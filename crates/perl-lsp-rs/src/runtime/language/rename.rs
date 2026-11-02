@@ -857,6 +857,57 @@ impl LspServer {
         Ok(Some(Value::Null))
     }
 
+    /// True when the cursor sits on a `my`/`state` lexical that shares its name
+    /// with another nested or enclosing lexical binding (#18175).
+    pub(crate) fn is_shadowed_lexical_binding(ast: &perl_parser_core::Node, offset: usize) -> bool {
+        let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
+        analyzer.find_definition(offset).is_some_and(|symbol| {
+            if !matches!(symbol.declaration.as_deref(), Some("my" | "state")) {
+                return false;
+            }
+            let table = analyzer.symbol_table();
+            let on_chain = |mut scope: usize, target: usize| loop {
+                if scope == target {
+                    break true;
+                }
+                match table.scopes.get(&scope).and_then(|s| s.parent) {
+                    Some(parent) => scope = parent,
+                    None => break false,
+                }
+            };
+            table.symbols.get(&symbol.name).is_some_and(|candidates| {
+                candidates.iter().any(|candidate| {
+                    candidate.location.start != symbol.location.start
+                        && matches!(candidate.declaration.as_deref(), Some("my" | "state"))
+                        && (on_chain(candidate.scope_id, symbol.scope_id)
+                            || on_chain(symbol.scope_id, candidate.scope_id))
+                })
+            })
+        })
+    }
+
+    /// Same-file references for a shadowed lexical, keeping only occurrences
+    /// that resolve to the binding under the cursor (#18175).
+    pub(crate) fn shadow_aware_same_file_references(
+        ast: &perl_parser_core::Node,
+        offset: usize,
+        include_declaration: bool,
+    ) -> Vec<perl_parser_core::SourceLocation> {
+        let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
+        let Some(bound) = analyzer.find_definition(offset) else {
+            return Vec::new();
+        };
+        analyzer
+            .find_all_references(offset, include_declaration)
+            .into_iter()
+            .filter(|loc| {
+                analyzer.find_definition(loc.start).is_some_and(|sym| {
+                    sym.scope_id == bound.scope_id && sym.location.start == bound.location.start
+                })
+            })
+            .collect()
+    }
+
     fn scoped_lexical_rename_edits(
         &self,
         doc: &crate::state::DocumentState,
@@ -1977,6 +2028,21 @@ impl LspServer {
                                     0,
                                     "same_file",
                                 );
+                            } else if rename_byte_offset.is_some_and(|offset| {
+                                let documents = self.documents_guard();
+                                self.get_document(&documents, uri).is_some_and(|doc| {
+                                    let Some(parsed) = doc.current_parsed() else {
+                                        return false;
+                                    };
+                                    let Some(ast) = parsed.ast() else {
+                                        return false;
+                                    };
+                                    Self::is_shadowed_lexical_binding(ast, offset)
+                                })
+                            }) {
+                                // #18175: workspace index rename is name-only for
+                                // lexicals; fall through to shadow-aware same-file
+                                // scoped rename below.
                             } else {
                                 let edits = crate::features::workspace_rename::build_rename_edit(
                                     idx.as_ref(),
@@ -2088,10 +2154,12 @@ impl LspServer {
                     }
 
                     // Create semantic analyzer for same-file rename
-                    let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
-
-                    // Find all references (including definition)
-                    let references = analyzer.find_all_references(offset, true);
+                    let references = if Self::is_shadowed_lexical_binding(ast, offset) {
+                        Self::shadow_aware_same_file_references(ast, offset, true)
+                    } else {
+                        let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
+                        analyzer.find_all_references(offset, true)
+                    };
 
                     if !references.is_empty() {
                         let edit_count = references.len();
@@ -3829,6 +3897,88 @@ mod tests {
         assert!(LspServer::offset_is_generated_accessor_declaration(text, spaced_accessor_offset));
         assert!(LspServer::offset_is_generated_accessor_declaration(text, wrapped_accessor_offset));
         assert!(!LspServer::offset_is_generated_accessor_declaration(text, hash_offset));
+        Ok(())
+    }
+
+    /// #18175: with a ready workspace index, rename must not use the name-only
+    /// index path for shadowed lexicals; inner and outer bindings rename independently.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn rename_shadowed_lexical_respects_binding_18175() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/shadow_rename_18175.pl";
+        let text = "my $x = 1;\nprint $x;\n{ my $x = 2; print $x; }\nprint $x;\n";
+        server.test_apply_did_open(uri, text, 1)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace index coordinator")?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(uri)?, text.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator.transition_to_ready(
+            coordinator.index().file_count(),
+            coordinator.index().symbol_count(),
+        );
+
+        let (inner_line, inner_character) = (2_u32, 7_u32);
+        let inner_rename = server
+            .handle_rename_workspace(Some(rename_params(uri, inner_line, inner_character, "z")))?
+            .ok_or("missing inner rename result (rename returned null)")?;
+        let inner_changes = inner_rename
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing inner rename changes")?;
+        let inner_edits = inner_changes
+            .get(uri)
+            .and_then(Value::as_array)
+            .ok_or("missing inner same-file edits")?;
+        assert_eq!(
+            inner_edits.len(),
+            2,
+            "inner $x rename edits declaration and use only: {inner_rename}"
+        );
+        for edit in inner_edits {
+            let start_line = edit
+                .pointer("/range/start/line")
+                .and_then(Value::as_u64)
+                .ok_or("missing edit start line")?;
+            assert_eq!(start_line, u64::from(inner_line), "inner edits must stay in block");
+            assert_eq!(
+                edit.get("newText").and_then(Value::as_str),
+                Some("$z"),
+                "inner rename must preserve sigil: {edit}"
+            );
+        }
+
+        let (outer_line, outer_character) = (0_u32, 3_u32);
+        let outer_rename = server
+            .handle_rename_workspace(Some(rename_params(uri, outer_line, outer_character, "y")))?
+            .ok_or("missing outer rename result")?;
+        let outer_changes = outer_rename
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing outer rename changes")?;
+        let outer_edits = outer_changes
+            .get(uri)
+            .and_then(Value::as_array)
+            .ok_or("missing outer same-file edits")?;
+        assert_eq!(
+            outer_edits.len(),
+            3,
+            "outer $x rename edits declaration and two outer uses: {outer_rename}"
+        );
+        for edit in outer_edits {
+            let start_line = edit
+                .pointer("/range/start/line")
+                .and_then(Value::as_u64)
+                .ok_or("missing edit start line")?;
+            assert_ne!(
+                start_line,
+                u64::from(inner_line),
+                "outer rename must not edit the inner block: {edit}"
+            );
+        }
+
         Ok(())
     }
 }

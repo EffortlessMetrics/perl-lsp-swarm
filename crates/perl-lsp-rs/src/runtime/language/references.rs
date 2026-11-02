@@ -892,6 +892,62 @@ impl LspServer {
                         // Carry the observed state out to the terminal no-result
                         // return, which is below this block's scope.
                         observed_index_state = index_state;
+                        // #18175: when the analyzer resolves the cursor to a lexical
+                        // (`my`/`state`), its shadow-aware same-file answer is exact
+                        // and complete: a lexical cannot be referenced from another
+                        // file, while the name-only tiers below return every
+                        // same-name occurrence when shadowing makes entity
+                        // resolution decline. Answer here instead.
+                        {
+                            // Only shadowed names need this: with a single lexical
+                            // of the name, the existing tiers already answer
+                            // exactly and their contracts stand.
+                            if Self::is_shadowed_lexical_binding(ast, offset) {
+                                let references = Self::shadow_aware_same_file_references(
+                                    ast,
+                                    offset,
+                                    include_declaration,
+                                );
+                                let locations: Vec<Value> = references
+                                    .iter()
+                                    .map(|loc| {
+                                        let (start_line, start_char) =
+                                            self.offset_to_pos16(doc, loc.start);
+                                        let (end_line, end_char) =
+                                            self.offset_to_pos16(doc, loc.end);
+                                        json!({
+                                            "uri": uri,
+                                            "range": {
+                                                "start": {
+                                                    "line": start_line,
+                                                    "character": start_char,
+                                                },
+                                                "end": {
+                                                    "line": end_line,
+                                                    "character": end_char,
+                                                },
+                                            },
+                                        })
+                                    })
+                                    .collect();
+                                let locations = finalize_reference_locations(locations, cap);
+                                self.check_references_cancellation(
+                                    typed_request_id.as_ref(),
+                                    &mut fallback_receipt,
+                                )?;
+                                return Ok((
+                                    Some(Value::Array(locations)),
+                                    ReferencesAnsweringTier::SemanticAnalyzer,
+                                    index_state,
+                                    0,
+                                    0,
+                                    start.elapsed().as_micros(),
+                                    source_backed_attempt.clone(),
+                                    fallback_receipt.clone(),
+                                ));
+                            }
+                        }
+
                         let workspace_symbol_key =
                             symbol_key.as_ref().map(super::to_workspace_symbol_key);
                         // A fallback caller package is not an import origin or a
@@ -4688,6 +4744,132 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), ghost.len(), "no duplicated (uri, range): {ghost:?}");
 
+        Ok(())
+    }
+
+    #[test]
+    fn is_shadowed_lexical_binding_detects_nested_block_fixture_18175() {
+        use crate::runtime::LspServer;
+        let text = "my $x = 1;\nprint $x;\n{ my $x = 2; print $x; }\nprint $x;\n";
+        let ast = perl_parser_core::Parser::new(text).parse().expect("parse fixture");
+        let outer = text.find("$x = 1").expect("outer decl") + 1;
+        let inner = text.find("$x = 2").expect("inner decl") + 1;
+        assert!(
+            LspServer::is_shadowed_lexical_binding(&ast, outer),
+            "outer binding must be treated as shadowed"
+        );
+        assert!(
+            LspServer::is_shadowed_lexical_binding(&ast, inner),
+            "inner binding must be treated as shadowed"
+        );
+        let outer_refs = LspServer::shadow_aware_same_file_references(&ast, outer, false);
+        assert_eq!(
+            outer_refs.len(),
+            2,
+            "shadow-aware filter must return only outer uses without declaration"
+        );
+    }
+
+    #[test]
+    fn references_shadowed_lexical_uses_analyzer_answer_18175() -> Result<(), Box<dyn Error>> {
+        // #18175: with two same-name lexicals, entity resolution declines and
+        // the name-only tiers returned every occurrence for either query.
+        // The handler must answer from the shadow-aware analyzer instead:
+        // outer query keeps only its own uses, inner query only its use.
+        let server = crate::runtime::LspServer::default();
+        let uri = "file:///probe-shadow.pl";
+        let text = "my $x = 1;\nprint $x;\n{ my $x = 2; print $x; }\nprint $x;\n";
+        server.test_apply_did_open(uri, text, 1)?;
+
+        let outer = server
+            .test_handle_references(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 0, "character": 3 },
+                "context": { "includeDeclaration": false }
+            })))?
+            .ok_or("missing references result")?;
+        let Value::Array(outer_locations) = &outer else {
+            return Err(format!("references payload was not an array: {outer}").into());
+        };
+        assert_eq!(
+            outer_locations.len(),
+            2,
+            "outer $x has exactly its 2 uses outside the block; got {outer}"
+        );
+        assert!(
+            outer_locations
+                .iter()
+                .all(|loc| loc.pointer("/range/start/line").and_then(Value::as_u64) != Some(2)),
+            "no location may point into the shadowing block; got {outer}"
+        );
+
+        let inner = server
+            .test_handle_references(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 7 },
+                "context": { "includeDeclaration": false }
+            })))?
+            .ok_or("missing references result 2")?;
+        let Value::Array(inner_locations) = &inner else {
+            return Err(format!("references payload was not an array: {inner}").into());
+        };
+        assert_eq!(inner_locations.len(), 1, "inner $x has exactly its 1 use; got {inner}");
+        assert_eq!(
+            inner_locations[0].pointer("/range/start/line").and_then(Value::as_u64),
+            Some(2),
+            "the inner use is on line 2; got {inner}"
+        );
+
+        // includeDeclaration=true adds each declaration exactly once.
+        let outer_decl = server
+            .test_handle_references(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 0, "character": 3 },
+                "context": { "includeDeclaration": true }
+            })))?
+            .ok_or("missing references result 3")?;
+        let Value::Array(outer_decl_locations) = &outer_decl else {
+            return Err(format!("references payload was not an array: {outer_decl}").into());
+        };
+        assert_eq!(
+            outer_decl_locations.len(),
+            3,
+            "outer $x with declaration: 1 declaration + 2 uses; got {outer_decl}"
+        );
+        let inner_decl = server
+            .test_handle_references(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 7 },
+                "context": { "includeDeclaration": true }
+            })))?
+            .ok_or("missing references result 4")?;
+        let Value::Array(inner_decl_locations) = &inner_decl else {
+            return Err(format!("references payload was not an array: {inner_decl}").into());
+        };
+        assert_eq!(
+            inner_decl_locations.len(),
+            2,
+            "inner $x with declaration: 1 declaration + 1 use; got {inner_decl}"
+        );
+
+        // A shadowed lexical with no uses answers empty, not the other
+        // binding's uses.
+        server.test_apply_did_open(
+            "file:///probe-shadow-unused.pl",
+            "my $y = 1;\n{ my $y = 2; }\nprint $y;\n",
+            1,
+        )?;
+        let unused = server
+            .test_handle_references(Some(json!({
+                "textDocument": { "uri": "file:///probe-shadow-unused.pl", "version": 1 },
+                "position": { "line": 1, "character": 7 },
+                "context": { "includeDeclaration": false }
+            })))?
+            .ok_or("missing references result 5")?;
+        let Value::Array(unused_locations) = &unused else {
+            return Err(format!("references payload was not an array: {unused}").into());
+        };
+        assert!(unused_locations.is_empty(), "unused inner $y must answer empty; got {unused}");
         Ok(())
     }
 }
