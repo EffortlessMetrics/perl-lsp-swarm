@@ -4,6 +4,10 @@
 //! indexed in checked-in harness fixtures rather than inferred from Linux-only
 //! semantic tests.
 
+use perl_core_harness::invocation_trace::{
+    TestInitClass,
+    model::EffectiveInvocationField,
+};
 use perl_core_harness::target_contracts::model::{
     TARGET_MATRIX_PART_SCHEMA_VERSION, TargetDisposition, TargetMatrixPart,
 };
@@ -55,20 +59,27 @@ fn optional_resource_populations_stay_out_of_default_denominator() -> TestResult
         ".ci/perl-core-harness/upstream-targets-5.42.2.v1/06-optional-platform.json",
     ))?;
     let matrix: TargetMatrixPart = serde_json::from_str(&raw)?;
+    const OPTIONAL_IDS: [&str; 3] = ["optional_benchmark", "optional_bigmem", "optional_japh"];
+    let mut found = [false; OPTIONAL_IDS.len()];
     for entry in &matrix.targets {
         let id = entry.contract.target_id.as_str();
-        if matches!(id, "optional_benchmark" | "optional_bigmem" | "optional_japh") {
-            assert_eq!(
-                entry.disposition,
-                TargetDisposition::Planned,
-                "{id} must stay out of the implemented default denominator"
-            );
-            assert!(!entry.claim_boundary.is_empty(), "{id} must document a claim boundary");
-            assert!(
-                entry.contract.change_reason.as_deref().is_some_and(|r| !r.is_empty()),
-                "{id} must record why it is optional"
-            );
-        }
+        let Some(index) = OPTIONAL_IDS.iter().position(|expected| *expected == id) else {
+            continue;
+        };
+        found[index] = true;
+        assert_eq!(
+            entry.disposition,
+            TargetDisposition::Planned,
+            "{id} must stay out of the implemented default denominator"
+        );
+        assert!(!entry.claim_boundary.is_empty(), "{id} must document a claim boundary");
+        assert!(
+            entry.contract.change_reason.as_deref().is_some_and(|r| !r.is_empty()),
+            "{id} must record why it is optional"
+        );
+    }
+    for (index, id) in OPTIONAL_IDS.iter().enumerate() {
+        assert!(found[index], "matrix must index optional population {id}");
     }
     Ok(())
 }
@@ -85,6 +96,17 @@ fn invocation_trace_model_documents_testinit_bootstrap_classes() -> TestResult {
         source.contains("Standard bootstrap"),
         "invocation trace must name the standard bootstrap class"
     );
+    let standard = EffectiveInvocationField::Observed { value: TestInitClass::Standard };
+    assert_eq!(standard.observed(), Some(&TestInitClass::Standard));
+    for special in [
+        TestInitClass::U1,
+        TestInitClass::U2,
+        TestInitClass::U2t,
+        TestInitClass::A,
+        TestInitClass::Nc,
+    ] {
+        assert_ne!(TestInitClass::Standard, special);
+    }
     Ok(())
 }
 

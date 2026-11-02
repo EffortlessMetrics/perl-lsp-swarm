@@ -45,8 +45,8 @@ identity.
 
 ## Contract — Parser-to-fact transitions
 
-The parser-to-semantic path is layered; no stage may skip a lower layer or
-infer facts from stale or foreign layer state.
+The compile-state parser-to-semantic path is layered; no stage may skip a lower
+layer or infer facts from stale or foreign layer state.
 
 | Stage | Owner | Output | Semantic fact entry |
 | --- | --- | --- | --- |
@@ -55,7 +55,14 @@ infer facts from stale or foreign layer state.
 | Analyze | `perl-semantic-analyzer` | synthesized facts, summaries, framework adapters | typed records in `perl-semantic-facts` |
 | Transport | `perl-semantic-facts` | `SemanticFactEnvelope` and versioned contract modules | provider/workspace consumers |
 
-Transition rules:
+**Direct AST import extraction (workspace index).** Some analyzer facts are
+extracted straight from parser AST without `lower_ast` or `HirFile` compile-state
+layers. `ImportExtractor::extract` walks the AST and emits `ImportSpec` records
+in `perl-semantic-facts`; the live workspace index uses this path for `use` /
+`require` discovery. That path still obeys analyzer provenance and envelope
+classification rules, but it is not a compile-state-layer projection.
+
+Transition rules (compile-state path and direct analyzer paths):
 
 - Parser AST nodes are not neutral semantic facts; only lowered compile-state
   projections and analyzer-emitted typed facts enter `perl-semantic-facts`.
