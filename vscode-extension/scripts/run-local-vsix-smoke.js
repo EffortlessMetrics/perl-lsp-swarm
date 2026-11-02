@@ -979,23 +979,6 @@ function buildAccessibilityExpectation() {
  * earlier run would all produce it. Behavior only counts when the child wrote
  * a fresh receipt that binds itself to this candidate, this VSIX, this server,
  * and this matrix leg.
- *
- * @param {{
- *   receiptFile: string,
- *   expectedRevision: string,
- *   expectedVsixSha256: string | null,
- *   expectedServerSourceSha: string,
- *   expectedServerObservation?: {path:string,sha256:string,size:number},
- *   expectedVsixObservation?: {path:string,sha256:string,size:number},
- *   expectedExtensionsRoot?: string,
- *   expectedVscodeVersion: string,
- *   expectedSourceLabel: string,
- *   expectedDeclineOutcome?: string | null,
- *   accessibilityExpectation?: ReturnType<typeof buildAccessibilityExpectation> | null,
- *   readFile?: (file: string) => string,
- *   exists?: (file: string) => boolean,
- * }} input
- * @returns {{ ok: true, receipt: any } | { ok: false, violations: string[] }}
  */
 function validateUntrustedDeclineSmokeReceipt(receipt, violations) {
   const topology = receipt.workspace?.topology;
@@ -1031,6 +1014,24 @@ function validateUntrustedDeclineSmokeReceipt(receipt, violations) {
   }
 }
 
+/**
+ * @param {{
+ *   receiptFile: string,
+ *   expectedRevision: string,
+ *   expectedVsixSha256: string | null,
+ *   expectedServerSourceSha: string,
+ *   expectedServerObservation?: {path:string,sha256:string,size:number},
+ *   expectedVsixObservation?: {path:string,sha256:string,size:number},
+ *   expectedExtensionsRoot?: string,
+ *   expectedVscodeVersion: string,
+ *   expectedSourceLabel: string,
+ *   expectedDeclineOutcome?: string | null,
+ *   accessibilityExpectation?: ReturnType<typeof buildAccessibilityExpectation> | null,
+ *   readFile?: (file: string) => string,
+ *   exists?: (file: string) => boolean,
+ * }} input
+ * @returns {{ ok: true, receipt: any } | { ok: false, violations: string[] }}
+ */
 function validateChildSmokeReceipt({
   receiptFile,
   expectedRevision,
