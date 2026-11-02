@@ -20,7 +20,7 @@ and the vendored query sources in `queries/`.
 - `c-src/parser.c` SHA-256:
   `07b7bb23511188e97cfdbd6ac6289439f872e58504d2c51d9e24e59fae957d2a`
 - `c-src/scanner.c` SHA-256:
-  `01bbea22f0864679692fb0163b29304d346666f2181b1dbbe08f900c9bb219eb`
+  `27f2f5cf8e2562bb1727231de53291c43aba67c6362a749cf878caa2261b3f77`
 - `c-src/tsp_unicode.h` SHA-256:
   `9cbc0731f8c9bd52bd3de9644fd887f20cecea2d17634b20769db4940eadb566`
 - `c-src/bsearch.h` SHA-256:
@@ -65,7 +65,8 @@ heredocs, which permits intervening Perl comments but not later statements.
 ### Vendored from upstream grammar snapshot
 
 - `c-src/parser.c` (generated parser)
-- `c-src/scanner.c` (external scanner)
+- `c-src/scanner.c` (external scanner; **generated projection** of
+  `tree-sitter-perl/src/scanner.c` — refresh with `cargo xtask tree-sitter-scanner sync`)
 - `c-src/bsearch.h`
 - `c-src/tsp_unicode.h`
 - `c-src/tree_sitter/parser.h`
