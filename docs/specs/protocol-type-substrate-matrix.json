@@ -163,11 +163,6 @@
           "reachability": "normal_chain"
         },
         {
-          "min_hops": 2,
-          "package": "perl-core-harness",
-          "reachability": "dev_only_chain"
-        },
-        {
           "min_hops": 3,
           "package": "perl-core-test-runner",
           "reachability": "normal_chain"
@@ -203,7 +198,7 @@
           "reachability": "normal_chain"
         },
         {
-          "min_hops": 2,
+          "min_hops": 3,
           "package": "perl-parser-comparison",
           "reachability": "normal_chain"
         },
@@ -213,19 +208,9 @@
           "reachability": "normal_chain"
         },
         {
-          "min_hops": 2,
-          "package": "perl-parser-pest",
-          "reachability": "dev_only_chain"
-        },
-        {
           "min_hops": 3,
           "package": "perl-pragma",
           "reachability": "normal_chain"
-        },
-        {
-          "min_hops": 2,
-          "package": "perl-release-readiness",
-          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 2,
@@ -236,11 +221,6 @@
           "min_hops": 2,
           "package": "perl-semantic-analyzer",
           "reachability": "normal_chain"
-        },
-        {
-          "min_hops": 2,
-          "package": "perl-subprocess-runtime",
-          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 2,
@@ -256,11 +236,6 @@
           "min_hops": 3,
           "package": "perl-tree-sitter-compat",
           "reachability": "normal_chain"
-        },
-        {
-          "min_hops": 2,
-          "package": "perl-uri",
-          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 3,
@@ -313,7 +288,7 @@
         "candidate_evidence": "0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step",
         "classification": "public_api_only_difference",
         "incumbent_evidence": "0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result",
-        "migration_note": "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire",
+        "migration_note": "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire; canonical string→Uri gates live in perl-lsp-rs-core::uri (`parse_uri` with ADR-0037 fallback, `try_parse_uri` for skip-on-invalid workspace folders, `parse_uri_or_err` for strict/test callers — #14292)",
         "row_id": "DELTA-URI-DEFAULT"
       },
       {
