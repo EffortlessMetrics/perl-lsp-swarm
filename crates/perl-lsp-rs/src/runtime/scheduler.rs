@@ -54,6 +54,11 @@ use std::sync::{
 use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 
+#[cfg(feature = "workspace")]
+use crate::runtime::readiness::references_index_readiness_policy;
+#[cfg(feature = "workspace")]
+use crate::runtime::workspace::set_references_warmup_already_waited;
+
 use super::{LspServer, outbound::OutboundSender};
 
 // =========================================================================
@@ -329,6 +334,7 @@ const QUEUE_CAPACITY: usize = 64;
 
 /// Number of concurrent read-pool workers.
 const READ_WORKERS: usize = 4;
+const REFERENCES_METHOD: &str = "textDocument/references";
 
 /// Mutation/lifecycle request tagged with its ingress-order sequence number.
 struct QueuedMutation {
@@ -360,6 +366,9 @@ struct QueuedRead {
     /// generation observed at ingress so the dispatcher can detect that
     /// the document moved on before this read had a chance to run.
     freshness: Option<ReadFreshness>,
+    /// When true, reference-index warm-up already ran outside read-worker
+    /// capacity (#16700).
+    references_warmup_precompleted: bool,
 }
 
 /// Re-capture freshness after prior mutations when ingress could not see the
@@ -488,6 +497,7 @@ impl Scheduler {
             // blocking pool, capped by a semaphore instead of a receiver mutex.
             tokio::spawn(Self::read_dispatcher(
                 read_rx,
+                read_tx.clone(),
                 Arc::clone(&server),
                 Arc::clone(&mutation_seq_done),
                 Arc::clone(&mutation_notify),
@@ -576,6 +586,7 @@ impl Scheduler {
             arrival_seq,
             dedup_key,
             freshness,
+            references_warmup_precompleted: false,
         });
         admission.armed = false;
         Ok(())
@@ -704,6 +715,7 @@ impl Scheduler {
     /// waits for preceding mutations to complete before executing.
     async fn read_dispatcher(
         mut rx: tokio::sync::mpsc::Receiver<QueuedRead>,
+        read_tx: tokio::sync::mpsc::Sender<QueuedRead>,
         server: Arc<LspServer>,
         mutation_seq_done: Arc<AtomicU64>,
         mutation_notify: Arc<Notify>,
@@ -755,6 +767,7 @@ impl Scheduler {
                                 &latest_seq,
                                 &permits,
                                 &mut in_flight,
+                                &read_tx,
                                 &server,
                                 &mutation_seq_done,
                                 &mutation_notify,
@@ -773,6 +786,7 @@ impl Scheduler {
                     &latest_seq,
                     &permits,
                     &mut in_flight,
+                    &read_tx,
                     &server,
                     &mutation_seq_done,
                     &mutation_notify,
@@ -1007,6 +1021,25 @@ impl Scheduler {
         Self::send_response(&server.outbound, cancelled_response);
     }
 
+    fn send_client_cancelled(
+        server: &Arc<LspServer>,
+        id: Option<JsonRpcId>,
+        method: &str,
+        message: &str,
+    ) {
+        let cancelled_response = JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: REQUEST_CANCELLED,
+                message: format!("{message} ({method})"),
+                data: None,
+            }),
+        };
+        Self::send_response(&server.outbound, cancelled_response);
+    }
+
     /// Dispatch a single read request, cancelling it if it becomes stale
     /// before execution or before its response is delivered.
     async fn dispatch_one(
@@ -1014,6 +1047,7 @@ impl Scheduler {
         latest_seq: &HashMap<RequestDedupKey, u64>,
         permits: &Arc<Semaphore>,
         in_flight: &mut JoinSet<()>,
+        read_tx: &tokio::sync::mpsc::Sender<QueuedRead>,
         server: &Arc<LspServer>,
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
@@ -1050,6 +1084,60 @@ impl Scheduler {
             return;
         }
 
+        #[cfg(feature = "workspace")]
+        if queued.request.method == REFERENCES_METHOD && !queued.references_warmup_precompleted {
+            let server = Arc::clone(server);
+            let read_tx = read_tx.clone();
+            tokio::spawn(async move {
+                let request_id = queued.request.id.clone();
+                let method = queued.request.method.clone();
+                let warm = tokio::task::spawn_blocking({
+                    let server = Arc::clone(&server);
+                    let request_id = request_id.clone();
+                    move || {
+                        let cancelled =
+                            || request_id.as_ref().is_some_and(|id| server.is_cancelled(id));
+                        server.check_index_readiness_with_cancellation(
+                            references_index_readiness_policy(),
+                            Some(&cancelled),
+                        )
+                    }
+                })
+                .await;
+
+                let warm_cancelled = match warm {
+                    Ok(outcome) => {
+                        request_id.as_ref().is_some_and(|id| server.is_cancelled(id))
+                            || outcome.reason() == "request cancelled during readiness wait"
+                    }
+                    Err(_) => true,
+                };
+
+                if warm_cancelled {
+                    if let Some(id) = request_id.as_ref() {
+                        server.clear_request_pending(id);
+                        server.cancel_clear(id);
+                    }
+                    Self::send_client_cancelled(
+                        &server,
+                        request_id,
+                        &method,
+                        "Request cancelled during references warm-up wait",
+                    );
+                    return;
+                }
+
+                let mut requeued = queued;
+                requeued.references_warmup_precompleted = true;
+                if read_tx.send(requeued).await.is_err()
+                    && let Some(id) = request_id.as_ref()
+                {
+                    server.clear_request_pending(id);
+                }
+            });
+            return;
+        }
+
         let permit = match Arc::clone(permits).acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => {
@@ -1072,6 +1160,7 @@ impl Scheduler {
         let mut freshness = queued.freshness.clone();
         let method = queued.request.method.clone();
         let id = queued.request.id.clone();
+        let references_warmup_precompleted = queued.references_warmup_precompleted;
 
         in_flight.spawn(async move {
             let _permit = permit;
@@ -1124,6 +1213,9 @@ impl Scheduler {
                     let handler_server = Arc::clone(&srv);
                     move || {
                         let _pending_guard = pending_guard;
+                        if references_warmup_precompleted {
+                            set_references_warmup_already_waited(true);
+                        }
                         handler_server.handle_request(queued.request)
                     }
                 },
@@ -1496,6 +1588,7 @@ mod tests {
             arrival_seq,
             dedup_key: None,
             freshness: None,
+            references_warmup_precompleted: false,
         }
     }
 
@@ -1669,6 +1762,7 @@ mod tests {
             arrival_seq,
             dedup_key,
             freshness,
+            references_warmup_precompleted: false,
         }
     }
 
@@ -1695,6 +1789,7 @@ mod tests {
             arrival_seq,
             dedup_key,
             freshness,
+            references_warmup_precompleted: false,
         }
     }
 
@@ -1884,6 +1979,7 @@ mod tests {
             arrival_seq: 1,
             dedup_key: extract_dedup_key("textDocument/hover", Some(&params), priority),
             freshness: extract_freshness(&server, "textDocument/hover", Some(&params), priority),
+            references_warmup_precompleted: false,
         };
 
         assert!(refresh_after_mutation_barrier(&queued));
@@ -2080,12 +2176,14 @@ mod tests {
         let mutation_seq_done = Arc::new(AtomicU64::new(0));
         let mutation_notify = Arc::new(Notify::new());
         let latest_seq = HashMap::new();
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(8);
 
         Scheduler::dispatch_one(
             queued,
             &latest_seq,
             &one_permit,
             &mut in_flight,
+            &read_tx,
             &server,
             &mutation_seq_done,
             &mutation_notify,
@@ -2226,12 +2324,14 @@ mod tests {
         let mutation_seq_done = Arc::new(AtomicU64::new(0));
         let mutation_notify = Arc::new(Notify::new());
         let latest_seq = HashMap::new();
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(8);
 
         Scheduler::dispatch_one(
             queued,
             &latest_seq,
             &one_permit,
             &mut in_flight,
+            &read_tx,
             &server,
             &mutation_seq_done,
             &mutation_notify,
@@ -2281,12 +2381,14 @@ mod tests {
         let mutation_seq_done = Arc::new(AtomicU64::new(0));
         let mutation_notify = Arc::new(Notify::new());
         let latest_seq = HashMap::new();
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(8);
 
         Scheduler::dispatch_one(
             queued,
             &latest_seq,
             &one_permit,
             &mut in_flight,
+            &read_tx,
             &server,
             &mutation_seq_done,
             &mutation_notify,
@@ -2335,12 +2437,14 @@ mod tests {
         let mutation_seq_done = Arc::new(AtomicU64::new(0));
         let mutation_notify = Arc::new(Notify::new());
         let latest_seq = HashMap::new();
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(8);
 
         Scheduler::dispatch_one(
             queued,
             &latest_seq,
             &one_permit,
             &mut in_flight,
+            &read_tx,
             &server,
             &mutation_seq_done,
             &mutation_notify,
@@ -2400,6 +2504,7 @@ mod tests {
         let mutation_seq_done = Arc::new(AtomicU64::new(0));
         let mutation_notify = Arc::new(Notify::new());
         let latest_seq = HashMap::new();
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(8);
         let stale_count = stale_reads.len();
 
         for queued in stale_reads {
@@ -2410,6 +2515,7 @@ mod tests {
                     &latest_seq,
                     &zero_permits,
                     &mut in_flight,
+                    &read_tx,
                     &server,
                     &mutation_seq_done,
                     &mutation_notify,
@@ -2429,6 +2535,7 @@ mod tests {
             &latest_seq,
             &one_permit,
             &mut in_flight,
+            &read_tx,
             &server,
             &mutation_seq_done,
             &mutation_notify,

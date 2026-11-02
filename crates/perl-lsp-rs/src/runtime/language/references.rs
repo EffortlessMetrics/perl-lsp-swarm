@@ -41,8 +41,6 @@ use perl_semantic_facts::AnchorId;
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 
 #[cfg(feature = "workspace")]
-use crate::runtime::readiness::IndexReadinessPolicy;
-#[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
 const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
@@ -860,14 +858,22 @@ impl LspServer {
                     #[cfg(not(feature = "workspace"))]
                     let index_state: &'static str = "none";
 
-                    // Wait for the workspace index to finish building before querying it.
-                    // Without this, a references request while the index is in Building state
-                    // routes to Partial and misses cross-file usages in non-open files.
-                    // The text-search fallback masks this in tests (open files are scanned),
-                    // but production users on large workspaces see empty cross-file results.
-                    // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                    // Hold until reference-index warm-up completes (or the safety cap).
+                    // Scheduler-side warm-up keeps interactive reads off the four shared
+                    // read workers (#16700); this path covers direct/test handlers.
                     #[cfg(feature = "workspace")]
-                    let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                    if !crate::runtime::workspace::references_warmup_already_waited() {
+                        let references_cancelled =
+                            || typed_request_id.as_ref().is_some_and(|id| self.is_cancelled(id));
+                        let _ = self.check_index_readiness_with_cancellation(
+                            crate::runtime::readiness::references_index_readiness_policy(),
+                            Some(&references_cancelled),
+                        );
+                        self.check_references_cancellation(
+                            typed_request_id.as_ref(),
+                            &mut fallback_receipt,
+                        )?;
+                    }
 
                     // Sample after the readiness wait and before index/semantic use; do
                     // not call while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
@@ -2197,7 +2203,9 @@ impl LspServer {
                 })));
             };
 
-            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let _ = self.check_index_readiness(
+                crate::runtime::readiness::references_index_readiness_policy(),
+            );
             let source_backed_receipt_and_cutover = if self
                 .workspace_index_stale_for_any_open_document()
             {

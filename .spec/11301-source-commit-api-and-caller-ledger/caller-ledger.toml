@@ -168,6 +168,11 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # is a new caller identity that seeds temp on-disk fixtures through
 # index_initial_file in index_temp_source. Owned by the existing
 # crates/perl-workspace/tests row; no compatibility call, no production caller.
+# Canonical-only caller identity by #16650 (PR #16687): the test helper
+# `seed_open_documents_into_building_coordinator` in
+# crates/perl-lsp-rs/src/runtime/language/references.rs calls
+# `.index_live_file(..., SourceCommit::new(generation))` so Full-path fixtures
+# are generation-matched and not stale. Fixture-only; baseline unchanged.
 compatibility_baseline = 697
 
 # Structural recurrence control (#11305): files under these prefixes must
