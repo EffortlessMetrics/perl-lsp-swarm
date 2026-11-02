@@ -80,8 +80,8 @@ fn bare_use_warnings_after_subset_reenables_global_all() {
     let state = PragmaTracker::state_for_offset(&map, 40);
 
     assert!(state.warnings);
-    assert!(state.enabled_warning_categories.is_empty());
     assert!(state.is_warning_active("deprecated"));
+    assert!(state.is_warning_active("uninitialized"));
 }
 
 #[test]

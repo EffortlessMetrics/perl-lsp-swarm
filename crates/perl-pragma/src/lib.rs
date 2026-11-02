@@ -84,7 +84,7 @@ pub struct PragmaState {
     /// While this list is non-empty and [`Self::warnings`] is `false`, only
     /// listed categories are considered active. Final hierarchical policy is
     /// owned by #8219.
-    pub enabled_warning_categories: Vec<String>,
+    pub(crate) enabled_warning_categories: Vec<String>,
     /// Whether explicit `use feature 'signatures'` currently implies strictness.
     ///
     /// This is tracked separately from the raw strict flags so `no feature
