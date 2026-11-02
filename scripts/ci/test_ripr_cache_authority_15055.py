@@ -47,6 +47,11 @@ RECEIPT_CACHE_PATH = "path: target/receipts/quality/ripr-plus.json"
 RECEIPT_CACHE_MARKER_GUARD = (
     "success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''"
 )
+RECEIPT_CACHE_CHECKPOINT_NAME = "Checkpoint save memoized ripr-plus receipt"
+RECEIPT_CACHE_CHECKPOINT_GUARD = (
+    "hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''"
+)
+RECEIPT_CACHE_FINAL_NAME = "Save memoized ripr-plus receipt"
 RECEIPT_CACHE_ADJUDICATOR = "Adjudicate receipt cache exactness"
 RECEIPT_CACHE_EXACT_GUARD = ' && [ "${RIPR_RECEIPT_CACHE_HIT:-}" = "true" ]'
 RECEIPT_SCAN = "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json"
@@ -324,13 +329,19 @@ def validate_receipt_cache_contract(source: list[str]) -> None:
         saves = [i for i, text in names
                  if action_reference(text.splitlines()) == RECEIPT_CACHE_SAVE
                  and "key: ripr-plus-receipt-v1-" in text]
-        if len(restores) != 1 or len(saves) != 1:
+        if len(restores) != 1 or len(saves) != 2:
             raise AssertionError(
-                f"{job} must carry exactly one receipt-cache restore and one save"
+                f"{job} must carry exactly one receipt-cache restore and two saves"
             )
-        restore, save = restores[0], saves[0]
+        checkpoint = [i for i in saves if f"name: {RECEIPT_CACHE_CHECKPOINT_NAME}" in names[i][1]]
+        final = [i for i in saves if f"name: {RECEIPT_CACHE_FINAL_NAME}" in names[i][1]]
+        if len(checkpoint) != 1 or len(final) != 1:
+            raise AssertionError(f"{job} receipt-cache checkpoint/final save names drifted")
+        restore, save = restores[0], final[0]
+        checkpoint_save = checkpoint[0]
         restore_text = names[restore][1]
         save_text = names[save][1]
+        checkpoint_text = names[checkpoint_save][1]
         for text in (restore_text, save_text):
             if f"key: {RECEIPT_CACHE_KEY}" not in text:
                 raise AssertionError(f"{job} receipt cache key is not bound to the exact head")
@@ -381,18 +392,23 @@ def validate_receipt_cache_contract(source: list[str]) -> None:
             )
         if RECEIPT_MARKER_NAME not in receipt:
             raise AssertionError(f"{job} receipt step does not record produce-branch freshness")
-        if not (restore < adjudicators[0] < receipt_steps[0] < save):
+        guidance = [i for i, text in names if "name: Generate review guidance" in text]
+        if len(guidance) != 1:
+            raise AssertionError(f"{job} must declare exactly one Generate review guidance step")
+        if not (restore < adjudicators[0] < receipt_steps[0] < checkpoint_save < guidance[0] < save):
             raise AssertionError(
-                f"{job} receipt-cache restore/adjudicate/produce/save order drifted"
+                f"{job} receipt-cache restore/adjudicate/produce/checkpoint/guidance/final order drifted"
             )
-        # Save side: only a fully succeeding run may publish, and only when
-        # this run produced the receipt itself (freshness marker present).
+        if field(checkpoint_text.splitlines(), "if", 8) != RECEIPT_CACHE_CHECKPOINT_GUARD:
+            raise AssertionError(f"{job} receipt-cache checkpoint save guard drifted")
+        # Final save side: only a fully succeeding run may publish again, and
+        # only when this run produced the receipt itself (freshness marker).
         if field(save_text.splitlines(), "if", 8) != RECEIPT_CACHE_MARKER_GUARD:
-            raise AssertionError(f"{job} receipt-cache save guard is not the exact fresh rule")
-        if "restore-keys" in save_text:
+            raise AssertionError(f"{job} receipt-cache final save guard is not the exact fresh rule")
+        if "restore-keys" in save_text or "restore-keys" in checkpoint_text:
             raise AssertionError(f"{job} receipt-cache save must not carry restore-keys")
         if save != len(steps) - 1:
-            raise AssertionError(f"{job} receipt-cache save is not the job's last step")
+            raise AssertionError(f"{job} receipt-cache final save is not the job's last step")
 
 
 def validate_cache_family_accounting(source: list[str]) -> None:
@@ -415,7 +431,7 @@ def validate_cache_family_accounting(source: list[str]) -> None:
             "an unaccounted actions/cache step appeared: "
             + "; ".join(action_reference(step) or step[0] for step in unknown)
         )
-    if len(cache) != 3 + 2 * len(RECEIPT_CACHE_JOBS):
+    if len(cache) != 3 + 3 * len(RECEIPT_CACHE_JOBS):
         raise AssertionError("cache family cardinality drifted")
 
 
@@ -743,6 +759,10 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             ),
             "receipt save step removed": re.sub(
                 r"(?m)^      - name: Save memoized ripr-plus receipt\n(?:        .*\n)+",
+                "", text, count=1
+            ),
+            "receipt checkpoint save step removed": re.sub(
+                r"(?m)^      - name: Checkpoint save memoized ripr-plus receipt\n(?:        .*\n)+",
                 "", text, count=1
             ),
             "receipt restore step removed": re.sub(
