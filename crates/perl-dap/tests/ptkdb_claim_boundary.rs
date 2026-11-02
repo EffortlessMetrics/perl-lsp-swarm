@@ -1075,24 +1075,35 @@ fn reference_ptkdb_adapter_repeated_install_is_idempotent_without_double_wrappin
     let peer_addr = listener.local_addr()?;
     let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
     let harness = r#"
+package main;
+our $ORIGINAL_CALLS = 0;
 package Devel::ptkdb;
 our $VERSION = '1.1091';
 our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
 our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
 our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
-sub set_file { return "original:$_[2]"; }
+sub set_file {
+    $main::ORIGINAL_CALLS++;
+    return "original:$_[2]";
+}
 package main;
+my $before_install = \&Devel::ptkdb::set_file;
 my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
 die "first plugin load failed: " . ($@ || $!) unless $loaded;
 my $after_first_install = \&Devel::ptkdb::set_file;
+die "mirror install never wrapped set_file"
+    if $before_install == $after_first_install;
 $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
 die "second plugin load failed: " . ($@ || $!) unless $loaded;
 my $after_second_install = \&Devel::ptkdb::set_file;
 die "repeated install re-wrapped set_file"
     unless $after_first_install == $after_second_install;
+my $calls_before = $ORIGINAL_CALLS;
 my $window = bless {}, 'Devel::ptkdb';
 my $value = $window->set_file('/work/idempotent.pl', 9);
 die "wrapped set_file lost scalar return: $value" unless $value eq 'original:9';
+die "wrapper invoked original set_file more than once per call"
+    unless $ORIGINAL_CALLS == $calls_before + 1;
 exit 0;
 "#;
 
@@ -1142,6 +1153,8 @@ fn reference_ptkdb_adapter_preserves_set_file_return_context_and_exceptions()
     let peer_addr = listener.local_addr()?;
     let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
     let harness = r#"
+package main;
+our $VOID_CONTEXT = 0;
 package Devel::ptkdb;
 our $VERSION = '1.1091';
 our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
@@ -1152,6 +1165,7 @@ sub set_file {
     die "set_file exception probe" if $path eq '/throw';
     my $wantarray = wantarray;
     if (!defined $wantarray) {
+        $main::VOID_CONTEXT++;
         return;
     }
     if ($wantarray) {
@@ -1170,6 +1184,8 @@ my @list = $window->set_file('/work/list.pl', 5);
 die "list return context changed"
     unless @list == 2 && $list[0] == 5 && $list[1] eq 'list:5';
 $window->set_file('/work/void.pl', 6);
+die "void return context was not preserved"
+    unless $VOID_CONTEXT == 1;
 my $ok = eval { $window->set_file('/throw', 0); 1 };
 die "exception from original set_file was not preserved"
     unless !$ok && $@ =~ /set_file exception probe/;
