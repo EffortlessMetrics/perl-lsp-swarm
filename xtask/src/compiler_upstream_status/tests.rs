@@ -563,6 +563,32 @@ fn compiler_upstream_conformance_status_rejects_dangling_successor() -> TestResu
 }
 
 #[test]
+fn compiler_upstream_conformance_status_rejects_no_current_snapshot_when_series_selects_snapshot()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-masked-absence", "perl-5.38");
+    row.terminal_state = TerminalState::NoCurrentSnapshot;
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("cannot be no_current_snapshot"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_agreement_current_requires_installed_witness() -> TestResult
+{
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-current-no-witness", "perl-5.38");
+    row.witness = None;
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("requires a recorded installed witness"), "{message}");
+    Ok(())
+}
+
+#[test]
 fn compiler_upstream_conformance_status_rejects_ineligible_evidence_and_private_bindings()
 -> TestResult {
     let dir = TempDir::new()?;
@@ -751,6 +777,35 @@ fn compiler_upstream_conformance_status_diff_reports_row_and_binding_changes() -
     assert!(message.contains("compiler_subject changed"), "{message}");
     assert!(message.contains("semantic_obligation_graph_identity changed"), "{message}");
     assert!(!message.contains("0 summarized differences"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_diff_reports_limitation_only_change() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-limitation-diff", "perl-5.38");
+    row.terminal_state = TerminalState::AgreementWithDeclaredLimitation;
+    row.limitation = Some(LimitationRecord {
+        statement: "initial limitation".to_string(),
+        nonclaims: vec!["no broader claim".to_string()],
+        claim_ceiling: "declared slice only".to_string(),
+    });
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let before = project_from(dir.path())?;
+    let mut after = before.clone();
+    after.rows[0].limitation = Some(LimitationRecord {
+        statement: "revised limitation".to_string(),
+        nonclaims: vec!["no broader claim".to_string()],
+        claim_ceiling: "declared slice only".to_string(),
+    });
+    let before_path = dir.path().join("before.json");
+    let after_path = dir.path().join("after.json");
+    fs::write(&before_path, canonical_bytes(&before)?)?;
+    fs::write(&after_path, canonical_bytes(&after)?)?;
+    let summary = error_message(run_diff(&before_path, &after_path));
+    assert!(summary.contains("limitation changed"), "{summary}");
+    assert!(!summary.contains("0 summarized differences"), "{summary}");
     Ok(())
 }
 
