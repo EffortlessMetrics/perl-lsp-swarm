@@ -50,6 +50,10 @@ mod loop_conversion;
 mod postfix;
 mod signature_actions;
 
+pub use extract_subroutine::{
+    detect_parameters, is_admissible_extract_block, is_admissible_standalone_extract_block,
+};
+
 use helpers::Helpers;
 
 static UTF8_PRAGMA_RE: LazyLock<Option<Regex>> =
