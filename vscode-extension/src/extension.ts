@@ -1295,7 +1295,12 @@ async function runExtensionActivation(
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
-            ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
+            ...(widget?.fileCount === undefined
+              ? {}
+              : {
+                  fileCount: widget.fileCount,
+                  fileCountLowerBound: widget.fileCountLowerBound,
+                }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
             ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
             ...(widget?.experienceDetail ? { lifecycleDetail: widget.experienceDetail } : {}),
