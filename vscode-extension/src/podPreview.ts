@@ -506,19 +506,39 @@ function renderInlineCode(code: string, inner: string): string {
   }
 }
 
+/** Defense in depth at the extension boundary (#6030): never emit blocked schemes. */
+function isBlockedLinkTarget(target: string): boolean {
+  return /^(javascript|data|vbscript|file):/i.test(target.trim());
+}
+
+function isNavigableHttpUrl(target: string): boolean {
+  return /^https?:\/\//.test(target.trim());
+}
+
+function renderNonLinkLabel(label: string): string {
+  return renderInline(label);
+}
+
 function renderLinkCode(inner: string): string {
   // L<text|url> or L<name> or L<name/section>
   const pipeIdx = inner.indexOf('|');
   if (pipeIdx !== -1) {
     const label = inner.slice(0, pipeIdx).trim();
     const target = inner.slice(pipeIdx + 1).trim();
-    if (/^https?:\/\//.test(target)) {
+    if (isBlockedLinkTarget(target)) {
+      return renderNonLinkLabel(label);
+    }
+    if (isNavigableHttpUrl(target)) {
       return `<a href="${escapeAttr(target)}">${renderInline(label)}</a>`;
     }
     return `<a href="#${escapeAttr(target.replace(/\s+/g, '-').toLowerCase())}">${renderInline(label)}</a>`;
   }
 
-  if (/^https?:\/\//.test(inner)) {
+  if (isBlockedLinkTarget(inner)) {
+    return escapeHtml(inner);
+  }
+
+  if (isNavigableHttpUrl(inner)) {
     return `<a href="${escapeAttr(inner)}">${escapeHtml(inner)}</a>`;
   }
 
