@@ -26,9 +26,16 @@
 
 mod common;
 
+#[path = "common/diagnostic_occurrence.rs"]
+mod diagnostic_occurrence;
+
 use common::test_utils::TestServerBuilder;
+use diagnostic_occurrence::{
+    DiagnosticSubject, gold_expectations, gold_extras_policy, match_diagnostic_expectations,
+    observe_diagnostics_json,
+};
 use perl_corpus::gold::{
-    CompletionAssertionKind, CompletionGoldFixture, GoldAssertion, GoldFixture, GotoAssertionKind,
+    CompletionAssertionKind, CompletionGoldFixture, GoldFixture, GotoAssertionKind,
     GotoGoldFixture, HoverAssertionRigor, HoverGoldFixture, RenameAssertion, RenameAssertionKind,
     RenameExpectedEdit, RenameGoldFixture, load_completion_gold_fixtures,
     load_document_symbol_gold_fixtures, load_gold_fixtures, load_goto_gold_fixtures,
@@ -36,6 +43,7 @@ use perl_corpus::gold::{
     observe_hover_response,
 };
 use perl_corpus::{DocumentSymbolAssertionKind, DocumentSymbolGoldFixture};
+use perl_position_tracking::PositionEncoding;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -76,20 +84,6 @@ fn first_goto_line(resp: &Value) -> Option<u32> {
     let first = arr.first()?;
     let line = first["range"]["start"]["line"].as_u64()? as u32;
     Some(line)
-}
-
-fn diagnostic_codes_from_response(resp: &Value) -> Vec<String> {
-    resp["result"]["items"].as_array().map_or_else(Vec::new, |items| {
-        items
-            .iter()
-            .filter_map(|item| {
-                let code = item.get("code")?;
-                code.as_str()
-                    .map(ToString::to_string)
-                    .or_else(|| code.as_i64().map(|n| n.to_string()))
-            })
-            .collect()
-    })
 }
 
 fn document_symbol_names(resp: &Value) -> Vec<String> {
@@ -410,52 +404,21 @@ fn test_diagnostics_gold_corpus() -> TestResult {
         server.open_document(&uri, &code);
 
         let diagnostics = server.get_diagnostics(&uri);
-        let diagnostic_codes = diagnostic_codes_from_response(&diagnostics);
-
-        for assertion in &fixture.expected.diagnostics {
-            total += 1;
-            let ok = match assertion {
-                GoldAssertion::NoDiagnostics => diagnostic_codes.is_empty(),
-                GoldAssertion::NoDiagnostic { code } => !diagnostic_codes.iter().any(|c| c == code),
-                GoldAssertion::DiagnosticPresent { code, message_contains, .. } => {
-                    let has_code = diagnostic_codes.iter().any(|c| c == code);
-                    if !has_code {
-                        false
-                    } else if let Some(needle) = message_contains {
-                        diagnostics["result"]["items"].as_array().is_some_and(|items| {
-                            items.iter().any(|item| {
-                                // Use the same normalization as diagnostic_codes_from_response:
-                                // accept both string and integer coded diagnostics.
-                                let item_code = item.get("code").and_then(|v| {
-                                    v.as_str()
-                                        .map(ToString::to_string)
-                                        .or_else(|| v.as_i64().map(|n| n.to_string()))
-                                });
-                                let item_code_matches =
-                                    item_code.as_deref().is_some_and(|c| c == code);
-                                let message_matches = item["message"]
-                                    .as_str()
-                                    .is_some_and(|message| message.contains(needle));
-                                item_code_matches && message_matches
-                            })
-                        })
-                    } else {
-                        true
-                    }
-                }
-                GoldAssertion::DiagnosticCount { code, count } => {
-                    diagnostic_codes.iter().filter(|c| *c == code).count() == *count
-                }
-            };
-
-            if ok {
-                passed += 1;
-            } else {
-                failures.push(format!(
-                    "  FAIL [{}] {:?} — diagnostic codes: {:?}",
-                    fixture.name, assertion, diagnostic_codes
-                ));
-            }
+        let subject = DiagnosticSubject {
+            uri: &uri,
+            version: Some(1),
+            source: &code,
+            encoding: PositionEncoding::Utf16,
+        };
+        let observation = observe_diagnostics_json(&diagnostics, subject);
+        let expectations = gold_expectations(&fixture.name, &fixture.expected.diagnostics);
+        total += expectations.len();
+        let extras = gold_extras_policy(&fixture.expected.diagnostics);
+        let verdict = match_diagnostic_expectations(&expectations, &observation, extras, subject);
+        if verdict.is_pass() {
+            passed += expectations.len();
+        } else {
+            failures.push(format!("  FAIL [{}] {verdict}", fixture.name));
         }
     }
 
