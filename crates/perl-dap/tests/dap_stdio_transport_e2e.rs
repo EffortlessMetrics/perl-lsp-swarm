@@ -33,10 +33,9 @@ const DAP_SMOKE_CLAIM_BOUNDARY: &str = concat!(
     "prove launch/debug-session semantics or platform-wide process cleanup"
 );
 
-/// `run_with_io` may wait up to [`EVENT_WRITER_JOIN_TIMEOUT`] (5s) for the
-/// event writer on healthy shutdown and up to [`EVENT_DRAIN_MAX_WAIT`] (1s)
-/// while an in-flight initialize response drains handler events. Loaded CI
-/// schedulers can exceed a tight 5s stop oracle without a transport defect.
+// `run_with_io` may wait up to 5s for the event writer on healthy shutdown and
+// up to 1s while an in-flight initialize drains handler events. Loaded CI
+// schedulers can exceed a tight 5s stop oracle without a transport defect.
 const CLIENT_STDOUT_CLOSE_STOP_DEADLINE: Duration = Duration::from_secs(12);
 
 #[test]
