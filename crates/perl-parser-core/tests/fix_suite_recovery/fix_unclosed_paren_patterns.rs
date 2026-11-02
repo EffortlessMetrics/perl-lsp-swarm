@@ -11,8 +11,7 @@
 //! 4. Method chaining across lines inside paren argument list
 //! 5. unless with multi-line condition block
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 use perl_parser_core::Parser;
 use perl_tdd_support::must;
 

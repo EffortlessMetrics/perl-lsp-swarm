@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Regression tests for issue #2398: unclosed_bracket — array slice and
 // complex subscripts with range operator inside [...].

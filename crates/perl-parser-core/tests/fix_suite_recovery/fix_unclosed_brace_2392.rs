@@ -4,8 +4,7 @@
 //! Root cause: `is_indirect_call_pattern()` in calls.rs checked for Comma and Arrow
 //! but not FatArrow when deciding whether `print STDERR => ...` is a list call.
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 #[test]
 fn print_stderr_fat_arrow() {

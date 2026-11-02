@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Issue #2754: unclosed_brace_semicolon bucket — 'new' as hash subscript key
 //
