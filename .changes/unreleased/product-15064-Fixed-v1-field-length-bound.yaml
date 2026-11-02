@@ -4,6 +4,6 @@ kind: Fixed
 body: source_identity.v1 length-prefix encoding now rejects fields longer than u32::MAX bytes fail-closed instead of silently truncating the prefix, with fallible try_* constructors and pinned regression tests.
 time: 2026-11-02T00:30:00Z
 custom:
-  PR: ""
+  PR: "18672"
   Slug: source-identity-v1-field-length-bound
   Breaking: "no"
