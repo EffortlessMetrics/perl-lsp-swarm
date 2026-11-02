@@ -228,13 +228,24 @@ pub fn find_references_cutover<Q: SemanticQueries>(
 /// `legacy_locations` is the legacy `WorkspaceIndex::find_references` result,
 /// resolved by the caller before entering a
 /// `with_semantic_queries_for_uri` callback (#15644).
+///
+/// When `include_declaration` is false, declaration-role occurrences are
+/// excluded from the live eligibility gate and from an `Exact` cutover answer.
+/// The caller materializes the declaration separately when requested (#4801).
 pub fn find_references_live_source_backed<Q: SemanticQueries>(
     legacy_locations: Vec<Location>,
     semantic_queries: &Q,
     symbol: &str,
     entity_id: EntityId,
+    include_declaration: bool,
+    exclude_declaration_anchor: Option<AnchorId>,
 ) -> ReferencesCutoverOutcome {
     let all_occurrences = semantic_queries.references(entity_id);
+    let cutover_occurrences = live_source_backed_cutover_occurrences(
+        &all_occurrences,
+        include_declaration,
+        exclude_declaration_anchor,
+    );
     let new_summary = semantic_occurrences_to_summary(&all_occurrences);
     let old_summary = legacy_locations_to_summary(&legacy_locations);
 
@@ -254,12 +265,12 @@ pub fn find_references_live_source_backed<Q: SemanticQueries>(
             .map(|(span, anchor_id)| (*anchor_id, span))
             .collect();
 
-    let live_occurrences = if !all_occurrences.is_empty()
-        && all_occurrences
+    let live_occurrences = if !cutover_occurrences.is_empty()
+        && cutover_occurrences
             .iter()
             .all(|occurrence| is_live_source_backed_reference_occurrence(&anchor_spans, occurrence))
     {
-        Some(all_occurrences.clone())
+        Some(cutover_occurrences)
     } else {
         None
     };
@@ -324,6 +335,24 @@ fn references_cutover_fallback_state(result: &ReferencesCutoverResult) -> Provid
         }
         ReferencesCutoverResult::LegacyFallback(_) => ProviderFallbackState::Fallback,
     }
+}
+
+fn live_source_backed_cutover_occurrences(
+    all_occurrences: &[OccurrenceFact],
+    include_declaration: bool,
+    exclude_declaration_anchor: Option<AnchorId>,
+) -> Vec<OccurrenceFact> {
+    if include_declaration {
+        return all_occurrences.to_vec();
+    }
+    all_occurrences
+        .iter()
+        .filter(|occurrence| {
+            occurrence.kind != OccurrenceKind::Definition
+                && exclude_declaration_anchor.is_none_or(|decl| occurrence.anchor_id != decl)
+        })
+        .cloned()
+        .collect()
 }
 
 /// Whether `occurrence` qualifies for the live source-backed slice.
@@ -634,6 +663,20 @@ mod tests {
                         ));
                     }
                 }
+            }
+            self
+        }
+
+        fn with_synthetic_spans(mut self, anchor_ids: &[AnchorId], source_uri: &str) -> Self {
+            for anchor_id in anchor_ids {
+                self.anchor_spans.push((
+                    *anchor_id,
+                    AnchorSourceSpan {
+                        source_uri: source_uri.to_string(),
+                        start_byte: 0,
+                        end_byte: 1,
+                    },
+                ));
             }
             self
         }
@@ -1364,6 +1407,8 @@ mod tests {
             &queries,
             "LiveRefs::target",
             entity_id,
+            true,
+            None,
         );
 
         assert_eq!(outcome.result, ReferencesCutoverResult::Exact(references.clone()));
@@ -1387,6 +1432,70 @@ mod tests {
     }
 
     #[test]
+    fn references_live_source_backed_excludes_definition_from_gate_when_include_declaration_false()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let declaration = make_occurrence(
+            1,
+            10,
+            1,
+            OccurrenceKind::Write,
+            Provenance::ExactAst,
+            Confidence::High,
+        );
+        let definition_kind_declaration = make_occurrence(
+            1,
+            10,
+            1,
+            OccurrenceKind::Definition,
+            Provenance::ExactAst,
+            Confidence::High,
+        );
+        let first_use = make_ref_occurrence(2, 11, 1);
+        let second_use = make_ref_occurrence(3, 12, 1);
+        let write_references = vec![declaration.clone(), first_use.clone(), second_use.clone()];
+        let queries = StubSemanticQueries::new(write_references).with_synthetic_spans(
+            &[AnchorId(10), AnchorId(11), AnchorId(12)],
+            "file:///lib/MojoPlugins.pm",
+        );
+
+        let definition_only =
+            vec![definition_kind_declaration, first_use.clone(), second_use.clone()];
+        let definition_queries = StubSemanticQueries::new(definition_only).with_synthetic_spans(
+            &[AnchorId(10), AnchorId(11), AnchorId(12)],
+            "file:///lib/MojoPlugins.pm",
+        );
+        let definition_declined = find_references_live_source_backed(
+            index.find_references("plugins"),
+            &definition_queries,
+            "plugins",
+            EntityId(1),
+            true,
+            None,
+        );
+        assert!(
+            matches!(definition_declined.result, ReferencesCutoverResult::LegacyFallback(_)),
+            "Definition kind in the unfiltered set must fail the live kind gate"
+        );
+
+        let outcome = find_references_live_source_backed(
+            index.find_references("plugins"),
+            &queries,
+            "plugins",
+            EntityId(1),
+            false,
+            Some(AnchorId(10)),
+        );
+        assert_eq!(outcome.result, ReferencesCutoverResult::Exact(vec![first_use, second_use]));
+        assert!(
+            !matches!(outcome.result, ReferencesCutoverResult::Exact(ref occurrences)
+                if occurrences.iter().any(|occurrence| occurrence.kind == OccurrenceKind::Definition)),
+            "include_declaration=false must not return declaration occurrences"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn references_live_source_backed_falls_back_for_non_source_backed_occurrence()
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
@@ -1398,6 +1507,8 @@ mod tests {
             &queries,
             "Foo::bar",
             EntityId(20),
+            true,
+            None,
         );
 
         assert!(matches!(outcome.result, ReferencesCutoverResult::LegacyFallback(_)));
@@ -1422,6 +1533,8 @@ mod tests {
             &queries,
             "target",
             entity_id,
+            true,
+            None,
         );
 
         assert_eq!(outcome.result, ReferencesCutoverResult::Exact(vec![imported]));
@@ -1449,6 +1562,8 @@ mod tests {
             &queries,
             "target",
             entity_id,
+            true,
+            None,
         );
 
         assert_eq!(outcome.result, ReferencesCutoverResult::Exact(vec![imported]));
@@ -1481,6 +1596,8 @@ mod tests {
             &queries,
             "Foo::dynamic",
             EntityId(20),
+            true,
+            None,
         );
 
         assert!(matches!(outcome.result, ReferencesCutoverResult::LegacyFallback(_)));
@@ -1615,6 +1732,8 @@ mod tests {
                     &queries,
                     "LiveRefDeadlock::target",
                     entity_id,
+                    true,
+                    None,
                 )
                 .result
             })

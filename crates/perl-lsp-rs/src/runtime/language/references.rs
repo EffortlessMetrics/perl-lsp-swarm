@@ -2012,11 +2012,16 @@ impl LspServer {
                                 None
                             };
 
+                        let exclude_declaration_anchor =
+                            if include_declaration { None } else { decl_anchor };
+
                         let outcome = find_references_live_source_backed(
                             legacy_locations.clone(),
                             &queries,
                             symbol,
                             entity_id,
+                            include_declaration,
+                            exclude_declaration_anchor,
                         );
                         Some(Ok((outcome, decl_anchor)))
                     })
@@ -2228,6 +2233,8 @@ impl LspServer {
                                 &queries,
                                 &symbol,
                                 entity_id,
+                                include_declaration,
+                                None,
                             );
                             let live_cutover =
                                 matches!(outcome.result, ReferencesCutoverResult::Exact(_));
