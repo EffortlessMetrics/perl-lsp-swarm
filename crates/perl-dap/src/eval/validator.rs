@@ -52,26 +52,6 @@ pub enum ValidationError {
     /// Expression contains newlines (potential command injection)
     #[error("Expression cannot contain newlines")]
     ContainsNewlines,
-
-    /// Indirect invocation of a deny-listed operation in trusted REPL (#1746).
-    #[error("Side-effectful REPL evaluation: indirect invocation of '{0}' is not allowed")]
-    IndirectDangerousOperation(String),
-
-    /// Dynamic subroutine call bypass in trusted REPL (#1746).
-    #[error("Side-effectful REPL evaluation: dynamic subroutine calls (&{{...}}) are not allowed")]
-    DynamicSubroutineCall,
-
-    /// Glob read bypass in trusted REPL (#1746).
-    #[error("Side-effectful REPL evaluation: glob operations (<*...>) are not allowed")]
-    GlobOperation,
-
-    /// Filehandle/glob read at expression start in trusted REPL (#1746).
-    #[error("Side-effectful REPL evaluation: file handle reads (<...>) and globs are not allowed")]
-    FileHandleRead,
-
-    /// CORE:: qualification bypass in trusted REPL (#1746).
-    #[error("Side-effectful REPL evaluation: CORE:: qualification of '{0}' is not allowed")]
-    CoreQualificationBypass(String),
 }
 
 /// Result type for expression validation
@@ -142,15 +122,18 @@ impl SafeEvaluator {
     /// Direct side-effectful calls such as `system('ls')` remain available to the
     /// interactive debug console; this check targets indirect forms that existed
     /// only to evade screening (`$obj->system`, `&$system`, `CORE::system`, …).
-    pub fn validate_bypass_confinement(&self, expression: &str) -> ValidationResult {
+    pub(crate) fn validate_bypass_confinement(&self, expression: &str) -> Option<String> {
         if expression.contains('\n') || expression.contains('\r') {
-            return Err(ValidationError::ContainsNewlines);
+            return Some("Expression cannot contain newlines".to_string());
         }
 
         if let Ok(re) = DEREF_RE.as_ref() {
             for mat in re.find_iter(expression) {
                 if !is_in_string_literal(expression, mat.start()) {
-                    return Err(ValidationError::DynamicSubroutineCall);
+                    return Some(
+                        "Side-effectful REPL evaluation: dynamic subroutine calls (&{...}) are not allowed"
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -158,13 +141,19 @@ impl SafeEvaluator {
         if let Ok(re) = GLOB_RE.as_ref() {
             for mat in re.find_iter(expression) {
                 if !is_in_string_literal(expression, mat.start()) {
-                    return Err(ValidationError::GlobOperation);
+                    return Some(
+                        "Side-effectful REPL evaluation: glob operations (<*...>) are not allowed"
+                            .to_string(),
+                    );
                 }
             }
         }
 
         if filehandle_read_outside_string_literals(expression) {
-            return Err(ValidationError::FileHandleRead);
+            return Some(
+                "Side-effectful REPL evaluation: file handle reads (<...>) and globs are not allowed"
+                    .to_string(),
+            );
         }
 
         self.check_bypass_confinement_operations(expression)
@@ -209,9 +198,9 @@ impl SafeEvaluator {
         Ok(())
     }
 
-    fn check_bypass_confinement_operations(&self, expression: &str) -> ValidationResult {
+    fn check_bypass_confinement_operations(&self, expression: &str) -> Option<String> {
         let Some(re) = DANGEROUS_OPS_RE.as_ref().ok() else {
-            return Ok(());
+            return None;
         };
 
         for mat in re.find_iter(expression) {
@@ -240,17 +229,21 @@ impl SafeEvaluator {
             }
 
             if is_core_qualified(expression, start) {
-                return Err(ValidationError::CoreQualificationBypass(op.to_string()));
+                return Some(format!(
+                    "Side-effectful REPL evaluation: CORE:: qualification of '{op}' is not allowed"
+                ));
             }
 
             if is_indirect_dangerous_op_use(expression, start) {
-                return Err(ValidationError::IndirectDangerousOperation(op.to_string()));
+                return Some(format!(
+                    "Side-effectful REPL evaluation: indirect invocation of '{op}' is not allowed"
+                ));
             }
 
             // Bare deny-list call (e.g. `system('ls')`) is intentionally allowed.
         }
 
-        Ok(())
+        None
     }
 
     /// Check for regex mutation operators (s///, tr///, y///)
@@ -656,13 +649,13 @@ mod tests {
         let evaluator = SafeEvaluator::new();
         for expr in ["system('ls')", "print 'test'", "eval('1')", "$x = 1", "`date`"] {
             assert!(
-                evaluator.validate_bypass_confinement(expr).is_ok(),
+                evaluator.validate_bypass_confinement(expr).is_none(),
                 "direct REPL execution should remain available: {expr}"
             );
         }
         for expr in ["print \"system\"", "'&{evil}'", "'<*.txt>'"] {
             assert!(
-                evaluator.validate_bypass_confinement(expr).is_ok(),
+                evaluator.validate_bypass_confinement(expr).is_none(),
                 "quoted literal must not trigger confinement: {expr}"
             );
         }
@@ -684,7 +677,7 @@ mod tests {
         ];
         for (expr, label) in blocked {
             assert!(
-                evaluator.validate_bypass_confinement(expr).is_err(),
+                evaluator.validate_bypass_confinement(expr).is_some(),
                 "{label} must stay blocked in trusted REPL: {expr}"
             );
         }
@@ -693,6 +686,6 @@ mod tests {
     #[test]
     fn bypass_confinement_allows_non_deny_list_method_calls() {
         let evaluator = SafeEvaluator::new();
-        assert!(evaluator.validate_bypass_confinement("$obj->some_method()").is_ok());
+        assert!(evaluator.validate_bypass_confinement("$obj->some_method()").is_none());
     }
 }
