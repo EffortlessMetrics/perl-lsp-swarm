@@ -267,4 +267,89 @@ mod tests {
         assert!(items.iter().all(|item| item.label.starts_with("hx-")));
         Ok(())
     }
+
+    fn regex_flag_labels(items: &[CompletionItem]) -> Vec<String> {
+        items
+            .iter()
+            .filter(|item| item.detail.as_deref() == Some("regex flag"))
+            .map(|item| item.label.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn method_arrow_after_angle_regex_does_not_offer_regex_flags()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "if ($name =~ m<sku>) {\n    print $inv->";
+        let provider = provider_for(source)?;
+        let items = provider.get_completions(source, source.len());
+        let flags = regex_flag_labels(&items);
+        assert!(
+            flags.is_empty(),
+            "method completion after `->` must not offer regex flags; got {flags:?} from {:?}",
+            items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+        for method in ["new", "isa", "can"] {
+            assert!(
+                items.iter().any(|item| item.label == *method),
+                "expected generic method `{method}` at `$inv->`; got {:?}",
+                items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mid_word_method_after_angle_regex_does_not_offer_regex_flags()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "$x =~ m<foo>;\nprint $inv->re";
+        let provider = provider_for(source)?;
+        let items = provider.get_completions(source, source.len());
+        let flags = regex_flag_labels(&items);
+        assert!(
+            flags.is_empty(),
+            "mid-word `$inv->re` must not offer regex flags; got {flags:?} from {:?}",
+            items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn closed_angle_regex_still_offers_flag_letters() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "$x =~ m<foo>";
+        let provider = provider_for(source)?;
+        let items = provider.get_completions(source, source.len());
+        let flags = regex_flag_labels(&items);
+        for flag in ["g", "i", "m", "s"] {
+            assert!(
+                flags.iter().any(|label| label == flag),
+                "expected regex flag `{flag}` after `m<foo>`; got {flags:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_mid_word_method_offers_class_method() -> Result<(), Box<dyn std::error::Error>> {
+        use perl_parser_core::Parser;
+        use perl_workspace::workspace_index::WorkspaceIndex;
+        use std::sync::Arc;
+        use url::Url;
+
+        let index = Arc::new(WorkspaceIndex::new());
+        index.index_initial_file(
+            Url::parse("file:///lib/Inventory.pm")?,
+            "package Inventory;\nsub remove_item { 1 }\nsub add_item { 1 }\n1;\n".to_string(),
+        )?;
+        let source = "use Inventory;\nmy $inv = Inventory->new;\nmy $low = $inv->re";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let provider = CompletionProvider::new_with_index(&ast, Some(index));
+        let items = provider.get_completions(source, source.len());
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_ref()).collect();
+        assert!(
+            labels.contains(&"remove_item"),
+            "mid-word `$inv->re` must offer Inventory::remove_item; got {labels:?}"
+        );
+        Ok(())
+    }
 }

@@ -104,6 +104,24 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "exit_policy",
+        ProductComposition,
+        "immutable",
+        "process restart / server construction",
+        "transport exit scope (#17331): TerminateProcess vs EndConnection",
+        false,
+        "#17331"
+    ),
+    row!(
+        "connection_exit",
+        ClientTransport,
+        "Arc<Notify>",
+        "connection shutdown / exit notification",
+        "connection serve-loop wake (#17331)",
+        false,
+        "#17331"
+    ),
+    row!(
         "pending_startup_log",
         ClientSession,
         "Arc<Mutex>",
@@ -731,6 +749,24 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "server session",
         false,
         "#16551"
+    ),
+    row!(
+        "module_ambiguity_notices",
+        AnalysisServices,
+        "Arc<owned store>",
+        "connection replacement / server drop",
+        "bounded module-identity ambiguity observation (#16594)",
+        true,
+        "#16594"
+    ),
+    row!(
+        "module_ambiguity_probe_gate",
+        RuntimeServices,
+        "Mutex<Option>",
+        "test gate release / server drop",
+        "test runtime (#16594 falsifiers)",
+        true,
+        "#16594"
     ),
     row!(
         "formatter_runtime_override",
