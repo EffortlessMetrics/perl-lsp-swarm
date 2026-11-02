@@ -116,6 +116,10 @@
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },
+    "compiler_ast_impact": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
     "compiler_proof_policy": {
       "requires": [
         "compiler_concept_ledger"

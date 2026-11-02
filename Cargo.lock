@@ -4194,6 +4194,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "notify",
+ "perl-ast",
  "perl-ci-hygiene",
  "perl-core-harness",
  "perl-core-harness-types",
