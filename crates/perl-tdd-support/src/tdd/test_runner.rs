@@ -1,4 +1,5 @@
 use crate::ast::{Node, NodeKind};
+use perl_test_facts::{TapAssertion, TapAssertionOutcome, parse_tap};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -564,7 +565,7 @@ impl TestRunner {
         }]
     }
 
-    /// Parse TAP (Test Anything Protocol) output
+    /// Parse TAP (Test Anything Protocol) output through the canonical facts crate.
     fn parse_tap_output(
         &self,
         stdout: &str,
@@ -573,31 +574,12 @@ impl TestRunner {
         duration: u64,
         test_id: &str,
     ) -> Vec<TestResult> {
-        let mut results = Vec::new();
-        let mut _test_count = 0;
-
-        // Parse TAP output line by line
-        for line in stdout.lines() {
-            if line.starts_with("ok ") {
-                _test_count += 1;
-                let test_name = line.splitn(3, ' ').nth(2).unwrap_or("test");
-                results.push(TestResult {
-                    test_id: format!("{}::{}", test_id, test_name),
-                    status: TestStatus::Passed,
-                    message: None,
-                    duration: None,
-                });
-            } else if line.starts_with("not ok ") {
-                _test_count += 1;
-                let test_name = line.splitn(3, ' ').nth(2).unwrap_or("test");
-                results.push(TestResult {
-                    test_id: format!("{}::{}", test_id, test_name),
-                    status: TestStatus::Failed,
-                    message: Some(line.to_string()),
-                    duration: None,
-                });
-            }
-        }
+        let report = parse_tap(stdout);
+        let mut results: Vec<TestResult> = report
+            .assertions
+            .iter()
+            .map(|assertion| project_tap_assertion(assertion, test_id))
+            .collect();
 
         // If no individual test results, create one for the whole file
         if results.is_empty() {
@@ -611,6 +593,50 @@ impl TestRunner {
 
         results
     }
+}
+
+/// Project one canonical TAP assertion into the historical `TestResult` shape.
+///
+/// The legacy line scanner keyed result IDs off the third whitespace-delimited
+/// segment of each `ok` / `not ok` line; reconstruct that label so existing
+/// consumers stay stable while parsing flows through `perl-test-facts`.
+fn project_tap_assertion(assertion: &TapAssertion, file_test_id: &str) -> TestResult {
+    let line = format_canonical_tap_line(assertion);
+    let label = legacy_tap_result_label(&line).to_owned();
+    let status = match assertion.outcome {
+        TapAssertionOutcome::Pass => TestStatus::Passed,
+        TapAssertionOutcome::Fail => TestStatus::Failed,
+        _ => TestStatus::Failed,
+    };
+    let message = matches!(assertion.outcome, TapAssertionOutcome::Fail).then_some(line);
+
+    TestResult { test_id: format!("{file_test_id}::{label}"), status, message, duration: None }
+}
+
+fn format_canonical_tap_line(assertion: &TapAssertion) -> String {
+    let header = match assertion.outcome {
+        TapAssertionOutcome::Pass => "ok",
+        TapAssertionOutcome::Fail => "not ok",
+        _ => "not ok",
+    };
+    let mut line = header.to_string();
+    if let Some(number) = assertion.number {
+        line.push(' ');
+        line.push_str(&number.to_string());
+    }
+    if let Some(name) = &assertion.name {
+        line.push_str(" - ");
+        line.push_str(name);
+    }
+    if let Some(directive) = &assertion.directive {
+        line.push_str(" # ");
+        line.push_str(directive);
+    }
+    line
+}
+
+fn legacy_tap_result_label(line: &str) -> &str {
+    line.splitn(3, ' ').nth(2).unwrap_or("test")
 }
 
 /// Convert TestItem to JSON for LSP
@@ -825,6 +851,24 @@ done_testing();
         assert_eq!(json["state"], "errored");
         assert_eq!(json["message"]["message"], "boom");
         assert_eq!(json["duration"], 42);
+        Ok(())
+    }
+
+    #[test]
+    fn tap_parser_uses_canonical_facts_for_directives() -> Result<(), Box<dyn std::error::Error>> {
+        let runner = TestRunner::new(String::new(), String::new());
+
+        let results = runner.parse_tap_output(
+            "1..1\nok 1 - skipped case # SKIP not applicable\n",
+            "",
+            true,
+            1,
+            "t/skip.t",
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].test_id, "t/skip.t::- skipped case # SKIP not applicable");
+        assert_eq!(results[0].status, TestStatus::Passed);
         Ok(())
     }
 
