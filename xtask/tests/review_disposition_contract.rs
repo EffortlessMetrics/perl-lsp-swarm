@@ -624,3 +624,671 @@ fn unsupported_marker_versions_fail_closed() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+/// Fixture GraphQL `reviewThreads` payload covering the #17095 selection matrix.
+#[cfg(unix)]
+fn sweep_graphql_fixture() -> Value {
+    let node = |id: &str, resolved: bool, outdated: bool, author: Option<(&str, &str)>| {
+        let author_json = match author {
+            Some((typename, login)) => serde_json::json!({"__typename": typename, "login": login}),
+            None => Value::Null,
+        };
+        serde_json::json!({
+            "id": id,
+            "isResolved": resolved,
+            "isOutdated": outdated,
+            "path": format!("src/{id}.rs"),
+            "comments": {"nodes": [{"author": author_json, "body": "finding", "url": "https://example.invalid/t"}]}
+        })
+    };
+    serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
+        "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+            node("PRRT_bot_outdated", false, true, Some(("Bot", "coderabbitai"))),
+            node("PRRT_bot_current", false, false, Some(("Bot", "gemini-code-assist"))),
+            node("PRRT_human_outdated", false, true, Some(("User", "alice"))),
+            node("PRRT_resolved", true, true, Some(("Bot", "coderabbitai"))),
+            node("PRRT_ghost", false, true, None),
+        ]}}}}
+    })
+}
+
+#[cfg(unix)]
+fn sweep_threads_json_fixture() -> Value {
+    let thread = |id: &str, resolved: bool, outdated: bool, typename: Option<&str>, login: &str| {
+        serde_json::json!({
+            "id": id,
+            "isResolved": resolved,
+            "isOutdated": outdated,
+            "path": format!("src/{id}.rs"),
+            "author": login,
+            "author_typename": typename,
+        })
+    };
+    serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
+        "threads": [
+            thread("PRRT_bot_outdated", false, true, Some("Bot"), "coderabbitai"),
+            thread("PRRT_bot_current", false, false, Some("Bot"), "gemini-code-assist"),
+            thread("PRRT_human_outdated", false, true, Some("User"), "alice"),
+            thread("PRRT_resolved", true, true, Some("Bot"), "coderabbitai"),
+            thread("PRRT_ghost", false, true, None, "unknown"),
+        ]
+    })
+}
+
+#[cfg(unix)]
+const SWEEP_HEAD: &str = "0123456789012345678901234567890123456789";
+
+#[cfg(unix)]
+fn first_json_line(stdout: &str) -> Result<Value, Box<dyn Error>> {
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with('{'))
+        .ok_or("sweep output is missing a JSON selection object")?;
+    Ok(serde_json::from_str(line)?)
+}
+
+#[cfg(unix)]
+fn write_poison_gh(dir: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin)?;
+    let log = dir.join("gh.log");
+    fs::write(&log, "")?;
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$GH_STUB_LOG"
+echo "ERROR: gh must not be invoked against live GitHub during fixture dry-run" >&2
+exit 1
+"#,
+    )?;
+    let mut permissions = fs::metadata(&gh)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh, permissions)?;
+    Ok((bin, log))
+}
+
+#[cfg(unix)]
+fn run_sweep(
+    root: &Path,
+    payload: &Value,
+    extra: &[&str],
+    poison_gh: bool,
+) -> Result<(Output, String), Box<dyn Error>> {
+    run_sweep_bytes(root, &serde_json::to_vec_pretty(payload)?, extra, poison_gh)
+}
+
+#[cfg(unix)]
+fn run_sweep_bytes(
+    root: &Path,
+    payload: &[u8],
+    extra: &[&str],
+    poison_gh: bool,
+) -> Result<(Output, String), Box<dyn Error>> {
+    let temp = tempfile::tempdir()?;
+    let payload_path = temp.path().join("threads.json");
+    fs::write(&payload_path, payload)?;
+
+    let log = temp.path().join("gh.log");
+    fs::write(&log, "")?;
+    let mut path = OsString::new();
+    if poison_gh {
+        let (bin, _) = write_poison_gh(temp.path())?;
+        path.push(bin.as_os_str());
+        path.push(":");
+    } else {
+        let bin = write_gh_stub(temp.path())?;
+        path.push(bin.as_os_str());
+        path.push(":");
+    }
+    path.push(std::env::var_os("PATH").ok_or("PATH is unavailable")?);
+
+    let mut command = Command::new("bash");
+    command
+        .arg(disposition_script(root))
+        .args(["--sweep-bot-outdated", "--pr", "42", "--threads-json"])
+        .arg(&payload_path)
+        .args(["--repo", "owner/repo", "--head", SWEEP_HEAD, "--by", "tester"])
+        .args(extra)
+        .env("PATH", path)
+        .env("GH_STUB_LOG", &log)
+        .env("GH_STUB_RESOLVED", "false");
+
+    let output = command.output()?;
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    Ok((output, calls))
+}
+
+#[cfg(unix)]
+fn assert_selection_matrix(summary: &Value) -> Result<(), Box<dyn Error>> {
+    let selected: Vec<&str> = summary
+        .pointer("/selected")
+        .and_then(Value::as_array)
+        .ok_or("selection JSON missing selected[]")?
+        .iter()
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        selected,
+        ["PRRT_bot_outdated"],
+        "only unresolved bot+outdated threads may be selected: {summary}"
+    );
+
+    let skipped = summary
+        .pointer("/skipped")
+        .and_then(Value::as_array)
+        .ok_or("selection JSON missing skipped[]")?;
+    let reason = |id: &str| -> Result<&str, Box<dyn Error>> {
+        skipped
+            .iter()
+            .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|row| row.get("reason").and_then(Value::as_str))
+            .ok_or_else(|| format!("missing skip reason for {id} in {summary}").into())
+    };
+    assert_eq!(reason("PRRT_bot_current")?, "not-outdated");
+    assert_eq!(reason("PRRT_human_outdated")?, "not-bot");
+    assert_eq!(reason("PRRT_resolved")?, "already-resolved");
+    assert_eq!(reason("PRRT_ghost")?, "missing-author");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn parse_convergence_v1_markers(body: &str) -> Result<Vec<Value>, Box<dyn Error>> {
+    let output = Command::new("jq")
+        .args([
+            "-n",
+            "--arg",
+            "body",
+            body,
+            r#"[$body | scan("<!-- disposition:v1 (\\{.*\\}) -->") | .[0] | fromjson]"#,
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("convergence marker parser failed: {}", output_text(&output)).into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+/// Selection-predicate contract over recorded GraphQL and threads-JSON payloads
+/// (#17095 item 1). Never talks to a live PR: `--threads-json` plus `--dry-run`
+/// and a poison `gh` stub refuse any GitHub mutation or network call.
+#[cfg(unix)]
+#[test]
+fn sweep_selects_unresolved_bot_outdated_only() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let threads = fs::read_to_string(root.join("scripts/reviews/threads"))?;
+    assert!(
+        threads.contains("author { __typename login }"),
+        "scripts/reviews/threads must request author __typename so Bot selection is not a login heuristic"
+    );
+    assert!(
+        threads.contains("author_typename:"),
+        "scripts/reviews/threads must project author_typename; a GraphQL __typename query alone does not expose the field the sweep selects on"
+    );
+
+    for payload in [sweep_graphql_fixture(), sweep_threads_json_fixture()] {
+        let (output, calls) = run_sweep(&root, &payload, &["--dry-run"], true)?;
+        assert!(output.status.success(), "sweep dry-run failed: {}", output_text(&output));
+        assert!(calls.trim().is_empty(), "dry-run must not invoke gh (log={calls})");
+        let summary = first_json_line(&output_text(&output))?;
+        assert_eq!(summary.get("mode").and_then(Value::as_str), Some("sweep-bot-outdated"));
+        assert_eq!(summary.get("dry_run").and_then(Value::as_bool), Some(true));
+        assert_eq!(summary.get("head").and_then(Value::as_str), Some(SWEEP_HEAD));
+        assert_selection_matrix(&summary)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn sweep_dry_run_reply_carries_v1_marker_and_head_sha() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let (output, calls) = run_sweep(&root, &sweep_graphql_fixture(), &["--dry-run"], true)?;
+    assert!(output.status.success(), "sweep dry-run failed: {}", output_text(&output));
+    assert!(calls.trim().is_empty(), "dry-run invoked gh: {calls}");
+
+    let text = output_text(&output);
+    assert!(
+        text.contains("Disposition: superseded"),
+        "templated reply must use class superseded: {text}"
+    );
+    assert!(
+        text.contains("no longer exists at HEAD"),
+        "templated reply must note the anchored hunk is gone: {text}"
+    );
+    assert!(text.contains(SWEEP_HEAD), "templated reply must cite the current head SHA: {text}");
+    assert!(
+        text.contains("resolveReviewThread(PRRT_bot_outdated)"),
+        "dry-run must plan resolve after the reply: {text}"
+    );
+    assert!(
+        !text.contains("resolveReviewThread(PRRT_bot_current)"),
+        "dry-run must not plan resolve for a current bot thread: {text}"
+    );
+    assert!(
+        !text.contains("resolveReviewThread(PRRT_human_outdated)"),
+        "dry-run must not plan resolve for a human thread: {text}"
+    );
+
+    let markers = parse_convergence_v1_markers(&text)?;
+    assert_eq!(
+        markers.len(),
+        1,
+        "exactly one selected thread must emit a parseable disposition:v1 marker: {markers:?}"
+    );
+    let marker = &markers[0];
+    assert_eq!(marker.get("v").and_then(Value::as_u64), Some(1));
+    assert_eq!(marker.get("class").and_then(Value::as_str), Some("superseded"));
+    assert_eq!(marker.get("thread_id").and_then(Value::as_str), Some("PRRT_bot_outdated"));
+    assert_eq!(marker.get("head").and_then(Value::as_str), Some(SWEEP_HEAD));
+    assert_eq!(marker.pointer("/evidence/superseded_by").and_then(Value::as_str), Some(SWEEP_HEAD));
+    assert_eq!(marker.get("thread_transition").and_then(Value::as_str), Some("resolve"));
+
+    Ok(())
+}
+
+/// Live (non-dry-run) sweep still talks only to the gh stub: selected bot+outdated
+/// threads get a reply then resolve; skipped threads are not mutated.
+#[cfg(unix)]
+#[test]
+fn sweep_live_replies_then_resolves_only_selected_threads() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let (output, calls) = run_sweep(&root, &sweep_graphql_fixture(), &[], false)?;
+    assert!(output.status.success(), "sweep live fixture run failed: {}", output_text(&output));
+
+    let reply_count = calls.matches("addPullRequestReviewThreadReply").count();
+    let resolve_count = calls.matches("resolveReviewThread").count();
+    assert_eq!(reply_count, 1, "exactly one selected thread may be replied to; log={calls}");
+    assert_eq!(resolve_count, 1, "exactly one selected thread may be resolved; log={calls}");
+    assert!(
+        calls.contains("addPullRequestReviewThreadReply"),
+        "convergence requires a real reply before resolve; log={calls}"
+    );
+
+    let reply_at = calls.find("addPullRequestReviewThreadReply").ok_or("missing reply")?;
+    let resolve_at = calls.find("resolveReviewThread").ok_or("missing resolve")?;
+    assert!(
+        reply_at < resolve_at,
+        "reply must precede resolve (check-pr-review-convergence-core #3732); log={calls}"
+    );
+
+    for skipped in ["PRRT_bot_current", "PRRT_human_outdated", "PRRT_resolved", "PRRT_ghost"] {
+        let thread_invocations = calls.lines().filter(|line| line.contains(skipped)).count();
+        assert_eq!(
+            thread_invocations, 0,
+            "skipped thread {skipped} must not be mutated; log={calls}"
+        );
+    }
+
+    Ok(())
+}
+
+/// Sweeping a selected thread that already carries an unsupported v2 marker
+/// must refuse mutation (keep #15282 fail-closed behavior).
+#[cfg(unix)]
+#[test]
+fn sweep_unsupported_marker_versions_fail_closed() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let payload = serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
+        "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [{
+            "id": "PRRT_test",
+            "isResolved": false,
+            "isOutdated": true,
+            "path": "src/lib.rs",
+            "comments": {"nodes": [{"author": {"__typename": "Bot", "login": "coderabbitai"}, "body": "finding"}]}
+        }]}}}}
+    });
+
+    let temp = tempfile::tempdir()?;
+    let payload_path = temp.path().join("threads.json");
+    fs::write(&payload_path, serde_json::to_vec_pretty(&payload)?)?;
+    let stub_bin = write_gh_stub(temp.path())?;
+    let log = temp.path().join("gh.log");
+
+    let mut path = OsString::from(stub_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH is unavailable")?);
+
+    let v2_marker = serde_json::json!({
+        "v": 2,
+        "class": "superseded",
+        "thread_id": "PRRT_test",
+        "by": "tester",
+        "head": SWEEP_HEAD,
+        "evidence": {"superseded_by": SWEEP_HEAD},
+        "thread_transition": "resolve",
+    })
+    .to_string();
+    let markers_json = serde_json::json!([{"version": "v2", "marker": v2_marker}]).to_string();
+
+    let output = Command::new("bash")
+        .arg(disposition_script(&root))
+        .args(["--sweep-bot-outdated", "--pr", "42", "--threads-json"])
+        .arg(&payload_path)
+        .args(["--repo", "owner/repo", "--head", SWEEP_HEAD, "--by", "tester"])
+        .env("PATH", path)
+        .env("GH_STUB_LOG", &log)
+        .env("GH_STUB_RESOLVED", "false")
+        .env("GH_STUB_MARKERS_JSON", markers_json)
+        .output()?;
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+
+    assert!(
+        !output.status.success(),
+        "sweep of a v2-marked thread must fail closed: {}",
+        output_text(&output)
+    );
+    assert!(
+        output_text(&output).contains("malformed disposition marker"),
+        "expected the v2 rejection error: {}",
+        output_text(&output)
+    );
+    assert!(
+        !calls.contains("addPullRequestReviewThreadReply"),
+        "v2 sweep must not post a reply; log={calls}"
+    );
+    assert!(
+        !calls.contains("resolveReviewThread"),
+        "v2 sweep must not resolve the thread; log={calls}"
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn sweep_skips_already_disposed_and_does_not_reapply() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let marker = serde_json::json!({
+        "v": 1,
+        "class": "superseded",
+        "thread_id": "PRRT_bot_outdated",
+        "by": "tester",
+        "head": SWEEP_HEAD,
+        "evidence": {"superseded_by": SWEEP_HEAD},
+        "thread_transition": "resolve",
+    });
+    let payload = serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
+        "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [{
+            "id": "PRRT_bot_outdated",
+            "isResolved": false,
+            "isOutdated": true,
+            "path": "src/lib.rs",
+            "comments": {"nodes": [
+                {"author": {"__typename": "Bot", "login": "coderabbitai"}, "body": "finding"},
+                {"author": {"__typename": "User", "login": "tester"},
+                 "body": format!("prior\n<!-- disposition:v1 {} -->", marker)}
+            ]}
+        }]}}}}
+    });
+
+    let (dry, dry_calls) = run_sweep(&root, &payload, &["--dry-run"], true)?;
+    assert!(dry.status.success(), "already-disposed dry-run failed: {}", output_text(&dry));
+    assert!(dry_calls.trim().is_empty(), "dry-run invoked gh: {dry_calls}");
+    let summary = first_json_line(&output_text(&dry))?;
+    let skipped = summary.pointer("/skipped").and_then(Value::as_array).ok_or("missing skipped")?;
+    assert!(
+        skipped.iter().any(|row| {
+            row.get("id").and_then(Value::as_str) == Some("PRRT_bot_outdated")
+                && row.get("reason").and_then(Value::as_str) == Some("already-disposed")
+        }),
+        "reopened/already-disposed bot thread must be skipped: {summary}"
+    );
+    assert_eq!(summary.pointer("/selected").and_then(Value::as_array).map(Vec::len), Some(0));
+
+    let (live, live_calls) = run_sweep(&root, &payload, &[], false)?;
+    assert!(live.status.success(), "already-disposed live skip failed: {}", output_text(&live));
+    assert!(
+        !live_calls.contains("addPullRequestReviewThreadReply"),
+        "already-disposed thread must not be replied to; log={live_calls}"
+    );
+    assert!(
+        !live_calls.contains("resolveReviewThread"),
+        "already-disposed thread must not be re-resolved; log={live_calls}"
+    );
+
+    // threads --json does not carry comment bodies; --no-reapply must still
+    // refuse to re-resolve when the child observes an existing v1 marker.
+    let temp = tempfile::tempdir()?;
+    let payload_path = temp.path().join("threads.json");
+    fs::write(&payload_path, serde_json::to_vec_pretty(&sweep_threads_json_fixture())?)?;
+    let stub_bin = write_gh_stub(temp.path())?;
+    let log = temp.path().join("gh.log");
+    let mut path = OsString::from(stub_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH is unavailable")?);
+    let output = Command::new("bash")
+        .arg(disposition_script(&root))
+        .args(["--sweep-bot-outdated", "--pr", "42", "--threads-json"])
+        .arg(&payload_path)
+        .args(["--repo", "owner/repo", "--head", SWEEP_HEAD, "--by", "tester"])
+        .env("PATH", path)
+        .env("GH_STUB_LOG", &log)
+        .env("GH_STUB_RESOLVED", "false")
+        .env("GH_STUB_MARKER", marker.to_string())
+        .output()?;
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(output.status.success(), "threads-json reapply skip failed: {}", output_text(&output));
+    assert!(
+        output_text(&output).contains("skip already-disposed"),
+        "expected --no-reapply skip: {}",
+        output_text(&output)
+    );
+    assert!(
+        !calls.contains("addPullRequestReviewThreadReply")
+            && !calls.contains("resolveReviewThread"),
+        "reopened matching marker must not be mutated; log={calls}"
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn sweep_live_threads_json_requires_matching_pr() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let mut foreign = sweep_graphql_fixture();
+    foreign["pr"] = serde_json::json!(99);
+
+    let (mismatch, mismatch_calls) = run_sweep(&root, &foreign, &[], false)?;
+    assert!(
+        !mismatch.status.success(),
+        "live sweep must refuse a foreign --threads-json pr: {}",
+        output_text(&mismatch)
+    );
+    assert!(
+        output_text(&mismatch).contains("does not match --pr"),
+        "expected a PR identity error: {}",
+        output_text(&mismatch)
+    );
+    assert!(
+        !mismatch_calls.contains("addPullRequestReviewThreadReply")
+            && !mismatch_calls.contains("resolveReviewThread"),
+        "foreign payload must not mutate; log={mismatch_calls}"
+    );
+
+    let mut unbound = sweep_graphql_fixture();
+    unbound.as_object_mut().ok_or("graphql fixture is not an object")?.remove("pr");
+    let (unbound_out, unbound_calls) = run_sweep(&root, &unbound, &[], false)?;
+    assert!(
+        !unbound_out.status.success(),
+        "live GraphQL-only --threads-json must be refused: {}",
+        output_text(&unbound_out)
+    );
+    assert!(
+        output_text(&unbound_out).contains("dry-run only"),
+        "expected GraphQL-only live refusal: {}",
+        output_text(&unbound_out)
+    );
+    assert!(
+        !unbound_calls.contains("resolveReviewThread"),
+        "unbound payload must not mutate; log={unbound_calls}"
+    );
+
+    Ok(())
+}
+
+/// Recorded GraphQL payloads with top-level `errors` are incomplete; do not
+/// select or mutate from a partial nodes array.
+#[cfg(unix)]
+#[test]
+fn sweep_rejects_graphql_payloads_with_errors() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+
+    let mut nonempty = sweep_graphql_fixture();
+    nonempty["errors"] = serde_json::json!([{"message": "partial page"}]);
+    let (dry, dry_calls) = run_sweep(&root, &nonempty, &["--dry-run"], true)?;
+    assert!(
+        !dry.status.success(),
+        "nonempty GraphQL errors must fail closed: {}",
+        output_text(&dry)
+    );
+    let dry_text = output_text(&dry);
+    assert!(
+        dry_text.contains("failed to classify") || dry_text.contains("GraphQL errors"),
+        "expected a classify/errors refusal: {dry_text}"
+    );
+    assert!(dry_calls.trim().is_empty(), "errors payload must not invoke gh: {dry_calls}");
+
+    let mut malformed = sweep_graphql_fixture();
+    malformed["errors"] = serde_json::json!("not-an-array");
+    let (bad, bad_calls) = run_sweep(&root, &malformed, &["--dry-run"], true)?;
+    assert!(
+        !bad.status.success(),
+        "malformed GraphQL errors must fail closed: {}",
+        output_text(&bad)
+    );
+    assert!(bad_calls.trim().is_empty(), "malformed errors must not invoke gh: {bad_calls}");
+
+    let (live, live_calls) = run_sweep(&root, &nonempty, &[], false)?;
+    assert!(
+        !live.status.success(),
+        "live sweep must refuse a GraphQL errors payload: {}",
+        output_text(&live)
+    );
+    assert!(
+        !live_calls.contains("addPullRequestReviewThreadReply")
+            && !live_calls.contains("resolveReviewThread"),
+        "errors payload must not mutate; log={live_calls}"
+    );
+
+    let mut empty = sweep_graphql_fixture();
+    empty["errors"] = serde_json::json!([]);
+    let (ok, ok_calls) = run_sweep(&root, &empty, &["--dry-run"], true)?;
+    assert!(
+        ok.status.success(),
+        "empty GraphQL errors array is a complete payload: {}",
+        output_text(&ok)
+    );
+    assert!(ok_calls.trim().is_empty(), "empty-errors dry-run invoked gh: {ok_calls}");
+    assert_selection_matrix(&first_json_line(&output_text(&ok))?)?;
+
+    Ok(())
+}
+
+/// Empty stdin/file is not a zero-thread sweep. A recorded `{threads:[]}`
+/// document is the honest empty result and must still emit selected/skipped.
+#[cfg(unix)]
+#[test]
+fn sweep_rejects_empty_payload_but_accepts_empty_thread_list() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let temp = tempfile::tempdir()?;
+    let empty_path = temp.path().join("empty.json");
+    fs::write(&empty_path, "")?;
+
+    let (bin, log) = write_poison_gh(temp.path())?;
+    let mut path = OsString::from(bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH is unavailable")?);
+
+    let empty = Command::new("bash")
+        .arg(disposition_script(&root))
+        .args(["--sweep-bot-outdated", "--pr", "42", "--threads-json"])
+        .arg(&empty_path)
+        .args(["--repo", "owner/repo", "--head", SWEEP_HEAD, "--by", "tester", "--dry-run"])
+        .env("PATH", &path)
+        .env("GH_STUB_LOG", &log)
+        .output()?;
+    assert!(!empty.status.success(), "empty payload must fail closed: {}", output_text(&empty));
+    assert!(
+        output_text(&empty).contains("failed to classify"),
+        "expected a classify refusal for empty input: {}",
+        output_text(&empty)
+    );
+    assert!(
+        fs::read_to_string(&log).unwrap_or_default().trim().is_empty(),
+        "empty payload must not invoke gh"
+    );
+
+    let zero = serde_json::json!({"pr": 42, "repo": "owner/repo", "threads": []});
+    let (ok, ok_calls) = run_sweep(&root, &zero, &["--dry-run"], true)?;
+    assert!(ok.status.success(), "empty thread list is a valid zero: {}", output_text(&ok));
+    assert!(ok_calls.trim().is_empty(), "empty-list dry-run invoked gh: {ok_calls}");
+    let summary = first_json_line(&output_text(&ok))?;
+    assert_eq!(summary.pointer("/selected").and_then(Value::as_array).map(Vec::len), Some(0));
+    assert_eq!(summary.pointer("/skipped").and_then(Value::as_array).map(Vec::len), Some(0));
+
+    Ok(())
+}
+
+/// Concatenated JSON values and selected rows without an id must fail closed
+/// rather than silently skipping or sweeping unintended thread IDs.
+#[cfg(unix)]
+#[test]
+fn sweep_rejects_concatenated_payloads_and_missing_ids() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let one = serde_json::to_vec(&sweep_threads_json_fixture())?;
+    let mut concatenated = one.clone();
+    concatenated.push(b'\n');
+    concatenated.extend_from_slice(&one);
+
+    let (dup, dup_calls) = run_sweep_bytes(&root, &concatenated, &["--dry-run"], true)?;
+    assert!(
+        !dup.status.success(),
+        "concatenated JSON payloads must fail closed: {}",
+        output_text(&dup)
+    );
+    assert!(
+        output_text(&dup).contains("failed to classify"),
+        "expected a classify refusal for multiple JSON values: {}",
+        output_text(&dup)
+    );
+    assert!(dup_calls.trim().is_empty(), "concatenated payload must not invoke gh: {dup_calls}");
+
+    let missing_id = serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
+        "threads": [{
+            "isResolved": false,
+            "isOutdated": true,
+            "author": "coderabbitai",
+            "author_typename": "Bot"
+        }]
+    });
+    let (noid, noid_calls) = run_sweep(&root, &missing_id, &["--dry-run"], true)?;
+    assert!(
+        !noid.status.success(),
+        "selected thread without id must fail closed: {}",
+        output_text(&noid)
+    );
+    assert!(
+        output_text(&noid).contains("failed to classify"),
+        "expected a classify refusal for a missing id: {}",
+        output_text(&noid)
+    );
+    assert!(noid_calls.trim().is_empty(), "missing-id payload must not invoke gh: {noid_calls}");
+
+    Ok(())
+}
