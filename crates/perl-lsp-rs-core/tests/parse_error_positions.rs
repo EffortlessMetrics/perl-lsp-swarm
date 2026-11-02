@@ -133,19 +133,16 @@ fn advisory_still_reports_its_location() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
-fn catch_redeclaration_uses_parser_owned_anchor_without_variant_match()
--> Result<(), Box<dyn std::error::Error>> {
-    // Version-skew fixture: a variant added after downstream code was written
-    // must still land on the parser-owned anchor, not byte 0 via a stale
-    // location registry or catch-all.
-    let error = ParseError::CatchVariableRedeclaration {
-        keyword: "my".into(),
-        range: perl_parser_core::SourceLocation::new(31, 33),
-    };
+fn utf8_interior_anchor_is_rejected_to_end_of_source() -> Result<(), Box<dyn std::error::Error>> {
+    // Discriminates `resolved_diagnostic_anchor` from the old
+    // `location().unwrap_or(0).min(source_len)` path: pr-base would pin this at
+    // byte 1 inside the scalar, while parser-owned rejection lands at EOF.
+    let source = "💖";
+    let error = ParseError::syntax("bad syntax", 1);
     assert_eq!(
-        parse_diagnostic_start(SOURCE, error),
-        Some(31),
-        "CatchVariableRedeclaration must use diagnostic_anchor, not a downstream variant match"
+        parse_diagnostic_start(source, error),
+        Some(source.len()),
+        "a UTF-8 interior anchor must reject to end-of-source, not raw location().min(len)"
     );
 
     Ok(())
