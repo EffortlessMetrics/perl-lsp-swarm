@@ -11,7 +11,7 @@
 
 use perl_lexer::{
     CheckpointCache, Checkpointable, LexerCheckpoint, LexerConfig, LexerError, LexerMode,
-    PerlLexer, StringPart, Token, TokenType,
+    PerlLexer, StringPart, StringPartKind, Token, TokenType,
 };
 use std::sync::Arc;
 
@@ -114,11 +114,11 @@ fn token_type_clone_and_eq() {
 #[test]
 fn string_part_variants() {
     let parts = vec![
-        StringPart::Literal(Arc::from("hello")),
-        StringPart::Variable(Arc::from("$x")),
-        StringPart::Expression(Arc::from("${expr}")),
-        StringPart::MethodCall(Arc::from("->method()")),
-        StringPart::ArraySlice(Arc::from("[1..3]")),
+        StringPart::expect(StringPartKind::Literal, "hello"),
+        StringPart::expect(StringPartKind::Variable, "$x"),
+        StringPart::expect(StringPartKind::Expression, "${expr}"),
+        StringPart::expect(StringPartKind::MethodCall, "->method()"),
+        StringPart::expect(StringPartKind::ArraySlice, "[1..3]"),
     ];
     for part in &parts {
         let cloned = part.clone();
@@ -150,7 +150,10 @@ fn token_type_with_arc_data() {
 
 #[test]
 fn interpolated_string_token_type() {
-    let parts = vec![StringPart::Literal(Arc::from("hi ")), StringPart::Variable(Arc::from("$x"))];
+    let parts = vec![
+        StringPart::expect(StringPartKind::Literal, "hi "),
+        StringPart::expect(StringPartKind::Variable, "$x"),
+    ];
     let tt = TokenType::InterpolatedString(parts.clone());
     if let TokenType::InterpolatedString(ref p) = tt {
         assert_eq!(p.len(), 2);
@@ -859,58 +862,61 @@ fn double_quoted_string() -> R {
 #[test]
 fn interpolated_string_preserves_complex_tails() -> R {
     let cases = [
-        (r#""${expr}""#, vec![StringPart::Expression(Arc::from("${expr}"))]),
+        (r#""${expr}""#, vec![StringPart::expect(StringPartKind::Expression, "${expr}")]),
         (
             r#""$arr[0]""#,
-            vec![StringPart::Variable(Arc::from("$arr")), StringPart::ArraySlice(Arc::from("[0]"))],
+            vec![
+                StringPart::expect(StringPartKind::Variable, "$arr"),
+                StringPart::expect(StringPartKind::ArraySlice, "[0]"),
+            ],
         ),
         (
             r#""$hash{key}""#,
             vec![
-                StringPart::Variable(Arc::from("$hash")),
-                StringPart::Expression(Arc::from("{key}")),
+                StringPart::expect(StringPartKind::Variable, "$hash"),
+                StringPart::expect(StringPartKind::Expression, "{key}"),
             ],
         ),
         (
             r#""$var->[0]""#,
             vec![
-                StringPart::Variable(Arc::from("$var")),
-                StringPart::MethodCall(Arc::from("->[0]")),
+                StringPart::expect(StringPartKind::Variable, "$var"),
+                StringPart::expect(StringPartKind::MethodCall, "->[0]"),
             ],
         ),
         (
             r#""$obj->{key}""#,
             vec![
-                StringPart::Variable(Arc::from("$obj")),
-                StringPart::MethodCall(Arc::from("->{key}")),
+                StringPart::expect(StringPartKind::Variable, "$obj"),
+                StringPart::expect(StringPartKind::MethodCall, "->{key}"),
             ],
         ),
         (
             r#""$hash{incomplete""#,
             vec![
-                StringPart::Variable(Arc::from("$hash")),
-                StringPart::Expression(Arc::from("{incomplete")),
+                StringPart::expect(StringPartKind::Variable, "$hash"),
+                StringPart::expect(StringPartKind::Expression, "{incomplete"),
             ],
         ),
         (
             r#""$array[0""#,
             vec![
-                StringPart::Variable(Arc::from("$array")),
-                StringPart::ArraySlice(Arc::from("[0")),
+                StringPart::expect(StringPartKind::Variable, "$array"),
+                StringPart::expect(StringPartKind::ArraySlice, "[0"),
             ],
         ),
         (
             r#""$obj->{field""#,
             vec![
-                StringPart::Variable(Arc::from("$obj")),
-                StringPart::MethodCall(Arc::from("->{field")),
+                StringPart::expect(StringPartKind::Variable, "$obj"),
+                StringPart::expect(StringPartKind::MethodCall, "->{field"),
             ],
         ),
         (
             r#""$array[$i""#,
             vec![
-                StringPart::Variable(Arc::from("$array")),
-                StringPart::ArraySlice(Arc::from("[$i")),
+                StringPart::expect(StringPartKind::Variable, "$array"),
+                StringPart::expect(StringPartKind::ArraySlice, "[$i"),
             ],
         ),
         (
@@ -920,15 +926,15 @@ fn interpolated_string_preserves_complex_tails() -> R {
             // (`->[]`, `->{}`, `->()`) genuinely interpolate (see cases above).
             r#""$obj->method(arg""#,
             vec![
-                StringPart::Variable(Arc::from("$obj")),
-                StringPart::Literal(Arc::from("->method(arg")),
+                StringPart::expect(StringPartKind::Variable, "$obj"),
+                StringPart::expect(StringPartKind::Literal, "->method(arg"),
             ],
         ),
         (
             r#""$obj->(incomplete""#,
             vec![
-                StringPart::Variable(Arc::from("$obj")),
-                StringPart::MethodCall(Arc::from("->(incomplete")),
+                StringPart::expect(StringPartKind::Variable, "$obj"),
+                StringPart::expect(StringPartKind::MethodCall, "->(incomplete"),
             ],
         ),
     ];
@@ -951,9 +957,9 @@ fn interpolated_string_preserves_complex_tails() -> R {
             &simple.token_type,
             TokenType::InterpolatedString(parts) if parts
                 == &vec![
-                    StringPart::Literal(Arc::from("hello ")),
-                    StringPart::Variable(Arc::from("$x")),
-                    StringPart::Literal(Arc::from(" world")),
+                    StringPart::expect(StringPartKind::Literal, "hello "),
+                    StringPart::expect(StringPartKind::Variable, "$x"),
+                    StringPart::expect(StringPartKind::Literal, " world"),
                 ]
         ),
         "expected interpolated string token, got {:?}",

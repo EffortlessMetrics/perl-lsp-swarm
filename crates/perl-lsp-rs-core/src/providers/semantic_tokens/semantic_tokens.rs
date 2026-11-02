@@ -104,7 +104,7 @@
 //! println!("Token type: {:?}", legend.token_types.get(custom_token[3] as usize));
 //! ```
 
-use perl_lexer::{PerlLexer, StringPart, TokenType};
+use perl_lexer::{PerlLexer, StringPartKind, TokenType};
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 use regex::Regex;
@@ -870,25 +870,6 @@ fn is_special_variable(full_name: &str) -> bool {
     )
 }
 
-fn find_bytes_at_controlled(
-    haystack: &[u8],
-    from: usize,
-    needle: &[u8],
-    traversal: &mut TraversalState<'_, '_>,
-) -> Result<Option<usize>, TraversalStop> {
-    if needle.is_empty() {
-        return Ok(Some(from));
-    }
-    let end = haystack.len().saturating_sub(needle.len());
-    for index in from..=end {
-        traversal.admit_work()?;
-        if haystack[index..index + needle.len()] == *needle {
-            return Ok(Some(index));
-        }
-    }
-    Ok(None)
-}
-
 /// Caller-owned limits for semantic-token traversal.
 ///
 /// Cancellation is polled before every lexer step and every AST node. A work
@@ -1202,68 +1183,33 @@ pub fn collect_semantic_tokens_controlled(
             }
 
             TokenType::InterpolatedString(parts) => {
-                // Split the string into literal fragments (string) and variable
-                // interpolations (variable), pushing each as its own token.
-                // This avoids the "longer wins" overlap-removal rule that would
-                // silently discard variable sub-tokens if we also pushed a
-                // whole-string token spanning the entire interpolated string.
+                // Use lexer-authoritative segment ranges (#6730) instead of
+                // rescanning token text for each part.
                 if tok.end > tok.start {
-                    let text_bytes = tok.text.as_bytes();
-                    let mut cursor: usize = 1; // skip opening quote char
                     for part in parts {
                         controlled_value!(traversal.admit_work());
-                        match part {
-                            StringPart::Literal(lit) => {
-                                if let Some(rel) = controlled_value!(find_bytes_at_controlled(
-                                    text_bytes,
-                                    cursor,
-                                    lit.as_bytes(),
-                                    &mut traversal,
-                                )) {
-                                    let part_start = tok.start + rel;
-                                    let part_end = part_start + lit.len();
-                                    controlled_value!(push_line_contained_segments(
-                                        text,
-                                        part_start,
-                                        part_end,
-                                        to_pos16,
-                                        kind_idx(&leg, "string"),
-                                        0,
-                                        &mut lexer_tokens,
-                                        &mut traversal,
-                                    ));
-                                    cursor = rel + lit.len();
-                                }
-                            }
-                            StringPart::Variable(var) => {
-                                if let Some(rel) = controlled_value!(find_bytes_at_controlled(
-                                    text_bytes,
-                                    cursor,
-                                    var.as_bytes(),
-                                    &mut traversal,
-                                )) {
-                                    let part_start = tok.start + rel;
-                                    let part_end = part_start + var.len();
-                                    controlled_value!(push_line_contained_segments(
-                                        text,
-                                        part_start,
-                                        part_end,
-                                        to_pos16,
-                                        kind_idx(&leg, "variable"),
-                                        0,
-                                        &mut lexer_tokens,
-                                        &mut traversal,
-                                    ));
-                                    cursor = rel + var.len();
-                                }
-                            }
-                            // Expression, ArraySlice, MethodCall: defined in StringPart
-                            // and emitted by the lexer for subscripts, slices, and
-                            // method tails. They render as string-fragment text here
-                            // (no dedicated semantic-token kind); skipping them
-                            // leaves only their Variable head highlighted.
-                            _ => {}
+                        let part_start = part.start();
+                        let part_end = part.end();
+                        if part_end <= part_start {
+                            continue;
                         }
+                        let kind_name = match part.kind() {
+                            StringPartKind::Variable => "variable",
+                            StringPartKind::Literal
+                            | StringPartKind::Expression
+                            | StringPartKind::MethodCall
+                            | StringPartKind::ArraySlice => "string",
+                        };
+                        controlled_value!(push_line_contained_segments(
+                            text,
+                            part_start,
+                            part_end,
+                            to_pos16,
+                            kind_idx(&leg, kind_name),
+                            0,
+                            &mut lexer_tokens,
+                            &mut traversal,
+                        ));
                     }
                 }
                 continue;
@@ -2028,6 +1974,25 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn find_bytes_at_controlled(
+        haystack: &[u8],
+        from: usize,
+        needle: &[u8],
+        traversal: &mut TraversalState<'_, '_>,
+    ) -> Result<Option<usize>, TraversalStop> {
+        if needle.is_empty() {
+            return Ok(Some(from));
+        }
+        let end = haystack.len().saturating_sub(needle.len());
+        for index in from..=end {
+            traversal.admit_work()?;
+            if haystack[index..index + needle.len()] == *needle {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
 
     // Helper to create token tuple
     fn tok(line: u32, start: u32, len: u32, kind: u32, mods: u32) -> (u32, u32, u32, u32, u32) {

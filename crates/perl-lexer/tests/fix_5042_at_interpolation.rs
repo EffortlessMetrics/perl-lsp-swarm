@@ -6,9 +6,8 @@
 //! Issue #5042's headline claim is the `@` sigil, so #5235 (the `$`-only fix)
 //! cannot close the issue without this arm.
 
-use perl_lexer::{LexerConfig, PerlLexer, StringPart, Token, TokenType};
+use perl_lexer::{LexerConfig, PerlLexer, StringPart, StringPartKind, Token, TokenType};
 use perl_tdd_support::must_some;
-use std::sync::Arc;
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
@@ -41,7 +40,7 @@ fn at_followed_by_identifier_is_variable() -> R {
     let parts = interp_parts("\"@arr\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@arr"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@arr")],
         "\"@arr\" should produce Variable(\"@arr\"), got {parts:?}"
     );
     Ok(())
@@ -52,7 +51,7 @@ fn at_underscore_array_is_variable() -> R {
     let parts = interp_parts("\"@_\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@_"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@_")],
         "\"@_\" (argument array) should produce Variable(\"@_\"), got {parts:?}"
     );
     Ok(())
@@ -63,7 +62,7 @@ fn at_brace_expr_is_expression() -> R {
     let parts = interp_parts("\"@{arr}\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Expression(Arc::from("@{arr}"))],
+        vec![StringPart::expect(StringPartKind::Expression, "@{arr}")],
         "\"@{{arr}}\" should produce Expression(\"@{{arr}}\"), got {parts:?}"
     );
     Ok(())
@@ -77,7 +76,7 @@ fn at_brace_expr_is_expression() -> R {
 fn at_followed_by_punct_stays_literal() -> R {
     let parts = interp_parts("\"@!\"")?;
     assert!(
-        parts.iter().any(|p| matches!(p, StringPart::Literal(s) if s.contains('@'))),
+        parts.iter().any(|p| p.kind() == StringPartKind::Literal && p.text().contains('@')),
         "\"@!\" should keep @ as a literal (no identifier follows), got {parts:?}"
     );
     Ok(())
@@ -87,9 +86,9 @@ fn at_followed_by_punct_stays_literal() -> R {
 fn mixed_scalar_and_array_interpolation() -> R {
     let parts = interp_parts("\"Hello $name, you have @items items\"")?;
     let has_scalar =
-        parts.iter().any(|p| matches!(p, StringPart::Variable(s) if s.as_ref() == "$name"));
+        parts.iter().any(|p| p.kind() == StringPartKind::Variable && p.text() == "$name");
     let has_array =
-        parts.iter().any(|p| matches!(p, StringPart::Variable(s) if s.as_ref() == "@items"));
+        parts.iter().any(|p| p.kind() == StringPartKind::Variable && p.text() == "@items");
     assert!(has_scalar, "should contain Variable(\"$name\"), got {parts:?}");
     assert!(has_array, "should contain Variable(\"@items\"), got {parts:?}");
     Ok(())
@@ -99,9 +98,9 @@ fn mixed_scalar_and_array_interpolation() -> R {
 fn array_interpolation_followed_by_text() -> R {
     let parts = interp_parts("\"count: @arr items\"")?;
     let has_array =
-        parts.iter().any(|p| matches!(p, StringPart::Variable(s) if s.as_ref() == "@arr"));
+        parts.iter().any(|p| p.kind() == StringPartKind::Variable && p.text() == "@arr");
     let has_suffix =
-        parts.iter().any(|p| matches!(p, StringPart::Literal(s) if s.contains("items")));
+        parts.iter().any(|p| p.kind() == StringPartKind::Literal && p.text().contains("items"));
     assert!(has_array, "should contain Variable(\"@arr\"), got {parts:?}");
     assert!(has_suffix, "should contain Literal with 'items', got {parts:?}");
     Ok(())
@@ -119,7 +118,7 @@ fn at_followed_by_unicode_identifier_is_variable() -> R {
     let parts = interp_parts("\"@caf\u{00e9}\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@caf\u{00e9}"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@caf\u{00e9}")],
         "\"@café\" should produce Variable(\"@café\"), got {parts:?}"
     );
     Ok(())
@@ -135,7 +134,7 @@ fn at_followed_by_nothing_stays_literal() -> R {
     let joined: String = parts
         .iter()
         .map(|part| match part {
-            StringPart::Literal(text) => Ok(text.to_string()),
+            StringPart::Literal(payload) => Ok(payload.text.to_string()),
             other => Err(format!("expected only literal parts, got {other:?}")),
         })
         .collect::<Result<String, String>>()?;
@@ -184,7 +183,7 @@ fn at_package_qualified_array_emits_single_variable() -> R {
     let parts = interp_parts("\"@main::arr\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@main::arr"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@main::arr")],
         "\"@main::arr\" should be one Variable, not Variable(\"@main\") + Literal(\"::arr\"), \
          got {parts:?}"
     );
@@ -196,7 +195,7 @@ fn at_deeply_qualified_array_emits_single_variable() -> R {
     let parts = interp_parts("\"@Foo::Bar::baz\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@Foo::Bar::baz"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@Foo::Bar::baz")],
         "multi-segment package qualifiers should stay in one Variable, got {parts:?}"
     );
     Ok(())
@@ -209,7 +208,10 @@ fn at_single_trailing_colon_is_not_a_qualifier() -> R {
     let parts = interp_parts("\"@arr:tail\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@arr")), StringPart::Literal(Arc::from(":tail")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@arr"),
+            StringPart::expect(StringPartKind::Literal, ":tail"),
+        ],
         "a single ':' must end the variable, got {parts:?}"
     );
     Ok(())
@@ -223,7 +225,7 @@ fn at_trailing_package_separator_stays_in_the_variable() -> R {
     let parts = interp_parts("\"@arr::\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@arr::"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@arr::")],
         "a trailing '::' is part of the package-qualified name, got {parts:?}"
     );
     Ok(())
@@ -250,7 +252,10 @@ fn at_identifier_scan_stops_when_is_perl_identifier_continue_rejects_a_multibyte
     let parts = interp_parts("\"@arr\u{20ac}\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@arr")), StringPart::Literal(Arc::from("\u{20ac}")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@arr"),
+            StringPart::expect(StringPartKind::Literal, "\u{20ac}"),
+        ],
         "'\u{20ac}' is not an identifier-continue character, so it must end \"@arr\" and stay \
          literal, got {parts:?}"
     );
@@ -268,8 +273,8 @@ fn at_identifier_scan_continues_through_an_accepted_multibyte_char_then_stops() 
     assert_eq!(
         parts,
         vec![
-            StringPart::Variable(Arc::from("@caf\u{00e9}s")),
-            StringPart::Literal(Arc::from("\u{20ac}")),
+            StringPart::expect(StringPartKind::Variable, "@caf\u{00e9}s"),
+            StringPart::expect(StringPartKind::Literal, "\u{20ac}"),
         ],
         "'é' continues the name and '\u{20ac}' ends it, got {parts:?}"
     );
@@ -287,7 +292,7 @@ fn at_sigil_opens_a_variable_for_every_is_perl_identifier_start_char_including_e
     let parts = interp_parts("\"@\u{1f600}xy\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@\u{1f600}xy"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@\u{1f600}xy")],
         "\"@😀xy\" should produce Variable(\"@😀xy\"), got {parts:?}"
     );
     Ok(())
@@ -302,7 +307,7 @@ fn at_brace_arm_wins_over_the_identifier_arm_for_a_braced_name() -> R {
     let parts = interp_parts("\"@{main::arr}\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Expression(Arc::from("@{main::arr}"))],
+        vec![StringPart::expect(StringPartKind::Expression, "@{main::arr}")],
         "\"@{{main::arr}}\" must be one Expression part, got {parts:?}"
     );
     Ok(())
@@ -329,7 +334,7 @@ fn at_plus_match_end_offsets_array_is_variable() -> R {
     let parts = interp_parts("\"@+\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@+"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@+")],
         "\"@+\" is the match-end-offset array and must interpolate, got {parts:?}"
     );
     Ok(())
@@ -340,7 +345,7 @@ fn at_minus_match_start_offsets_array_is_variable() -> R {
     let parts = interp_parts("\"@-\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@-"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@-")],
         "\"@-\" is the match-start-offset array and must interpolate, got {parts:?}"
     );
     Ok(())
@@ -355,11 +360,11 @@ fn at_plus_and_at_minus_interpolate_inside_surrounding_literal_text() -> R {
     assert_eq!(
         parts,
         vec![
-            StringPart::Literal(Arc::from("match at ")),
-            StringPart::Variable(Arc::from("@+")),
-            StringPart::Literal(Arc::from("..")),
-            StringPart::Variable(Arc::from("@-")),
-            StringPart::Literal(Arc::from(" end")),
+            StringPart::expect(StringPartKind::Literal, "match at "),
+            StringPart::expect(StringPartKind::Variable, "@+"),
+            StringPart::expect(StringPartKind::Literal, ".."),
+            StringPart::expect(StringPartKind::Variable, "@-"),
+            StringPart::expect(StringPartKind::Literal, " end"),
         ],
         "both offset arrays must interpolate as separate Variable parts, got {parts:?}"
     );
@@ -373,7 +378,10 @@ fn at_plus_consumes_exactly_one_sigil_character() -> R {
     let parts = interp_parts("\"@++\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@+")), StringPart::Literal(Arc::from("+"))],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@+"),
+            StringPart::expect(StringPartKind::Literal, "+")
+        ],
         "\"@++\" is `@+` followed by a literal `+`, got {parts:?}"
     );
     Ok(())
@@ -398,7 +406,7 @@ fn at_dollar_ref_is_a_single_array_deref_variable() -> R {
     let parts = interp_parts("\"@$aref\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@$aref"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@$aref")],
         "\"@$aref\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -409,7 +417,7 @@ fn at_double_dollar_ref_chains_the_whole_sigil_run() -> R {
     let parts = interp_parts("\"@$$rr\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@$$rr"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@$$rr")],
         "\"@$$rr\" must keep the whole sigil run in one Variable part, got {parts:?}"
     );
     Ok(())
@@ -424,7 +432,7 @@ fn at_dollar_ref_folds_package_qualifiers() -> R {
     let parts = interp_parts("\"@$Foo::Bar::ref\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@$Foo::Bar::ref"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@$Foo::Bar::ref")],
         "\"@$Foo::Bar::ref\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -439,7 +447,10 @@ fn at_dollar_ref_stops_at_a_trailing_subscript() -> R {
     let parts = interp_parts("\"@$aref[0]\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@$aref")), StringPart::Literal(Arc::from("[0]"))],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@$aref"),
+            StringPart::expect(StringPartKind::Literal, "[0]")
+        ],
         "the `@$ref` arm must not consume the trailing subscript, got {parts:?}"
     );
     Ok(())
@@ -459,7 +470,7 @@ fn at_apostrophe_package_separator_stays_in_one_variable() -> R {
     let parts = interp_parts("\"@Foo'Bar\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@Foo'Bar"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@Foo'Bar")],
         "\"@Foo'Bar\" should produce one Variable part, got {parts:?}"
     );
     Ok(())
@@ -474,7 +485,10 @@ fn at_trailing_apostrophe_is_literal_text() -> R {
     let parts = interp_parts("\"@foo'\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@foo")), StringPart::Literal(Arc::from("'"))],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@foo"),
+            StringPart::expect(StringPartKind::Literal, "'")
+        ],
         "a trailing apostrophe must stay literal, got {parts:?}"
     );
     Ok(())
@@ -485,7 +499,10 @@ fn at_apostrophe_before_a_digit_is_literal_text() -> R {
     let parts = interp_parts("\"@foo'9\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@foo")), StringPart::Literal(Arc::from("'9"))],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@foo"),
+            StringPart::expect(StringPartKind::Literal, "'9")
+        ],
         "an apostrophe followed by a digit must stay literal, got {parts:?}"
     );
     Ok(())
@@ -498,7 +515,7 @@ fn at_leading_double_colon_is_a_main_package_array() -> R {
     let parts = interp_parts("\"@::a\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("@::a"))],
+        vec![StringPart::expect(StringPartKind::Variable, "@::a")],
         "\"@::a\" should produce one Variable part, got {parts:?}"
     );
     Ok(())
@@ -520,7 +537,7 @@ fn at_single_colon_stays_literal() -> R {
     let parts = interp_parts("\"@:x\"")?;
     assert_eq!(
         parts,
-        vec![StringPart::Literal(Arc::from("@:x"))],
+        vec![StringPart::expect(StringPartKind::Literal, "@:x")],
         "\"@:x\" must stay literal text, got {parts:?}"
     );
     Ok(())

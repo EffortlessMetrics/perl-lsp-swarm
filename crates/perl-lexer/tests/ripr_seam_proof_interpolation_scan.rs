@@ -12,9 +12,7 @@
 //! Each call site is driven separately so that a regression in any one of them
 //! fails on its own row rather than being masked by the others.
 
-use perl_lexer::{PerlLexer, StringPart, TokenType};
-use std::sync::Arc;
-
+use perl_lexer::{PerlLexer, StringPart, StringPartKind, TokenType};
 type R = Result<(), Box<dyn std::error::Error>>;
 
 /// Lex `input` and return the parts of its single interpolated string token.
@@ -34,7 +32,7 @@ fn interpolated_parts(input: &str) -> Result<Vec<StringPart>, Box<dyn std::error
 /// Assert that `input` lexes to exactly one `Variable` part spelled `expected`.
 fn assert_single_variable(input: &str, expected: &str) -> R {
     let parts = interpolated_parts(input)?;
-    if parts != vec![StringPart::Variable(Arc::from(expected))] {
+    if parts != vec![StringPart::expect(StringPartKind::Variable, expected)] {
         return Err(format!("{input:?} must be one Variable({expected:?}), got {parts:?}").into());
     }
     Ok(())
@@ -81,8 +79,10 @@ fn every_call_site_stops_the_shared_scan_at_a_lone_colon() -> R {
 
     for (input, head, arm) in cases {
         let parts = interpolated_parts(input)?;
-        let expected =
-            vec![StringPart::Variable(Arc::from(head)), StringPart::Literal(Arc::from(":tail"))];
+        let expected = vec![
+            StringPart::expect(StringPartKind::Variable, head),
+            StringPart::expect(StringPartKind::Literal, ":tail"),
+        ];
         if parts != expected {
             return Err(format!(
                 "{arm}: {input:?} must stop the scan at the lone ':', got {parts:?}"
@@ -125,8 +125,10 @@ fn the_shared_scan_leaves_a_non_separating_apostrophe_as_literal_text() -> R {
 
     for (input, head, tail) in cases {
         let parts = interpolated_parts(input)?;
-        let expected =
-            vec![StringPart::Variable(Arc::from(head)), StringPart::Literal(Arc::from(tail))];
+        let expected = vec![
+            StringPart::expect(StringPartKind::Variable, head),
+            StringPart::expect(StringPartKind::Literal, tail),
+        ];
         if parts != expected {
             return Err(format!(
                 "{input:?} must leave the non-separating apostrophe literal, got {parts:?}"
@@ -147,8 +149,8 @@ fn the_shared_scan_leaves_a_non_separating_apostrophe_as_literal_text() -> R {
 fn the_shared_scan_stops_before_a_trailing_subscript() -> R {
     let parts = interpolated_parts(r#""$$main::ar[1]""#)?;
     let expected = vec![
-        StringPart::Variable(Arc::from("$$main::ar")),
-        StringPart::ArraySlice(Arc::from("[1]")),
+        StringPart::expect(StringPartKind::Variable, "$$main::ar"),
+        StringPart::expect(StringPartKind::ArraySlice, "[1]"),
     ];
     if parts != expected {
         return Err(format!("qualified deref must not absorb \"[1]\", got {parts:?}").into());
