@@ -98,7 +98,7 @@ def validate_clippy(args):
                 raise Denied("staged Clippy requires profile agent")
             if flag == "--test" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
                 raise Denied("Clippy requires one literal test target name, not a pattern/path/option")
-        elif flag not in ("--all-targets", "--locked", "--offline"):
+        elif flag not in ("--all-targets", "--locked", "--offline", "--keep-going"):
             raise Denied("unsupported staged Clippy field: " + flag)
     if not {"-p", "--profile", "--locked"} <= seen:
         raise Denied("Clippy requires explicit package/agent/locked fields")
