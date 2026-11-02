@@ -58,6 +58,7 @@ pub mod dist_authoring;
 pub mod effects;
 pub mod environment;
 pub mod error;
+pub mod dist_zilla;
 pub mod eumm_mb;
 pub mod export;
 pub mod fact_classes;
@@ -131,6 +132,22 @@ pub use environment::{
     WorkspaceTrust,
 };
 pub use error::{ModelLimitation, WorkspaceCoreError};
+pub use dist_zilla::{
+    ADAPTER_VERSION as DIST_ZILLA_ADAPTER_VERSION, BLIB_ARCH as DIST_ZILLA_BLIB_ARCH,
+    BLIB_LIB as DIST_ZILLA_BLIB_LIB, DIST_INI, DZIL_LOGICAL_NAME,
+    DetectedDistZillaBuildSystem, DistZillaDetectOptions, DistZillaDetection,
+    DistZillaPluginRegistryNote, DistZillaRootCandidate, DistZillaRootDisposition,
+    DistZillaRootFreshness, DistZillaToolDisposition, PLUGIN_REGISTRY_VERSION,
+    REASON_CONFIGURED_DZIL_MISSING, REASON_DZIL_NOT_CONFIGURED,
+    REASON_GENERATED_ROOT_STALE as DIST_ZILLA_REASON_GENERATED_ROOT_STALE,
+    REASON_GENERATED_ROOT_WITHOUT_BUILD_SYSTEM as DIST_ZILLA_REASON_GENERATED_ROOT_WITHOUT_BUILD_SYSTEM,
+    REASON_NOT_A_DIRECTORY as DIST_ZILLA_REASON_NOT_A_DIRECTORY,
+    REASON_ROOT_ESCAPES_WORKSPACE as DIST_ZILLA_REASON_ROOT_ESCAPES_WORKSPACE,
+    REASON_ROOT_MISSING as DIST_ZILLA_REASON_ROOT_MISSING, SOURCE_LIB as DIST_ZILLA_SOURCE_LIB,
+    STAGED_BUILD, TEST_LIB as DIST_ZILLA_TEST_LIB,
+    WATCHER_INPUTS as DIST_ZILLA_WATCHER_INPUTS, classify_plugin_heading, detect_dist_zilla,
+    detect_dist_zilla_with_plugins, plugin_notes_from_authoring,
+};
 pub use eumm_mb::{
     ADAPTER_VERSION as EUMM_MB_ADAPTER_VERSION, BLIB_ARCH, BLIB_LIB, BUILD_PL,
     DetectedEummMbBuildSystem, EummMbDetection, EummMbRootCandidate, EummMbRootDisposition,
