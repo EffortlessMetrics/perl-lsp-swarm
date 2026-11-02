@@ -35,6 +35,13 @@ the symbol tables.
 
 ## WorkspaceIndex Memory Scaling
 
+Deterministic retained-weight evidence for the live index uses
+`WorkspaceIndex::memory_snapshot_v2` (`workspace-index-memory/v2`). It
+measures file, definition-symbol, search, reference, fact-shard, semantic
+index, and document-store families separately, keeps source text and line
+geometry distinct, and exposes collection capacity slack apart from logical
+`len()`. Process RSS and allocator return remain supporting signals only.
+
 ### Symbol Count Projections
 
 | Workspace files | Avg. subs/file | Total symbols | Approx. index RAM |

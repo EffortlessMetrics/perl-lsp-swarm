@@ -347,6 +347,75 @@ impl PackageGraphIndex {
         self.outgoing_edges.values().map(Vec::len).sum()
     }
 
+    /// Conservative retained logical/capacity weight for memory evidence.
+    #[cfg(feature = "memory-profiling")]
+    pub(crate) fn memory_retained_weight(
+        &self,
+    ) -> Result<
+        crate::workspace::memory_weight::CollectionWeight,
+        crate::workspace::memory_weight::MemoryWeightError,
+    > {
+        use crate::workspace::memory_weight::{
+            CollectionWeight, checked_add, hashmap_capacity_slack, string_logical, vec_capacity,
+            vec_logical,
+        };
+
+        let mut logical = 0usize;
+        let mut capacity = 0usize;
+        let mut live_entries = 0usize;
+
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.nodes)?)?;
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.outgoing_edges)?)?;
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.outgoing_edge_sources)?)?;
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.file_edges)?)?;
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.file_edge_ids)?)?;
+
+        for (name, node) in &self.nodes {
+            logical = checked_add(logical, string_logical(name))?;
+            logical = checked_add(logical, string_logical(&node.name))?;
+            logical = checked_add(logical, std::mem::size_of_val(node))?;
+            live_entries += 1;
+        }
+
+        for (package, edges) in &self.outgoing_edges {
+            logical = checked_add(logical, string_logical(package))?;
+            logical = checked_add(logical, vec_logical(edges.as_slice())?)?;
+            capacity = checked_add(capacity, vec_capacity(edges)?)?;
+            for edge in edges {
+                logical = checked_add(logical, string_logical(&edge.from_package))?;
+                logical = checked_add(logical, string_logical(&edge.to_package))?;
+                logical = checked_add(logical, std::mem::size_of_val(edge))?;
+                live_entries += 1;
+            }
+        }
+
+        for (package, sources) in &self.outgoing_edge_sources {
+            logical = checked_add(logical, string_logical(package))?;
+            logical = checked_add(logical, vec_logical(sources.as_slice())?)?;
+            capacity = checked_add(capacity, vec_capacity(sources)?)?;
+            for source in sources {
+                logical = checked_add(logical, string_logical(source))?;
+            }
+        }
+
+        for (uri, edges) in &self.file_edges {
+            logical = checked_add(logical, string_logical(uri))?;
+            logical = checked_add(logical, vec_logical(edges.as_slice())?)?;
+            capacity = checked_add(capacity, vec_capacity(edges)?)?;
+            for edge in edges {
+                logical = checked_add(logical, string_logical(&edge.from_package))?;
+                logical = checked_add(logical, string_logical(&edge.to_package))?;
+            }
+        }
+
+        for (uri, file_id) in &self.file_edge_ids {
+            logical = checked_add(logical, string_logical(uri))?;
+            logical = checked_add(logical, std::mem::size_of_val(file_id))?;
+        }
+
+        Ok(CollectionWeight { live_entries, logical_bytes: logical, capacity_bytes: capacity })
+    }
+
     // ── Private helpers ──
 
     /// Return the direct parent package names (Inherits edges) for a package.

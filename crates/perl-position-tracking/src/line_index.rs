@@ -195,6 +195,19 @@ impl LineStartsCache {
     }
 }
 
+/// Retained-weight breakdown for a [`LineIndex`]'s owned buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineIndexRetainedWeight {
+    /// Logical bytes in the owned source text (`text.len()`).
+    pub source_logical_bytes: usize,
+    /// Allocated capacity of the source buffer (`text.capacity()`).
+    pub source_capacity_bytes: usize,
+    /// Logical bytes in the line-start table (`line_starts.len()` pointers).
+    pub line_starts_logical_bytes: usize,
+    /// Allocated capacity of the line-start vector.
+    pub line_starts_capacity_bytes: usize,
+}
+
 /// Stores line information for efficient position lookups, owning the text.
 #[derive(Debug, Clone)]
 pub struct LineIndex {
@@ -218,6 +231,22 @@ impl LineIndex {
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Conservative retained-weight components for memory-evidence receipts.
+    ///
+    /// Logical bytes use `len()`; capacity bytes use `capacity()` on the owned
+    /// buffers. Allocator slack and hash-table bucket overhead remain outside
+    /// this estimate.
+    #[must_use]
+    pub fn retained_weight_components(&self) -> LineIndexRetainedWeight {
+        let ptr_size = std::mem::size_of::<usize>();
+        LineIndexRetainedWeight {
+            source_logical_bytes: self.text.len(),
+            source_capacity_bytes: self.text.capacity(),
+            line_starts_logical_bytes: self.line_starts.len().saturating_mul(ptr_size),
+            line_starts_capacity_bytes: self.line_starts.capacity().saturating_mul(ptr_size),
+        }
     }
 
     /// Convert byte offset to position (0-based line and UTF-16 column)
