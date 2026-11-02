@@ -2619,6 +2619,13 @@ mod tests {
                 }),
                 "{display_path} parse boundary"
             );
+            assert!(
+                parse
+                    .semantic_boundaries
+                    .iter()
+                    .all(|boundary| { boundary.source_span.start < boundary.source_span.end }),
+                "{display_path} registry-admissible source span"
+            );
             let compile = run_compile(&invocation)?;
             assert_eq!(compile.status, RunnerStatus::Pass, "{display_path} compile");
         }
