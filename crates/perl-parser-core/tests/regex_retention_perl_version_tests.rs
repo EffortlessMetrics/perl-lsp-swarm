@@ -40,8 +40,8 @@ fn old_use_version_reports_non_capturing_modifier_and_withholds_effect()
     assert!(output.diagnostics.iter().any(|diagnostic| {
         matches!(
             diagnostic,
-            ParseError::SyntaxError { message, .. }
-                if message.contains("Regex modifier requires a newer Perl version")
+            ParseError::SyntaxError { message, location }
+                if message.contains("Regex modifier requires a newer Perl version") && *location == 46
         )
     }));
     Ok(())
@@ -100,8 +100,9 @@ fn old_use_version_reports_named_capture_version_requirement() -> Result<(), Box
     assert!(output.diagnostics.iter().any(|diagnostic| {
         matches!(
             diagnostic,
-            ParseError::SyntaxError { message, .. }
+            ParseError::SyntaxError { message, location }
                 if message.contains("Regex capture syntax requires a newer Perl version")
+                    && *location == 39
         )
     }));
     Ok(())
