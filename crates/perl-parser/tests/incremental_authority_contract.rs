@@ -74,11 +74,7 @@ fn crate_root() -> PathBuf {
 
 fn workspace_root() -> PathBuf {
     let crate_root = crate_root();
-    crate_root
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or(crate_root)
+    crate_root.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or(crate_root)
 }
 
 fn read(path: impl AsRef<Path>) -> Result<String, std::io::Error> {
