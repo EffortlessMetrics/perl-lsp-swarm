@@ -105,12 +105,20 @@ fn strip_comments_and_string_literals(source: &str) -> String {
                 }
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let mut nesting = 1usize;
                 i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                if i + 1 < bytes.len() {
-                    i += 2;
+                while i + 1 < bytes.len() && nesting > 0 {
+                    match (bytes[i], bytes.get(i + 1)) {
+                        (b'/', Some(b'*')) => {
+                            nesting += 1;
+                            i += 2;
+                        }
+                        (b'*', Some(b'/')) => {
+                            nesting -= 1;
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    }
                 }
             }
             b'"' => {
@@ -139,26 +147,30 @@ fn strip_comments_and_string_literals(source: &str) -> String {
             }
             b'\'' => {
                 out[i] = b'\'';
-                i += 1;
-                while i < bytes.len() {
-                    match bytes[i] {
-                        b'\\' => {
-                            if i + 1 < bytes.len() {
-                                out[i] = bytes[i];
-                                out[i + 1] = bytes[i + 1];
+                if char_literal_body_follows(bytes, i) {
+                    i += 1;
+                    while i < bytes.len() {
+                        match bytes[i] {
+                            b'\\' => {
+                                if i + 1 < bytes.len() {
+                                    out[i] = bytes[i];
+                                    out[i + 1] = bytes[i + 1];
+                                }
+                                i += 2;
                             }
-                            i += 2;
-                        }
-                        b'\'' => {
-                            out[i] = b'\'';
-                            i += 1;
-                            break;
-                        }
-                        _ => {
-                            out[i] = b' ';
-                            i += 1;
+                            b'\'' => {
+                                out[i] = b'\'';
+                                i += 1;
+                                break;
+                            }
+                            _ => {
+                                out[i] = b' ';
+                                i += 1;
+                            }
                         }
                     }
+                } else {
+                    i += 1;
                 }
             }
             b'r' => {
@@ -183,6 +195,25 @@ fn strip_comments_and_string_literals(source: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn char_literal_body_follows(bytes: &[u8], open: usize) -> bool {
+    let Some(&first) = bytes.get(open + 1) else {
+        return false;
+    };
+    if first == b'\\' {
+        return bytes.get(open + 2) == Some(&b'\'');
+    }
+    if first == b'\'' {
+        return false;
+    }
+    let width = match first {
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
+    };
+    open + 1 + width < bytes.len() && bytes[open + 1 + width] == b'\''
 }
 
 fn raw_string_hashes(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
@@ -607,6 +638,14 @@ fn lower_tier_consumer_detector_covers_direct_nested_and_aliased_imports() {
     assert!(!uses_lower_tier_incremental(
         "const _: &str = \"perl_parser_core::incremental::IncrementalState\";",
         &paths
+    ));
+    assert!(!uses_lower_tier_incremental(
+        "/* outer /* inner */ perl_parser_core::incremental */",
+        &paths
+    ));
+    assert!(uses_lower_tier_incremental(
+        "fn parse<'a>(s: &'a str) -> &'a str { let _ = core_parser::incremental::IncrementalState; s }",
+        &["core_parser".to_string(), "perl_parser_core".to_string()]
     ));
     assert!(uses_lower_tier_incremental("use perl_parser_core::{ast::Node, incremental};", &paths));
     assert!(uses_lower_tier_incremental(
