@@ -11,6 +11,7 @@
 //! # Modules
 //!
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
+//! - [`call_semantics`] -- Versioned transport-neutral call shape and current-form AST adapters.
 //! - [`geometry_policy`] -- Field-level registry of independent source-geometry payload fields.
 //! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
 //! - [`invariants`] -- Bounded structural validation shared by parser paths.
@@ -74,6 +75,8 @@
 //! completeness. See [`Node`] for the operation-by-operation contract.
 
 pub mod ast;
+/// Versioned transport-neutral call shape and current-form AST adapters (#8851).
+pub mod call_semantics;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
 /// Owner-neutral source syntax for declaration attributes.
@@ -119,6 +122,15 @@ pub use ast::{
 };
 /// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
 pub use ast::{GotoTargetForm, RegexSurfaceForm};
+/// Versioned call-semantics schema and AST adapters.
+pub use call_semantics::{
+    ArgumentSource, CALL_SEMANTICS_SCHEMA_ID, CALL_SEMANTICS_SCHEMA_VERSION,
+    CALL_SEMANTICS_SCHEMA_WIRE, CODEREF_CALL_SENTINEL, CURRENT_REPRESENTATION_DISPOSITIONS,
+    CallBoundary, CallContradiction, CallLimitation, CallOperand, CallSemantics, CallSyntax,
+    CalleeIdentity, CurrentRepresentation, DispatchKind, EvaluationContract, OperandContext,
+    OperandList, OperandPresence, OperandRole, PrototypeDisposition, RepresentationDisposition,
+    RepresentationMapping, adapt_ast_call,
+};
 /// Owner-neutral declaration-attribute source contracts.
 pub use declaration::{
     DeclarationAttributeArgumentDisposition, DeclarationAttributeArgumentSyntax,
