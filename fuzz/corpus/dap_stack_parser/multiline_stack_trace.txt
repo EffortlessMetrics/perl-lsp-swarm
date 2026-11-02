@@ -1,0 +1,3 @@
+$ = A::B::first() called from file `/lib/A/B.pm' line 10
+$ = C::D::second() called from file `/lib/C/D.pm' line 20
+$ = main::entry() called from file `app.pl' line 5
