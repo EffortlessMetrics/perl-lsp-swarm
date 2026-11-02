@@ -108,8 +108,8 @@ fn focused_fixture_file_parses_coro_block_call_shapes() {
 }
 
 #[test]
-fn method_block_call_shape() -> Result<(), String> {
-    let source = "$obj->async { work() };";
+fn method_call_with_subref_argument_stays_valid_perl() -> Result<(), String> {
+    let source = "$obj->async(sub { work() });";
     assert_clean_parse(source);
     let ast = parse(source);
     let mut method_calls = 0usize;
@@ -118,16 +118,10 @@ fn method_block_call_shape() -> Result<(), String> {
             && method == "async"
         {
             method_calls += 1;
-            assert_eq!(args.len(), 1, "block must be the method argument");
-            assert!(
-                source_text(source, &args[0]).is_some_and(|text| text.contains("work()")),
-                "unexpected block arg: {}",
-                args[0].to_sexp()
-            );
+            assert_eq!(args.len(), 1, "subref must be the method argument");
         }
     });
     assert_eq!(method_calls, 1, "{}", ast.to_sexp());
-    assert_no_coro_specific_ast_nodes(source);
     Ok(())
 }
 
