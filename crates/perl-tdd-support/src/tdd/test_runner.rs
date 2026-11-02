@@ -575,10 +575,11 @@ impl TestRunner {
         test_id: &str,
     ) -> Vec<TestResult> {
         let report = parse_tap(stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
         let mut results: Vec<TestResult> = report
             .assertions
             .iter()
-            .map(|assertion| project_tap_assertion(assertion, test_id))
+            .map(|assertion| project_tap_assertion(assertion, test_id, &lines))
             .collect();
 
         // If no individual test results, create one for the whole file
@@ -600,17 +601,27 @@ impl TestRunner {
 /// The legacy line scanner keyed result IDs off the third whitespace-delimited
 /// segment of each `ok` / `not ok` line; reconstruct that label so existing
 /// consumers stay stable while parsing flows through `perl-test-facts`.
-fn project_tap_assertion(assertion: &TapAssertion, file_test_id: &str) -> TestResult {
-    let line = format_canonical_tap_line(assertion);
-    let label = legacy_tap_result_label(&line).to_owned();
+fn project_tap_assertion(
+    assertion: &TapAssertion,
+    file_test_id: &str,
+    stdout_lines: &[&str],
+) -> TestResult {
+    let raw_line = stdout_line(stdout_lines, assertion.line)
+        .unwrap_or_else(|| format_canonical_tap_line(assertion));
+    let label = legacy_tap_result_label(&raw_line).to_owned();
     let status = match assertion.outcome {
         TapAssertionOutcome::Pass => TestStatus::Passed,
         TapAssertionOutcome::Fail => TestStatus::Failed,
         _ => TestStatus::Failed,
     };
-    let message = matches!(assertion.outcome, TapAssertionOutcome::Fail).then_some(line);
+    let message = matches!(assertion.outcome, TapAssertionOutcome::Fail).then_some(raw_line);
 
     TestResult { test_id: format!("{file_test_id}::{label}"), status, message, duration: None }
+}
+
+fn stdout_line(lines: &[&str], line_number: usize) -> Option<String> {
+    let index = line_number.checked_sub(1)?;
+    lines.get(index).map(|line| (*line).to_string())
 }
 
 fn format_canonical_tap_line(assertion: &TapAssertion) -> String {
@@ -851,6 +862,24 @@ done_testing();
         assert_eq!(json["state"], "errored");
         assert_eq!(json["message"]["message"], "boom");
         assert_eq!(json["duration"], 42);
+        Ok(())
+    }
+
+    #[test]
+    fn tap_parser_preserves_unhyphenated_description_labels()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runner = TestRunner::new(String::new(), String::new());
+
+        let results = runner.parse_tap_output(
+            "1..1\nok 1 named\n",
+            "",
+            true,
+            1,
+            "t/nodash.t",
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].test_id, "t/nodash.t::named");
         Ok(())
     }
 

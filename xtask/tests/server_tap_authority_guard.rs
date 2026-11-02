@@ -12,7 +12,12 @@ use std::{
 const SCAN_ROOTS: &[&str] =
     &["crates/perl-lsp-rs/src", "crates/perl-lsp-rs-core/src", "crates/perl-tdd-support/src"];
 
-const FORBIDDEN_SNIPPETS: &[&str] = &["starts_with(\"ok \")", "starts_with(\"not ok \")"];
+const FORBIDDEN_SNIPPETS: &[&str] = &[
+    "starts_with(\"ok \")",
+    "starts_with(\"not ok \")",
+    "strip_prefix(\"ok \")",
+    "strip_prefix(\"not ok \")",
+];
 
 #[test]
 fn server_sources_do_not_reintroduce_raw_tap_line_classifiers() {
