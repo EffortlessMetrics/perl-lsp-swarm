@@ -192,13 +192,13 @@ fn has_simple_lexical_declaration(
 }
 
 /// Whether a block's statements match the narrow syntax this generator can move.
-pub fn is_admissible_extract_block(node: &Node) -> bool {
+pub(crate) fn is_admissible_extract_block(node: &Node) -> bool {
     admissible_block(node, true)
 }
 
 /// Whether a standalone top-level block only contains side-effect statements
 /// this basic extract-function path can move without capture analysis.
-pub fn is_admissible_standalone_extract_block(node: &Node) -> bool {
+pub(crate) fn is_admissible_standalone_extract_block(node: &Node) -> bool {
     standalone_admissible_block(node, true)
 }
 
