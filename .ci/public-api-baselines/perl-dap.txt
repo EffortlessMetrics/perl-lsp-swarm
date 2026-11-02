@@ -3294,6 +3294,7 @@ pub perl_dap::security::launch_authority::LaunchAuthorityError::AmbiguousAuthori
 pub perl_dap::security::launch_authority::LaunchAuthorityError::DuplicateTrustedRoot
 pub perl_dap::security::launch_authority::LaunchAuthorityError::DuplicateTrustedRoot::path: std::path::PathBuf
 pub perl_dap::security::launch_authority::LaunchAuthorityError::InvalidAcknowledgement(alloc::string::String)
+pub perl_dap::security::launch_authority::LaunchAuthorityError::LaunchExecution(perl_dap::security::launch_execution::LaunchExecutionError)
 pub perl_dap::security::launch_authority::LaunchAuthorityError::NoAuthorityConfigured
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
@@ -3308,6 +3309,8 @@ pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotFo
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootSymlink
 pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootSymlink::path: std::path::PathBuf
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::from(source: perl_dap::security::launch_execution::LaunchExecutionError) -> perl_dap::security::launch_authority::LaunchAuthorityError
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::launch_authority::LaunchAuthorityMode
@@ -3325,6 +3328,7 @@ pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::clone(&self)
 pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthoritySource) -> bool
 pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::security::launch_authority::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::admit_launch_execution(&self, launch_args: &serde_json::value::Value, requested_interpreter: &str, env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<perl_dap::security::launch_execution::AdmittedLaunchExecution, alloc::string::String>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::admits_launch_path(&self, program: &std::path::Path) -> core::result::Result<(), alloc::string::String>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::begin_session(&mut self) -> u64
 pub fn perl_dap::security::launch_authority::LaunchAuthority::identity(&self) -> &str
@@ -3350,11 +3354,19 @@ pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::eq(&self, o
 pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub perl_dap::security::launch_authority::LaunchAuthorityStartup::allow_unbounded: core::option::Option<perl_dap::security::launch_authority::UnboundedAcknowledgement>
+pub perl_dap::security::launch_authority::LaunchAuthorityStartup::execution: perl_dap::security::launch_authority::LaunchExecutionStartup
 pub perl_dap::security::launch_authority::LaunchAuthorityStartup::trusted_roots: alloc::vec::Vec<std::path::PathBuf>
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> bool
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::default() -> perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_authority::LaunchExecutionStartup
+pub perl_dap::security::launch_authority::LaunchExecutionStartup::admitted_interpreters: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::security::launch_authority::LaunchExecutionStartup::allow_launch_code_loading_env: bool
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchExecutionStartup
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchExecutionStartup) -> bool
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::default() -> perl_dap::security::launch_authority::LaunchExecutionStartup
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::security::launch_authority::TrustedRoot
 pub fn perl_dap::security::launch_authority::TrustedRoot::canonical(&self) -> &std::path::Path
 pub fn perl_dap::security::launch_authority::TrustedRoot::identity(&self) -> &str
@@ -3368,11 +3380,41 @@ pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::new(sourc
 pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::clone(&self) -> perl_dap::security::launch_authority::UnboundedAcknowledgement
 pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::eq(&self, other: &perl_dap::security::launch_authority::UnboundedAcknowledgement) -> bool
 pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_dap::security::launch_execution
+pub enum perl_dap::security::launch_execution::LaunchExecutionError
+pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterInvalid
+pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterInvalid::path: std::path::PathBuf
+pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterNotFound
+pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterNotFound::path: std::path::PathBuf
+pub perl_dap::security::launch_execution::LaunchExecutionError::NoAdmittedInterpreter
+pub fn perl_dap::security::launch_execution::LaunchExecutionError::eq(&self, other: &perl_dap::security::launch_execution::LaunchExecutionError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::from(source: perl_dap::security::launch_execution::LaunchExecutionError) -> perl_dap::security::launch_authority::LaunchAuthorityError
+pub fn perl_dap::security::launch_execution::LaunchExecutionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::launch_execution::LaunchExecutionError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_execution::AdmittedLaunchExecution
+pub perl_dap::security::launch_execution::AdmittedLaunchExecution::allow_launch_code_loading_env: bool
+pub perl_dap::security::launch_execution::AdmittedLaunchExecution::env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub perl_dap::security::launch_execution::AdmittedLaunchExecution::perl_binary: std::path::PathBuf
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::build_spawn_oracle(&self, cwd: std::path::PathBuf) -> perl_lsp_rs_core::config::perl_oracle_env::PerlOracleEnv
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::clone(&self) -> perl_dap::security::launch_execution::AdmittedLaunchExecution
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::eq(&self, other: &perl_dap::security::launch_execution::AdmittedLaunchExecution) -> bool
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_execution::LaunchExecutionPolicy
+pub perl_dap::security::launch_execution::LaunchExecutionPolicy::admitted_interpreter_paths: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::security::launch_execution::LaunchExecutionPolicy::allow_launch_code_loading_env: bool
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::admit_launch(&self, launch_args: &serde_json::value::Value, requested_interpreter: &str, env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, trusted_roots: &[perl_dap::security::launch_authority::TrustedRoot]) -> core::result::Result<perl_dap::security::launch_execution::AdmittedLaunchExecution, alloc::string::String>
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::resolve(startup: &perl_dap::security::launch_authority::LaunchExecutionStartup, _trusted_roots: &[perl_dap::security::launch_authority::TrustedRoot]) -> core::result::Result<perl_dap::security::launch_execution::LaunchExecutionPolicy, perl_dap::security::launch_execution::LaunchExecutionError>
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::clone(&self) -> perl_dap::security::launch_execution::LaunchExecutionPolicy
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::eq(&self, other: &perl_dap::security::launch_execution::LaunchExecutionPolicy) -> bool
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::launch_execution::admit_launch_without_execution_policy(requested_interpreter: &str, launch_args: &serde_json::value::Value, env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<perl_dap::security::launch_execution::AdmittedLaunchExecution, alloc::string::String>
+pub fn perl_dap::security::launch_execution::mode_requires_execution_policy(mode: perl_dap::security::launch_authority::LaunchAuthorityMode) -> bool
 pub enum perl_dap::security::LaunchAuthorityError
 pub perl_dap::security::LaunchAuthorityError::AmbiguousAuthorityMode
 pub perl_dap::security::LaunchAuthorityError::DuplicateTrustedRoot
 pub perl_dap::security::LaunchAuthorityError::DuplicateTrustedRoot::path: std::path::PathBuf
 pub perl_dap::security::LaunchAuthorityError::InvalidAcknowledgement(alloc::string::String)
+pub perl_dap::security::LaunchAuthorityError::LaunchExecution(perl_dap::security::launch_execution::LaunchExecutionError)
 pub perl_dap::security::LaunchAuthorityError::NoAuthorityConfigured
 pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict
 pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
@@ -3387,6 +3429,8 @@ pub perl_dap::security::LaunchAuthorityError::TrustedRootNotFound::path: std::pa
 pub perl_dap::security::LaunchAuthorityError::TrustedRootSymlink
 pub perl_dap::security::LaunchAuthorityError::TrustedRootSymlink::path: std::path::PathBuf
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::from(source: perl_dap::security::launch_execution::LaunchExecutionError) -> perl_dap::security::launch_authority::LaunchAuthorityError
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::LaunchAuthorityMode
@@ -3403,6 +3447,16 @@ pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::label(self) 
 pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthoritySource
 pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthoritySource) -> bool
 pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::security::LaunchExecutionError
+pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterInvalid
+pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterInvalid::path: std::path::PathBuf
+pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterNotFound
+pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterNotFound::path: std::path::PathBuf
+pub perl_dap::security::LaunchExecutionError::NoAdmittedInterpreter
+pub fn perl_dap::security::launch_execution::LaunchExecutionError::eq(&self, other: &perl_dap::security::launch_execution::LaunchExecutionError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::from(source: perl_dap::security::launch_execution::LaunchExecutionError) -> perl_dap::security::launch_authority::LaunchAuthorityError
+pub fn perl_dap::security::launch_execution::LaunchExecutionError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::launch_execution::LaunchExecutionError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::SecurityError
 pub perl_dap::security::SecurityError::ExcessiveTimeout(u32)
 pub perl_dap::security::SecurityError::InvalidExpression
@@ -3415,7 +3469,16 @@ pub fn perl_dap::security::SecurityError::from(error: perl_parser_core::syntax::
 pub fn perl_dap::security::SecurityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::SecurityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::SecurityError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub struct perl_dap::security::AdmittedLaunchExecution
+pub perl_dap::security::AdmittedLaunchExecution::allow_launch_code_loading_env: bool
+pub perl_dap::security::AdmittedLaunchExecution::env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
+pub perl_dap::security::AdmittedLaunchExecution::perl_binary: std::path::PathBuf
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::build_spawn_oracle(&self, cwd: std::path::PathBuf) -> perl_lsp_rs_core::config::perl_oracle_env::PerlOracleEnv
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::clone(&self) -> perl_dap::security::launch_execution::AdmittedLaunchExecution
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::eq(&self, other: &perl_dap::security::launch_execution::AdmittedLaunchExecution) -> bool
+pub fn perl_dap::security::launch_execution::AdmittedLaunchExecution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::security::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::admit_launch_execution(&self, launch_args: &serde_json::value::Value, requested_interpreter: &str, env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<perl_dap::security::launch_execution::AdmittedLaunchExecution, alloc::string::String>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::admits_launch_path(&self, program: &std::path::Path) -> core::result::Result<(), alloc::string::String>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::begin_session(&mut self) -> u64
 pub fn perl_dap::security::launch_authority::LaunchAuthority::identity(&self) -> &str
@@ -3441,11 +3504,27 @@ pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::eq(&self, o
 pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::security::LaunchAuthorityStartup
 pub perl_dap::security::LaunchAuthorityStartup::allow_unbounded: core::option::Option<perl_dap::security::launch_authority::UnboundedAcknowledgement>
+pub perl_dap::security::LaunchAuthorityStartup::execution: perl_dap::security::launch_authority::LaunchExecutionStartup
 pub perl_dap::security::LaunchAuthorityStartup::trusted_roots: alloc::vec::Vec<std::path::PathBuf>
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> bool
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::default() -> perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::LaunchExecutionPolicy
+pub perl_dap::security::LaunchExecutionPolicy::admitted_interpreter_paths: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::security::LaunchExecutionPolicy::allow_launch_code_loading_env: bool
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::admit_launch(&self, launch_args: &serde_json::value::Value, requested_interpreter: &str, env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, trusted_roots: &[perl_dap::security::launch_authority::TrustedRoot]) -> core::result::Result<perl_dap::security::launch_execution::AdmittedLaunchExecution, alloc::string::String>
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::resolve(startup: &perl_dap::security::launch_authority::LaunchExecutionStartup, _trusted_roots: &[perl_dap::security::launch_authority::TrustedRoot]) -> core::result::Result<perl_dap::security::launch_execution::LaunchExecutionPolicy, perl_dap::security::launch_execution::LaunchExecutionError>
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::clone(&self) -> perl_dap::security::launch_execution::LaunchExecutionPolicy
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::eq(&self, other: &perl_dap::security::launch_execution::LaunchExecutionPolicy) -> bool
+pub fn perl_dap::security::launch_execution::LaunchExecutionPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::LaunchExecutionStartup
+pub perl_dap::security::LaunchExecutionStartup::admitted_interpreters: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::security::LaunchExecutionStartup::allow_launch_code_loading_env: bool
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchExecutionStartup
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchExecutionStartup) -> bool
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::default() -> perl_dap::security::launch_authority::LaunchExecutionStartup
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::security::TrustedRoot
 pub fn perl_dap::security::launch_authority::TrustedRoot::canonical(&self) -> &std::path::Path
 pub fn perl_dap::security::launch_authority::TrustedRoot::identity(&self) -> &str
@@ -4000,6 +4079,7 @@ pub perl_dap::LaunchAuthorityError::AmbiguousAuthorityMode
 pub perl_dap::LaunchAuthorityError::DuplicateTrustedRoot
 pub perl_dap::LaunchAuthorityError::DuplicateTrustedRoot::path: std::path::PathBuf
 pub perl_dap::LaunchAuthorityError::InvalidAcknowledgement(alloc::string::String)
+pub perl_dap::LaunchAuthorityError::LaunchExecution(perl_dap::security::launch_execution::LaunchExecutionError)
 pub perl_dap::LaunchAuthorityError::NoAuthorityConfigured
 pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict
 pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
@@ -4014,6 +4094,8 @@ pub perl_dap::LaunchAuthorityError::TrustedRootNotFound::path: std::path::PathBu
 pub perl_dap::LaunchAuthorityError::TrustedRootSymlink
 pub perl_dap::LaunchAuthorityError::TrustedRootSymlink::path: std::path::PathBuf
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::from(source: perl_dap::security::launch_execution::LaunchExecutionError) -> perl_dap::security::launch_authority::LaunchAuthorityError
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::LaunchAuthorityMode
@@ -4388,6 +4470,7 @@ pub fn perl_dap::protocol::InitializeRequestArguments::fmt(&self, f: &mut core::
 pub fn perl_dap::protocol::InitializeRequestArguments::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::InitializeRequestArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_dap::protocol::InitializeRequestArguments, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::admit_launch_execution(&self, launch_args: &serde_json::value::Value, requested_interpreter: &str, env_overrides: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<perl_dap::security::launch_execution::AdmittedLaunchExecution, alloc::string::String>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::admits_launch_path(&self, program: &std::path::Path) -> core::result::Result<(), alloc::string::String>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::begin_session(&mut self) -> u64
 pub fn perl_dap::security::launch_authority::LaunchAuthority::identity(&self) -> &str
@@ -4413,6 +4496,7 @@ pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::eq(&self, o
 pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::LaunchAuthorityStartup
 pub perl_dap::LaunchAuthorityStartup::allow_unbounded: core::option::Option<perl_dap::security::launch_authority::UnboundedAcknowledgement>
+pub perl_dap::LaunchAuthorityStartup::execution: perl_dap::security::launch_authority::LaunchExecutionStartup
 pub perl_dap::LaunchAuthorityStartup::trusted_roots: alloc::vec::Vec<std::path::PathBuf>
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> bool
@@ -4431,6 +4515,13 @@ pub fn perl_dap::config::LaunchConfiguration::clone(&self) -> perl_dap::config::
 pub fn perl_dap::config::LaunchConfiguration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::config::LaunchConfiguration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::config::LaunchConfiguration::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_dap::config::LaunchConfiguration, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::LaunchExecutionStartup
+pub perl_dap::LaunchExecutionStartup::admitted_interpreters: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::LaunchExecutionStartup::allow_launch_code_loading_env: bool
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchExecutionStartup
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchExecutionStartup) -> bool
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::default() -> perl_dap::security::launch_authority::LaunchExecutionStartup
+pub fn perl_dap::security::launch_authority::LaunchExecutionStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::LaunchRequestArguments
 pub perl_dap::LaunchRequestArguments::args: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub perl_dap::LaunchRequestArguments::cwd: core::option::Option<alloc::string::String>

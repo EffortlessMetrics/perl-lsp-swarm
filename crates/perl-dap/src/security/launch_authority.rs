@@ -666,6 +666,9 @@ mod tests {
         LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthoritySource,
         LaunchAuthorityStartup, UnboundedAcknowledgement,
     };
+    use crate::security::launch_execution::{LaunchExecutionError, LaunchExecutionPolicy};
+    use crate::security::LaunchExecutionStartup;
+    use perl_lsp_rs_core::config::{PerlToolchainProfile, WorkspaceConfig};
     use std::path::{Path, PathBuf};
 
     #[cfg(windows)]
@@ -730,6 +733,21 @@ mod tests {
         let error = LaunchAuthority::resolve(&startup).unwrap_err();
         assert_eq!(error, LaunchAuthorityError::AmbiguousAuthorityMode);
         cleanup(&root);
+    }
+
+    /// Exact error variant when workspace-bound execution policy cannot admit
+    /// any interpreter (#14601 ripr seam at `launch_execution.rs:67`).
+    #[test]
+    fn resolve_exact_error_variant() {
+        if PerlToolchainProfile::resolve(&WorkspaceConfig::default()).is_some() {
+            return;
+        }
+        let err = LaunchExecutionPolicy::resolve(&LaunchExecutionStartup::default(), &[])
+            .expect_err("expected the exact error variant");
+        assert!(
+            matches!(err, LaunchExecutionError::NoAdmittedInterpreter),
+            "unexpected variant: {err:?}"
+        );
     }
 
     #[test]

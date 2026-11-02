@@ -6682,6 +6682,45 @@ mod tests {
         );
     }
 
+    /// Exact spawn error variant when `perl -d` cannot start the interpreter
+    /// (#14601 ripr seam at `launch_debugger` → `format_perl_spawn_error`).
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn launch_debugger_exact_error_variant() -> Result<(), String> {
+        use std::fs;
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
+        let script = dir.path().join("script.pl");
+        let mut file = fs::File::create(&script).map_err(|error| format!("create script: {error}"))?;
+        writeln!(file, "1;").map_err(|error| format!("write script: {error}"))?;
+        let missing_perl = dir.path().join("perl");
+        let missing_perl = missing_perl
+            .to_str()
+            .ok_or_else(|| "missing interpreter path is not UTF-8".to_string())?;
+        let program = script
+            .to_str()
+            .ok_or_else(|| "script path is not UTF-8".to_string())?;
+        let expected = format_perl_spawn_error(
+            missing_perl,
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+
+        let mut adapter = DebugAdapter::new();
+        let err = adapter
+            .launch_debugger(
+                program,
+                &admitted_for_tests(missing_perl, HashMap::new()),
+                Vec::new(),
+                false,
+                Some(dir.path().to_path_buf()),
+                0,
+            )
+            .expect_err("expected the exact error variant");
+        assert_eq!(err, expected, "spawn failure must surface format_perl_spawn_error verbatim");
+        Ok(())
+    }
+
     /// Verify that `detect_perl_info()` runs without panicking.
     ///
     /// On systems with Perl installed this returns a "Found Perl at …" string.
