@@ -3,6 +3,7 @@
 use crate::LspEvent;
 use crate::WaitEnd;
 use crate::client::EventSource;
+use crate::observation::{CapturedMessage, Inbox, ServerMessageCursor};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -55,6 +56,79 @@ impl DiagnosticsTracker {
                 matches!(event, LspEvent::Diagnostics { uri: event_uri, .. } if event_uri == uri)
             })
             .count()
+    }
+
+    /// Return the newest diagnostics payload after `cursor` among captured events
+    /// for `uri`.
+    pub fn latest_for_uri_after_cursor(
+        captured: &[CapturedMessage],
+        uri: &str,
+    ) -> Option<Vec<Value>> {
+        captured.iter().rev().find_map(|message| Self::diagnostics_from_raw(&message.value, uri))
+    }
+
+    fn diagnostics_from_raw(message: &Value, uri: &str) -> Option<Vec<Value>> {
+        let params = message.get("params")?;
+        (message.get("method")?.as_str()? == "textDocument/publishDiagnostics"
+            && params.get("uri")?.as_str()? == uri)
+            .then(|| {
+                params
+                    .get("diagnostics")
+                    .and_then(|diagnostics| diagnostics.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+    }
+
+    /// Wait until at least one diagnostics payload strictly after `cursor` is
+    /// available for `uri`.
+    pub fn wait_for_uri_after_cursor(
+        inbox: &Inbox,
+        uri: &str,
+        cursor: &ServerMessageCursor,
+        timeout: Duration,
+    ) -> Result<Vec<Value>, WaitEnd> {
+        inbox.wait_for_events_after(cursor, timeout, |captured| {
+            Self::latest_for_uri_after_cursor(captured, uri)
+        })
+    }
+
+    /// Return the first diagnostics payload published for `uri` with
+    /// `expected_version`, considering only captured events strictly after
+    /// `cursor`.
+    pub fn first_for_uri_after_cursor_and_version(
+        captured: &[CapturedMessage],
+        uri: &str,
+        expected_version: i64,
+    ) -> Option<Vec<Value>> {
+        captured.iter().find_map(|message| {
+            let params = message.value.get("params")?;
+            (message.value.get("method")?.as_str()? == "textDocument/publishDiagnostics"
+                && params.get("uri")?.as_str()? == uri
+                && params.get("version").and_then(|version| version.as_i64())
+                    == Some(expected_version))
+            .then(|| {
+                params
+                    .get("diagnostics")
+                    .and_then(|diagnostics| diagnostics.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+        })
+    }
+
+    /// Wait until a diagnostics publication for `uri` carrying
+    /// `expected_version` arrives strictly after `cursor`.
+    pub fn wait_for_uri_after_cursor_and_version(
+        inbox: &Inbox,
+        uri: &str,
+        cursor: &ServerMessageCursor,
+        expected_version: i64,
+        timeout: Duration,
+    ) -> Result<Vec<Value>, WaitEnd> {
+        inbox.wait_for_events_after(cursor, timeout, |captured| {
+            Self::first_for_uri_after_cursor_and_version(captured, uri, expected_version)
+        })
     }
 
     /// Return the newest diagnostics payload after `already_seen` matching
