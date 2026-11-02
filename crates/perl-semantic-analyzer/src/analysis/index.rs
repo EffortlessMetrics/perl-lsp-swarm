@@ -285,9 +285,9 @@ mod tests {
 
     #[test]
     fn quoted_require_path_is_indexed_as_module_name() -> Result<(), String> {
-        let index = WorkspaceIndex::new();
-        index.index_file_str("file:///quoted.pl", "require \"Foo/Bar.pm\";\n1;\n")?;
-        let deps = index.file_dependencies("file:///quoted.pl");
+        // extract_dependencies, not index_file_str: the latter is a #11301
+        // compatibility API counted against the source-commit ledger.
+        let deps = WorkspaceIndex::extract_dependencies("require \"Foo/Bar.pm\";\n1;\n")?;
         assert!(
             deps.contains("Foo::Bar"),
             "quoted require must be lookupable as Foo::Bar; deps: {deps:?}"
@@ -301,9 +301,7 @@ mod tests {
 
     #[test]
     fn bare_require_module_is_indexed_as_module_name() -> Result<(), String> {
-        let index = WorkspaceIndex::new();
-        index.index_file_str("file:///bare.pl", "require Foo::Bar;\n1;\n")?;
-        let deps = index.file_dependencies("file:///bare.pl");
+        let deps = WorkspaceIndex::extract_dependencies("require Foo::Bar;\n1;\n")?;
         assert!(deps.contains("Foo::Bar"), "bare require must stay Foo::Bar; deps: {deps:?}");
         Ok(())
     }
