@@ -20,7 +20,7 @@ fn index_temp_source(label: &str, rel: &str, source: &str) -> Result<(WorkspaceI
         .map_err(|()| format!("fixture path cannot become file URI: {}", path.display()))?;
     let uri_string = uri.to_string();
     let index = WorkspaceIndex::new();
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     Ok((index, uri_string))
 }
 
