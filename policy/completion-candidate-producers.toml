@@ -188,7 +188,16 @@ outcome_owner = "#10230"
 # change touched the scanned `completion/variables.rs` and
 # `completion/request/dispatch.rs`; the existing producer rows, their
 # identity/evidence/completeness ceilings and migration owners are unchanged.
-source_digest = "sha256:2f808f4cd3caa5d4f4ed562efc572cd888651c7c8df3fb63aae15fb635502bd6"
+# Re-anchored 2026-11-02 (#18723): the clippy repair of
+# `completion/completion/import_map.rs` — the dead `extract_import_map` removed
+# and both `needless_return` sites in `merge_spec_symbols` removed — changes that
+# scanned file's shipped surface. The prior anchor `sha256:2f808f4c…` was itself
+# computed over a 42-file surface that still counted
+# `completion/import_map/symbols.rs`, which #18684 deleted; the tree scans 41
+# files, so that digest did not describe the tree either. The 60 producer rows,
+# their identity/evidence/completeness ceilings, routes, delegations and
+# migration owners are unchanged.
+source_digest = "sha256:7c25cb9731c0b58b14a24e0de9f2b6b70d71672f37c1f4b16c445fa3be48a1b8"
 
 [[delegations]]
 module = "dancer2"

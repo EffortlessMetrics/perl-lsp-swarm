@@ -15,12 +15,9 @@ use used_modules::is_importable_module;
 ///
 /// Only uppercase-starting module names are included (skips pragmas like
 /// `strict`, `warnings`, `feature`, `constant`, `utf8`, `lib`, `parent`, `base`).
-pub(super) fn extract_import_map(ast: &Node) -> ImportMap {
-    extract_import_map_with_source(ast, None)
-}
-
-/// Same as [`extract_import_map`], but passes buffer source for framework import
-/// normalization that requires source text.
+///
+/// Passes buffer source for framework import normalization that requires source
+/// text; `None` is used where no source is available.
 pub(super) fn extract_import_map_with_source(ast: &Node, source: Option<&str>) -> ImportMap {
     let hir = lower_ast(ast);
     let specs = extract_import_specs_from_hir(&hir, ast, FileId(0), source);
@@ -54,9 +51,8 @@ fn merge_spec_symbols(module: &str, symbols: &ImportSymbols, map: &mut ImportMap
     match symbols {
         ImportSymbols::None => {
             map.entry(module.to_string()).or_default();
-            return;
         }
-        ImportSymbols::Default | ImportSymbols::Dynamic => return,
+        ImportSymbols::Default | ImportSymbols::Dynamic => {}
         ImportSymbols::Explicit(explicit) => {
             if explicit.is_empty() {
                 map.entry(module.to_string()).or_default();
@@ -189,6 +185,15 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_test_must::{must, must_some};
+
+    /// Source-less import extraction, kept local to the test module.
+    ///
+    /// The shipped entry point is `extract_import_map_with_source`; production
+    /// never calls the no-source form, so this shim lives with the tests that
+    /// exercise it rather than in the module's public surface.
+    fn extract_import_map(ast: &Node) -> ImportMap {
+        extract_import_map_with_source(ast, None)
+    }
 
     /// Regression test for #1700: an unresolvable export tag must not silently
     /// discard the explicit symbols collected alongside it.
