@@ -1,11 +1,14 @@
 #![cfg(feature = "incremental")]
 //! Fresh vs incremental `ParseSnapshot` parity across edit transitions (#7008).
 //!
-//! Expected terminal class is fixture-named and checked against independent
-//! structural evidence (`recovered_count`, `terminated_early`, blocking
-//! diagnostics, `ParseError::Cancelled`). Production `ParseSnapshot::disposition`
-//! is then compared to that named class; the test does not ask
-//! `ParseSnapshot::from_output` what the expected class should be.
+//! Expected terminal class is fixture-named on the initial snapshot and on every
+//! `Step::Apply`, then checked against independent structural evidence
+//! (`recovered_count`, `terminated_early`, blocking diagnostics,
+//! `ParseError::Cancelled`). Production `ParseSnapshot::disposition` is then
+//! compared to that named class; the test does not ask
+//! `ParseSnapshot::from_output` what the expected class should be. Intermediate
+//! edits are named too, so a shared-parser Clean/Clean miss of recovery cannot
+//! pass a recovered-in-the-middle sequence.
 //!
 //! Cancellation, budget exhaustion, and recovered→catastrophic remain named
 //! unimplemented boundaries until their production injection owners land.
@@ -19,6 +22,8 @@ use perl_parser::{ParseError, ParseOutput, Parser};
 
 type TestResult = Result<(), String>;
 
+const MATRIX_TEST: &str = "recovery_transition_matrix_matches_fresh_parse";
+
 #[derive(Debug, Clone, Copy)]
 enum Needle {
     Replace { old: &'static str, new: &'static str },
@@ -30,8 +35,12 @@ enum Needle {
 
 #[derive(Debug, Clone, Copy)]
 enum Step {
-    Apply(&'static [Needle]),
+    Apply { needles: &'static [Needle], expected: ParseTerminalDisposition },
     InvalidOverlap { start: usize, old_end: usize },
+}
+
+const fn apply(needles: &'static [Needle], expected: ParseTerminalDisposition) -> Step {
+    Step::Apply { needles, expected }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +49,6 @@ struct Transition {
     initial: &'static str,
     expected_initial: ParseTerminalDisposition,
     steps: &'static [Step],
-    expected_final: ParseTerminalDisposition,
 }
 
 fn splice(source: &str, start: usize, old_end: usize, new_text: &str) -> Result<Edit, String> {
@@ -212,9 +220,10 @@ impl ExactOffset for perl_parser::ResolvedParseDiagnosticAnchor {
 }
 
 fn first_divergence(
+    test: &str,
     case: &str,
     source: &str,
-    named: Option<ParseTerminalDisposition>,
+    named: ParseTerminalDisposition,
     incremental: &ParseSnapshot,
     returned: &ParseSnapshot,
 ) -> Result<(), String> {
@@ -222,81 +231,85 @@ fn first_divergence(
     let fresh_out = fresh.parse_output();
     let incr_out = incremental.parse_output();
     let returned_out = returned.parse_output();
-    let named_for_receipt = named.unwrap_or(incremental.disposition());
 
     incremental.validate_against(source).map_err(|error| {
-        receipt(case, source, named_for_receipt, "snapshot-validate", format!("{error}"))
+        receipt(test, case, source, named, "snapshot-validate", format!("{error}"))
     })?;
     returned.validate_against(source).map_err(|error| {
-        receipt(case, source, named_for_receipt, "returned-validate", format!("{error}"))
+        receipt(test, case, source, named, "returned-validate", format!("{error}"))
     })?;
 
-    if let Some(named) = named {
-        if !structural_matches_named(incr_out, named) {
-            return Err(receipt(
-                case,
-                source,
-                named,
-                "named-disposition-vs-structure",
-                format!(
-                    "incremental recovered_count={}, terminated_early={}, diagnostics={:?}",
-                    incr_out.recovered_count,
-                    incr_out.terminated_early(),
-                    incr_out.diagnostics
-                ),
-            ));
-        }
-        if incremental.disposition() != named {
-            return Err(receipt(
-                case,
-                source,
-                named,
-                "named-disposition-vs-production",
-                format!("{:?}", incremental.disposition()),
-            ));
-        }
-        if fresh.disposition() != named {
-            return Err(receipt(
-                case,
-                source,
-                named,
-                "fresh-disposition",
-                format!("{:?}", fresh.disposition()),
-            ));
-        }
+    if !structural_matches_named(incr_out, named) {
+        return Err(receipt(
+            test,
+            case,
+            source,
+            named,
+            "named-disposition-vs-structure",
+            format!(
+                "incremental recovered_count={}, terminated_early={}, diagnostics={:?}",
+                incr_out.recovered_count,
+                incr_out.terminated_early(),
+                incr_out.diagnostics
+            ),
+        ));
+    }
+    if incremental.disposition() != named {
+        return Err(receipt(
+            test,
+            case,
+            source,
+            named,
+            "named-disposition-vs-production",
+            format!("{:?}", incremental.disposition()),
+        ));
+    }
+    if fresh.disposition() != named {
+        return Err(receipt(
+            test,
+            case,
+            source,
+            named,
+            "fresh-disposition",
+            format!("{:?}", fresh.disposition()),
+        ));
     }
     if incremental.disposition() != fresh.disposition() {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "disposition-parity",
             format!("{:?} vs {:?}", incremental.disposition(), fresh.disposition()),
         ));
     }
     if incr_out.stop_cause() != fresh_out.stop_cause() {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "stop-cause",
             format!("{:?} vs {:?}", incr_out.stop_cause(), fresh_out.stop_cause()),
         ));
     }
     if incr_out.recovered_count != fresh_out.recovered_count {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "recovered-count",
             format!("{} vs {}", incr_out.recovered_count, fresh_out.recovered_count),
         ));
     }
     if diagnostic_plane(incr_out, source) != diagnostic_plane(fresh_out, source) {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "diagnostic-order-and-ranges",
             format!(
                 "{:?} vs {:?}",
@@ -307,18 +320,20 @@ fn first_divergence(
     }
     if incr_out.diagnostics != fresh_out.diagnostics {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "typed-diagnostics",
             format!("{:?} vs {:?}", incr_out.diagnostics, fresh_out.diagnostics),
         ));
     }
     if recovery_topology(&incr_out.ast) != recovery_topology(&fresh_out.ast) {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "recovery-topology",
             format!(
                 "{:?} vs {:?}",
@@ -329,9 +344,10 @@ fn first_divergence(
     }
     if incr_out.ast != fresh_out.ast {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "ast-payload-and-spans",
             "AST kind/payload/span mismatch".to_string(),
         ));
@@ -381,9 +397,10 @@ fn first_divergence(
     for (plane, actual, expected) in budget_planes {
         if actual != expected {
             return Err(receipt(
+                test,
                 case,
                 source,
-                named_for_receipt,
+                named,
                 plane,
                 format!("{actual} vs {expected}"),
             ));
@@ -394,9 +411,10 @@ fn first_divergence(
         || incremental.source_len() != source.len()
     {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "source-identity",
             format!(
                 "incremental len={} digest={:?}; fresh len={} digest={:?}",
@@ -416,9 +434,10 @@ fn first_divergence(
         || returned_out.stop_cause() != incr_out.stop_cause()
     {
         return Err(receipt(
+            test,
             case,
             source,
-            named_for_receipt,
+            named,
             "returned-vs-committed",
             "ReparseResult snapshot disagrees with IncrementalState".to_string(),
         ));
@@ -427,6 +446,7 @@ fn first_divergence(
 }
 
 fn receipt(
+    test: &str,
     case: &str,
     source: &str,
     named: ParseTerminalDisposition,
@@ -434,16 +454,17 @@ fn receipt(
     detail: String,
 ) -> String {
     format!(
-        "case={case}; named={named:?}; plane={plane}; source_len={}; detail={detail}; reproduce=cargo test -p perl-parser --features incremental --test incremental_recovery_transitions -- --exact {case}",
+        "test={test}; case={case}; named={named:?}; plane={plane}; source_len={}; detail={detail}; reproduce=cargo test -p perl-parser --features incremental --test incremental_recovery_transitions -- --exact {test}",
         source.len()
     )
 }
 
-fn run_transition(case: Transition) -> TestResult {
+fn run_transition(test: &str, case: Transition) -> TestResult {
     let mut state = IncrementalState::new(case.initial.to_string());
     let initial = state.snapshot();
     if !structural_matches_named(initial.parse_output(), case.expected_initial) {
         return Err(receipt(
+            test,
             case.name,
             case.initial,
             case.expected_initial,
@@ -457,6 +478,7 @@ fn run_transition(case: Transition) -> TestResult {
     }
     if initial.disposition() != case.expected_initial {
         return Err(receipt(
+            test,
             case.name,
             case.initial,
             case.expected_initial,
@@ -466,6 +488,7 @@ fn run_transition(case: Transition) -> TestResult {
     }
     initial.validate_against(state.source()).map_err(|error| {
         receipt(
+            test,
             case.name,
             case.initial,
             case.expected_initial,
@@ -475,9 +498,10 @@ fn run_transition(case: Transition) -> TestResult {
     })?;
 
     let mut expected_generation = state.generation();
+    let mut last_named = case.expected_initial;
     for (index, step) in case.steps.iter().enumerate() {
         match *step {
-            Step::Apply(needles) => {
+            Step::Apply { needles, expected } => {
                 let edits = needles
                     .iter()
                     .map(|needle| needle_to_edit(state.source(), *needle))
@@ -487,9 +511,10 @@ fn run_transition(case: Transition) -> TestResult {
                     .map_err(|error| format!("{} step {index}: {error}", case.name))?;
                 if state.source() != expected_source {
                     return Err(receipt(
+                        test,
                         case.name,
                         &expected_source,
-                        case.expected_final,
+                        expected,
                         "edit-application",
                         format!("state source diverged at step {index}"),
                     ));
@@ -499,39 +524,33 @@ fn run_transition(case: Transition) -> TestResult {
                     .ok_or_else(|| format!("{} generation exhausted", case.name))?;
                 if state.generation() != expected_generation {
                     return Err(receipt(
+                        test,
                         case.name,
                         state.source(),
-                        case.expected_final,
+                        expected,
                         "generation",
                         format!("{:?} vs {:?}", state.generation(), expected_generation),
                     ));
                 }
                 if result.snapshot.strategy() == ParseSnapshotStrategy::Fresh {
                     return Err(receipt(
+                        test,
                         case.name,
                         state.source(),
-                        case.expected_final,
+                        expected,
                         "strategy",
                         "mutating edit published Fresh".to_string(),
                     ));
                 }
-                let named = if case
-                    .steps
-                    .iter()
-                    .skip(index + 1)
-                    .all(|step| !matches!(step, Step::Apply(_)))
-                {
-                    Some(case.expected_final)
-                } else {
-                    None
-                };
                 first_divergence(
+                    test,
                     case.name,
                     state.source(),
-                    named,
+                    expected,
                     state.snapshot(),
                     &result.snapshot,
                 )?;
+                last_named = expected;
             }
             Step::InvalidOverlap { start, old_end } => {
                 let before_source = state.source().to_string();
@@ -545,6 +564,7 @@ fn run_transition(case: Transition) -> TestResult {
                 ];
                 if apply_edits(&mut state, &edits).is_ok() {
                     return Err(receipt(
+                        test,
                         case.name,
                         &before_source,
                         before_disposition,
@@ -560,6 +580,7 @@ fn run_transition(case: Transition) -> TestResult {
                     || state.parse_output().ast != before_output.ast
                 {
                     return Err(receipt(
+                        test,
                         case.name,
                         &before_source,
                         before_disposition,
@@ -571,13 +592,14 @@ fn run_transition(case: Transition) -> TestResult {
         }
     }
 
-    if case.steps.iter().any(|step| matches!(step, Step::Apply(_)))
-        && state.snapshot().disposition() != case.expected_final
+    if case.steps.iter().any(|step| matches!(step, Step::Apply { .. }))
+        && state.snapshot().disposition() != last_named
     {
         return Err(receipt(
+            test,
             case.name,
             state.source(),
-            case.expected_final,
+            last_named,
             "final-disposition",
             format!("{:?}", state.snapshot().disposition()),
         ));
@@ -590,192 +612,196 @@ const TRANSITIONS: &[Transition] = &[
         name: "clean_to_clean_literal_edit",
         initial: "my $x = 1; print 2;",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Replace { old: "1", new: "9" }])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(&[Needle::Replace { old: "1", new: "9" }], ParseTerminalDisposition::Clean)],
     },
     Transition {
         name: "clean_to_recovered_missing_operand",
         initial: "my $x = 1; print 2;",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: "1" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(&[Needle::Delete { text: "1" }], ParseTerminalDisposition::Recovered)],
     },
     Transition {
         name: "recovered_to_clean_insert_operand",
         initial: "my $x = ; print 2;",
         expected_initial: ParseTerminalDisposition::Recovered,
-        steps: &[Step::Apply(&[Needle::InsertBefore { needle: ";", text: "1" }])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(
+            &[Needle::InsertBefore { needle: ";", text: "1" }],
+            ParseTerminalDisposition::Clean,
+        )],
     },
     Transition {
         name: "recovered_to_recovered_prefix_range_shift",
         initial: "my $x = ; print 2;",
         expected_initial: ParseTerminalDisposition::Recovered,
-        steps: &[Step::Apply(&[Needle::Prefix { text: "  " }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(&[Needle::Prefix { text: "  " }], ParseTerminalDisposition::Recovered)],
     },
     Transition {
         name: "recovered_to_recovered_different_family",
         initial: "my $x = ; print 2;",
         expected_initial: ParseTerminalDisposition::Recovered,
-        steps: &[Step::Apply(&[Needle::Replace { old: "print 2;", new: "foo(1;" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(
+            &[Needle::Replace { old: "print 2;", new: "foo(1;" }],
+            ParseTerminalDisposition::Recovered,
+        )],
     },
     Transition {
         name: "recovered_to_catastrophic_unclosed_quote",
         initial: "my $x = ; print 2;",
         expected_initial: ParseTerminalDisposition::Recovered,
-        steps: &[Step::Apply(&[Needle::Replace { old: " = ;", new: " = \";" }])],
-        expected_final: ParseTerminalDisposition::Catastrophic,
+        steps: &[apply(
+            &[Needle::Replace { old: " = ;", new: " = \";" }],
+            ParseTerminalDisposition::Catastrophic,
+        )],
     },
     Transition {
         name: "edit_inside_recovery_site",
         initial: "my $x = ; print 2;",
         expected_initial: ParseTerminalDisposition::Recovered,
-        steps: &[Step::Apply(&[Needle::InsertBefore { needle: ";", text: " " }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(
+            &[Needle::InsertBefore { needle: ";", text: " " }],
+            ParseTerminalDisposition::Recovered,
+        )],
     },
     Transition {
         name: "clean_to_recovered_to_clean_sequence",
         initial: "my $x = 1; print 2;",
         expected_initial: ParseTerminalDisposition::Clean,
         steps: &[
-            Step::Apply(&[Needle::Delete { text: "1" }]),
-            Step::Apply(&[Needle::InsertBefore { needle: ";", text: "1" }]),
+            apply(&[Needle::Delete { text: "1" }], ParseTerminalDisposition::Recovered),
+            apply(
+                &[Needle::InsertBefore { needle: ";", text: "1" }],
+                ParseTerminalDisposition::Clean,
+            ),
         ],
-        expected_final: ParseTerminalDisposition::Clean,
     },
     Transition {
         name: "edit_undo_returns_to_original_bytes_new_generation",
         initial: "my $x = 1; print 2;",
         expected_initial: ParseTerminalDisposition::Clean,
         steps: &[
-            Step::Apply(&[Needle::Replace { old: "1", new: "42" }]),
-            Step::Apply(&[Needle::Replace { old: "42", new: "1" }]),
+            apply(&[Needle::Replace { old: "1", new: "42" }], ParseTerminalDisposition::Clean),
+            apply(&[Needle::Replace { old: "42", new: "1" }], ParseTerminalDisposition::Clean),
         ],
-        expected_final: ParseTerminalDisposition::Clean,
     },
     Transition {
         name: "atomic_batch_repairs_two_recoveries",
         initial: "my $x = ; my $y = ;",
         expected_initial: ParseTerminalDisposition::Recovered,
-        steps: &[Step::Apply(&[
-            Needle::InsertBeforeNth { needle: ";", index: 0, text: "1" },
-            Needle::InsertBeforeNth { needle: ";", index: 1, text: "2" },
-        ])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(
+            &[
+                Needle::InsertBeforeNth { needle: ";", index: 0, text: "1" },
+                Needle::InsertBeforeNth { needle: ";", index: 1, text: "2" },
+            ],
+            ParseTerminalDisposition::Clean,
+        )],
     },
     Transition {
         name: "atomic_batch_introduces_two_recoveries",
         initial: "my $x = 1; my $y = 2;",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: "1" }, Needle::Delete { text: "2" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(
+            &[Needle::Delete { text: "1" }, Needle::Delete { text: "2" }],
+            ParseTerminalDisposition::Recovered,
+        )],
     },
     Transition {
         name: "nested_block_clean_to_recovered",
         initial: "sub f { if (1) { my $x = 1; } }",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Replace { old: "my $x = 1", new: "my $x = " }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(
+            &[Needle::Replace { old: "my $x = 1", new: "my $x = " }],
+            ParseTerminalDisposition::Recovered,
+        )],
     },
     Transition {
         name: "quote_like_unclosed_q",
         initial: "my $x = q{ok};",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: "}" }])],
-        expected_final: ParseTerminalDisposition::Catastrophic,
+        steps: &[apply(&[Needle::Delete { text: "}" }], ParseTerminalDisposition::Catastrophic)],
     },
     Transition {
         name: "regex_unclosed_match",
         initial: "my $x = m/foo/;",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: "/" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(&[Needle::Delete { text: "/" }], ParseTerminalDisposition::Recovered)],
     },
     Transition {
         name: "qw_missing_closer",
         initial: "my @x = qw(a b);",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: ")" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(&[Needle::Delete { text: ")" }], ParseTerminalDisposition::Recovered)],
     },
     Transition {
         name: "signature_missing_parameter",
         initial: "sub f ($x) { 1 }",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: ")" }])],
-        expected_final: ParseTerminalDisposition::Catastrophic,
+        steps: &[apply(&[Needle::Delete { text: ")" }], ParseTerminalDisposition::Catastrophic)],
     },
     Transition {
         name: "unicode_identifier_clean_to_recovered",
         initial: "my $café = 1;",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: "1" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(&[Needle::Delete { text: "1" }], ParseTerminalDisposition::Recovered)],
     },
     Transition {
         name: "crlf_clean_to_recovered",
         initial: "my $x = 1;\r\nprint 2;\r\n",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: "1" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(&[Needle::Delete { text: "1" }], ParseTerminalDisposition::Recovered)],
     },
     Transition {
         name: "bare_cr_clean_to_clean",
         initial: "my $x = 1;\rprint 2;",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Replace { old: "2", new: "3" }])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(&[Needle::Replace { old: "2", new: "3" }], ParseTerminalDisposition::Clean)],
     },
     Transition {
         name: "bom_prefix_range_shift",
         initial: "my $x = ;",
         expected_initial: ParseTerminalDisposition::Recovered,
-        steps: &[Step::Apply(&[Needle::Prefix { text: "\u{FEFF}" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(
+            &[Needle::Prefix { text: "\u{FEFF}" }],
+            ParseTerminalDisposition::Recovered,
+        )],
     },
     Transition {
         name: "empty_to_clean",
         initial: "",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Prefix { text: "my $x = 1;" }])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(&[Needle::Prefix { text: "my $x = 1;" }], ParseTerminalDisposition::Clean)],
     },
     Transition {
         name: "whitespace_only_stays_clean",
         initial: " \n\t ",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Prefix { text: "\n" }])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(&[Needle::Prefix { text: "\n" }], ParseTerminalDisposition::Clean)],
     },
     Transition {
         name: "pod_then_statement_recovery",
         initial: "=pod\nignored\n=cut\nmy $x = 1;\n",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Delete { text: "1" }])],
-        expected_final: ParseTerminalDisposition::Recovered,
+        steps: &[apply(&[Needle::Delete { text: "1" }], ParseTerminalDisposition::Recovered)],
     },
     Transition {
         name: "data_section_clean_to_clean",
         initial: "my $x = 1;\n__DATA__\npayload\n",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Replace { old: "1", new: "2" }])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(&[Needle::Replace { old: "1", new: "2" }], ParseTerminalDisposition::Clean)],
     },
     Transition {
         name: "heredoc_terminator_edit",
         initial: "print <<EOF;\nhello\nEOF\n",
         expected_initial: ParseTerminalDisposition::Clean,
-        steps: &[Step::Apply(&[Needle::Replace { old: "hello", new: "world" }])],
-        expected_final: ParseTerminalDisposition::Clean,
+        steps: &[apply(
+            &[Needle::Replace { old: "hello", new: "world" }],
+            ParseTerminalDisposition::Clean,
+        )],
     },
     Transition {
         name: "invalid_overlap_preserves_recovered_snapshot",
         initial: "my $x = ; print 2;",
         expected_initial: ParseTerminalDisposition::Recovered,
         steps: &[Step::InvalidOverlap { start: 0, old_end: 4 }],
-        expected_final: ParseTerminalDisposition::Recovered,
     },
 ];
 
@@ -783,7 +809,7 @@ const TRANSITIONS: &[Transition] = &[
 fn recovery_transition_matrix_matches_fresh_parse() -> TestResult {
     let mut failures = Vec::new();
     for case in TRANSITIONS {
-        if let Err(error) = run_transition(*case) {
+        if let Err(error) = run_transition(MATRIX_TEST, *case) {
             failures.push(error);
         }
     }
@@ -802,8 +828,9 @@ fn atomic_batch_uses_old_generation_coordinates() -> TestResult {
     assert_eq!(state.source(), expected);
     first_divergence(
         "atomic_batch_uses_old_generation_coordinates",
+        "atomic_batch_uses_old_generation_coordinates",
         &expected,
-        Some(ParseTerminalDisposition::Recovered),
+        ParseTerminalDisposition::Recovered,
         state.snapshot(),
         &result.snapshot,
     )
@@ -825,8 +852,9 @@ fn oversized_multi_edit_batch_still_matches_fresh() -> TestResult {
     assert_eq!(result.snapshot.strategy(), ParseSnapshotStrategy::IncrementalFullFallback);
     first_divergence(
         "oversized_multi_edit_batch_still_matches_fresh",
+        "oversized_multi_edit_batch_still_matches_fresh",
         &expected,
-        Some(ParseTerminalDisposition::Clean),
+        ParseTerminalDisposition::Clean,
         state.snapshot(),
         &result.snapshot,
     )
@@ -859,8 +887,9 @@ fn prefix_edit_moves_recovery_diagnostic_range() -> TestResult {
     }
     first_divergence(
         "prefix_edit_moves_recovery_diagnostic_range",
+        "prefix_edit_moves_recovery_diagnostic_range",
         state.source(),
-        Some(ParseTerminalDisposition::Recovered),
+        ParseTerminalDisposition::Recovered,
         state.snapshot(),
         &result.snapshot,
     )
@@ -882,8 +911,9 @@ fn comparison_helper_rejects_cleared_diagnostics() -> TestResult {
     );
     match first_divergence(
         "comparison_helper_rejects_cleared_diagnostics",
+        "comparison_helper_rejects_cleared_diagnostics",
         source,
-        Some(ParseTerminalDisposition::Recovered),
+        ParseTerminalDisposition::Recovered,
         &incremental,
         &incremental,
     ) {
@@ -916,8 +946,9 @@ fn comparison_helper_rejects_reordered_diagnostics() -> TestResult {
     );
     match first_divergence(
         "comparison_helper_rejects_reordered_diagnostics",
+        "comparison_helper_rejects_reordered_diagnostics",
         source,
-        Some(ParseTerminalDisposition::Recovered),
+        ParseTerminalDisposition::Recovered,
         &incremental,
         &incremental,
     ) {
@@ -929,6 +960,57 @@ fn comparison_helper_rejects_reordered_diagnostics() -> TestResult {
         Err(err) => Err(format!("reordered diagnostics failed on the wrong plane: {err}")),
         Ok(()) => Err("reordered diagnostics must fail".to_string()),
     }
+}
+
+const WRONG_INTERMEDIATE: Transition = Transition {
+    name: "helper_wrong_intermediate_named_class",
+    initial: "my $x = 1; print 2;",
+    expected_initial: ParseTerminalDisposition::Clean,
+    steps: &[
+        apply(&[Needle::Delete { text: "1" }], ParseTerminalDisposition::Clean),
+        apply(&[Needle::InsertBefore { needle: ";", text: "1" }], ParseTerminalDisposition::Clean),
+    ],
+};
+
+#[test]
+fn multi_step_apply_rejects_wrong_intermediate_named_class() -> TestResult {
+    match run_transition("multi_step_apply_rejects_wrong_intermediate_named_class", WRONG_INTERMEDIATE) {
+        Err(err)
+            if err.contains("named-disposition")
+                && err.contains("helper_wrong_intermediate_named_class") =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(format!(
+            "wrong intermediate class failed on the wrong plane: {err}"
+        )),
+        Ok(()) => Err(
+            "a Clean name on a recovered intermediate step must fail; unnamed intermediates would pass"
+                .to_string(),
+        ),
+    }
+}
+
+#[test]
+fn matrix_failure_receipt_selects_the_rust_test() -> TestResult {
+    let msg = receipt(
+        MATRIX_TEST,
+        "clean_to_recovered_to_clean_sequence",
+        "my $x = ; print 2;",
+        ParseTerminalDisposition::Recovered,
+        "diagnostic-order-and-ranges",
+        "demo".to_string(),
+    );
+    if !msg.contains(&format!("--exact {MATRIX_TEST}")) {
+        return Err(format!("receipt must select the rust test: {msg}"));
+    }
+    if msg.contains("--exact clean_to_recovered_to_clean_sequence") {
+        return Err(format!("receipt selected the matrix row as a rust test: {msg}"));
+    }
+    if !msg.contains("case=clean_to_recovered_to_clean_sequence") {
+        return Err(format!("receipt dropped the matrix row name: {msg}"));
+    }
+    Ok(())
 }
 
 #[test]
