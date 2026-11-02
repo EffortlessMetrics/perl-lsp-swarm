@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 97,
-      "emitted": 97,
+      "considered": 98,
+      "emitted": 98,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -3181,33 +3181,6 @@
       "notes": "Compile workspace targets, example test modules, and wire-free parser profiles without running tests"
     },
     {
-      "surface_id": "gate:compiler_concept_ledger",
-      "class": "gate",
-      "class_authority": {
-        "kind": "derived",
-        "authority": ".ci/gate-policy.yaml",
-        "rule": "gate-policy-gates"
-      },
-      "semantic_authority": ".ci/gate-policy.yaml#compiler_concept_ledger",
-      "consumers": [],
-      "compile_profiles": [],
-      "registration": {
-        "state": "established",
-        "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = true"
-      },
-      "proof_references": [],
-      "publication": {
-        "state": "not_applicable",
-        "authority": ".ci/gate-policy.yaml"
-      },
-      "owner": "release/ci",
-      "promotion": {
-        "state": "not_evaluated"
-      },
-      "notes": "Validate contracts/compiler/perl_compiler_concepts.v1.toml and its generated status doc"
-    },
-    {
       "surface_id": "gate:compiler_ast_impact",
       "class": "gate",
       "class_authority": {
@@ -3233,6 +3206,33 @@
         "state": "not_evaluated"
       },
       "notes": "Validate contracts/compiler/ast_change_impact.v1.toml and its generated status doc (#5238)"
+    },
+    {
+      "surface_id": "gate:compiler_concept_ledger",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#compiler_concept_ledger",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate contracts/compiler/perl_compiler_concepts.v1.toml and its generated status doc"
     },
     {
       "surface_id": "gate:compiler_concept_proof",
