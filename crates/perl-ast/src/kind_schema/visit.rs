@@ -333,7 +333,9 @@ macro_rules! visit_kind_children {
 pub fn field_emission_counts(kind: &NodeKind) -> BTreeMap<&'static str, usize> {
     let mut counts = BTreeMap::new();
     macro_rules! emit {
-        ($field:expr, $_child:expr) => {{
+        ($field:expr, $child:expr) => {{
+            // Touch `$child` so shared `visit_kind_children!` bindings stay used under `-D warnings`.
+            let _ = &$child;
             let name = FieldId::name($field);
             *counts.entry(name).or_default() += 1;
         }};
