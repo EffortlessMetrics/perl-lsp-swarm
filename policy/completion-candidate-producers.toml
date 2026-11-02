@@ -190,7 +190,10 @@ outcome_owner = "#10230"
 # identity/evidence/completeness ceilings and migration owners are unchanged.
 # Re-anchored 2026-11-02 (#18731): clippy-only edits in scanned
 # `completion/import_map.rs` after #18684; producer rows unchanged.
-source_digest = "sha256:5eef7d56a246d92ae488492ef87e27b48df32773cd0b94f821f000205004155f"
+# Re-anchored 2026-11-02 (#2978): merge main through #18875 plus
+# `navigation.rs` semantic method-candidate goto-definition fallback; producer
+# rows unchanged.
+source_digest = "sha256:393918b93e6d55430a241d2663ed91d5b72ee4e35019cb08424232aa69943a7d"
 
 [[delegations]]
 module = "dancer2"
