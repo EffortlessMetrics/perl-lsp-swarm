@@ -646,14 +646,22 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
     fn occurrence_at(&self, file_id: FileId, byte_offset: u32) -> Option<OccurrenceFact> {
         let shard = self.shard_for_file(file_id)?;
 
-        // Find the anchor that encloses the byte offset.
-        let anchor = shard.anchors.iter().find(|a| {
-            a.file_id == file_id
-                && a.span_start_byte <= byte_offset
-                && byte_offset < a.span_end_byte
-        })?;
+        // Find the most specific anchor that encloses the byte offset. Parent
+        // expression anchors can overlap a nested variable anchor; choosing
+        // the first insertion-order match would stop on the parent occurrence
+        // even when the cursor is on the nested variable.
+        let anchor = shard
+            .anchors
+            .iter()
+            .filter(|a| {
+                a.file_id == file_id
+                    && a.span_start_byte <= byte_offset
+                    && byte_offset < a.span_end_byte
+            })
+            .min_by_key(|a| {
+                (a.span_end_byte.saturating_sub(a.span_start_byte), a.span_start_byte)
+            })?;
 
-        // Find an occurrence at this anchor.
         shard.occurrences.iter().find(|o| o.anchor_id == anchor.id).cloned()
     }
 
