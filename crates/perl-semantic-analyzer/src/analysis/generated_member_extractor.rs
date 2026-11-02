@@ -1,5 +1,5 @@
-//! Generated member extraction from Moo/Moose/Class::Tiny `has` declarations and
-//! `Class::Accessor` declarations.
+//! Generated member extraction from Moo/Moose/Class::Tiny `has` declarations,
+//! `Class::Accessor` declarations, and Object::Pad `field` traits.
 //!
 //! Leverages the existing [`ClassModelBuilder`] to parse `has` declarations,
 //! then maps each [`Attribute`] to one or more [`GeneratedMember`] entries
@@ -66,6 +66,10 @@ impl GeneratedMemberExtractor {
 
             if model.framework == Framework::DbixClass {
                 collect_dbix_class_members(model, pkg, &mut members);
+            }
+
+            if model.framework == Framework::ObjectPad {
+                collect_object_pad_field_members(model, pkg, &mut members);
             }
         }
 
@@ -163,6 +167,28 @@ fn collect_class_accessor_members(
             AnchorId(method.location.start as u64),
             package,
         ));
+    }
+}
+
+fn collect_object_pad_field_members(
+    model: &ClassModel,
+    package: &str,
+    members: &mut Vec<GeneratedMember>,
+) {
+    for field in &model.fields {
+        let anchor_id = AnchorId(field.location.start as u64);
+        if let Some(name) = &field.reader {
+            members.push(make_member(name, GeneratedMemberKind::Getter, anchor_id, package));
+        }
+        if let Some(name) = &field.writer {
+            members.push(make_member(name, GeneratedMemberKind::Setter, anchor_id, package));
+        }
+        if let Some(name) = &field.accessor {
+            members.push(make_member(name, GeneratedMemberKind::Accessor, anchor_id, package));
+        }
+        if let Some(name) = &field.mutator {
+            members.push(make_member(name, GeneratedMemberKind::Setter, anchor_id, package));
+        }
     }
 }
 
@@ -672,6 +698,56 @@ __PACKAGE__->add_columns(qw/id/);
             "DBIx synthesis must not run without DBIx::Class import"
         );
         assert_eq!(members_named(&members, "name").len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn object_pad_field_traits_emit_canonical_generated_members() -> Result<(), String> {
+        let code = r#"
+use Object::Pad;
+
+class Counter {
+    field $count :reader :writer :accessor :mutator;
+    method inc { }
+}
+"#;
+        let members = parse_and_extract(code);
+        let count_getters: Vec<_> = members
+            .iter()
+            .filter(|member| member.name == "count" && member.kind == GeneratedMemberKind::Getter)
+            .collect();
+        assert_eq!(count_getters.len(), 1);
+        assert_eq!(count_getters[0].package, "Counter");
+        assert_eq!(members_named(&members, "set_count").len(), 1);
+        assert_eq!(members_named(&members, "set_count")[0].kind, GeneratedMemberKind::Setter);
+        assert!(
+            members.iter().any(|member| {
+                member.name == "count" && member.kind == GeneratedMemberKind::Accessor
+            }),
+            "expected accessor generated member, got: {members:?}"
+        );
+        assert!(
+            members.iter().any(|member| {
+                member.name == "count"
+                    && member.kind == GeneratedMemberKind::Setter
+                    && member.entity_id != members_named(&members, "set_count")[0].entity_id
+            }),
+            "expected mutator generated member distinct from writer, got: {members:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn object_pad_generated_members_skip_moo_packages() -> Result<(), String> {
+        let code = r#"
+package Plain;
+use Moo;
+has 'name' => (is => 'ro');
+1;
+"#;
+        let members = parse_and_extract(code);
+        assert_eq!(members_named(&members, "name").len(), 1);
+        assert!(members.iter().all(|member| member.package == "Plain"));
         Ok(())
     }
 }

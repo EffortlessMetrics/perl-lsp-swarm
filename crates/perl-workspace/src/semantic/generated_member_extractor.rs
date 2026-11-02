@@ -38,6 +38,7 @@ struct WalkCtx {
     current_package: Option<String>,
     accessor_framework_active: bool,
     dbix_class_active: bool,
+    object_pad_module_active: bool,
 }
 
 /// Shared candidate-name vocabulary authority for source-backed extraction.
@@ -58,6 +59,118 @@ pub(crate) struct NameCandidate {
     pub(crate) span_end: usize,
 }
 
+/// Extract Object::Pad generated field accessors from `class`/`field` syntax.
+pub(crate) fn extract_object_pad_generated_member_facts(
+    ast: &Node,
+    file_id: FileId,
+) -> Vec<GeneratedMemberFact> {
+    let mut facts = Vec::new();
+    let mut ctx = WalkCtx::default();
+    walk_object_pad(ast, file_id, &mut ctx, &mut facts);
+    facts
+}
+
+fn walk_object_pad(
+    node: &Node,
+    file_id: FileId,
+    ctx: &mut WalkCtx,
+    out: &mut Vec<GeneratedMemberFact>,
+) {
+    match &node.kind {
+        NodeKind::Program { statements } | NodeKind::Block { statements } => {
+            for statement in statements {
+                walk_object_pad(statement, file_id, ctx, out);
+            }
+        }
+        NodeKind::Package { name, block, .. } => {
+            let saved = ctx.clone();
+            ctx.current_package = Some(name.clone());
+            if let Some(block) = block {
+                walk_object_pad(block, file_id, ctx, out);
+            }
+            *ctx = saved;
+        }
+        NodeKind::Class { name, body, .. } => {
+            let saved = ctx.clone();
+            ctx.current_package = Some(name.clone());
+            walk_object_pad(body, file_id, ctx, out);
+            *ctx = saved;
+        }
+        NodeKind::Use { module, .. } if module == "Object::Pad" => {
+            ctx.object_pad_module_active = true;
+        }
+        NodeKind::No { module, .. } if module == "Object::Pad" => {
+            ctx.object_pad_module_active = false;
+        }
+        NodeKind::VariableDeclaration { declarator, variable, attributes, .. }
+            if declarator == "field" && ctx.object_pad_module_active =>
+        {
+            extract_object_pad_field(variable, attributes, node, file_id, ctx, out);
+        }
+        _ => {
+            for child in node.children() {
+                walk_object_pad(child, file_id, ctx, out);
+            }
+        }
+    }
+}
+
+fn extract_object_pad_field(
+    variable: &Node,
+    attributes: &[String],
+    statement: &Node,
+    file_id: FileId,
+    ctx: &WalkCtx,
+    out: &mut Vec<GeneratedMemberFact>,
+) {
+    let NodeKind::Variable { sigil, name } = &variable.kind else {
+        return;
+    };
+    if sigil != "$" {
+        return;
+    }
+    let Some(field_name) = normalize_symbol_name(name) else {
+        return;
+    };
+    let public_name = object_pad_public_field_name(&field_name);
+    let package = ctx.current_package.as_deref().unwrap_or("main");
+    let candidate = NameCandidate {
+        name: public_name.clone(),
+        span_start: statement.location.start,
+        span_end: statement.location.end,
+    };
+    for attribute in attributes {
+        let Some(generated_name) = object_pad_generated_name_from_trait(&public_name, attribute)
+        else {
+            continue;
+        };
+        push_member(package, &generated_name, &candidate, file_id, out);
+    }
+}
+
+fn object_pad_public_field_name(field_name: &str) -> String {
+    field_name.strip_prefix('_').unwrap_or(field_name).to_string()
+}
+
+fn object_pad_generated_name_from_trait(public_name: &str, attribute: &str) -> Option<String> {
+    let attribute = attribute.trim();
+    if attribute == "reader" {
+        return Some(public_name.to_string());
+    }
+    if attribute == "writer" {
+        return Some(format!("set_{public_name}"));
+    }
+    if attribute == "accessor" || attribute == "mutator" {
+        return Some(public_name.to_string());
+    }
+    let (family, _) = attribute.split_once('(')?;
+    match family {
+        "reader" | "accessor" | "mutator" => Some(public_name.to_string()),
+        "writer" => Some(format!("set_{public_name}")),
+        _ => None,
+    }
+}
+
 /// Extract generated member facts from package-level framework declarations.
 pub(crate) fn extract_generated_member_facts(
     ast: &Node,
@@ -66,6 +179,7 @@ pub(crate) fn extract_generated_member_facts(
     let mut out = Vec::new();
     let mut ctx = WalkCtx::default();
     walk(ast, file_id, &mut ctx, &mut out);
+    out.extend(extract_object_pad_generated_member_facts(ast, file_id));
     out
 }
 
@@ -1032,6 +1146,33 @@ __PACKAGE__->add_columns(qw/id/);
             facts.is_empty(),
             "add_columns without DBIx::Class must not synthesize generated members"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn object_pad_field_reader_reaches_workspace_generated_member_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = extract_from_source(
+            r#"
+use Object::Pad;
+
+class Counter {
+    field $count :reader;
+    method inc { }
+}
+"#,
+        );
+
+        let names = canonical_names(&facts);
+        assert!(
+            names.contains(&"Counter::count"),
+            "Object::Pad :reader must reach workspace generated-member facts: {names:?}"
+        );
+        let fact = facts
+            .iter()
+            .find(|fact| fact.entity.canonical_name == "Counter::count")
+            .ok_or("missing Counter::count generated member")?;
+        assert_eq!(fact.entity.kind, EntityKind::GeneratedMember);
         Ok(())
     }
 }
