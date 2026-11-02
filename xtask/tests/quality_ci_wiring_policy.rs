@@ -1011,6 +1011,22 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             "coverage setup step `{setup_step}` must not carry PR routing conditions"
         );
     }
+    let coverage_proof_step =
+        must_some(workflow_step(coverage_job, "Run workspace coverage proof"));
+    assert!(
+        coverage_proof_step.contains("if:")
+            && coverage_proof_step
+                .contains("steps.coverage_route.outputs.coverage_required == 'true'"),
+        "coverage proof must run only when changed-file routing selects coverage packs"
+    );
+    let skipped_receipt_step =
+        must_some(workflow_step(coverage_job, "Emit skipped coverage proof receipt"));
+    assert!(
+        skipped_receipt_step.contains("if:")
+            && skipped_receipt_step
+                .contains("steps.coverage_route.outputs.coverage_required != 'true'"),
+        "skipped-by-policy receipt must emit only when coverage proof is not required"
+    );
     let codecov_upload_start = must_some(coverage_job.find("- name: Upload coverage to Codecov"));
     let enforced_coverage_steps = &coverage_job[..codecov_upload_start];
     let after_codecov_upload = &coverage_job[codecov_upload_start..];

@@ -758,6 +758,7 @@ jobs:
           touch archive/legacy-tests/test_fixtures/test.t
 
       - name: Run workspace coverage proof
+        if: steps.coverage_route.outputs.coverage_required == 'true'
         env:
           BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
           RUSTFLAGS: "-Cdebuginfo=0"
