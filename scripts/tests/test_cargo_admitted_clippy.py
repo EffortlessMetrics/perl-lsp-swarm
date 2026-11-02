@@ -407,6 +407,17 @@ class ClippyAdmissionTests(unittest.TestCase):
                 with self.assertRaises(safe.Denied):
                     safe.clippy_configuration(worktree, self.paths)
 
+    def test_local_config_is_part_of_clippy_configuration_scope(self):
+        worktree = self.root / "worktree"
+        (worktree / ".cargo").mkdir(parents=True)
+        local = worktree / ".cargo/config.local.toml"
+        local.write_text("[build]\njobs = 1\n", encoding="utf-8")
+        with patch.object(safe.Path, "cwd", return_value=worktree):
+            baseline = safe.clippy_configuration(worktree, self.paths)
+            local.write_text("[build]\njobs = 2\n", encoding="utf-8")
+            changed = safe.clippy_configuration(worktree, self.paths)
+        self.assertNotEqual(baseline, changed)
+
     def test_interruption_retains_owned_lease(self):
         result, output = self.invoke(call=Mock(side_effect=KeyboardInterrupt))
         self.assertEqual(result, 75)

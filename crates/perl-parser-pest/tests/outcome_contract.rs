@@ -2,7 +2,8 @@
 //! Discriminating tests for the pest parse-outcome vocabulary.
 //!
 //! These tests own the type-level contract. They do not assert that current
-//! `parse()` recovery accounts for source, and they do not add `parse_strict()`.
+//! `parse()` recovery accounts for source. Strict parsing is covered by
+//! `tests/strict_parse_contract.rs`.
 
 use std::error::Error;
 
