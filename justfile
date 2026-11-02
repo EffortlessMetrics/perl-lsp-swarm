@@ -2989,7 +2989,7 @@ publish-dry-run:
     cargo metadata --format-version=1 --no-deps \
       | python3 scripts/publish-topo.py > /tmp/publish-dry-run-crates.json
 
-    COUNT=$(python3 -c 'import json; print(len(json.load(open("/tmp/publish-dry-run-crates.json"))))')
+    COUNT=$(python3 scripts/ci/publish_crates_json.py --count < /tmp/publish-dry-run-crates.json)
     echo "  ${COUNT} crates in publish allowlist"
 
     STRIP_SCRIPT="$(mktemp --suffix=.py)"
@@ -3018,8 +3018,7 @@ publish-dry-run:
 
     FAILED=""
     CRATES_LIST="$(mktemp)"
-    python3 -c \
-      'import json,sys; [print("{} {}".format(c["name"],c["version"])) for c in json.load(open("/tmp/publish-dry-run-crates.json"))]' \
+    python3 scripts/ci/publish_crates_json.py --list < /tmp/publish-dry-run-crates.json \
       > "$CRATES_LIST"
 
     while read -r CRATE VERSION; do
