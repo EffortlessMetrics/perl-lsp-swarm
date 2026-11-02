@@ -120,6 +120,24 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    struct CurrentDirGuard {
+        previous: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+            let previous = std::env::current_dir()?;
+            std::env::set_current_dir(path)?;
+            Ok(Self { previous })
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
+    }
+
     fn perl5lib_root(path: &str) -> IncRoot {
         IncRoot {
             path: PathBuf::from(path),
@@ -232,17 +250,10 @@ mod tests {
         let from_cwd = temp.path().join("from_cwd");
         std::fs::create_dir_all(&from_cwd)?;
 
-        let previous = std::env::current_dir().ok();
-        std::env::set_current_dir(temp.path())?;
-        let result = (|| -> TestResult {
-            let displays = search_display_paths(&[perl5lib_root("from_cwd")], &workspace);
-            assert_eq!(displays[0].source, "PERL5LIB");
-            Ok(())
-        })();
-        if let Some(dir) = previous {
-            let _ = std::env::set_current_dir(dir);
-        }
-        result
+        let _dir_guard = CurrentDirGuard::change_to(temp.path())?;
+        let displays = search_display_paths(&[perl5lib_root("from_cwd")], &workspace);
+        assert_eq!(displays[0].source, "PERL5LIB");
+        Ok(())
     }
 
     #[cfg(unix)]
