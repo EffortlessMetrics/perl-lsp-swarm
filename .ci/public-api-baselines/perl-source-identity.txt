@@ -101,8 +101,8 @@ pub struct perl_source_identity::LogicalSourceId(_)
 pub fn perl_source_identity::LogicalSourceId::as_wire(&self) -> &str
 pub fn perl_source_identity::LogicalSourceId::from_wire(s: &str) -> core::option::Option<perl_source_identity::LogicalSourceId>
 pub fn perl_source_identity::LogicalSourceId::from_root_and_logical_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &perl_source_identity::RootRelativeLogicalPath) -> perl_source_identity::LogicalSourceId
-pub fn perl_source_identity::LogicalSourceId::try_from_root_and_logical_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &perl_source_identity::RootRelativeLogicalPath) -> core::result::Result<perl_source_identity::LogicalSourceId, perl_source_identity::SourceIdentityFieldLengthError>
 pub fn perl_source_identity::LogicalSourceId::from_root_and_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &str) -> perl_source_identity::LogicalSourceId
+pub fn perl_source_identity::LogicalSourceId::try_from_root_and_logical_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &perl_source_identity::RootRelativeLogicalPath) -> core::result::Result<perl_source_identity::LogicalSourceId, perl_source_identity::SourceIdentityFieldLengthError>
 pub fn perl_source_identity::LogicalSourceId::try_from_root_and_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &str) -> core::result::Result<perl_source_identity::LogicalSourceId, perl_source_identity::SourceIdentityFieldLengthError>
 pub fn perl_source_identity::LogicalSourceId::clone(&self) -> perl_source_identity::LogicalSourceId
 pub fn perl_source_identity::LogicalSourceId::cmp(&self, other: &perl_source_identity::LogicalSourceId) -> core::cmp::Ordering
@@ -136,15 +136,6 @@ pub fn perl_source_identity::RootRelativeLogicalPath::eq(&self, other: &perl_sou
 pub fn perl_source_identity::RootRelativeLogicalPath::partial_cmp(&self, other: &perl_source_identity::RootRelativeLogicalPath) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_source_identity::RootRelativeLogicalPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_source_identity::RootRelativeLogicalPath::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
-pub struct perl_source_identity::SourceIdentityFieldLengthError
-pub const perl_source_identity::SourceIdentityFieldLengthError::MAX_BYTES: u32
-pub fn perl_source_identity::SourceIdentityFieldLengthError::actual_bytes(self) -> usize
-pub fn perl_source_identity::SourceIdentityFieldLengthError::clone(&self) -> perl_source_identity::SourceIdentityFieldLengthError
-pub fn perl_source_identity::SourceIdentityFieldLengthError::cmp(&self, other: &perl_source_identity::SourceIdentityFieldLengthError) -> core::cmp::Ordering
-pub fn perl_source_identity::SourceIdentityFieldLengthError::eq(&self, other: &perl_source_identity::SourceIdentityFieldLengthError) -> bool
-pub fn perl_source_identity::SourceIdentityFieldLengthError::partial_cmp(&self, other: &perl_source_identity::SourceIdentityFieldLengthError) -> core::option::Option<core::cmp::Ordering>
-pub fn perl_source_identity::SourceIdentityFieldLengthError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_source_identity::SourceIdentityFieldLengthError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub struct perl_source_identity::SourceIdentityEnvelope
 pub perl_source_identity::SourceIdentityEnvelope::content_revision: core::option::Option<perl_source_identity::ContentRevision>
 pub perl_source_identity::SourceIdentityEnvelope::generation: perl_source_identity::SourceGeneration
@@ -164,6 +155,13 @@ pub fn perl_source_identity::SourceIdentityEnvelope::fmt(&self, f: &mut core::fm
 pub fn perl_source_identity::SourceIdentityEnvelope::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_source_identity::SourceIdentityEnvelope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_source_identity::SourceIdentityEnvelope::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_source_identity::SourceIdentityEnvelope, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_source_identity::SourceIdentityFieldLengthError
+pub const perl_source_identity::SourceIdentityFieldLengthError::MAX_BYTES: u32
+pub fn perl_source_identity::SourceIdentityFieldLengthError::actual_bytes(self) -> usize
+pub fn perl_source_identity::SourceIdentityFieldLengthError::clone(&self) -> perl_source_identity::SourceIdentityFieldLengthError
+pub fn perl_source_identity::SourceIdentityFieldLengthError::eq(&self, other: &perl_source_identity::SourceIdentityFieldLengthError) -> bool
+pub fn perl_source_identity::SourceIdentityFieldLengthError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceIdentityFieldLengthError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_source_identity::SourceIdentitySchemaVersion(pub u32)
 pub const perl_source_identity::SourceIdentitySchemaVersion::V1: Self
 pub fn perl_source_identity::SourceIdentitySchemaVersion::as_u32(self) -> u32
@@ -192,5 +190,5 @@ pub fn perl_source_identity::WorkspaceRootId::hash<__H: core::hash::Hasher>(&sel
 pub fn perl_source_identity::WorkspaceRootId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_source_identity::WorkspaceRootId::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<perl_source_identity::WorkspaceRootId, <D as serde_core::de::Deserializer>::Error>
 pub const perl_source_identity::CONTENT_DIGEST_SCHEMA_VERSION: u32
-pub const perl_source_identity::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES: u32
 pub const perl_source_identity::SCHEMA_VERSION_V1: u32
+pub const perl_source_identity::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES: u32
