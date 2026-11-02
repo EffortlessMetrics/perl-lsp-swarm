@@ -2120,9 +2120,7 @@ impl LspServer {
                                 return Ok(Some(result));
                             }
                             if perl_lsp_rs_core::providers::regex::record_at_pattern_body_offset(
-                                &doc.text,
-                                &table,
-                                offset,
+                                &doc.text, &table, offset,
                             )
                             .is_some()
                             {
