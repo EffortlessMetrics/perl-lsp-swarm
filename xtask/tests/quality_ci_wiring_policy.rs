@@ -5,9 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, anyhow, ensure};
-use assert_cmd::Command;
+use anyhow::{anyhow, ensure, Result};
 use assert_cmd::cargo::cargo_bin_cmd;
+use assert_cmd::Command;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
@@ -1160,11 +1160,8 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let ci_route_source =
         must(fs::read_to_string(root.join("xtask").join("src").join("tasks").join("ci_route.rs")));
     must(ci_nightly_coverage_route_consumer_contract(coverage_job));
-    let stale_coverage_consumer = coverage_job.replacen(
-        "unsupported ci-route schema",
-        "ignored schema drift",
-        1,
-    );
+    let stale_coverage_consumer =
+        coverage_job.replacen("unsupported ci-route schema", "ignored schema drift", 1);
     assert_ne!(
         stale_coverage_consumer, coverage_job,
         "negative control must disable the nightly ci-route schema_version gate"
@@ -2339,7 +2336,11 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         })
         .find_map(
             |(offset, line)| {
-                if line.trim_start().starts_with("- name:") { Some(offset) } else { None }
+                if line.trim_start().starts_with("- name:") {
+                    Some(offset)
+                } else {
+                    None
+                }
             },
         )
         .unwrap_or(rest.len());
