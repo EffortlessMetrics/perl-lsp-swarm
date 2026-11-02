@@ -537,10 +537,7 @@ mod tests {
             "default path must not nest under .claude/: {}",
             path.display()
         );
-        assert_eq!(
-            path,
-            PathBuf::from("/tmp/perl-lsp-swarm-worktrees/agent-wt-pr-42-1700000000")
-        );
+        assert_eq!(path, PathBuf::from("/tmp/perl-lsp-swarm-worktrees/agent-wt-pr-42-1700000000"));
         Ok(())
     }
 
