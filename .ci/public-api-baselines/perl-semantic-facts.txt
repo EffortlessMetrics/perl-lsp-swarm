@@ -4338,6 +4338,30 @@ pub fn perl_semantic_facts::AnchorId::fmt(&self, f: &mut core::fmt::Formatter<'_
 pub fn perl_semantic_facts::AnchorId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_semantic_facts::AnchorId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_semantic_facts::AnchorId::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::AnchorId, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub struct perl_semantic_facts::AttributeMethodHook
+pub perl_semantic_facts::AttributeMethodHook::attribute_name: alloc::string::String
+pub perl_semantic_facts::AttributeMethodHook::confidence: perl_semantic_facts::Confidence
+pub perl_semantic_facts::AttributeMethodHook::entity_id: perl_semantic_facts::EntityId
+pub perl_semantic_facts::AttributeMethodHook::explicit_name: bool
+pub perl_semantic_facts::AttributeMethodHook::kind: perl_semantic_facts::AttributeMethodHookKind
+pub perl_semantic_facts::AttributeMethodHook::method_name: alloc::string::String
+pub perl_semantic_facts::AttributeMethodHook::package: alloc::string::String
+pub perl_semantic_facts::AttributeMethodHook::provenance: perl_semantic_facts::Provenance
+pub perl_semantic_facts::AttributeMethodHook::source_anchor_id: perl_semantic_facts::AnchorId
+pub fn perl_semantic_facts::AttributeMethodHook::new(entity_id: perl_semantic_facts::EntityId, package: alloc::string::String, attribute_name: alloc::string::String, method_name: alloc::string::String, kind: perl_semantic_facts::AttributeMethodHookKind, source_anchor_id: perl_semantic_facts::AnchorId, explicit_name: bool, provenance: perl_semantic_facts::Provenance, confidence: perl_semantic_facts::Confidence) -> perl_semantic_facts::AttributeMethodHook
+pub fn perl_semantic_facts::AttributeMethodHook::clone(&self) -> perl_semantic_facts::AttributeMethodHook
+pub fn perl_semantic_facts::AttributeMethodHook::eq(&self, other: &perl_semantic_facts::AttributeMethodHook) -> bool
+pub fn perl_semantic_facts::AttributeMethodHook::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::AttributeMethodHook::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::AttributeMethodHook::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::AttributeMethodHook, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::AttributeMethodHookKind
+pub perl_semantic_facts::AttributeMethodHookKind::Builder
+pub perl_semantic_facts::AttributeMethodHookKind::Trigger
+pub fn perl_semantic_facts::AttributeMethodHookKind::clone(&self) -> perl_semantic_facts::AttributeMethodHookKind
+pub fn perl_semantic_facts::AttributeMethodHookKind::eq(&self, other: &perl_semantic_facts::AttributeMethodHookKind) -> bool
+pub fn perl_semantic_facts::AttributeMethodHookKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::AttributeMethodHookKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::AttributeMethodHookKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_semantic_facts::AttributeMethodHookKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub struct perl_semantic_facts::BoundaryLink
 pub perl_semantic_facts::BoundaryLink::boundary_id: core::option::Option<perl_semantic_facts::FactId>
 pub perl_semantic_facts::BoundaryLink::disposition: perl_semantic_facts::BoundaryDisposition
