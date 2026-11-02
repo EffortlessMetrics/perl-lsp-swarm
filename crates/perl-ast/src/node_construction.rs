@@ -7,10 +7,9 @@
 //! continues to use unchecked [`Node::new`].
 
 use crate::invariant_policy::{AstEmptyRangePolicy, AstNodeClassification, ast_node_policy_of};
-use crate::kind_schema::{FieldCardinality, structural_row};
+use crate::kind_schema::{FieldCardinality, field_emission_counts, structural_row};
 use crate::{FieldId, Node, NodeKind, SourceLocation};
 use std::fmt;
-use std::ops::ControlFlow;
 
 /// Stable class for span failures at the checked construction boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -163,8 +162,7 @@ pub fn validate_node_construction(
     source: Option<&str>,
 ) -> Result<(), NodeInvariantError> {
     validate_location(kind, location, source)?;
-    let node = Node::new(kind.clone(), location);
-    validate_registry_cardinality(&node)?;
+    validate_registry_cardinality(kind)?;
     if let Some(err) = validate_variant_local(kind) {
         return Err(NodeInvariantError::Local(err));
     }
@@ -196,7 +194,7 @@ fn validate_location(
             });
         }
     }
-    if location.start == location.end && !allows_empty_range(kind) {
+    if location.start == location.end && !allows_empty_range(kind, location, source) {
         return Err(NodeInvariantError::Span {
             code: NodeSpanInvariantCode::UnexpectedEmptyRange,
             location,
@@ -205,7 +203,19 @@ fn validate_location(
     Ok(())
 }
 
-fn allows_empty_range(kind: &NodeKind) -> bool {
+fn allows_empty_range(kind: &NodeKind, location: SourceLocation, source: Option<&str>) -> bool {
+    if matches!(kind, NodeKind::Program { statements } if statements.is_empty())
+        && location.start == 0
+        && location.end == 0
+    {
+        return true;
+    }
+    if matches!(kind, NodeKind::Program { .. })
+        && location.start == location.end
+        && source.is_some_and(str::is_empty)
+    {
+        return true;
+    }
     let kind_name = NodeKind::kind_name(kind);
     if structural_row(kind_name).is_some_and(|row| row.recovery) {
         return true;
@@ -219,25 +229,13 @@ fn allows_empty_range(kind: &NodeKind) -> bool {
     ) || policy.empty_range == AstEmptyRangePolicy::SyntheticAllowed
 }
 
-fn field_emission_counts(node: &Node) -> std::collections::BTreeMap<&'static str, usize> {
-    let mut counts = std::collections::BTreeMap::new();
-    let _ = node.try_for_each_child_with_field(|field, _child| {
-        if let Some(field) = field {
-            let name = FieldId::name(field);
-            *counts.entry(name).or_default() += 1;
-        }
-        ControlFlow::<(), ()>::Continue(())
-    });
-    counts
-}
-
-fn validate_registry_cardinality(node: &Node) -> Result<(), NodeInvariantError> {
-    let kind_name = node.kind.kind_name();
+fn validate_registry_cardinality(kind: &NodeKind) -> Result<(), NodeInvariantError> {
+    let kind_name = NodeKind::kind_name(kind);
     let Some(row) = structural_row(kind_name) else {
         return Ok(());
     };
     if row.is_leaf() {
-        let counts = field_emission_counts(node);
+        let counts = field_emission_counts(kind);
         if counts.values().any(|count| *count > 0) {
             return Err(local_error(
                 NodeLocalInvariantCode::FixedCardinalityMismatch,
@@ -250,7 +248,7 @@ fn validate_registry_cardinality(node: &Node) -> Result<(), NodeInvariantError> 
         return Ok(());
     }
 
-    let counts = field_emission_counts(node);
+    let counts = field_emission_counts(kind);
     for child in row.children {
         let count = counts.get(child.field.name()).copied().unwrap_or(0);
         match child.cardinality {
@@ -299,12 +297,12 @@ fn local_error(
 fn validate_variant_local(kind: &NodeKind) -> Option<NodeLocalInvariantError> {
     match kind {
         NodeKind::ChainedComparison { operands, ops } => {
-            if operands.len() < 2 {
+            if operands.len() < 3 {
                 return Some(local_payload(
                     NodeLocalInvariantCode::FixedCardinalityMismatch,
                     "ChainedComparison",
                     Some(FieldId::ELEMENTS),
-                    "at least 2 operands",
+                    "at least 3 operands",
                     format!("{} operands", operands.len()),
                 ));
             }
@@ -340,6 +338,14 @@ fn validate_variant_local(kind: &NodeKind) -> Option<NodeLocalInvariantError> {
                         "default fields present on required parameter".to_string(),
                     ));
                 }
+            } else if default_value.is_none() {
+                return Some(local_payload(
+                    NodeLocalInvariantCode::MutuallyExclusiveState,
+                    "NamedParameter",
+                    None,
+                    "default_value when required is false",
+                    "required false without default_value".to_string(),
+                ));
             } else if default_value.is_some() && default_operator.is_none() {
                 return Some(local_payload(
                     NodeLocalInvariantCode::RequiredLocalPayloadMissing,

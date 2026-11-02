@@ -99,6 +99,40 @@ fn chained_comparison_fixed_operand_minimum() {
 }
 
 #[test]
+fn chained_comparison_rejects_binary_shape() {
+    let kind = NodeKind::ChainedComparison {
+        operands: vec![dummy(), dummy()],
+        ops: vec!["<".to_string()],
+    };
+    assert_local_code(
+        Node::try_new(kind, loc(0, 10)),
+        NodeLocalInvariantCode::FixedCardinalityMismatch,
+    );
+}
+
+#[test]
+fn empty_program_in_empty_source_passes_try_new_in_source() {
+    let kind = NodeKind::Program { statements: vec![] };
+    Node::try_new_in_source(kind, loc(0, 0), "").expect("empty program at 0..0 for empty source");
+}
+
+#[test]
+fn named_parameter_optional_without_default_rejected() {
+    let kind = NodeKind::NamedParameter {
+        variable: boxed(),
+        external_name: "gamma".to_string(),
+        default_operator: None,
+        default_operator_span: None,
+        default_value: None,
+        required: false,
+    };
+    assert_local_code(
+        Node::try_new(kind, loc(0, 10)),
+        NodeLocalInvariantCode::MutuallyExclusiveState,
+    );
+}
+
+#[test]
 fn named_parameter_mutually_exclusive_required_and_default() {
     let kind = NodeKind::NamedParameter {
         variable: boxed(),
@@ -165,8 +199,13 @@ fn fixture_bank_passes_checked_construction() {
 
 #[test]
 fn parser_sample_nodes_pass_checked_construction() {
-    let samples =
-        ["my $x = 42;", "sub foo { return 1; }", "if ($x) { print $x; }", "package P; use v5.36;"];
+    let samples = [
+        "",
+        "my $x = 42;",
+        "sub foo { return 1; }",
+        "if ($x) { print $x; }",
+        "package P; use v5.36;",
+    ];
     for source in samples {
         let ast = parse_sample(source);
         walk_try_new(&ast, source);
@@ -180,7 +219,7 @@ fn parse_sample(source: &str) -> Node {
 }
 
 fn walk_try_new(node: &Node, source: &str) {
-    Node::try_new_in_source(node.kind.clone(), node.location, source)
+    perl_ast::validate_node_construction(&node.kind, node.location, Some(source))
         .unwrap_or_else(|err| panic!("{}: {err}", node.kind.kind_name()));
     let _ = node.try_for_each_child_with_field(|_, child| {
         walk_try_new(child, source);
