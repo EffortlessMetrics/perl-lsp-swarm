@@ -212,11 +212,77 @@ impl FixtureLoader {
 
 /// Hermetic Perl execution harness.
 ///
-/// Provides the shared `query_perl_version` helper used by extractors.
-/// Each extractor implements its own `run_probe` with piped stdio and timeout.
+/// Shared tempdir fixture staging, `-I` injection, ambient env denials, timeout, and
+/// stdio capture for differential oracle probes (#2532).
 pub struct PerlExecutionHarness;
 
 impl PerlExecutionHarness {
+    /// Run `probe_script` against `fixture` in a fresh tempdir with hermetic env control.
+    ///
+    /// The probe is passed to `perl -e` with the staged fixture path as the sole `@ARGV`
+    /// element (same contract as the PackageSubTable probe).
+    pub fn execute(fixture: &Fixture, probe_script: &str) -> Result<PerlOutput> {
+        use std::process::Stdio;
+        use std::thread;
+
+        let tempdir = tempfile::tempdir().context("create oracle harness tempdir")?;
+
+        let fixture_filename = fixture
+            .source_path
+            .file_name()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture source has no file name"))?;
+        let fixture_in_temp = tempdir.path().join(fixture_filename);
+        fs::write(&fixture_in_temp, &fixture.source_text)
+            .context("write fixture to oracle harness tempdir")?;
+
+        let perl_version = Self::query_perl_version()?;
+
+        let mut cmd = Command::new("perl");
+        for root in &fixture.module_roots {
+            cmd.arg("-I").arg(root);
+        }
+        cmd.arg("-I").arg(tempdir.path());
+        cmd.arg("-e").arg(probe_script);
+        cmd.arg(&fixture_in_temp);
+        Self::apply_hermetic_env(&mut cmd, fixture);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let timeout = Duration::from_secs(PERL_TIMEOUT_SECS);
+        let mut child = cmd.spawn().context("spawn oracle Perl probe")?;
+
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait().context("polling Perl oracle probe process")? {
+                Some(_) => break,
+                None => {
+                    if start.elapsed() >= timeout {
+                        let _ = child.kill();
+                        bail!("Perl oracle probe timed out after {}s", timeout.as_secs());
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        let raw = child.wait_with_output().context("collect oracle probe output")?;
+        let stdout = String::from_utf8(raw.stdout).context("decode probe stdout")?;
+        let stderr = String::from_utf8(raw.stderr).context("decode probe stderr")?;
+        Ok(PerlOutput { perl_version, stdout, stderr, exit_code: raw.status.code().unwrap_or(-1) })
+    }
+
+    fn apply_hermetic_env(cmd: &mut Command, fixture: &Fixture) {
+        for denial in &fixture.environment_denials {
+            if denial == "local::lib" {
+                cmd.env_remove("PERL_LOCAL_LIB_ROOT");
+                cmd.env_remove("PERL_MB_OPT");
+            } else {
+                cmd.env_remove(denial.as_str());
+            }
+        }
+        cmd.env_remove("PERL5LIB");
+        cmd.env_remove("PERL5OPT");
+        cmd.env("LC_ALL", "C");
+    }
+
     fn query_perl_version() -> Result<String> {
         let output = Command::new("perl")
             .arg("-e")
@@ -358,62 +424,7 @@ impl PackageSubTableExtractor {
     }
 
     fn run_probe(fixture: &Fixture) -> Result<PerlOutput> {
-        use std::process::Stdio;
-        use std::thread;
-
-        let tempdir = tempfile::tempdir().context("create PackageSubTable harness tempdir")?;
-
-        let fixture_filename = fixture
-            .source_path
-            .file_name()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture source has no file name"))?;
-        let fixture_in_temp = tempdir.path().join(fixture_filename);
-        fs::write(&fixture_in_temp, &fixture.source_text)
-            .context("write fixture to PackageSubTable harness tempdir")?;
-
-        let perl_version = PerlExecutionHarness::query_perl_version()?;
-
-        let mut cmd = Command::new("perl");
-        for root in &fixture.module_roots {
-            cmd.arg("-I").arg(root);
-        }
-        cmd.arg("-I").arg(tempdir.path());
-        cmd.arg("-e").arg(PACKAGE_SUB_TABLE_PROBE);
-        cmd.arg(&fixture_in_temp);
-
-        for denial in &fixture.environment_denials {
-            if denial == "local::lib" {
-                cmd.env_remove("PERL_LOCAL_LIB_ROOT");
-                cmd.env_remove("PERL_MB_OPT");
-            } else {
-                cmd.env_remove(denial.as_str());
-            }
-        }
-        cmd.env_remove("PERL5LIB");
-        cmd.env_remove("PERL5OPT");
-        cmd.env("LC_ALL", "C");
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let timeout = Duration::from_secs(PERL_TIMEOUT_SECS);
-        let mut child = cmd.spawn().context("spawn PackageSubTable Perl probe")?;
-
-        let start = std::time::Instant::now();
-        loop {
-            match child.try_wait().context("polling Perl oracle probe process")? {
-                Some(_) => break,
-                None => {
-                    if start.elapsed() >= timeout {
-                        let _ = child.kill();
-                        bail!("PackageSubTable Perl probe timed out after {}s", timeout.as_secs());
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-            }
-        }
-        let raw = child.wait_with_output().context("collect PackageSubTable probe output")?;
-        let stdout = String::from_utf8(raw.stdout).context("decode probe stdout")?;
-        let stderr = String::from_utf8(raw.stderr).context("decode probe stderr")?;
-        Ok(PerlOutput { perl_version, stdout, stderr, exit_code: raw.status.code().unwrap_or(-1) })
+        PerlExecutionHarness::execute(fixture, PACKAGE_SUB_TABLE_PROBE)
     }
 }
 
@@ -883,6 +894,143 @@ sub beta { 2 }
         Ok(())
     }
 
+    // ── PerlExecutionHarness unit tests (skipped when perl unavailable) ───────
+
+    #[test]
+    fn harness_execute_removes_staged_tempdir_after_return() -> TestResult {
+        if !perl_available() {
+            eprintln!("SKIP: perl not available in this environment");
+            return Ok(());
+        }
+
+        let (_dir, fixture) = minimal_probe_fixture("package HarnessTmp;\n1;\n", &[])?;
+        let probe = r#"
+my $file = shift @ARGV;
+print $file, "\n";
+"#;
+
+        let output = PerlExecutionHarness::execute(&fixture, probe)?;
+        let staged = output.stdout.trim();
+        assert!(!staged.is_empty(), "probe should print staged fixture path");
+        assert!(
+            !std::path::Path::new(staged).exists(),
+            "harness tempdir should be removed after execute returns; still present: {staged}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn harness_execute_scrubs_perl5lib_from_child_environment() -> TestResult {
+        if !perl_available() {
+            eprintln!("SKIP: perl not available in this environment");
+            return Ok(());
+        }
+
+        unsafe {
+            std::env::set_var("PERL5LIB", "/ambient/should/not/leak");
+        }
+        let restore = RestoreEnvVar::new("PERL5LIB");
+
+        let (_dir, fixture) = minimal_probe_fixture("1;\n", &[])?;
+        let probe = r#"
+my $file = shift @ARGV;
+print((exists $ENV{PERL5LIB} ? "present" : "absent"), "\n");
+"#;
+
+        let output = PerlExecutionHarness::execute(&fixture, probe)?;
+
+        assert_eq!(
+            output.stdout.trim(),
+            "absent",
+            "PERL5LIB must not leak into the child probe environment"
+        );
+        drop(restore);
+        Ok(())
+    }
+
+    #[test]
+    fn harness_execute_injects_declared_module_roots_on_inc() -> TestResult {
+        if !perl_available() {
+            eprintln!("SKIP: perl not available in this environment");
+            return Ok(());
+        }
+
+        let tempdir = tempfile::tempdir()?;
+        let lib_root = tempdir.path().join("lib");
+        fs::create_dir_all(&lib_root)?;
+        let fixture = Fixture {
+            id: "inc_probe".into(),
+            source_path: tempdir.path().join("probe.pl"),
+            source_text: "1;\n".to_string(),
+            comparison_classes: vec![],
+            module_roots: vec![lib_root.clone()],
+            environment_denials: default_environment_denials(),
+            claim_boundary: "test".into(),
+        };
+        let probe = format!(
+            r#"
+my $file = shift @ARGV;
+my $needle = {};
+for my $dir (@INC) {{
+    print "$dir\n" if $dir eq $needle;
+}}
+"#,
+            format!("{:?}", lib_root.to_string_lossy())
+        );
+
+        let output = PerlExecutionHarness::execute(&fixture, &probe)?;
+
+        assert!(
+            output.stdout.lines().any(|line| line == lib_root.to_string_lossy()),
+            "expected module_root on @INC; stdout={:?}",
+            output.stdout
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn harness_execute_kills_probe_after_timeout() -> TestResult {
+        if !perl_available() {
+            eprintln!("SKIP: perl not available in this environment");
+            return Ok(());
+        }
+
+        let (_dir, fixture) = minimal_probe_fixture("1;\n", &[])?;
+        let probe = r#"
+my $file = shift @ARGV;
+sleep 10;
+print "should not finish\n";
+"#;
+
+        let err = PerlExecutionHarness::execute(&fixture, probe)
+            .expect_err("long-running probe should hit harness timeout");
+
+        assert!(err.to_string().contains("timed out"), "unexpected error: {err:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn harness_execute_captures_stdout_and_stderr() -> TestResult {
+        if !perl_available() {
+            eprintln!("SKIP: perl not available in this environment");
+            return Ok(());
+        }
+
+        let (_dir, fixture) = minimal_probe_fixture("1;\n", &[])?;
+        let probe = r#"
+my $file = shift @ARGV;
+print "stdout-line\n";
+print STDERR "stderr-line\n";
+"#;
+
+        let output = PerlExecutionHarness::execute(&fixture, probe)?;
+
+        assert_eq!(output.stdout.trim(), "stdout-line");
+        assert!(output.stderr.contains("stderr-line"));
+        assert_eq!(output.exit_code, 0);
+        Ok(())
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn perl_available() -> bool {
@@ -892,6 +1040,54 @@ sub beta { 2 }
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    fn default_environment_denials() -> Vec<String> {
+        vec!["PERL5LIB".into(), "PERL5OPT".into(), "local::lib".into()]
+    }
+
+    fn minimal_probe_fixture(
+        source: &str,
+        module_roots: &[&str],
+    ) -> TestResult<(tempfile::TempDir, Fixture)> {
+        let tempdir = tempfile::tempdir()?;
+        let src_path = tempdir.path().join("probe.pl");
+        fs::write(&src_path, source)?;
+        let roots = module_roots.iter().map(|rel| tempdir.path().join(rel)).collect::<Vec<_>>();
+        for root in &roots {
+            fs::create_dir_all(root)?;
+        }
+        let fixture = Fixture {
+            id: "harness_probe".into(),
+            source_path: src_path,
+            source_text: source.to_string(),
+            comparison_classes: vec![],
+            module_roots: roots,
+            environment_denials: default_environment_denials(),
+            claim_boundary: "test".into(),
+        };
+        Ok((tempdir, fixture))
+    }
+
+    struct RestoreEnvVar {
+        key: &'static str,
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl RestoreEnvVar {
+        fn new(key: &'static str) -> Self {
+            let prior = std::env::var_os(key);
+            Self { key, prior }
+        }
+    }
+
+    impl Drop for RestoreEnvVar {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
     }
 
     fn make_workspace() -> TestResult<tempfile::TempDir> {
