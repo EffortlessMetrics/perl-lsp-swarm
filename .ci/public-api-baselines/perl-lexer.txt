@@ -396,6 +396,46 @@ pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> 
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_lexer::unicode_xid
+#[non_exhaustive] pub enum perl_lexer::unicode_xid::UnicodeXidApplicability
+pub perl_lexer::unicode_xid::UnicodeXidApplicability::DataMismatch
+pub perl_lexer::unicode_xid::UnicodeXidApplicability::Exact
+pub perl_lexer::unicode_xid::UnicodeXidApplicability::Unsupported
+pub fn perl_lexer::unicode_xid::UnicodeXidApplicability::clone(&self) -> perl_lexer::unicode_xid::UnicodeXidApplicability
+pub fn perl_lexer::unicode_xid::UnicodeXidApplicability::eq(&self, other: &perl_lexer::unicode_xid::UnicodeXidApplicability) -> bool
+pub fn perl_lexer::unicode_xid::UnicodeXidApplicability::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::unicode_xid::UnicodeXidApplicability::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_lexer::unicode_xid::UnicodeXidDataSource
+pub perl_lexer::unicode_xid::UnicodeXidDataSource::UnicodeIdent
+pub fn perl_lexer::unicode_xid::UnicodeXidDataSource::clone(&self) -> perl_lexer::unicode_xid::UnicodeXidDataSource
+pub fn perl_lexer::unicode_xid::UnicodeXidDataSource::eq(&self, other: &perl_lexer::unicode_xid::UnicodeXidDataSource) -> bool
+pub fn perl_lexer::unicode_xid::UnicodeXidDataSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::unicode_xid::UnicodeXidDataSource::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_lexer::unicode_xid::PerlXidProfile
+pub perl_lexer::unicode_xid::PerlXidProfile::major: u16
+pub perl_lexer::unicode_xid::PerlXidProfile::minor: u16
+pub const perl_lexer::unicode_xid::PerlXidProfile::PERL_5_44: Self
+pub const fn perl_lexer::unicode_xid::PerlXidProfile::new(major: u16, minor: u16) -> Self
+pub fn perl_lexer::unicode_xid::PerlXidProfile::clone(&self) -> perl_lexer::unicode_xid::PerlXidProfile
+pub fn perl_lexer::unicode_xid::PerlXidProfile::eq(&self, other: &perl_lexer::unicode_xid::PerlXidProfile) -> bool
+pub fn perl_lexer::unicode_xid::PerlXidProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::unicode_xid::PerlXidProfile::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_lexer::unicode_xid::UnicodeVersion
+pub perl_lexer::unicode_xid::UnicodeVersion::major: u8
+pub perl_lexer::unicode_xid::UnicodeVersion::minor: u8
+pub perl_lexer::unicode_xid::UnicodeVersion::update: u8
+pub const perl_lexer::unicode_xid::UnicodeVersion::UNICODE_17_0: Self
+pub const fn perl_lexer::unicode_xid::UnicodeVersion::as_tuple(self) -> (u8, u8, u8)
+pub fn perl_lexer::unicode_xid::UnicodeVersion::clone(&self) -> perl_lexer::unicode_xid::UnicodeVersion
+pub fn perl_lexer::unicode_xid::UnicodeVersion::eq(&self, other: &perl_lexer::unicode_xid::UnicodeVersion) -> bool
+pub fn perl_lexer::unicode_xid::UnicodeVersion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::unicode_xid::UnicodeVersion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::unicode_xid::UnicodeVersion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lexer::unicode_xid::is_xid_continue(ch: char) -> bool
+pub fn perl_lexer::unicode_xid::is_xid_start(ch: char) -> bool
+pub fn perl_lexer::unicode_xid::unicode_data_version() -> perl_lexer::unicode_xid::UnicodeVersion
+pub fn perl_lexer::unicode_xid::unicode_xid_data_source() -> perl_lexer::unicode_xid::UnicodeXidDataSource
+pub fn perl_lexer::unicode_xid::xid_policy_for_perl(profile: perl_lexer::unicode_xid::PerlXidProfile) -> perl_lexer::unicode_xid::UnicodeXidApplicability
 #[non_exhaustive] pub enum perl_lexer::CheckpointNewlinePolicy
 pub perl_lexer::CheckpointNewlinePolicy::SourceExact
 pub fn perl_lexer::CheckpointNewlinePolicy::clone(&self) -> perl_lexer::CheckpointNewlinePolicy

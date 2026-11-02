@@ -197,6 +197,7 @@ pub mod symbol_table;
 pub mod token;
 pub mod tokenizer;
 mod unicode;
+pub mod unicode_xid;
 
 pub use api::*;
 pub use checkpoint::{
