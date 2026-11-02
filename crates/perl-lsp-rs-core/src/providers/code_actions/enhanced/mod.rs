@@ -51,7 +51,7 @@ mod postfix;
 mod signature_actions;
 
 pub(crate) use extract_subroutine::{
-    detect_parameters, is_admissible_extract_block, is_admissible_standalone_extract_block,
+    detect_parameters, is_admissible_standalone_extract_block,
 };
 
 use helpers::Helpers;

@@ -70,6 +70,12 @@ fn standalone_block_extract_function(source: &str, ast: &Node, block: &Node) -> 
     if !standalone_block_preamble_is_safe(source, block.location.start) {
         return None;
     }
+    if !standalone_block_suffix_is_safe(source, block.location.end) {
+        return None;
+    }
+    if block_uses_caller_call(block) {
+        return None;
+    }
     if source.lines().any(|line| {
         let line = line.trim_start();
         line.starts_with("__DATA__") || line.starts_with("__END__")
@@ -147,6 +153,49 @@ fn standalone_block_preamble_is_safe(source: &str, block_start: usize) -> bool {
     true
 }
 
+/// EOF insertion must not cross a later `package` boundary or lexical pragma
+/// change that would not apply to the extracted subroutine body.
+fn standalone_block_suffix_is_safe(source: &str, block_end: usize) -> bool {
+    let Some(suffix) = source.get(block_end..) else {
+        return false;
+    };
+    for line in suffix.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with("package ")
+            || trimmed.starts_with("use ")
+            || trimmed.starts_with("no ")
+            || trimmed.starts_with("our ")
+            || trimmed.starts_with("state ")
+            || trimmed.starts_with("local ")
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn block_uses_caller_call(node: &Node) -> bool {
+    let mut found = false;
+    visit_for_caller_call(node, &mut found);
+    found
+}
+
+fn visit_for_caller_call(node: &Node, found: &mut bool) {
+    if *found {
+        return;
+    }
+    if matches!(&node.kind, NodeKind::FunctionCall { name, .. } if name == "caller") {
+        *found = true;
+        return;
+    }
+    for child in node.children() {
+        visit_for_caller_call(child, found);
+    }
+}
+
 fn block_is_inside_subroutine(ast: &Node, target: &Node) -> bool {
     let mut inside = false;
     visit_subroutine_enclosure(ast, target, false, &mut inside);
@@ -212,7 +261,11 @@ fn visit_subroutine_enclosure(node: &Node, target: &Node, in_subroutine: bool, m
             visit_subroutine_enclosure(left, target, in_subroutine, matched);
             visit_subroutine_enclosure(right, target, in_subroutine, matched);
         }
-        _ => {}
+        _ => {
+            for child in node.children() {
+                visit_subroutine_enclosure(child, target, in_subroutine, matched);
+            }
+        }
     }
 }
 
@@ -269,7 +322,11 @@ fn visit_control_flow_body(node: &Node, target: &Node, is_control_body: bool, ma
             visit_control_flow_body(left, target, is_control_body, matched);
             visit_control_flow_body(right, target, is_control_body, matched);
         }
-        _ => {}
+        _ => {
+            for child in node.children() {
+                visit_control_flow_body(child, target, is_control_body, matched);
+            }
+        }
     }
 }
 
@@ -574,6 +631,49 @@ mod tests {
     fn historical_basic_extract_on_admitted_standalone_passes_perl_c() {
         let edited = apply_historical_basic_extract(STANDALONE_EXTRACT_FIXTURE, STANDALONE_BLOCK);
         assert!(perl_compiles(&edited), "admitted historical edit must compile:\n{edited}");
+    }
+
+    /// EOF insertion must not place the new sub after a trailing `package` line.
+    #[test]
+    fn standalone_block_with_trailing_package_does_not_offer_extract_function() {
+        const FIXTURE: &str =
+            "use strict;\nuse warnings;\nuse feature \"say\";\n{ say \"ok\"; }\npackage Other;\n";
+        const BLOCK: &str = "{ say \"ok\"; }";
+        assert!(perl_compiles(FIXTURE), "fixture must compile");
+        let actions = refactor_actions(FIXTURE, BLOCK);
+        assert!(
+            extract_function_actions(&actions).is_empty(),
+            "must not extract when a package boundary follows the block, got: {:?}",
+            actions.iter().map(|action| &action.title).collect::<Vec<_>>()
+        );
+    }
+
+    /// Lexical pragma changes after the block would not apply to an EOF sub.
+    #[test]
+    fn standalone_block_with_trailing_no_feature_does_not_offer_extract_function() {
+        const FIXTURE: &str = "use strict;\nuse warnings;\nuse feature \"say\";\n{ say \"ok\"; }\nno feature \"say\";\n";
+        const BLOCK: &str = "{ say \"ok\"; }";
+        assert!(perl_compiles(FIXTURE), "fixture must compile");
+        let actions = refactor_actions(FIXTURE, BLOCK);
+        assert!(
+            extract_function_actions(&actions).is_empty(),
+            "must not extract when trailing no feature follows the block, got: {:?}",
+            actions.iter().map(|action| &action.title).collect::<Vec<_>>()
+        );
+    }
+
+    /// `caller()` stack depth changes when the block moves into a subroutine.
+    #[test]
+    fn standalone_block_using_caller_does_not_offer_extract_function() {
+        const FIXTURE: &str = "use strict;\nuse warnings;\n{ my @c = caller(); }\n";
+        const BLOCK: &str = "{ my @c = caller(); }";
+        assert!(perl_compiles(FIXTURE), "fixture must compile");
+        let actions = refactor_actions(FIXTURE, BLOCK);
+        assert!(
+            extract_function_actions(&actions).is_empty(),
+            "must not extract when the block calls caller(), got: {:?}",
+            actions.iter().map(|action| &action.title).collect::<Vec<_>>()
+        );
     }
 
     /// After one extraction, repeat requests must not re-offer the same action.
