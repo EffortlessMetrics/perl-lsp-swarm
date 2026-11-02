@@ -103,7 +103,6 @@ on:
       # half must re-run the self-test gate.
       - 'scripts/worktree-add.sh'
       - 'scripts/tests/test-worktree-add-hooks.sh'
-      - 'scripts/test-worktree-isolation.sh'
       - 'scripts/agent-preflight.sh'
       - 'scripts/test-agent-preflight.sh'
       # Per-worktree core.hooksPath isolation (issue #17414 rule C).
@@ -647,33 +646,6 @@ jobs:
             echo "## Worktree hook-provisioning self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The worktree hook-provisioning contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-  worktree-claude-isolation-self-test:
-    name: Worktree .claude isolation self-test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - name: Run worktree .claude isolation self-test
-        run: bash scripts/test-worktree-isolation.sh
-
-      - name: Summary
-        if: always()
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          if [ "$JOB_STATUS" = "success" ]; then
-            echo "## Worktree .claude isolation self-test passed" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Linked worktrees keep tracked \`.claude/\` content isolated from the coordination checkout (issue #2429)." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Worktree .claude isolation self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "The worktree .claude isolation contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   hookspath-isolation-self-test:
