@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "programme": "perl_regex_capture_conformance",
+  "family": "captures.numbering",
+  "owner_issue": 7036,
+  "rows": [
+    {
+      "id": "captures.numbering.mixed-group-forms",
+      "family": "captures.numbering",
+      "authority": "perlre(1) 'Capture groups': ordinary, non-capturing, and named group forms share one numbering stream",
+      "pattern": "(a)(?:b)(?<name>c)(?'other'd)(?P<py>e)",
+      "operator": "match",
+      "profile": {
+        "perl_minor": 44,
+        "enhanced_xx": "disabled",
+        "source_utf8": "enabled"
+      },
+      "modifier_sequence": "",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "declaration_count": 4,
+        "numbers": [1, 2, 3, 4],
+        "named_families": ["name", "other", "py"],
+        "diagnostic_codes": [],
+        "complete": true
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "captures.numbering.n-disables-ordinary",
+      "family": "captures.numbering",
+      "authority": "perlop(1) 'Modifiers': /n makes unnamed (...) non-capturing while named groups and (?-n:...) still capture",
+      "pattern": "(a)(?<name>b)(?-n:(c))",
+      "operator": "match",
+      "profile": {
+        "perl_minor": 44,
+        "enhanced_xx": "disabled",
+        "source_utf8": "enabled"
+      },
+      "modifier_sequence": "n",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "declaration_count": 2,
+        "numbers": [1, 2],
+        "named_families": ["name"],
+        "diagnostic_codes": [],
+        "complete": true
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "captures.numbering.branch-reset-with-n",
+      "family": "captures.numbering",
+      "authority": "perlre(1) '(?|...)': branch reset restarts numbering per alternative; /n suppresses unnamed captures outside (?-n:...)",
+      "pattern": "(?|(?<x>a)(b)|(?-n:(c)))(?<after>d)",
+      "operator": "match",
+      "profile": {
+        "perl_minor": 44,
+        "enhanced_xx": "disabled",
+        "source_utf8": "enabled"
+      },
+      "modifier_sequence": "n",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "declaration_count": 3,
+        "numbers": [1, 1, 2],
+        "named_families": ["x", "after"],
+        "diagnostic_codes": [],
+        "complete": true
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "captures.numbering.duplicate-named-families",
+      "family": "captures.numbering",
+      "authority": "perlre(1) 'Duplicate names': duplicate named captures remain distinct declarations sharing one family spelling",
+      "pattern": "(?<x>a)(?<x>b)(?<y>c)",
+      "operator": "match",
+      "profile": {
+        "perl_minor": 44,
+        "enhanced_xx": "disabled",
+        "source_utf8": "enabled"
+      },
+      "modifier_sequence": "",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "declaration_count": 3,
+        "numbers": [1, 2, 3],
+        "named_families": ["x", "y"],
+        "diagnostic_codes": [],
+        "complete": true
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    }
+  ]
+}
