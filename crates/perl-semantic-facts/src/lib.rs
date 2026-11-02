@@ -24,6 +24,8 @@ pub mod hook;
 /// Dependency-neutral versioned contracts for interprocedural composition
 /// (#12672).
 pub mod interprocedural;
+/// Parser-to-semantic transition contract note (#6599, PLSP-SPEC-0039).
+pub mod parser_to_semantic_contract;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;
