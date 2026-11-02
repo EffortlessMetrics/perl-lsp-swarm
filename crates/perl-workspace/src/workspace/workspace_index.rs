@@ -15192,15 +15192,6 @@ mod extraction_bundle_shadow_compare {
         );
     }
 
-    fn fixture_prefix(sub_count: usize) -> String {
-        let mut src = String::new();
-        src.push_str("package Big::Reextraction::Fixture;\n");
-        for i in 0..sub_count {
-            src.push_str(&format!("sub sub_{i} {{ return {i}; }}\n"));
-        }
-        src
-    }
-
     #[test]
     fn parity_generated_dynamic() {
         let text = r#"
