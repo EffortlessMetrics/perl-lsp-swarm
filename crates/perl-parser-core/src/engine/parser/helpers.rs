@@ -259,6 +259,13 @@ impl<'a> Parser<'a> {
             && !Self::is_keyword_handled_builtin(name)
     }
 
+    /// Expression builtins whose first argument is commonly a string/quote.
+    /// Used to admit nested list-operator calls such as `_croak sprintf qq{...}`
+    /// without treating `foo print "hi"` as a single call.
+    fn is_string_taking_expression_builtin(name: &str) -> bool {
+        matches!(name, "sprintf" | "join")
+    }
+
     /// Strip `CORE::` prefix from a name and return the bare builtin name if it
     /// is a known builtin function.  Returns `None` if the prefix is absent or
     /// if the bare name is not a builtin.
@@ -1648,6 +1655,12 @@ impl<'a> Parser<'a> {
                 //     croak ref(shift) . " is not a valid class"
                 //     confess ref($self) . "::new() is abstract"
                 //
+                // Pattern C (quote arg): `func sprintf qq{"%s"}, $arg`,
+                //   `func join ',', @list` — the builtin is a list operator whose
+                //   first argument is a string or quote-like. Without this, the
+                //   outer identifier is left as a bare term and the ternary colon
+                //   is reported as missing (`Test/Needs.pm`, #2721).
+                //
                 // Without the `LeftParen` check, the early-return here prevented
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
@@ -1658,6 +1671,22 @@ impl<'a> Parser<'a> {
                     if third.kind() == TokenKind::LeftParen {
                         // builtin(args) — the builtin is called with parens,
                         // producing a value that is the outer function's argument.
+                        return true;
+                    }
+                    // Quote/string first args prove a nested *expression* builtin
+                    // (`sprintf qq{...}`, `join ',', @list`). Statement-like
+                    // builtins (`print "hi"`) more often start the next
+                    // statement, so treating them as nested calls swallowed
+                    // genuine missing-semicolon diagnostics.
+                    if Self::is_string_taking_expression_builtin(&next_text)
+                        && matches!(
+                            third.kind(),
+                            TokenKind::String
+                                | TokenKind::QuoteSingle
+                                | TokenKind::QuoteDouble
+                                | TokenKind::QuoteCommand
+                        )
+                    {
                         return true;
                     }
                     return Self::is_sigil_argument_start(third.kind(), third_text);
