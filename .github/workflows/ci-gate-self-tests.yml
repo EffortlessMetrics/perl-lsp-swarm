@@ -186,6 +186,14 @@ on:
       - 'scripts/ci/test_ripr_event_operands.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
       - 'scripts/tests/test-preserve-lane-log-tail.sh'
+      # cargo-deny vacuous skip gate (#17686): fail closed on unmatched-skip.
+      - 'deny.toml'
+      - '.github/workflows/ci-security.yml'
+      - 'scripts/ci/assert-no-cargo-deny-unmatched-skip.sh'
+      - 'scripts/ci/run-cargo-deny-check.sh'
+      - 'scripts/security_scan.sh'
+      - 'scripts/tests/test-run-cargo-deny-check.sh'
+      - '.justfiles/security.just'
       # Governed RIPR proof entry point (#13768): the adapter and its
       # recording controls gate each other, so both halves re-run here.
       - '.ci/ripr-proof.sh'
@@ -951,3 +959,32 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The head-name sentinel contract regressed — it could again trigger via a suppressible event, execute or check out any ref, silently pass a SHA-like branch, or drift from its documented surface. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  cargo-deny-unmatched-skip-self-test:
+    name: cargo-deny unmatched-skip gate self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: cargo-deny
+
+      - name: Run cargo-deny unmatched-skip gate self-test
+        run: bash scripts/tests/test-run-cargo-deny-check.sh
+
+  security-scan-receipt-self-test:
+    name: security scan typed receipt self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run security scan receipt self-test
+        run: bash scripts/security_scan_test.sh
