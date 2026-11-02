@@ -638,14 +638,7 @@ fn prepare_gitignore_probe_repo(
     root: &Path,
     relative_paths: &[PathBuf],
 ) -> std::io::Result<PathBuf> {
-    let probe_root = std::env::temp_dir().join(format!(
-        "perl-workspace-gitignore-probe-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos())
-    ));
-    std::fs::create_dir_all(&probe_root)?;
+    let probe_root = create_gitignore_probe_root()?;
 
     let init = std::process::Command::new("git")
         .args(["init", "--quiet"])
@@ -655,6 +648,7 @@ fn prepare_gitignore_probe_repo(
         return Err(std::io::Error::other("git init failed for ignore probe"));
     }
 
+    copy_gitignore_probe_configuration(root, &probe_root)?;
     copy_gitignore_rules_for_paths(root, &probe_root, relative_paths)?;
 
     for relative in relative_paths {
@@ -665,14 +659,119 @@ fn prepare_gitignore_probe_repo(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if path.extension().is_some() {
-            std::fs::write(path, b"")?;
-        } else {
-            std::fs::create_dir_all(path)?;
-        }
+        // Linked-directory expansion only supplies regular files; materialize each
+        // candidate as a file so directory-only ignore rules cannot misfire.
+        std::fs::write(path, b"")?;
     }
 
     Ok(probe_root)
+}
+
+fn create_gitignore_probe_root() -> std::io::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    for attempt in 0..32 {
+        let candidate = base.join(format!(
+            "perl-workspace-gitignore-probe-{}-{}-{}",
+            std::process::id(),
+            seed,
+            attempt
+        ));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique gitignore probe directory",
+    ))
+}
+
+fn copy_gitignore_probe_configuration(
+    source_root: &Path,
+    probe_root: &Path,
+) -> std::io::Result<()> {
+    const KEYS: &[&str] = &["core.excludesfile", "core.ignorecase", "core.quotepath"];
+    for key in KEYS {
+        let Some(value) = git_local_config_value(source_root, key) else {
+            continue;
+        };
+        if *key == "core.excludesfile" {
+            let source_excludes = resolve_git_path(source_root, &value);
+            if source_excludes.is_file() {
+                let dest = probe_root.join(".git").join("info").join("probe-excludes");
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(source_excludes, &dest)?;
+                git_set_local_config(probe_root, key, &path_to_git_config_value(&dest))?;
+            } else {
+                git_set_local_config(probe_root, key, &value)?;
+            }
+            continue;
+        }
+        git_set_local_config(probe_root, key, &value)?;
+    }
+
+    copy_git_info_exclude(source_root, probe_root)
+}
+
+fn git_local_config_value(root: &Path, key: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["config", "--local", "--get", key])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+fn git_set_local_config(root: &Path, key: &str, value: &str) -> std::io::Result<()> {
+    let status = std::process::Command::new("git")
+        .args(["config", "--local", key, value])
+        .current_dir(root)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("git config --local {key} failed for ignore probe")))
+    }
+}
+
+fn resolve_git_path(root: &Path, git_path: &str) -> PathBuf {
+    let path = Path::new(git_path);
+    if path.is_absolute() { path.to_path_buf() } else { root.join(path) }
+}
+
+fn path_to_git_config_value(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn copy_git_info_exclude(source_root: &Path, probe_root: &Path) -> std::io::Result<()> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--git-path", "info/exclude"])
+        .current_dir(source_root)
+        .output()?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let source = resolve_git_path(source_root, String::from_utf8_lossy(&output.stdout).trim());
+    if !source.is_file() {
+        return Ok(());
+    }
+    let dest = probe_root.join(".git").join("info").join("exclude");
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(source, dest)?;
+    Ok(())
 }
 
 fn copy_gitignore_rules_for_paths(
@@ -695,15 +794,6 @@ fn copy_gitignore_rules_for_paths(
             dir.push(name);
             copy_gitignore_if_present(root, probe_root, &dir, &mut copied)?;
         }
-    }
-
-    let exclude = root.join(".git").join("info").join("exclude");
-    if exclude.is_file() {
-        let dest = probe_root.join(".git").join("info").join("exclude");
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(exclude, dest)?;
     }
 
     Ok(())
