@@ -11,8 +11,9 @@ pub const STATUS_PATH: &str = "docs/project/status/critic_rule_proof.md";
 pub const FIXTURE_ROOT: &str = "fixtures/critic-rule-proof";
 pub const ISSUE: u32 = 6973;
 
-/// Closed sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). Extra catalog rows
-/// are rejected so remaining classes stay missing on purpose (#14560).
+/// Closed twenty-four-rule cohort (#6973 pilot, #17661 cohort 2, #6979 supplementary cases,
+/// #6978 strict variable/scope rules). Extra catalog rows are rejected so remaining classes
+/// stay missing on purpose (#14560).
 pub const PILOT_RULES: &[&str] = &[
     "native.testing.require_use_strict",
     "native.testing.require_use_warnings",
@@ -30,6 +31,14 @@ pub const PILOT_RULES: &[&str] = &[
     "native.documentation.require_pod_sections",
     "native.syntax.prohibit_leading_zeros",
     "native.syntax.unquoted_bareword",
+    "native.variables.unused_lexical",
+    "native.variables.unused_parameter",
+    "native.variables.duplicate_parameter",
+    "native.variables.parameter_shadows_global",
+    "native.variables.duplicate_lexical",
+    "native.variables.shadowed_lexical",
+    "native.variables.undeclared",
+    "native.variables.uninitialized",
 ];
 
 /// Resolve a declared fixture path beneath the repository root and require it

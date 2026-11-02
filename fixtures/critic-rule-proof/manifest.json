@@ -4,8 +4,8 @@
   "issue": 6973,
   "owner": "native-critic",
   "status": "pilot",
-  "updated": "2026-08-26",
-  "claim_boundary": "This pilot owns the versioned rule-proof schema, typed model, generator/checker, and a sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). Issue #6979 adds nine supplementary strict regex/POD/literal cases on top of the cohort-3 five-case rows without changing critic rule semantics. It does not migrate the remaining 12 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.",
+  "updated": "2026-11-02",
+  "claim_boundary": "This pilot owns the versioned rule-proof schema, typed model, generator/checker, and the closed strict variable/scope cohort (#6978) plus the earlier sixteen-rule pilot (#6973, #17661, #6979 supplementary regex/POD/literal cases). It does not migrate remaining native rules or change critic rule semantics.",
   "evidence_classes": [
     "positive_finding",
     "near_miss_negative",
@@ -284,6 +284,126 @@
     },
     "unreachable_code/suppression.pl": {
       "digest": "sha256:148e13a2b02d8a8ea1862c2e1e3a68c07cfa27af965a230a2650d406f94f47b7"
+    },
+    "unused_lexical/positive.pl": {
+      "digest": "sha256:0c3826edd957679a297e0e7c7d5aa21d44e00a44f6b2f398b743309ad206df9b"
+    },
+    "unused_lexical/near_miss.pl": {
+      "digest": "sha256:b5b319a3c40cdbc831869dc71b0af2a7f48c437ff1b3919d5e99e87f325b32b6"
+    },
+    "unused_lexical/project_shaped.pl": {
+      "digest": "sha256:c509e982af5acf803f5ea1ea52ed5ffeb3335bb82d29dafccf40ed5de504ebd3"
+    },
+    "unused_lexical/suppression.pl": {
+      "digest": "sha256:45686c97347222f380cddfa7a5d65f86149ebd27fb8455f1ba9ac32cf7d0b87c"
+    },
+    "unused_lexical/boundary.pl": {
+      "digest": "sha256:5fb6ee17d853b5d65f2cda2b38eff8cfe872f53f01f7269f4fe14ab4bc699be2"
+    },
+    "unused_parameter/positive.pl": {
+      "digest": "sha256:522a58226f63436cf55145443290cbdc5bdb41ac46b5b256114fcf5baeae12ab"
+    },
+    "unused_parameter/near_miss.pl": {
+      "digest": "sha256:694998ea019ccda94b444eeacdd4732eefa1804fcd2dc7b70e3eb7c1b9b50764"
+    },
+    "unused_parameter/project_shaped.pl": {
+      "digest": "sha256:fcd1c65a684ba25e444d964d14c9cdf599e435e207e3a20e02188c8b6f0d46e4"
+    },
+    "unused_parameter/suppression.pl": {
+      "digest": "sha256:b34506e50ebecccd1de90f354f64b094e5bf064b6c8c00a16f810716b7399bea"
+    },
+    "unused_parameter/boundary.pl": {
+      "digest": "sha256:fe1c790db3ffc59ca6b000cfce1e91810712d5d1d5a1934e852f5fe064665c69"
+    },
+    "duplicate_parameter/positive.pl": {
+      "digest": "sha256:3a2421390dfbf9ffa4f1845c611173af68163ff97944b5ae1253fd0f94018d38"
+    },
+    "duplicate_parameter/near_miss.pl": {
+      "digest": "sha256:26e406775edbad2ae9e1932c935985ec7f30fb38e6986532917f9b856edd9ca0"
+    },
+    "duplicate_parameter/project_shaped.pl": {
+      "digest": "sha256:9ce81c80e65f3ff4273e9f009bb97e31c0e07595830f504ad628201cdbff5e6f"
+    },
+    "duplicate_parameter/suppression.pl": {
+      "digest": "sha256:d22b76117302bc6c17fce26ec13865b517277984b8df51c05f23f440320b1147"
+    },
+    "duplicate_parameter/boundary.pl": {
+      "digest": "sha256:0d5de15db33953209b1fed708ae52cfd2a9c96564c11b3d8a7c11dda96547bae"
+    },
+    "parameter_shadows_global/positive.pl": {
+      "digest": "sha256:c02bc99ebaac0feecfefce61c6862dc57288251a76447e5e7e0938b0ab7727c6"
+    },
+    "parameter_shadows_global/near_miss.pl": {
+      "digest": "sha256:f665019884b1005b997e48c25d5e390e3d6fec771b0d926d1da04823d69ca6cd"
+    },
+    "parameter_shadows_global/project_shaped.pl": {
+      "digest": "sha256:65bff3a516d1adddba544c1fb4e44cf08b806937a719e6821e16b856da6bacf1"
+    },
+    "parameter_shadows_global/suppression.pl": {
+      "digest": "sha256:2ed9aae1ef340ad6e9cd0f94277286962449a175b367448ca2001d4013c6c5fc"
+    },
+    "parameter_shadows_global/boundary.pl": {
+      "digest": "sha256:a81b87acccc10d6c4a31d5ca765fe14c46385edf45ba9574e120118fffdcdb86"
+    },
+    "duplicate_lexical/positive.pl": {
+      "digest": "sha256:d7c229a44f9602161470adcea207934c85fb63d5bfe07e4cbeddbf2dba13e041"
+    },
+    "duplicate_lexical/near_miss.pl": {
+      "digest": "sha256:afbbce6c6dd9ea4cd722ae17c9048e8613545acdfd77851f211b5b73c7b79774"
+    },
+    "duplicate_lexical/project_shaped.pl": {
+      "digest": "sha256:679bc3324aa4dd5deea983f5e93ed65af5815e7e8d5b88d007e6fc87ea1569c0"
+    },
+    "duplicate_lexical/suppression.pl": {
+      "digest": "sha256:285d4c9edc5a1c16eaab606a874142fed105f1f68cb65a7771b7176f186d45a3"
+    },
+    "duplicate_lexical/boundary.pl": {
+      "digest": "sha256:9368ee43354d840f0cfc531ab033b1a7dc2474c2f7430fdd39c194ffdb674b6f"
+    },
+    "shadowed_lexical/positive.pl": {
+      "digest": "sha256:afbbce6c6dd9ea4cd722ae17c9048e8613545acdfd77851f211b5b73c7b79774"
+    },
+    "shadowed_lexical/near_miss.pl": {
+      "digest": "sha256:950c2dabb05f06fe7e209c4258b5f24aa06253409ed506ce7bba4d91fb379db4"
+    },
+    "shadowed_lexical/project_shaped.pl": {
+      "digest": "sha256:f44aa0dcec36c82bdee1269fc45d958354406d4ae27c46762b06e547a4e50f58"
+    },
+    "shadowed_lexical/suppression.pl": {
+      "digest": "sha256:021e3ca926747ba3ca7a480fd2ec99daec1073442874e2cb62c3e2c15ba2919b"
+    },
+    "shadowed_lexical/boundary.pl": {
+      "digest": "sha256:2fa28df8cf140ad5afef44f897e283fd3897fa5eb934eff5703b52bd5d09b00d"
+    },
+    "undeclared/positive.pl": {
+      "digest": "sha256:054e10d0b62667f22bcce94a3f76789624aa11e605c563e5c2dcd7c898a30b0a"
+    },
+    "undeclared/near_miss.pl": {
+      "digest": "sha256:c891ce3d64bf3043876a82ce5ff47b81c8d2ea96bcd053a26c4b2e8683a5da90"
+    },
+    "undeclared/project_shaped.pl": {
+      "digest": "sha256:eedea95586134c2b25a2d547a014c0e00172931c5c106cd86fe3e23284193323"
+    },
+    "undeclared/suppression.pl": {
+      "digest": "sha256:175ff33990c5beb1f3f5058e48dfbc13360a67e67cc8aeb38e4d76fc33885005"
+    },
+    "undeclared/boundary.pl": {
+      "digest": "sha256:f20feb4a05cd75a87a172de01d08e1013adfd1d68cc3d71e7127031592e03c23"
+    },
+    "uninitialized/positive.pl": {
+      "digest": "sha256:8b3636f7708dd3af317aaaa2796208c8087cc6b629b35cfe4b7f8dce0c75968e"
+    },
+    "uninitialized/near_miss.pl": {
+      "digest": "sha256:2e6ab0b90d51ce806203f9f71e3079d08965f1a594fee790687e6de5500cf92c"
+    },
+    "uninitialized/project_shaped.pl": {
+      "digest": "sha256:89ba7520a83c7d68fbcbe3f955cce7bb0409e9203297bac978e27d2b04e0bd38"
+    },
+    "uninitialized/suppression.pl": {
+      "digest": "sha256:c318771083badaa390975e74bd5ac48c573abf5479cbc55a7f84f7d4c75af704"
+    },
+    "uninitialized/boundary.pl": {
+      "digest": "sha256:cb2ec9b07bb3d1fbc2bbb89a05e905ff538640fb8438f5f4b2f56803765943de"
     }
   },
   "rules": [
@@ -470,8 +590,7 @@
           "shape": "general"
         }
       ]
-    }
-,
+    },
     {
       "rule_id": "native.common.stale_dollar_at",
       "canonical_id": "critic.common.stale_dollar_at",
@@ -605,6 +724,160 @@
           "shape": "general"
         }
       ]
+    },
+    {
+      "rule_id": "native.variables.unused_lexical",
+      "canonical_id": "critic.variables.unused_lexical",
+      "profile": "strict",
+      "declared_remediation": "preview_candidate",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.unused_lexical",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL102",
+          "shape": "general"
+        },
+        {
+          "origin": "legacy_policy",
+          "code": "Variables::ProhibitUnusedVariables",
+          "shape": "general"
+        },
+        {
+          "origin": "external_perl_critic",
+          "code": "Variables::ProhibitUnusedVariables",
+          "shape": "general"
+        }
+      ]
+    },
+    {
+      "rule_id": "native.variables.unused_parameter",
+      "canonical_id": "critic.variables.unused_parameter",
+      "profile": "strict",
+      "declared_remediation": "preview_candidate",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.unused_parameter",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL108",
+          "shape": "general"
+        }
+      ]
+    },
+    {
+      "rule_id": "native.variables.duplicate_parameter",
+      "canonical_id": "critic.variables.duplicate_parameter",
+      "profile": "strict",
+      "declared_remediation": "preview_candidate",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.duplicate_parameter",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL106",
+          "shape": "general"
+        }
+      ]
+    },
+    {
+      "rule_id": "native.variables.parameter_shadows_global",
+      "canonical_id": "critic.variables.parameter_shadows_global",
+      "profile": "strict",
+      "declared_remediation": "preview_candidate",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.parameter_shadows_global",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL107",
+          "shape": "general"
+        }
+      ]
+    },
+    {
+      "rule_id": "native.variables.duplicate_lexical",
+      "canonical_id": "critic.variables.duplicate_lexical",
+      "profile": "strict",
+      "declared_remediation": "automatic_candidate",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.duplicate_lexical",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL105",
+          "shape": "general"
+        }
+      ]
+    },
+    {
+      "rule_id": "native.variables.shadowed_lexical",
+      "canonical_id": "critic.variables.shadowed_lexical",
+      "profile": "strict",
+      "declared_remediation": "preview_candidate",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.shadowed_lexical",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL104",
+          "shape": "general"
+        }
+      ]
+    },
+    {
+      "rule_id": "native.variables.undeclared",
+      "canonical_id": "critic.variables.undeclared",
+      "profile": "strict",
+      "declared_remediation": "preview_candidate",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.undeclared",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL103",
+          "shape": "general"
+        }
+      ]
+    },
+    {
+      "rule_id": "native.variables.uninitialized",
+      "canonical_id": "critic.variables.uninitialized",
+      "profile": "strict",
+      "declared_remediation": "none",
+      "identity_aliases": [
+        {
+          "origin": "native_critic",
+          "code": "native.variables.uninitialized",
+          "shape": "general"
+        },
+        {
+          "origin": "built_in_diagnostic",
+          "code": "PL110",
+          "shape": "general"
+        }
+      ]
     }
   ],
   "cases": [
@@ -620,7 +893,9 @@
       ],
       "fixture": "require_use_strict/positive.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_strict"],
+      "include": [
+        "native.testing.require_use_strict"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -640,7 +915,11 @@
         "expect_target_removed": true,
         "expect_no_new_governed": true,
         "expected_edits": [
-          { "start_byte": 0, "end_byte": 0, "new_text": "use strict;\n" }
+          {
+            "start_byte": 0,
+            "end_byte": 0,
+            "new_text": "use strict;\n"
+          }
         ]
       },
       "proposition": "A file without use strict emits one insertion-range finding with a Safe automatic-candidate edit; applying it reparses and removes the target diagnostic."
@@ -648,47 +927,69 @@
     {
       "case_id": "CRP-STRICT-NEAR-001",
       "rule_id": "native.testing.require_use_strict",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "require_use_strict/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_strict"],
+      "include": [
+        "native.testing.require_use_strict"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.testing.require_use_strict"],
+      "expected_non_findings": [
+        "native.testing.require_use_strict"
+      ],
       "proposition": "An independently authored shebang-plus-package file that does use strict is not a missing-pragma finding."
     },
     {
       "case_id": "CRP-STRICT-PROJ-001",
       "rule_id": "native.testing.require_use_strict",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "require_use_strict/project_shaped.t",
       "profile": "recommended",
-      "include": ["native.testing.require_use_strict"],
+      "include": [
+        "native.testing.require_use_strict"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.testing.require_use_strict"],
+      "expected_non_findings": [
+        "native.testing.require_use_strict"
+      ],
       "proposition": "use Test2::V0 satisfies require_use_strict without a bare use strict line."
     },
     {
       "case_id": "CRP-STRICT-SUPP-001",
       "rule_id": "native.testing.require_use_strict",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "require_use_strict/suppression.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_strict"],
+      "include": [
+        "native.testing.require_use_strict"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.testing.require_use_strict"],
+      "expected_non_findings": [
+        "native.testing.require_use_strict"
+      ],
       "suppression_selector": "native.testing.require_use_strict",
       "proposition": "File-level ## no critic for the governed rule suppresses the missing-strict finding; stripping it restores that same rule."
     },
     {
       "case_id": "CRP-STRICT-BOUND-001",
       "rule_id": "native.testing.require_use_strict",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "require_use_strict/boundary.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_strict"],
+      "include": [
+        "native.testing.require_use_strict"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -716,7 +1017,9 @@
       ],
       "fixture": "require_use_warnings/positive.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_warnings"],
+      "include": [
+        "native.testing.require_use_warnings"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -736,7 +1039,11 @@
         "expect_target_removed": true,
         "expect_no_new_governed": true,
         "expected_edits": [
-          { "start_byte": 0, "end_byte": 0, "new_text": "use warnings;\n" }
+          {
+            "start_byte": 0,
+            "end_byte": 0,
+            "new_text": "use warnings;\n"
+          }
         ]
       },
       "proposition": "A file without use warnings emits one insertion-range finding with a Safe automatic-candidate edit; applying it reparses and removes the target diagnostic."
@@ -744,47 +1051,69 @@
     {
       "case_id": "CRP-WARN-NEAR-001",
       "rule_id": "native.testing.require_use_warnings",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "require_use_warnings/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_warnings"],
+      "include": [
+        "native.testing.require_use_warnings"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.testing.require_use_warnings"],
+      "expected_non_findings": [
+        "native.testing.require_use_warnings"
+      ],
       "proposition": "An independently authored shebang-plus-package file that does use warnings is not a missing-pragma finding."
     },
     {
       "case_id": "CRP-WARN-PROJ-001",
       "rule_id": "native.testing.require_use_warnings",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "require_use_warnings/project_shaped.t",
       "profile": "recommended",
-      "include": ["native.testing.require_use_warnings"],
+      "include": [
+        "native.testing.require_use_warnings"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.testing.require_use_warnings"],
+      "expected_non_findings": [
+        "native.testing.require_use_warnings"
+      ],
       "proposition": "use Test2::V0 satisfies require_use_warnings without a bare use warnings line."
     },
     {
       "case_id": "CRP-WARN-SUPP-001",
       "rule_id": "native.testing.require_use_warnings",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "require_use_warnings/suppression.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_warnings"],
+      "include": [
+        "native.testing.require_use_warnings"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.testing.require_use_warnings"],
+      "expected_non_findings": [
+        "native.testing.require_use_warnings"
+      ],
       "suppression_selector": "native.testing.require_use_warnings",
       "proposition": "File-level ## no critic for the governed rule suppresses the missing-warnings finding; stripping it restores that same rule."
     },
     {
       "case_id": "CRP-WARN-BOUND-001",
       "rule_id": "native.testing.require_use_warnings",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "require_use_warnings/boundary.pl",
       "profile": "recommended",
-      "include": ["native.testing.require_use_warnings"],
+      "include": [
+        "native.testing.require_use_warnings"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -811,7 +1140,9 @@
       ],
       "fixture": "assignment_in_condition/positive.pl",
       "profile": "recommended",
-      "include": ["native.common.assignment_in_condition"],
+      "include": [
+        "native.common.assignment_in_condition"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -830,50 +1161,74 @@
     {
       "case_id": "CRP-ASSIGN-NEAR-001",
       "rule_id": "native.common.assignment_in_condition",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "assignment_in_condition/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.common.assignment_in_condition"],
+      "include": [
+        "native.common.assignment_in_condition"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.assignment_in_condition"],
+      "expected_non_findings": [
+        "native.common.assignment_in_condition"
+      ],
       "proposition": "An independently authored comparison condition is not an assignment-in-condition finding."
     },
     {
       "case_id": "CRP-ASSIGN-PROJ-001",
       "rule_id": "native.common.assignment_in_condition",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "assignment_in_condition/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.common.assignment_in_condition"],
+      "include": [
+        "native.common.assignment_in_condition"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.assignment_in_condition"],
+      "expected_non_findings": [
+        "native.common.assignment_in_condition"
+      ],
       "proposition": "Double-parenthesized assignment is treated as intentional and is not a finding."
     },
     {
       "case_id": "CRP-ASSIGN-SUPP-001",
       "rule_id": "native.common.assignment_in_condition",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "assignment_in_condition/suppression.pl",
       "profile": "recommended",
-      "include": ["native.common.assignment_in_condition"],
+      "include": [
+        "native.common.assignment_in_condition"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.assignment_in_condition"],
+      "expected_non_findings": [
+        "native.common.assignment_in_condition"
+      ],
       "suppression_selector": "native.common.assignment_in_condition",
       "proposition": "File-level suppression of the governed assignment rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-ASSIGN-BOUND-001",
       "rule_id": "native.common.assignment_in_condition",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "assignment_in_condition/boundary.pl",
       "profile": "recommended",
-      "include": ["native.common.assignment_in_condition"],
+      "include": [
+        "native.common.assignment_in_condition"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.assignment_in_condition"],
+      "expected_non_findings": [
+        "native.common.assignment_in_condition"
+      ],
       "proposition": "A commented assignment-in-condition is not a finding; comment text does not inherit a positive."
     },
     {
@@ -887,7 +1242,9 @@
       ],
       "fixture": "printf_format_arity/positive.pl",
       "profile": "recommended",
-      "include": ["native.common.printf_format_arity"],
+      "include": [
+        "native.common.printf_format_arity"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -905,50 +1262,74 @@
     {
       "case_id": "CRP-PRINTF-NEAR-001",
       "rule_id": "native.common.printf_format_arity",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "printf_format_arity/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.common.printf_format_arity"],
+      "include": [
+        "native.common.printf_format_arity"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.printf_format_arity"],
+      "expected_non_findings": [
+        "native.common.printf_format_arity"
+      ],
       "proposition": "An independently authored printf whose specifier and argument counts match is not an arity finding."
     },
     {
       "case_id": "CRP-PRINTF-PROJ-001",
       "rule_id": "native.common.printf_format_arity",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "printf_format_arity/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.common.printf_format_arity"],
+      "include": [
+        "native.common.printf_format_arity"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.printf_format_arity"],
+      "expected_non_findings": [
+        "native.common.printf_format_arity"
+      ],
       "proposition": "A project-shaped helper returning a matching sprintf is not an arity finding."
     },
     {
       "case_id": "CRP-PRINTF-SUPP-001",
       "rule_id": "native.common.printf_format_arity",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "printf_format_arity/suppression.pl",
       "profile": "recommended",
-      "include": ["native.common.printf_format_arity"],
+      "include": [
+        "native.common.printf_format_arity"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.printf_format_arity"],
+      "expected_non_findings": [
+        "native.common.printf_format_arity"
+      ],
       "suppression_selector": "native.common.printf_format_arity",
       "proposition": "File-level suppression of the governed printf rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-PRINTF-BOUND-001",
       "rule_id": "native.common.printf_format_arity",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "printf_format_arity/boundary.pl",
       "profile": "recommended",
-      "include": ["native.common.printf_format_arity"],
+      "include": [
+        "native.common.printf_format_arity"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.printf_format_arity"],
+      "expected_non_findings": [
+        "native.common.printf_format_arity"
+      ],
       "proposition": "A commented printf arity mismatch is not a finding; comment text does not inherit a positive."
     },
     {
@@ -962,7 +1343,9 @@
       ],
       "fixture": "deprecated_defined/positive.pl",
       "profile": "recommended",
-      "include": ["native.common.deprecated_defined"],
+      "include": [
+        "native.common.deprecated_defined"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -981,50 +1364,74 @@
     {
       "case_id": "CRP-DEFD-NEAR-001",
       "rule_id": "native.common.deprecated_defined",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "deprecated_defined/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.common.deprecated_defined"],
+      "include": [
+        "native.common.deprecated_defined"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.deprecated_defined"],
+      "expected_non_findings": [
+        "native.common.deprecated_defined"
+      ],
       "proposition": "An independently authored defined $scalar check is not a deprecated-defined finding."
     },
     {
       "case_id": "CRP-DEFD-PROJ-001",
       "rule_id": "native.common.deprecated_defined",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "deprecated_defined/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.common.deprecated_defined"],
+      "include": [
+        "native.common.deprecated_defined"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.deprecated_defined"],
+      "expected_non_findings": [
+        "native.common.deprecated_defined"
+      ],
       "proposition": "A project-shaped helper that tests an array in boolean context is not a deprecated-defined finding."
     },
     {
       "case_id": "CRP-DEFD-SUPP-001",
       "rule_id": "native.common.deprecated_defined",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "deprecated_defined/suppression.pl",
       "profile": "recommended",
-      "include": ["native.common.deprecated_defined"],
+      "include": [
+        "native.common.deprecated_defined"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.deprecated_defined"],
+      "expected_non_findings": [
+        "native.common.deprecated_defined"
+      ],
       "suppression_selector": "native.common.deprecated_defined",
       "proposition": "File-level suppression of the governed deprecated-defined rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-DEFD-BOUND-001",
       "rule_id": "native.common.deprecated_defined",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "deprecated_defined/boundary.pl",
       "profile": "recommended",
-      "include": ["native.common.deprecated_defined"],
+      "include": [
+        "native.common.deprecated_defined"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.deprecated_defined"],
+      "expected_non_findings": [
+        "native.common.deprecated_defined"
+      ],
       "proposition": "A commented defined @array is not a finding; comment text does not inherit a positive."
     },
     {
@@ -1038,7 +1445,9 @@
       ],
       "fixture": "two_arg_open/positive.pl",
       "profile": "recommended",
-      "include": ["native.io.two_arg_open"],
+      "include": [
+        "native.io.two_arg_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1057,50 +1466,74 @@
     {
       "case_id": "CRP-OPEN-NEAR-001",
       "rule_id": "native.io.two_arg_open",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "two_arg_open/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.io.two_arg_open"],
+      "include": [
+        "native.io.two_arg_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.two_arg_open"],
+      "expected_non_findings": [
+        "native.io.two_arg_open"
+      ],
       "proposition": "An independently authored three-argument open is not a two-argument-open finding."
     },
     {
       "case_id": "CRP-OPEN-PROJ-001",
       "rule_id": "native.io.two_arg_open",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "two_arg_open/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.io.two_arg_open"],
+      "include": [
+        "native.io.two_arg_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.two_arg_open"],
+      "expected_non_findings": [
+        "native.io.two_arg_open"
+      ],
       "proposition": "A project-shaped loader using three-argument open with an error check is not a two-argument-open finding."
     },
     {
       "case_id": "CRP-OPEN-SUPP-001",
       "rule_id": "native.io.two_arg_open",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "two_arg_open/suppression.pl",
       "profile": "recommended",
-      "include": ["native.io.two_arg_open"],
+      "include": [
+        "native.io.two_arg_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.two_arg_open"],
+      "expected_non_findings": [
+        "native.io.two_arg_open"
+      ],
       "suppression_selector": "native.io.two_arg_open",
       "proposition": "File-level suppression of the governed two-argument-open rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-OPEN-BOUND-001",
       "rule_id": "native.io.two_arg_open",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "two_arg_open/boundary.pl",
       "profile": "recommended",
-      "include": ["native.io.two_arg_open"],
+      "include": [
+        "native.io.two_arg_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.two_arg_open"],
+      "expected_non_findings": [
+        "native.io.two_arg_open"
+      ],
       "proposition": "A commented two-argument open is not a finding; comment text does not inherit a positive."
     },
     {
@@ -1114,7 +1547,9 @@
       ],
       "fixture": "string_eval/positive.pl",
       "profile": "recommended",
-      "include": ["native.security.string_eval"],
+      "include": [
+        "native.security.string_eval"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1132,50 +1567,74 @@
     {
       "case_id": "CRP-EVAL-NEAR-001",
       "rule_id": "native.security.string_eval",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "string_eval/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.security.string_eval"],
+      "include": [
+        "native.security.string_eval"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.security.string_eval"],
+      "expected_non_findings": [
+        "native.security.string_eval"
+      ],
       "proposition": "Block eval is an independently authored near miss and is not a string-eval finding."
     },
     {
       "case_id": "CRP-EVAL-PROJ-001",
       "rule_id": "native.security.string_eval",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "string_eval/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.security.string_eval"],
+      "include": [
+        "native.security.string_eval"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.security.string_eval"],
+      "expected_non_findings": [
+        "native.security.string_eval"
+      ],
       "proposition": "Project-shaped exception-handling block eval is not a string-eval finding."
     },
     {
       "case_id": "CRP-EVAL-SUPP-001",
       "rule_id": "native.security.string_eval",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "string_eval/suppression.pl",
       "profile": "recommended",
-      "include": ["native.security.string_eval"],
+      "include": [
+        "native.security.string_eval"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.security.string_eval"],
+      "expected_non_findings": [
+        "native.security.string_eval"
+      ],
       "suppression_selector": "native.security.string_eval",
       "proposition": "File-level suppression of the governed string-eval rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-EVAL-BOUND-001",
       "rule_id": "native.security.string_eval",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "string_eval/boundary.pl",
       "profile": "recommended",
-      "include": ["native.security.string_eval"],
+      "include": [
+        "native.security.string_eval"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.security.string_eval"],
+      "expected_non_findings": [
+        "native.security.string_eval"
+      ],
       "proposition": "A commented string eval is not a finding; comment text does not inherit a positive."
     },
     {
@@ -1189,7 +1648,9 @@
       ],
       "fixture": "capture_without_match/positive.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1207,50 +1668,74 @@
     {
       "case_id": "CRP-CAP-NEAR-001",
       "rule_id": "native.regex.capture_without_match",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "capture_without_match/near_miss.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.regex.capture_without_match"],
+      "expected_non_findings": [
+        "native.regex.capture_without_match"
+      ],
       "proposition": "An independently authored capture after a successful match is not a finding."
     },
     {
       "case_id": "CRP-CAP-PROJ-001",
       "rule_id": "native.regex.capture_without_match",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "capture_without_match/project_shaped.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.regex.capture_without_match"],
+      "expected_non_findings": [
+        "native.regex.capture_without_match"
+      ],
       "proposition": "A project-shaped helper that reads $1 only after a match is not a finding."
     },
     {
       "case_id": "CRP-CAP-SUPP-001",
       "rule_id": "native.regex.capture_without_match",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "capture_without_match/suppression.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.regex.capture_without_match"],
+      "expected_non_findings": [
+        "native.regex.capture_without_match"
+      ],
       "suppression_selector": "native.regex.capture_without_match",
       "proposition": "File-level suppression of the governed capture rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-CAP-BOUND-001",
       "rule_id": "native.regex.capture_without_match",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "capture_without_match/boundary.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.regex.capture_without_match"],
+      "expected_non_findings": [
+        "native.regex.capture_without_match"
+      ],
       "proposition": "A single-quoted '$1' is not a capture-variable use; string text does not inherit a positive."
     },
     {
@@ -1264,7 +1749,9 @@
       ],
       "fixture": "capture_without_match/before_match.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1282,25 +1769,37 @@
     {
       "case_id": "CRP-CAP-NEAR-002",
       "rule_id": "native.regex.capture_without_match",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "capture_without_match/nested_after_match.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.regex.capture_without_match"],
+      "expected_non_findings": [
+        "native.regex.capture_without_match"
+      ],
       "proposition": "A nested block inherits regex-match context from an outer scope and is not a capture-without-match finding."
     },
     {
       "case_id": "CRP-CAP-BOUND-002",
       "rule_id": "native.regex.capture_without_match",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "capture_without_match/string_interpolation.pl",
       "profile": "strict",
-      "include": ["native.regex.capture_without_match"],
+      "include": [
+        "native.regex.capture_without_match"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.regex.capture_without_match"],
+      "expected_non_findings": [
+        "native.regex.capture_without_match"
+      ],
       "proposition": "Interpolated capture text inside a double-quoted string is not visited as a capture-variable use at the current rule boundary."
     },
     {
@@ -1314,7 +1813,9 @@
       ],
       "fixture": "stale_dollar_at/positive.pl",
       "profile": "recommended",
-      "include": ["native.common.stale_dollar_at"],
+      "include": [
+        "native.common.stale_dollar_at"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1332,50 +1833,74 @@
     {
       "case_id": "CRP-STALE-NEAR-001",
       "rule_id": "native.common.stale_dollar_at",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "stale_dollar_at/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.common.stale_dollar_at"],
+      "include": [
+        "native.common.stale_dollar_at"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.stale_dollar_at"],
+      "expected_non_findings": [
+        "native.common.stale_dollar_at"
+      ],
       "proposition": "An independently authored block that localizes $@ before eval is not a stale-error finding."
     },
     {
       "case_id": "CRP-STALE-PROJ-001",
       "rule_id": "native.common.stale_dollar_at",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "stale_dollar_at/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.common.stale_dollar_at"],
+      "include": [
+        "native.common.stale_dollar_at"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.stale_dollar_at"],
+      "expected_non_findings": [
+        "native.common.stale_dollar_at"
+      ],
       "proposition": "A project-shaped helper that checks the eval return value instead of $@ is not a stale-error finding."
     },
     {
       "case_id": "CRP-STALE-SUPP-001",
       "rule_id": "native.common.stale_dollar_at",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "stale_dollar_at/suppression.pl",
       "profile": "recommended",
-      "include": ["native.common.stale_dollar_at"],
+      "include": [
+        "native.common.stale_dollar_at"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.stale_dollar_at"],
+      "expected_non_findings": [
+        "native.common.stale_dollar_at"
+      ],
       "suppression_selector": "native.common.stale_dollar_at",
       "proposition": "File-level suppression of the governed stale-error rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-STALE-BOUND-001",
       "rule_id": "native.common.stale_dollar_at",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "stale_dollar_at/boundary.pl",
       "profile": "recommended",
-      "include": ["native.common.stale_dollar_at"],
+      "include": [
+        "native.common.stale_dollar_at"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.stale_dollar_at"],
+      "expected_non_findings": [
+        "native.common.stale_dollar_at"
+      ],
       "proposition": "A commented eval/$@ check is not a finding; comment text does not inherit a positive."
     },
     {
@@ -1390,7 +1915,9 @@
       ],
       "fixture": "unreachable_code/positive.pl",
       "profile": "recommended",
-      "include": ["native.common.unreachable_code"],
+      "include": [
+        "native.common.unreachable_code"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1410,7 +1937,11 @@
         "expect_target_removed": true,
         "expect_no_new_governed": true,
         "expected_edits": [
-          { "start_byte": 44, "end_byte": 58, "new_text": "" }
+          {
+            "start_byte": 44,
+            "end_byte": 58,
+            "new_text": ""
+          }
         ]
       },
       "proposition": "A statement after an unconditional return is an automatic-candidate unreachable finding; removing the line reparses and removes the target."
@@ -1418,50 +1949,74 @@
     {
       "case_id": "CRP-UNREACH-NEAR-001",
       "rule_id": "native.common.unreachable_code",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "unreachable_code/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.common.unreachable_code"],
+      "include": [
+        "native.common.unreachable_code"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.unreachable_code"],
+      "expected_non_findings": [
+        "native.common.unreachable_code"
+      ],
       "proposition": "An independently authored conditional return leaves the following statement reachable and is not a finding."
     },
     {
       "case_id": "CRP-UNREACH-PROJ-001",
       "rule_id": "native.common.unreachable_code",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "unreachable_code/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.common.unreachable_code"],
+      "include": [
+        "native.common.unreachable_code"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.unreachable_code"],
+      "expected_non_findings": [
+        "native.common.unreachable_code"
+      ],
       "proposition": "A project-shaped helper with a conditional early return and a reachable eval is not an unreachable finding."
     },
     {
       "case_id": "CRP-UNREACH-SUPP-001",
       "rule_id": "native.common.unreachable_code",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "unreachable_code/suppression.pl",
       "profile": "recommended",
-      "include": ["native.common.unreachable_code"],
+      "include": [
+        "native.common.unreachable_code"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.unreachable_code"],
+      "expected_non_findings": [
+        "native.common.unreachable_code"
+      ],
       "suppression_selector": "native.common.unreachable_code",
       "proposition": "File-level suppression of the governed unreachable rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-UNREACH-BOUND-001",
       "rule_id": "native.common.unreachable_code",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "unreachable_code/boundary.pl",
       "profile": "recommended",
-      "include": ["native.common.unreachable_code"],
+      "include": [
+        "native.common.unreachable_code"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.common.unreachable_code"],
+      "expected_non_findings": [
+        "native.common.unreachable_code"
+      ],
       "proposition": "A commented statement after a return is not a finding; comment text does not inherit a positive."
     },
     {
@@ -1475,7 +2030,9 @@
       ],
       "fixture": "bareword_filehandle/positive.pl",
       "profile": "recommended",
-      "include": ["native.io.bareword_filehandle"],
+      "include": [
+        "native.io.bareword_filehandle"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1494,50 +2051,74 @@
     {
       "case_id": "CRP-HANDLE-NEAR-001",
       "rule_id": "native.io.bareword_filehandle",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "bareword_filehandle/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.io.bareword_filehandle"],
+      "include": [
+        "native.io.bareword_filehandle"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.bareword_filehandle"],
+      "expected_non_findings": [
+        "native.io.bareword_filehandle"
+      ],
       "proposition": "An independently authored lexical-handle open is not a bareword-filehandle finding."
     },
     {
       "case_id": "CRP-HANDLE-PROJ-001",
       "rule_id": "native.io.bareword_filehandle",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "bareword_filehandle/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.io.bareword_filehandle"],
+      "include": [
+        "native.io.bareword_filehandle"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.bareword_filehandle"],
+      "expected_non_findings": [
+        "native.io.bareword_filehandle"
+      ],
       "proposition": "A project-shaped loader that opens a lexical handle with or die is not a bareword-filehandle finding."
     },
     {
       "case_id": "CRP-HANDLE-SUPP-001",
       "rule_id": "native.io.bareword_filehandle",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "bareword_filehandle/suppression.pl",
       "profile": "recommended",
-      "include": ["native.io.bareword_filehandle"],
+      "include": [
+        "native.io.bareword_filehandle"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.bareword_filehandle"],
+      "expected_non_findings": [
+        "native.io.bareword_filehandle"
+      ],
       "suppression_selector": "native.io.bareword_filehandle",
       "proposition": "File-level suppression of the governed bareword rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-HANDLE-BOUND-001",
       "rule_id": "native.io.bareword_filehandle",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "bareword_filehandle/boundary.pl",
       "profile": "recommended",
-      "include": ["native.io.bareword_filehandle"],
+      "include": [
+        "native.io.bareword_filehandle"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.bareword_filehandle"],
+      "expected_non_findings": [
+        "native.io.bareword_filehandle"
+      ],
       "proposition": "A standard filehandle (STDOUT) is exempt and is not a bareword-filehandle finding."
     },
     {
@@ -1551,7 +2132,9 @@
       ],
       "fixture": "pipe_open/positive.pl",
       "profile": "recommended",
-      "include": ["native.io.pipe_open"],
+      "include": [
+        "native.io.pipe_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1569,50 +2152,74 @@
     {
       "case_id": "CRP-PIPE-NEAR-001",
       "rule_id": "native.io.pipe_open",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "pipe_open/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.io.pipe_open"],
+      "include": [
+        "native.io.pipe_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.pipe_open"],
+      "expected_non_findings": [
+        "native.io.pipe_open"
+      ],
       "proposition": "An independently authored plain file open is not a pipe-open finding."
     },
     {
       "case_id": "CRP-PIPE-PROJ-001",
       "rule_id": "native.io.pipe_open",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "pipe_open/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.io.pipe_open"],
+      "include": [
+        "native.io.pipe_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.pipe_open"],
+      "expected_non_findings": [
+        "native.io.pipe_open"
+      ],
       "proposition": "A project-shaped loader that opens a plain file with or die is not a pipe-open finding."
     },
     {
       "case_id": "CRP-PIPE-SUPP-001",
       "rule_id": "native.io.pipe_open",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "pipe_open/suppression.pl",
       "profile": "recommended",
-      "include": ["native.io.pipe_open"],
+      "include": [
+        "native.io.pipe_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.pipe_open"],
+      "expected_non_findings": [
+        "native.io.pipe_open"
+      ],
       "suppression_selector": "native.io.pipe_open",
       "proposition": "File-level suppression of the governed pipe-open rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-PIPE-BOUND-001",
       "rule_id": "native.io.pipe_open",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "pipe_open/boundary.pl",
       "profile": "recommended",
-      "include": ["native.io.pipe_open"],
+      "include": [
+        "native.io.pipe_open"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.pipe_open"],
+      "expected_non_findings": [
+        "native.io.pipe_open"
+      ],
       "proposition": "A commented pipe open is not a finding; comment text does not inherit a positive."
     },
     {
@@ -1626,7 +2233,9 @@
       ],
       "fixture": "unchecked_open_close/positive.pl",
       "profile": "recommended",
-      "include": ["native.io.unchecked_open_close"],
+      "include": [
+        "native.io.unchecked_open_close"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1644,50 +2253,74 @@
     {
       "case_id": "CRP-UNCHECK-NEAR-001",
       "rule_id": "native.io.unchecked_open_close",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "unchecked_open_close/near_miss.pl",
       "profile": "recommended",
-      "include": ["native.io.unchecked_open_close"],
+      "include": [
+        "native.io.unchecked_open_close"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.unchecked_open_close"],
+      "expected_non_findings": [
+        "native.io.unchecked_open_close"
+      ],
       "proposition": "An independently authored open guarded by or die is not an unchecked-open finding."
     },
     {
       "case_id": "CRP-UNCHECK-PROJ-001",
       "rule_id": "native.io.unchecked_open_close",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "unchecked_open_close/project_shaped.pl",
       "profile": "recommended",
-      "include": ["native.io.unchecked_open_close"],
+      "include": [
+        "native.io.unchecked_open_close"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.unchecked_open_close"],
+      "expected_non_findings": [
+        "native.io.unchecked_open_close"
+      ],
       "proposition": "A project-shaped store that checks both open and close with or die is not an unchecked finding."
     },
     {
       "case_id": "CRP-UNCHECK-SUPP-001",
       "rule_id": "native.io.unchecked_open_close",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "unchecked_open_close/suppression.pl",
       "profile": "recommended",
-      "include": ["native.io.unchecked_open_close"],
+      "include": [
+        "native.io.unchecked_open_close"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.unchecked_open_close"],
+      "expected_non_findings": [
+        "native.io.unchecked_open_close"
+      ],
       "suppression_selector": "native.io.unchecked_open_close",
       "proposition": "File-level suppression of the governed unchecked rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-UNCHECK-BOUND-001",
       "rule_id": "native.io.unchecked_open_close",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "unchecked_open_close/boundary.pl",
       "profile": "recommended",
-      "include": ["native.io.unchecked_open_close"],
+      "include": [
+        "native.io.unchecked_open_close"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.io.unchecked_open_close"],
+      "expected_non_findings": [
+        "native.io.unchecked_open_close"
+      ],
       "proposition": "A commented unchecked open is not a finding; comment text does not inherit a positive."
     },
     {
@@ -1701,7 +2334,9 @@
       ],
       "fixture": "require_pod_sections/positive.pl",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1719,62 +2354,92 @@
     {
       "case_id": "CRP-POD-NEAR-001",
       "rule_id": "native.documentation.require_pod_sections",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "require_pod_sections/near_miss.pl",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.documentation.require_pod_sections"],
+      "expected_non_findings": [
+        "native.documentation.require_pod_sections"
+      ],
       "proposition": "An independently authored complete POD block with NAME and DESCRIPTION is not a finding."
     },
     {
       "case_id": "CRP-POD-PROJ-001",
       "rule_id": "native.documentation.require_pod_sections",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "require_pod_sections/project_shaped.pl",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.documentation.require_pod_sections"],
+      "expected_non_findings": [
+        "native.documentation.require_pod_sections"
+      ],
       "proposition": "A project-shaped module with complete POD sections is not a finding."
     },
     {
       "case_id": "CRP-POD-SUPP-001",
       "rule_id": "native.documentation.require_pod_sections",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "require_pod_sections/suppression.pl",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.documentation.require_pod_sections"],
+      "expected_non_findings": [
+        "native.documentation.require_pod_sections"
+      ],
       "suppression_selector": "native.documentation.require_pod_sections",
       "proposition": "File-level suppression of the governed POD rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-POD-BOUND-001",
       "rule_id": "native.documentation.require_pod_sections",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "require_pod_sections/boundary.pl",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.documentation.require_pod_sections"],
+      "expected_non_findings": [
+        "native.documentation.require_pod_sections"
+      ],
       "proposition": "A file with no POD at all is outside this rule, which only checks existing POD, and is not a finding."
     },
     {
       "case_id": "CRP-POD-BOUND-002",
       "rule_id": "native.documentation.require_pod_sections",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "require_pod_sections/heredoc_payload.pl",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.documentation.require_pod_sections"],
+      "expected_non_findings": [
+        "native.documentation.require_pod_sections"
+      ],
       "proposition": "=head1 lines inside a heredoc payload are data, not documentation, and must not mark the file as having POD."
     },
     {
@@ -1788,7 +2453,9 @@
       ],
       "fixture": "require_pod_sections/data_payload_mask.pl",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1806,10 +2473,15 @@
     {
       "case_id": "CRP-POD-POS-003",
       "rule_id": "native.documentation.require_pod_sections",
-      "evidence_classes": ["positive_finding", "source_range_and_severity"],
+      "evidence_classes": [
+        "positive_finding",
+        "source_range_and_severity"
+      ],
       "fixture": "require_pod_sections/script_shaped.t",
       "profile": "strict",
-      "include": ["native.documentation.require_pod_sections"],
+      "include": [
+        "native.documentation.require_pod_sections"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1835,7 +2507,9 @@
       ],
       "fixture": "prohibit_leading_zeros/positive.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1853,50 +2527,74 @@
     {
       "case_id": "CRP-OCTAL-NEAR-001",
       "rule_id": "native.syntax.prohibit_leading_zeros",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "prohibit_leading_zeros/near_miss.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "expected_non_findings": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "proposition": "An independently authored plain decimal literal is not a leading-zero finding."
     },
     {
       "case_id": "CRP-OCTAL-PROJ-001",
       "rule_id": "native.syntax.prohibit_leading_zeros",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "prohibit_leading_zeros/project_shaped.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "expected_non_findings": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "proposition": "A project-shaped helper returning a plain decimal value is not a leading-zero finding."
     },
     {
       "case_id": "CRP-OCTAL-SUPP-001",
       "rule_id": "native.syntax.prohibit_leading_zeros",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "prohibit_leading_zeros/suppression.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "expected_non_findings": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "suppression_selector": "native.syntax.prohibit_leading_zeros",
       "proposition": "File-level suppression of the governed leading-zero rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-OCTAL-BOUND-001",
       "rule_id": "native.syntax.prohibit_leading_zeros",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "prohibit_leading_zeros/boundary.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "expected_non_findings": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "proposition": "Plain zero and explicit hex literals are exempt and are not leading-zero findings."
     },
     {
@@ -1910,7 +2608,9 @@
       ],
       "fixture": "prohibit_leading_zeros/file_mode.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1928,25 +2628,37 @@
     {
       "case_id": "CRP-OCTAL-BOUND-002",
       "rule_id": "native.syntax.prohibit_leading_zeros",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "prohibit_leading_zeros/string_literal.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "expected_non_findings": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "proposition": "A quoted string such as \"0123\" is not an integer literal and is not a leading-zero finding."
     },
     {
       "case_id": "CRP-OCTAL-BOUND-003",
       "rule_id": "native.syntax.prohibit_leading_zeros",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "prohibit_leading_zeros/comment_text.pl",
       "profile": "strict",
-      "include": ["native.syntax.prohibit_leading_zeros"],
+      "include": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.prohibit_leading_zeros"],
+      "expected_non_findings": [
+        "native.syntax.prohibit_leading_zeros"
+      ],
       "proposition": "Octal-looking text inside a comment does not inherit a numeric literal finding."
     },
     {
@@ -1960,7 +2672,9 @@
       ],
       "fixture": "unquoted_bareword/positive.pl",
       "profile": "strict",
-      "include": ["native.syntax.unquoted_bareword"],
+      "include": [
+        "native.syntax.unquoted_bareword"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [
         {
@@ -1979,51 +2693,904 @@
     {
       "case_id": "CRP-BAREWORD-NEAR-001",
       "rule_id": "native.syntax.unquoted_bareword",
-      "evidence_classes": ["near_miss_negative"],
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
       "fixture": "unquoted_bareword/near_miss.pl",
       "profile": "strict",
-      "include": ["native.syntax.unquoted_bareword"],
+      "include": [
+        "native.syntax.unquoted_bareword"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.unquoted_bareword"],
+      "expected_non_findings": [
+        "native.syntax.unquoted_bareword"
+      ],
       "proposition": "An independently authored quoted string is not an unquoted-bareword finding."
     },
     {
       "case_id": "CRP-BAREWORD-PROJ-001",
       "rule_id": "native.syntax.unquoted_bareword",
-      "evidence_classes": ["project_shaped_false_positive"],
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
       "fixture": "unquoted_bareword/project_shaped.pl",
       "profile": "strict",
-      "include": ["native.syntax.unquoted_bareword"],
+      "include": [
+        "native.syntax.unquoted_bareword"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.unquoted_bareword"],
+      "expected_non_findings": [
+        "native.syntax.unquoted_bareword"
+      ],
       "proposition": "A project-shaped fat-comma hash key is auto-quoted and is not an unquoted-bareword finding."
     },
     {
       "case_id": "CRP-BAREWORD-SUPP-001",
       "rule_id": "native.syntax.unquoted_bareword",
-      "evidence_classes": ["file_level_suppression"],
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
       "fixture": "unquoted_bareword/suppression.pl",
       "profile": "strict",
-      "include": ["native.syntax.unquoted_bareword"],
+      "include": [
+        "native.syntax.unquoted_bareword"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.unquoted_bareword"],
+      "expected_non_findings": [
+        "native.syntax.unquoted_bareword"
+      ],
       "suppression_selector": "native.syntax.unquoted_bareword",
       "proposition": "File-level suppression of the governed bareword rule removes that finding; stripping it restores the same rule."
     },
     {
       "case_id": "CRP-BAREWORD-BOUND-001",
       "rule_id": "native.syntax.unquoted_bareword",
-      "evidence_classes": ["boundary"],
+      "evidence_classes": [
+        "boundary"
+      ],
       "fixture": "unquoted_bareword/boundary.pl",
       "profile": "strict",
-      "include": ["native.syntax.unquoted_bareword"],
+      "include": [
+        "native.syntax.unquoted_bareword"
+      ],
       "parse_expectation": "ok",
       "expected_findings": [],
-      "expected_non_findings": ["native.syntax.unquoted_bareword"],
+      "expected_non_findings": [
+        "native.syntax.unquoted_bareword"
+      ],
       "proposition": "A commented bareword is not a finding; comment text does not inherit a positive."
+    },
+    {
+      "case_id": "CRP-UVAR-POS-001",
+      "rule_id": "native.variables.unused_lexical",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "unused_lexical/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.unused_lexical",
+          "start_byte": 29,
+          "end_byte": 36,
+          "excerpt": "$unused",
+          "severity": "stern",
+          "remediation_eligibility": "preview_candidate",
+          "fix_title": "Rename to '$_unused'"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.unused_lexical fixture emits one governed finding at the diagnosed span."
+    },
+    {
+      "case_id": "CRP-UVAR-NEAR-001",
+      "rule_id": "native.variables.unused_lexical",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "unused_lexical/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_lexical"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-UVAR-PROJ-001",
+      "rule_id": "native.variables.unused_lexical",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "unused_lexical/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_lexical"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-UVAR-SUPP-001",
+      "rule_id": "native.variables.unused_lexical",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "unused_lexical/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_lexical"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.unused_lexical"
+    },
+    {
+      "case_id": "CRP-UVAR-BOUND-001",
+      "rule_id": "native.variables.unused_lexical",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "unused_lexical/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_lexical"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
+    },
+    {
+      "case_id": "CRP-UPAR-POS-001",
+      "rule_id": "native.variables.unused_parameter",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "unused_parameter/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.unused_parameter",
+          "start_byte": 44,
+          "end_byte": 51,
+          "excerpt": "$unused",
+          "severity": "stern",
+          "remediation_eligibility": "preview_candidate",
+          "fix_title": "Rename to '$_unused'"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.unused_parameter fixture emits one governed finding at the diagnosed span."
+    },
+    {
+      "case_id": "CRP-UPAR-NEAR-001",
+      "rule_id": "native.variables.unused_parameter",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "unused_parameter/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_parameter"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-UPAR-PROJ-001",
+      "rule_id": "native.variables.unused_parameter",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "unused_parameter/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_parameter"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-UPAR-SUPP-001",
+      "rule_id": "native.variables.unused_parameter",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "unused_parameter/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_parameter"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.unused_parameter"
+    },
+    {
+      "case_id": "CRP-UPAR-BOUND-001",
+      "rule_id": "native.variables.unused_parameter",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "unused_parameter/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.unused_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.unused_parameter"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
+    },
+    {
+      "case_id": "CRP-DPAR-POS-001",
+      "rule_id": "native.variables.duplicate_parameter",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "duplicate_parameter/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.duplicate_parameter",
+          "start_byte": 43,
+          "end_byte": 47,
+          "excerpt": "$arg",
+          "severity": "stern",
+          "remediation_eligibility": "preview_candidate",
+          "fix_title": "Rename duplicate parameter to '$arg_2'"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.duplicate_parameter fixture emits one governed finding at the diagnosed span."
+    },
+    {
+      "case_id": "CRP-DPAR-NEAR-001",
+      "rule_id": "native.variables.duplicate_parameter",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "duplicate_parameter/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_parameter"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-DPAR-PROJ-001",
+      "rule_id": "native.variables.duplicate_parameter",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "duplicate_parameter/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_parameter"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-DPAR-SUPP-001",
+      "rule_id": "native.variables.duplicate_parameter",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "duplicate_parameter/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_parameter"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.duplicate_parameter"
+    },
+    {
+      "case_id": "CRP-DPAR-BOUND-001",
+      "rule_id": "native.variables.duplicate_parameter",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "duplicate_parameter/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_parameter"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_parameter"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
+    },
+    {
+      "case_id": "CRP-PSG-POS-001",
+      "rule_id": "native.variables.parameter_shadows_global",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "parameter_shadows_global/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.parameter_shadows_global",
+          "start_byte": 57,
+          "end_byte": 62,
+          "excerpt": "$name",
+          "severity": "stern",
+          "remediation_eligibility": "preview_candidate",
+          "fix_title": "Rename parameter to '$p_name'"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.parameter_shadows_global fixture emits one governed finding at the diagnosed span."
+    },
+    {
+      "case_id": "CRP-PSG-NEAR-001",
+      "rule_id": "native.variables.parameter_shadows_global",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "parameter_shadows_global/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-PSG-PROJ-001",
+      "rule_id": "native.variables.parameter_shadows_global",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "parameter_shadows_global/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-PSG-SUPP-001",
+      "rule_id": "native.variables.parameter_shadows_global",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "parameter_shadows_global/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.parameter_shadows_global"
+    },
+    {
+      "case_id": "CRP-PSG-BOUND-001",
+      "rule_id": "native.variables.parameter_shadows_global",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "parameter_shadows_global/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.parameter_shadows_global"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
+    },
+    {
+      "case_id": "CRP-DLEX-POS-001",
+      "rule_id": "native.variables.duplicate_lexical",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class",
+        "automatic_fix_round_trip"
+      ],
+      "fixture": "duplicate_lexical/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.duplicate_lexical",
+          "start_byte": 42,
+          "end_byte": 46,
+          "excerpt": "$dup",
+          "severity": "stern",
+          "remediation_eligibility": "automatic_candidate",
+          "fix_title": "Remove duplicate 'my' declaration"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.duplicate_lexical fixture emits one governed finding at the diagnosed span.",
+      "fix_round_trip": {
+        "apply": "automatic",
+        "expect_reparse": "ok",
+        "expect_target_removed": true,
+        "expect_no_new_governed": true,
+        "expected_edits": [
+          {
+            "start_byte": 39,
+            "end_byte": 42,
+            "new_text": ""
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "CRP-DLEX-NEAR-001",
+      "rule_id": "native.variables.duplicate_lexical",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "duplicate_lexical/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_lexical"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-DLEX-PROJ-001",
+      "rule_id": "native.variables.duplicate_lexical",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "duplicate_lexical/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_lexical"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-DLEX-SUPP-001",
+      "rule_id": "native.variables.duplicate_lexical",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "duplicate_lexical/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_lexical"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.duplicate_lexical"
+    },
+    {
+      "case_id": "CRP-DLEX-BOUND-001",
+      "rule_id": "native.variables.duplicate_lexical",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "duplicate_lexical/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.duplicate_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.duplicate_lexical"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
+    },
+    {
+      "case_id": "CRP-SHAD-POS-001",
+      "rule_id": "native.variables.shadowed_lexical",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "shadowed_lexical/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.shadowed_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.shadowed_lexical",
+          "start_byte": 46,
+          "end_byte": 52,
+          "excerpt": "$value",
+          "severity": "stern",
+          "remediation_eligibility": "preview_candidate",
+          "fix_title": "Rename to '$inner_value'"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.shadowed_lexical fixture emits one governed finding at the diagnosed span."
+    },
+    {
+      "case_id": "CRP-SHAD-NEAR-001",
+      "rule_id": "native.variables.shadowed_lexical",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "shadowed_lexical/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.shadowed_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.shadowed_lexical"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-SHAD-PROJ-001",
+      "rule_id": "native.variables.shadowed_lexical",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "shadowed_lexical/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.shadowed_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.shadowed_lexical"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-SHAD-SUPP-001",
+      "rule_id": "native.variables.shadowed_lexical",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "shadowed_lexical/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.shadowed_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.shadowed_lexical"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.shadowed_lexical"
+    },
+    {
+      "case_id": "CRP-SHAD-BOUND-001",
+      "rule_id": "native.variables.shadowed_lexical",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "shadowed_lexical/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.shadowed_lexical"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.shadowed_lexical"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
+    },
+    {
+      "case_id": "CRP-UNDECL-POS-001",
+      "rule_id": "native.variables.undeclared",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "undeclared/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.undeclared"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.undeclared",
+          "start_byte": 32,
+          "end_byte": 43,
+          "excerpt": "$undeclared",
+          "severity": "stern",
+          "remediation_eligibility": "preview_candidate",
+          "fix_title": "Change to 'my $undeclared'"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.undeclared fixture emits one governed finding at the diagnosed span."
+    },
+    {
+      "case_id": "CRP-UNDECL-NEAR-001",
+      "rule_id": "native.variables.undeclared",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "undeclared/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.undeclared"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.undeclared"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-UNDECL-PROJ-001",
+      "rule_id": "native.variables.undeclared",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "undeclared/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.undeclared"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.undeclared"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-UNDECL-SUPP-001",
+      "rule_id": "native.variables.undeclared",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "undeclared/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.undeclared"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.undeclared"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.undeclared"
+    },
+    {
+      "case_id": "CRP-UNDECL-BOUND-001",
+      "rule_id": "native.variables.undeclared",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "undeclared/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.undeclared"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.undeclared"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
+    },
+    {
+      "case_id": "CRP-UNINIT-POS-001",
+      "rule_id": "native.variables.uninitialized",
+      "evidence_classes": [
+        "positive_finding",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class"
+      ],
+      "fixture": "uninitialized/positive.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.uninitialized"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [
+        {
+          "rule_id": "native.variables.uninitialized",
+          "start_byte": 43,
+          "end_byte": 49,
+          "excerpt": "$count",
+          "severity": "stern",
+          "remediation_eligibility": "none"
+        }
+      ],
+      "expected_non_findings": [],
+      "proposition": "Positive native.variables.uninitialized fixture emits one governed finding at the diagnosed span."
+    },
+    {
+      "case_id": "CRP-UNINIT-NEAR-001",
+      "rule_id": "native.variables.uninitialized",
+      "evidence_classes": [
+        "near_miss_negative"
+      ],
+      "fixture": "uninitialized/near_miss.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.uninitialized"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.uninitialized"
+      ],
+      "proposition": "Independently authored legal scope/signature usage is not a governed finding."
+    },
+    {
+      "case_id": "CRP-UNINIT-PROJ-001",
+      "rule_id": "native.variables.uninitialized",
+      "evidence_classes": [
+        "project_shaped_false_positive"
+      ],
+      "fixture": "uninitialized/project_shaped.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.uninitialized"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.uninitialized"
+      ],
+      "proposition": "Project-shaped module layout without the governed defect is not a finding."
+    },
+    {
+      "case_id": "CRP-UNINIT-SUPP-001",
+      "rule_id": "native.variables.uninitialized",
+      "evidence_classes": [
+        "file_level_suppression"
+      ],
+      "fixture": "uninitialized/suppression.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.uninitialized"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.uninitialized"
+      ],
+      "proposition": "File-level suppression removes the governed finding; stripping it restores the same rule.",
+      "suppression_selector": "native.variables.uninitialized"
+    },
+    {
+      "case_id": "CRP-UNINIT-BOUND-001",
+      "rule_id": "native.variables.uninitialized",
+      "evidence_classes": [
+        "boundary"
+      ],
+      "fixture": "uninitialized/boundary.pl",
+      "profile": "strict",
+      "include": [
+        "native.variables.uninitialized"
+      ],
+      "parse_expectation": "ok",
+      "expected_findings": [],
+      "expected_non_findings": [
+        "native.variables.uninitialized"
+      ],
+      "proposition": "Commented-out source does not inherit a positive finding."
     }
   ]
 }
