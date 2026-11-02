@@ -5515,7 +5515,7 @@ language = "json"
 surface = "compiler"
 classification = "config"
 owner = "compiler"
-reason = "Published JSON Schema for the perl_core_harness.result_axes.v2 receipt; the cross-axis rules are held to the Rust constructor case-for-case by the schema-parity tests in perl-core-harness-types, so the schema cannot drift from the invariants it publishes (#8607)."
+reason = "Published shape-contract JSON Schema for perl_core_harness.result_axes.v2 (#14177). Axis-level rules stay case-for-case with ResultAxes::new (#8607). Report-level cross-field arithmetic is owned by RunAxesReport::validate and is classified RustStricter in the parity corpus, not as unfinished schema work."
 covered_by = [
   "cargo test -p perl-core-harness-types --locked",
 ]
