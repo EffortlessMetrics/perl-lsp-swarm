@@ -2,6 +2,9 @@
 
 use rustc_hash::FxHashSet;
 
+/// Names shorter than this skip nearest-match suggestions (avoids `$i` → `$x` noise).
+const MIN_SUGGESTION_NAME_LEN: usize = 3;
+
 /// Levenshtein distance between two identifiers (ASCII case-insensitive).
 pub(super) fn edit_distance(left: &str, right: &str) -> usize {
     let left = left.to_ascii_lowercase();
@@ -31,7 +34,11 @@ pub(super) fn edit_distance(left: &str, right: &str) -> usize {
 
 /// Dynamic threshold aligned with perl-dap command typo suggestions.
 fn suggestion_threshold(left: &str, right: &str) -> usize {
-    left.len().max(right.len()).saturating_div(4).clamp(1, 4)
+    let max_len = left.len().max(right.len());
+    if max_len < MIN_SUGGESTION_NAME_LEN {
+        return 0;
+    }
+    max_len.saturating_div(4).clamp(1, 4)
 }
 
 /// Collect declared lexical names visible from `scope` for the given sigil.
@@ -69,6 +76,10 @@ pub(super) fn similar_variable_names(
     sigil: &str,
     typo_name: &str,
 ) -> Vec<String> {
+    if typo_name.len() < MIN_SUGGESTION_NAME_LEN {
+        return Vec::new();
+    }
+
     let mut ranked: Vec<(usize, String)> = visible_variable_names(scope, sigil)
         .into_iter()
         .filter(|candidate| candidate != typo_name)
@@ -131,6 +142,13 @@ mod tests {
     fn unrelated_name_is_not_suggested() {
         let scope = scope_with_scalar_names(&["totally_different"]);
         let similar = similar_variable_names(scope.as_ref(), "$", "cont");
+        assert!(similar.is_empty());
+    }
+
+    #[test]
+    fn very_short_undeclared_name_does_not_suggest_unrelated() {
+        let scope = scope_with_scalar_names(&["x"]);
+        let similar = similar_variable_names(scope.as_ref(), "$", "i");
         assert!(similar.is_empty());
     }
 }
