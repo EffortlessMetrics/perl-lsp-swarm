@@ -10,6 +10,7 @@ use std::path::Path;
 const MANIFEST_PATH: &str = "crates/perl-corpus/fixtures/differential_oracle/manifest.json";
 const SCHEMA_PATH: &str = "schemas/oracle_fixture_manifest.v1.schema.json";
 const SCHEMA_VERSION: &str = "oracle_fixture_manifest.v1";
+const MAX_KNOWN_SCHEMA_VERSION: &str = SCHEMA_VERSION;
 const MANIFEST_NAME: &str = "differential-real-perl-oracle-fixtures";
 const ORACLE_SPEC: &str = "docs/specs/PLSP-SPEC-0027-differential-real-perl-oracle.md";
 
@@ -232,16 +233,26 @@ fn read_text(root: &Path, rel: &str) -> Result<String> {
     fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
 }
 
+/// Distinguish supported, newer-than-known-max, and other unsupported schema versions.
+fn schema_version_violation(actual: &str) -> Option<String> {
+    if actual == SCHEMA_VERSION {
+        return None;
+    }
+    if actual > MAX_KNOWN_SCHEMA_VERSION {
+        return Some(format!(
+            "{MANIFEST_PATH}: schema_version {actual} newer than known max {MAX_KNOWN_SCHEMA_VERSION}; upgrade xtask"
+        ));
+    }
+    Some(format!("{MANIFEST_PATH}: schema_version is {actual:?}; expected {SCHEMA_VERSION:?}"))
+}
+
 fn validate_manifest_shape(
     root: &Path,
     manifest: &OracleFixtureManifest,
     violations: &mut Vec<String>,
 ) {
-    if manifest.schema_version != SCHEMA_VERSION {
-        violations.push(format!(
-            "{MANIFEST_PATH}: schema_version is {:?}; expected {:?}",
-            manifest.schema_version, SCHEMA_VERSION
-        ));
+    if let Some(violation) = schema_version_violation(&manifest.schema_version) {
+        violations.push(violation);
     }
     if manifest.manifest != MANIFEST_NAME {
         violations.push(format!(
@@ -970,6 +981,43 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T>;
+
+    #[test]
+    fn rejects_schema_version_newer_than_known_max() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                &format!(r#""schema_version": "{SCHEMA_VERSION}""#),
+                r#""schema_version": "oracle_fixture_manifest.v2""#,
+            ),
+        )?;
+
+        assert_violation(tempdir.path(), "newer than known max")
+    }
+
+    #[test]
+    fn rejects_unsupported_older_schema_version() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                &format!(r#""schema_version": "{SCHEMA_VERSION}""#),
+                r#""schema_version": "oracle_fixture_manifest.v0""#,
+            ),
+        )?;
+
+        assert_violation(
+            tempdir.path(),
+            &format!(
+                "schema_version is \"oracle_fixture_manifest.v0\"; expected \"{SCHEMA_VERSION}\""
+            ),
+        )
+    }
 
     #[test]
     fn accepts_minimal_valid_manifest() -> TestResult {
