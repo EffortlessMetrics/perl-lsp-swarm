@@ -91,6 +91,50 @@ fn row_string<'a>(row: &'a Value, field: &str) -> &'a str {
         .unwrap_or_else(|| panic!("inventory row is missing string field {field}: {row}"))
 }
 
+fn inventory_envelope_ledger_pointers() -> BTreeSet<String> {
+    inventory_covered_pointers()
+        .into_iter()
+        .filter(|pointer| pointer.starts_with("envelope."))
+        .collect()
+}
+
+/// Flatten top-level initialize-result fields (everything except `capabilities`)
+/// using the ledger's `envelope.*` pointer namespace.
+fn flatten_envelope_pointers(initialize_result: &Value) -> BTreeSet<String> {
+    let Some(result_object) = initialize_result.as_object() else {
+        return BTreeSet::new();
+    };
+    let mut envelope_object = serde_json::Map::new();
+    for (key, value) in result_object {
+        if key == "capabilities" {
+            continue;
+        }
+        envelope_object.insert(key.clone(), value.clone());
+    }
+    flatten_surface_pointers(&Value::Object(envelope_object))
+        .into_iter()
+        .map(|pointer| format!("envelope.{pointer}"))
+        .collect()
+}
+
+fn ledgered_envelope_pointers_missing_from_emission(
+    emitted_envelope: &BTreeSet<String>,
+    ledgered_envelope: &BTreeSet<String>,
+) -> Vec<String> {
+    ledgered_envelope
+        .iter()
+        .filter(|pointer| !emitted_envelope.contains(*pointer))
+        .cloned()
+        .collect()
+}
+
+fn emitted_envelope_pointers_missing_from_ledger(
+    emitted_envelope: &BTreeSet<String>,
+    covered: &BTreeSet<String>,
+) -> Vec<String> {
+    emitted_envelope.iter().filter(|pointer| !covered.contains(*pointer)).cloned().collect()
+}
+
 fn flatten_surface_pointers(value: &Value) -> BTreeSet<String> {
     fn walk(prefix: &str, value: &Value, out: &mut BTreeSet<String>) {
         match value {
@@ -228,10 +272,16 @@ fn representative_client_shapes() -> Vec<(&'static str, Value)> {
     ]
 }
 
-fn emitted_capabilities(server: &LspServer, shape: &Value) -> Value {
+fn emitted_initialize_result(server: &LspServer, shape: &Value) -> Value {
     let response = server.handle_initialize(Some(shape.clone())).expect("initialize must succeed");
-    let result = response.expect("initialize must return a result");
-    result.get("capabilities").cloned().expect("initialize result must carry serverCapabilities")
+    response.expect("initialize must return a result")
+}
+
+fn emitted_capabilities(server: &LspServer, shape: &Value) -> Value {
+    emitted_initialize_result(server, shape)
+        .get("capabilities")
+        .cloned()
+        .expect("initialize result must carry serverCapabilities")
 }
 
 #[test]
@@ -239,15 +289,67 @@ fn every_emitted_surface_pointer_is_ledgered() {
     let covered = inventory_covered_pointers();
     for (shape_name, params) in representative_client_shapes() {
         let server = LspServer::new();
-        let capabilities = emitted_capabilities(&server, &params);
-        let pointers = flatten_surface_pointers(&capabilities);
-        let unledgered: Vec<&String> =
-            pointers.iter().filter(|pointer| !covered.contains(*pointer)).collect();
+        let result = emitted_initialize_result(&server, &params);
+        let capabilities =
+            result.get("capabilities").expect("initialize result must carry serverCapabilities");
+        let mut pointers = flatten_surface_pointers(capabilities);
+        pointers.extend(flatten_envelope_pointers(&result));
+        let unledgered = emitted_envelope_pointers_missing_from_ledger(&pointers, &covered);
         assert!(
             unledgered.is_empty(),
             "shape {shape_name} emitted final-surface pointers with no inventory row: {unledgered:?}"
         );
     }
+}
+
+#[test]
+fn every_ledgered_envelope_pointer_is_emitted() {
+    let ledgered = inventory_envelope_ledger_pointers();
+    assert!(
+        !ledgered.is_empty(),
+        "inventory must declare envelope.* pointers for the initialize envelope census"
+    );
+    for (shape_name, params) in representative_client_shapes() {
+        let server = LspServer::new();
+        let result = emitted_initialize_result(&server, &params);
+        let emitted = flatten_envelope_pointers(&result);
+        let missing = ledgered_envelope_pointers_missing_from_emission(&emitted, &ledgered);
+        assert!(
+            missing.is_empty(),
+            "shape {shape_name} omitted ledgered initialize-envelope pointers: {missing:?}"
+        );
+    }
+}
+
+#[test]
+fn falsifier_removed_server_info_version_fails_envelope_census() {
+    let ledgered = inventory_envelope_ledger_pointers();
+    let result = json!({
+        "capabilities": {},
+        "serverInfo": {"name": "perl-lsp"}
+    });
+    let emitted = flatten_envelope_pointers(&result);
+    let missing = ledgered_envelope_pointers_missing_from_emission(&emitted, &ledgered);
+    assert!(
+        missing.iter().any(|pointer| pointer == "envelope.serverInfo.version"),
+        "census must detect a removed serverInfo.version emission: {missing:?}"
+    );
+}
+
+#[test]
+fn falsifier_bogus_envelope_ledger_pointer_fails_envelope_census() {
+    let mut ledgered = inventory_envelope_ledger_pointers();
+    ledgered.insert("envelope.bogus.field".to_string());
+    let result = json!({
+        "capabilities": {},
+        "serverInfo": {"name": "perl-lsp", "version": "0.0.0"}
+    });
+    let emitted = flatten_envelope_pointers(&result);
+    let missing = ledgered_envelope_pointers_missing_from_emission(&emitted, &ledgered);
+    assert!(
+        missing.iter().any(|pointer| pointer == "envelope.bogus.field"),
+        "census must detect a ledgered envelope pointer that is not emitted: {missing:?}"
+    );
 }
 
 #[test]
@@ -275,7 +377,11 @@ fn runtime_added_pointers_are_owned_by_mutation_rows() {
     let mut runtime_added = BTreeSet::new();
     for (_, params) in representative_client_shapes() {
         let server = LspServer::new();
-        let pointers = flatten_surface_pointers(&emitted_capabilities(&server, &params));
+        let result = emitted_initialize_result(&server, &params);
+        let capabilities =
+            result.get("capabilities").expect("initialize result must carry serverCapabilities");
+        let mut pointers = flatten_surface_pointers(capabilities);
+        pointers.extend(flatten_envelope_pointers(&result));
         for pointer in pointers {
             if !static_census.contains(&pointer) {
                 runtime_added.insert(pointer);
@@ -304,6 +410,8 @@ fn runtime_added_pointers_are_owned_by_mutation_rows() {
         "workspace.fileOperations.willRename.filters[].pattern.glob",
         "codeActionProvider.documentation[]",
         "experimental.perlInlineCompletionStream",
+        "envelope.serverInfo.name",
+        "envelope.serverInfo.version",
     ];
     let missing: Vec<&str> =
         required.iter().copied().filter(|p| !runtime_added.contains(*p)).collect();
