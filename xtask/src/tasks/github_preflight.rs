@@ -4,7 +4,7 @@ use super::github::{self, CandidateFacts, RequiredContext};
 use super::github_review::{self, ReviewSnapshot};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequiredCheckFact {
@@ -160,7 +160,16 @@ pub fn run_head_gate(
     let required_names =
         required_contexts.iter().map(|context| context.name.as_str()).collect::<BTreeSet<_>>();
     let advisory_failures = collect_advisory_failures(&all_check_runs, &head_sha, &required_names);
-    let overall = derive_head_gate_overall(&required_checks, &[]);
+    let mut errors = Vec::new();
+    if let Some(ref branch_name) = branch {
+        let final_head = github::resolve_git_ref_head_sha(&repository, branch_name)?;
+        if final_head != head_sha {
+            errors.push(format!(
+                "branch {branch_name} advanced from {head_sha} to {final_head} during evaluation"
+            ));
+        }
+    }
+    let overall = derive_head_gate_overall(&required_checks, &errors);
     let snapshot = HeadGateSnapshot {
         schema_version: "github-head-gate.v1",
         repository,
@@ -213,24 +222,25 @@ fn collect_advisory_failures(
     head_sha: &str,
     required_names: &BTreeSet<&str>,
 ) -> Vec<AdvisoryFailure> {
-    let mut failures = BTreeMap::<String, String>::new();
-    for run in check_runs {
-        if required_names.contains(run.name.as_str()) {
+    let mut failures = Vec::new();
+    for name in KNOWN_ADVISORY_CHECKS {
+        if required_names.contains(name) {
             continue;
         }
-        if !is_known_advisory_check(run.name.as_str()) {
+        let required = RequiredContext {
+            name: (*name).to_string(),
+            source: "advisory".to_string(),
+            app_id: None,
+        };
+        let Some(run) = latest_check_run(check_runs, &required) else {
             continue;
-        }
+        };
         let result = classify_check(run, head_sha);
         if matches!(result.as_str(), "FAILURE" | "CANCELLED" | "INSTRUMENT_FAILURE") {
-            failures.insert(run.name.clone(), result);
+            failures.push(AdvisoryFailure { name: (*name).to_string(), result });
         }
     }
-    failures.into_iter().map(|(name, result)| AdvisoryFailure { name, result }).collect()
-}
-
-fn is_known_advisory_check(name: &str) -> bool {
-    KNOWN_ADVISORY_CHECKS.contains(&name)
+    failures
 }
 
 fn derive_head_gate_overall(checks: &[HeadRequiredCheck], errors: &[String]) -> String {
@@ -300,7 +310,7 @@ pub(crate) fn merge_check_run_json_pages(page_json: &[&str]) -> Result<(Vec<Chec
         .map(|raw| serde_json::from_str::<CheckRunsPayload>(raw))
         .collect::<Result<Vec<_>, _>>()
         .context("failed to parse recorded check-run fixture page")?;
-    Ok(merge_check_run_pages(&pages))
+    paginate_check_runs_from_pages(&pages)
 }
 
 pub fn run_preflight(pr: u64, json_only: bool) -> Result<()> {
@@ -522,10 +532,21 @@ fn paginate_check_runs(repository: &str, head_sha: &str) -> Result<(Vec<CheckRun
             .context("failed to parse check runs for the captured head")?;
         if page == 1 {
             total_count = payload.total_count;
+        } else if payload.total_count != total_count {
+            bail!(
+                "check runs total_count changed across pages (page {page}: {}, expected {total_count})",
+                payload.total_count
+            );
         }
         let count = payload.check_runs.len();
         items.extend(payload.check_runs);
         if count < 100 {
+            if total_count > 0 && u64::try_from(items.len()).unwrap_or(u64::MAX) != total_count {
+                bail!(
+                    "check runs pagination collected {} runs but GitHub reported total_count={total_count}",
+                    items.len()
+                );
+            }
             return Ok((items, total_count, page));
         }
         if page >= 100 {
@@ -533,6 +554,36 @@ fn paginate_check_runs(repository: &str, head_sha: &str) -> Result<(Vec<CheckRun
         }
         page += 1;
     }
+}
+
+pub(crate) fn paginate_check_runs_from_pages(
+    pages: &[CheckRunsPayload],
+) -> Result<(Vec<CheckRun>, u64, u32)> {
+    let mut items = Vec::new();
+    let mut total_count = 0u64;
+    for (index, payload) in pages.iter().enumerate() {
+        let page_number = u32::try_from(index + 1).unwrap_or(u32::MAX);
+        if index == 0 {
+            total_count = payload.total_count;
+        } else if payload.total_count != total_count {
+            bail!(
+                "check runs total_count changed across pages (page {page_number}: {}, expected {total_count})",
+                payload.total_count
+            );
+        }
+        let count = payload.check_runs.len();
+        items.extend(payload.check_runs.clone());
+        if count < 100 {
+            if total_count > 0 && u64::try_from(items.len()).unwrap_or(u64::MAX) != total_count {
+                bail!(
+                    "check runs pagination collected {} runs but GitHub reported total_count={total_count}",
+                    items.len()
+                );
+            }
+            return Ok((items, total_count, page_number));
+        }
+    }
+    bail!("check runs pagination ended without a short terminal page");
 }
 
 fn paginate_github_items<T, P, F>(
@@ -992,14 +1043,45 @@ mod tests {
 
     #[test]
     fn recorded_fixture_pages_merge_with_declared_total_count() -> Result<()> {
-        let (runs, total_count, pages_read) = merge_check_run_json_pages(&[
-            include_str!("../../tests/fixtures/github/check-runs-page1-17098.json"),
-            include_str!("../../tests/fixtures/github/check-runs-page2-17098.json"),
+        let (runs, total_count, pages_read) = paginate_check_runs_from_pages(&[
+            serde_json::from_str(include_str!(
+                "../../tests/fixtures/github/check-runs-page1-17098.json"
+            ))?,
+            serde_json::from_str(include_str!(
+                "../../tests/fixtures/github/check-runs-page2-17098.json"
+            ))?,
         ])?;
         assert_eq!(total_count, 101);
         assert_eq!(pages_read, 2);
         assert_eq!(runs.len(), 101);
         Ok(())
+    }
+
+    #[test]
+    fn truncated_check_run_pages_fail_closed_against_total_count() {
+        let head = "6823f7f69";
+        let page1 = CheckRunsPayload {
+            total_count: 101,
+            check_runs: (0..99)
+                .map(|id| sample_check_run(id, &format!("filler-{id}"), head, Some("SUCCESS")))
+                .collect(),
+        };
+        let err = paginate_check_runs_from_pages(&[page1]).unwrap_err();
+        assert!(
+            err.to_string().contains("total_count=101"),
+            "truncated pagination must refuse a false-complete observation"
+        );
+    }
+
+    #[test]
+    fn advisory_failures_use_latest_attempt_only() {
+        let head = "head";
+        let runs = vec![
+            sample_check_run(1, "Trivy", head, Some("FAILURE")),
+            sample_check_run(2, "Trivy", head, Some("SUCCESS")),
+        ];
+        let required_names = BTreeSet::new();
+        assert!(collect_advisory_failures(&runs, head, &required_names).is_empty());
     }
 
     #[test]
