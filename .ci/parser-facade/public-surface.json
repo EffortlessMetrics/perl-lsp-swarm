@@ -2518,6 +2518,16 @@
       "exit_condition": "Inventory row for a test-only target."
     },
     {
+      "name": "rename_transaction_validity",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#18209",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Prove workspace-rename invalid-range controls refuse before writing; test-only, no parser facade authority."
+    },
+    {
       "name": "ripr_seam_proof_concept_ast_invariant_contract",
       "kind": "test",
       "classification": "product_composition",
