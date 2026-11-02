@@ -13,6 +13,7 @@ use chrono::NaiveDate;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -124,18 +125,24 @@ fn build_receipt(
     let base_tree = resolve_base_tree(root, base)?;
     let base_text = read_base(root, SCENARIO_67_MANIFEST, &base_tree)?;
     let candidate_text = read_candidate(root, SCENARIO_67_MANIFEST)?;
-    let base_waivers = waiver_map(base_text.as_deref())?;
-    let candidate_waivers = waiver_map(candidate_text.as_deref())?;
-    let mut keys: BTreeMap<String, ()> = BTreeMap::new();
-    for key in base_waivers.keys().chain(candidate_waivers.keys()) {
-        keys.insert(key.clone(), ());
-    }
+    let base_side = parse_waiver_side(base_text.as_deref())?;
+    let candidate_side = parse_waiver_side(candidate_text.as_deref())?;
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    keys.extend(base_side.unique.keys().cloned());
+    keys.extend(candidate_side.unique.keys().cloned());
+    keys.extend(base_side.ambiguous.iter().cloned());
+    keys.extend(candidate_side.ambiguous.iter().cloned());
     let mut rows = Vec::new();
-    for record_id in keys.keys() {
+    for record_id in keys {
+        if base_side.ambiguous.contains(&record_id) || candidate_side.ambiguous.contains(&record_id)
+        {
+            rows.push(ambiguous_waiver_row(&record_id, as_of));
+            continue;
+        }
         rows.push(attribute_row(
-            record_id,
-            base_waivers.get(record_id),
-            candidate_waivers.get(record_id),
+            &record_id,
+            base_side.unique.get(&record_id),
+            candidate_side.unique.get(&record_id),
             as_of,
             candidate_as_of,
             clock_mismatch,
@@ -157,16 +164,37 @@ fn build_receipt(
 
 type WaiverMap = BTreeMap<String, ScenarioWaiver>;
 
-fn waiver_map(text: Option<&str>) -> Result<WaiverMap> {
-    let mut map = BTreeMap::new();
+struct ParsedWaivers {
+    unique: WaiverMap,
+    ambiguous: BTreeSet<String>,
+}
+
+fn parse_waiver_side(text: Option<&str>) -> Result<ParsedWaivers> {
+    let mut unique = WaiverMap::new();
+    let mut ambiguous = BTreeSet::new();
     let Some(text) = text else {
-        return Ok(map);
+        return Ok(ParsedWaivers { unique, ambiguous });
     };
     for entry in parse_scenario_waivers(text)? {
         let record_id = format!("{}:{}", entry.project, entry.journey);
-        map.insert(record_id, entry);
+        if unique.contains_key(&record_id) || ambiguous.contains(&record_id) {
+            unique.remove(&record_id);
+            ambiguous.insert(record_id);
+        } else {
+            unique.insert(record_id, entry);
+        }
     }
-    Ok(map)
+    Ok(ParsedWaivers { unique, ambiguous })
+}
+
+fn scenario_domain_governing(waiver: &ScenarioWaiver, as_of: NaiveDate) -> GoverningResult {
+    if waiver.issue == 0 {
+        return GoverningResult::NotProven;
+    }
+    let Ok(expiry) = parse_date(&waiver.expires_after, "expires_after") else {
+        return GoverningResult::NotProven;
+    };
+    if as_of > expiry { GoverningResult::Failed } else { GoverningResult::Pass }
 }
 
 fn attribute_row(
@@ -224,32 +252,18 @@ fn attribute_row(
         raw_from_scenario_waiver(candidate_waiver, SCENARIO_67_MANIFEST),
         candidate_as_of,
     );
-    let governing = governing_result(candidate_ob.state);
+    let governing = scenario_domain_governing(candidate_waiver, candidate_as_of);
     let semantics_equal = waiver_semantics_equal(base_waiver, candidate_waiver);
     let attribution = if !semantics_equal {
-        if records_share_path_not_identity(base_waiver, candidate_waiver) {
-            CandidateAttribution::NotProven
-        } else if candidate_worsens(base_ob.state, candidate_ob.state)
-            || candidate_changes_governed_fields(base_waiver, candidate_waiver)
+        if candidate_changes_governed_fields(base_waiver, candidate_waiver)
+            || candidate_worsens(base_ob.state, candidate_ob.state)
         {
             CandidateAttribution::CandidateOwned
         } else {
             CandidateAttribution::IntegrationInteraction
         }
-    } else if base_ob.state == candidate_ob.state
-        && matches!(
-            base_ob.state,
-            CadenceState::Expired | CadenceState::ReviewOverdue | CadenceState::Invalid
-        )
-    {
-        CandidateAttribution::BaseOwned
-    } else if candidate_ob.state == CadenceState::Current && base_ob.state == CadenceState::Current
-    {
-        CandidateAttribution::BaseOwned
-    } else if semantics_equal {
-        CandidateAttribution::BaseOwned
     } else {
-        CandidateAttribution::NotProven
+        CandidateAttribution::BaseOwned
     };
     let (not_proven_reason, limitation) = match attribution {
         CandidateAttribution::NotProven if semantics_equal => {
@@ -285,14 +299,24 @@ fn attribute_row(
     }
 }
 
-fn governing_result(state: CadenceState) -> GoverningResult {
-    match state {
-        CadenceState::Current | CadenceState::ReviewDueSoon => GoverningResult::Pass,
-        CadenceState::NotProven => GoverningResult::NotProven,
-        CadenceState::Expired
-        | CadenceState::ReviewOverdue
-        | CadenceState::Expiring
-        | CadenceState::Invalid => GoverningResult::Failed,
+fn ambiguous_waiver_row(record_id: &str, as_of: NaiveDate) -> AttributionRow {
+    AttributionRow {
+        record_id: record_id.to_string(),
+        source_kind: "scenario_67_error_waiver".to_string(),
+        source_path: SCENARIO_67_MANIFEST.to_string(),
+        owner: "—".to_string(),
+        owner_issue: None,
+        as_of: as_of.to_string(),
+        clock_source: "explicit_cli",
+        base_cadence_state: CadenceState::NotProven,
+        candidate_cadence_state: CadenceState::NotProven,
+        governing_result: GoverningResult::NotProven,
+        candidate_attribution: CandidateAttribution::NotProven,
+        disposition_route: None,
+        not_proven_reason: Some(
+            "duplicate Scenario 67 waiver identity in one manifest side".to_string(),
+        ),
+        limitation: None,
     }
 }
 
@@ -302,12 +326,6 @@ fn waiver_semantics_equal(left: &ScenarioWaiver, right: &ScenarioWaiver) -> bool
         && left.expected_error_class == right.expected_error_class
         && left.issue == right.issue
         && left.expires_after == right.expires_after
-}
-
-fn records_share_path_not_identity(left: &ScenarioWaiver, right: &ScenarioWaiver) -> bool {
-    left.project == right.project
-        && left.journey == right.journey
-        && (left.expected_error_class != right.expected_error_class || left.issue != right.issue)
 }
 
 fn candidate_changes_governed_fields(base: &ScenarioWaiver, candidate: &ScenarioWaiver) -> bool {
@@ -432,6 +450,45 @@ mod tests {
             issue: 4050,
             expires_after: expires_after.to_string(),
         }
+    }
+
+    #[test]
+    fn current_waiver_before_expiry_governs_pass() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 8, 4).expect("valid date");
+        let row = evaluate_fixture_pair(&waiver("2026-08-11"), &waiver("2026-08-11"), as_of);
+        assert_eq!(row.governing_result, GoverningResult::Pass);
+        assert_eq!(row.candidate_attribution, CandidateAttribution::BaseOwned);
+    }
+
+    #[test]
+    fn invalid_issue_zero_is_not_proven() {
+        let mut bad = waiver("2026-08-11");
+        bad.issue = 0;
+        let as_of = NaiveDate::from_ymd_opt(2026, 8, 4).expect("valid date");
+        let row = evaluate_fixture_pair(&bad, &bad, as_of);
+        assert_eq!(row.governing_result, GoverningResult::NotProven);
+    }
+
+    #[test]
+    fn candidate_issue_change_is_candidate_owned() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 8, 4).expect("valid date");
+        let mut changed = waiver("2026-08-11");
+        changed.issue = 0;
+        let row = evaluate_fixture_pair(&waiver("2026-08-11"), &changed, as_of);
+        assert_eq!(row.candidate_attribution, CandidateAttribution::CandidateOwned);
+    }
+
+    #[test]
+    fn duplicate_waiver_identity_is_not_proven() -> Result<()> {
+        let text = r#"{
+          "error_waivers": [
+            {"project":"mojolicious","journey":"edit_burst_completion","expected_error_class":"request_superseded","issue":4050,"expires_after":"2026-08-04"},
+            {"project":"mojolicious","journey":"edit_burst_completion","expected_error_class":"request_superseded","issue":4050,"expires_after":"2026-08-11"}
+          ]
+        }"#;
+        let side = parse_waiver_side(Some(text))?;
+        assert!(side.ambiguous.contains("mojolicious:edit_burst_completion"));
+        Ok(())
     }
 
     #[test]
