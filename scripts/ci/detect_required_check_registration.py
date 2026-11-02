@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""Diagnose required-check registration against an exact PR head (#16469).
+"""Diagnose required-check registration against an exact subject SHA (#16469).
 
 GitHub branch protection and rulesets require named status contexts. A PR can
 look green while remaining unmergeable when:
 
-- a required name was never reported on the current head (#14612);
+- a required name was never reported on the classified SHA (#14612), typically
+  because a workflow was skipped by path/branch/message filters;
 - a required name was reported only on another SHA;
-- a required job ran as skipped, which does not satisfy a required context;
-- every required name is success on the exact head, but GitHub merge
-  evaluation still reports expected checks (#16469).
+- every required name is a GitHub-accepted conclusion on the classified SHA,
+  but GitHub merge evaluation still reports expected checks (#16469).
+
+A job skipped by a conditional reports `skipped` and GitHub treats that as a
+successful required-check conclusion. That is not a registration failure.
+`product_not_run` records that product work did not run.
 
 This classifier is fail-closed. Missing, partial, or ambiguous evidence is
-NOT_PROVEN. It never synthesizes merge-ready from absent checks, and it does
-not infer a GitHub defect from a blocked merge alone.
+NOT_PROVEN. COMPLETE_GREEN is a subject-observation verdict, not a protected
+merge verdict: GitHub evaluates the test merge commit when that commit has
+checks. It never synthesizes merge-ready from absent checks, and it does not
+infer a GitHub defect from a blocked merge alone.
 
 Input JSON (stdin or --fixture):
 
@@ -30,11 +36,13 @@ Input JSON (stdin or --fixture):
       "app": {"id": 15368}
     }
   ],
+  "evaluated_sha": "<optional; GitHub-evaluated subject, usually the test merge commit>",
   "merge_evaluation": {
     "mergeable": "MERGEABLE",
     "merge_state_status": "CLEAN",
     "blocked_by_expected_checks": false,
-    "blocked_reason": null
+    "blocked_reason": null,
+    "merge_commit_sha": "<optional test-merge commit SHA>"
   }
 }
 
@@ -60,9 +68,9 @@ from pathlib import Path
 from typing import Any
 
 
-SUCCESS = {"success", "neutral"}
+SUCCESS = {"success", "neutral", "skipped"}
 RED = {"failure", "timed_out", "startup_failure", "cancelled", "action_required"}
-SKIPPED = {"skipped"}
+PRODUCT_SKIPPED = {"skipped"}
 EXPECTED_REASON = re.compile(
     r"(required status checks? are expected|checks are expected|expected[ —-]+waiting for status)",
     re.IGNORECASE,
@@ -71,29 +79,31 @@ SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 REMEDY = {
     "COMPLETE_GREEN": (
-        "Every required context has a completed success or neutral check-run "
-        "from the bound app on the exact head, and merge evaluation is not "
-        "refusing for expected checks."
+        "Every required context has a completed GitHub-accepted check-run "
+        "(success, skipped, or neutral) from the bound app on the classified "
+        "subject SHA, and merge evaluation is not refusing for expected checks. "
+        "This is a subject-observation verdict, not a protected merge verdict. "
+        "GitHub evaluates the test merge commit when that commit has checks. "
+        "A skipped job is accepted registration; product_not_run records that "
+        "product work did not run."
     ),
     "REQUIRED_ABSENT": (
-        "A required context was never reported on any observed SHA. This is the "
-        "#14612 shape (workflow did not produce a check-run), not #16469. "
-        "Never treat absence as success. Dispatch the producing workflow against "
-        "the current head (`workflow_dispatch` with that exact SHA) and wait for "
-        "a check-run whose name matches the required context."
+        "A required context was never reported on any observed SHA. This is "
+        "workflow-level silence (#14612), not a skipped job. A skipped job "
+        "emits a check-run and GitHub treats skipped as success. Never treat "
+        "absence as success. workflow_dispatch on a PR head does not satisfy "
+        "the branch ruleset. Ordinary pull_request/push CI and empty commits "
+        "are not authorized while #17900/#17903 G-only qualification is "
+        "inactive. Recovery is NOT_PROVEN until a permitted producer "
+        "(an admissible event; currently the inactive merge_group/G path) is "
+        "live. Check-suite rerequest cannot create a check that was never emitted."
     ),
     "REQUIRED_OTHER_SHA": (
-        "A required context is reported, but not on the current head SHA. An "
-        "older SHA cannot satisfy GitHub's required-check evaluation. Re-run or "
-        "dispatch the producing workflow against the current head."
-    ),
-    "REQUIRED_SKIPPED": (
-        "A required context reported skipped on the current head. GitHub does "
-        "not treat skipped required checks as success, so the merge box stays "
-        "on Expected. Convert the emitting job to always-or-scoped-noop: keep "
-        "the job reachable and no-op inside the job when the work is out of "
-        "scope. Do not change the live ruleset from this detector. GitHub "
-        "`neutral` is success, matching scripts/ci/check_release_required_ci.py."
+        "A required context is reported, but not on the classified subject SHA. "
+        "An older SHA cannot satisfy GitHub's required-check evaluation. "
+        "Do not workflow_dispatch the producer against a PR head; that event "
+        "does not count for the ruleset. Ordinary PR/push CI and empty commits "
+        "are not authorized while #17900/#17903 G-only is inactive."
     ),
     "REQUIRED_RED": (
         "A required context failed on the current head. Repair the failing job; "
@@ -104,17 +114,22 @@ REMEDY = {
         "head. Wait for completion; do not treat pending as green."
     ),
     "EXPECTED_STALE": (
-        "Every required context is completed success on the exact current head, "
-        "but GitHub merge evaluation still reports expected checks (#16469). "
-        "This is not #14612 (a required name never reported).\n"
-        "Do not push an empty commit as the default.\n"
+        "Every required context is a GitHub-accepted conclusion (success, "
+        "skipped, or neutral) on the classified subject SHA, but GitHub merge "
+        "evaluation still reports expected checks (#16469). This is not #14612 "
+        "(a required name never reported) and not a skipped job.\n"
+        "Do not use a manual dispatch event; GitHub does not count "
+        "`workflow_dispatch` toward PR required checks.\n"
+        "Do not push an empty commit.\n"
+        "Do not start ordinary pull_request/push CI; #17900/#17903 G-only "
+        "qualification is inactive.\n"
         "Recovery:\n"
         "1. Confirm this detector reports EXPECTED_STALE, not REQUIRED_ABSENT.\n"
-        "2. Rerequest the check suites for this head: "
+        "2. If an existing check suite was produced by an admissible event "
+        "(pull_request, pull_request_target, push), rerequest it: "
         "POST /repos/{owner}/{repo}/check-suites/{id}/rerequest\n"
-        "3. If no suite exists, workflow_dispatch the producing workflow with "
-        "the exact current head SHA.\n"
-        "4. Push an empty commit only after (2) and (3) fail to re-register."
+        "3. If no admissible suite exists, recovery is NOT_PROVEN until the "
+        "#17900/#17903 merge_group/G producer is live."
     ),
     "NOT_PROVEN": "Evidence is missing, contradictory, or insufficient.",
 }
@@ -181,7 +196,7 @@ def _not_proven(message: str, **extra: Any) -> dict[str, Any]:
         "required_contexts": extra.pop("required_contexts", []),
         "absent": extra.pop("absent", []),
         "other_sha": extra.pop("other_sha", []),
-        "skipped": extra.pop("skipped", []),
+        "product_not_run": extra.pop("product_not_run", []),
         "red": extra.pop("red", []),
         "pending": extra.pop("pending", []),
         "rows": extra.pop("rows", []),
@@ -198,6 +213,14 @@ def classify(data: Any) -> dict[str, Any]:
     head_sha = _normalize_sha(data.get("head_sha"))
     if head_sha is None:
         return _not_proven("head_sha must be a 40-character commit SHA")
+
+    raw_evaluated = data.get("evaluated_sha")
+    if raw_evaluated is None or raw_evaluated == "":
+        subject_sha = head_sha
+    else:
+        subject_sha = _normalize_sha(raw_evaluated)
+        if subject_sha is None:
+            return _not_proven("evaluated_sha must be a 40-character commit SHA")
 
     required = data.get("required_contexts")
     if not isinstance(required, list) or not required:
@@ -250,7 +273,7 @@ def classify(data: Any) -> dict[str, Any]:
 
     absent: list[str] = []
     other_sha: list[str] = []
-    skipped: list[str] = []
+    product_not_run: list[str] = []
     red: list[str] = []
     pending: list[str] = []
     rows: list[dict[str, Any]] = []
@@ -267,11 +290,11 @@ def classify(data: Any) -> dict[str, Any]:
             absent.append(name)
             rows.append({"name": name, "state": "absent"})
             continue
-        on_head = [
+        on_subject = [
             run for run in observed
-            if _normalize_sha(run.get("head_sha")) == head_sha
+            if _normalize_sha(run.get("head_sha")) == subject_sha
         ]
-        if not on_head:
+        if not on_subject:
             other_sha.append(name)
             foreign = next(
                 (
@@ -284,8 +307,8 @@ def classify(data: Any) -> dict[str, Any]:
             rows.append({"name": name, "state": "other_sha", "observed_sha": foreign})
             continue
 
-        terminal = [run for run in on_head if _status(run) == "completed"]
-        unfinished = [run for run in on_head if _status(run) != "completed"]
+        terminal = [run for run in on_subject if _status(run) == "completed"]
+        unfinished = [run for run in on_subject if _status(run) != "completed"]
         if not terminal:
             pending.append(name)
             rows.append({"name": name, "state": "pending"})
@@ -296,18 +319,16 @@ def classify(data: Any) -> dict[str, Any]:
             red.append(name)
             rows.append({"name": name, "state": "red"})
             continue
-        if conclusions & SKIPPED and not (conclusions & SUCCESS):
-            skipped.append(name)
-            rows.append({"name": name, "state": "skipped"})
-            continue
-        # An unfinished same-head rerun vetoes an older completed green.
+        # An unfinished same-subject rerun vetoes an older completed green.
         # check_release_required_ci.py encodes the same rule: latest completed
-        # success cannot override a pending or unknown on-head status.
+        # success cannot override a pending or unknown on-subject status.
         if unfinished:
             pending.append(name)
             rows.append({"name": name, "state": "pending"})
             continue
         if conclusions <= SUCCESS:
+            if conclusions <= PRODUCT_SKIPPED:
+                product_not_run.append(name)
             rows.append({"name": name, "state": "success"})
             continue
         return _not_proven(
@@ -320,9 +341,10 @@ def classify(data: Any) -> dict[str, Any]:
             "verdict": verdict,
             "head_status": extra.pop("head_status", "BLOCKED" if verdict != "COMPLETE_GREEN" else "HEAD_GREEN"),
             "required_contexts": names,
+            "subject_sha": subject_sha,
             "absent": absent,
             "other_sha": other_sha,
-            "skipped": skipped,
+            "product_not_run": extra.pop("product_not_run", product_not_run),
             "red": red,
             "pending": pending,
             "rows": [row for row in rows if row["state"] != "success"],
@@ -340,11 +362,9 @@ def classify(data: Any) -> dict[str, Any]:
         return finish(
             "REQUIRED_OTHER_SHA",
             REMEDY["REQUIRED_OTHER_SHA"]
-            + f" Current head {head_sha[:12]}; observed {foreign[:12]}.",
+            + f" Classified subject {subject_sha[:12]}; observed {foreign[:12]}.",
             head_status="STALE_SUBJECT",
         )
-    if skipped:
-        return finish("REQUIRED_SKIPPED", head_status="SKIPPED")
     if red:
         return finish("REQUIRED_RED", head_status="RED")
     if pending:
@@ -376,6 +396,28 @@ def classify(data: Any) -> dict[str, Any]:
             required_contexts=names,
             rows=[],
         )
+
+    raw_merge_commit = evaluation.get("merge_commit_sha")
+    if raw_merge_commit is not None and raw_merge_commit != "":
+        merge_commit = _normalize_sha(raw_merge_commit)
+        if merge_commit is None:
+            return _not_proven(
+                "merge_commit_sha is present but is not a 40-character commit SHA",
+                head_status="HEAD_GREEN",
+                required_contexts=names,
+                rows=[],
+            )
+        if merge_commit != subject_sha:
+            return _not_proven(
+                "GitHub evaluates the test merge commit when that commit has checks; "
+                f"this observation classified {subject_sha[:12]} while merge_commit_sha "
+                f"is {merge_commit[:12]}. Re-run with evaluated_sha set to the merge "
+                "commit and check-runs for that SHA. COMPLETE_GREEN is a "
+                "subject-observation verdict, not a protected merge verdict.",
+                head_status="HEAD_GREEN",
+                required_contexts=names,
+                rows=[],
+            )
 
     if _expected_checks_signal(evaluation):
         return finish("EXPECTED_STALE", head_status="HEAD_GREEN")

@@ -11,11 +11,15 @@ Discriminators:
   reports expected checks → EXPECTED_STALE (#16469)
 - merge BLOCKED without an expected-checks signal is NOT_PROVEN, not a
   GitHub-defect inference
-- skipped required jobs on the current head are not success
+- a skipped required job with the bound app on the classified SHA is
+  GitHub-accepted registration, recorded as product_not_run, not REQUIRED_SKIPPED
+- workflow-filtered absence (no check-run) remains REQUIRED_ABSENT
 - a same-name run from a different app does not satisfy the required identity
 - an unfinished same-head rerun vetoes an older completed green
 - empty merge evaluation is NOT_PROVEN, never green
-- GitHub `neutral` is success, matching check_release_required_ci.py
+- GitHub `neutral` is success
+- COMPLETE_GREEN is a subject observation, not a protected merge verdict when
+  merge_commit_sha differs from the classified SHA
 - malformed input is NOT_PROVEN, never green
 """
 
@@ -50,6 +54,7 @@ CONTRACT_SPEC.loader.exec_module(contract)
 
 HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OTHER = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+MERGE = "cccccccccccccccccccccccccccccccccccccccc"
 GITHUB_ACTIONS_APP = 15368
 OTHER_APP = 999
 REQUIRED = (
@@ -124,7 +129,7 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual("REQUIRED_ABSENT", result["verdict"])
         self.assertEqual(["ripr+ New Gap Gate"], result["absent"])
         self.assertIn("#14612", result["remedy"])
-        self.assertNotIn("empty commit", result["remedy"].lower())
+        self.assertIn("does not satisfy", result["remedy"].lower())
         self.assertNotEqual("EXPECTED_STALE", result["verdict"])
 
     def test_required_context_only_on_other_sha_is_stale_subject(self) -> None:
@@ -153,9 +158,10 @@ class ClassifierTests(unittest.TestCase):
         self.assertIn("#14612", result["remedy"])
         self.assertIn("not #14612", result["remedy"].lower())
         self.assertIn("rerequest", result["remedy"].lower())
-        self.assertIn("workflow_dispatch", result["remedy"].lower())
-        self.assertIn("empty commit", result["remedy"].lower())
-        self.assertIn("do not push an empty commit as the default", result["remedy"].lower())
+        self.assertIn("does not count", result["remedy"].lower())
+        self.assertIn("#17900", result["remedy"])
+        self.assertIn("#17903", result["remedy"])
+        self.assertIn("do not push an empty commit", result["remedy"].lower())
 
     def test_blocked_merge_without_expected_signal_is_not_inferred_github_defect(self) -> None:
         data = payload(
@@ -183,16 +189,26 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual("NOT_PROVEN", result["verdict"])
         self.assertIn("conflict", result["remedy"].lower())
 
-    def test_skipped_required_job_is_not_success(self) -> None:
+    def test_skipped_required_job_is_github_accepted_registration(self) -> None:
         data = payload()
         for row in data["check_runs"]:
             if row["name"] == "Compile All Targets (bit-rot guard)":
                 row["conclusion"] = "skipped"
         result = classify(data)
-        self.assertEqual("REQUIRED_SKIPPED", result["verdict"])
-        self.assertEqual(["Compile All Targets (bit-rot guard)"], result["skipped"])
-        self.assertIn("always-or-scoped-noop", result["remedy"])
-        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+        self.assertEqual("COMPLETE_GREEN", result["verdict"])
+        self.assertEqual(["Compile All Targets (bit-rot guard)"], result["product_not_run"])
+        self.assertNotEqual("REQUIRED_SKIPPED", result["verdict"])
+
+    def test_workflow_silence_is_absent_not_skipped(self) -> None:
+        data = payload()
+        data["check_runs"] = [
+            row for row in data["check_runs"]
+            if row["name"] != "Compile All Targets (bit-rot guard)"
+        ]
+        result = classify(data)
+        self.assertEqual("REQUIRED_ABSENT", result["verdict"])
+        self.assertEqual(["Compile All Targets (bit-rot guard)"], result["absent"])
+        self.assertIn("does not satisfy", result["remedy"].lower())
 
     def test_red_required_context_blocks(self) -> None:
         data = payload()
@@ -334,7 +350,60 @@ class ClassifierTests(unittest.TestCase):
                 row["conclusion"] = "neutral"
         result = classify(data)
         self.assertEqual("COMPLETE_GREEN", result["verdict"])
-        self.assertFalse(result["skipped"])
+        self.assertFalse(result["product_not_run"])
+
+    def test_merge_commit_sha_different_from_head_is_not_protected_merge_verdict(self) -> None:
+        data = payload(
+            merge_evaluation={
+                "mergeable": "MERGEABLE",
+                "merge_state_status": "CLEAN",
+                "blocked_by_expected_checks": False,
+                "merge_commit_sha": MERGE,
+            }
+        )
+        result = classify(data)
+        self.assertEqual("NOT_PROVEN", result["verdict"])
+        self.assertIn("merge commit", result["remedy"].lower())
+        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+        self.assertNotEqual("EXPECTED_STALE", result["verdict"])
+
+    def test_expected_checks_with_unobserved_merge_commit_is_not_stale_github_defect(self) -> None:
+        data = payload(
+            merge_evaluation={
+                "mergeable": "MERGEABLE",
+                "merge_state_status": "BLOCKED",
+                "blocked_by_expected_checks": True,
+                "blocked_reason": "required status checks are expected",
+                "merge_commit_sha": MERGE,
+            }
+        )
+        result = classify(data)
+        self.assertEqual("NOT_PROVEN", result["verdict"])
+        self.assertNotEqual("EXPECTED_STALE", result["verdict"])
+
+    def test_evaluated_sha_on_merge_commit_is_complete_green(self) -> None:
+        data = payload(
+            evaluated_sha=MERGE,
+            check_runs=[
+                {
+                    "name": name,
+                    "head_sha": MERGE,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": GITHUB_ACTIONS_APP},
+                }
+                for name in REQUIRED
+            ],
+            merge_evaluation={
+                "mergeable": "MERGEABLE",
+                "merge_state_status": "CLEAN",
+                "blocked_by_expected_checks": False,
+                "merge_commit_sha": MERGE,
+            },
+        )
+        result = classify(data)
+        self.assertEqual("COMPLETE_GREEN", result["verdict"])
+        self.assertEqual(MERGE, result["subject_sha"])
 
 
 def _live_workflows() -> dict:
@@ -402,16 +471,26 @@ class LiveWorkflowStructureTests(unittest.TestCase):
 
 
 class RecoveryContractTests(unittest.TestCase):
-    def test_expected_stale_remedy_refuses_empty_commit_default(self) -> None:
+    def test_expected_stale_remedy_refuses_unauthorized_producers(self) -> None:
         remedy = detector.REMEDY["EXPECTED_STALE"]
-        self.assertIn("Do not push an empty commit as the default", remedy)
+        self.assertIn("Do not push an empty commit", remedy)
         self.assertIn("POST /repos/{owner}/{repo}/check-suites/{id}/rerequest", remedy)
-        self.assertIn("workflow_dispatch", remedy)
+        self.assertIn("does not count", remedy.lower())
+        self.assertIn("#17900", remedy)
+        self.assertIn("#17903", remedy)
+        self.assertIn("NOT_PROVEN", remedy)
 
     def test_absent_remedy_does_not_treat_silence_as_success(self) -> None:
         remedy = detector.REMEDY["REQUIRED_ABSENT"]
         self.assertIn("never treat absence as success", remedy.lower())
         self.assertIn("#14612", remedy)
+        self.assertIn("does not satisfy", remedy.lower())
+        self.assertIn("#17900", remedy)
+
+    def test_complete_green_remedy_is_subject_observation_not_protected_merge(self) -> None:
+        remedy = detector.REMEDY["COMPLETE_GREEN"]
+        self.assertIn("subject-observation", remedy)
+        self.assertIn("test merge commit", remedy.lower())
 
 
 class FixtureFileTests(unittest.TestCase):

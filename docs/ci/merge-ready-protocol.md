@@ -119,8 +119,16 @@ observations instead of reconstructing that lost state.
 
 Compare required `(name, app_id)` identities from
 `.ci/policies/required-checks.toml` (or the live ruleset) against check-runs
-on the exact PR head. A same-name run from another app does not satisfy the
-bound GitHub Actions integration.
+on the classified subject SHA (`evaluated_sha`, defaulting to the PR head).
+A same-name run from another app does not satisfy the bound GitHub Actions
+integration. GitHub evaluates the test merge commit when that commit has
+checks; `COMPLETE_GREEN` is a subject-observation verdict unless
+`merge_commit_sha` matches the classified SHA.
+
+GitHub-accepted required-check conclusions are `success`, `skipped`, and
+`neutral`. A job skipped by a conditional reports a check-run and does not
+block merge. A **workflow** skipped by path/branch/message filters emits no
+check-run and leaves the name Pending (#14612).
 
 ```bash
 python3 scripts/ci/detect_required_check_registration.py --fixture <observation.json>
@@ -129,12 +137,11 @@ python3 scripts/ci/detect_required_check_registration.py --policy .ci/policies/r
 
 | Verdict | Meaning | Recovery |
 | --- | --- | --- |
-| `COMPLETE_GREEN` | Bound-app required names succeeded (`success` or `neutral`) on this head; merge evaluation is not expecting checks | None |
-| `REQUIRED_ABSENT` | A required `(name, app_id)` has no check-run on any SHA (#14612) | `workflow_dispatch` the producer against the current head; never treat absence as success |
-| `REQUIRED_OTHER_SHA` | The name exists only on another SHA | Re-run/dispatch against the current head |
-| `REQUIRED_SKIPPED` | The job reported `skipped` | Keep the job reachable and no-op in-job (`always-or-scoped-noop`); do not edit the live ruleset from this path |
-| `EXPECTED_STALE` | All required names succeeded on this head, and GitHub still expects checks (#16469) | Rerequest the check suite (`POST /repos/{owner}/{repo}/check-suites/{id}/rerequest`); if no suite exists, `workflow_dispatch` the producer with the exact head SHA. An empty commit is last resort, not the default |
-| `NOT_PROVEN` | Missing evidence, incomplete app identity, a conflicted tree, empty merge evaluation, or a blocked merge without an expected-checks signal | Do not infer a GitHub defect from the merge error alone |
+| `COMPLETE_GREEN` | Bound-app required names have a GitHub-accepted conclusion (`success`, `skipped`, or `neutral`) on the classified SHA; merge evaluation is not expecting checks. `product_not_run` names skipped jobs. This is not a protected merge verdict unless `merge_commit_sha` matches that SHA | None |
+| `REQUIRED_ABSENT` | A required `(name, app_id)` has no check-run on any SHA (workflow-level silence, #14612) | Never treat absence as success. Manual dispatch does not satisfy a PR ruleset. Ordinary PR/push CI and empty commits are not authorized while #17900/#17903 G-only is inactive; recovery is `NOT_PROVEN` until that producer is live |
+| `REQUIRED_OTHER_SHA` | The name exists only on another SHA | Same authorization boundary as absence; do not dispatch against the PR head |
+| `EXPECTED_STALE` | All required names are GitHub-accepted on the classified SHA, and GitHub still expects checks (#16469) | Rerequest an existing suite produced by an admissible event (`POST /repos/{owner}/{repo}/check-suites/{id}/rerequest`). If no such suite exists, recovery is `NOT_PROVEN` until #17900/#17903. Do not dispatch, empty-commit, or start ordinary PR/push CI |
+| `NOT_PROVEN` | Missing evidence, incomplete app identity, a conflicted tree, empty merge evaluation, a merge-commit SHA that differs from the classified subject, or a blocked merge without an expected-checks signal | Do not infer a GitHub defect from the merge error alone |
 
 Two required jobs remain `applicability = "conditional"` on purpose
 (`check-all-targets` and `conflict-markers`): they skip drafts and superseded
