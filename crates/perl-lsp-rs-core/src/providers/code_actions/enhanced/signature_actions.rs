@@ -33,7 +33,7 @@ pub fn add_parameter_action(source: &str, node: &Node, ast: &Node) -> Option<Cod
     let new_param_text = ", $options = {}";
     let call_default_text = ", {}";
 
-    let call_sites = collect_call_sites(source, ast, &callable_identity, &sub_name)?;
+    let call_sites = collect_call_sites(source, ast, &callable_identity)?;
 
     let mut changes = Vec::with_capacity(1 + call_sites.len());
 
@@ -77,6 +77,9 @@ fn signature_admits_optional_positional_append(signature: &Node) -> bool {
 }
 
 fn qualified_callable_name(package: &str, sub_name: &str) -> String {
+    if sub_name.contains("::") {
+        return sub_name.to_string();
+    }
     if package == "main" { sub_name.to_string() } else { format!("{package}::{sub_name}") }
 }
 
@@ -99,9 +102,9 @@ fn walk_for_package(node: &Node, current: &mut String, target_start: usize, foun
             *current = name.clone();
             walk_for_package(blk, current, target_start, found);
             *current = saved;
-        } else {
-            *current = name.clone();
+            return;
         }
+        *current = name.clone();
     }
 
     visit_children(node, |child| walk_for_package(child, current, target_start, found));
@@ -123,28 +126,24 @@ fn find_signature_close_paren(
     find_matching_close_paren(source, sig_open, body_open)
 }
 
-fn collect_call_sites(
-    source: &str,
-    ast: &Node,
-    callable_identity: &str,
-    sub_name: &str,
-) -> Option<Vec<usize>> {
+fn collect_call_sites(source: &str, ast: &Node, callable_identity: &str) -> Option<Vec<usize>> {
+    let mut current = "main".to_string();
     let mut sites = Vec::new();
-    if !collect_calls_recursive(source, ast, callable_identity, sub_name, &mut sites) {
+    if !collect_calls_in_scope(source, ast, &mut current, callable_identity, &mut sites) {
         return None;
     }
     Some(sites)
 }
 
-fn collect_calls_recursive(
+fn collect_calls_in_scope(
     source: &str,
     node: &Node,
+    current_package: &mut String,
     callable_identity: &str,
-    sub_name: &str,
     out: &mut Vec<usize>,
 ) -> bool {
     if let NodeKind::FunctionCall { name, args } = &node.kind
-        && call_matches_callable(name, callable_identity, sub_name)
+        && call_matches_callable(name, current_package, callable_identity)
     {
         if call_has_named_arguments(args) || call_source_has_named_pair(source, node) {
             return false;
@@ -155,18 +154,32 @@ fn collect_calls_recursive(
         out.push(close);
     }
 
+    if let NodeKind::Package { name, block, .. } = &node.kind {
+        if let Some(blk) = block {
+            let saved = current_package.clone();
+            *current_package = name.clone();
+            let ok = collect_calls_in_scope(source, blk, current_package, callable_identity, out);
+            *current_package = saved;
+            return ok;
+        }
+        *current_package = name.clone();
+    }
+
     let mut ok = true;
     visit_children(node, |child| {
-        ok &= collect_calls_recursive(source, child, callable_identity, sub_name, out);
+        ok &= collect_calls_in_scope(source, child, current_package, callable_identity, out);
     });
     ok
 }
 
-fn call_matches_callable(call_name: &str, callable_identity: &str, sub_name: &str) -> bool {
+fn call_matches_callable(call_name: &str, call_package: &str, callable_identity: &str) -> bool {
     if call_name == callable_identity {
         return true;
     }
-    call_name == sub_name && callable_identity == sub_name
+    if call_name.contains("::") {
+        return false;
+    }
+    qualified_callable_name(call_package, call_name) == callable_identity
 }
 
 fn call_source_has_named_pair(source: &str, call_node: &Node) -> bool {
@@ -319,7 +332,7 @@ where
                 f(s);
             }
         }
-        NodeKind::Package { block: Some(blk), .. } => f(blk),
+        NodeKind::Package { .. } => {}
         NodeKind::ExpressionStatement { expression } => f(expression),
         NodeKind::VariableDeclaration { variable, initializer, .. } => {
             f(variable);
@@ -551,6 +564,27 @@ mod tests {
         let source = "sub f ($x, @rest) { }\nf(1, 2);\n";
         with_first_sub_named(source, "f", |sub, ast| {
             assert!(add_parameter_action(source, sub, ast).is_none());
+        });
+    }
+
+    #[test]
+    fn package_local_bare_calls_receive_matching_argument_insert() {
+        let source = "package A;\nsub greet ($name) { }\ngreet('hi');\n";
+        with_first_sub_named(source, "greet", |sub, ast| {
+            let action =
+                must_some_with(add_parameter_action(source, sub, ast), "package-local greet");
+            let updated = apply_edits(source, &edit_insertions(&action));
+            assert!(updated.contains("greet('hi', {})"), "bare call must update: {updated}");
+        });
+    }
+
+    #[test]
+    fn package_block_scope_does_not_leak_past_closing_brace() {
+        let source = "package Outer { package Inner; }\nsub f ($x) { }\nf(1);\n";
+        with_first_sub_named(source, "f", |sub, ast| {
+            let action = must_some_with(add_parameter_action(source, sub, ast), "main package f");
+            let updated = apply_edits(source, &edit_insertions(&action));
+            assert!(updated.contains("f(1, {})"), "main-package call must update: {updated}");
         });
     }
 
