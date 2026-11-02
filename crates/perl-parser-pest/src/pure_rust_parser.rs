@@ -660,7 +660,8 @@ impl PureRustPerlParser {
         };
         let caps = re.captures(source)?;
         let matched = caps.get(0)?;
-        let range = SourceRange::try_over_source(matched.start(), matched.end(), source).ok()?;
+        let range =
+            SourceRange::try_over_source(matched.start(), matched.end(), source).ok()?;
         Some(StrictParseError::new(
             range,
             "strict parse does not apply source normalization substitutions",

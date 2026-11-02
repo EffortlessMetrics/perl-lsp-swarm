@@ -168,7 +168,10 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # is a new caller identity that seeds temp on-disk fixtures through
 # index_initial_file in index_temp_source. Owned by the existing
 # crates/perl-workspace/tests row; no compatibility call, no production caller.
-compatibility_baseline = 697
+# Reconciled 697 -> 698 on #16240 CI leaf: origin/main carried one
+# compatibility call not yet reflected in compatibility_baseline after rebase;
+# ledger identity for completion request context.rs added in the same pass.
+compatibility_baseline = 698
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -186,6 +189,7 @@ compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/request/context.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
