@@ -12,6 +12,9 @@ on:
       - 'Cargo.lock'
       - '**/Cargo.toml'
       - 'deny.toml'
+      - 'scripts/ci/assert-no-cargo-deny-unmatched-skip.sh'
+      - 'scripts/ci/run-cargo-deny-check.sh'
+      - 'scripts/tests/test-run-cargo-deny-check.sh'
       - '.github/workflows/ci-security.yml'
       - '.docker/**'
       - 'Dockerfile*'
@@ -163,7 +166,7 @@ jobs:
           tool: cargo-deny
 
       - name: Run cargo-deny (all checks)
-        run: cargo deny --locked check advisories licenses bans sources
+        run: bash scripts/ci/run-cargo-deny-check.sh
 
   # ============================================================================
   # Trivy Comprehensive Scanning
