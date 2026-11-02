@@ -211,10 +211,11 @@ material merge-tree/base subject changed
 + ordinary rerun would replay the stale snapshot
 + no admissible exact-subject dispatch
 + provider can bind the sanctioned writer-owned fresh trigger to the new subject
++ effective repository policy admits the writer-owned fresh trigger
 → one bounded fresh trigger (`ci: re-request fresh merge-tree checks`); at most one per observed material base movement; re-read before PR_IN_FLIGHT
 
 material merge-tree subject changed
-+ mechanic unavailable or trigger/new-subject relationship unproven
++ mechanic unavailable, repository policy forbids the fresh trigger, or trigger/new-subject relationship unproven
 → NOT_PROVEN; do not invent equivalence or a clean/current result
 ```
 

@@ -104,6 +104,7 @@ struct Observation {
     exact_subject_dispatch_admissible: bool,
     policy_requires_new_subject: bool,
     provider_can_bind_fresh_trigger: bool,
+    repository_policy_allows_fresh_trigger: bool,
     expected: (Action, ResultClass),
 }
 
@@ -119,6 +120,7 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: false,
         policy_requires_new_subject: false,
         provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
         expected: (Action::NoOp, ResultClass::ExistingEvidence),
     },
     Observation {
@@ -132,6 +134,7 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: false,
         policy_requires_new_subject: false,
         provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
         expected: (Action::NoOp, ResultClass::ExistingEvidence),
     },
     Observation {
@@ -145,6 +148,7 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: false,
         policy_requires_new_subject: false,
         provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
         expected: (Action::Wait, ResultClass::PrInFlight),
     },
     Observation {
@@ -158,6 +162,7 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: false,
         policy_requires_new_subject: false,
         provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
         expected: (Action::ClassifyFailure, ResultClass::MergeBlocked),
     },
     Observation {
@@ -171,6 +176,7 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: false,
         policy_requires_new_subject: true,
         provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
         expected: (Action::NonMutatingRefresh, ResultClass::PrInFlight),
     },
     Observation {
@@ -184,6 +190,7 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: false,
         policy_requires_new_subject: true,
         provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
         expected: (Action::FreshTrigger, ResultClass::PrInFlight),
     },
     Observation {
@@ -197,6 +204,21 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: false,
         policy_requires_new_subject: true,
         provider_can_bind_fresh_trigger: false,
+        repository_policy_allows_fresh_trigger: true,
+        expected: (Action::NotProven, ResultClass::NotProven),
+    },
+    Observation {
+        name: "queue-only repository policy forbids fresh trigger despite bindable provider mechanic",
+        unrelated_or_behind_only: false,
+        evidence_current: false,
+        pending_current_subject: false,
+        failed_current_subject: false,
+        material_merge_tree_changed: true,
+        ordinary_rerun_evaluates_new_subject: false,
+        exact_subject_dispatch_admissible: false,
+        policy_requires_new_subject: true,
+        provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: false,
         expected: (Action::NotProven, ResultClass::NotProven),
     },
     Observation {
@@ -210,6 +232,7 @@ const FIXTURES: &[Observation] = &[
         exact_subject_dispatch_admissible: true,
         policy_requires_new_subject: true,
         provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
         expected: (Action::NonMutatingRefresh, ResultClass::PrInFlight),
     },
 ];
@@ -235,7 +258,10 @@ fn classify(obs: Observation) -> (Action, ResultClass) {
         if obs.ordinary_rerun_evaluates_new_subject || obs.exact_subject_dispatch_admissible {
             return (Action::NonMutatingRefresh, ResultClass::PrInFlight);
         }
-        if obs.policy_requires_new_subject && obs.provider_can_bind_fresh_trigger {
+        if obs.policy_requires_new_subject
+            && obs.provider_can_bind_fresh_trigger
+            && obs.repository_policy_allows_fresh_trigger
+        {
             return (Action::FreshTrigger, ResultClass::PrInFlight);
         }
         return (Action::NotProven, ResultClass::NotProven);
@@ -256,7 +282,8 @@ const SKILL_MARKERS: &[&str] = &[
     "ordinary rerun would replay the stale snapshot",
     "one bounded fresh trigger (`ci: re-request fresh merge-tree checks`)",
     "at most one per observed material base movement",
-    "mechanic unavailable or trigger/new-subject relationship unproven",
+    "effective repository policy admits the writer-owned fresh trigger",
+    "mechanic unavailable, repository policy forbids the fresh trigger, or trigger/new-subject relationship unproven",
     "NOT_PROVEN; do not invent equivalence or a clean/current result",
     "this skill does not mutate the branch directly",
     "the currentness contract's narrow fresh-trigger exception applies",
@@ -294,7 +321,7 @@ fn validate_skill(body: &str) -> Result<(), String> {
 
 #[test]
 fn fixtures_cover_the_issue_negative_controls() {
-    assert_eq!(FIXTURES.len(), 8, "keep one fixture per #13350 negative-control family");
+    assert!(FIXTURES.len() >= 8, "keep at least one fixture per #13350 negative-control family");
     for fixture in FIXTURES {
         assert_eq!(classify(*fixture), fixture.expected, "{}", fixture.name);
     }
@@ -317,6 +344,40 @@ fn unrelated_or_pending_or_failed_current_subject_cannot_select_fresh_trigger() 
             );
         }
     }
+}
+
+#[test]
+fn repository_policy_forbids_fresh_trigger_when_provider_could_bind() -> Result<(), DynError> {
+    let fixture = FIXTURES
+        .iter()
+        .copied()
+        .find(|fixture| fixture.name.contains("queue-only repository policy"))
+        .ok_or("repository-policy fixture")?;
+    assert_eq!(classify(fixture), (Action::NotProven, ResultClass::NotProven));
+    assert!(fixture.provider_can_bind_fresh_trigger);
+    assert!(!fixture.repository_policy_allows_fresh_trigger);
+    Ok(())
+}
+
+#[test]
+fn classifier_fresh_trigger_predicates_match_skill_decision_section() -> Result<(), DynError> {
+    let root = root()?;
+    for (provider, path) in [
+        ("Codex", ".agents/skills/verify-live-ci/SKILL.md"),
+        ("Claude", ".claude/skills/verify-live-ci/SKILL.md"),
+    ] {
+        let body = read(&root, path)?;
+        let decision = collapsed(section(&body, "## Currentness and fresh-trigger decision")?);
+        for needle in [
+            "policy requires a fresh result",
+            "provider can bind the sanctioned writer-owned fresh trigger",
+            "effective repository policy admits the writer-owned fresh trigger",
+            "repository policy forbids the fresh trigger",
+        ] {
+            assert!(decision.contains(needle), "{provider} decision section missing {needle:?}");
+        }
+    }
+    Ok(())
 }
 
 #[test]
