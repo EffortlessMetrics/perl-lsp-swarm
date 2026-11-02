@@ -1983,6 +1983,17 @@ impl LspServer {
                             doc.text_arc.to_string(),
                             offset,
                         ))
+                    } else if let Some(module_name) =
+                        perl_lsp_rs_core::providers::document_links::module_runtime_module_at_byte_offset(
+                            text,
+                            offset,
+                        )
+                    {
+                        Some((
+                            EarlyDefinitionTarget::UseModule(module_name),
+                            doc.text_arc.to_string(),
+                            offset,
+                        ))
                     } else if (!cursor_in_single_quoted_literal || quoted_parent_base_argument)
                         && let Some(module_name) =
                             self.extract_module_reference_extended(&text_around, cursor_in_text)
