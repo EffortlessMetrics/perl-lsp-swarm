@@ -1,0 +1,854 @@
+{
+  "claim_boundary": "schema-derived standard initialize capability projection only; nullability semantics remain owned by #9404/#7362; production inventory and runtime values remain out of scope",
+  "extension_candidate_count": 1,
+  "extension_candidates": [
+    {
+      "classification": "extension_candidate",
+      "reason": "repository custom initialize field; absent from pinned upstream Capabilities schema",
+      "row_id": "CAP-EXT-001",
+      "rust_owner": "Capabilities::supports_inline_values",
+      "wire_name": "supportsInlineValues"
+    }
+  ],
+  "schema_version": "dap_initialize_capability_schema.v1",
+  "standard_row_count": 42,
+  "standard_rows": [
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "additionalModuleColumns"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-001",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "additionalModuleColumns",
+      "wire_name": "additionalModuleColumns",
+      "wire_shape": {
+        "items": {
+          "definition": "ColumnDescriptor",
+          "kind": "definition"
+        },
+        "kind": "array"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "breakpointModes"
+      },
+      "related_events": [],
+      "related_requests": [
+        "setBreakpoints"
+      ],
+      "row_id": "CAP-STD-002",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "breakpointModes",
+      "wire_name": "breakpointModes",
+      "wire_shape": {
+        "items": {
+          "definition": "BreakpointMode",
+          "kind": "definition"
+        },
+        "kind": "array"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "completionTriggerCharacters"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-003",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "completionTriggerCharacters",
+      "wire_name": "completionTriggerCharacters",
+      "wire_shape": {
+        "items": {
+          "kind": "string"
+        },
+        "kind": "array"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "exceptionBreakpointFilters"
+      },
+      "related_events": [],
+      "related_requests": [
+        "setExceptionBreakpoints"
+      ],
+      "row_id": "CAP-STD-004",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "exceptionBreakpointFilters",
+      "wire_name": "exceptionBreakpointFilters",
+      "wire_shape": {
+        "items": {
+          "definition": "ExceptionBreakpointsFilter",
+          "kind": "definition"
+        },
+        "kind": "array"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportSuspendDebuggee"
+      },
+      "related_events": [],
+      "related_requests": [
+        "disconnect"
+      ],
+      "row_id": "CAP-STD-005",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportSuspendDebuggee",
+      "wire_name": "supportSuspendDebuggee",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportTerminateDebuggee"
+      },
+      "related_events": [],
+      "related_requests": [
+        "disconnect"
+      ],
+      "row_id": "CAP-STD-006",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportTerminateDebuggee",
+      "wire_name": "supportTerminateDebuggee",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportedChecksumAlgorithms"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-007",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportedChecksumAlgorithms",
+      "wire_name": "supportedChecksumAlgorithms",
+      "wire_shape": {
+        "items": {
+          "definition": "ChecksumAlgorithm",
+          "kind": "definition"
+        },
+        "kind": "array"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsANSIStyling"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-008",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsANSIStyling",
+      "wire_name": "supportsANSIStyling",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsBreakpointLocationsRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "breakpointLocations"
+      ],
+      "row_id": "CAP-STD-009",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsBreakpointLocationsRequest",
+      "wire_name": "supportsBreakpointLocationsRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsCancelRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "cancel"
+      ],
+      "row_id": "CAP-STD-010",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsCancelRequest",
+      "wire_name": "supportsCancelRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsClipboardContext"
+      },
+      "related_events": [],
+      "related_requests": [
+        "evaluate"
+      ],
+      "row_id": "CAP-STD-011",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsClipboardContext",
+      "wire_name": "supportsClipboardContext",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsCompletionsRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "completions"
+      ],
+      "row_id": "CAP-STD-012",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsCompletionsRequest",
+      "wire_name": "supportsCompletionsRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsConditionalBreakpoints"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-013",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsConditionalBreakpoints",
+      "wire_name": "supportsConditionalBreakpoints",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsConfigurationDoneRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "configurationDone"
+      ],
+      "row_id": "CAP-STD-014",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsConfigurationDoneRequest",
+      "wire_name": "supportsConfigurationDoneRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsDataBreakpointBytes"
+      },
+      "related_events": [],
+      "related_requests": [
+        "dataBreakpointInfo"
+      ],
+      "row_id": "CAP-STD-015",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsDataBreakpointBytes",
+      "wire_name": "supportsDataBreakpointBytes",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsDataBreakpoints"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-016",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsDataBreakpoints",
+      "wire_name": "supportsDataBreakpoints",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsDelayedStackTraceLoading"
+      },
+      "related_events": [],
+      "related_requests": [
+        "stackTrace"
+      ],
+      "row_id": "CAP-STD-017",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsDelayedStackTraceLoading",
+      "wire_name": "supportsDelayedStackTraceLoading",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsDisassembleRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "disassemble"
+      ],
+      "row_id": "CAP-STD-018",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsDisassembleRequest",
+      "wire_name": "supportsDisassembleRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsEvaluateForHovers"
+      },
+      "related_events": [],
+      "related_requests": [
+        "evaluate"
+      ],
+      "row_id": "CAP-STD-019",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsEvaluateForHovers",
+      "wire_name": "supportsEvaluateForHovers",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsExceptionFilterOptions"
+      },
+      "related_events": [],
+      "related_requests": [
+        "setExceptionBreakpoints"
+      ],
+      "row_id": "CAP-STD-020",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsExceptionFilterOptions",
+      "wire_name": "supportsExceptionFilterOptions",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsExceptionInfoRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "exceptionInfo"
+      ],
+      "row_id": "CAP-STD-021",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsExceptionInfoRequest",
+      "wire_name": "supportsExceptionInfoRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsExceptionOptions"
+      },
+      "related_events": [],
+      "related_requests": [
+        "setExceptionBreakpoints"
+      ],
+      "row_id": "CAP-STD-022",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsExceptionOptions",
+      "wire_name": "supportsExceptionOptions",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsFunctionBreakpoints"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-023",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsFunctionBreakpoints",
+      "wire_name": "supportsFunctionBreakpoints",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsGotoTargetsRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "gotoTargets"
+      ],
+      "row_id": "CAP-STD-024",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsGotoTargetsRequest",
+      "wire_name": "supportsGotoTargetsRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsHitConditionalBreakpoints"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-025",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsHitConditionalBreakpoints",
+      "wire_name": "supportsHitConditionalBreakpoints",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsInstructionBreakpoints"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-026",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsInstructionBreakpoints",
+      "wire_name": "supportsInstructionBreakpoints",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsLoadedSourcesRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "loadedSources"
+      ],
+      "row_id": "CAP-STD-027",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsLoadedSourcesRequest",
+      "wire_name": "supportsLoadedSourcesRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsLogPoints"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-028",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsLogPoints",
+      "wire_name": "supportsLogPoints",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsModulesRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "modules"
+      ],
+      "row_id": "CAP-STD-029",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsModulesRequest",
+      "wire_name": "supportsModulesRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsReadMemoryRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "readMemory"
+      ],
+      "row_id": "CAP-STD-030",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsReadMemoryRequest",
+      "wire_name": "supportsReadMemoryRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsRestartFrame"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-031",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsRestartFrame",
+      "wire_name": "supportsRestartFrame",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsRestartRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "restart"
+      ],
+      "row_id": "CAP-STD-032",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsRestartRequest",
+      "wire_name": "supportsRestartRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsSetExpression"
+      },
+      "related_events": [],
+      "related_requests": [
+        "setExpression"
+      ],
+      "row_id": "CAP-STD-033",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsSetExpression",
+      "wire_name": "supportsSetExpression",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsSetVariable"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-034",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsSetVariable",
+      "wire_name": "supportsSetVariable",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsSingleThreadExecutionRequests"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-035",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsSingleThreadExecutionRequests",
+      "wire_name": "supportsSingleThreadExecutionRequests",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsStepBack"
+      },
+      "related_events": [],
+      "related_requests": [
+        "reverseContinue"
+      ],
+      "row_id": "CAP-STD-036",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsStepBack",
+      "wire_name": "supportsStepBack",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsStepInTargetsRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "stepInTargets"
+      ],
+      "row_id": "CAP-STD-037",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsStepInTargetsRequest",
+      "wire_name": "supportsStepInTargetsRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsSteppingGranularity"
+      },
+      "related_events": [],
+      "related_requests": [],
+      "row_id": "CAP-STD-038",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsSteppingGranularity",
+      "wire_name": "supportsSteppingGranularity",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsTerminateRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "terminate"
+      ],
+      "row_id": "CAP-STD-039",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsTerminateRequest",
+      "wire_name": "supportsTerminateRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsTerminateThreadsRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "terminateThreads"
+      ],
+      "row_id": "CAP-STD-040",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsTerminateThreadsRequest",
+      "wire_name": "supportsTerminateThreadsRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsValueFormattingOptions"
+      },
+      "related_events": [],
+      "related_requests": [
+        "evaluate"
+      ],
+      "row_id": "CAP-STD-041",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsValueFormattingOptions",
+      "wire_name": "supportsValueFormattingOptions",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    },
+    {
+      "classification": "standard",
+      "nullability_row": {
+        "class": "optional-non-null-when-present",
+        "definition": "Capabilities",
+        "field": "supportsWriteMemoryRequest"
+      },
+      "related_events": [],
+      "related_requests": [
+        "writeMemory"
+      ],
+      "row_id": "CAP-STD-042",
+      "schema_required": false,
+      "upstream_definition": "Capabilities",
+      "upstream_property": "supportsWriteMemoryRequest",
+      "wire_name": "supportsWriteMemoryRequest",
+      "wire_shape": {
+        "kind": "boolean"
+      }
+    }
+  ],
+  "upstream": {
+    "commit": "bf8a5d27e8040044b84b863f90916e08925ee811",
+    "definition": "Capabilities",
+    "repository": "microsoft/debug-adapter-protocol",
+    "sha256": "ff8ae4c6cfd588a050e9346c35fd104748a27ef4518d1c3268529ca6f8ff5818"
+  }
+}
