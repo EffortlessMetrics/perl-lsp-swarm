@@ -24,6 +24,13 @@
 //! # }
 //! ```
 
+/// Marker stored on signature-parameter symbols during extraction (#1641).
+///
+/// This is not a Perl source attribute; completion uses it to distinguish
+/// signature parameters from ordinary `my` lexicals while keeping the same
+/// lexical admission semantics.
+pub const SIGNATURE_PARAMETER_SYMBOL_MARKER: &str = "lsp:signature-parameter";
+
 use crate::SourceLocation;
 use crate::ast::{GotoTargetForm, Node, NodeKind};
 use regex::Regex;
@@ -3189,7 +3196,13 @@ impl SymbolExtractor {
                 // Unexpected node kind inside a signature — skip gracefully
                 _ => continue,
             };
-            self.handle_variable_declaration("my", variable, &[], variable.location, None);
+            self.handle_variable_declaration(
+                "my",
+                variable,
+                &[SIGNATURE_PARAMETER_SYMBOL_MARKER.to_string()],
+                variable.location,
+                None,
+            );
         }
     }
 
