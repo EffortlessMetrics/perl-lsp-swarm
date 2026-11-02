@@ -14,6 +14,9 @@
 //! - Preserved `ScopeId` where the producer supplies one (carried as `None`
 //!   when unknown, per Req 26)
 
+use crate::semantic::fact_fingerprint::{
+    fingerprint_anchors, fingerprint_edges, fingerprint_entities, fingerprint_occurrences,
+};
 use crate::workspace::workspace_index::FileFactShard;
 use perl_position_tracking::WireRange;
 use perl_semantic_facts::{
@@ -140,20 +143,20 @@ pub fn build_canonical_fact_shard(
     // Hashes are computed after all synthetic facts are merged so that
     // `entities_hash` and `anchors_hash` cover the full shard.  This is
     // the "hash last" invariant from #1598.
-    let anchors_hash = compute_anchors_hash(&anchors);
-    let entities_hash = compute_entities_hash(&entities);
-    let occurrences_hash = compute_occurrences_hash(&occurrences);
-    let edges_hash = compute_edges_hash(&edges);
+    let anchors_hash = fingerprint_anchors(&anchors, PRODUCER_SCHEMA_VERSION);
+    let entities_hash = fingerprint_entities(&entities, PRODUCER_SCHEMA_VERSION);
+    let occurrences_hash = fingerprint_occurrences(&occurrences, PRODUCER_SCHEMA_VERSION);
+    let edges_hash = fingerprint_edges(&edges, PRODUCER_SCHEMA_VERSION);
 
     FileFactShard {
         source_uri: uri.to_string(),
         file_id,
         content_hash,
         producer_schema_version: PRODUCER_SCHEMA_VERSION,
-        anchors_hash: Some(anchors_hash),
-        entities_hash: Some(entities_hash),
-        occurrences_hash: Some(occurrences_hash),
-        edges_hash: Some(edges_hash),
+        anchors_hash,
+        entities_hash,
+        occurrences_hash,
+        edges_hash,
         anchors,
         entities,
         occurrences,
@@ -191,6 +194,10 @@ pub fn byte_span_to_lsp_range(
 // ── Helpers ──
 
 /// Derive a stable `FileId` from a URI string (mirrors `WorkspaceIndex::hash_uri_to_file_id`).
+///
+/// Current process/repository identity debt (#8054): `DefaultHasher` remains
+/// the FileId mint, which is **not** the category-fingerprint authority.
+/// Portable FileId migration is owned by the identity contract, not this PR.
 fn hash_uri_to_file_id(uri: &str) -> FileId {
     let mut hasher = DefaultHasher::new();
     uri.hash(&mut hasher);
@@ -198,52 +205,14 @@ fn hash_uri_to_file_id(uri: &str) -> FileId {
 }
 
 /// Deterministic base ID for synthetic import anchors.
+///
+/// Current process/repository identity debt (#8054): this mint is not a
+/// portable semantic fingerprint. Do not reuse it as category-hash authority.
 fn import_anchor_base_id(index: usize) -> u64 {
     let mut hasher = DefaultHasher::new();
     "import-anchor".hash(&mut hasher);
     index.hash(&mut hasher);
     hasher.finish()
-}
-
-fn compute_anchors_hash(anchors: &[AnchorFact]) -> u64 {
-    let mut h = DefaultHasher::new();
-    anchors.len().hash(&mut h);
-    for a in anchors {
-        a.id.hash(&mut h);
-        a.span_start_byte.hash(&mut h);
-        a.span_end_byte.hash(&mut h);
-    }
-    h.finish()
-}
-
-fn compute_entities_hash(entities: &[EntityFact]) -> u64 {
-    let mut h = DefaultHasher::new();
-    entities.len().hash(&mut h);
-    for e in entities {
-        e.id.hash(&mut h);
-        e.canonical_name.hash(&mut h);
-    }
-    h.finish()
-}
-
-fn compute_occurrences_hash(occurrences: &[OccurrenceFact]) -> u64 {
-    let mut h = DefaultHasher::new();
-    occurrences.len().hash(&mut h);
-    for o in occurrences {
-        o.id.hash(&mut h);
-        o.kind.hash(&mut h);
-    }
-    h.finish()
-}
-
-fn compute_edges_hash(edges: &[EdgeFact]) -> u64 {
-    let mut h = DefaultHasher::new();
-    edges.len().hash(&mut h);
-    for e in edges {
-        e.id.hash(&mut h);
-        e.kind.hash(&mut h);
-    }
-    h.finish()
 }
 
 #[cfg(test)]
@@ -861,6 +830,50 @@ mod tests {
         assert!(shard.edges.iter().any(|e| e.kind == EdgeKind::Defines));
         assert!(shard.edges.iter().any(|e| e.kind == EdgeKind::References));
 
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_shard_edge_target_change_moves_only_edges_hash()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut decl_facts = sample_decl_facts();
+        decl_facts.defines_edges.push(EdgeFact {
+            id: EdgeId(10),
+            kind: EdgeKind::Defines,
+            from_entity_id: EntityId(200),
+            to_entity_id: EntityId(201),
+            via_occurrence_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+        let ref_facts = sample_ref_facts();
+        let baseline = build_canonical_fact_shard(
+            "file:///test.pl",
+            12345,
+            &decl_facts,
+            &ref_facts,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        decl_facts.defines_edges[0].to_entity_id = EntityId(999);
+        let mutated = build_canonical_fact_shard(
+            "file:///test.pl",
+            12345,
+            &decl_facts,
+            &ref_facts,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        assert_eq!(baseline.anchors_hash, mutated.anchors_hash);
+        assert_eq!(baseline.entities_hash, mutated.entities_hash);
+        assert_eq!(baseline.occurrences_hash, mutated.occurrences_hash);
+        assert_ne!(baseline.edges_hash, mutated.edges_hash);
         Ok(())
     }
 }
