@@ -1097,7 +1097,8 @@ ci-agent-ledgers-validate:
 
 # Production-unsafe SAFETY ratchet (#16215) — runs `check-unsafe-prod`, which
 # fails when any production unsafe block lacks a preceding `// SAFETY:`
-# comment or the ci/unsafe_prod_baseline.txt count is exceeded. The checker
+# comment or when the committed `ci/unsafe_prod_baseline.txt` site set no longer
+# matches the scanned production unsafe sites. The checker
 # existed and was unit-tested, but nothing in CI invoked it, so drift was
 # silently absorbed; this recipe plus the merge-gate `_timed` call close that
 # gap, mirroring `ci-agent-ledgers-validate`.
