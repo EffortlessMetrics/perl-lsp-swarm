@@ -1,4 +1,5 @@
 //! Shipped-process proof for in-pattern regex capture navigation (#7030).
+#![cfg(feature = "expose_lsp_test_api")]
 
 use perl_lsp::LspServer;
 use serde_json::{Value, json};

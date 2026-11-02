@@ -6398,18 +6398,16 @@ pub fn perl_lsp_rs_core::providers::references_shadow::find_references_cutover<Q
 pub fn perl_lsp_rs_core::providers::references_shadow::find_references_live_source_backed<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_locations: alloc::vec::Vec<perl_workspace::workspace::workspace_index::Location>, semantic_queries: &Q, symbol: &str, entity_id: perl_semantic_facts::EntityId) -> perl_lsp_rs_core::providers::references_shadow::ReferencesCutoverOutcome
 pub fn perl_lsp_rs_core::providers::references_shadow::find_references_shadow<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_locations: alloc::vec::Vec<perl_workspace::workspace::workspace_index::Location>, semantic_queries: &Q, symbol: &str, entity_id: perl_semantic_facts::EntityId) -> perl_lsp_rs_core::providers::references_shadow::ReferencesShadowResult
 pub mod perl_lsp_rs_core::providers::regex
-pub use perl_lsp_rs_core::providers::regex::definition_links_at
-pub use perl_lsp_rs_core::providers::regex::reference_spans_at
-pub struct perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink
-pub perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink::origin_selection: perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
-pub perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink::target_range: perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
-pub perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink::target_selection: perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
-pub struct perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
-pub perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan::end: usize
-pub perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan::start: usize
-pub fn perl_lsp_rs_core::providers::regex::definition_links_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink>>
+pub struct perl_lsp_rs_core::providers::regex::RegexCaptureDefinitionLink
+pub perl_lsp_rs_core::providers::regex::RegexCaptureDefinitionLink::origin_selection: perl_lsp_rs_core::providers::regex::SourceByteSpan
+pub perl_lsp_rs_core::providers::regex::RegexCaptureDefinitionLink::target_range: perl_lsp_rs_core::providers::regex::SourceByteSpan
+pub perl_lsp_rs_core::providers::regex::RegexCaptureDefinitionLink::target_selection: perl_lsp_rs_core::providers::regex::SourceByteSpan
+pub struct perl_lsp_rs_core::providers::regex::SourceByteSpan
+pub perl_lsp_rs_core::providers::regex::SourceByteSpan::end: usize
+pub perl_lsp_rs_core::providers::regex::SourceByteSpan::start: usize
+pub fn perl_lsp_rs_core::providers::regex::definition_links_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::RegexCaptureDefinitionLink>>
 pub fn perl_lsp_rs_core::providers::regex::record_at_pattern_body_offset(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
-pub fn perl_lsp_rs_core::providers::regex::reference_spans_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize, include_declaration: bool) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan>>
+pub fn perl_lsp_rs_core::providers::regex::reference_spans_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize, include_declaration: bool) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::SourceByteSpan>>
 pub mod perl_lsp_rs_core::providers::regex_canonical
 pub fn perl_lsp_rs_core::providers::regex_canonical::project_canonical_regex_diagnostics(table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub mod perl_lsp_rs_core::providers::rename
@@ -9810,6 +9808,7 @@ pub fn perl_lsp_rs_core::providers::get_shebang_lens(source: &str) -> core::opti
 pub fn perl_lsp_rs_core::providers::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<perl_position_tracking::span::SourceLocation>
 pub fn perl_lsp_rs_core::providers::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
 pub fn perl_lsp_rs_core::providers::htmx_attribute_name_context(source: &str, position: usize) -> core::option::Option<perl_lsp_rs_core::providers::HtmxAttributeNameContext<'_>>
 pub fn perl_lsp_rs_core::providers::identity_for_code(code: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::DeadCodeIdentity>
 pub fn perl_lsp_rs_core::providers::inlay_hint_label_str(hint: &serde_json::value::Value) -> core::option::Option<&str>
@@ -9817,6 +9816,7 @@ pub fn perl_lsp_rs_core::providers::is_test_file(path: &str) -> bool
 pub fn perl_lsp_rs_core::providers::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::legend() -> perl_lsp_rs_core::providers::TokensLegend
 pub fn perl_lsp_rs_core::providers::matches_query(name: &str, query: &str) -> bool
+pub fn perl_lsp_rs_core::providers::markup_attribute_name_suffix_end(source: &str, name_start: usize) -> usize
 pub fn perl_lsp_rs_core::providers::merge_and_sort_completion_candidates(candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>
 pub fn perl_lsp_rs_core::providers::normalize_provider_decision_receipt(receipt: serde_json::value::Value) -> serde_json::value::Value
 pub fn perl_lsp_rs_core::providers::parameter_hints(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<serde_json::value::Value>
