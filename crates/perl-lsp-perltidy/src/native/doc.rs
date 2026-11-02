@@ -1,8 +1,6 @@
 use super::config::FormatConfig;
 use super::counters;
-use super::layout_bounds::{
-    effective_indent_width, effective_line_width, render_indent_columns,
-};
+use super::layout_bounds::{effective_indent_width, effective_line_width, render_indent_columns};
 
 /// Native formatter document tree.
 ///
