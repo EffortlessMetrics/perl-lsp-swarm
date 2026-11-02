@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "The `perl-lsp-rs-core` completion import map no longer carries a dead `extract_import_map` wrapper or two `needless_return` sites, so the `clippy_full` gate is clean again, and the completion-candidate ledger's `source_digest` is re-anchored against the tree it ships with. `import_map.rs` sits inside the ledger's `SCAN_ROOTS`, so the clippy repair necessarily moves the digest and the two land as one coupled change. The re-anchor also drops `completion/import_map/symbols.rs` from the generated projection: the previous anchor was computed over a 42-file surface that still counted that file, which #18684 deleted, so the committed digest did not describe the tree before this change either. The 60 producer rows, their identity/evidence/completeness ceilings, routes, delegations and migration owners are unchanged."
+time: 2026-11-02T05:34:00Z
+custom:
+  PR: "18738"
+  Slug: couple-import-map-clippy-repair-with-ledger-reanchor
+  Breaking: "no"
