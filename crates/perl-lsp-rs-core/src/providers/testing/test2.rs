@@ -1114,14 +1114,20 @@ fn resolve_import_with(
                 analysis_limited: false,
             });
         }
+        let v0_baseline = resolve_import_with("Test2::V0", "", rename_as, rename_fix)?;
         let v0_analysis = resolve_import_with("Test2::V0", &synthetic, rename_as, rename_fix)?;
-        let default_names: BTreeSet<String> =
-            V0_DEFAULT.iter().map(|symbol| (*symbol).to_string()).collect();
+        let baseline = &v0_baseline.resolved.symbols;
+        // Direct Target imports install only `-target` helpers. Reusing V0 resolution
+        // merges those helpers with V0's default export set; diff against a plain
+        // `use Test2::V0;` import drops the defaults but also drops helpers whose
+        // names overlap V0 defaults (for example `ok => ...`).
+        let collision_keys = direct_target_import_hash_keys(raw_args);
         let symbols: BTreeSet<String> = v0_analysis
             .resolved
             .symbols
             .into_iter()
-            .filter(|symbol| !default_names.contains(symbol))
+            .filter(|symbol| !baseline.contains(symbol))
+            .chain(collision_keys)
             .collect();
         return Some(ResolvedImportAnalysis {
             resolved: ResolvedImport { symbols, pragmas: None },
@@ -1193,6 +1199,7 @@ fn resolve_import_with(
     let mut exclusions: BTreeSet<String> = BTreeSet::new();
     let mut include_default_tag = false;
     let mut include_all_tag = false;
+    let mut include_extended_v1_tag = false;
 
     while let Some(atom) = atoms.get(atom_index) {
         atom_index += 1;
@@ -1215,6 +1222,7 @@ fn resolve_import_with(
             match tag.to_ascii_lowercase().as_str() {
                 "default" => include_default_tag = true,
                 "all" => include_all_tag = true,
+                "v1" if module == "Test2::Bundle::Extended" => include_extended_v1_tag = true,
                 _ => {}
             }
             continue;
@@ -1368,7 +1376,8 @@ fn resolve_import_with(
     // `:DEFAULT` and `:ALL` tags; asking for `:ALL` must not suppress every
     // known import merely because the tag itself is explicit.
     let has_local_selection = !positives.is_empty() || !renames.is_empty();
-    let use_default = !has_local_selection || include_default_tag || include_all_tag;
+    let use_default =
+        !has_local_selection || include_default_tag || include_all_tag || include_extended_v1_tag;
     let requested_base_set = if include_all_tag { all_set } else { default_set };
 
     let base_symbols: BTreeSet<String> = if use_default {
@@ -2181,6 +2190,41 @@ fn consume_dynamic_target_expression(atoms: &[String], start: usize) -> usize {
         next = next.saturating_add(1);
     }
     next
+}
+
+/// Hash keys from a direct `use Test2::Tools::Target key => ...` import list.
+///
+/// Only literal bareword keys are recovered; dynamic expressions remain outside
+/// this resolver's proof boundary.
+fn direct_target_import_hash_keys(raw_args: &str) -> BTreeSet<String> {
+    let trimmed = raw_args.trim();
+    if !trimmed.contains("=>") {
+        return BTreeSet::new();
+    }
+    let wrapped =
+        if trimmed.starts_with('{') { trimmed.to_string() } else { format!("{{ {trimmed} }}") };
+    let atoms = tokenize_import_args(&wrapped);
+    let mut keys = BTreeSet::new();
+    let mut brace_depth = 0_isize;
+    let mut expect_key = true;
+    for atom in atoms {
+        let atom = strip_quotes(atom.trim());
+        if atom.is_empty() || atom == "," {
+            continue;
+        }
+        let (opens, closes) = count_unquoted_braces(atom);
+        if brace_depth == 1 && !atom.is_empty() {
+            if expect_key && is_bareword(atom) {
+                keys.insert(atom.to_string());
+                expect_key = false;
+            } else if !expect_key {
+                expect_key = true;
+            }
+        }
+        brace_depth += opens;
+        brace_depth -= closes;
+    }
+    keys
 }
 
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.

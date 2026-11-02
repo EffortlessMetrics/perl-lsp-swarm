@@ -313,6 +313,27 @@ fn pinned_direct_target_import_generates_helpers_without_bundle_defaults() {
     );
     assert!(named.symbols.contains("service"));
     assert!(!named.symbols.contains("ok"));
+
+    let collision = must_some_with(
+        resolve_import("Test2::Tools::Target", "ok => 'Some::Service'"),
+        "Target hash key overlapping V0 default recognized",
+    );
+    assert!(
+        collision.symbols.contains("ok"),
+        "target helpers must survive names that also appear in V0 defaults"
+    );
+    assert!(!collision.symbols.contains("is"));
+}
+
+#[test]
+fn pinned_extended_v1_tag_with_positive_import_keeps_full_export_set() {
+    let resolved = must_some_with(
+        resolve_import("Test2::Bundle::Extended", "':v1', 'ok'"),
+        "Extended recognized",
+    );
+    assert!(resolved.symbols.contains("ok"));
+    assert!(resolved.symbols.contains("is"));
+    assert!(resolved.symbols.contains("subtest"));
 }
 
 #[test]
