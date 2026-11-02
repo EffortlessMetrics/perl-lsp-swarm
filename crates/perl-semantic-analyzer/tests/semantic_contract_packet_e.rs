@@ -1,14 +1,17 @@
 //! Semantic packet E contract discovery (#6599).
 
+use std::path::PathBuf;
+
 #[test]
-fn analyzer_consumers_can_import_parser_to_semantic_contract_note() {
-    use perl_semantic_facts::parser_to_semantic_contract::{
-        FOLLOW_UP_CAPABILITY_BACKLOG, FOLLOW_UP_COMPATIBILITY_LEDGER, FOLLOW_UP_FACT_TAXONOMY,
-        ROUTING_POLICY_PATH, SPEC_PATH,
-    };
-    assert_eq!(FOLLOW_UP_COMPATIBILITY_LEDGER, 4736);
-    assert_eq!(FOLLOW_UP_FACT_TAXONOMY, 2543);
-    assert_eq!(FOLLOW_UP_CAPABILITY_BACKLOG, 2559);
-    assert!(SPEC_PATH.contains("PLSP-SPEC-0039"));
-    assert!(ROUTING_POLICY_PATH.contains("packet-e-issue-routing"));
+fn packet_e_spec_and_routing_policy_exist_at_declared_paths() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let spec = root.join("docs/specs/PLSP-SPEC-0039-semantic-contract-packet-e.md");
+    let routing = root.join("policy/semantic/packet-e-issue-routing.v1.toml");
+    assert!(spec.is_file(), "missing {}", spec.display());
+    assert!(routing.is_file(), "missing {}", routing.display());
+    let spec_text = std::fs::read_to_string(&spec).expect("read spec");
+    assert!(spec_text.contains("Parser-to-fact transitions"));
+    let routing_text = std::fs::read_to_string(&routing).expect("read routing");
+    assert!(routing_text.contains("issue = 4736"));
+    assert!(routing_text.contains("follow_up = \"compatibility_ledger\""));
 }

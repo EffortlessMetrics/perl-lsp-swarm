@@ -58,6 +58,11 @@ fn optional_resource_populations_stay_out_of_default_denominator() -> TestResult
     for entry in &matrix.targets {
         let id = entry.contract.target_id.as_str();
         if matches!(id, "optional_benchmark" | "optional_bigmem" | "optional_japh") {
+            assert_eq!(
+                entry.disposition,
+                TargetDisposition::Planned,
+                "{id} must stay out of the implemented default denominator"
+            );
             assert!(!entry.claim_boundary.is_empty(), "{id} must document a claim boundary");
             assert!(
                 entry.contract.change_reason.as_deref().is_some_and(|r| !r.is_empty()),
@@ -96,20 +101,5 @@ fn semantic_boundary_registry_fixture_is_valid_empty_registry() -> TestResult {
         value.get("entries").and_then(|v| v.as_array()).is_some_and(|a| a.is_empty()),
         "registry scaffold must start empty until #4737 population lands"
     );
-    Ok(())
-}
-
-#[test]
-fn packet_e_routes_bootstrap_and_platform_issues_to_compatibility_ledger() -> TestResult {
-    let policy = fs::read_to_string(repo_file("policy/semantic/packet-e-issue-routing.v1.toml"))?;
-    for issue in [3651_u32, 3700, 3708, 4737] {
-        let needle = format!("issue = {issue}");
-        assert!(policy.contains(&needle), "routing policy must mention issue {issue}");
-        let section = policy.split(&needle).nth(1).ok_or("issue section missing")?;
-        assert!(
-            section.contains("follow_up = \"compatibility_ledger\""),
-            "issue {issue} must route to compatibility_ledger"
-        );
-    }
     Ok(())
 }

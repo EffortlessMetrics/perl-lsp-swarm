@@ -27,19 +27,19 @@
 //! facts with exact-source reason codes.
 
 /// Packet E routing follow-up owner for harness compatibility ledger work (#4736).
-pub const FOLLOW_UP_COMPATIBILITY_LEDGER: u32 = 4736;
+pub(crate) const FOLLOW_UP_COMPATIBILITY_LEDGER: u32 = 4736;
 
 /// Packet E routing follow-up owner for unsupported-fact taxonomy work (#2543).
-pub const FOLLOW_UP_FACT_TAXONOMY: u32 = 2543;
+pub(crate) const FOLLOW_UP_FACT_TAXONOMY: u32 = 2543;
 
 /// Packet E routing follow-up owner for compiler programme capability backlog (#2559).
-pub const FOLLOW_UP_CAPABILITY_BACKLOG: u32 = 2559;
+pub(crate) const FOLLOW_UP_CAPABILITY_BACKLOG: u32 = 2559;
 
 /// Spec path for the normative packet E semantic contract.
-pub const SPEC_PATH: &str = "docs/specs/PLSP-SPEC-0039-semantic-contract-packet-e.md";
+pub(crate) const SPEC_PATH: &str = "docs/specs/PLSP-SPEC-0039-semantic-contract-packet-e.md";
 
 /// Policy path for machine-readable issue routing.
-pub const ROUTING_POLICY_PATH: &str = "policy/semantic/packet-e-issue-routing.v1.toml";
+pub(crate) const ROUTING_POLICY_PATH: &str = "policy/semantic/packet-e-issue-routing.v1.toml";
 
 #[cfg(test)]
 mod tests {

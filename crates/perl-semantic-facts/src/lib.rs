@@ -6,6 +6,11 @@
 //! This crate defines strongly-typed IDs and serializable fact records that can be shared
 //! between parser-derived semantics, semantic analyzer synthesis, and workspace indexing.
 //!
+//! Parser-to-semantic and unsupported-fact contract (Packet E, #6599): see
+//! [PLSP-SPEC-0039](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/specs/PLSP-SPEC-0039-semantic-contract-packet-e.md)
+//! and `policy/semantic/packet-e-issue-routing.v1.toml`. The internal
+//! `parser_to_semantic_contract` module restates the transition note for tests.
+//!
 //! It intentionally does **not** parse Perl, implement LSP providers, or own workspace
 //! storage backends.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
@@ -24,8 +29,7 @@ pub mod hook;
 /// Dependency-neutral versioned contracts for interprocedural composition
 /// (#12672).
 pub mod interprocedural;
-/// Parser-to-semantic transition contract note (#6599, PLSP-SPEC-0039).
-pub mod parser_to_semantic_contract;
+mod parser_to_semantic_contract;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;
