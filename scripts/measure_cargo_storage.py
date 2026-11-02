@@ -88,9 +88,12 @@ def main(argv=None):
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command or not math.isfinite(args.interval) or args.interval <= 0 or args.min_free_bytes < 0:
         parser.error('a command and positive finite interval are required')
-    roots = [root.absolute() for root in args.root]
+    try:
+        roots = [root.resolve(strict=False) for root in args.root]
+        evidence = args.evidence.resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        parser.error(f'cannot resolve measurement paths: {error}')
     # Existing evidence must never be truncated. Durable evidence stays outside observed roots.
-    evidence = args.evidence.absolute()
     if any(evidence == root or root in evidence.parents for root in roots):
         parser.error('evidence must be outside observed roots')
     stop = threading.Event()
@@ -131,10 +134,11 @@ def main(argv=None):
                                        for fs in row['filesystems'].values())
         if not samples[-1]['valid'] or reserve_lost(samples[-1]):
             return 75
+        child = None
+        worker = None
         command_started = time.monotonic()
-        child = subprocess.Popen(command)
         def signal_child(signum):
-            if child.poll() is None:
+            if child is not None and child.poll() is None:
                 try:
                     child.send_signal(signum)
                 except ProcessLookupError:
@@ -143,7 +147,6 @@ def main(argv=None):
             cancelled.append(signum)
             scan_stop.set()
             signal_child(signum)
-        old = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
         def monitor():
             try:
                 while not stop.wait(args.interval):
@@ -177,14 +180,25 @@ def main(argv=None):
                     pass
             finally:
                 worker_state['finished'] = True
-        worker = threading.Thread(target=monitor)
-        worker.start()
+        old = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
         try:
+            child = subprocess.Popen(command)
+            # A signal may arrive after handler installation but before Popen
+            # returns and binds the child. Forward that pending cancellation now.
+            if cancelled:
+                signal_child(cancelled[-1])
+            worker = threading.Thread(target=monitor)
+            worker.start()
             status = child.wait()
             command_elapsed = time.monotonic() - command_started
         finally:
             stop.set()
-            worker.join()
+            if worker is not None and worker.ident is not None:
+                worker.join()
+            if child is not None and child.poll() is None:
+                # Setup/wait failure cannot abandon the observer-owned direct child.
+                signal_child(cancelled[-1] if cancelled else signal.SIGINT)
+                child.wait()
             for sig, handler in old.items():
                 signal.signal(sig, handler)
         sample('retained')
