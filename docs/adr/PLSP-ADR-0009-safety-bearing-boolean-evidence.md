@@ -24,10 +24,12 @@ Every self-declared boolean (or equivalent pass/fail flag) in a **safety-bearing
 document** must satisfy one of:
 
 1. **Independent evidence path** — the field's truth value is derivable from a
-   source other than the field itself. Acceptable sources include peer fields
-   bound by deterministic computation, witness structures parsed from artifact
-   bodies, or read-only host queries (`git`, filesystem facts). The source
-   must be able to contradict a lie in the declared field.
+   source other than the field itself. Acceptable sources include witness
+   structures parsed from artifact bodies or read-only host queries (`git`,
+   filesystem facts). Peer fields in the same caller-supplied request are not
+   independent, even when bound by deterministic computation; a pair of
+   caller-supplied fields is a partial bind. The source must be able to
+   contradict a lie in the declared field.
 2. **Documented exemption** — a comment adjacent to the field (or on the type)
    explains why pairwise or syntactic validation is sufficient for that
    specific claim, with an issue link when the exemption is temporary.
