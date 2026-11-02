@@ -83,6 +83,23 @@ fn leaked_capability_snapshot_fails_check() -> TestResult {
 }
 
 #[test]
+fn missing_capability_snapshot_fails_check() -> TestResult {
+    let inventory = load_test_api_protocol_inventory(&repo_root())?;
+    let temp = tempfile::tempdir()?;
+    let violations = check_product_capability_snapshots(temp.path(), &inventory);
+    assert_eq!(
+        violations.len(),
+        2,
+        "both committed capability snapshots must be present, got: {violations:?}"
+    );
+    assert!(
+        violations.iter().all(|v| v.contains("cannot read ordinary product capability snapshot")),
+        "expected missing snapshot violations, got: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn unlisted_routing_discovery_fails_check() -> TestResult {
     let inventory = load_test_api_protocol_inventory(&repo_root())?;
     let routing = format!(

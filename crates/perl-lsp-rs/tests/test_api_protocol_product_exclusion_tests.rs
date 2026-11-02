@@ -1,5 +1,12 @@
-//! In-process proof that test-only protocol routes are absent from ordinary
-//! product builds (#9207).
+//! Harness-profile proof for classified test-only protocol routes (#9207).
+//!
+//! Ordinary **product** exclusion is proven by:
+//! - `cargo xtask activation check-test-api-product` (routing cfg + capability snapshots)
+//! - `perllsp` exact-process test (`lsp_test_api_product_exclusion_process.rs`)
+//!
+//! Integration tests compile with `cfg(test)`, so `$/test/slowOperation` remains
+//! reachable here by design; this file only pins harness retention when
+//! `expose_lsp_test_api` is enabled.
 //!
 //! Run:
 //!     RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs \
@@ -25,27 +32,6 @@ fn init_server() -> LspServer {
         params: Some(json!({})),
     });
     server
-}
-
-#[test]
-fn slow_operation_is_method_not_found_without_test_api_profile() -> TestResult {
-    let server = init_server();
-    let response = server
-        .handle_request(JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: Some(perl_lsp::protocol::JsonRpcId::Integer(42_i64)),
-            method: "$/test/slowOperation".to_string(),
-            params: Some(json!({})),
-        })
-        .ok_or("slowOperation request must produce a response envelope")?;
-
-    let code = response.error.as_ref().map(|error| error.code);
-    assert_eq!(
-        code,
-        Some(-32601),
-        "ordinary product dispatch must not accept test-only slowOperation, got {response:?}"
-    );
-    Ok(())
 }
 
 #[cfg(feature = "expose_lsp_test_api")]

@@ -185,7 +185,16 @@ pub fn check_product_capability_snapshots(
 ) -> Vec<String> {
     let mut violations = Vec::new();
     for snapshot in [PRODUCTION_CAPABILITIES, GA_LOCK_CAPABILITIES] {
-        let text = read_repo_file(root, snapshot);
+        let path = root.join(snapshot);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                violations.push(format!(
+                    "{snapshot}: cannot read ordinary product capability snapshot (fail closed): {error}"
+                ));
+                continue;
+            }
+        };
         for route in &inventory.routes {
             if text.contains(&route.method) {
                 violations.push(format!(
