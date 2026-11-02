@@ -4229,6 +4229,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-perl-c",
  "tree-sitter-perl-rs",
+ "url",
  "walkdir",
  "winapi",
  "zip",

@@ -52,6 +52,7 @@ tree-sitter-perl-rs = { workspace = true }
 regex.workspace = true
 serde_yaml_ng = "0.10.0"
 toml = "1.1.2"
+url = { workspace = true }
 # Only the parser-tasks-gated bindings command uses libclang/bindgen.
 bindgen = { version = "0.73.2", optional = true }
 notify = "8.2.0"
