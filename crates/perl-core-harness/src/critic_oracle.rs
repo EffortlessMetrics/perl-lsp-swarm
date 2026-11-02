@@ -52,6 +52,28 @@ impl OracleSubject {
         Ok(subject)
     }
 
+    /// Borrow the invocation settings bound into this subject.
+    #[must_use]
+    pub fn invocation(&self) -> &OracleInvocation {
+        &self.invocation
+    }
+
+    /// Copy the non-invocation identity axes for receipt and process-plan binding.
+    #[must_use]
+    pub fn identity(&self) -> OracleSubjectIdentity {
+        OracleSubjectIdentity {
+            perl_identity: self.perl_identity.clone(),
+            critic_identity: self.critic_identity.clone(),
+            fixture_digest: self.fixture_digest.clone(),
+            root_identity: self.root_identity.clone(),
+            source_digest: self.source_digest.clone(),
+            profile_digest: self.profile_digest.clone(),
+            environment_digest: self.environment_digest.clone(),
+            process_schema: self.process_schema.clone(),
+            parser_schema: self.parser_schema.clone(),
+        }
+    }
+
     /// Stable, path-free digest used as the cache key and receipt identity.
     pub fn digest(&self) -> String {
         let mut hasher = Sha256::new();
