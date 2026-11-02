@@ -74,6 +74,33 @@ pub(crate) fn windows_quote_for_cmd(arg: &str) -> String {
 /// span is `TEMP` and does expand (verified against real cmd.exe). The `is_defined`
 /// parameter is injected so the scan stays a pure, cross-platform-testable
 /// function; production passes `|name| std::env::var_os(name).is_some()`.
+/// cmd.exe dynamic variables expanded on the `/C` command line even when absent
+/// from the parent environment (command extensions enabled by default; we never
+/// pass `/E:OFF`). See #17437.
+#[cfg(any(windows, test))]
+pub(crate) const CMD_DYNAMIC_VARIABLES: &[&str] = &[
+    "CD",
+    "DATE",
+    "TIME",
+    "RANDOM",
+    "ERRORLEVEL",
+    "CMDEXTVERSION",
+    "CMDCMDLINE",
+    "HIGHESTNUMANODENUMBER",
+];
+
+/// Whether cmd.exe would treat `name` as defined for `%NAME%` command-line expansion.
+///
+/// `env_lookup` mirrors `std::env::var_os(name).is_some()` at the production call
+/// site; dynamic cmd.exe variables are accepted in addition (#17437).
+#[cfg(any(windows, test))]
+pub(crate) fn is_cmd_defined(name: &str, env_lookup: impl Fn(&str) -> bool) -> bool {
+    if env_lookup(name) {
+        return true;
+    }
+    CMD_DYNAMIC_VARIABLES.iter().any(|dynamic| dynamic.eq_ignore_ascii_case(name))
+}
+
 pub(crate) fn windows_has_expandable_percent_ref(
     arg: &str,
     is_defined: impl Fn(&str) -> bool,
@@ -182,6 +209,47 @@ mod tests {
             windows_has_expandable_percent_ref("a%TEMP%b%TEMP%c", is_defined),
             "multiple expandable spans must still be detected"
         );
+    }
+
+    #[test]
+    fn is_cmd_defined_accepts_environment_via_lookup() {
+        let env = ["MY_TOOL", "other"];
+        let lookup = |name: &str| env.iter().any(|e| e.eq_ignore_ascii_case(name));
+        assert!(is_cmd_defined("MY_TOOL", lookup));
+        assert!(is_cmd_defined("my_tool", lookup));
+        assert!(!is_cmd_defined("NOT_SET", lookup));
+    }
+
+    #[test]
+    fn is_cmd_defined_accepts_cmd_dynamic_variables_without_env_entry() {
+        let lookup = |_name: &str| false;
+        for name in [
+            "CD",
+            "cd",
+            "DATE",
+            "TIME",
+            "RANDOM",
+            "ERRORLEVEL",
+            "CMDEXTVERSION",
+            "CMDCMDLINE",
+            "HIGHESTNUMANODENUMBER",
+        ] {
+            assert!(
+                is_cmd_defined(name, lookup),
+                "{name} must be treated as cmd-defined even when absent from the environment"
+            );
+        }
+        assert!(!is_cmd_defined("TEMP", lookup));
+        assert!(!is_cmd_defined("f", lookup));
+    }
+
+    #[test]
+    fn expandable_percent_ref_honors_cmd_dynamic_names_via_closure() {
+        let lookup = |_name: &str| false;
+        let is_defined = |name: &str| is_cmd_defined(name, lookup);
+        assert!(windows_has_expandable_percent_ref("--label=%CD%", is_defined));
+        assert!(windows_has_expandable_percent_ref("--seed=%RANDOM%", is_defined));
+        assert!(!windows_has_expandable_percent_ref("--verbose=%f:%l:%c:%s:%p:%m\\n", is_defined));
     }
 
     #[test]
