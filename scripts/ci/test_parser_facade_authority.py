@@ -923,8 +923,6 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def test_feature_gated_only_inside_a_cfg_test_module_is_not_a_source_boundary(self) -> None:
         """A gate inside `#[cfg(test)] mod tests` gates test code, not production."""
         row = self.independent_source_only_feature()
-        row["isolation"] = "source_only"
-        self.write_ledger(self.ledger)
         self.write_feature_gates(
             [name for name in self.gated_features if name != row["name"]],
             self.test_gated_features,
@@ -944,8 +942,6 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def test_production_gate_outside_a_test_module_still_counts(self) -> None:
         """Negative control: the cfg(test) strip must not swallow real gates."""
         row = self.independent_source_only_feature()
-        row["isolation"] = "source_only"
-        self.write_ledger(self.ledger)
         self.write_feature_gates(
             [name for name in self.gated_features if name != row["name"]],
             self.test_gated_features,
