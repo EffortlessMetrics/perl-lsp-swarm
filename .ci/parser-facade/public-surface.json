@@ -448,6 +448,18 @@
       "exit_condition": "Remain a feature-gated snapshot test target that does not widen the production surface."
     },
     {
+      "name": "exact_suffix_sync_contract",
+      "kind": "test",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6986",
+      "target_owner": "perl-parser",
+      "required_features": [
+        "incremental"
+      ],
+      "exit_condition": "Remain the executable contract for exact suffix synchronization until #6986 closes."
+    },
+    {
       "name": "analyze_test_failures",
       "kind": "example",
       "classification": "product_composition",
@@ -2486,6 +2498,16 @@
       "target_owner": "perl-parser",
       "required_features": [],
       "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "rename_transaction_validity",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#18209",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for rename transaction validity proof."
     },
     {
       "name": "red_tdd_panic_on_user_input",
