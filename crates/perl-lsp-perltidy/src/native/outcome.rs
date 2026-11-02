@@ -171,12 +171,27 @@ pub enum FormatExecutionStrategy {
 /// Derive the native execution strategy from the immutable requested target.
 #[must_use]
 pub const fn execution_for_requested_native_target(
-    target: FormatRequestTarget,
+    target: &FormatRequestTarget,
 ) -> FormatExecutionStrategy {
     match target {
         FormatRequestTarget::Document => FormatExecutionStrategy::NativeDocument,
         FormatRequestTarget::Range { .. } => FormatExecutionStrategy::NativeRangeOrIsland,
     }
+}
+
+fn execution_for_classified_native_outcome(
+    config: &FormatConfig,
+    target: &FormatRequestTarget,
+    reason: FormatReasonCode,
+    range_admission_passed: Option<bool>,
+) -> FormatExecutionStrategy {
+    if matches!(config.mode, FormatterMode::Off) {
+        return FormatExecutionStrategy::Disabled;
+    }
+    if matches!(reason, FormatReasonCode::UnsafeRange) && range_admission_passed == Some(false) {
+        return FormatExecutionStrategy::NotStarted;
+    }
+    execution_for_requested_native_target(target)
 }
 
 /// Stable subject, implementation, and configuration identity for one computation.
@@ -272,7 +287,14 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let result = <Self as PerlFormatter>::format_document(self, source, config);
-        classify_native_result(source, config, context, FormatRequestTarget::Document, result)
+        classify_native_result(
+            source,
+            config,
+            context,
+            FormatRequestTarget::Document,
+            result,
+            None,
+        )
     }
 
     /// Format a complete document recording deterministic pipeline work
@@ -291,8 +313,14 @@ impl NativeFormatter {
         let result = <Self as PerlFormatter>::format_document(self, source, config);
         scope.merge_into(counters);
         observe_edits_derived(counters, &result);
-        let typed =
-            classify_native_result(source, config, context, FormatRequestTarget::Document, result);
+        let typed = classify_native_result(
+            source,
+            config,
+            context,
+            FormatRequestTarget::Document,
+            result,
+            None,
+        );
         observe_elapsed(counters, started.elapsed());
         typed
     }
@@ -306,7 +334,8 @@ impl NativeFormatter {
         config: &FormatConfig,
         context: &FormatContext,
     ) -> TypedFormatResult {
-        let result = if valid_range(source, range) {
+        let admission_passed = valid_range(source, range);
+        let result = if admission_passed {
             <Self as PerlFormatter>::format_range(self, source, range, config)
         } else {
             FormatResult::unsafe_to_format(
@@ -321,6 +350,7 @@ impl NativeFormatter {
             context,
             FormatRequestTarget::Range { range },
             result,
+            Some(admission_passed),
         )
     }
 
@@ -337,7 +367,8 @@ impl NativeFormatter {
     ) -> TypedFormatResult {
         let scope = PipelineCollectorScope::install();
         let started = std::time::Instant::now();
-        let result = if valid_range(source, range) {
+        let admission_passed = valid_range(source, range);
+        let result = if admission_passed {
             <Self as PerlFormatter>::format_range(self, source, range, config)
         } else {
             FormatResult::unsafe_to_format(
@@ -354,6 +385,7 @@ impl NativeFormatter {
             context,
             FormatRequestTarget::Range { range },
             result,
+            Some(admission_passed),
         );
         observe_elapsed(counters, started.elapsed());
         typed
@@ -382,6 +414,7 @@ fn classify_native_result(
     context: &FormatContext,
     target: FormatRequestTarget,
     result: FormatResult,
+    range_admission_passed: Option<bool>,
 ) -> TypedFormatResult {
     let mut result = result;
     // The rendered bytes are the formatting authority. A result whose render
@@ -412,8 +445,13 @@ fn classify_native_result(
             requested_mode: config.mode,
             config_fingerprint: config_fingerprint(config),
         },
+        execution: execution_for_classified_native_outcome(
+            config,
+            &target,
+            classification.reason,
+            range_admission_passed,
+        ),
         target,
-        execution: execution_for_requested_native_target(target),
         change: change_summary(source, &result.formatted, &result.edits),
         safety,
         next_action: next_action(classification.reason).map(str::to_string),
@@ -1040,6 +1078,7 @@ mod tests {
             &FormatContext::default(),
             FormatRequestTarget::Document,
             result,
+            None,
         );
 
         assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
@@ -1073,6 +1112,7 @@ mod tests {
             &FormatContext::default(),
             FormatRequestTarget::Document,
             result,
+            None,
         );
 
         assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
@@ -1160,8 +1200,54 @@ mod tests {
             );
             assert_eq!(result.outcome.disposition, FormatDisposition::Refused);
             assert_eq!(result.outcome.reason, FormatReasonCode::UnsafeRange);
+            assert_eq!(result.outcome.execution, FormatExecutionStrategy::NotStarted);
             assert!(!result.result.changed);
         }
+    }
+
+    #[test]
+    fn disabled_typed_calls_record_disabled_execution() {
+        let config = FormatConfig {
+            mode: FormatterMode::Off,
+            ..FormatConfig::default()
+        };
+        let document = NativeFormatter::new().format_document_typed(
+            "my$x=1;\n",
+            &config,
+            &FormatContext::default(),
+        );
+        assert_eq!(document.outcome.reason, FormatReasonCode::FormatterDisabled);
+        assert_eq!(document.outcome.execution, FormatExecutionStrategy::Disabled);
+        assert_eq!(document.outcome.identity.actual_engine, FormatEngine::Disabled);
+
+        let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 4));
+        let range_result = NativeFormatter::new().format_range_typed(
+            "my$x=1;\n",
+            range,
+            &config,
+            &FormatContext::default(),
+        );
+        assert_eq!(range_result.outcome.reason, FormatReasonCode::FormatterDisabled);
+        assert_eq!(range_result.outcome.execution, FormatExecutionStrategy::Disabled);
+    }
+
+    #[test]
+    fn successful_native_calls_record_target_matched_execution() {
+        let document = NativeFormatter::new().format_document_typed(
+            "my$x=1;\n",
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(document.outcome.execution, FormatExecutionStrategy::NativeDocument);
+
+        let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 4));
+        let range_result = NativeFormatter::new().format_range_typed(
+            "my$x=1;\n",
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(range_result.outcome.execution, FormatExecutionStrategy::NativeRangeOrIsland);
     }
 
     #[test]
