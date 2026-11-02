@@ -527,6 +527,55 @@ fn executable_python(source: &str) -> String {
     source.lines().filter(|line| !line.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n")
 }
 
+/// The `ux-tests` job carries a control-surface comment (#17213): it must not
+/// hardcode flake counts or claim merge-gate enforcement that
+/// `.ci/policies/required-checks.toml` does not provide.
+#[test]
+fn ci_ux_tests_flakiness_note_matches_ledger_and_policy() -> Result<()> {
+    let ci_path = project_root().join(".github/workflows/ci.yml");
+    let ci = fs::read_to_string(&ci_path)?;
+    let job_start = ci
+        .find("\n  ux-tests:")
+        .ok_or_else(|| anyhow!("ci.yml must declare ux-tests job"))?;
+    let steps_start = ci[job_start..]
+        .find("\n    steps:")
+        .ok_or_else(|| anyhow!("ux-tests job must declare steps"))?;
+    let comment_block = &ci[job_start..job_start + steps_start];
+
+    assert!(
+        !comment_block.contains("merge-gate blocks"),
+        "ux-tests flakiness note must not claim merge-gate enforcement"
+    );
+    assert!(
+        !comment_block.contains("regression prevention gate"),
+        "ux-tests comment must not overstate branch-protection role"
+    );
+    assert!(
+        comment_block.contains(".ci/policies/required-checks.toml"),
+        "ux-tests comment must point readers at required-checks policy"
+    );
+    assert!(
+        comment_block.contains("summary"),
+        "ux-tests comment must direct readers to ux-flakes.json summary counts"
+    );
+    assert!(
+        !comment_block.contains("11 active"),
+        "ux-tests comment must not hardcode stale active flake counts"
+    );
+
+    let ledger_path = project_root().join(".ci/ux-flakes.json");
+    let ledger: JsonValue = serde_json::from_str(&fs::read_to_string(&ledger_path)?)?;
+    let active = ledger
+        .pointer("/summary/active")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.active"))?;
+    assert_eq!(
+        active, 0,
+        "fixture drift: update the flakiness note if summary.active changes"
+    );
+    Ok(())
+}
+
 #[test]
 fn final_jobs_fail_after_captured_ux_failure() -> Result<()> {
     for (file, job) in WORKFLOWS {
