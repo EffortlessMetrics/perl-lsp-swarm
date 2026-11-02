@@ -1,5 +1,12 @@
-/** Pure starter content for an explicitly chosen new file. */
 import * as path from 'path';
+import * as vscode from 'vscode';
+
+/** Ordinary workspace file creation never auto-populates Perl boilerplate (#14451). */
+export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
+  return;
+}
+
+/** Pure starter content for an explicitly chosen new file. */
 
 export const enum FileKind {
   Module = 'module',

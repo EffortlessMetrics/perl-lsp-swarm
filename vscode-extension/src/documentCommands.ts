@@ -3,6 +3,14 @@ import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { machineScopedExternalIncludePaths } from './languageClientConfiguration';
+import {
+  debugTestEligible,
+  editProviderEligible,
+  editRefusalMessage,
+  externalExecutionEligible,
+  readProviderEligible,
+  readRefusalMessage,
+} from './documentEligibility';
 import { isPerlLanguageId } from './languageIdentity';
 
 type DocumentClient = Pick<LanguageClient, 'sendRequest'>;
@@ -83,6 +91,10 @@ export async function runCheckSyntaxCommand(
     vscode.window.showErrorMessage('No active Perl file to check syntax');
     return;
   }
+  if (!externalExecutionEligible(editor.document)) {
+    vscode.window.showErrorMessage(editRefusalMessage(editor.document));
+    return;
+  }
 
   if (editor.document.isDirty) {
     await editor.document.save();
@@ -141,6 +153,10 @@ export async function formatDocumentCommand(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('No active Perl file to format');
+    return;
+  }
+  if (!editProviderEligible(editor.document)) {
+    vscode.window.showErrorMessage(editRefusalMessage(editor.document));
     return;
   }
 
@@ -253,6 +269,10 @@ export async function showParserAstCommand(
   const editor = vscode.window.activeTextEditor;
   if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('No active Perl file to show AST');
+    return;
+  }
+  if (!readProviderEligible(editor.document)) {
+    vscode.window.showErrorMessage(readRefusalMessage(editor.document));
     return;
   }
 

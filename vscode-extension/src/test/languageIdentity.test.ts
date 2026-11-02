@@ -278,7 +278,7 @@ describe('language-ID manifest contract (#7699)', () => {
 
   test('the language client selector is built from the authority, not inline literals', () => {
     const extensionSource = fs.readFileSync(path.join(SRC_ROOT, 'extension.ts'), 'utf8');
-    expect(extensionSource).toContain('documentSelector: perlDocumentSelector()');
+    expect(extensionSource).toContain('documentSelector: perlFullLspDocumentSelector()');
     expect(extensionSource).not.toMatch(/language:\s*'perl5?'/);
   });
 

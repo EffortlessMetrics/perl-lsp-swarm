@@ -3,6 +3,7 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import { parseDebugTestLaunchTarget } from './debugAdapter';
 import type { PerlTestAdapter } from './testAdapter';
 import { selectTestCommandAtPosition } from './runTestAtCursor';
+import { debugTestEligible, editRefusalMessage } from './documentEligibility';
 import { isPerlLanguageId } from './languageIdentity';
 
 type TestLanguageClient = Pick<LanguageClient, 'sendRequest'>;
@@ -42,6 +43,10 @@ export async function runTestsCommand(
     const editor = vscode.window.activeTextEditor;
     if (!editor || !isPerlLanguageId(editor.document.languageId)) {
       vscode.window.showErrorMessage('No active Perl file to test');
+      return;
+    }
+    if (!debugTestEligible(editor.document)) {
+      vscode.window.showErrorMessage(editRefusalMessage(editor.document));
       return;
     }
     targetUri = editor.document.uri;
@@ -84,6 +89,10 @@ export async function runTestAtCursorCommand(dependencies: TestCommandDependenci
   const editor = vscode.window.activeTextEditor;
   if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('Run Test at Cursor requires an active Perl file');
+    return;
+  }
+  if (!debugTestEligible(editor.document)) {
+    vscode.window.showErrorMessage(editRefusalMessage(editor.document));
     return;
   }
 
@@ -129,6 +138,10 @@ export async function runCurrentTestWithProve(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('No active Perl file to run');
+    return;
+  }
+  if (!debugTestEligible(editor.document)) {
+    vscode.window.showErrorMessage(editRefusalMessage(editor.document));
     return;
   }
 
