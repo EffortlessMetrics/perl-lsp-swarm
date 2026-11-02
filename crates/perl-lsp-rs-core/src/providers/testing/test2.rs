@@ -907,6 +907,10 @@ fn resolve_import_with(
         });
     }
 
+    if module == "Test2::Tools::Target" {
+        return Some(resolve_test2_tools_target_import(raw_args));
+    }
+
     let bundle = is_test2_bundle(module);
 
     // `Test2::V1` reaches V0 parity (the full bare tool set) only under an
@@ -1001,133 +1005,9 @@ fn resolve_import_with(
             // export processing. The flat atom view must do the same or a
             // single-segment package name/hash key looks like an imported sub.
             if target_option_supported && atom == "-target" {
-                let mut brace_depth = 0_isize;
-                let mut saw_hash = false;
-                let mut expect_key = true;
-                let mut nested_value_depth = None;
-                let mut hash_closed = false;
-                let mut value_expression_unprovable = false;
-                let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
-                while let Some(value) = atoms.get(atom_index) {
-                    atom_index += 1;
-                    if saw_hash && brace_depth == 1 && value == "," {
-                        // Commas preserved by tokenization delimit hash pairs;
-                        // whitespace inside a value must not change pairing.
-                        expect_key = true;
-                        continue;
-                    }
-                    if is_quote_like_operator(value) {
-                        // Quote-like operators are expressions, even when
-                        // their first token resembles a bareword. At the
-                        // scalar boundary they own the target and leave
-                        // CLASS unproven. Inside a hash, however, they are a
-                        // value (or a dynamic key), so consume the complete
-                        // expression and keep scanning the enclosing hash;
-                        // stopping here would leak the remaining keys and
-                        // values into ordinary import processing.
-                        atom_index = consume_quote_like_target(&atoms, atom_index - 1, value);
-                        if saw_hash {
-                            continue;
-                        }
-                        break;
-                    }
-                    let (opens, closes) = count_unquoted_braces(value);
-                    if is_dynamic_target_atom(value) {
-                        atom_index = consume_dynamic_target_expression(&atoms, atom_index - 1);
-                        if saw_hash {
-                            continue;
-                        }
-                        break;
-                    }
-                    if !saw_hash && opens == 0 {
-                        // Parentheses and unary-plus may be separated from a
-                        // hash opener by whitespace (`( { ... } )` and
-                        // `+ { ... }`). They are structural only when the
-                        // nearby tokens prove that this is a hash target;
-                        // otherwise the first atom is the scalar target.
-                        if is_structural_target_atom(value) {
-                            if target_starts_hash(&atoms, atom_index - 1) {
-                                continue;
-                            }
-                            if value == "+" {
-                                // A separated unary-plus target owns its
-                                // operand too. Otherwise `+ 'Foo'` would
-                                // stop here and the outer export scan would
-                                // incorrectly import `Foo`.
-                                atom_index =
-                                    consume_unwrapped_target_expression(&atoms, atom_index - 1);
-                                break;
-                            }
-                            if value == "(" {
-                                if let Some((next_index, truthy)) =
-                                    consume_parenthesized_scalar(&atoms, atom_index - 1)
-                                {
-                                    atom_index = next_index;
-                                    if truthy {
-                                        target_helpers.insert("CLASS".to_string());
-                                    }
-                                    break;
-                                }
-                                // An unclosed parenthesized target owns the
-                                // remainder of the option expression. Do not
-                                // resume ordinary export scanning and leak
-                                // its values or barewords.
-                                atom_index = atoms.len();
-                                break;
-                            }
-                        }
-                        if is_bareword(value)
-                            && atoms.get(atom_index).map(String::as_str) == Some("(")
-                        {
-                            atom_index = consume_parenthesized_expression(&atoms, atom_index);
-                            break;
-                        }
-                        if scalar_target_is_truthy(value) {
-                            target_helpers.insert("CLASS".to_string());
-                        }
-                        break;
-                    }
-                    let previous_depth = brace_depth;
-                    saw_hash |= opens > 0;
-                    brace_depth += opens;
-                    if previous_depth == 1 && opens > 0 && !expect_key {
-                        // A nested hash is one value of the enclosing hash.
-                        // Keep the outer key/value parity unchanged until the
-                        // complete nested structure closes.
-                        nested_value_depth = Some(brace_depth);
-                    }
-                    // Unary-plus and parenthesized hashrefs leave wrapper
-                    // punctuation attached to the first/last atom. These
-                    // structural atoms must not consume a key/value slot.
-                    let candidate =
-                        strip_quotes(value.trim_matches(['+', '{', '}', '(', ')']).trim());
-                    if brace_depth == 1 && !candidate.is_empty() {
-                        if expect_key && is_bareword(candidate) {
-                            pending_helpers.insert(candidate.to_string());
-                            expect_key = false;
-                        } else if !expect_key && LIST_ARITY_OPERATORS.contains(&candidate) {
-                            // A list operator's argument list consumes its own
-                            // comma-separated terms, so a top-level comma after
-                            // it is an argument separator, not a hash-pair
-                            // separator (`join '-', 'Widget'`). The remaining
-                            // pairing is a guess: fail closed for the whole
-                            // hash instead of inventing helpers (#13305).
-                            value_expression_unprovable = true;
-                        }
-                    }
-                    brace_depth -= closes;
-                    if nested_value_depth.is_some_and(|depth| brace_depth < depth) {
-                        nested_value_depth = None;
-                        expect_key = true;
-                    }
-                    if saw_hash && brace_depth <= 0 {
-                        hash_closed = true;
-                        break;
-                    }
-                }
-                if hash_closed && !value_expression_unprovable {
-                    target_helpers.extend(pending_helpers);
-                }
+                let (helpers, next_index) = scan_target_helper_atoms(&atoms, atom_index);
+                target_helpers.extend(helpers);
+                atom_index = next_index;
             }
             // Other import options are flags whose effects are handled
             // elsewhere; no option token is a positive symbol.
@@ -1958,6 +1838,198 @@ fn consume_dynamic_target_expression(atoms: &[String], start: usize) -> usize {
         next = next.saturating_add(1);
     }
     next
+}
+
+/// Resolve a direct `use Test2::Tools::Target ...;` import. Target installs
+/// generated helpers only; it has no ordinary export list.
+fn resolve_test2_tools_target_import(raw_args: &str) -> ResolvedImportAnalysis {
+    let trimmed = raw_args.trim();
+    if trimmed.is_empty() {
+        return ResolvedImportAnalysis {
+            resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
+            analysis_limited: false,
+        };
+    }
+    if contains_transform_syntax(trimmed) {
+        return ResolvedImportAnalysis {
+            resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
+            analysis_limited: true,
+        };
+    }
+    let atoms = tokenize_import_args(trimmed);
+    let (helpers, next_index) = scan_target_helper_atoms(&atoms, 0);
+    let trailing = atoms[next_index..].iter().any(|atom| atom != ",");
+    if trailing {
+        return ResolvedImportAnalysis {
+            resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
+            analysis_limited: true,
+        };
+    }
+    ResolvedImportAnalysis {
+        resolved: ResolvedImport { symbols: helpers, pragmas: None },
+        analysis_limited: false,
+    }
+}
+
+/// Scan import-argument atoms for `Test2::Tools::Target` generated helper
+/// names beginning at `start`. Returns the helpers and the first unconsumed
+/// atom index.
+fn scan_target_helper_atoms(atoms: &[String], start: usize) -> (BTreeSet<String>, usize) {
+    if should_scan_target_fatcomma_pairs(atoms, start) {
+        return scan_target_fatcomma_pair_list(atoms, start);
+    }
+
+    let mut target_helpers: BTreeSet<String> = BTreeSet::new();
+    let mut atom_index = start;
+    let mut brace_depth = 0_isize;
+    let mut saw_hash = false;
+    let mut expect_key = true;
+    let mut nested_value_depth = None;
+    let mut hash_closed = false;
+    let mut value_expression_unprovable = false;
+    let mut pending_helpers: BTreeSet<String> = BTreeSet::new();
+    while let Some(value) = atoms.get(atom_index) {
+        atom_index += 1;
+        if saw_hash && brace_depth == 1 && value == "," {
+            expect_key = true;
+            continue;
+        }
+        if is_quote_like_operator(value) {
+            atom_index = consume_quote_like_target(atoms, atom_index - 1, value);
+            if saw_hash {
+                continue;
+            }
+            break;
+        }
+        let (opens, closes) = count_unquoted_braces(value);
+        if is_dynamic_target_atom(value) {
+            atom_index = consume_dynamic_target_expression(atoms, atom_index - 1);
+            if saw_hash {
+                continue;
+            }
+            break;
+        }
+        if !saw_hash && opens == 0 {
+            if is_structural_target_atom(value) {
+                if target_starts_hash(atoms, atom_index - 1) {
+                    continue;
+                }
+                if value == "+" {
+                    atom_index = consume_unwrapped_target_expression(atoms, atom_index - 1);
+                    break;
+                }
+                if value == "(" {
+                    if let Some((next_index, truthy)) =
+                        consume_parenthesized_scalar(atoms, atom_index - 1)
+                    {
+                        atom_index = next_index;
+                        if truthy {
+                            target_helpers.insert("CLASS".to_string());
+                        }
+                        break;
+                    }
+                    atom_index = atoms.len();
+                    break;
+                }
+            }
+            if is_bareword(value) && atoms.get(atom_index).map(String::as_str) == Some("(") {
+                atom_index = consume_parenthesized_expression(atoms, atom_index);
+                break;
+            }
+            if scalar_target_is_truthy(value) {
+                target_helpers.insert("CLASS".to_string());
+            }
+            break;
+        }
+        let previous_depth = brace_depth;
+        saw_hash |= opens > 0;
+        brace_depth += opens;
+        if previous_depth == 1 && opens > 0 && !expect_key {
+            nested_value_depth = Some(brace_depth);
+        }
+        let candidate = strip_quotes(value.trim_matches(['+', '{', '}', '(', ')']).trim());
+        if brace_depth == 1 && !candidate.is_empty() {
+            if expect_key && is_bareword(candidate) {
+                pending_helpers.insert(candidate.to_string());
+                expect_key = false;
+            } else if !expect_key && LIST_ARITY_OPERATORS.contains(&candidate) {
+                value_expression_unprovable = true;
+            }
+        }
+        brace_depth -= closes;
+        if nested_value_depth.is_some_and(|depth| brace_depth < depth) {
+            nested_value_depth = None;
+            expect_key = true;
+        }
+        if saw_hash && brace_depth <= 0 {
+            hash_closed = true;
+            break;
+        }
+    }
+    if hash_closed && !value_expression_unprovable {
+        target_helpers.extend(pending_helpers);
+    }
+    (target_helpers, atom_index)
+}
+
+/// Whether `atoms[start..]` begins a Target key/value list (`key => value` or
+/// the whitespace-normalized spelling produced by import tokenization).
+fn should_scan_target_fatcomma_pairs(atoms: &[String], start: usize) -> bool {
+    let Some(key_atom) = atoms.get(start) else {
+        return false;
+    };
+    let key = strip_quotes(key_atom.trim());
+    if !is_bareword(key) {
+        return false;
+    }
+    let Some(next) = atoms.get(start.saturating_add(1)) else {
+        return false;
+    };
+    if next == "," {
+        return false;
+    }
+    next == "=>" || (!is_structural_target_atom(next) && !next.starts_with('-'))
+}
+
+/// Parse top-level `key => value` pairs for direct Target imports (and the
+/// same shape after a bundle `-target` option).
+fn scan_target_fatcomma_pair_list(atoms: &[String], start: usize) -> (BTreeSet<String>, usize) {
+    let mut helpers = BTreeSet::new();
+    let mut atom_index = start;
+    while atom_index < atoms.len() {
+        if atoms[atom_index] == "," {
+            atom_index += 1;
+            continue;
+        }
+        let key = strip_quotes(atoms[atom_index].trim());
+        if !is_bareword(key) {
+            return (BTreeSet::new(), start);
+        }
+        atom_index += 1;
+        if atoms.get(atom_index).map(String::as_str) == Some("=>") {
+            atom_index += 1;
+        }
+        if atom_index >= atoms.len() {
+            return (BTreeSet::new(), start);
+        }
+        helpers.insert(key.to_string());
+        atom_index = consume_target_value_atom(atoms, atom_index);
+    }
+    (helpers, atom_index)
+}
+
+/// Consume one Target hash value or fat-comma value expression.
+fn consume_target_value_atom(atoms: &[String], start: usize) -> usize {
+    let Some(value) = atoms.get(start) else {
+        return start;
+    };
+    if is_quote_like_operator(value) {
+        return consume_quote_like_target(atoms, start, value);
+    }
+    if is_dynamic_target_atom(value) {
+        return consume_dynamic_target_expression(atoms, start);
+    }
+    start.saturating_add(1)
 }
 
 /// Whether a scalar `-target` literal creates Test2::Tools::Target helpers.
