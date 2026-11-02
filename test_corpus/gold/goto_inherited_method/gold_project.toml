@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "goto_inherited_method"
+topology_fingerprint = "62d026dd60e2eb23500ad1780ff94360c2a5f74b3222b2838c296fe263a92c6c"
+content_fingerprint = "49fa47e116d9a1315bbaa446b3a06011a5afa322791b0d5fabcc59aef5be5af2"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 97
+sha256 = "ee955208b48f2193cd6c162a4a0198299baaf7f27fea1b7f603ac9774738ea85"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "expected_goto_json"
+path = "expected_goto.json"
+role = "generated_expectation_input"
+byte_length = 504
+sha256 = "99717a4f4b01cf5f0852e4008f894e743c54dbdfa447b6962282e36b91cb7957"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 336
+sha256 = "b279fa7fabc2c43d7390802a3c2071214bf337f07117bcf97b625551e04174ab"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

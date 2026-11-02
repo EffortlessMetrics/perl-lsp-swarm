@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "inc_no_lib_cancellation"
+topology_fingerprint = "70fc10fa325d2f8f3ae9d0e993d1b47e9dc1ab19cdc045200fecd965a24fe478"
+content_fingerprint = "4cfd12c12c7421e79885c972b3d0aaf48ee71175317741fbfaf48ca3cdf18faf"
+
+[[members]]
+member_id = "expected_module_json"
+path = "expected_module.json"
+role = "generated_expectation_input"
+byte_length = 497
+sha256 = "0de172b8d33c97a1f1732b21bf5be036a69711358aeb9ade45ea881c9b8cfd11"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 95
+sha256 = "cc0cfd770d7e387c1363566cc9be261b721865667de9f1f9d3e372122addda8e"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "lib__GoneModule_pm"
+path = "lib/GoneModule.pm"
+role = "support_source"
+byte_length = 236
+sha256 = "4159c70e6a9459e93a840fd61a68ca54fc8e1bd30d5c17ae6b5107f2763d9b3a"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

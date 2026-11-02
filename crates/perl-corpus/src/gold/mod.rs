@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod hover_observation;
+pub mod project_envelope;
 pub use hover_observation::{
     HOVER_RENDERED_TEXT_BOUND, HoverAssertionFailure, HoverAssertionRigor, HoverContent,
     HoverContentForm, HoverContentSection, HoverInstrumentFailure, HoverMarkupKind,
