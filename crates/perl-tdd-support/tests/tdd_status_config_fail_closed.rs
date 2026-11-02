@@ -16,6 +16,9 @@ fn malformed_tdd_config_returns_error() -> Result<(), Box<dyn std::error::Error>
     let err = read_tdd_config(r#"{"coverage_threshold": -1.0}"#).unwrap_err();
     assert!(matches!(err, TddConfigError::InvalidCoverageThreshold));
 
+    let err = read_tdd_config(r#"{"coverage_treshold": 90.0}"#).unwrap_err();
+    assert!(matches!(err, TddConfigError::Parse(_)));
+
     let err = read_tdd_config(r#"{"test_framework": ""}"#).unwrap_err();
     assert!(matches!(err, TddConfigError::EmptyTestFramework));
     Ok(())
@@ -34,7 +37,7 @@ fn valid_tdd_config_roundtrip_unchanged() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn empty_workflow_status_is_not_green() -> Result<(), Box<dyn std::error::Error>> {
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     let status = wf.get_status();
     assert_ne!(status.tests_passing, Some(true));
     assert!(status.coverage.is_none());
@@ -46,7 +49,7 @@ fn empty_workflow_status_is_not_green() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn unsupported_run_tests_does_not_authorize_red_or_green() -> Result<(), Box<dyn std::error::Error>>
 {
-    let mut wf = TddWorkflow::new(TddConfig::default());
+    let mut wf = TddWorkflow::new(TddConfig::default())?;
     wf.start_cycle("feature");
 
     let result = wf.run_tests(&[PathBuf::from("t/feature.t")]);
@@ -71,17 +74,16 @@ fn legacy_workflow_deprecation_notice_points_at_replacements()
 #[test]
 fn inactive_config_fields_emit_deprecation_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
     let json = r#"{
-        "auto_generate_tests": true,
-        "test_on_save": true,
-        "show_inline_coverage": true,
+        "test_on_save": false,
         "test_framework": "Test::More",
         "test_file_pattern": "t/{name}.t",
-        "coverage_threshold": 80.0,
-        "continuous_testing": true,
-        "auto_suggest_refactorings": true
+        "coverage_threshold": 80.0
     }"#;
     let read = read_tdd_config_with_diagnostics(json)?;
-    assert!(!read.deprecations.is_empty());
+    assert_eq!(read.deprecations.len(), 1);
     assert!(read.deprecations.iter().any(|d| d.contains("test_on_save")));
+
+    let empty = read_tdd_config_with_diagnostics("{}")?;
+    assert!(empty.deprecations.is_empty());
     Ok(())
 }

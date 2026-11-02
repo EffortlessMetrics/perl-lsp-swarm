@@ -68,11 +68,49 @@ pub fn read_tdd_config(json: &str) -> Result<TddConfig, TddConfigError> {
 
 /// Parse legacy workflow configuration and collect inactive-field deprecation notes.
 pub fn read_tdd_config_with_diagnostics(json: &str) -> Result<TddConfigReadResult, TddConfigError> {
-    let config: TddConfig =
+    let value: serde_json::Value =
         serde_json::from_str(json).map_err(|err| TddConfigError::Parse(err.to_string()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| TddConfigError::Parse("TDD config must be a JSON object".to_string()))?;
+    let deprecations = inactive_field_deprecations_for_keys(object.keys().map(String::as_str));
+    let config: TddConfig =
+        serde_json::from_value(value).map_err(|err| TddConfigError::Parse(err.to_string()))?;
     config.validate()?;
-    let deprecations = config.inactive_field_deprecations();
     Ok(TddConfigReadResult { config, deprecations })
+}
+
+fn inactive_field_deprecations_for_keys<'a>(
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut deprecations = Vec::new();
+    for key in keys {
+        if let Some(message) = inactive_field_deprecation_message(key) {
+            deprecations.push(message.to_string());
+        }
+    }
+    deprecations
+}
+
+fn inactive_field_deprecation_message(key: &str) -> Option<&'static str> {
+    match key {
+        "auto_generate_tests" => {
+            Some("auto_generate_tests is compatibility-ignored; generation is owned by #8154")
+        }
+        "test_on_save" => Some(
+            "test_on_save is compatibility-ignored; save-time execution is unavailable (#4972)",
+        ),
+        "show_inline_coverage" => {
+            Some("show_inline_coverage is compatibility-ignored; inline coverage has no live owner")
+        }
+        "continuous_testing" => Some(
+            "continuous_testing is compatibility-ignored; watcher execution is unavailable (#4972)",
+        ),
+        "auto_suggest_refactorings" => Some(
+            "auto_suggest_refactorings has no reachable effect with the generation-only runner",
+        ),
+        _ => None,
+    }
 }
 
 /// TDD workflow manager
@@ -93,6 +131,8 @@ pub struct TddWorkflow {
     coverage_tracker: CoverageTracker,
     /// Configuration
     config: TddConfig,
+    /// Whether the last refactoring analysis retained suggestion facts.
+    suggestion_facts_available: bool,
 }
 
 /// Represents the current phase of the TDD (Test-Driven Development) workflow cycle.
@@ -116,7 +156,7 @@ pub enum WorkflowState {
 /// Customizes how the TDD workflow manager generates tests, runs them, and provides
 /// feedback. All settings have sensible defaults suitable for typical Perl development.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TddConfig {
     /// Automatically generate tests for new code
     pub auto_generate_tests: bool,
@@ -165,41 +205,6 @@ impl TddConfig {
         }
         Ok(())
     }
-
-    fn inactive_field_deprecations(&self) -> Vec<String> {
-        let mut notes = Vec::new();
-        if self.auto_generate_tests {
-            notes.push(
-                "auto_generate_tests is compatibility-ignored; generation is owned by #8154"
-                    .to_string(),
-            );
-        }
-        if self.test_on_save {
-            notes.push(
-                "test_on_save is compatibility-ignored; save-time execution is unavailable (#4972)"
-                    .to_string(),
-            );
-        }
-        if self.show_inline_coverage {
-            notes.push(
-                "show_inline_coverage is compatibility-ignored; inline coverage has no live owner"
-                    .to_string(),
-            );
-        }
-        if self.continuous_testing {
-            notes.push(
-                "continuous_testing is compatibility-ignored; watcher execution is unavailable (#4972)"
-                    .to_string(),
-            );
-        }
-        if self.auto_suggest_refactorings {
-            notes.push(
-                "auto_suggest_refactorings has no reachable effect with the generation-only runner"
-                    .to_string(),
-            );
-        }
-        notes
-    }
 }
 
 /// Coverage tracking for TDD
@@ -241,7 +246,8 @@ pub struct BranchCoverage {
 impl TddWorkflow {
     /// Create a new TDD workflow manager with the given configuration
     #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
-    pub fn new(config: TddConfig) -> Self {
+    pub fn new(config: TddConfig) -> Result<Self, TddConfigError> {
+        config.validate()?;
         let framework = match config.test_framework.as_str() {
             "Test2::V0" => TestFramework::Test2V0,
             "Test::Simple" => TestFramework::TestSimple,
@@ -249,7 +255,7 @@ impl TddWorkflow {
             _ => TestFramework::TestMore,
         };
 
-        Self {
+        Ok(Self {
             generator: TestGenerator::new(framework),
             runner: TestRunner::new(),
             suggester: RefactoringSuggester::new(),
@@ -257,7 +263,8 @@ impl TddWorkflow {
             test_cache: HashMap::new(),
             coverage_tracker: CoverageTracker::new(),
             config,
-        }
+            suggestion_facts_available: false,
+        })
     }
 
     /// Start a new TDD cycle
@@ -464,7 +471,9 @@ impl TddWorkflow {
         ast: &Node,
         source: &str,
     ) -> Vec<RefactoringSuggestion> {
-        self.suggester.analyze(ast, source)
+        let suggestions = self.suggester.analyze(ast, source);
+        self.suggestion_facts_available = !suggestions.is_empty();
+        suggestions
     }
 
     /// Get current test coverage
@@ -536,7 +545,7 @@ impl TddWorkflow {
             state: self.state.clone(),
             coverage,
             tests_passing,
-            suggestions_available: false,
+            suggestions_available: self.suggestion_facts_available,
         }
     }
 
@@ -576,7 +585,7 @@ impl CoverageTracker {
     }
 
     fn has_measured_facts(&self) -> bool {
-        !self.line_coverage.is_empty()
+        self.line_coverage.values().any(|lines| !lines.is_empty())
     }
 
     fn calculate_total_coverage(&mut self) {
@@ -784,7 +793,7 @@ mod tests {
     #[test]
     fn test_tdd_workflow_cycle() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = TddWorkflow::new(config).expect("default config validates");
 
         // Start a new cycle
         let result = workflow.start_cycle("calculate_sum");
@@ -796,7 +805,7 @@ mod tests {
     #[test]
     fn test_generate_tests() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config);
+        let workflow = TddWorkflow::new(config).expect("default config validates");
 
         let ast = Node::new(
             NodeKind::Subroutine {
@@ -821,7 +830,7 @@ mod tests {
     #[test]
     fn test_coverage_tracking() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = TddWorkflow::new(config).expect("default config validates");
 
         let coverage = vec![
             LineCoverage { line: 1, hits: 5, covered: true },
@@ -840,7 +849,7 @@ mod tests {
     fn test_coverage_resets_to_zero_when_all_inputs_empty() -> Result<(), Box<dyn std::error::Error>>
     {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = TddWorkflow::new(config).expect("default config validates");
 
         workflow.update_coverage(
             PathBuf::from("a.pl"),
@@ -850,15 +859,15 @@ mod tests {
 
         workflow.update_coverage(PathBuf::from("a.pl"), vec![]);
 
-        assert_eq!(workflow.check_coverage_threshold(), Some(false));
-        assert_eq!(workflow.get_status().coverage, Some(0.0));
+        assert_eq!(workflow.check_coverage_threshold(), None);
+        assert_eq!(workflow.get_status().coverage, None);
         Ok(())
     }
 
     #[test]
     fn test_refactoring_suggestions() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = TddWorkflow::new(config).expect("default config validates");
 
         // Create a subroutine with 8 parameters to trigger TooManyParameters suggestion
         let parameters: Vec<Node> = (0..8)
@@ -910,7 +919,7 @@ mod tests {
     #[test]
     fn test_specific_test_generation() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config);
+        let workflow = TddWorkflow::new(config).expect("default config validates");
 
         let test = workflow.generate_test_for_function(
             "validate_email",
@@ -926,7 +935,7 @@ mod tests {
     #[test]
     fn test_edge_case_generation_preserves_signature_arity() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config);
+        let workflow = TddWorkflow::new(config).expect("default config validates");
 
         let test = workflow.generate_test_for_function(
             "validate_contact",

@@ -484,7 +484,7 @@ fn test_refactoring_analyzer_anonymous_sub() -> Result<(), Box<dyn std::error::E
 #[test]
 fn test_full_tdd_workflow_start_cycle_state() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
     let result = wf.start_cycle("my_feature");
     assert!(result.message.contains("my_feature"));
     assert_eq!(result.phase, "Intent");
@@ -494,7 +494,7 @@ fn test_full_tdd_workflow_start_cycle_state() -> Result<(), Box<dyn std::error::
 #[test]
 fn test_full_tdd_workflow_coverage_threshold_no_data() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     // No coverage data => total_coverage is 0.0, threshold is 80.0
     assert_eq!(wf.check_coverage_threshold(), None);
     Ok(())
@@ -503,7 +503,7 @@ fn test_full_tdd_workflow_coverage_threshold_no_data() -> Result<(), Box<dyn std
 #[test]
 fn test_full_tdd_workflow_coverage_threshold_met() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig { coverage_threshold: 50.0, ..TddConfig::default() };
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     // 3 covered out of 4 lines = 75% > 50% threshold
     let coverage = vec![
@@ -520,7 +520,7 @@ fn test_full_tdd_workflow_coverage_threshold_met() -> Result<(), Box<dyn std::er
 #[test]
 fn test_full_tdd_workflow_coverage_threshold_not_met() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig { coverage_threshold: 90.0, ..TddConfig::default() };
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     // 1 covered out of 4 = 25% < 90%
     let coverage = vec![
@@ -538,7 +538,7 @@ fn test_full_tdd_workflow_coverage_threshold_not_met() -> Result<(), Box<dyn std
 fn test_full_tdd_workflow_inline_coverage_uncovered_lines() -> Result<(), Box<dyn std::error::Error>>
 {
     let config = TddConfig::default();
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     let coverage = vec![
         LineCoverage { line: 1, hits: 3, covered: true },
@@ -559,7 +559,7 @@ fn test_full_tdd_workflow_inline_coverage_uncovered_lines() -> Result<(), Box<dy
 #[test]
 fn test_full_tdd_workflow_inline_coverage_no_file() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     let annotations = wf.get_inline_coverage(&PathBuf::from("nonexistent.pm"));
     assert!(annotations.is_empty());
     Ok(())
@@ -568,7 +568,7 @@ fn test_full_tdd_workflow_inline_coverage_no_file() -> Result<(), Box<dyn std::e
 #[test]
 fn test_full_tdd_workflow_status_idle() -> Result<(), Box<dyn std::error::Error>> {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     let status = wf.get_status();
     assert_eq!(status.state, WorkflowState::Idle);
     assert_ne!(status.tests_passing, Some(true));
@@ -579,7 +579,7 @@ fn test_full_tdd_workflow_status_idle() -> Result<(), Box<dyn std::error::Error>
 fn test_full_tdd_workflow_coverage_diagnostics_for_file() -> Result<(), Box<dyn std::error::Error>>
 {
     let config = TddConfig::default();
-    let mut wf = FullTddWorkflow::new(config);
+    let mut wf = FullTddWorkflow::new(config)?;
 
     let coverage = vec![
         LineCoverage { line: 10, hits: 0, covered: false },
@@ -600,7 +600,7 @@ fn test_full_tdd_workflow_coverage_diagnostics_for_file() -> Result<(), Box<dyn 
 fn test_full_tdd_workflow_coverage_diagnostics_empty_file() -> Result<(), Box<dyn std::error::Error>>
 {
     let config = TddConfig::default();
-    let wf = FullTddWorkflow::new(config);
+    let wf = FullTddWorkflow::new(config)?;
     let diags = wf.generate_coverage_diagnostics(&PathBuf::from("missing.pl"));
     assert!(diags.is_empty());
     Ok(())

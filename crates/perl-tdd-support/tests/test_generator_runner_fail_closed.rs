@@ -54,7 +54,7 @@ fn tdd_workflow_run_tests_stays_red_without_all_tests_pass_message()
         EXECUTION_UNSUPPORTED_PHASE, TddConfig, TddWorkflow, WorkflowState,
     };
 
-    let mut workflow = TddWorkflow::new(TddConfig::default());
+    let mut workflow = TddWorkflow::new(TddConfig::default())?;
     workflow.start_cycle("feature");
 
     let result = workflow.run_tests(&[PathBuf::from("t/feature.t")]);

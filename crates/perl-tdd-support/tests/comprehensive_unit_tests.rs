@@ -1092,7 +1092,7 @@ fn source_location_fields() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn full_tdd_workflow_start_cycle() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow};
-    let mut wf = TddWorkflow::new(TddConfig::default());
+    let mut wf = TddWorkflow::new(TddConfig::default())?;
     let result = wf.start_cycle("my_feature");
     assert_eq!(result.phase, "Intent");
     assert!(result.message.contains("my_feature"));
@@ -1103,7 +1103,7 @@ fn full_tdd_workflow_start_cycle() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn full_tdd_workflow_get_status() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, WorkflowState};
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     let status = wf.get_status();
     assert_eq!(status.state, WorkflowState::Idle);
     Ok(())
@@ -1118,7 +1118,7 @@ fn full_tdd_workflow_run_tests_fail_closed_then_refactor_cycle()
         EXECUTION_UNSUPPORTED_PHASE, TddConfig, TddWorkflow, WorkflowState,
     };
 
-    let mut wf = TddWorkflow::new(TddConfig::default());
+    let mut wf = TddWorkflow::new(TddConfig::default())?;
     wf.start_cycle("my_feature");
 
     let unsupported = wf.run_tests(&[PathBuf::from("t/my_feature.t")]);
@@ -1141,7 +1141,7 @@ fn full_tdd_workflow_run_tests_fail_closed_then_refactor_cycle()
 fn full_tdd_workflow_coverage_threshold_initially_not_met() -> Result<(), Box<dyn std::error::Error>>
 {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow};
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     // No coverage data → threshold check is unknown, not a fabricated pass/fail.
     assert_eq!(wf.check_coverage_threshold(), None);
     Ok(())
@@ -1150,7 +1150,7 @@ fn full_tdd_workflow_coverage_threshold_initially_not_met() -> Result<(), Box<dy
 #[test]
 fn full_tdd_workflow_generate_test_for_function() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, TestType};
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     let tc = wf.generate_test_for_function(
         "add",
         &["$a".to_string(), "$b".to_string()],
@@ -1164,7 +1164,7 @@ fn full_tdd_workflow_generate_test_for_function() -> Result<(), Box<dyn std::err
 #[test]
 fn full_tdd_workflow_generate_edge_case_test() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, TestType};
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     let tc = wf.generate_test_for_function("process", &[], TestType::EdgeCase);
     assert!(tc.code.contains("edge cases"));
     Ok(())
@@ -1173,7 +1173,7 @@ fn full_tdd_workflow_generate_edge_case_test() -> Result<(), Box<dyn std::error:
 #[test]
 fn full_tdd_workflow_generate_error_test() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, TestType};
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     let tc = wf.generate_test_for_function("validate", &[], TestType::ErrorHandling);
     assert!(tc.code.contains("error handling"));
     Ok(())
@@ -1182,7 +1182,7 @@ fn full_tdd_workflow_generate_error_test() -> Result<(), Box<dyn std::error::Err
 #[test]
 fn full_tdd_workflow_integration_test_is_todo() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, TestType};
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     let tc = wf.generate_test_for_function("setup", &[], TestType::Integration);
     assert!(tc.is_todo);
     Ok(())
@@ -1191,7 +1191,7 @@ fn full_tdd_workflow_integration_test_is_todo() -> Result<(), Box<dyn std::error
 #[test]
 fn full_tdd_workflow_performance_test_is_todo() -> Result<(), Box<dyn std::error::Error>> {
     use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, TestType};
-    let wf = TddWorkflow::new(TddConfig::default());
+    let wf = TddWorkflow::new(TddConfig::default())?;
     let tc = wf.generate_test_for_function("render", &[], TestType::Performance);
     assert!(tc.is_todo);
     Ok(())
