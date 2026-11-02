@@ -81,7 +81,6 @@ import {
   runTestAtCursorCommand,
   runTestsCommand,
 } from './testCommands';
-import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
 import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
@@ -1038,14 +1037,6 @@ async function runExtensionActivation(
   if (aliasLanguageDisposable) {
     activation.own('base', 'optional_degradable', aliasLanguageDisposable);
   }
-  // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
-  // longer activation-critical: it registers nothing and returns no disposable.
-  const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
-    registerMcpSupport(outputChannel),
-  );
-  if (mcpDisposable) {
-    activation.own('support', 'optional_degradable', mcpDisposable);
-  }
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
@@ -1528,15 +1519,6 @@ async function runExtensionActivation(
 
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
-
-  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    try {
-      await populateCreatedFiles(event);
-    } catch (e) {
-      outputChannel.error('File creation handler error', e);
-    }
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
   // The document feature group receives a scoped facade context: registrations
   // it pushes during activation join the attempt, while lazily created

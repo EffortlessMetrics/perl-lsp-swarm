@@ -28,13 +28,13 @@ describe('feature activation metrics', () => {
     const metrics = new FeatureActivationMetrics();
     metrics.beginActivation();
     expect(() =>
-      metrics.measure('mcp', false, () => {
+      metrics.measure('debugger', false, () => {
         throw new Error('registration failed');
       }),
     ).toThrow('registration failed');
 
     expect(metrics.snapshot().measurements[0]).toMatchObject({
-      domain: 'mcp',
+      domain: 'debugger',
       registration_status: 'failed',
       error: 'registration failed',
     });

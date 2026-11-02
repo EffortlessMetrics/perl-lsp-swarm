@@ -1,5 +1,4 @@
 export type FeatureActivationDomain =
-  | 'mcp'
   | 'whats_new'
   | 'providers'
   | 'configuration'
