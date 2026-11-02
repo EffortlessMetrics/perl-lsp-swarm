@@ -790,8 +790,9 @@ impl ExecuteCommandProvider {
             // `perlcritic` under any legacy/external/perlcritic alias, and
             // must not silently reinterpret that intent as native or
             // BuiltInAnalyzer parity (#18377, #6969/#9072). Configuration
-            // migration is a separate obligation. The deprecated `run_critic`
-            // wrapper retains the #16550 spawn/fallback contract.
+            // migration is a separate obligation. This path intentionally
+            // diverges from deprecated `run_critic`, which still keeps the
+            // #16550 spawn/fallback contract.
             return Err(concat!(
                 "External critic engines are retired for perl.runCritic; ",
                 "configure critic.engine = native to request native rules explicitly"
@@ -832,7 +833,8 @@ impl ExecuteCommandProvider {
 
         if self.external_critic_requested() {
             if command_exists("perlcritic") {
-                // Same #16550 contract as `run_critic_secure`: a present-but-
+                // Deprecated wrapper keeps the #16550 spawn/fallback contract
+                // that public `run_critic_secure` no longer has: a present-but-
                 // failing perlcritic surfaces its error instead of silently
                 // falling back to the builtin analyzer.
                 return self.run_external_critic(path);
