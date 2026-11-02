@@ -64,6 +64,60 @@
 //! [`SourceSegmentation::observed_segments`] remains the unchecked view and
 //! says so.
 //!
+//! # Coherence axes settled with populator evidence (#14345)
+//!
+//! Four review observations from #13841 are resolved here against lexer facts
+//! or recorded as deliberately weak until a populator measures honest output
+//! (#8608, #8621, #8636, #8654).
+//!
+//! ## Axis 1 — zero-length segments and cooked text
+//!
+//! A segment whose [`SourceSegment::raw_range`] is empty may carry
+//! [`CookedValue::Proven`] with an empty string — for example a `<<~` indent
+//! strip that removed an empty indentation run. It may not carry [`CookedValue::Proven`]
+//! or [`CookedValue::Partial`] with **non-empty** text: that would invent bytes
+//! with no backing source span. Checked as
+//! [`PayloadContradiction::ZeroLengthSegmentWithNonEmptyCooked`].
+//!
+//! ## Axis 2 — bracketing delimiter pairs
+//!
+//! Perl's quote lexer admits exactly four auto-paired openers — `(`, `[`, `{`,
+//! `<` — each closing with its mate (`perl_lexer::quote_handler::paired_close`,
+//! conformance matrix in `quote_handler.rs` tests). A
+//! [`StringDelimiter::Paired`] whose open and close do not match that table is
+//! checked as [`PayloadContradiction::MismatchedDelimiterPair`]. Non-bracket
+//! delimiters belong in [`StringDelimiter::Same`], not a mismatched `Paired`.
+//!
+//! ## Axis 3 — heredoc `full_region` endpoints
+//!
+//! [`PayloadContradiction::FullRegionMissesAPart`] requires containment only.
+//! **Deliberately unconstrained:** whether `full_region` must equal the tight
+//! hull of declaration, body, and terminator. Recovered or budgeted heredocs
+//! may honestly record a wider region; exact endpoints need populator evidence
+//! (#8654) before a stricter rule is added.
+//!
+//! ## Axis 4 — segment kind × cooked disposition
+//!
+//! Interpolation and recovery semantics are enforced without populator evidence
+//! ([`SourceSegment::kind_can_prove_its_fragment`],
+//! [`PayloadContradiction::ProvenValueOverDynamicSegments`],
+//! [`PayloadContradiction::ProvenValueOverRecoverySegment`],
+//! [`PayloadContradiction::SegmentKindDisagreesWithCookedFragment`]).
+//!
+//! For literal, escape, and normalization runs the fragment disposition matrix
+//! is:
+//!
+//! | Kind / disposition | Proven | Partial | Dynamic | Unavailable |
+//! |---------------------|--------|---------|---------|-------------|
+//! | Literal             | allowed | allowed | *unconstrained* (#8608) | allowed |
+//! | Escape              | allowed | allowed | *unconstrained* (#8608) | allowed |
+//! | Normalization       | allowed | allowed | *unconstrained* (#8608) | allowed |
+//! | Interpolation       | forbidden | forbidden | required at payload when whole value proven | allowed when payload not proven |
+//! | Recovery            | forbidden | forbidden | forbidden when payload proven | allowed when payload not proven |
+//!
+//! Cells marked *unconstrained* stay so until a populator shows whether the
+//! lexer ever labels a non-interpolating run [`CookedValue::Dynamic`].
+//!
 //! # Compatibility projections
 //!
 //! The `compat_*` methods are **derived views** computed from the typed state
@@ -437,6 +491,15 @@ pub enum PayloadContradiction {
         /// Index of the offending segment in recorded order.
         index: usize,
     },
+    /// A zero-length segment claiming non-empty proven or partial cooked text.
+    ///
+    /// An empty range may still carry [`CookedValue::Proven`] with an empty
+    /// string when normalization removed an indentation run over no bytes (#14345
+    /// axis 1). Non-empty text over zero bytes invents source.
+    ZeroLengthSegmentWithNonEmptyCooked {
+        /// Index of the offending segment in recorded order.
+        index: usize,
+    },
     /// A terminal that proves delimiters over a content region that was never
     /// established.
     TerminalRequiresContentRange,
@@ -468,6 +531,9 @@ pub enum PayloadContradiction {
     /// `'...'`, `"..."`, and `` `...` `` each fix their own delimiter; only the
     /// `q`-family forms choose one.
     FormDelimiterMismatch,
+    /// A [`StringDelimiter::Paired`] whose open and close are not one of
+    /// Perl's four lexer-admitted bracket pairs (#14345 axis 2).
+    MismatchedDelimiterPair,
     /// A segment whose kind cannot produce the cooked fragment it carries.
     ///
     /// Recovery runs failed classification and interpolation runs depend on
@@ -627,6 +693,14 @@ fn payload_contradictions(
         let range = segment.raw_range;
         if is_malformed(range) {
             found.push(PayloadContradiction::MalformedSegmentRange { index });
+        }
+        if range.start == range.end
+            && matches!(
+                &segment.cooked_fragment,
+                CookedValue::Proven(text) | CookedValue::Partial(text) if !text.is_empty()
+            )
+        {
+            found.push(PayloadContradiction::ZeroLengthSegmentWithNonEmptyCooked { index });
         }
         if !segment.kind_can_prove_its_fragment() {
             found.push(PayloadContradiction::SegmentKindDisagreesWithCookedFragment { index });
@@ -980,6 +1054,20 @@ impl StringDelimiter {
             Self::Unavailable => 1,
         }
     }
+
+    /// Whether a bracketing pair matches Perl's lexer-admitted open/close pairs.
+    ///
+    /// [`StringDelimiter::Same`] and [`StringDelimiter::Unavailable`] always
+    /// pass; only [`StringDelimiter::Paired`] is validated (#14345 axis 2).
+    #[must_use]
+    pub const fn is_lexer_admitted_pair(&self) -> bool {
+        match self {
+            Self::Same { .. } | Self::Unavailable => true,
+            Self::Paired { open, close } => {
+                matches!((open, close), ('(', ')') | ('[', ']') | ('{', '}') | ('<', '>'))
+            }
+        }
+    }
 }
 
 /// Source-backed payload of an ordinary string or quote-like construct.
@@ -1027,6 +1115,9 @@ impl StringSyntax {
         );
         if !self.form.admits_delimiter(self.delimiter) {
             found.push(PayloadContradiction::FormDelimiterMismatch);
+        }
+        if !self.delimiter.is_lexer_admitted_pair() {
+            found.push(PayloadContradiction::MismatchedDelimiterPair);
         }
         // `raw_range` spans the quote operator and both delimiters. Malformed
         // bounds are reported by the shared check above and compare
@@ -2749,9 +2840,10 @@ mod tests {
         );
 
         // `SourceLocation` counts bytes, so a multibyte delimiter reserves more
-        // than one of them.
+        // than one of them. Use `Same` here: only the four ASCII bracket pairs
+        // are valid `Paired` delimiters (#14345 axis 2).
         let mut multibyte = q_literal.clone();
-        multibyte.delimiter = StringDelimiter::Paired { open: '\u{ab}', close: '\u{bb}' };
+        multibyte.delimiter = StringDelimiter::Same { delimiter: '\u{ab}' };
         multibyte.raw_range = span(0, 8);
         multibyte.content_range = Some(span(3, 6));
         multibyte.segmentation = SourceSegmentation::Exact(vec![literal_segment(3, 6, "abc")]);
@@ -2770,6 +2862,38 @@ mod tests {
 
         // Heredoc bodies are not delimiter-wrapped, so the rule is string-only.
         assert!(heredoc(HeredocForm::Bare, PayloadTerminal::Complete).is_coherent());
+    }
+
+    #[test]
+    fn a_zero_length_segment_may_not_invent_non_empty_cooked_text() {
+        let mut invented = plain_double_quoted_string();
+        invented.segmentation = SourceSegmentation::Exact(vec![SourceSegment {
+            raw_range: span(2, 2),
+            cooked_fragment: CookedValue::Proven("x".to_string()),
+            payload: SourceSegmentPayload::Normalization {
+                rule: NormalizationRule::HeredocIndentStrip,
+            },
+        }]);
+        assert!(
+            invented
+                .contradictions()
+                .contains(&PayloadContradiction::ZeroLengthSegmentWithNonEmptyCooked { index: 0 })
+        );
+        assert!(!invented.is_coherent());
+
+        let mut empty_ok = invented.clone();
+        empty_ok.segmentation = SourceSegmentation::Exact(vec![SourceSegment {
+            raw_range: span(2, 2),
+            cooked_fragment: CookedValue::Proven(String::new()),
+            payload: SourceSegmentPayload::Normalization {
+                rule: NormalizationRule::HeredocIndentStrip,
+            },
+        }]);
+        assert!(
+            !empty_ok
+                .contradictions()
+                .contains(&PayloadContradiction::ZeroLengthSegmentWithNonEmptyCooked { index: 0 })
+        );
     }
 
     #[test]
@@ -3180,6 +3304,16 @@ mod tests {
             StringForm::QLiteral
                 .admits_delimiter(StringDelimiter::Paired { open: '(', close: ')' })
         );
+        let mut mismatched_pair = plain_double_quoted_string();
+        mismatched_pair.form = StringForm::QLiteral;
+        mismatched_pair.delimiter = StringDelimiter::Paired { open: '{', close: ')' };
+        assert!(
+            mismatched_pair
+                .contradictions()
+                .contains(&PayloadContradiction::MismatchedDelimiterPair)
+        );
+        assert!(StringDelimiter::Paired { open: '{', close: '}' }.is_lexer_admitted_pair());
+        assert!(!StringDelimiter::Paired { open: '{', close: ')' }.is_lexer_admitted_pair());
         assert!(StringForm::QxCommand.admits_delimiter(StringDelimiter::Same { delimiter: '!' }));
         assert!(StringForm::SingleQuoted.admits_delimiter(StringDelimiter::Unavailable));
         assert!(StringForm::Backtick.admits_delimiter(StringDelimiter::Same { delimiter: '`' }));
