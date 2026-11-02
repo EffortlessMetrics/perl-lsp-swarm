@@ -110,10 +110,42 @@ fn nested_call_in_declaration_initializer_precedes_assignment() {
             })
             .map(|node| node.id),
     );
-    assert!(graph.edges.iter().any(|edge| {
-        edge.kind == PirEdgeKind::Fallthrough && edge.from == inner_id && edge.to == Some(outer_id)
+    let eval_chain_fallthroughs: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == PirEdgeKind::Fallthrough)
+        .filter(|edge| {
+            (edge.from == inner_id && edge.to == Some(outer_id))
+                || (edge.from == outer_id && edge.to == Some(assign_id))
+        })
+        .collect();
+    assert_eq!(
+        eval_chain_fallthroughs.len(),
+        2,
+        "expected exactly bar -> foo and foo -> Assign fallthrough edges"
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == PirEdgeKind::Fallthrough && edge.from == inner_id)
+            .count(),
+        1,
+        "inner call must have a single fallthrough successor"
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == PirEdgeKind::Fallthrough && edge.from == outer_id)
+            .count(),
+        1,
+        "outer call must have a single fallthrough successor"
+    );
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == outer_id && edge.to == Some(inner_id)
     }));
-    assert!(graph.edges.iter().any(|edge| {
-        edge.kind == PirEdgeKind::Fallthrough && edge.from == outer_id && edge.to == Some(assign_id)
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == inner_id && edge.to == Some(assign_id)
     }));
 }
