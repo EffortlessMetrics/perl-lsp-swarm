@@ -147,10 +147,10 @@ fn build_artifact() -> Artifact {
             "imported_func",
             Some(vec!["t/foo.t:6:9"]),
             Some(vec!["t/foo.t:6:9"]),
-            "references shadow proof: compiler-ranked imported symbol occurrence is traced through ImportSpec/ExportSet; no live navigation behavior change",
+            "references shadow proof: AST/workspace-index imported symbol occurrence is traced through ImportSpec/ExportSet; no live navigation behavior change",
             vec![trace(
                 ProviderSurface::References,
-                ProviderFactSourceKind::CompilerFact,
+                ProviderFactSourceKind::SemanticFact,
                 Provenance::ImportExportInference,
                 Confidence::High,
                 ProviderFactFreshness::Fresh,
@@ -1265,7 +1265,7 @@ mod tests {
         assert!(markdown.contains(
             "| release-readiness | FindDefinition | `navigation_definition_real_workspace_quality` | improved | 1 | 2 |"
         ));
-        assert!(markdown.contains("| release-readiness | FindReferences | References | CompilerFact | ImportExportInference | High | Fresh | Shadow |"));
+        assert!(markdown.contains("| release-readiness | FindReferences | References | SemanticFact | ImportExportInference | High | Fresh | Shadow |"));
         assert!(markdown.contains("| release-readiness | FindReferences | References | FrameworkAdapter | FrameworkSynthesis | Medium | Fresh | Shadow |"));
         assert!(markdown.contains("| release-readiness | FindReferences | References | DynamicBoundary | DynamicBoundary | High | Fresh | Blocked |"));
         assert!(markdown.contains("| release-readiness | FindReferences | References | CompilerFact | SemanticAnalyzer | Low | Stale | Blocked |"));
