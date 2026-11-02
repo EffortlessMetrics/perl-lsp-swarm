@@ -201,18 +201,31 @@ pub fn module_runtime_module_at_byte_offset(text: &str, byte_offset: usize) -> O
     let mut quote_like_state = None;
     for line in text.lines() {
         let line_end = line_start.saturating_add(line.len());
-        if byte_offset >= line_start && byte_offset <= line_end {
-            if in_pod {
+        let on_line = byte_offset >= line_start && byte_offset <= line_end;
+
+        if in_pod {
+            if line.starts_with("=cut") {
+                in_pod = false;
+            } else if on_line {
                 return None;
             }
+            line_start = line_end.saturating_add(1);
+            continue;
+        }
+
+        if starts_pod_block(line) {
+            in_pod = true;
+            if on_line {
+                return None;
+            }
+            line_start = line_end.saturating_add(1);
+            continue;
+        }
+
+        if on_line {
             let line_byte = byte_offset.saturating_sub(line_start);
             let code = code_mask(line, &mut quote_like_state);
             return module_runtime_module_on_line(line, line_byte, &code).map(str::to_string);
-        }
-        if in_pod && line.starts_with("=cut") {
-            in_pod = false;
-        } else if starts_pod_block(line) {
-            in_pod = true;
         }
         line_start = line_end.saturating_add(1);
     }
@@ -973,6 +986,21 @@ mod tests {
             module_runtime_module_at_byte_offset(text, before_call).is_none(),
             "cursor on the call keyword must not resolve"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn module_runtime_module_at_byte_offset_ignores_pod_headings() -> Result<(), String> {
+        let text = "=head1 use_module('Foo::Bar')\n\n=cut\nuse_module('Demo::Worker');\n";
+        let in_pod = text.find('F').ok_or("missing pod text")?;
+        assert!(
+            module_runtime_module_at_byte_offset(text, in_pod).is_none(),
+            "POD headings must not resolve as executable Module::Runtime calls"
+        );
+        let in_code = text.find("'Demo").ok_or("missing code call")?;
+        let resolved = module_runtime_module_at_byte_offset(text, in_code)
+            .ok_or("code after POD must still resolve")?;
+        assert_eq!(resolved, "Demo::Worker");
         Ok(())
     }
 
