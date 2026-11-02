@@ -271,7 +271,7 @@ impl WorkspaceIndex {
 mod tests {
     use super::*;
     use crate::SourceLocation;
-    use crate::symbol::Symbol;
+    use crate::symbol::{Symbol, SymbolTable};
 
     #[test]
     fn normalize_path_like_module_converts_only_path_identities() {
@@ -284,10 +284,16 @@ mod tests {
     }
 
     #[test]
-    fn quoted_require_path_is_indexed_as_module_name() -> Result<(), String> {
-        // extract_dependencies, not index_file_str: the latter is a #11301
+    fn quoted_require_path_is_indexed_as_module_name() {
+        // update_from_document, not index_file_str: the latter is a #11301
         // compatibility API counted against the source-commit ledger.
-        let deps = WorkspaceIndex::extract_dependencies("require \"Foo/Bar.pm\";\n1;\n")?;
+        let mut index = WorkspaceIndex::new();
+        index.update_from_document(
+            "file:///quoted.pl",
+            "require \"Foo/Bar.pm\";\n1;\n",
+            &SymbolTable::new(),
+        );
+        let deps = index.file_dependencies("file:///quoted.pl");
         assert!(
             deps.contains("Foo::Bar"),
             "quoted require must be lookupable as Foo::Bar; deps: {deps:?}"
@@ -296,14 +302,18 @@ mod tests {
             !deps.contains("Foo/Bar.pm") && !deps.contains("\"Foo/Bar.pm\""),
             "path-like HIR identity must not be the dependency lookup key; deps: {deps:?}"
         );
-        Ok(())
     }
 
     #[test]
-    fn bare_require_module_is_indexed_as_module_name() -> Result<(), String> {
-        let deps = WorkspaceIndex::extract_dependencies("require Foo::Bar;\n1;\n")?;
+    fn bare_require_module_is_indexed_as_module_name() {
+        let mut index = WorkspaceIndex::new();
+        index.update_from_document(
+            "file:///bare.pl",
+            "require Foo::Bar;\n1;\n",
+            &SymbolTable::new(),
+        );
+        let deps = index.file_dependencies("file:///bare.pl");
         assert!(deps.contains("Foo::Bar"), "bare require must stay Foo::Bar; deps: {deps:?}");
-        Ok(())
     }
 
     /// Regression: `use parent qw [..]` with whitespace before the delimiter
