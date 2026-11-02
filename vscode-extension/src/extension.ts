@@ -25,7 +25,6 @@ import {
   isSupportedPerlUriScheme,
   loadPerlAliasLanguageConfiguration,
   PERL_ALIAS_LANGUAGE_ID,
-  perlDocumentSelector,
 } from './languageIdentity';
 import { perlFullLspDocumentSelector } from './documentEligibility';
 import {

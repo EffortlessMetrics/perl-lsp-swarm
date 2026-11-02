@@ -4,7 +4,6 @@ import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { machineScopedExternalIncludePaths } from './languageClientConfiguration';
 import {
-  debugTestEligible,
   editProviderEligible,
   editRefusalMessage,
   externalExecutionEligible,

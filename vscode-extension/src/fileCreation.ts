@@ -1,8 +1,8 @@
 import * as path from 'path';
-import * as vscode from 'vscode';
+import type { FileCreateEvent } from 'vscode';
 
 /** Ordinary workspace file creation never auto-populates Perl boilerplate (#14451). */
-export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
+export async function populateCreatedFiles(_event: FileCreateEvent): Promise<void> {
   return;
 }
 

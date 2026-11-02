@@ -185,7 +185,10 @@ export async function extractMethodCommand(
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (
-    !requireEditEligibleEditor(editor, 'Extract Method requires an active Perl file with a selection')
+    !requireEditEligibleEditor(
+      editor,
+      'Extract Method requires an active Perl file with a selection',
+    )
   ) {
     return;
   }

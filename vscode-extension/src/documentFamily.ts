@@ -174,7 +174,11 @@ function buildFilenameIndex(): ReadonlyMap<string, DocumentFamilyRow> {
 }
 
 export interface DocumentFamilyInput {
-  readonly uri?: { readonly scheme?: string; readonly fsPath?: string; readonly toString?: () => string };
+  readonly uri?: {
+    readonly scheme?: string;
+    readonly fsPath?: string;
+    readonly toString?: () => string;
+  };
   readonly languageId: string;
   readonly fileName?: string;
 }
@@ -216,7 +220,10 @@ function documentFileName(document: DocumentFamilyInput): string {
 }
 
 export function classifyDocumentFamily(document: DocumentFamilyInput): DocumentFamilyRow {
-  if (!isPerlLanguageId(document.languageId) || !isSupportedPerlUriScheme(documentUriScheme(document))) {
+  if (
+    !isPerlLanguageId(document.languageId) ||
+    !isSupportedPerlUriScheme(documentUriScheme(document))
+  ) {
     return unsupportedFamilyRow();
   }
 
