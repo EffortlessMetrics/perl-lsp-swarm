@@ -507,8 +507,8 @@ fn apply_public_api_sed_stage(text: &str) -> Result<String, Box<dyn std::error::
 /// unrelated paths alone, mirroring the Arc fixture in
 /// `scripts/tests/test-public-api-ratchet.sh`.
 #[test]
-fn the_rcs_relocation_fold_normalizes_rc_and_weak_aliases(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn the_rcs_relocation_fold_normalizes_rc_and_weak_aliases() -> Result<(), Box<dyn std::error::Error>>
+{
     let input = "\
 pub fn Surface::nested_rc() -> alloc::rcs::rc::Rc<alloc::rcs::rc::Rc<u8>>
 pub fn Surface::arc_weak() -> alloc::rcs::arc::Weak<u8>
@@ -560,11 +560,7 @@ fn parse_filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Err
 /// stdlib rcs relocation (#17024/#17121) and must not run in io-only fixtures.
 fn filter_io_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let exprs = parse_filter_sed_expressions()?;
-    let io: Vec<String> = exprs
-        .iter()
-        .filter(|expr| expr.contains("std::io::"))
-        .cloned()
-        .collect();
+    let io: Vec<String> = exprs.iter().filter(|expr| expr.contains("std::io::")).cloned().collect();
     if io.len() != 2 {
         return Err(format!(
             "expected 2 io-path substitutions in _public-api-filter, parsed {}: {io:?}",
