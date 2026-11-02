@@ -1852,7 +1852,8 @@ fn run_gate_plan(
     // Build summary
     let total_duration_ms = start_time.elapsed().as_millis() as u64;
     let passed = results.iter().filter(|r| r.status == "pass").count() as u32;
-    let failed = results.iter().filter(|r| r.status == "fail").count() as u32;
+    let not_evaluated = results.iter().filter(|r| r.status == "not_evaluated").count() as u32;
+    let failed = results.iter().filter(|r| r.status == "fail").count() as u32 + not_evaluated;
     let skipped = results.iter().filter(|r| r.status == "skip").count() as u32;
     let timeout = results.iter().filter(|r| r.status == "timeout").count() as u32;
     let error = results.iter().filter(|r| r.status == "error").count() as u32;

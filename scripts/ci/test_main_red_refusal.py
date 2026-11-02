@@ -71,6 +71,20 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
             candidate_workflow_sha=candidate_workflow_sha,
         )
 
+    def test_green_main_missing_candidate_policy_shard_waits(self) -> None:
+        decision = self.evaluate(
+            main=all_shards("main-sha", conclusion="success"),
+            candidate=[
+                run
+                for run in all_shards("candidate-sha", conclusion="success")
+                if run["name"] != "CI Gate shard (policy)"
+            ],
+            main_workflow_run_ids=set(range(1, 9)),
+            candidate_workflow_run_ids=set(range(1, 9)),
+        )
+        self.assertTrue(decision.waits_for_candidate)
+        self.assertFalse(decision.blocks)
+
     def test_green_main_red_candidate_policy_shard_blocks(self) -> None:
         main = all_shards("main-sha", conclusion="success")
         candidate = all_shards("candidate-sha", conclusion="success")

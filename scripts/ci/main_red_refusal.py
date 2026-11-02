@@ -335,8 +335,16 @@ def _append_candidate_policy_shard_required_routing(
     required ``Perl LSP Rust Small Result`` check.
     """
     if candidate is None:
+        decision.waiters.append(
+            "CI Gate shard (policy): required-context routing waiting for "
+            "exact-SHA candidate result"
+        )
         return
     if str(candidate.get("status") or "").lower() != "completed":
+        decision.waiters.append(
+            "CI Gate shard (policy): required-context routing waiting for "
+            f"completed candidate result ({_describe_probe_state(candidate)})"
+        )
         return
     conclusion = _conclusion(candidate)
     if conclusion not in RED_CONCLUSIONS:
