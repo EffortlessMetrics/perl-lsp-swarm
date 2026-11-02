@@ -3513,10 +3513,8 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_refuses_without_apply_edit
     assert_eq!(live_result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(false));
     assert_eq!(live_result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
     assert_eq!(live_result.get("apply_edit_requested").and_then(Value::as_bool), None);
-    let user_message = live_result
-        .get("user_message")
-        .and_then(Value::as_str)
-        .ok_or("missing user_message")?;
+    let user_message =
+        live_result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
     assert!(
         user_message.contains("does not support") && user_message.contains("No source changes"),
         "expected explicit refusal message: {user_message}"
