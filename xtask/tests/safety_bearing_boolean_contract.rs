@@ -47,10 +47,7 @@ fn adr_inventory_anchors_file_paths_and_line_refs() {
         "authority_transfer_closeout.rs:1046",
         "authority_transfer_closeout.rs:630",
     ] {
-        assert!(
-            adr.contains(anchor),
-            "ADR inventory missing location anchor {anchor}"
-        );
+        assert!(adr.contains(anchor), "ADR inventory missing location anchor {anchor}");
     }
 }
 
