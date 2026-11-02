@@ -21,8 +21,7 @@ bounded remediation choices. Startup may show one advisory notification per dist
 finding set; suppressions bind to an exact conflict identity.
 
 PATH presence of `perlcritic` or `perltidy`, and a project `.perlcriticrc` file alone, are
-**not** reported as external providers. First-party `perl-lsp` has no selectable external
-Perl::Critic engine in the extension; stale legacy critic settings route to migration
+**not** reported as external providers. First-party `perl-lsp` has no selectable external Perl::Critic engine in the extension; stale legacy critic settings route to migration
 guidance instead.
 
 See also [VS Code Setup](VS_CODE_SETUP.md).
