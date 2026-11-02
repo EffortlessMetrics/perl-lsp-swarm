@@ -35,7 +35,8 @@
 
 use crate::ast::{Node, NodeKind};
 use crate::tdd::generated_test_artifact::{
-    emit_subtest_draft_fail, emit_test_more_draft_fail, emit_unsupported_stub,
+    emit_subtest_close, emit_subtest_draft_fail, emit_subtest_open, emit_test_more_draft_fail,
+    emit_unsupported_stub,
 };
 use std::collections::HashMap;
 
@@ -247,34 +248,18 @@ impl TestGenerator {
     fn generate_test_more_basic(
         &self,
         name: &str,
-        params: &Option<Vec<String>>,
+        _params: &Option<Vec<String>>,
     ) -> (String, GeneratedTestReadiness) {
-        if self.options.expected_values.contains_key(name) {
-            let mut code = String::new();
-            code.push_str("use Test::More;\n\n");
-            code.push_str(&format!("subtest '{}' => sub {{\n", name));
-            if let Some(params) = params {
-                let args = self.generate_sample_args(params.len());
-                code.push_str(&format!("    my $result = {}({});\n", name, args));
-            } else {
-                code.push_str(&format!("    my $result = {}();\n", name));
-            }
-            let expected = match self.options.expected_values.get(name) {
-                Some(value) => value,
-                None => unreachable!("contains_key checked above"),
-            };
-            code.push_str(&format!("    is($result, {}, 'Returns expected value');\n", expected));
-            code.push_str("}};\n");
-            code.push_str("done_testing();\n");
-            return (code, GeneratedTestReadiness::Runnable);
-        }
-
-        let reason = format!("behavioral oracle required for {name}");
+        let reason = if self.options.expected_values.contains_key(name) {
+            format!("input oracle required for {name} (expected value alone is insufficient)")
+        } else {
+            format!("behavioral oracle required for {name}")
+        };
         let mut code = String::new();
         code.push_str("use Test::More;\n\n");
-        code.push_str(&format!("subtest '{}' => sub {{\n", name));
+        code.push_str(&emit_subtest_open(name));
         code.push_str(&emit_subtest_draft_fail(&reason));
-        code.push_str("}};\n");
+        code.push_str(emit_subtest_close());
         code.push_str("done_testing();\n");
         (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
@@ -359,9 +344,9 @@ impl TestGenerator {
             TestFramework::TestMore => {
                 let mut code = String::new();
                 code.push_str("use Test::More;\n\n");
-                code.push_str(&format!("subtest '{subtest_label}' => sub {{\n"));
+                code.push_str(&emit_subtest_open(subtest_label));
                 code.push_str(&emit_subtest_draft_fail(reason));
-                code.push_str("}};\n");
+                code.push_str(emit_subtest_close());
                 code.push_str("done_testing();\n");
                 (code, GeneratedTestReadiness::DraftNeedsOracle)
             }
@@ -552,6 +537,7 @@ impl TestGenerator {
         make_test_case(test_name, description, code, readiness)
     }
 
+    #[allow(dead_code, reason = "reserved for future input-oracle runnable generation")]
     fn generate_sample_args(&self, count: usize) -> String {
         let args: Vec<String> = (0..count).map(|i| format!("'arg{}'", i + 1)).collect();
         args.join(", ")

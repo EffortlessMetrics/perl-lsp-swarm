@@ -14,8 +14,8 @@ fn assert_no_false_green(code: &str, readiness: GeneratedTestReadiness) {
     assert!(!code.contains("ok(1"), "must not emit ok(1): {code}");
     if readiness != GeneratedTestReadiness::Runnable {
         assert!(
-            code.contains("TODO:") || code.contains("plan skip_all"),
-            "draft/unsupported must encode TODO or skip: {code}"
+            code.contains("TODO: {") || code.contains("plan skip_all"),
+            "draft/unsupported must encode TODO block or skip: {code}"
         );
     }
     let policy = FalseGreenPolicy;
@@ -51,7 +51,7 @@ fn test_generator_basic_without_oracle_is_draft() {
 }
 
 #[test]
-fn test_generator_with_oracle_can_be_runnable() {
+fn test_generator_expected_value_still_draft_without_inputs() {
     let mut options = TestGeneratorOptions::default();
     options.expected_values.insert("add".to_string(), "3".to_string());
     let generator = TestGenerator::with_options(TestFramework::TestMore, options);
@@ -72,8 +72,8 @@ fn test_generator_with_oracle_can_be_runnable() {
     );
     let tests = generator.generate_tests(&ast, "sub add { }");
     let basic = must_some(tests.iter().find(|t| t.name == "test_add"));
-    assert_eq!(basic.readiness, GeneratedTestReadiness::Runnable);
-    assert!(!basic.code.contains("pass("));
+    assert_eq!(basic.readiness, GeneratedTestReadiness::DraftNeedsOracle);
+    assert_no_false_green(&basic.code, basic.readiness);
 }
 
 #[test]
@@ -177,6 +177,43 @@ fn generated_draft_prove_is_not_all_green_without_todo() {
     assert!(
         stdout.contains("TODO") || !output.status.success(),
         "integration draft must not be all-green without TODO; stdout={stdout}"
+    );
+}
+
+#[test]
+fn generated_basic_draft_parses_under_perl_c() {
+    if Command::new("perl").arg("-v").output().is_err() {
+        return;
+    }
+    let generator = TestGenerator::new(TestFramework::TestMore);
+    let ast = perl_tdd_support::Node::new(
+        perl_tdd_support::NodeKind::Subroutine {
+            name: Some("add".to_string()),
+            name_span: None,
+            declarator: None,
+            signature: None,
+            body: Box::new(perl_tdd_support::Node::new(
+                perl_tdd_support::NodeKind::Block { statements: vec![] },
+                perl_tdd_support::SourceLocation { start: 0, end: 0 },
+            )),
+            attributes: vec![],
+            prototype: None,
+        },
+        perl_tdd_support::SourceLocation { start: 0, end: 0 },
+    );
+    let tests = generator.generate_tests(&ast, "sub add { }");
+    let basic = must_some(tests.iter().find(|t| t.name == "test_add"));
+    let dir = must_with(tempfile::tempdir(), "tempdir for perl -c");
+    let path = dir.path().join("basic.t");
+    must_with(std::fs::write(&path, &basic.code), "write generated basic draft for perl -c");
+    let output = must_with(
+        Command::new("perl").arg("-c").arg(&path).output(),
+        "perl -c on generated basic draft",
+    );
+    assert!(
+        output.status.success(),
+        "generated basic draft must parse: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

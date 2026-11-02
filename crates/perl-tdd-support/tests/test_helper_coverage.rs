@@ -1274,8 +1274,9 @@ fn test_find_subroutines_in_if_branch() -> Result<(), Box<dyn std::error::Error>
 fn test_generator_test2_framework_output() -> Result<(), Box<dyn std::error::Error>> {
     let generator = perl_tdd_support::tdd_basic::TestGenerator::new("Test2::V0");
     let code = generator.generate_test("process_data", 3);
+    assert!(code.contains("Test2::V0"));
     assert!(code.contains("process_data"));
-    assert!(code.contains("TODO:"));
+    assert!(code.contains("TODO: {"));
     assert!(!code.contains("ok("));
     assert!(code.contains("done_testing"));
     Ok(())

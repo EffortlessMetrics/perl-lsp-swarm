@@ -7,7 +7,8 @@ use crate::ast::Node;
 
 // Re-use Diagnostic from tdd_basic to avoid duplication
 use crate::tdd::generated_test_artifact::{
-    GeneratedTestReadiness, emit_subtest_draft_fail, emit_test_more_draft_fail,
+    GeneratedTestReadiness, emit_subtest_close, emit_subtest_draft_fail, emit_subtest_open,
+    emit_test_more_draft_fail,
 };
 use crate::tdd_basic::{Diagnostic, DiagnosticSeverity};
 #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
@@ -198,9 +199,9 @@ impl TddWorkflow {
         let reason = format!("behavioral oracle required for {name}");
         let mut code = String::new();
         code.push_str("use Test::More;\n\n");
-        code.push_str(&format!("subtest '{name}' => sub {{\n"));
+        code.push_str(&emit_subtest_open(name));
         code.push_str(&emit_subtest_draft_fail(&reason));
-        code.push_str("}};\n\n");
+        code.push_str(emit_subtest_close());
         code.push_str("done_testing();\n");
         (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
@@ -213,9 +214,9 @@ impl TddWorkflow {
         let reason = format!("edge acceptance oracle required for {name}");
         let mut code = String::new();
         code.push_str("use Test::More;\n\n");
-        code.push_str(&format!("subtest '{name} edge cases' => sub {{\n"));
+        code.push_str(&emit_subtest_open(&format!("{name} edge cases")));
         code.push_str(&emit_subtest_draft_fail(&reason));
-        code.push_str("}};\n\n");
+        code.push_str(emit_subtest_close());
         code.push_str("done_testing();\n");
         (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
@@ -228,9 +229,9 @@ impl TddWorkflow {
         let reason = format!("error handling oracle required for {name}");
         let mut code = String::new();
         code.push_str("use Test::More;\n\n");
-        code.push_str(&format!("subtest '{name} error handling' => sub {{\n"));
+        code.push_str(&emit_subtest_open(&format!("{name} error handling")));
         code.push_str(&emit_subtest_draft_fail(&reason));
-        code.push_str("}};\n\n");
+        code.push_str(emit_subtest_close());
         code.push_str("done_testing();\n");
         (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
@@ -248,12 +249,12 @@ impl TddWorkflow {
         let reason = format!("integration setup/call/verification required for {name}");
         let mut code = String::new();
         code.push_str("use Test::More;\n\n");
-        code.push_str(&format!("subtest '{name} integration' => sub {{\n"));
+        code.push_str(&emit_subtest_open(&format!("{name} integration")));
         code.push_str("    # PENDING: Set up test environment\n");
         code.push_str("    # PENDING: Call with real dependencies\n");
         code.push_str("    # PENDING: Verify integration points\n");
         code.push_str(&emit_subtest_draft_fail(&reason));
-        code.push_str("}};\n\n");
+        code.push_str(emit_subtest_close());
         code.push_str("done_testing();\n");
         (code, GeneratedTestReadiness::DraftNeedsSetup)
     }

@@ -31,8 +31,20 @@ pub struct UnsupportedReason {
 }
 
 /// Escape a string for single-quoted Perl literals.
-fn perl_single_quote(value: &str) -> String {
+pub fn perl_single_quote(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// Open a Test::More subtest with an escaped label.
+#[must_use]
+pub fn emit_subtest_open(label: &str) -> String {
+    format!("subtest '{}' => sub {{\n", perl_single_quote(label))
+}
+
+/// Close a Test::More subtest callback.
+#[must_use]
+pub fn emit_subtest_close() -> &'static str {
+    "};\n"
 }
 
 /// Emit a single-file Test::More draft that cannot report an authorizing pass.
@@ -104,10 +116,16 @@ impl FalseGreenPolicy {
                 });
             }
         } else if readiness != GeneratedTestReadiness::Unsupported {
-            if !source.contains("TODO:") && !source.contains("plan skip_all") {
+            if !source.contains("TODO: {") {
                 out.push(FalseGreenViolation {
                     rule: "draft_missing_todo",
-                    detail: "draft artifact must encode TODO or skip".to_string(),
+                    detail: "draft artifact must encode a TODO block".to_string(),
+                });
+            }
+            if !source.contains("fail(") {
+                out.push(FalseGreenViolation {
+                    rule: "draft_missing_fail",
+                    detail: "draft artifact must include fail(...) inside TODO".to_string(),
                 });
             }
             if source.contains("pass(") || source.contains("ok(1") {

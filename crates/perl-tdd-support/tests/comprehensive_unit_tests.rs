@@ -324,8 +324,9 @@ fn basic_test_generator_test_more() -> Result<(), Box<dyn std::error::Error>> {
 fn basic_test_generator_test2() -> Result<(), Box<dyn std::error::Error>> {
     let generator = perl_tdd_support::tdd_basic::TestGenerator::new("Test2::V0");
     let code = generator.generate_test("process", 0);
+    assert!(code.contains("Test2::V0"));
     assert!(code.contains("process"));
-    assert!(code.contains("TODO:"));
+    assert!(code.contains("TODO: {"));
     assert!(!code.contains("ok("));
     Ok(())
 }
