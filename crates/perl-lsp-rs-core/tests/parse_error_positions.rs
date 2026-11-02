@@ -132,6 +132,25 @@ fn advisory_still_reports_its_location() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+#[test]
+fn catch_redeclaration_uses_parser_owned_anchor_without_variant_match()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Version-skew fixture: a variant added after downstream code was written
+    // must still land on the parser-owned anchor, not byte 0 via a stale
+    // location registry or catch-all.
+    let error = ParseError::CatchVariableRedeclaration {
+        keyword: "my".into(),
+        range: perl_parser_core::SourceLocation::new(31, 33),
+    };
+    assert_eq!(
+        parse_diagnostic_start(SOURCE, error),
+        Some(31),
+        "CatchVariableRedeclaration must use diagnostic_anchor, not a downstream variant match"
+    );
+
+    Ok(())
+}
+
 // ---- variants that carry no location --------------------------------------
 
 #[test]
@@ -173,13 +192,12 @@ fn nesting_too_deep_stays_anchored_at_start_of_file() -> Result<(), Box<dyn std:
 // ---- location is clamped to the source ------------------------------------
 
 #[test]
-fn out_of_range_location_is_clamped_to_the_source_length() -> Result<(), Box<dyn std::error::Error>>
-{
+fn out_of_range_location_is_rejected_to_end_of_source() -> Result<(), Box<dyn std::error::Error>> {
     let error = ParseError::syntax("stale offset from a previous revision", SOURCE.len() + 500);
     assert_eq!(
         parse_diagnostic_start(SOURCE, error),
         Some(SOURCE.len()),
-        "an offset past end-of-source must clamp rather than produce an invalid range"
+        "an out-of-range exact anchor must not silently clamp to an interior byte"
     );
 
     Ok(())
