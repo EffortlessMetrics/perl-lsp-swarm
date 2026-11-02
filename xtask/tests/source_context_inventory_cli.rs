@@ -21,11 +21,7 @@ fn committed_inventory_reconciles_and_projection_is_current() {
 fn explain_resolves_site_id() {
     let output = Command::cargo_bin("xtask")
         .expect("xtask binary")
-        .args([
-            "source-context",
-            "explain",
-            "completion-lexical-is-in-string",
-        ])
+        .args(["source-context", "explain", "completion-lexical-is-in-string"])
         .output()
         .expect("run explain");
     assert!(output.status.success(), "explain failed");

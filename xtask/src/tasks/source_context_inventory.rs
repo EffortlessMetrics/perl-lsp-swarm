@@ -30,12 +30,8 @@ const STATUSES: &[&str] = &[
     "must_retire",
 ];
 
-const REACHABILITY: &[&str] = &[
-    "production_reachable",
-    "not_proven",
-    "historical_only",
-    "test_oracle_only",
-];
+const REACHABILITY: &[&str] =
+    &["production_reachable", "not_proven", "historical_only", "test_oracle_only"];
 
 const SELF_ARTIFACTS: &[&str] = &[LEDGER_PATH, PROJECTION_PATH];
 
@@ -103,9 +99,7 @@ pub fn run_inventory(check: bool, root: Option<PathBuf>) -> Result<()> {
                 format!("failed to read {PROJECTION_PATH}; run `cargo xtask source-context inventory --write`")
             })?;
         if normalize_newlines(&committed) != normalize_newlines(&markdown) {
-            bail!(
-                "{PROJECTION_PATH} is stale; run `cargo xtask source-context inventory --write`"
-            );
+            bail!("{PROJECTION_PATH} is stale; run `cargo xtask source-context inventory --write`");
         }
         eprintln!("source-classifier inventory: check OK ({})", ledger.site.len());
         return Ok(());
@@ -117,10 +111,7 @@ pub fn run_inventory(check: bool, root: Option<PathBuf>) -> Result<()> {
     }
     fs::write(&json_path, serde_json::to_string_pretty(&json)?).wrap_err("write JSON inventory")?;
     fs::write(root.join(PROJECTION_PATH), &markdown).wrap_err("write Markdown projection")?;
-    eprintln!(
-        "source-classifier inventory: wrote {} and {}",
-        PROJECTION_PATH, JSON_PATH
-    );
+    eprintln!("source-classifier inventory: wrote {} and {}", PROJECTION_PATH, JSON_PATH);
     Ok(())
 }
 
@@ -140,11 +131,8 @@ pub fn run_explain(query: &str, root: Option<PathBuf>) -> Result<()> {
         bail!("explain query must be a site id or path substring");
     }
 
-    let mut matches: Vec<&SiteRow> = ledger
-        .site
-        .iter()
-        .filter(|row| row.id == query || row.path.contains(query))
-        .collect();
+    let mut matches: Vec<&SiteRow> =
+        ledger.site.iter().filter(|row| row.id == query || row.path.contains(query)).collect();
     matches.sort_by_key(|row| row.id.as_str());
 
     if matches.is_empty() {
@@ -180,10 +168,7 @@ fn load_ledger(root: &Path) -> Result<Ledger> {
 
 fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
     if ledger.schema_version != SCHEMA {
-        bail!(
-            "schema_version must be {SCHEMA}, got {:?}",
-            ledger.schema_version
-        );
+        bail!("schema_version must be {SCHEMA}, got {:?}", ledger.schema_version);
     }
     if ledger.controller_issue != 7300 {
         bail!("controller_issue must be 7300");
@@ -200,7 +185,9 @@ fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
     for crate_name in &ledger.production_scan_crates {
         let manifest = root.join("crates").join(crate_name).join("Cargo.toml");
         if !manifest.is_file() {
-            bail!("production_scan_crates entry {crate_name:?} has no crate manifest at {manifest:?}");
+            bail!(
+                "production_scan_crates entry {crate_name:?} has no crate manifest at {manifest:?}"
+            );
         }
     }
     if ledger.site.is_empty() {
@@ -223,11 +210,7 @@ fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
             bail!("site {} has invalid status {:?}", row.id, row.status);
         }
         if !REACHABILITY.contains(&row.reachability.as_str()) {
-            bail!(
-                "site {} has invalid reachability {:?}",
-                row.id,
-                row.reachability
-            );
+            bail!("site {} has invalid reachability {:?}", row.id, row.reachability);
         }
         if row.owner_issue == 0 {
             bail!("site {} must name a nonzero owner_issue", row.id);
@@ -235,10 +218,8 @@ fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
         if row.reason.trim().is_empty() || row.exit_condition.trim().is_empty() {
             bail!("site {} must record reason and exit_condition", row.id);
         }
-        if matches!(
-            row.status.as_str(),
-            "must_retire" | "bounded_compatibility_adapter"
-        ) && row.exit_condition.trim().is_empty()
+        if matches!(row.status.as_str(), "must_retire" | "bounded_compatibility_adapter")
+            && row.exit_condition.trim().is_empty()
         {
             bail!("site {} must record an exit_condition", row.id);
         }
@@ -247,10 +228,7 @@ fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
             && row.mechanism.contains("completion")
             && row.owner_issue == COMPLETION_HISTORICAL_BUG_ISSUE
         {
-            bail!(
-                "site {} cannot mark completion migration complete from #4956 alone",
-                row.id
-            );
+            bail!("site {} cannot mark completion migration complete from #4956 alone", row.id);
         }
 
         if row.path.contains("selection_range") && row.symbol == "selection_ranges" {
@@ -268,12 +246,7 @@ fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
             bail!("site {} cannot inventory itself: {}", row.id, row.path);
         }
         if !row.symbol.is_empty() && !symbol_present(&path, &row.symbol)? {
-            bail!(
-                "site {} symbol {:?} not found in {}",
-                row.id,
-                row.symbol,
-                row.path
-            );
+            bail!("site {} symbol {:?} not found in {}", row.id, row.symbol, row.path);
         }
 
         let key = format!("{}::{}", row.path, row.symbol);
@@ -283,9 +256,7 @@ fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
     }
 
     if !selection_raw || !selection_ast {
-        bail!(
-            "inventory must keep raw-text selectionRange and AST compatibility rows separate"
-        );
+        bail!("inventory must keep raw-text selectionRange and AST compatibility rows separate");
     }
 
     let has_completion_lexical = ledger.site.iter().any(|row| {
@@ -294,12 +265,15 @@ fn validate_ledger(ledger: &Ledger, root: &Path) -> Result<()> {
             && row.owner_issue == 13244
     });
     if !has_completion_lexical {
-        bail!("inventory must include live completion lexical_context must_retire rows under #13244");
+        bail!(
+            "inventory must include live completion lexical_context must_retire rows under #13244"
+        );
     }
 
-    let has_rename_runtime = ledger.site.iter().any(|row| {
-        row.id.starts_with("rename-runtime") && row.status == "must_retire"
-    });
+    let has_rename_runtime = ledger
+        .site
+        .iter()
+        .any(|row| row.id.starts_with("rename-runtime") && row.status == "must_retire");
     if !has_rename_runtime {
         bail!("inventory must include runtime rename text-scan rows under their migration owners");
     }
@@ -324,12 +298,7 @@ fn render_json(ledger: &Ledger) -> InventoryJson {
     let mut sites = ledger.site.clone();
     sites.sort_by(|a, b| a.id.cmp(&b.id));
     let digest = inventory_digest(&sites);
-    InventoryJson {
-        schema: SCHEMA.to_string(),
-        digest,
-        row_count: sites.len(),
-        sites,
-    }
+    InventoryJson { schema: SCHEMA.to_string(), digest, row_count: sites.len(), sites }
 }
 
 fn inventory_digest(sites: &[SiteRow]) -> String {
@@ -379,11 +348,7 @@ fn render_markdown(ledger: &Ledger) -> String {
     )
     .expect("scan");
     writeln!(out).expect("newline");
-    writeln!(
-        out,
-        "| id | status | path | symbol | owner | reachability |"
-    )
-    .expect("table header");
+    writeln!(out, "| id | status | path | symbol | owner | reachability |").expect("table header");
     writeln!(out, "| --- | --- | --- | --- | --- | --- |").expect("table rule");
     for row in &json.sites {
         writeln!(
@@ -489,11 +454,7 @@ mod tests {
             writeln!(
                 file,
                 "source_classes = [{}]",
-                row.source_classes
-                    .iter()
-                    .map(|c| format!("{c:?}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                row.source_classes.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(", ")
             )?;
             writeln!(file, "reachability = {:?}", row.reachability)?;
             writeln!(file, "reachability_evidence = {:?}", row.reachability_evidence)?;
