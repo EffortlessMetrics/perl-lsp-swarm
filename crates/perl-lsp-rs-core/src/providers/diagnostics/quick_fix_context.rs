@@ -1,6 +1,7 @@
 //! Typed machine inputs for parse-error quick fixes (#8396).
 
 use perl_parser_core::error::ParseError;
+use perl_parser_core::syntax::error::RecoveryKind;
 
 /// Stable parse-error fix identity carried on diagnostics and quick-fix metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,9 @@ pub fn parse_error_fix_kind_from_legacy_code(code: &str) -> Option<ParseErrorFix
 #[must_use]
 pub fn parse_error_fix_kind_from_parse_error(error: &ParseError) -> Option<ParseErrorFixKind> {
     match error {
+        ParseError::Recovered { kind: RecoveryKind::InferredSemicolon, .. } => {
+            Some(ParseErrorFixKind::MissingSemicolon)
+        }
         ParseError::UnexpectedToken { expected, .. } => {
             let expected_lower = expected.to_ascii_lowercase();
             if expected.contains(';') || expected_lower.contains("semicolon") {
@@ -80,6 +84,20 @@ pub fn parse_error_fix_kind_for_diagnostic(
 mod tests {
     use super::*;
     use perl_parser_core::error::ParseError;
+    use perl_parser_core::syntax::error::RecoveryKind;
+
+    #[test]
+    fn inferred_semicolon_recovery_yields_missing_semicolon_kind() {
+        let error = ParseError::Recovered {
+            site: perl_parser_core::syntax::error::RecoverySite::Statement,
+            kind: RecoveryKind::InferredSemicolon,
+            location: 4,
+        };
+        assert_eq!(
+            parse_error_fix_kind_from_parse_error(&error),
+            Some(ParseErrorFixKind::MissingSemicolon)
+        );
+    }
 
     #[test]
     fn parse_error_token_expecting_semicolon_yields_missing_semicolon_kind() {
