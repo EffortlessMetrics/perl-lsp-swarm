@@ -16,6 +16,48 @@ fn lower(source: &str) -> (perl_parser_core::hir::HirFile, CompileTimePragmaEnvi
     (file, environment)
 }
 
+fn assert_snapshot_matches_fact(
+    fact: &perl_parser_core::hir::PragmaStateFact,
+    snapshot: &perl_pragma::PragmaSnapshot,
+) {
+    let state = snapshot.state();
+    assert_eq!(fact.strict_vars, state.strict_vars, "strict_vars at {}", fact.range.start);
+    assert_eq!(fact.strict_subs, state.strict_subs, "strict_subs at {}", fact.range.start);
+    assert_eq!(fact.strict_refs, state.strict_refs, "strict_refs at {}", fact.range.start);
+    assert_eq!(fact.warnings, state.warnings, "warnings at {}", fact.range.start);
+    assert_eq!(
+        fact.disabled_warning_categories, state.disabled_warning_categories,
+        "disabled_warning_categories at {}",
+        fact.range.start
+    );
+    assert_eq!(
+        fact.features,
+        state.features.iter().map(|name| (*name).to_string()).collect::<Vec<_>>(),
+        "features at {}",
+        fact.range.start
+    );
+}
+
+fn assert_interpreter_entries_projected_to_hir(
+    environment: &CompileEnvironment,
+    interpreter: &CompileTimePragmaEnvironment,
+) {
+    let facts = environment.pragma_state_facts();
+    let entries = interpreter.map().entries();
+    assert_eq!(facts.len(), entries.len(), "HIR must record one fact per interpreter transition");
+
+    for entry in entries {
+        let fact =
+            facts.iter().find(|fact| fact.range.start == entry.range.start).unwrap_or_else(|| {
+                panic!(
+                    "missing HIR fact for interpreter transition at offset {}",
+                    entry.range.start
+                )
+            });
+        assert_snapshot_matches_fact(fact, &entry.snapshot);
+    }
+}
+
 fn assert_fact_matches_interpreter(
     environment: &CompileEnvironment,
     interpreter: &CompileTimePragmaEnvironment,
@@ -25,21 +67,7 @@ fn assert_fact_matches_interpreter(
         .pragma_state_at(offset)
         .unwrap_or_else(|| panic!("expected HIR pragma state at offset {offset}"));
     let snapshot = interpreter.snapshot_at(fact.range.start);
-    let state = snapshot.state();
-
-    assert_eq!(fact.strict_vars, state.strict_vars, "strict_vars at {offset}");
-    assert_eq!(fact.strict_subs, state.strict_subs, "strict_subs at {offset}");
-    assert_eq!(fact.strict_refs, state.strict_refs, "strict_refs at {offset}");
-    assert_eq!(fact.warnings, state.warnings, "warnings at {offset}");
-    assert_eq!(
-        fact.disabled_warning_categories, state.disabled_warning_categories,
-        "disabled_warning_categories at {offset}"
-    );
-    assert_eq!(
-        fact.features,
-        state.features.iter().map(|name| (*name).to_string()).collect::<Vec<_>>(),
-        "features at {offset}"
-    );
+    assert_snapshot_matches_fact(fact, &snapshot);
 }
 
 #[test]
@@ -57,11 +85,7 @@ fn hir_pragma_state_facts_match_shared_interpreter_snapshots() {
     let (file, interpreter) = lower(source);
     let environment = &file.compile_environment;
 
-    assert!(!environment.pragma_state_facts().is_empty(), "expected recorded pragma transitions");
-
-    for fact in environment.pragma_state_facts() {
-        assert_fact_matches_interpreter(environment, &interpreter, fact.range.start);
-    }
+    assert_interpreter_entries_projected_to_hir(environment, &interpreter);
 
     let marker = source.find("my $x").expect("marker");
     assert_fact_matches_interpreter(environment, &interpreter, marker);
@@ -81,6 +105,11 @@ fn require_version_does_not_mutate_lexical_pragma_state_in_hir() {
     assert!(
         before_strict.strict_enabled(),
         "use strict must remain in effect after require VERSION"
+    );
+
+    assert!(
+        !before_strict.has_feature("signatures"),
+        "HIR must not gain version-bundle features from require VERSION"
     );
 
     let snapshot = interpreter.snapshot_at(after_offset);
