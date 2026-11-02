@@ -534,6 +534,47 @@ fn summary_step_fails_on_invalid_receipt_json_instead_of_silent_skip() -> Result
     Ok(())
 }
 
+#[test]
+fn summary_step_rejects_unsupported_schema_version() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let run = run_step(steps(&wf, "ux-regression-gate")?, "Summarize UX evidence")?;
+    let source = heredoc_python(run, "ux-regression-gate.yml", "Summarize UX evidence")?;
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    fs::create_dir_all(root.join("target/receipts"))?;
+    fs::write(
+        root.join("target/receipts/ux-regression.log"),
+        "test result: ok. 1 passed; 0 failed\n",
+    )?;
+    fs::write(
+        root.join("target/receipts/ux-regression.json"),
+        serde_json::json!({
+            "schema_version": UX_REGRESSION_RECEIPT_SCHEMA_VERSION + 1,
+            "sha": FIXED_SHA,
+            "result": "pass",
+        })
+        .to_string(),
+    )?;
+    let script = root.join("step.py");
+    fs::write(&script, source)?;
+    let summary = root.join("GITHUB_STEP_SUMMARY");
+    fs::write(&summary, "")?;
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg(&script)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("TESTED_SHA", FIXED_SHA)
+        .env("HARNESS_AVAILABLE", "true")
+        .env("UX_TEST_OUTCOME", "success")
+        .current_dir(root)
+        .output()?;
+    assert!(!output.status.success(), "unsupported schema_version must fail the summary step");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unsupported UX regression schema"),
+        "summary must identify schema drift"
+    );
+    Ok(())
+}
+
 /// One receipt, two printers, and until now only one of them read the field
 /// that carries the per-test discrimination.
 ///
