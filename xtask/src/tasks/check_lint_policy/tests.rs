@@ -2,6 +2,7 @@ mod config;
 mod debt;
 mod disposition;
 mod lock_partition;
+mod path_overwrite;
 mod summary;
 
 use super::model::{
