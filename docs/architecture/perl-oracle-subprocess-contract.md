@@ -1,8 +1,20 @@
 # `perl-oracle` Subprocess Contract Inventory
 
-**Issue:** [#8620](https://github.com/EffortlessMetrics/perl-lsp/issues/8620)
-**Umbrella:** [#8551](https://github.com/EffortlessMetrics/perl-lsp/issues/8551) — `PerlOracleEnv` wrapper + per-call-site migration
+**Tracking (this repository):** [EffortlessMetrics/perl-lsp-swarm#2007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2007)
+(migrated from EffortlessMetrics/perl-lsp-swarm#2726).
+
+**Historical phase-1/2 references on `perl-lsp`:** [EffortlessMetrics/perl-lsp#8620](https://github.com/EffortlessMetrics/perl-lsp/issues/8620) (this inventory),
+[EffortlessMetrics/perl-lsp#8551](https://github.com/EffortlessMetrics/perl-lsp/issues/8551) (`PerlOracleEnv` + editor-runtime migration — landed).
+
 **Framing:** [`docs/architecture/perl-subprocess-seams.md`](perl-subprocess-seams.md)
+
+**Acceptance note (2026-11):** Criteria 1–4 of #2007 are satisfied on `main` (this
+inventory, `PerlOracleEnv`, editor-runtime migration, poisoned-env tests). Criterion 5
+(automated CI gate for bare production `Command::new("perl")`) is owned by
+[EffortlessMetrics/perl-lsp-swarm#1975](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1975),
+not a standalone Perl-only grep on #2007. Criterion 6 (cross-links) is satisfied by
+repository-qualified issue links and per-seam ownership rows below — not a single
+“internalize all Perl” umbrella tracker.
 
 ---
 
@@ -59,7 +71,7 @@ behaviour.
 | **Desired contract** | Already meets the post-#8551 contract. Explicit allow: `PERL5LIB` (user-gated), `PATH`. Explicit deny: `PERL5OPT`, `PERL_MM_OPT`, `PERL_MB_OPT`, `PERL_LOCAL_LIB_ROOT`, perlbrew/plenv vars. |
 | **Timeout** | 1 000 ms (`SYSTEM_INC_PROBE_TIMEOUT` at `mod.rs:807`) |
 | **Cache key** | `(config.use_perl5lib, config.use_system_inc, config.perl_path, workspace_folder)` — invalidated when `use_perl5lib` toggles (see `mod.rs:669`) |
-| **Internalization path** | **Bridge** — replace with modeled config + workspace heuristics; tracked in #8551 roadmap |
+| **Internalization path** | **Retained external evidence** — bounded startup `@INC` under explicit `PerlOracleEnv`; not an unowned raw spawn. Ownership: [EffortlessMetrics/perl-lsp-swarm#7420](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7420); transitional acquisition/retirement graph: [EffortlessMetrics/perl-lsp-swarm#12950](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12950) |
 
 **Perl invocation:** `perl <perl_args> -e 'print join("\n", @INC)'`
 
@@ -75,7 +87,7 @@ behaviour.
 | **Desired contract** | Same as §1.1 — already met |
 | **Timeout** | 1 000 ms (`SYSTEM_INC_PROBE_TIMEOUT`) |
 | **Cache key** | Same as §1.1 (shares the cache path in `WorkspaceConfig::get_system_inc`) |
-| **Internalization path** | **Bridge** — collapse into §1.1 at the cache layer; no independent subprocess needed once startup probe shares its result |
+| **Internalization path** | Same disposition as §1.1 — alias only; shares cache and ownership |
 
 **Note:** This constructor is a gated alias of `for_startup_inc_probe`. It returns `None`
 when `config.use_system_inc` is `false`, so no subprocess is spawned in that case.
@@ -129,7 +141,7 @@ contract for the execute-command seam.
 | **Desired contract** | Already meets the post-#8551 bridge contract. `perldoc` resolves from the configured Perl toolchain directory when possible, then falls back to `perldoc` on `PATH`. Long-term: replace with an in-process POD reader. |
 | **Timeout** | 10 s (via `run_command_with_timeout` at call site) |
 | **Cache key** | None currently — per-request; caching by module name would reduce subprocess churn |
-| **Internalization path** | **Bridge** — replace with embedded documentation tables or bundled POD extractor that does not need a subprocess |
+| **Internalization path** | **Bounded external fallback** — workspace/current-source POD first; installed `perldoc` only when source is unavailable (`PerlOracleEnv::for_perldoc`). Ownership: [EffortlessMetrics/perl-lsp-swarm#8223](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8223), [EffortlessMetrics/perl-lsp-swarm#8612](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8612), [EffortlessMetrics/perl-lsp-swarm#11023](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11023) |
 
 **Perl invocation:** `perldoc -T -- <module>` with the perldoc binary resolved from the
 configured Perl toolchain when possible.
@@ -374,9 +386,9 @@ Quick-reference. Sorted by internalization path priority (gaps first).
 | # | Call site | Mechanism | PERL5LIB | PERL5OPT | local::lib | Timeout | Internalization |
 |---|---|---|---|---|---|---|---|
 | 1.3 | `misc.rs:perl.debugFile` | `PerlOracleEnv::for_language_probe` | user-gated | ✓ denied | ✓ denied | 30 s | Permanent |
-| 1.5 | `virtual_content.rs:fetch_perldoc` | `PerlOracleEnv::for_perldoc` | user-gated | ✓ denied | ✓ denied | 10 s | Bridge |
-| 1.1 | `mod.rs:fetch_perl_inc` | `PerlOracleEnv::for_module_resolution` | user-gated | ✓ denied | ✓ denied | 1 000 ms | Bridge |
-| 1.2 | `perl_oracle_env.rs:for_module_resolution` | `PerlOracleEnv` alias of §1.1 | user-gated | ✓ denied | ✓ denied | 1 000 ms | Bridge |
+| 1.5 | `virtual_content.rs:fetch_perldoc` | `PerlOracleEnv::for_perldoc` | user-gated | ✓ denied | ✓ denied | 10 s | #8223/#8612/#11023 |
+| 1.1 | `mod.rs:fetch_perl_inc` | `PerlOracleEnv::for_module_resolution` | user-gated | ✓ denied | ✓ denied | 1 000 ms | #7420/#12950 |
+| 1.2 | `perl_oracle_env.rs:for_module_resolution` | `PerlOracleEnv` alias of §1.1 | user-gated | ✓ denied | ✓ denied | 1 000 ms | #7420/#12950 |
 | 1.6 | `process.rs:check_syntax` | `PerlOracleEnv::for_version_probe` | ✓ denied | ✓ denied | ✓ denied | 5 s | Bridge |
 | 1.7 | `process.rs:launch_perl` | `PerlOracleEnv::for_version_probe` | ✓ denied | ✓ denied | ✓ denied | 30 s | Permanent |
 | 1.8 | `bridge_adapter.rs:build_pls_dap_command` | `PerlOracleEnv::for_dap_bridge` | configurable | configurable | ✓ denied | 30 s | Permanent |
@@ -396,12 +408,26 @@ Legend: ✓ denied/removed = no leak · user-gated = follows `usePerl5lib` confi
 
 ---
 
-## Section 5 — Gap status for Phase 2 / #8551
+## Section 5 — Gap status for editor-runtime migration
 
-The editor-runtime subprocess seams in this inventory are now routed through
+The editor-runtime subprocess seams in this inventory are routed through
 `PerlOracleEnv` or fail closed with a user-visible error instead of silently
 falling back to ambient `perl`. Remaining bare `Command::new("perl")` rows are
-oracle, fixture, or xtask/CI tooling seams, not editor-runtime truth paths.
+oracle, fixture, test-helper, or xtask/CI tooling seams, not editor-runtime truth paths.
+
+---
+
+## Section 5.1 — Automated enforcement (criterion 5 → #1975)
+
+The #2007 acceptance item “fail CI on bare production `Command::new("perl")` outside
+the contract” is **not** implemented as a Perl-only grep gate on this issue. It is a
+classified negative control inside the process-wide inventory and ratchet tracked in
+[EffortlessMetrics/perl-lsp-swarm#1975](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1975)
+(`tooling(process): inventory, migrate, and ratchet direct subprocess seams`).
+
+Until that ratchet is active in CI, this document’s maintenance rule (§Purpose) plus
+the greps in §6 remain the human gate. Update the inventory table in the same PR when
+adding or removing a Rust `ask-Perl` seam.
 
 ---
 
@@ -437,9 +463,12 @@ If a call site appears that is not in the table above, open a PR that adds it.
 
 ## Section 7 — Related
 
-- **#8551** — `PerlOracleEnv` struct implementation and per-call-site migration (Phase 2)
-- **#8555** — tracking issue for `perl-subprocess-seams.md`
-- **#8620** — this document (Phase 1)
-- **#8493** — the `PERL5LIB` env-leak incident that surfaced this work
+- **[EffortlessMetrics/perl-lsp-swarm#2007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2007)** — explicit subprocess-environment contract (this file + seams doc)
+- **[EffortlessMetrics/perl-lsp-swarm#1975](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1975)** — process-wide subprocess inventory + CI ratchet (criterion 5)
+- **[EffortlessMetrics/perl-lsp-swarm#7420](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7420)**, **[EffortlessMetrics/perl-lsp-swarm#12950](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12950)** — startup `@INC` evidence ownership
+- **[EffortlessMetrics/perl-lsp-swarm#8223](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8223)**, **[EffortlessMetrics/perl-lsp-swarm#8612](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8612)**, **[EffortlessMetrics/perl-lsp-swarm#11023](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11023)** — POD / `perldoc` source authority
+- **[EffortlessMetrics/perl-lsp#8551](https://github.com/EffortlessMetrics/perl-lsp/issues/8551)** — historical `PerlOracleEnv` migration (landed)
+- **[EffortlessMetrics/perl-lsp#8620](https://github.com/EffortlessMetrics/perl-lsp/issues/8620)** — historical phase-1 inventory issue
+- **[EffortlessMetrics/perl-lsp#8493](https://github.com/EffortlessMetrics/perl-lsp/issues/8493)** — the `PERL5LIB` env-leak incident that surfaced this work
 - **`docs/architecture/perl-subprocess-seams.md`** — framing and policy for subprocess seams
 - **`crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs`** — `PerlOracleEnv` implementation
