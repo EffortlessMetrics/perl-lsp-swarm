@@ -245,6 +245,7 @@ caller_paths = [
   "crates/perl-workspace/tests/folder_provenance_tests.rs",
   "crates/perl-workspace/tests/generated_member_facts.rs",
   "crates/perl-workspace/tests/interpolated_string_usage_tests.rs",
+  "crates/perl-workspace/tests/issue_1761_dynamic_construct_acceptance.rs",
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
