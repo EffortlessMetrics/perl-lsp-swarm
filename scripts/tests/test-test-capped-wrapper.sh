@@ -93,28 +93,7 @@ write_expected_cwd_log() {
 }
 
 assert_cwd_log() {
-  local label="$1"
-  local expected="$2"
-  local actual="$3"
-
-  assert_args_equal "$label" "$expected" "$actual"
-
-  if [[ ! -f "$actual" ]]; then
-    return
-  fi
-
-  local first=""
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ -z "$first" ]]; then
-      first="$line"
-      continue
-    fi
-    if [[ "$line" != "$first" ]]; then
-      fail "${label}: guard probe and delegation used different cwd values"
-      return
-    fi
-  done <"$actual"
-  pass "${label}: guard probe and delegation share cwd"
+  assert_args_equal "$1" "$2" "$3"
 }
 
 echo "=== test-capped wrapper test suite ==="
@@ -181,6 +160,16 @@ code=0
 ) > "${PASS_DIR}/relative-out.txt" 2> "${PASS_DIR}/relative-err.txt" || code=$?
 assert_exit_zero "delegates through a relative nested invocation" "$code"
 assert_cwd_log "relative invocation still probes before delegation" \
+  "$EXPECTED_CWD_LOG" "${FAKE_LOG}.cwd"
+
+rm -f "${FAKE_LOG}" "${FAKE_LOG}.cwd"
+code=0
+(
+  cd "$REPO_ROOT/scripts/tests"
+  PATH="${FAKE_BIN}:$PATH" CDPATH=. bash ../test-capped.sh --package perl-lsp-rs-core
+) > "${PASS_DIR}/cdpath-out.txt" 2> "${PASS_DIR}/cdpath-err.txt" || code=$?
+assert_exit_zero "delegates with CDPATH set for relative invocation" "$code"
+assert_cwd_log "CDPATH relative invocation keeps probe and delegation at repo root" \
   "$EXPECTED_CWD_LOG" "${FAKE_LOG}.cwd"
 
 EXPECTED_SPACE_ARGS="${PASS_DIR}/expected-space-args.txt"

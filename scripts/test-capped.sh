@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Use the same repository toolchain and xtask alias for the probe and command.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
 # Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
