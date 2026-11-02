@@ -181,6 +181,13 @@ pub struct ParseBudget {
     /// Default: 64 MiB. Collection is monotone within a drain, so ordinary
     /// files charge on the order of their own size; the default exists to bound
     /// pathological inputs, not to constrain real Perl.
+    ///
+    /// This is the sole heredoc-specific budget dimension in parser-core (#7291,
+    /// residue #13786). Queue admission, terminator comparisons, retained body
+    /// segments, and attachment walks are bounded incidentally by scan bytes,
+    /// `MAX_HEREDOC_DEPTH`, and the enclosing statement subtree — not by separate
+    /// counters — so #7085 / #7112 can consume `budget_usage.heredoc_scan_bytes`
+    /// without a second heredoc model.
     pub max_heredoc_scan_bytes: usize,
 
     /// Maximum number of non-EOF tokens the parser may consume in one
