@@ -563,10 +563,8 @@ fn validate_entry(
             }
         }
         "release_lineage_only" => {
-            if let Some(path) = entry
-                .changed_paths
-                .iter()
-                .find(|path| is_ineligible_for_release_lineage_only(path))
+            if let Some(path) =
+                entry.changed_paths.iter().find(|path| is_ineligible_for_release_lineage_only(path))
             {
                 let reason = if is_public_admission_control_path(path) {
                     "public admission control"
@@ -2160,7 +2158,9 @@ mod tests {
         let receipt = receipt_value(path)?;
         let joined = receipt_error_text(&receipt);
         assert!(
-            joined.contains("covers public admission control path `scripts/publication_sync_check.py`"),
+            joined.contains(
+                "covers public admission control path `scripts/publication_sync_check.py`"
+            ),
             "{joined}"
         );
         Ok(())
