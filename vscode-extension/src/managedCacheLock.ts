@@ -224,7 +224,6 @@ export async function acquireManagedCacheMutationLock(
   while (Date.now() < deadline) {
     const outcome = tryAcquireLeaseOnce(baseDir, attempt, leaseToken);
     if (outcome === 'acquired') {
-      const heldLease = buildManagedMutationLease(attempt, leaseToken);
       return {
         leaseToken,
         release: () => {
