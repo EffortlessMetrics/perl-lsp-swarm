@@ -4877,6 +4877,7 @@ impl WorkspaceIndex {
                 return candidates
                     .into_iter()
                     .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+                    .filter(|symbol| !Self::is_framework_or_exporter_convention_symbol(symbol))
                     .collect();
             }
             tracing::debug!("Torn read in find_unused_symbols, retrying");
@@ -4898,7 +4899,33 @@ impl WorkspaceIndex {
         candidates
             .into_iter()
             .filter(|symbol| !Self::symbol_has_non_definition_usage(&used_names, symbol))
+            .filter(|symbol| !Self::is_framework_or_exporter_convention_symbol(symbol))
             .collect()
+    }
+
+    /// Package-level names read dynamically by Moo/Moose/Mouse/Object::Pad or
+    /// Exporter/parent.pm. They have no ordinary reference edges in the index
+    /// but must not be reported as removable dead code (#18765 items 3–4).
+    fn is_framework_or_exporter_convention_symbol(symbol: &WorkspaceSymbol) -> bool {
+        match symbol.kind {
+            SymbolKind::Subroutine => matches!(
+                symbol.name.as_str(),
+                "BUILD"
+                    | "DEMOLISH"
+                    | "BUILDARGS"
+                    | "FOREIGNBUILDARGS"
+                    | "DESTROY"
+                    | "AUTOLOAD"
+                    | "import"
+                    | "unimport"
+            ),
+            SymbolKind::Variable(_) => {
+                let bare =
+                    symbol.name.strip_prefix(['$', '@', '%']).unwrap_or(symbol.name.as_str());
+                matches!(bare, "EXPORT" | "EXPORT_OK" | "EXPORT_TAGS" | "ISA" | "VERSION")
+            }
+            _ => false,
+        }
     }
 
     /// Names with at least one non-definition reference in `global_references`,
@@ -13874,17 +13901,19 @@ mod file_fact_shard_serde_tests {
 
     /// Positive control: an unused `our` (package-level) variable IS still
     /// reported — only lexical my/state vars are excluded, not our/local.
+    /// Exporter/Moo convention names (`$VERSION`, `@EXPORT_OK`, …) are excluded
+    /// separately (#18765).
     #[test]
     fn test_find_unused_symbols_still_reports_unused_our_variable() {
         let index = WorkspaceIndex::new();
         let uri = "file:///our-var.pl";
-        let code = "package Foo;\nour $VERSION = '1.0';\n";
+        let code = "package Foo;\nour $never_read = 1;\n";
         must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
 
         let unused = index.find_unused_symbols();
         let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
         assert!(
-            unused_names.contains(&"$VERSION"),
+            unused_names.contains(&"$never_read"),
             "unused our variable must still be reported by find_unused_symbols; got: {:?}",
             unused_names
         );
