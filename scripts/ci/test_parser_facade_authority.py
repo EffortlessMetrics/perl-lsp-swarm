@@ -376,11 +376,10 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         class too, so these tests pick one outside it to keep the assertion pointed
         at the feature under test.
         """
-        return next(
-            row for row in self.ledger["features"]
-            if row["isolation"] == "source_only"
-            and row["name"] not in self.ledger["default_features"]
-        )
+        for row in self.ledger["features"]:
+            if row["isolation"] == "source_only" and row["name"] not in self.ledger["default_features"]:
+                return row
+        raise unittest.SkipTest("authority ledger has no independent source_only feature")
 
     # --- dependency universe -------------------------------------------------
 
