@@ -14974,6 +14974,30 @@ mod extraction_bundle_shadow_compare {
         )
     }
 
+    /// Canonical shard expected after perl-lsp-swarm#4047: one declaration
+    /// inventory seeded by [`initial_package_for_uri`], independent reference
+    /// extraction unchanged.
+    fn expected_declaration_unified_canonical_shard(
+        uri: &str,
+        text: &str,
+        ast: &Node,
+    ) -> FileFactShard {
+        let content_hash = content_hash_of(text);
+        let doc = Document::new(uri.to_string(), 1, text.to_string());
+        let initial_package = initial_package_for_uri(uri);
+        let decls = extract_symbol_decls(ast, initial_package.as_deref());
+        let refs = extract_symbol_refs(ast);
+        WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs(
+            uri,
+            content_hash,
+            ast,
+            &decls,
+            &refs,
+            &std::collections::BTreeMap::new(),
+            doc.text(),
+        )
+    }
+
     /// Assert full structural parity between the two independently-computed
     /// projections and the bundle-derived ones, for one fixture. There must
     /// be NO delta -- `FileExtractionBundle::build` runs the identical
@@ -15025,22 +15049,12 @@ mod extraction_bundle_shadow_compare {
         );
     }
 
-    /// **1711-B phase 2: canonical-side parity for the REAL unified
-    /// traversal.** Asserts the unified walk's canonical `FileFactShard`
-    /// (built from `IndexVisitor::visit_unified`'s `Vec<SymbolRef>`, via
-    /// `build_canonical_fact_shard_from_symbol_refs`) is BYTE-FOR-BYTE
-    /// IDENTICAL to production's own canonical output
-    /// (`build_canonical_fact_shard_for_ast`, via `extract_symbol_refs`).
-    ///
-    /// This MUST hold with zero deltas everywhere, including fixtures that
-    /// exercise the coverage-delta constructs (block-form packages/classes,
-    /// Typeglob, Goto, regex-binds, etc.) -- canonical's `extract_symbol_refs`
-    /// already reaches all of those today via its own complete
-    /// `Node::for_each_child`-based fallback (verified empirically; see
-    /// `docs/reference/1711-B-coverage-delta.md`). Only the LEGACY
-    /// `FileIndex` projection gains new coverage under unification (see
-    /// `assert_unified_legacy_is_superset` below) -- canonical does not
-    /// change at all.
+    /// **1711-B phase 2 + #4047 declaration cutover:** Asserts the unified
+    /// production path's canonical `FileFactShard` matches the shard built
+    /// from one shared declaration inventory (URI seed) plus the existing
+    /// independent reference walk. Reference coverage is unchanged from
+    /// 1711-B; declaration facts on script URIs may differ from the pre-4047
+    /// dual-walk canonical output that always seeded declarations with `None`.
     fn assert_unified_canonical_parity(label: &str, uri: &str, text: &str) {
         let mut parser = Parser::new(text);
         let ast = match parser.parse() {
@@ -15051,13 +15065,13 @@ mod extraction_bundle_shadow_compare {
             }
         };
 
-        let direct = build_direct(uri, text, &ast);
+        let expected = expected_declaration_unified_canonical_shard(uri, text, &ast);
         let unified = build_bundle_unified(uri, text, &ast);
 
         assert_eq!(
-            direct.shard, unified.canonical_shard,
-            "{label}: canonical FileFactShard diverged between production's dual-walk output \
-             and the unified traversal -- canonical coverage must NOT change under unification"
+            expected, unified.canonical_shard,
+            "{label}: canonical FileFactShard diverged from the #4047 unified \
+             declaration inventory policy"
         );
     }
 
@@ -15497,9 +15511,10 @@ sub bar { return $greeting; }
              this construct."
         );
         assert_eq!(
-            direct.shard, unified.canonical_shard,
-            "{label}: canonical FileFactShard must stay IDENTICAL -- canonical already had this \
-             coverage before unification; only the legacy projection should gain anything here"
+            expected_declaration_unified_canonical_shard(uri, text, &ast),
+            unified.canonical_shard,
+            "{label}: canonical FileFactShard must match the unified declaration \
+             inventory policy (#4047); reference-side coverage delta is legacy-only"
         );
     }
 
