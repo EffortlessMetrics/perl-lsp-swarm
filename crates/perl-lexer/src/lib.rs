@@ -839,7 +839,9 @@ impl<'a> PerlLexer<'a> {
 
                     // Record the comment span for trivia consumers (#17295):
                     // `#` through end of line, line terminator excluded. The
-                    // main token stream stays comment-free.
+                    // main token stream stays comment-free. Body text stays in
+                    // the source and is addressed by `start..end` geometry —
+                    // the same convention as POD/HeredocBody (#17891).
                     let comment_start = self.position;
                     self.position += 1; // Skip # directly
 
@@ -852,10 +854,9 @@ impl<'a> PerlLexer<'a> {
                         // No newline found, skip to end
                         self.position = self.input_bytes.len();
                     }
-                    let comment_text = Arc::from(&self.input[comment_start..self.position]);
                     self.trivia_tokens.push(Token {
-                        token_type: TokenType::Comment(Arc::clone(&comment_text)),
-                        text: comment_text,
+                        token_type: TokenType::Comment(empty_arc()),
+                        text: empty_arc(),
                         start: comment_start,
                         end: self.position,
                     });

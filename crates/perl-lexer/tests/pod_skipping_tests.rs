@@ -229,12 +229,37 @@ fn comments_are_recorded_in_trivia_side_channel() -> R {
     assert_eq!(spans, ["#!/usr/bin/perl", "# trailing", "# last line no newline"]);
     // Line terminators stay out of every recorded comment span.
     assert!(spans.iter().all(|span| !span.contains('\n')), "spans: {spans:?}");
-    // The recorded text matches the source slice.
+    // Comment trivia is geometry-only (#17891): spans address the source; no heap copy.
     for token in &trivia {
         let TokenType::Comment(text) = &token.token_type else {
             return Err(format!("expected Comment trivia, got {:?}", token.token_type).into());
         };
-        assert_eq!(text.as_ref(), &code[token.start..token.end]);
+        assert!(
+            text.is_empty() && token.text.is_empty(),
+            "comment trivia must not copy source text: {token:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn comment_trivia_side_channel_is_geometry_only() -> R {
+    let code = "# line one\n# line two with payload\n";
+    let mut lexer = PerlLexer::new(code);
+    drain_main_stream(&mut lexer, code)?;
+
+    let trivia = lexer.take_trivia_tokens();
+    assert_eq!(trivia.len(), 2, "{trivia:?}");
+    for token in &trivia {
+        assert!(matches!(token.token_type, TokenType::Comment(_)));
+        let TokenType::Comment(ref arc) = token.token_type else {
+            continue;
+        };
+        assert!(
+            arc.is_empty() && token.text.is_empty(),
+            "must not allocate comment bytes in trivia (#17891): {token:?}"
+        );
+        assert_eq!(&code[token.start..token.end], &code[token.start..token.end]);
     }
     Ok(())
 }
