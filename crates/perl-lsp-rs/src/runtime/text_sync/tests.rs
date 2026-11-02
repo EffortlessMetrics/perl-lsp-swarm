@@ -3684,6 +3684,137 @@ fn open_save_source_generation_held_side_effects_publish_only_accepted_dispositi
     Ok(())
 }
 
+/// #7071 acceptance fixture: one deterministic ordering proof across parse
+/// publication, pull diagnostics, workspace index contribution, and a
+/// representative provider path — using the existing pre-publish and
+/// side-effect worker barriers (no sleeps).
+#[cfg(feature = "workspace")]
+#[test]
+fn document_task_barrier_ordering_fixture_parse_diagnostics_index_and_provider()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = StdArc::new(LspServer::new());
+    server.test_handle_initialize_dispatch(Some(json!({
+        "capabilities": {},
+        "rootUri": null,
+        "workspaceFolders": null
+    })))?;
+    server.install_default_parse_worker();
+    let uri = "file:///document_task_barrier_ordering.pl";
+    let normalized_uri = server.normalize_uri_key(uri);
+
+    let v1 = "package Ordering;\nsub alpha_v1 { 1 }\nmy $x =;\n1;\n";
+    let v2 = "package Ordering;\nsub beta_v2 { 2 }\nmy $x = 1;\n1;\n";
+
+    server.test_apply_did_open(uri, v1, 1)?;
+    assert!(
+        must_some(server.parse_worker())
+            .wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "initial open must settle"
+    );
+
+    let index = must_some(server.coordinator()).index();
+    assert_eq!(index.indexed_generation(uri), Some(1));
+    assert!(index.file_symbols(uri).iter().any(|s| s.name == "alpha_v1"));
+
+    let baseline_diag = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri }
+    })))?;
+    let baseline_items = baseline_diag
+        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
+        .ok_or("baseline pull must carry items")?;
+    assert!(
+        baseline_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
+        "baseline must report the syntax error; got {baseline_items:?}"
+    );
+
+    server.test_parse_worker_arm_barrier(uri, 2);
+    server.test_parse_worker_arm_side_effect_barrier(uri, 2);
+    server.test_apply_did_change(uri, v2, 2)?;
+    server.test_parse_worker_wait_until_paused();
+
+    assert_eq!(server.test_document_generation(uri), Some(2));
+
+    {
+        let docs = server.documents.lock();
+        let doc = must_some(docs.get(&normalized_uri));
+        assert!(
+            doc.current_parsed().is_none(),
+            "pre-publish barrier must leave current_parsed unset"
+        );
+    }
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(1),
+        "index must not advance while parse is held before publish"
+    );
+
+    let refs_pre_publish = server.test_handle_references(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 4 },
+        "context": { "includeDeclaration": true }
+    })))?;
+    assert!(
+        refs_pre_publish.as_ref().and_then(Value::as_array).is_none_or(|a| a.is_empty()),
+        "provider path must not answer from an unpublished snapshot; got {refs_pre_publish:?}"
+    );
+
+    let diag_pre_publish = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri }
+    })))?;
+    let diag_pre_items = diag_pre_publish
+        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
+        .ok_or("pull diagnostics must carry items pre-publish")?;
+    assert!(
+        !diag_pre_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
+        "pull diagnostics must reflect fixed live text during the parse hold; got {diag_pre_items:?}"
+    );
+
+    server.test_parse_worker_release_barrier();
+    server.test_parse_worker_wait_until_side_effects_paused();
+
+    {
+        let docs = server.documents.lock();
+        let doc = must_some(docs.get(&normalized_uri));
+        assert_eq!(must_some(doc.current_parsed()).generation(), 2);
+    }
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(1),
+        "side-effect barrier must hold workspace index before commit"
+    );
+    assert!(
+        !index.file_symbols(uri).iter().any(|s| s.name == "beta_v2"),
+        "index symbols must not include beta_v2 while side effects are paused"
+    );
+
+    let refs_published_held = server.test_handle_references(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 4 },
+        "context": { "includeDeclaration": true }
+    })))?;
+    assert!(
+        refs_published_held.as_ref().and_then(Value::as_array).is_some_and(|a| !a.is_empty()),
+        "after publish, provider path may use the generation-2 snapshot; got {refs_published_held:?}"
+    );
+
+    server.test_parse_worker_release_side_effect_barrier();
+    assert!(
+        server.test_wait_for_parse_worker_settled(uri, Duration::from_secs(5)),
+        "released side effects must settle"
+    );
+
+    assert_eq!(index.indexed_generation(uri), Some(2));
+    assert!(index.file_symbols(uri).iter().any(|s| s.name == "beta_v2"));
+
+    let metrics = must_some(server.test_parse_worker_metrics());
+    assert_eq!(metrics.jobs_published, 1);
+    assert_eq!(metrics.jobs_rejected_stale, 0);
+
+    Ok(())
+}
+
 /// Generation-zero ban on the save path: a no-parse (template) document sits
 /// at internal generation zero and must never cross a live source commit --
 /// its save reconciliation is skipped outright rather than indexed.
