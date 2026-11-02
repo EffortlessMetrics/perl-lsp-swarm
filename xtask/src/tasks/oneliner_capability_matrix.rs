@@ -612,9 +612,10 @@ fn subject_switches(subject: &str) -> Vec<&str> {
 /// - `#[cfg(...)]` disables the item conditionally.
 /// - `#[ignore]` or `#[ignore = "..."]` marks a test as ignored.
 /// - `#[cfg_attr(..., ignore)]` ignores the test conditionally.
+/// - `#[cfg_attr(..., cfg(...))]` applies conditional compilation via the tail.
 ///
 /// `#[cfg_attr(feature, allow(dead_code))]` does NOT suppress: the tail must
-/// name `ignore` as an attribute, not any other path.
+/// name `ignore` or `cfg`, not an arbitrary lint path.
 fn attr_suppresses_execution(attr: &Attribute) -> bool {
     let path = attr.path();
     if path.is_ident("cfg") || path.is_ident("ignore") {
@@ -623,7 +624,7 @@ fn attr_suppresses_execution(attr: &Attribute) -> bool {
     if path.is_ident("cfg_attr")
         && let Meta::List(ref list) = attr.meta
     {
-        return cfg_attr_tail_has_ignore(list.tokens.clone());
+        return cfg_attr_tail_suppresses_execution(list.tokens.clone());
     }
     false
 }
@@ -665,20 +666,27 @@ fn split_on_commas(tokens: proc_macro2::TokenStream) -> Vec<proc_macro2::TokenSt
     segments.into_iter().filter(|s| !s.is_empty()).collect()
 }
 
-/// Whether a `cfg_attr`'s tail arguments contain `ignore` as an attribute
-/// name.
+/// Whether a `cfg_attr`'s tail arguments apply a suppressing attribute.
 ///
-/// `#[cfg_attr(cond, ignore)]` and `#[cfg_attr(cond, ignore = "message")]`
-/// both suppress; `#[cfg_attr(cond, allow(dead_code))]` does not.
-fn cfg_attr_tail_has_ignore(tokens: proc_macro2::TokenStream) -> bool {
+/// `#[cfg_attr(cond, ignore)]`, `#[cfg_attr(cond, cfg(...))]`, and nested
+/// `#[cfg_attr(cond, cfg_attr(..., ignore))]` suppress;
+/// `#[cfg_attr(cond, allow(dead_code))]` does not.
+fn cfg_attr_tail_suppresses_execution(tokens: proc_macro2::TokenStream) -> bool {
     let segments = split_on_commas(tokens);
     // segments[0] is the cfg predicate; segments[1..] are the applied attrs.
-    segments.iter().skip(1).any(|seg| {
-        matches!(
-            seg.clone().into_iter().next(),
-            Some(TokenTree::Ident(ref id)) if *id == "ignore"
-        )
-    })
+    segments.iter().skip(1).any(attribute_segment_suppresses_execution)
+}
+
+fn attribute_segment_suppresses_execution(seg: &proc_macro2::TokenStream) -> bool {
+    match seg.clone().into_iter().next() {
+        Some(TokenTree::Ident(ref id)) if *id == "ignore" || *id == "cfg" => true,
+        Some(TokenTree::Ident(ref id)) if *id == "cfg_attr" => syn::parse2::<Meta>(seg.clone())
+            .ok()
+            .is_some_and(|meta| {
+                matches!(meta, Meta::List(ref list) if cfg_attr_tail_suppresses_execution(list.tokens.clone()))
+            }),
+        _ => false,
+    }
 }
 
 /// Extract name and switch bundle from `command_line_oneliner!` token args.
@@ -713,30 +721,25 @@ fn extract_oneliner_case(tokens: &proc_macro2::TokenStream, evidence: &mut Corpu
     evidence.switch_cases.insert(name, switch);
 }
 
-/// Scan a token stream for `command_line_oneliner!` invocations, recursing
-/// into `Group` tokens but not into `macro_rules!` definition bodies.
-///
-/// This handles nested cases such as
-/// `helper_macro_rules!(command_line_oneliner!(...))` where the corpus macro
-/// is an argument to another macro invocation.
-fn scan_tokens_for_oneliners(tokens: &proc_macro2::TokenStream, evidence: &mut CorpusEvidence) {
+/// Whether a token stream contains a `command_line_oneliner!` invocation.
+fn tokens_contain_oneliner_invocation(tokens: &proc_macro2::TokenStream) -> bool {
     let tts: Vec<TokenTree> = tokens.clone().into_iter().collect();
     let mut i = 0;
     while i < tts.len() {
         match &tts[i] {
             TokenTree::Ident(id) if *id == "command_line_oneliner" => {
-                if let (Some(TokenTree::Punct(p)), Some(TokenTree::Group(g))) =
+                if let (Some(TokenTree::Punct(p)), Some(TokenTree::Group(_))) =
                     (tts.get(i + 1), tts.get(i + 2))
                     && p.as_char() == '!'
                 {
-                    extract_oneliner_case(&g.stream(), evidence);
-                    i += 3;
-                    continue;
+                    return true;
                 }
                 i += 1;
             }
             TokenTree::Group(g) => {
-                scan_tokens_for_oneliners(&g.stream(), evidence);
+                if tokens_contain_oneliner_invocation(&g.stream()) {
+                    return true;
+                }
                 i += 1;
             }
             _ => {
@@ -744,6 +747,7 @@ fn scan_tokens_for_oneliners(tokens: &proc_macro2::TokenStream, evidence: &mut C
             }
         }
     }
+    false
 }
 
 /// Walk parsed items and populate `evidence`.
@@ -759,14 +763,8 @@ fn extract_from_items(items: &[Item], evidence: &mut CorpusEvidence, suppressed:
                     continue;
                 }
                 let item_suppressed = suppressed || attrs_suppress_execution(&item_macro.attrs);
-                if item_macro.mac.path.is_ident("command_line_oneliner") {
-                    if !item_suppressed {
-                        extract_oneliner_case(&item_macro.mac.tokens, evidence);
-                    }
-                } else if !item_suppressed {
-                    // Recurse into the token tree of other macro invocations to
-                    // find nested command_line_oneliner! calls.
-                    scan_tokens_for_oneliners(&item_macro.mac.tokens, evidence);
+                if item_macro.mac.path.is_ident("command_line_oneliner") && !item_suppressed {
+                    extract_oneliner_case(&item_macro.mac.tokens, evidence);
                 }
             }
             Item::Fn(item_fn) => {
@@ -815,7 +813,8 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
 }
 
 /// Refuse to extract from a corpus that invokes a macro defined by
-/// `macro_rules!` in the same file at the top level.
+/// `macro_rules!` in the same file, or passes `command_line_oneliner!` through
+/// another macro invocation (including inside inline modules).
 ///
 /// Generated fixtures are not discoverable at parse time: macro expansion
 /// produces names that only exist after the compiler has run, so those names
@@ -833,19 +832,53 @@ fn refuse_macro_expansion_fixtures(source: &str) -> Result<()> {
     };
     let mut defined: BTreeSet<String> = BTreeSet::new();
     collect_macro_rules_names(&file.items, &mut defined);
-    for item in &file.items {
-        let Item::Macro(item_macro) = item else { continue };
-        if item_macro.mac.path.is_ident("macro_rules") {
-            continue;
-        }
-        if item_macro.mac.path.is_ident("command_line_oneliner") {
-            continue;
-        }
-        let name = macro_path_string(&item_macro.mac.path);
-        if defined.contains(&name) {
-            bail!(
-                "{CORPUS_PATH} invokes `{name}!` at the top level, and `{name}` is defined                  by `macro_rules!` in the same file. Fixtures generated by macro expansion                  are not discoverable by this checker. Inline the fixtures directly or use                  `command_line_oneliner!` instead."
-            );
+    refuse_macro_invocations_in_items(&file.items, &defined, false)
+}
+
+fn refuse_macro_invocations_in_items(
+    items: &[Item],
+    defined: &BTreeSet<String>,
+    suppressed: bool,
+) -> Result<()> {
+    for item in items {
+        match item {
+            Item::Macro(item_macro) => {
+                if item_macro.mac.path.is_ident("macro_rules") {
+                    continue;
+                }
+                let item_suppressed = suppressed || attrs_suppress_execution(&item_macro.attrs);
+                if item_suppressed || item_macro.mac.path.is_ident("command_line_oneliner") {
+                    continue;
+                }
+                let name = macro_path_string(&item_macro.mac.path);
+                if defined.contains(&name) {
+                    bail!(
+                        "{CORPUS_PATH} invokes `{name}!`, and `{name}` is defined by \
+                         `macro_rules!` in the same file. Fixtures generated by macro \
+                         expansion are not discoverable by this checker. Inline the \
+                         fixtures directly or use `command_line_oneliner!` instead."
+                    );
+                }
+                if tokens_contain_oneliner_invocation(&item_macro.mac.tokens) {
+                    bail!(
+                        "{CORPUS_PATH} passes `command_line_oneliner!` through `{name}!`. \
+                         Fixtures inside unexpanded macro arguments are not discoverable \
+                         and may not run. Inline fixtures at item level or use \
+                         `command_line_oneliner!` directly."
+                    );
+                }
+            }
+            Item::Mod(item_mod) => {
+                let Some((_, sub_items)) = &item_mod.content else {
+                    continue;
+                };
+                if suppressed || outer_attrs_suppress_execution(&item_mod.attrs) {
+                    continue;
+                }
+                let mod_suppressed = inner_attrs_have_cfg(&item_mod.attrs);
+                refuse_macro_invocations_in_items(sub_items, defined, mod_suppressed)?;
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -1632,11 +1665,14 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "#[test]\n#[cfg_attr(windows, ignore)]\nfn conditionally_ignored() {}\n",
             "#[cfg_attr(windows, ignore)]\n#[test]\nfn conditionally_ignored() {}\n",
             "#[cfg(target_os = \"linux\")]\n#[test]\nfn platform_only() {}\n",
+            "#[cfg_attr(test, cfg(any()))]\n#[test]\nfn cfg_attr_cfg_disabled() {}\n",
+            "#[cfg_attr(test, cfg(any()))]\ncommand_line_oneliner!(cfg_attr_cfg_case, \"-e\", \"print 1;\");\n",
         ] {
             let evidence = extract_corpus_evidence(source);
             assert!(
-                evidence.proof_tests.is_empty(),
-                "suppressed test was captured from {source:?}: {:?}",
+                evidence.proof_tests.is_empty() && evidence.switch_cases.is_empty(),
+                "suppressed item was captured from {source:?}: switch={:?} proof={:?}",
+                evidence.switch_cases,
                 evidence.proof_tests
             );
         }
@@ -1761,17 +1797,25 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         }
 
         // The keyword must start a token. An invocation whose name merely ends
-        // in `macro_rules` is ordinary code, and blanking its arguments would
-        // hide a real fixture without tripping the uncited-fixture rule.
+        // in `macro_rules` is ordinary code, but passing `command_line_oneliner!`
+        // through another macro is refused rather than counted or silently skipped.
         let tail_named = concat!(
             "helper_macro_rules!(\n",
             "    command_line_oneliner!(real_case, \"-ne\", \"print;\");\n",
             ");\n"
         );
+        let error = must_err_with(
+            refuse_macro_expansion_fixtures(tail_named),
+            "a wrapped oneliner invocation was accepted",
+        );
+        assert!(
+            error.to_string().contains("helper_macro_rules"),
+            "error did not name the wrapper macro: {error}"
+        );
         let evidence = extract_corpus_evidence(tail_named);
         assert!(
-            evidence.switch_cases.contains_key("real_case"),
-            "an invocation ending in `macro_rules` was treated as a definition: {:?}",
+            evidence.switch_cases.is_empty(),
+            "wrapped fixture was extracted: {:?}",
             evidence.switch_cases
         );
 
@@ -2347,7 +2391,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     }
 
     /// A `#[cfg_attr(feature, allow(dead_code))]` on a fixture does NOT
-    /// suppress it. Only `cfg_attr` tails that name `ignore` suppress.
+    /// suppress it. Only `cfg_attr` tails that apply `ignore` or `cfg` suppress.
     #[test]
     fn benign_cfg_attr_allow_on_fixture_still_counts() {
         let source = concat!(
@@ -2388,6 +2432,23 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         );
         let message = error.to_string();
         assert!(message.contains("`make!`"), "error did not name the macro: {message}");
+
+        let module_expansion = concat!(
+            "mod extra {\n",
+            "    macro_rules! make {\n",
+            "        () => { command_line_oneliner!(new_case, \"-e\", \"x;\"); };\n",
+            "    }\n",
+            "    make!();\n",
+            "}\n"
+        );
+        let error = must_err_with(
+            refuse_macro_expansion_fixtures(module_expansion),
+            "module-local macro expansion was accepted",
+        );
+        assert!(
+            error.to_string().contains("`make!`"),
+            "module-local error did not name the macro: {error}"
+        );
 
         // command_line_oneliner! invocations are exempt.
         let only_canonical = concat!(
