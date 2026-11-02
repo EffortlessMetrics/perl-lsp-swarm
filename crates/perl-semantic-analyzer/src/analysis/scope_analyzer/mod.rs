@@ -1511,7 +1511,9 @@ impl ScopeAnalyzer {
             self.use_variable_parts_in_context(scope, sigil, name, context);
         if !variable_used {
             if strict_vars_mode {
-                self.push_undeclared_variable_issue(issues, scope, context, node, sigil, name);
+                self.push_undeclared_variable_issue(
+                    issues, scope, context, node, sigil, name, sigil, name,
+                );
             }
         } else if !is_initialized {
             self.push_uninitialized_variable_issue(issues, context, node, sigil, name);
@@ -1524,11 +1526,14 @@ impl ScopeAnalyzer {
         scope: &Rc<Scope>,
         context: &AnalysisContext<'_>,
         node: &Node,
-        sigil: &str,
-        name: &str,
+        display_sigil: &str,
+        display_name: &str,
+        lookup_sigil: &str,
+        lookup_name: &str,
     ) {
-        let full_name = format!("{}{}", sigil, name);
-        let similar_names = edit_distance::similar_variable_names(scope.as_ref(), sigil, name);
+        let full_name = format!("{}{}", display_sigil, display_name);
+        let similar_names =
+            edit_distance::similar_variable_names(scope.as_ref(), lookup_sigil, lookup_name);
         issues.push(ScopeIssue {
             kind: IssueKind::UndeclaredVariable,
             variable_name: full_name.clone(),

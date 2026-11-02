@@ -591,7 +591,7 @@ fn build_scope_suggestion(issue: &ScopeIssue) -> Option<String> {
     match issue.kind {
         IssueKind::UndeclaredVariable => {
             if let Some(candidate) = issue.similar_names.first() {
-                Some(format!("Did you mean '{candidate}'? (press Enter to replace)"))
+                Some(format!("Did you mean '{candidate}'?"))
             } else {
                 Some(format!("Add 'my {};' before this line", name))
             }
@@ -1428,10 +1428,7 @@ mod tests {
             "message should include nearest-match hint: {}",
             diagnostic.message
         );
-        assert_eq!(
-            diagnostic.suggestion.as_deref(),
-            Some("Did you mean '$count'? (press Enter to replace)")
-        );
+        assert_eq!(diagnostic.suggestion.as_deref(), Some("Did you mean '$count'?"));
     }
 
     #[test]

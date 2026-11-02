@@ -66,7 +66,16 @@ pub(super) fn handle_variable<'a>(
     // Variable not found - check if we should report it
     if !variable_used {
         if strict_vars_mode {
-            analyzer.push_undeclared_variable_issue(issues, scope, context, node, sigil, name);
+            analyzer.push_undeclared_variable_issue(
+                issues,
+                scope,
+                context,
+                node,
+                sigil,
+                name,
+                lookup_sigil,
+                lookup_name,
+            );
         }
     } else if !is_initialized {
         analyzer.push_uninitialized_variable_issue(issues, context, node, sigil, name);

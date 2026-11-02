@@ -1,5 +1,7 @@
 //! Edit-distance helpers for nearest-match variable suggestions (#1770).
 
+use rustc_hash::FxHashSet;
+
 /// Levenshtein distance between two identifiers (ASCII case-insensitive).
 pub(super) fn edit_distance(left: &str, right: &str) -> usize {
     let left = left.to_ascii_lowercase();
@@ -36,6 +38,7 @@ fn suggestion_threshold(left: &str, right: &str) -> usize {
 fn visible_variable_names(scope: &super::Scope, sigil: &str) -> Vec<String> {
     let idx = super::sigil_to_index(sigil);
     let mut names = Vec::new();
+    let mut seen = FxHashSet::default();
     let mut current = scope;
 
     loop {
@@ -43,7 +46,7 @@ fn visible_variable_names(scope: &super::Scope, sigil: &str) -> Vec<String> {
             let vars = current.variables.borrow();
             if let Some(map) = &vars[idx] {
                 for name in map.keys() {
-                    if !names.iter().any(|existing| existing == name) {
+                    if seen.insert(name.clone()) {
                         names.push(name.clone());
                     }
                 }
