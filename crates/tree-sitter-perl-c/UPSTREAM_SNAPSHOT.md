@@ -106,11 +106,16 @@ heredocs, which permits intervening Perl comments but not later statements.
    tree-sitter generate
    ```
 
-4. **Copy vendored C snapshot files into this crate**
+4. **Copy vendored C snapshot files into this repository**
+
+   Parser and helper headers still copy directly into `crates/tree-sitter-perl-c/c-src/`.
+   The external scanner is behavior-owned by `tree-sitter-perl/src/scanner.c` (#7261):
+   copy upstream `src/scanner.c` there, then project into the crate.
 
    ```bash
    cp src/parser.c /workspace/perl-lsp/crates/tree-sitter-perl-c/c-src/parser.c
-   cp src/scanner.c /workspace/perl-lsp/crates/tree-sitter-perl-c/c-src/scanner.c
+   cp src/scanner.c /workspace/perl-lsp/tree-sitter-perl/src/scanner.c
+   cargo xtask tree-sitter-scanner sync
    cp src/bsearch.h /workspace/perl-lsp/crates/tree-sitter-perl-c/c-src/bsearch.h
    cp src/tsp_unicode.h /workspace/perl-lsp/crates/tree-sitter-perl-c/c-src/tsp_unicode.h
    cp src/tree_sitter/parser.h /workspace/perl-lsp/crates/tree-sitter-perl-c/c-src/tree_sitter/parser.h

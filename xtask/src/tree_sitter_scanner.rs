@@ -205,6 +205,15 @@ pub fn check(root: &Path) -> Vec<Violation> {
         }];
     }
 
+    if ledger.projection.is_empty() {
+        return vec![Violation {
+            code: ViolationCode::LedgerSchema,
+            path: LEDGER_REL.to_string(),
+            detail: "projection inventory must list every active compiled scanner copy (#7261)"
+                .to_string(),
+        }];
+    }
+
     let mut violations = Vec::new();
     for projection in &ledger.projection {
         if projection.authority != authority_rel {
@@ -244,6 +253,15 @@ pub fn sync(root: &Path) -> Result<SyncOutcome, Violation> {
     })?;
     let normalized = normalize_scanner_bytes(&authority_disk);
     let authority_hash = content_sha256(&normalized);
+
+    if ledger.projection.is_empty() {
+        return Err(Violation {
+            code: ViolationCode::LedgerSchema,
+            path: LEDGER_REL.to_string(),
+            detail: "projection inventory must list every active compiled scanner copy (#7261)"
+                .to_string(),
+        });
+    }
 
     let mut updated = Vec::new();
     for projection in &ledger.projection {
@@ -364,6 +382,33 @@ note = "fixture"
     #[test]
     fn normalize_scanner_bytes_unifies_crlf_and_lf() {
         assert_eq!(normalize_scanner_bytes(b"a\r\nb\rc"), normalize_scanner_bytes(b"a\nb\nc"));
+    }
+
+    #[test]
+    fn check_fails_when_projection_inventory_is_empty() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::create_dir_all(dir.path().join("grammar")).expect("grammar dir");
+        fs::write(dir.path().join("grammar/scanner.c"), b"x").expect("authority");
+        fs::create_dir_all(dir.path().join("policy")).expect("policy dir");
+        let hash = content_sha256(b"x");
+        let ledger = format!(
+            r#"
+schema_version = "tree_sitter_scanner_authority.v1"
+controlling_issue = 7261
+sync_command = "cargo xtask tree-sitter-scanner sync"
+check_command = "cargo xtask tree-sitter-scanner check"
+generator = "test"
+
+[authority]
+path = "grammar/scanner.c"
+role = "authoritative"
+content_sha256 = "{hash}"
+note = "fixture"
+"#
+        );
+        fs::write(dir.path().join(LEDGER_REL), ledger).expect("ledger");
+        let violations = check(dir.path());
+        assert!(violations.iter().any(|v| v.code == ViolationCode::LedgerSchema));
     }
 
     #[test]
