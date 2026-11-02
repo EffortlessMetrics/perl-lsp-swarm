@@ -338,10 +338,10 @@ name = "Semver Compatibility (facade PR)"
 producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "semver-pr"
+workflow_result = "propagate"
 events = ["pull_request"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-workflow_result = "propagate"
 reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for API-ratcheted crates; stays merge-advisory (required=false) until baseline confidence supports hard-gating, but a detected break must fail the job conclusion (#17208)."
