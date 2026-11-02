@@ -333,30 +333,41 @@ fn relative_pattern_clients_fall_back_to_string_watchers_without_valid_workspace
 }
 
 #[test]
-fn jetbrains_still_disables_file_watchers_even_if_client_advertises_support() -> TestResult {
-    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
-    let init = harness.request_raw(json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "processId": std::process::id(),
-            "clientInfo": { "name": "JetBrains" },
-            "capabilities": watcher_dynamic_capabilities(),
-            "rootUri": "file:///workspace"
+fn lsp4ij_profile_watcher_registration_is_invariant_to_client_name_only() -> TestResult {
+    let capabilities = watcher_dynamic_capabilities();
+    let client_names = ["LSP4IJ", "IntelliJ IDEA", "Visual Studio Code", "neovim"];
+    let mut expected_registration: Option<Value> = None;
+    for name in client_names {
+        let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
+        let init = harness.request_raw(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": std::process::id(),
+                "clientInfo": { "name": name },
+                "capabilities": capabilities.clone(),
+                "rootUri": "file:///workspace"
+            }
+        }));
+        assert!(
+            init.pointer("/result/capabilities").is_some(),
+            "initialize must succeed for client {name}, got {init:?}"
+        );
+        harness.notify("initialized", json!({}));
+        let requests = harness.drain_server_requests(250);
+        let registration = registration_for_method(&requests, "workspace/didChangeWatchedFiles")
+            .ok_or_else(|| {
+                format!("client {name} must register file watchers when capabilities match")
+            })?;
+        match &expected_registration {
+            None => expected_registration = Some(registration.clone()),
+            Some(expected) => assert_eq!(
+                expected, registration,
+                "client name {name} must not change watcher registration for identical capabilities"
+            ),
         }
-    }));
-    assert!(
-        init.pointer("/result/capabilities").is_some(),
-        "initialize must succeed for JetBrains-shaped client, got {init:?}"
-    );
-
-    harness.notify("initialized", json!({}));
-    let requests = harness.drain_server_requests(250);
-    assert!(
-        !has_registration(&requests, "workspace/didChangeWatchedFiles"),
-        "JetBrains watcher suppression must remain separate from runtime tuning; got {requests:?}"
-    );
+    }
     Ok(())
 }
 

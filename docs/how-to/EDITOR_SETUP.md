@@ -328,11 +328,10 @@ push.
   regardless of capability advertisement, because OpenCode's agent feedback
   loop relies on push. See
   [OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) Troubleshooting.
-- **LSP4IJ:** the server has historical JetBrains-family watched-file
-  compatibility debt. #7710 owns retiring or exactly bounding that workaround
-  from the supported LSP4IJ capability profile; #7719 owns the real-host
-  create/change/delete result. Do not treat broad product-name suppression as
-  a permanent LSP4IJ limitation.
+- **LSP4IJ:** the historical JetBrains-family watched-file name override was
+  retired in #7710; watcher registration follows the canonical registration
+  plan for the supported LSP4IJ capability profile. #7719 owns the real-host
+  create/change/delete result. Do not reintroduce broad product-name suppression.
 
 ## When Setup Fails
 

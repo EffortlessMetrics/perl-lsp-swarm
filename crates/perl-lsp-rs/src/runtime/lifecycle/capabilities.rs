@@ -154,18 +154,6 @@ fn is_opencode_client(params: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn is_jetbrains_client(params: &Value) -> bool {
-    params
-        .get("clientInfo")
-        .and_then(|info| info.get("name"))
-        .and_then(|name| name.as_str())
-        .map(|name| {
-            let lower = name.to_ascii_lowercase();
-            lower.contains("jetbrains") || lower.contains("intellij") || lower.contains("idea")
-        })
-        .unwrap_or(false)
-}
-
 fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Value) {
     if !capabilities.get("experimental").is_some_and(Value::is_object) {
         let Some(capabilities_object) = capabilities.as_object_mut() else {
@@ -275,30 +263,6 @@ impl LspServer {
                     .pointer("/capabilities/textDocument/inlineCompletion/dynamicRegistration")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-
-                // JetBrains-family IDEs (IntelliJ IDEA, etc.) advertise dynamic watcher
-                // registration but their registration flow is unreliable and can degrade LSP
-                // startup behavior. Force-disable for these clients regardless of what the
-                // capabilities object claims.
-                if is_jetbrains_client(params) {
-                    caps.dynamic_registration_support = false;
-                    // Queue a one-time logMessage so the user can see the override
-                    // happened. The message is emitted after the `initialized`
-                    // notification arrives (see handle_initialized_dispatch)
-                    // because the LSP spec discourages sending notifications
-                    // before the initialize response is delivered (#4630).
-                    let client_name = params
-                        .get("clientInfo")
-                        .and_then(|info| info.get("name"))
-                        .and_then(|name| name.as_str())
-                        .unwrap_or("JetBrains");
-                    *self.pending_startup_log.lock() = Some(format!(
-                        "Perl LSP: Dynamic file-watcher registration has been disabled for \
-                         JetBrains-family client \"{client_name}\" because its registration \
-                         flow is unreliable. Workspace/didChangeWatchedFiles dynamic \
-                         registration requests from this client will be ignored."
-                    ));
-                }
 
                 caps.workspace_configuration_support = params
                     .get("capabilities")
@@ -1089,8 +1053,7 @@ mod tests {
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]
     use super::{
-        WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE, apply_disabled_feature_id, is_jetbrains_client,
-        is_opencode_client,
+        WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE, apply_disabled_feature_id, is_opencode_client,
     };
     use crate::LspServer;
     use crate::protocol::JsonRpcError;
@@ -2626,42 +2589,6 @@ mod tests {
     }
 
     #[test]
-    fn jetbrains_client_detection_matches_jetbrains_intellij_idea_names() {
-        for name in &["JetBrains", "IntelliJ IDEA", "idea", "JetBrains Client"] {
-            let params = json!({ "clientInfo": { "name": name } });
-            assert!(is_jetbrains_client(&params), "should detect JetBrains client: {name}");
-        }
-        let non_jetbrains = json!({ "clientInfo": { "name": "vscode" } });
-        assert!(!is_jetbrains_client(&non_jetbrains));
-        assert!(!is_jetbrains_client(&Value::Object(serde_json::Map::new())));
-    }
-
-    #[test]
-    fn initialize_disables_dynamic_registration_for_jetbrains_clients() {
-        let server = LspServer::new();
-        let params = json!({
-            "clientInfo": {
-                "name": "JetBrains"
-            },
-            "capabilities": {
-                "workspace": {
-                    "didChangeWatchedFiles": {
-                        "dynamicRegistration": true
-                    }
-                }
-            }
-        });
-
-        let _ = server.handle_initialize(Some(params));
-
-        assert!(
-            !server.client_capabilities.lock().dynamic_registration_support,
-            "JetBrains clients must have dynamic_registration_support forced to false \
-             even when the capabilities object claims support"
-        );
-    }
-
-    #[test]
     fn initialize_preserves_dynamic_registration_for_non_jetbrains_clients() {
         let server = LspServer::new();
         let params = json!({
@@ -2686,11 +2613,11 @@ mod tests {
     }
 
     #[test]
-    fn initialize_queues_startup_log_for_jetbrains_dynamic_registration_override() {
+    fn initialize_preserves_dynamic_registration_for_lsp4ij_shaped_clients() {
         let server = LspServer::new();
         let params = json!({
             "clientInfo": {
-                "name": "IntelliJ IDEA"
+                "name": "LSP4IJ"
             },
             "capabilities": {
                 "workspace": {
@@ -2703,19 +2630,15 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        let pending = server.pending_startup_log.lock();
-        assert!(pending.is_some(), "JetBrains override should queue a pending startup logMessage");
-        if let Some(ref msg) = *pending {
-            assert!(msg.contains("IntelliJ IDEA"), "pending log should name the client: got {msg}");
-            assert!(
-                msg.contains("dynamic"),
-                "pending log should mention the disabled capability: got {msg}"
-            );
-        }
+        assert!(
+            server.client_capabilities.lock().dynamic_registration_support,
+            "LSP4IJ-shaped clients must preserve declared dynamic watcher registration; \
+             #7710 retires the JetBrains name override"
+        );
     }
 
     #[test]
-    fn initialize_does_not_queue_startup_log_for_non_jetbrains_clients() {
+    fn initialize_does_not_queue_startup_log_for_watcher_registration() {
         let server = LspServer::new();
         let params = json!({
             "clientInfo": {
@@ -2734,7 +2657,7 @@ mod tests {
 
         assert!(
             server.pending_startup_log.lock().is_none(),
-            "non-JetBrains clients should not have a pending startup logMessage"
+            "watcher registration must not queue a startup logMessage (#7710)"
         );
     }
 
