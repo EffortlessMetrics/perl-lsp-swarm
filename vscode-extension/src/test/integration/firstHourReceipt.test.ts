@@ -588,6 +588,7 @@ suite('First-hour VS Code receipt', function () {
           ...baseReceipt.limitations,
           'Untrusted workspace smoke proves manifest decline and deferred startup, not provider success.',
         ],
+        failures: [],
       });
       return;
     }

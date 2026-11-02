@@ -1661,6 +1661,39 @@ void test('a non-terminal or failing child receipt is rejected', () => {
   assert.match(failed.violations.join('; '), /reported failures/);
 });
 
+void test('accepts an untrusted decline receipt without completed provider evidence', () => {
+  const decline = validateChildSmokeReceipt({
+    ...CHILD_SUBJECT,
+    expectedDeclineOutcome: 'untrusted_product_declined',
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => true,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({
+          outcome: 'untrusted_product_declined',
+          workspace: {
+            topology: {
+              trust: 'untrusted',
+              capabilities: {
+                workspace_root: 'unsupported',
+                file_backed_operations: 'unsupported',
+                language_server_documents: 'unsupported',
+              },
+            },
+          },
+          startup: {
+            language_client: {
+              lifecycle_state: 'stopped',
+              server_start_status: 'idle',
+            },
+          },
+          installed_byte_identity: undefined,
+        }),
+      ),
+  });
+  assert.equal(decline.ok, true);
+});
+
 void test('a malformed child receipt is rejected rather than parsed optimistically', () => {
   const result = validateChildSmokeReceipt({
     ...CHILD_SUBJECT,
