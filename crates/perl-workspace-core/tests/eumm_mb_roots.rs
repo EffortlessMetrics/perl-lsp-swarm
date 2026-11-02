@@ -91,11 +91,8 @@ fn source_lib_selected_independent_of_blib() {
     fixture.dir(SOURCE_LIB);
 
     let detection = detect_eumm_mb(&fixture.root);
-    let lib = detection
-        .roots
-        .iter()
-        .find(|root| root.relative_path == SOURCE_LIB)
-        .expect("lib root");
+    let lib =
+        detection.roots.iter().find(|root| root.relative_path == SOURCE_LIB).expect("lib root");
     assert_eq!(lib.disposition, EummMbRootDisposition::Selected);
     assert!(lib.source_canonical_over_generated);
 }
@@ -110,11 +107,8 @@ fn fresh_blib_roots_selected_when_build_system_present() {
     fixture.dir("blib/arch");
 
     let detection = detect_eumm_mb(&fixture.root);
-    let blib_lib = detection
-        .roots
-        .iter()
-        .find(|root| root.relative_path == BLIB_LIB)
-        .expect("blib/lib");
+    let blib_lib =
+        detection.roots.iter().find(|root| root.relative_path == BLIB_LIB).expect("blib/lib");
     assert_eq!(blib_lib.disposition, EummMbRootDisposition::Selected);
     assert_eq!(blib_lib.freshness, EummMbRootFreshness::Current);
 }
@@ -128,17 +122,11 @@ fn stale_blib_rejected_when_authoring_is_newer() {
     fixture.dir(SOURCE_LIB);
 
     let detection = detect_eumm_mb(&fixture.root);
-    let blib_lib = detection
-        .roots
-        .iter()
-        .find(|root| root.relative_path == BLIB_LIB)
-        .expect("blib/lib");
+    let blib_lib =
+        detection.roots.iter().find(|root| root.relative_path == BLIB_LIB).expect("blib/lib");
     assert!(matches!(
         blib_lib.disposition,
-        EummMbRootDisposition::Rejected {
-            reason_code: REASON_GENERATED_ROOT_STALE,
-            ..
-        }
+        EummMbRootDisposition::Rejected { reason_code: REASON_GENERATED_ROOT_STALE, .. }
     ));
 }
 
@@ -149,11 +137,8 @@ fn blib_without_build_system_markers_is_rejected() {
 
     let detection = detect_eumm_mb(&fixture.root);
     assert_eq!(detection.build_system, DetectedEummMbBuildSystem::None);
-    let blib_lib = detection
-        .roots
-        .iter()
-        .find(|root| root.relative_path == BLIB_LIB)
-        .expect("blib/lib");
+    let blib_lib =
+        detection.roots.iter().find(|root| root.relative_path == BLIB_LIB).expect("blib/lib");
     assert!(matches!(
         blib_lib.disposition,
         EummMbRootDisposition::Rejected {
@@ -170,11 +155,8 @@ fn test_lib_is_test_role_and_not_canonical_over_generated() {
     fixture.dir(TEST_LIB);
 
     let detection = detect_eumm_mb(&fixture.root);
-    let test_lib = detection
-        .roots
-        .iter()
-        .find(|root| root.relative_path == TEST_LIB)
-        .expect("t/lib");
+    let test_lib =
+        detection.roots.iter().find(|root| root.relative_path == TEST_LIB).expect("t/lib");
     assert_eq!(test_lib.project_role, ProjectRootRole::Test);
     assert!(!test_lib.source_canonical_over_generated);
     assert_eq!(test_lib.disposition, EummMbRootDisposition::Selected);
@@ -195,17 +177,11 @@ fn symlink_blib_outside_workspace_is_rejected() {
     symlink(&outside, fixture.root.join(BLIB_LIB)).expect("symlink");
 
     let detection = detect_eumm_mb(&fixture.root);
-    let blib_lib = detection
-        .roots
-        .iter()
-        .find(|root| root.relative_path == BLIB_LIB)
-        .expect("blib/lib");
+    let blib_lib =
+        detection.roots.iter().find(|root| root.relative_path == BLIB_LIB).expect("blib/lib");
     assert!(matches!(
         blib_lib.disposition,
-        EummMbRootDisposition::Rejected {
-            reason_code: REASON_ROOT_ESCAPES_WORKSPACE,
-            ..
-        }
+        EummMbRootDisposition::Rejected { reason_code: REASON_ROOT_ESCAPES_WORKSPACE, .. }
     ));
     let _ = std::fs::remove_dir_all(outside);
 }
