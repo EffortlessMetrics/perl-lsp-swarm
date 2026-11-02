@@ -40,15 +40,18 @@ Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`)
 no longer requires any status context. Rulesets bind administrators, so none of
 these contexts can be bypassed by a manual admin probe while pending.
 
-This list must match the live branch protection and ruleset state exactly. It
-is not self-verifying: nothing compares it against GitHub, so a context added
-to either surface without a corresponding `required = true` entry here
-silently understates the gate set in every emitted receipt's `required_checks`
-inventory and in `gate_graph_version`, which is hashed over this file. When a
-required context is added or removed on either surface, update this file in the
-same change. See issue #5418 for this gap's discovery. Reading the live
-surfaces instead of trusting this checked-in list remains unbuilt, and is the
-recurrence risk this leaves open.
+This list must match the live branch protection and ruleset state exactly.
+`scripts/ci/reconcile_required_checks_ledger.py` compares `required = true`
+`[[checks]]` names against a supplied
+`GET /repos/{owner}/{repo}/rules/branches/{branch}` plus
+`GET /repos/{owner}/{repo}/branches/{branch}/protection` JSON snapshot (or an
+optional `gh api` fetch) and exits nonzero on missing or extra contexts. It
+does not mutate the live ruleset. An unreadable classic-protection surface is
+`NOT_PROVEN`, not an empty set. When a required context is added or removed on
+either surface, update this file in the same change. See issue #5418 for the
+gap's discovery and #17195 for the name-inventory comparator. The
+identity-and-app-binding observer/reconciler pair remains the deeper live-read
+model.
 
 `Codecov / Patch 95` is the repo-owned advisory coverage job. `codecov/patch`
 is the external Codecov status context posted after Codecov processes an

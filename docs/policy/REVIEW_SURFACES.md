@@ -281,8 +281,8 @@ Executable policy and public migration: suppression policy, receipt schemas, pub
 - Review profile: `public_api_or_retirement_authority`
 - Required evidence: `current_head_reviewer_packet`
 - First falsifier: A baseline is regenerated alongside an accidental public addition and the ratchet certifies the widening instead of catching it.
-- Enforcement successor: #11796
-- Code-owner route: `not_proven` (resolution owner #11796): Routing promotion deferred to #11796.
+- Enforcement successor: #17089
+- Code-owner route: `not_proven` (resolution owner #17089): Public-boundary evidence fan-in (#17089) owns whether this surface becomes enforced; #11796 is AR03 review promotion and does not mention this surface.
 - Bound paths:
   - `.ci/public-api-baselines/**`
   - `xtask/tests/public_api_ratchet_tests.rs`

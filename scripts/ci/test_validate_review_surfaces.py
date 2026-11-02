@@ -406,5 +406,24 @@ paths = ["src/authority/extra.rs"]
         self.assertNotIn("unclassified_sensitive_path", output)
 
 
+class ProductionManifestTests(unittest.TestCase):
+    def test_public_api_baseline_routes_enforcement_to_the_api_boundary_issue(
+        self,
+    ) -> None:
+        # #17195: #11796 is AR03 Authority Transfer Review promotion and does
+        # not mention public_api_baseline. The owning successor is #17089.
+        root = Path(__file__).resolve().parents[2]
+        doc = tomllib.loads(
+            (root / "policy/review-surfaces.toml").read_text(encoding="utf-8")
+        )
+        row = doc["surface"]["public_api_baseline"]
+        self.assertEqual(row["enforcement_successor"], "#17089")
+        self.assertEqual(row["code_owner_route"]["resolution_owner"], "#17089")
+        self.assertNotEqual(row["enforcement_successor"], "#11796")
+        self.assertNotEqual(
+            row["code_owner_route"]["resolution_owner"], "#11796"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
