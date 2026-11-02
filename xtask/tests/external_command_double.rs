@@ -482,6 +482,22 @@ mod hermetic {
     }
 
     #[test]
+    fn zero_argument_invocation_matches_empty_argv() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ExternalCommandFixture::new()
+            .expect(ExpectedExternalCommand::exact("git", Vec::new()).stdout("usage\n"));
+        let env = HermeticCommandEnv::install("git", &fixture)?;
+        let mut command = Command::new("git");
+        env.apply(&mut command)?;
+        let output = command.output()?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "usage\n");
+        let observations = env.observations()?;
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].argv, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
     fn matched_git_is_served_by_the_fixture() -> Result<(), Box<dyn std::error::Error>> {
         let fixture = ExternalCommandFixture::new().expect(
             ExpectedExternalCommand::exact(

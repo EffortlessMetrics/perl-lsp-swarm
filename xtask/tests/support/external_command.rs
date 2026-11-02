@@ -690,7 +690,9 @@ n=$((n + 1))
 printf '%s\n' "$n" > "$dir/obs_count"
 {
   printf '%s\0' "$program"
-  printf '%s\0' "$@"
+  if [ "$#" -gt 0 ]; then
+    printf '%s\0' "$@"
+  fi
 } > "$dir/observed/$n.argv"
 matched=
 for slot in "$dir"/expected/*; do
