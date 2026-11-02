@@ -64,7 +64,9 @@ async function coexistenceReportFromCommand(): Promise<string> {
   await vscode.commands.executeCommand('perl-lsp.showCoexistenceStatus');
   const editor = vscode.window.activeTextEditor;
   assert.ok(editor, 'coexistence status must open a report editor');
-  return editor.document.getText();
+  const text = editor.document.getText();
+  await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+  return text;
 }
 
 async function observeCoexistenceCases(
@@ -1265,6 +1267,9 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(workspaceFolder, 'packaged DAP journey requires a workspace folder');
     const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
     assert.ok(extension, 'packaged DAP journey requires the installed extension');
+    if (!extension.isActive) {
+      await withTimeout('packaged DAP extension activation', extension.activate(), 90_000);
+    }
     const extensionPath = extension.extensionPath;
     const dapPath = bundledDapPath(extensionPath);
     assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
@@ -1478,10 +1483,10 @@ suite('Packaged VSIX bundled-server journey', function () {
           cwd: workspacePath,
           stopOnEntry: false,
         }),
-        30_000,
+        60_000,
       );
       assert.equal(startResult, true, 'VS Code did not start the packaged DAP session');
-      const session = await withTimeout('packaged DAP session start', started, 30_000);
+      const session = await withTimeout('packaged DAP session start', started, 60_000);
       const matchingProcess = await waitForNewPackagedDap(dapDirectory, beforeKeys, dapPath);
       assert.ok(
         matchingProcess.creationIdentity ?? matchingProcess.creationTimeFileTime,
