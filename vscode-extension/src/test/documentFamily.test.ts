@@ -89,6 +89,9 @@ describe('document family registry (#14450)', () => {
     expect(patterns.some((pattern) => pattern?.includes('.pm'))).toBe(true);
     expect(patterns.some((pattern) => pattern?.includes('.pod'))).toBe(false);
     expect(patterns.some((pattern) => pattern?.includes('.tt2'))).toBe(false);
+    expect(selector).toEqual(
+      expect.arrayContaining([{ scheme: 'file', language: 'perl5' }]),
+    );
   });
 
   test('registry rows stay internally consistent', () => {

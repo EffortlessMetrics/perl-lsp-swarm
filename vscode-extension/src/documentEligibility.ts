@@ -7,6 +7,7 @@ import {
 } from './documentFamily';
 import {
   isPerlLanguageId,
+  PERL_ALIAS_LANGUAGE_ID,
   type PerlDocumentSelectorEntry,
   SUPPORTED_PERL_LANGUAGE_IDS,
   SUPPORTED_PERL_URI_SCHEMES,
@@ -113,10 +114,19 @@ function selectorEntriesForAttachment(level: LspAttachmentLevel): PerlDocumentSe
  * that are not LSP-eligible do not match this selector (#14450).
  */
 export function perlFullLspDocumentSelector(): PerlDocumentSelectorEntry[] {
-  return [
+  const entries = [
     ...selectorEntriesForAttachment('full'),
     ...selectorEntriesForAttachment('bounded'),
   ];
+  // #7699: `perl5` is never manifest syntax-associated; alias buffers are classified
+  // explicitly and must not be dropped by path-only patterns (#14450 + #7699).
+  for (const scheme of SUPPORTED_PERL_URI_SCHEMES) {
+    if (scheme === 'untitled') {
+      continue;
+    }
+    entries.push({ scheme, language: PERL_ALIAS_LANGUAGE_ID });
+  }
+  return entries;
 }
 
 /** Human-readable refusal when an edit action is unavailable for the document family. */
