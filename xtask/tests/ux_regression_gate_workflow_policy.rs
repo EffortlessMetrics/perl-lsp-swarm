@@ -14,6 +14,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use tempfile::TempDir;
+use toml::Value as TomlValue;
 
 #[path = "support/workflow_bash.rs"]
 mod workflow_bash;
@@ -561,14 +562,66 @@ fn ci_ux_tests_flakiness_note_matches_ledger_and_policy() -> Result<()> {
         !comment_block.contains("11 active"),
         "ux-tests comment must not hardcode stale active flake counts"
     );
+    for line in comment_block.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#')
+            && trimmed
+                .trim_start_matches('#')
+                .trim()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+            && trimmed.contains(" active")
+        {
+            bail!(
+                "ux-tests comment must not hardcode active flake counts; use ux-flakes.json summary: {trimmed}"
+            );
+        }
+    }
+
+    let policy_path = project_root().join(".ci/policies/required-checks.toml");
+    let policy: TomlValue = toml::from_str(&fs::read_to_string(&policy_path)?)?;
+    let checks = policy
+        .get("checks")
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("required-checks.toml must declare checks"))?;
+    let ux_policy = checks
+        .iter()
+        .find(|check| check.get("name").and_then(TomlValue::as_str) == Some("UX Regression Tests"))
+        .ok_or_else(|| anyhow!("required-checks.toml must inventory UX Regression Tests"))?;
+    let required = ux_policy
+        .get("required")
+        .and_then(TomlValue::as_bool)
+        .ok_or_else(|| anyhow!("UX Regression Tests must declare required"))?;
+    let policy_role = ux_policy
+        .get("policy_role")
+        .and_then(TomlValue::as_str)
+        .ok_or_else(|| anyhow!("UX Regression Tests must declare policy_role"))?;
+    let claims_advisory_only = comment_block.contains("not branch-protection")
+        || comment_block.contains("advisory UX regression evidence");
+
+    if !required && policy_role == "advisory" {
+        assert!(
+            claims_advisory_only,
+            "ux-tests comment must state advisory posture when required-checks marks the job advisory"
+        );
+    } else {
+        assert!(
+            !claims_advisory_only,
+            "ux-tests comment must not claim advisory-only posture when required-checks marks the job required"
+        );
+    }
 
     let ledger_path = project_root().join(".ci/ux-flakes.json");
     let ledger: JsonValue = serde_json::from_str(&fs::read_to_string(&ledger_path)?)?;
-    let active = ledger
+    ledger
         .pointer("/summary/active")
         .and_then(JsonValue::as_u64)
         .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.active"))?;
-    assert_eq!(active, 0, "fixture drift: update the flakiness note if summary.active changes");
+    ledger
+        .pointer("/summary/total")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.total"))?;
     Ok(())
 }
 
