@@ -4413,38 +4413,6 @@ created = "2026-11-02"
 review_after = "2027-02-02"
 
 [[allow]]
-id = "non-rust-framework-attribute-generation-manifest"
-path = ".spec/2373-framework-attribute-generation/manifest.json"
-kind = "compiler_contract"
-language = "json"
-surface = "compiler"
-classification = "config"
-owner = "framework-semantic-conformance"
-reason = "Authored Moo/Moose static attribute-generation conformance authority (#2373); expectations are framework-contract sourced, not ClassModelBuilder output."
-covered_by = [
-  "cargo xtask framework-attribute-generation-conformance validate",
-  "cargo test -p xtask --locked --test framework_attribute_generation_conformance",
-]
-created = "2026-11-02"
-review_after = "2027-02-02"
-
-[[allow]]
-id = "non-rust-framework-attribute-generation-fixtures"
-glob = ".spec/2373-framework-attribute-generation/fixtures/**/*.pl"
-kind = "test_fixture"
-language = "perl"
-surface = "fixtures"
-classification = "fixture"
-owner = "framework-semantic-conformance"
-reason = "Perl source subjects for the #2373 independently reviewed static-generation matrices and failure probes."
-covered_by = [
-  "cargo xtask framework-attribute-generation-conformance validate",
-  "cargo test -p xtask --locked --test framework_attribute_generation_conformance",
-]
-created = "2026-11-02"
-review_after = "2027-02-02"
-
-[[allow]]
 id = "non-rust-compiler-lexical-cutline-fixtures"
 glob = "xtask/tests/fixtures/compiler_lexical_cutline/*.json"
 kind = "test_fixture"

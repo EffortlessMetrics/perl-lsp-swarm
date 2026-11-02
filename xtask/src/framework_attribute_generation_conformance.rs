@@ -59,9 +59,7 @@ pub fn validate_manifest_value(
     manifest: &Value,
 ) -> Result<ValidationStats, ConformanceValidationError> {
     if manifest.get("schema_version").and_then(Value::as_str) != Some(SCHEMA_VERSION) {
-        return Err(violation(format!(
-            "schema_version mismatch: expected `{SCHEMA_VERSION}`"
-        )));
+        return Err(violation(format!("schema_version mismatch: expected `{SCHEMA_VERSION}`")));
     }
     if manifest.get("manifest").and_then(Value::as_str) != Some(MANIFEST_NAME) {
         return Err(violation(format!("manifest mismatch: expected `{MANIFEST_NAME}`")));
@@ -115,14 +113,12 @@ fn verify_fixture_digests(
             .and_then(Value::as_str)
             .ok_or_else(|| violation(format!("fixture `{relative}` missing digest")))?;
         let path = root.join(FIXTURE_ROOT).join(relative);
-        let bytes = fs::read(&path)
-            .map_err(|error| ConformanceValidationError::Io(format!("read fixture `{relative}`: {error}")))?;
+        let bytes = fs::read(&path).map_err(|error| {
+            ConformanceValidationError::Io(format!("read fixture `{relative}`: {error}"))
+        })?;
         let actual = format!(
             "sha256:{}",
-            Sha256::digest(&bytes)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+            Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>()
         );
         if actual != expected {
             return Err(violation(format!(
@@ -159,11 +155,8 @@ fn verify_cases(
             .get("expectation")
             .and_then(Value::as_object)
             .ok_or_else(|| violation(format!("case `{case_id}` missing expectation object")))?;
-        for member in expectation
-            .get("provided_members")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+        for member in
+            expectation.get("provided_members").and_then(Value::as_array).into_iter().flatten()
         {
             if member.get("generator_anchor").and_then(Value::as_str) != Some("has_declaration") {
                 return Err(violation(format!(
@@ -176,11 +169,8 @@ fn verify_cases(
                 )));
             }
         }
-        for hook in expectation
-            .get("referenced_hooks")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+        for hook in
+            expectation.get("referenced_hooks").and_then(Value::as_array).into_iter().flatten()
         {
             if hook.get("provided_by_attribute").and_then(Value::as_bool) != Some(false) {
                 return Err(violation(format!(
@@ -217,7 +207,8 @@ fn verify_failure_probes(
         let probe_id = probe
             .get("probe_id")
             .and_then(Value::as_u64)
-            .ok_or_else(|| violation("failure probe missing probe_id"))? as u32;
+            .ok_or_else(|| violation("failure probe missing probe_id"))?
+            as u32;
         if !seen.insert(probe_id) {
             return Err(violation(format!("duplicate failure probe_id {probe_id}")));
         }
@@ -256,9 +247,7 @@ fn verify_matrices(
                 .as_str()
                 .ok_or_else(|| violation(format!("matrix `{name}` case_ids must be strings")))?;
             if !case_ids.contains(id) {
-                return Err(violation(format!(
-                    "matrix `{name}` references unknown case `{id}`"
-                )));
+                return Err(violation(format!("matrix `{name}` references unknown case `{id}`")));
             }
         }
     }

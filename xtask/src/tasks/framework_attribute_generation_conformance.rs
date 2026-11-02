@@ -1,7 +1,7 @@
 //! `cargo xtask framework-attribute-generation-conformance` — validate #2373 truth rows.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{eyre, Result};
 use xtask::framework_attribute_generation_conformance as fag;
 
 #[derive(clap::Subcommand, Debug)]
@@ -22,8 +22,7 @@ pub fn run(command: FrameworkAttributeGenerationConformanceSubcommand) -> Result
             }
         }
         FrameworkAttributeGenerationConformanceSubcommand::Validate => {
-            let stats =
-                fag::validate_manifest_file(&root).map_err(|error| eyre!("{error}"))?;
+            let stats = fag::validate_manifest_file(&root).map_err(|error| eyre!("{error}"))?;
             println!(
                 "framework attribute-generation conformance check passed: {} fixtures, {} cases, {} failure probes",
                 stats.fixtures, stats.cases, stats.failure_probes

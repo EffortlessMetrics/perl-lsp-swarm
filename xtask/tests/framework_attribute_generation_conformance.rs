@@ -38,10 +38,8 @@ fn failure_probe_ids_are_unique_and_complete() -> TestResult {
 #[test]
 fn moo_and_moose_matrices_are_separate() -> TestResult {
     let manifest = fag::load_manifest(&repo_root())?;
-    let matrices = manifest
-        .get("matrices")
-        .and_then(|value| value.as_object())
-        .ok_or("missing matrices")?;
+    let matrices =
+        manifest.get("matrices").and_then(|value| value.as_object()).ok_or("missing matrices")?;
     let moo = matrices
         .get("moo_core")
         .and_then(|value| value.get("profile_id"))
