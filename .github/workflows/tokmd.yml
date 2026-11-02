@@ -155,7 +155,8 @@ jobs:
             fi
           else
             echo "::notice::Skipping tokmd advisory policy; cockpit receipt or trusted policy not found"
-            echo '{"status":"skipped"}' > .tokmd/gate/cockpit-gate.json
+            printf '{"schema_version":"cockpit_gate.v1","kind":"cockpit_gate_skipped","status":"skipped"}\n' \
+              > .tokmd/gate/cockpit-gate-skipped.json
           fi
 
           exit 0
@@ -190,6 +191,7 @@ jobs:
             echo "- `.tokmd/cockpit/review.md` — full human review surface"
             echo "- `.tokmd/analysis/` — risk, complexity, and near-duplicate analysis"
             echo "- `.tokmd/gate/cockpit-gate.json` — advisory policy findings"
+            echo "- `.tokmd/gate/cockpit-gate-skipped.json` — advisory policy skipped receipt"
             echo
             printf 'Workflow run: %s/%s/actions/runs/%s\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
@@ -239,6 +241,14 @@ jobs:
               echo
               echo '```json'
               head -c 100000 .tokmd/gate/cockpit-gate.json
+              echo
+              echo '```'
+            elif [ -f .tokmd/gate/cockpit-gate-skipped.json ]; then
+              echo
+              echo "## Advisory cockpit policy (skipped)"
+              echo
+              echo '```json'
+              head -c 100000 .tokmd/gate/cockpit-gate-skipped.json
               echo
               echo '```'
             fi
