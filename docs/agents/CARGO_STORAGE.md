@@ -371,11 +371,12 @@ product failures even when the cohort subsequently settles successfully.
 
 ### Staged native Clippy
 
-The existing owner admits these finite Linux requests (optional `--offline`):
+The existing owner admits these finite Linux requests (optional `--offline`; optional
+`--keep-going` on either selector shape):
 
 ```text
-python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
-python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked [--offline] [--keep-going] -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked [--offline] [--keep-going] -- -D warnings
 ```
 
 Select exactly one of `--all-targets` or `--test NAME`. A named test uses one literal
@@ -386,6 +387,12 @@ of that target and reports a missing target as a product failure. The selected n
 remains in the request digest, so its budget cannot transfer to another target or
 all-targets work. A focused result covers only the selected compilation graph; it
 does not replace a required all-targets gate or qualify an unvisited target.
+
+`--keep-going` forwards Cargo's continue-after-failure behavior for independent work
+within the admitted selector. It does not convert failing diagnostics to success, does
+not turn a named-target run into a complete all-targets census, and cannot compile a
+target whose prerequisite failed; such targets remain blocked or not-proven rather
+than reported clean.
 
 Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
 installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,
