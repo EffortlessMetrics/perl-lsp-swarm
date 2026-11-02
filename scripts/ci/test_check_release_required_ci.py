@@ -160,6 +160,16 @@ raise SystemExit(checker.main(sys.argv[2:], transport=get))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["subject_sha"], SHA)
 
+    def test_actual_step_refuses_contradictory_selected_run_snapshots(self):
+        fixture = responses()
+        fixture[ALL] = {"total_count": 1, "check_runs": [check_run(conclusion="failure")]}
+        fixture[LATEST] = {"total_count": 1, "check_runs": [check_run(conclusion="success")]}
+        result, calls = self.run_step(fixture)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["verdict"], "NOT_PROVEN")
+        self.assertIn(ALL, calls)
+        self.assertIn(LATEST, calls)
+
     def test_actual_step_refuses_observed_check_without_latest_identity(self):
         for conclusion in ("failure", "success"):
             with self.subTest(conclusion=conclusion):
@@ -259,6 +269,22 @@ class RequiredCITests(unittest.TestCase):
     def test_new_success_can_replace_historical_failure(self):
         fixture = responses()
         fixture[ALL] = {"total_count": 2, "check_runs": [check_run(id=100, conclusion="failure"), check_run(id=1)]}
+        self.assertEqual(self.verdict(fixture)["verdict"], "PASS")
+
+    def test_contradictory_selected_run_snapshots_refuse(self):
+        for all_conclusion, latest_conclusion in (("failure", "success"), ("success", "failure")):
+            with self.subTest(all_conclusion=all_conclusion, latest_conclusion=latest_conclusion):
+                fixture = responses()
+                fixture[ALL] = {"total_count": 1,
+                                "check_runs": [check_run(conclusion=all_conclusion)]}
+                fixture[LATEST] = {"total_count": 1,
+                                     "check_runs": [check_run(conclusion=latest_conclusion)]}
+                packet = self.verdict(fixture)
+                self.assertEqual(packet["verdict"], "NOT_PROVEN")
+                self.assertEqual(packet["checks"][0]["result"], "NOT_PROVEN")
+
+    def test_coherent_neutral_success_across_observations_passes(self):
+        fixture = responses(conclusion="neutral")
         self.assertEqual(self.verdict(fixture)["verdict"], "PASS")
 
     def test_latest_failed_attempt_vetoes_historical_success(self):
@@ -399,6 +425,8 @@ class RequiredCITests(unittest.TestCase):
                 "total_count": 101, "check_runs": [check_run(id=101)]}
         self.assertEqual(self.verdict(fixture)["verdict"], "PASS")
         fixture[f"{PREFIX}/check-runs?filter=latest&per_page=100&page=2"]["check_runs"][0]["conclusion"] = "failure"
+        self.assertEqual(self.verdict(fixture)["verdict"], "NOT_PROVEN")
+        fixture[f"{PREFIX}/check-runs?filter=all&per_page=100&page=2"]["check_runs"][0]["conclusion"] = "failure"
         self.assertEqual(self.verdict(fixture)["verdict"], "FAIL")
 
     def test_incomplete_changed_and_duplicate_pages_refuse(self):
