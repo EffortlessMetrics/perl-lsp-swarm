@@ -1,7 +1,12 @@
-import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {
+  ExtensionOwnedWorkspaceWriteError,
+  prepareWorkspaceRegularFileTarget,
+  replaceWorkspaceRegularFile,
+  type WorkspaceRegularFileIdentity,
+} from './extensionOwnedWorkspaceWrite';
 import {
   createGherkinMatchBudget,
   isSafeGherkinStepMatch,
@@ -70,25 +75,6 @@ export type BoundedFileRead =
 interface CreateStepDefinitionArgs {
   featureUri: string;
   line: number;
-}
-
-interface TargetIdentity {
-  dev: number;
-  ino: number;
-  size: number;
-  mtimeMs: number;
-}
-
-interface ExistingTarget {
-  text: string;
-  mode: number;
-  identity: TargetIdentity;
-}
-
-interface SafeTarget {
-  canonicalWorkspaceRoot: string;
-  targetPath: string;
-  parentPath: string;
 }
 
 export function registerGherkinStepDefinitionSupport(): vscode.Disposable[] {
@@ -624,8 +610,13 @@ export async function writeGeneratedStepDefinitionFile(
   createContent: string,
   appendStub: string,
 ): Promise<void> {
-  const safeTarget = await prepareSafeTarget(workspaceRoot, targetPath);
-  const existing = await readExistingTarget(safeTarget);
+  const resolvedTarget = path.resolve(targetPath);
+  let existing: { text: string; mode: number; identity: WorkspaceRegularFileIdentity | null } | null;
+  try {
+    existing = await readExistingStepDefinitionContent(workspaceRoot, resolvedTarget);
+  } catch (error) {
+    throw mapWorkspaceWriteError(error);
+  }
   const nextContent = existing
     ? `${existing.text.replace(/\s*$/, '')}${existing.text.trimEnd().length === 0 ? '' : '\n\n'}${appendStub}\n`
     : createContent;
@@ -634,60 +625,22 @@ export async function writeGeneratedStepDefinitionFile(
     throw new Error('generated step definition exceeds the file-size limit');
   }
 
-  await atomicReplaceTarget(
-    safeTarget,
-    nextContent,
-    existing?.mode ?? 0o600,
-    existing?.identity ?? null,
-  );
+  try {
+    await replaceWorkspaceRegularFile(workspaceRoot, resolvedTarget, nextContent, {
+      replace: existing ? 'match-existing' : 'create-only',
+      mode: existing?.mode ?? 0o600,
+      observedIdentity: existing?.identity ?? null,
+    });
+  } catch (error) {
+    throw mapWorkspaceWriteError(error);
+  }
 }
 
-async function prepareSafeTarget(workspaceRoot: string, targetPath: string): Promise<SafeTarget> {
-  const lexicalWorkspaceRoot = path.resolve(workspaceRoot);
-  const resolvedTarget = path.resolve(targetPath);
-  if (
-    !isPathContained(lexicalWorkspaceRoot, resolvedTarget) ||
-    resolvedTarget === lexicalWorkspaceRoot
-  ) {
-    throw new Error('generated step-definition path escapes the workspace');
-  }
-
-  const canonicalWorkspaceRoot = await fs.promises.realpath(lexicalWorkspaceRoot);
-  const parentPath = path.dirname(resolvedTarget);
-  const parentRelative = path.relative(lexicalWorkspaceRoot, parentPath);
-  const segments = parentRelative.split(path.sep).filter((segment) => segment.length > 0);
-  let current = lexicalWorkspaceRoot;
-
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    let stat: fs.Stats;
-    try {
-      stat = await fs.promises.lstat(current);
-    } catch (error) {
-      if (!isNodeError(error, 'ENOENT')) {
-        throw error;
-      }
-      await fs.promises.mkdir(current);
-      stat = await fs.promises.lstat(current);
-    }
-
-    if (stat.isSymbolicLink()) {
-      throw new Error(`generated step-definition parent is a symlink: ${current}`);
-    }
-    if (!stat.isDirectory()) {
-      throw new Error(`generated step-definition parent is not a directory: ${current}`);
-    }
-
-    const canonicalCurrent = await fs.promises.realpath(current);
-    if (!isPathContained(canonicalWorkspaceRoot, canonicalCurrent)) {
-      throw new Error(`generated step-definition parent escapes the workspace: ${current}`);
-    }
-  }
-
-  return { canonicalWorkspaceRoot, targetPath: resolvedTarget, parentPath };
-}
-
-async function readExistingTarget(target: SafeTarget): Promise<ExistingTarget | null> {
+async function readExistingStepDefinitionContent(
+  workspaceRoot: string,
+  targetPath: string,
+): Promise<{ text: string; mode: number; identity: WorkspaceRegularFileIdentity | null } | null> {
+  const target = await prepareWorkspaceRegularFileTarget(workspaceRoot, targetPath);
   let before: fs.Stats;
   try {
     before = await fs.promises.lstat(target.targetPath);
@@ -699,10 +652,16 @@ async function readExistingTarget(target: SafeTarget): Promise<ExistingTarget | 
   }
 
   if (before.isSymbolicLink()) {
-    throw new Error('generated step-definition target is a symlink');
+    throw new ExtensionOwnedWorkspaceWriteError(
+      target.workspaceRelativePath,
+      `Workspace path is a symlink or reparse point: ${target.workspaceRelativePath}`,
+    );
   }
   if (!before.isFile()) {
-    throw new Error('generated step-definition target is not a regular file');
+    throw new ExtensionOwnedWorkspaceWriteError(
+      target.workspaceRelativePath,
+      `Workspace destination is not a regular file: ${target.workspaceRelativePath}`,
+    );
   }
   if (before.size > MAX_STEP_DEFINITION_FILE_BYTES) {
     throw new Error('existing step-definition file exceeds the file-size limit');
@@ -710,7 +669,10 @@ async function readExistingTarget(target: SafeTarget): Promise<ExistingTarget | 
 
   const canonicalTarget = await fs.promises.realpath(target.targetPath);
   if (!isPathContained(target.canonicalWorkspaceRoot, canonicalTarget)) {
-    throw new Error('generated step-definition target escapes the workspace');
+    throw new ExtensionOwnedWorkspaceWriteError(
+      target.workspaceRelativePath,
+      `Cannot write outside the workspace: ${target.workspaceRelativePath}`,
+    );
   }
 
   const handle = await fs.promises.open(
@@ -720,119 +682,48 @@ async function readExistingTarget(target: SafeTarget): Promise<ExistingTarget | 
   try {
     const after = await handle.stat();
     if (!after.isFile() || !sameFileIdentity(before, after)) {
-      throw new Error('generated step-definition target changed during validation');
+      throw new ExtensionOwnedWorkspaceWriteError(
+        target.workspaceRelativePath,
+        `Workspace file changed during validation: ${target.workspaceRelativePath}`,
+      );
     }
     const text = await handle.readFile({ encoding: 'utf8' });
     if (Buffer.byteLength(text, 'utf8') > MAX_STEP_DEFINITION_FILE_BYTES) {
       throw new Error('existing step-definition file exceeds the file-size limit');
     }
-    return { text, mode: before.mode & 0o777, identity: toTargetIdentity(after) };
+    return { text, mode: before.mode & 0o777, identity: toStepDefinitionIdentity(after) };
   } finally {
     await handle.close();
   }
 }
 
-async function atomicReplaceTarget(
-  target: SafeTarget,
-  content: string,
-  mode: number,
-  expected: TargetIdentity | null,
-): Promise<void> {
-  await revalidateSafeParent(target);
-  await assertTargetUnchanged(target.targetPath, expected);
-
-  const temporaryPath = path.join(
-    target.parentPath,
-    `.${path.basename(target.targetPath)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  let handle: fs.promises.FileHandle | undefined;
-  try {
-    handle = await fs.promises.open(
-      temporaryPath,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
-      mode,
-    );
-    await handle.writeFile(content, { encoding: 'utf8' });
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-
-    await revalidateSafeParent(target);
-    await assertTargetUnchanged(target.targetPath, expected);
-    await fs.promises.rename(temporaryPath, target.targetPath);
-  } finally {
-    if (handle) {
-      await handle.close().catch(() => undefined);
-    }
-    await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
-}
-
-async function revalidateSafeParent(target: SafeTarget): Promise<void> {
-  const stat = await fs.promises.lstat(target.parentPath);
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new Error('generated step-definition parent changed during validation');
-  }
-  const canonicalParent = await fs.promises.realpath(target.parentPath);
-  if (!isPathContained(target.canonicalWorkspaceRoot, canonicalParent)) {
-    throw new Error('generated step-definition parent escapes the workspace');
-  }
-}
-
-/**
- * Refuse the rename unless the target is still exactly what the append content
- * was derived from.
- *
- * `expected` is the identity observed while reading the existing file, or
- * `null` when the write is a create. Proving only that the current path holds
- * some regular file is not enough: an editor save or another workspace process
- * between the read and the rename would have its bytes silently discarded, and
- * a create would clobber a file that appeared in the meantime. This narrows
- * that window to the interval between this check and `rename`, which POSIX
- * gives no way to close; any change observed here aborts the write instead.
- */
-async function assertTargetUnchanged(
-  targetPath: string,
-  expected: TargetIdentity | null,
-): Promise<void> {
-  let stat: fs.Stats;
-  try {
-    stat = await fs.promises.lstat(targetPath);
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) {
-      if (expected) {
-        throw new Error('generated step-definition target was removed during validation');
-      }
-      return;
-    }
-    throw error;
-  }
-
-  if (stat.isSymbolicLink()) {
-    throw new Error('generated step-definition target is a symlink');
-  }
-  if (!stat.isFile()) {
-    throw new Error('generated step-definition target is not a regular file');
-  }
-  if (!expected) {
-    throw new Error('generated step-definition target appeared during validation');
-  }
-  if (!sameTargetIdentity(expected, toTargetIdentity(stat))) {
-    throw new Error('generated step-definition target changed during validation');
-  }
-}
-
-function toTargetIdentity(stat: fs.Stats): TargetIdentity {
+function toStepDefinitionIdentity(stat: fs.Stats): WorkspaceRegularFileIdentity {
   return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
 }
 
-function sameTargetIdentity(left: TargetIdentity, right: TargetIdentity): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.size === right.size &&
-    left.mtimeMs === right.mtimeMs
-  );
+function mapWorkspaceWriteError(error: unknown): Error {
+  if (error instanceof ExtensionOwnedWorkspaceWriteError) {
+    const relative = error.workspaceRelativePath;
+    if (error.message.includes('symlink or reparse point')) {
+      if (!relative.includes('/')) {
+        return new Error(`generated step-definition parent is a symlink: ${relative}`);
+      }
+      return new Error('generated step-definition target is a symlink');
+    }
+    if (error.message.includes('outside the workspace')) {
+      return new Error('generated step-definition path escapes the workspace');
+    }
+    if (error.message.includes('changed during validation')) {
+      return new Error('generated step-definition target changed during validation');
+    }
+    if (error.message.includes('already exists') || error.message.includes('appeared during validation')) {
+      return new Error('generated step-definition target appeared during validation');
+    }
+    if (error.message.includes('was removed during validation')) {
+      return new Error('generated step-definition target was removed during validation');
+    }
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {

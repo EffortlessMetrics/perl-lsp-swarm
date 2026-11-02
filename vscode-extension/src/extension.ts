@@ -58,7 +58,7 @@ import {
 } from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
-import { FileKind } from './fileCreation';
+import { FileKind, scaffoldContent } from './fileCreation';
 import { createPerlScaffold } from './scaffoldCommands';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
@@ -4097,4 +4097,34 @@ async function disposeLanguageClient(): Promise<void> {
   // no-op and strand the user on a stopped server.
   serverDemand?.noteStopped();
   userInitiatedStopPending = false;
+}
+
+/** Restores the file-creation listener target dropped during a refactor (#14621). */
+async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
+  for (const uri of event.files) {
+    const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
+    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
+      continue;
+    }
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!folder) {
+      continue;
+    }
+    const ext = path.extname(uri.fsPath).toLowerCase();
+    const kind = ext === '.pm' ? FileKind.Module : ext === '.t' ? FileKind.Test : null;
+    if (kind === null) {
+      continue;
+    }
+    const content = scaffoldContent(kind, folder.uri.fsPath, uri.fsPath);
+    if (content === null) {
+      continue;
+    }
+    const doc = await vscode.workspace.openTextDocument(uri);
+    if (doc.getText().length > 0) {
+      continue;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(uri, new vscode.Position(0, 0), content);
+    await vscode.workspace.applyEdit(edit);
+  }
 }
