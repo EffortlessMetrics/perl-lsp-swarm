@@ -63,6 +63,43 @@ def manifest_path(install_dir: Path) -> Path:
     return install_root_path(install_dir) / MANIFEST_FILENAME
 
 
+def entry_path_under_store(store: Path, relative_path: str) -> Path | None:
+    """Resolve a manifest relative_path strictly inside the install store."""
+    rel = Path(relative_path)
+    if rel.is_absolute() or ".." in rel.parts:
+        return None
+    store_resolved = store.resolve()
+    candidate = store / rel
+    try:
+        candidate.resolve().relative_to(store_resolved)
+    except (ValueError, OSError):
+        return None
+    return candidate
+
+
+def safe_remove_owned_path(path: Path, store: Path) -> None:
+    """Remove a file, symlink, or directory tree without following directory symlinks."""
+    store_resolved = store.resolve()
+    path_resolved = path.resolve()
+    try:
+        path_resolved.relative_to(store_resolved)
+    except ValueError as exc:
+        raise ValueError(f"path escapes install store: {path}") from exc
+
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    if not path.is_dir():
+        return
+
+    for child in sorted(path.iterdir(), reverse=True):
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            safe_remove_owned_path(child, store)
+    path.rmdir()
+
+
 def path_selector_is_owned(link: Path, store: Path) -> bool:
     if not link.is_symlink():
         return False
@@ -303,7 +340,17 @@ def execute_uninstall(install_dir: Path) -> int:
             preserved_foreign += 1
             continue
         rel = entry["relative_path"]
-        path = store / rel
+        path = entry_path_under_store(store, rel)
+        if path is None:
+            emit_receipt(
+                {
+                    "result": "root_or_manifest_mismatch",
+                    "reason": f"manifest_path_escape:{rel}",
+                    "next_action": "reobserve_and_replan",
+                    "route": "posix_installer",
+                }
+            )
+            return 2
         if not path.exists() and not path.is_symlink():
             continue
         if not verify_entry_present(store, entry):
@@ -316,15 +363,18 @@ def execute_uninstall(install_dir: Path) -> int:
                 }
             )
             return 2
-        if path.is_symlink() or path.is_file():
-            path.unlink()
-        elif path.is_dir():
-            for child in sorted(path.rglob("*"), reverse=True):
-                if child.is_file() or child.is_symlink():
-                    child.unlink()
-                elif child.is_dir():
-                    child.rmdir()
-            path.rmdir()
+        try:
+            safe_remove_owned_path(path, store)
+        except ValueError:
+            emit_receipt(
+                {
+                    "result": "root_or_manifest_mismatch",
+                    "reason": f"manifest_path_escape:{rel}",
+                    "next_action": "reobserve_and_replan",
+                    "route": "posix_installer",
+                }
+            )
+            return 2
         removed.append(rel)
 
     if manifest_file.exists():

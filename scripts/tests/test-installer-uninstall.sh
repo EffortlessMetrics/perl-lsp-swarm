@@ -148,6 +148,48 @@ else
     fail_case "run_standalone_uninstall" "status=$CLI_STATUS output=$CLI_OUT"
 fi
 
+# ── manifest path escape refuses destructive work (#18831) ────────────────────
+
+setup_case
+mkdir -p "${INSTALL_DIR}/.perl-lsp/candidates/safe-id"
+printf 'keep\n' > "${INSTALL_DIR}/.perl-lsp/candidates/safe-id/${BIN_NAME}"
+VICTIM="${INSTALL_DIR}/outside-victim"
+printf 'victim\n' > "$VICTIM"
+python3 "$HELPER" record --install-dir "$INSTALL_DIR" >/dev/null
+MANIFEST="${INSTALL_DIR}/.perl-lsp/owned_state.v1.json"
+python3 - "$MANIFEST" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest_path = pathlib.Path(sys.argv[1])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+manifest["entries"].append(
+    {
+        "role": "escape_probe",
+        "relative_path": "../outside-victim",
+        "observed": "present",
+        "ownership_class": "owned_required",
+        "identity": {"kind": "sha256_content", "sha256": "0" * 64},
+        "process_refs": [],
+        "user_modified": False,
+        "retention": "retain_required",
+    }
+)
+manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+run_uninstall
+if [ "$LAST_STATUS" -eq 2 ] && [[ "$LAST_OUT" == *"manifest_path_escape"* ]]; then
+    pass "manifest path escape refuses uninstall"
+else
+    fail_case "manifest path escape" "status=$LAST_STATUS output=$LAST_OUT"
+fi
+if [ -f "$VICTIM" ]; then
+    pass "manifest path escape preserves files outside install root"
+else
+    fail_case "outside victim deleted" "path=$VICTIM was removed"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -ne 0 ]; then
     exit 1
