@@ -374,13 +374,15 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
 
         Mutating a feature inside the default closure would change `default`'s own
         class too, so these tests pick one outside it to keep the assertion pointed
-        at the feature under test.
+        at the feature under test. The staged ledger has no production `source_only`
+        row yet, so the synthetic fixture promotes `incremental` for the duration of
+        the test run.
         """
-        return next(
-            row for row in self.ledger["features"]
-            if row["isolation"] == "source_only"
-            and row["name"] not in self.ledger["default_features"]
-        )
+        row = self.feature_row("incremental")
+        if row["isolation"] != "source_only":
+            row["isolation"] = "source_only"
+            self.write_fixture()
+        return row
 
     # --- dependency universe -------------------------------------------------
 
