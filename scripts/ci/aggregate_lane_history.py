@@ -18,6 +18,7 @@ import argparse
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -42,6 +43,10 @@ MAX_SAMPLES_PER_LANE = 1_000
 TRUSTED_MARKER = "trusted-run.json"
 RUN_DIRECTORY_RE = re.compile(r"run-([1-9][0-9]*)")
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+CONTENT_DIGEST_HEX_RE = re.compile(r"[0-9a-f]{64}")
+# Co-anchor for generated_at + lane_count + lanes so a clean line-wise merge
+# of two honest regenerations cannot keep one parent's digest (#17987).
+CONTENT_DIGEST_FIELDS = ("generated_at", "lane_count", "lanes")
 
 
 @dataclass(frozen=True)
@@ -455,6 +460,39 @@ def build_history(
     }
     if validation is not None:
         history["validation"] = validation
+    return stamp_content_digest(history)
+
+
+def history_content_digest(data: dict[str, Any]) -> str:
+    """SHA-256 over the co-anchored generated_at, lane_count, and lanes fields.
+
+    `content_digest` itself is excluded so the stamp is not self-referential.
+    Canonical JSON (sorted keys, compact separators) makes the digest
+    independent of in-file key order.
+    """
+    preimage = {field: data.get(field) for field in CONTENT_DIGEST_FIELDS}
+    try:
+        encoded = json.dumps(
+            preimage,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        # Non-canonical values (NaN/Inf, unserializable) cannot bind a digest.
+        # Return a non-matching sentinel so the oracle records a digest
+        # mismatch instead of crashing (#17987 co-anchor must fail closed).
+        return ""
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def stamp_content_digest(history: dict[str, Any]) -> dict[str, Any]:
+    """Write `content_digest` covering generated_at, lane_count, and lanes.
+
+    Mutates `history` and returns it so the producer and tests share one stamp.
+    """
+    history["content_digest"] = history_content_digest(history)
     return history
 
 
@@ -463,11 +501,12 @@ def validate_history_payload(
 ) -> list[str]:
     """Structurally validate a lane-history payload; return violations.
 
-    Independent oracle over the checked-in artifact (#11731): the producer's
-    own smoke check runs in the same context that generated the file, so the
-    repository also needs a reader-side gate that can go red on a payload
-    defect — percentile ordering, sample/learned agreement, counter
-    coherence, and lane-count identity are all asserted here.
+    Independent oracle over the checked-in artifact (#11731, #17987): the
+    producer's own smoke check runs in the same context that generated the
+    file, so the repository also needs a reader-side gate that can go red on
+    a payload defect — percentile ordering, sample/learned agreement,
+    counter coherence, lane-count identity, and the content_digest co-anchor
+    that binds generated_at to the lane set.
     """
     violations: list[str] = []
 
@@ -481,6 +520,15 @@ def validate_history_payload(
         violations.append(f"schema_version must be {SCHEMA_VERSION}, got {data.get('schema_version')!r}")
     if not isinstance(data.get("generated_at"), str) or not data.get("generated_at"):
         violations.append("generated_at must be a non-empty string")
+    digest = data.get("content_digest")
+    if not isinstance(digest, str) or not CONTENT_DIGEST_HEX_RE.fullmatch(digest):
+        violations.append("content_digest must be a lowercase sha256 hex digest")
+    else:
+        expected = history_content_digest(data)
+        if digest != expected:
+            violations.append(
+                "content_digest does not match generated_at, lane_count, and lanes"
+            )
     min_samples = data.get("min_samples_for_learned")
     if not isinstance(min_samples, int) or isinstance(min_samples, bool) or min_samples < 1:
         violations.append(f"min_samples_for_learned must be a positive int, got {min_samples!r}")
