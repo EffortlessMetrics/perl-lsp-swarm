@@ -30,6 +30,12 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     // `parking_lot` guards while the surviving row still looks like coverage.
     ("rust::let_underscore_lock", Some("deny"), Some("active")),
     ("clippy::let_underscore_lock", Some("deny"), Some("active")),
+    // Async discipline rail (#2323): lock-across-await and nested-Future returns must
+    // stay enforced at deny; mutex_atomic was promoted on a zero-finding denominator.
+    ("clippy::await_holding_lock", Some("deny"), Some("active")),
+    ("clippy::await_holding_refcell_ref", Some("deny"), Some("active")),
+    ("clippy::async_yields_async", Some("deny"), Some("active")),
+    ("clippy::mutex_atomic", Some("deny"), Some("active")),
 ];
 
 pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Result<()> {
