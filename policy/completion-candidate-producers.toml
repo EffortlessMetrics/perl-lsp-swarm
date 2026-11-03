@@ -190,9 +190,15 @@ outcome_owner = "#10230"
 # identity/evidence/completeness ceilings and migration owners are unchanged.
 # Re-anchored 2026-11-02 (#18731): clippy-only edits in scanned
 # `completion/import_map.rs` after #18684; producer rows unchanged.
-# Re-anchored 2026-11-02 (#2978): merge main through #18875 plus
-# `navigation.rs` semantic method-candidate goto-definition fallback; producer
-# rows unchanged.
+# Re-anchor 2026-11-02 (#18936): #18828 (#18760) narrowed
+# `is_in_regex_flags` so method-arrow suffixes after a closed angle-delimited
+# m<>/qr<> literal do not route into the regex-flag branch, and runtime
+# `add_runtime_workspace_completions` requires a string prefix (not merely a
+# subsequence match) for Package/Class/Role symbols from `find_symbols`. Scan
+# roots: lexical_context.rs, request/context.rs (tests only), and
+# runtime/language/completion.rs; 41 files, producer population unchanged,
+# entry routes and finalizer untouched. This is a source re-audit, not a claim
+# that completion behavior is unchanged.
 source_digest = "sha256:393918b93e6d55430a241d2663ed91d5b72ee4e35019cb08424232aa69943a7d"
 
 [[delegations]]
@@ -254,7 +260,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "direct_call"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11009"
-limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
+limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed. Package, Class, and Role hits from `find_symbols` must match the typed prefix as a string prefix (or qualified prefix), not merely as a subsequence (#18828)."
 note = "Enriches the pool with workspace-indexed symbols under the routing policy."
 
 [[producers]]
@@ -652,7 +658,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
-limitations = "This seam finalizes early on two of its three exit paths: both the regex-flag branch and the plain in-regex branch call the shared deduplicate-and-sort and return, after which the runtime finalizes the page again. Candidates on either branch are therefore sorted twice and capped once downstream. Only the sigil-prefixed branch, which returns empty, is exempt. Collapsing the duplicate finalization is #10229's."
+limitations = "This seam finalizes early on two of its three exit paths: both the regex-flag branch and the plain in-regex branch call the shared deduplicate-and-sort and return, after which the runtime finalizes the page again. Candidates on either branch are therefore sorted twice and capped once downstream. Only the sigil-prefixed branch, which returns empty, is exempt. Collapsing the duplicate finalization is #10229's. The regex-flag branch is gated by `is_in_regex_flags`, which now rejects method-arrow suffixes left after a closed angle-delimited m<>/qr<> literal (#18828)."
 note = "Regex-context routing, with an early finalization on two branches that the shared route does not expect."
 
 [[producers]]
