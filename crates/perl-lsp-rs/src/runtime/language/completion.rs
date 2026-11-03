@@ -21,7 +21,7 @@ use crate::{
     protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri},
     runtime::routing::{IndexAccessMode, route_index_access},
     state::DocumentState,
-    state::{completion_cap, completion_deadline},
+    state::{completion_cap, completion_deadline, completion_parse_settle_budget},
 };
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -1548,10 +1548,22 @@ impl LspServer {
                 uri,
                 generation,
                 value,
-                Self::empty_completion_list(),
+                Self::superseded_completion_list(),
             ),
             None => Self::empty_completion_list(),
         }
+    }
+
+    /// The response for an answer whose document generation advanced while
+    /// the request was analyzing (#18760). The computed page is stale, but
+    /// the client must still re-query: an empty `isIncomplete=false` list
+    /// reads as "no suggestions" and nothing re-triggers, which is the
+    /// "0 items on every keystroke" half of the defect. Marking the page
+    /// incomplete is honest — the document moved under the request — and
+    /// clients honoring `isIncomplete` refill the popup with the settled
+    /// answer.
+    fn superseded_completion_list() -> Value {
+        json!({"isIncomplete": true, "items": []})
     }
 
     /// Handle completion request
@@ -1599,7 +1611,7 @@ impl LspServer {
             // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let (doc_owned, captured_generation) = {
+            let (mut doc_owned, mut captured_generation) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
                     Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
@@ -1613,6 +1625,51 @@ impl LspServer {
                     crate::runtime::timing::elapsed_ms(t_lock_start),
                     crate::runtime::timing::uri_tail(uri),
                 ));
+            }
+
+            // Bounded latest-wins wait for the current generation's parse to
+            // publish (#18760). At keystroke latency the didChange-triggered
+            // parse is usually still in flight; answering immediately either
+            // fell into the fabricated lexical fallback (plausible-looking
+            // junk at an arrow position) or lost the computed answer to the
+            // mid-request generation bump (silently empty). Waiting --
+            // bounded by `completion_parse_settle_budget` -- converts the
+            // common case into the settled, generation-current provider
+            // answer; expiry keeps today's bounded fallback, which is marked
+            // incomplete so clients re-query. Skipped entirely when no parse
+            // has ever published for this document (template-skipped and
+            // oversize documents will never publish one) and when the budget
+            // is zero.
+            {
+                // A parse can only be genuinely in flight when the off-lock
+                // worker is installed; on the synchronous fallback path a
+                // pending snapshot will never settle, so waiting would burn
+                // the budget on every request for the same answer.
+                let settle_budget = if self.parse_worker().is_some() {
+                    completion_parse_settle_budget()
+                } else {
+                    Duration::ZERO
+                };
+                let settle_start = Instant::now();
+                while doc_owned.as_ref().is_some_and(|doc| doc.latest_parsed().is_some())
+                    && settle_budget > Duration::ZERO
+                    && settle_start.elapsed() < settle_budget
+                    && doc_owned.as_ref().is_some_and(|doc| Self::completion_parsed_snapshot(doc).1)
+                {
+                    std::thread::sleep(Duration::from_millis(2));
+                    let documents = self.documents_guard();
+                    match self.get_document(&documents, uri) {
+                        // Re-clone the freshest state AND the generation it
+                        // carries: without the generation update,
+                        // `publish_user_answer_value` would suppress the very
+                        // answer this wait just produced as "stale".
+                        Some(fresh) => {
+                            doc_owned = Some(fresh.clone());
+                            captured_generation = Some(fresh.current_generation());
+                        }
+                        None => break,
+                    }
+                }
             }
 
             let t_analyze_start = std::time::Instant::now();
@@ -1739,8 +1796,15 @@ impl LspServer {
                 } else if doc.full_sync_required() {
                     Vec::new()
                 } else {
-                    // Fallback: provide basic keyword completions when AST is unavailable
-                    self.lexical_complete(&doc.text, offset, Some(uri))
+                    // Fallback: provide basic keyword completions when AST is unavailable.
+                    // A predecessor snapshot means the pending-parse window is active
+                    // (#18760): keep the fabricated method list out of it.
+                    self.lexical_complete(
+                        &doc.text,
+                        offset,
+                        Some(uri),
+                        doc.latest_parsed().is_none(),
+                    )
                 };
 
                 if !doc.full_sync_required() {
@@ -1952,7 +2016,7 @@ impl LspServer {
             // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let (doc_owned, captured_generation) = {
+            let (mut doc_owned, mut captured_generation) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
                     Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
@@ -1966,6 +2030,50 @@ impl LspServer {
                     crate::runtime::timing::elapsed_ms(t_lock_start),
                     crate::runtime::timing::uri_tail(uri),
                 ));
+            }
+
+            // Bounded latest-wins wait for the current generation's parse to
+            // publish (#18760) -- the cancellable handler's mirror of the
+            // `handle_completion` settle loop above. Each iteration checks
+            // the cancellation token, so a cancelled request surfaces
+            // REQUEST_CANCELLED instead of burning its settle budget.
+            {
+                // A parse can only be genuinely in flight when the off-lock
+                // worker is installed; on the synchronous fallback path a
+                // pending snapshot will never settle, so waiting would burn
+                // the budget on every request for the same answer.
+                let settle_budget = if self.parse_worker().is_some() {
+                    completion_parse_settle_budget()
+                } else {
+                    Duration::ZERO
+                };
+                let settle_start = Instant::now();
+                while doc_owned.as_ref().is_some_and(|doc| doc.latest_parsed().is_some())
+                    && settle_budget > Duration::ZERO
+                    && settle_start.elapsed() < settle_budget
+                    && doc_owned.as_ref().is_some_and(|doc| Self::completion_parsed_snapshot(doc).1)
+                {
+                    if token.is_cancelled_relaxed() {
+                        return Err(JsonRpcError {
+                            code: REQUEST_CANCELLED,
+                            message: "Request cancelled during completion settle wait".to_string(),
+                            data: None,
+                        });
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                    let documents = self.documents_guard();
+                    match self.get_document(&documents, uri) {
+                        // Re-clone the freshest state AND the generation it
+                        // carries: without the generation update,
+                        // `publish_user_answer_value` would suppress the very
+                        // answer this wait just produced as "stale".
+                        Some(fresh) => {
+                            doc_owned = Some(fresh.clone());
+                            captured_generation = Some(fresh.current_generation());
+                        }
+                        None => break,
+                    }
+                }
             }
 
             // RAII span: covers the whole analysis attempt via `Drop`, so it
@@ -2096,7 +2204,14 @@ impl LspServer {
                 } else if doc.full_sync_required() {
                     Vec::new()
                 } else {
-                    self.lexical_complete(&doc.text, offset, Some(uri))
+                    // A predecessor snapshot means the pending-parse window is
+                    // active (#18760): keep the fabricated method list out of it.
+                    self.lexical_complete(
+                        &doc.text,
+                        offset,
+                        Some(uri),
+                        doc.latest_parsed().is_none(),
+                    )
                 };
 
                 // Check for cancellation after provider call using relaxed read
@@ -2258,11 +2373,22 @@ impl LspServer {
     }
 
     /// Lexical completion fallback for when AST is unavailable
+    ///
+    /// `fabricate_method_names` admits the fabricated common-method list at
+    /// arrow positions. Callers pass `doc.latest_parsed().is_none()`:
+    /// documents with a predecessor snapshot are in the pending-parse window
+    /// (#18760), where a replacement parse is milliseconds away and the
+    /// response is already marked incomplete, so inventing plausible method
+    /// names ("render" for a class with no render) is strictly worse than
+    /// answering empty. Only documents that will never publish a parse
+    /// (template-skipped, oversize) keep the fabrication as their only
+    /// answer.
     pub(crate) fn lexical_complete(
         &self,
         content: &str,
         offset: usize,
         filepath: Option<&str>,
+        fabricate_method_names: bool,
     ) -> Vec<crate::completion::CompletionItem> {
         let mut completions = Vec::new();
 
@@ -2302,6 +2428,14 @@ impl LspServer {
 
         // If we're completing after '->', provide common method completions
         if is_method_call {
+            // #18760: these names are fabricated, not derived from the
+            // document. In the pending-parse window the settled answer is
+            // milliseconds away, so an invented "render" reads as a
+            // confidently wrong suggestion; answer empty instead and let the
+            // incomplete marker drive the client's re-query.
+            if !fabricate_method_names {
+                return completions;
+            }
             let common_methods = [
                 ("new", "constructor"),
                 ("init", "initializer"),
@@ -2634,7 +2768,9 @@ mod tests {
             ("sub example { @", 15, 15),
             ("sub example { $unknown->", 24, 24),
         ] {
-            let items = server.lexical_complete(source, source.len(), None);
+            // No document is involved, so this exercises the never-parsed
+            // document posture: the fabricated method list stays admitted.
+            let items = server.lexical_complete(source, source.len(), None, true);
             assert!(!items.is_empty(), "fallback fixture must emit candidates: {source}");
             for item in items {
                 assert_eq!(item.text_edit_range, Some((start, end)), "{source}: {}", item.label);
@@ -6138,5 +6274,172 @@ our $single_root_var;
                 "subsequence package {bogus} must not appear for prefix Thing0; got {labels:?}"
             );
         }
+    }
+
+    /// Restores the process-global completion settle budget on every exit
+    /// path, including assertion failures.
+    struct RestoreSettleBudget(std::time::Duration);
+    impl Drop for RestoreSettleBudget {
+        fn drop(&mut self) {
+            if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                limits.completion_parse_settle_budget = self.0;
+            }
+        }
+    }
+
+    fn force_settle_budget(budget: std::time::Duration) -> RestoreSettleBudget {
+        let original = perl_lsp_rs_core::runtime::limits::completion_parse_settle_budget();
+        if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+            limits.completion_parse_settle_budget = budget;
+        }
+        RestoreSettleBudget(original)
+    }
+
+    /// #18760: a completion request that arrives while the current
+    /// generation's parse is still in flight must wait (bounded) for the
+    /// settled snapshot instead of answering from the stale predecessor or
+    /// the fabricated fallback. The response must be generation-current and
+    /// complete.
+    #[test]
+    #[serial_test::serial]
+    fn completion_waits_for_pending_parse_and_answers_current_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = Arc::new(LspServer::default());
+        server.test_install_parse_worker();
+        assert!(server.test_parse_worker_installed());
+
+        // Raise the budget above thread-handoff latency so the deterministic
+        // barrier handoff below cannot exhaust it on a loaded machine.
+        let _restore = force_settle_budget(std::time::Duration::from_secs(5));
+
+        let uri = "file:///workspace/settle_completion.pl";
+        let v1 = "package SettleCompletion;\nsub pred_settle_marker {}\n1;\n";
+        let v2 = "package SettleCompletion;\nsub pred_settle_marker {}\nsub settled_uniq_marker {}\nset\n1;\n";
+
+        server.test_apply_did_open(uri, v1, 1)?;
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "generation-1 parse must publish before the pending-window scenario starts"
+        );
+
+        // Hold generation 2's parse immediately before publish so the
+        // completion request below starts inside the pending-parse window.
+        server.test_parse_worker_arm_barrier(uri, 2);
+        server.test_apply_did_change(uri, v2, 2)?;
+        server.test_parse_worker_wait_until_paused();
+
+        // Release the held parse from a helper thread so the request's
+        // bounded settle wait observes publication while inside its budget.
+        let releaser = Arc::clone(&server);
+        std::thread::spawn(move || releaser.test_parse_worker_release_barrier());
+
+        let response = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 3, "character": 3 }
+            })))?
+            .ok_or("completion must answer during the pending-parse window")?;
+        let items = response["items"].as_array().ok_or("missing items")?;
+        let labels: Vec<&str> = items.iter().filter_map(|item| item["label"].as_str()).collect();
+        assert!(
+            labels.contains(&"settled_uniq_marker"),
+            "settled completion must offer generation-2's subroutine; got {labels:?}"
+        );
+        assert_eq!(
+            response["isIncomplete"],
+            json!(false),
+            "a settled answer must not be marked incomplete: {response}"
+        );
+        Ok(())
+    }
+
+    /// #18760: with the settle budget disabled, the pending-parse window
+    /// keeps today's honest fallback — the response is marked incomplete so
+    /// clients re-query, and the fabricated method list is withheld.
+    #[test]
+    #[serial_test::serial]
+    fn zero_settle_budget_keeps_honest_incomplete_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = Arc::new(LspServer::default());
+        server.test_install_parse_worker();
+        assert!(server.test_parse_worker_installed());
+
+        let _restore = force_settle_budget(std::time::Duration::ZERO);
+
+        let uri = "file:///workspace/settle_fallback.pl";
+        let v1 = "package SettleFallback;\nsub pred_settle_marker {}\n1;\n";
+        let v2 = "package SettleFallback;\nsub pred_settle_marker {}\nsub settled_uniq_marker {}\nset\n1;\n";
+
+        server.test_apply_did_open(uri, v1, 1)?;
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "generation-1 parse must publish before the pending-window scenario starts"
+        );
+
+        server.test_parse_worker_arm_barrier(uri, 2);
+        server.test_apply_did_change(uri, v2, 2)?;
+        server.test_parse_worker_wait_until_paused();
+
+        let response = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 3, "character": 3 }
+            })))?
+            .ok_or("completion must answer during the pending-parse window")?;
+        let items = response["items"].as_array().ok_or("missing items")?;
+        let labels: Vec<&str> = items.iter().filter_map(|item| item["label"].as_str()).collect();
+        assert!(
+            !labels.contains(&"settled_uniq_marker"),
+            "unsettled fallback must not answer from the pending generation; got {labels:?}"
+        );
+        assert_eq!(
+            response["isIncomplete"],
+            json!(true),
+            "the expiry path must tell the client to re-query: {response}"
+        );
+
+        // The re-query the incomplete marker triggers lands the settled answer.
+        server.test_parse_worker_release_barrier();
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "released generation-2 parse must publish"
+        );
+        let settled = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 3, "character": 3 }
+            })))?
+            .ok_or("completion must answer after settling")?;
+        let settled_items = settled["items"].as_array().ok_or("missing settled items")?;
+        let settled_labels: Vec<&str> =
+            settled_items.iter().filter_map(|item| item["label"].as_str()).collect();
+        assert!(
+            settled_labels.contains(&"settled_uniq_marker"),
+            "re-queried completion must offer generation-2's subroutine; got {settled_labels:?}"
+        );
+        Ok(())
+    }
+
+    /// #18760: the fabricated common-method fallback is withheld in the
+    /// pending-parse window (a predecessor snapshot exists) and kept only
+    /// for documents that will never publish a parse.
+    #[test]
+    fn fabricated_method_fallback_only_serves_never_parsed_documents() {
+        let server = LspServer::default();
+        let source = "my $obj = Thing->new;\n$obj->ren";
+
+        let fabricated = server.lexical_complete(source, source.len(), None, true);
+        assert!(
+            fabricated.iter().any(|item| item.label == "render"),
+            "never-parsed documents keep the fabricated method list; got {:?}",
+            fabricated.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+
+        let honest = server.lexical_complete(source, source.len(), None, false);
+        assert!(
+            honest.is_empty(),
+            "the pending-parse window must not invent method names; got {:?}",
+            honest.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
     }
 }

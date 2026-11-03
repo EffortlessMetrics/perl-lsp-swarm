@@ -776,7 +776,7 @@ fn file_operation_create_and_rename_refresh_pull_clients() -> Result<(), Box<dyn
         // A generous injected window makes the second-event control independent
         // of machine speed; successful invalidations must bypass this timer.
         server.refresh_controller =
-            super::refresh::RefreshController::with_debounce(Duration::from_secs(60));
+            super::refresh::RefreshController::with_debounce(Duration::from_mins(1));
         server.client_capabilities.lock().diagnostic_refresh_support = true;
         server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
         server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);

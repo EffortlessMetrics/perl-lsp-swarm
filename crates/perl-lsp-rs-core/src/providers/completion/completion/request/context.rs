@@ -314,6 +314,49 @@ mod tests {
     }
 
     #[test]
+    fn earlier_slash_substitution_does_not_offer_regex_flags_at_arrow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A find-replace edit earlier in the buffer must not poison a clean
+        // method-call site: the flag region ends at the substitution's
+        // closing delimiter (#18760).
+        let source = "package Inventory;\nsub add_item { 1 }\npackage main;\nmy $inv = Inventory->new;\n$sku =~ s/A1/B2/g;\nprint $inv->";
+        let provider = provider_for(source)?;
+        let items = provider.get_completions(source, source.len());
+        let flags = regex_flag_labels(&items);
+        assert!(
+            flags.is_empty(),
+            "clean call site after an earlier `s///` must not offer regex flags; got {flags:?} from {:?}",
+            items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+        for method in ["new", "isa", "can"] {
+            assert!(
+                items.iter().any(|item| item.label == *method),
+                "expected generic method `{method}` at `$inv->` after an earlier `s///`; got {:?}",
+                items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_slash_substitution_does_not_offer_regex_flags_mid_word()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Non-arrow cursors are poisoned by the same unanchored count: a
+        // mid-word completion below a closed `s///` used to answer the nine
+        // regex-flag keywords instead of word candidates (#18760).
+        let source = "$sku =~ s/A1/B2/g;\nmy $count";
+        let provider = provider_for(source)?;
+        let items = provider.get_completions(source, source.len());
+        let flags = regex_flag_labels(&items);
+        assert!(
+            flags.is_empty(),
+            "mid-word completion after a closed `s///` must not offer regex flags; got {flags:?} from {:?}",
+            items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn closed_angle_regex_still_offers_flag_letters() -> Result<(), Box<dyn std::error::Error>> {
         let source = "$x =~ m<foo>";
         let provider = provider_for(source)?;

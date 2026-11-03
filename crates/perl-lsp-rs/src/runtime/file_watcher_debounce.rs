@@ -1026,6 +1026,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    // Harness diagnostics intentionally fail tests with dynamic messages;
+    // the module-scoped exemption matches the sibling test-module convention.
+    #![allow(clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     struct Harness {

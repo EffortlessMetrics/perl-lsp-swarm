@@ -261,6 +261,16 @@ pub struct LspLimits {
     /// Deadline for completion operations (default: 500ms)
     pub completion_deadline: Duration,
 
+    /// How long `textDocument/completion` may wait for the current
+    /// generation's pending parse to publish before answering from the
+    /// bounded fallback (default: 30ms).
+    ///
+    /// At keystroke latency the didChange-triggered parse is usually still
+    /// in flight; a short latest-wins wait converts the common case into the
+    /// settled, correct answer (#18760). Zero disables the wait entirely
+    /// (the fallback answers immediately).
+    pub completion_parse_settle_budget: Duration,
+
     // =========================================================================
     // Degradation Behavior
     // =========================================================================
@@ -304,6 +314,7 @@ impl Default for LspLimits {
             semantic_tokens_deadline: Duration::from_secs(2),
             code_lens_resolve_deadline: Duration::from_secs(1),
             completion_deadline: Duration::from_millis(500),
+            completion_parse_settle_budget: Duration::from_millis(30),
 
             // Degradation behavior
             return_partial_on_timeout: true,
@@ -366,6 +377,9 @@ impl LspLimits {
             // Deadlines (in milliseconds)
             if let Some(v) = limits.get("referenceSearchDeadlineMs").and_then(|v| v.as_u64()) {
                 self.reference_search_deadline = Duration::from_millis(v);
+            }
+            if let Some(v) = limits.get("completionParseSettleBudgetMs").and_then(|v| v.as_u64()) {
+                self.completion_parse_settle_budget = Duration::from_millis(v);
             }
 
             // Memory budget
@@ -447,6 +461,12 @@ pub fn code_lens_resolve_deadline() -> Duration {
 #[inline]
 pub fn completion_deadline() -> Duration {
     LSP_LIMITS.read().map(|l| l.completion_deadline).unwrap_or(Duration::from_millis(500))
+}
+
+/// Get current completion pending-parse settle budget
+#[inline]
+pub fn completion_parse_settle_budget() -> Duration {
+    LSP_LIMITS.read().map(|l| l.completion_parse_settle_budget).unwrap_or(Duration::from_millis(30))
 }
 
 /// Get current inlay hints cap
