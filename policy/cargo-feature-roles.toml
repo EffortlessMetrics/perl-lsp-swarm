@@ -471,7 +471,8 @@ name = "modernize"
 role = "experimental_opt_in"
 owner = "#8409"
 consumers = []
-migration = "No downstream cfg gate yet; reserved for future modernization transforms (#8411)."
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer; modernization API is always compiled after Wave 4 absorption (#4543)."
 
 [[feature]]
 crate = "perl-parser"
