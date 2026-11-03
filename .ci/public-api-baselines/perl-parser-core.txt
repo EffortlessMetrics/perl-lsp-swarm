@@ -6,6 +6,7 @@ pub use perl_parser_core::MissingKind
 pub use perl_parser_core::Node
 pub use perl_parser_core::NodeKind
 pub use perl_parser_core::PositionMapper
+pub use perl_parser_core::RegexSurfaceForm
 pub use perl_parser_core::SourceLocation
 pub use perl_parser_core::Token
 pub use perl_parser_core::TokenKind
@@ -444,6 +445,102 @@ pub perl_parser_core::engine::error::InvalidSignatureParameterKind::SlurpyDefaul
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseBudgetExhaustionDimension
+pub perl_parser_core::engine::error::ParseBudgetExhaustionDimension::Core(perl_parser_core::syntax::error::ParseCoreDimension)
+pub perl_parser_core::engine::error::ParseBudgetExhaustionDimension::HeredocScanBytes
+pub perl_parser_core::engine::error::ParseBudgetExhaustionDimension::Lexer
+pub perl_parser_core::engine::error::ParseBudgetExhaustionDimension::NestingOrDepth
+pub perl_parser_core::engine::error::ParseBudgetExhaustionDimension::Recursion
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::clone(&self) -> perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCancellationIdentity
+pub perl_parser_core::engine::error::ParseCancellationIdentity::CooperativeToken
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCatastrophicCause
+pub perl_parser_core::engine::error::ParseCatastrophicCause::FutureTypedTerminal
+pub perl_parser_core::engine::error::ParseCatastrophicCause::UnrecoverableParserOrLexerFailure
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCatastrophicCause) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCompletion
+pub perl_parser_core::engine::error::ParseCompletion::BudgetExhausted
+pub perl_parser_core::engine::error::ParseCompletion::BudgetExhausted::dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::engine::error::ParseCompletion::BudgetExhausted::limit: core::option::Option<usize>
+pub perl_parser_core::engine::error::ParseCompletion::BudgetExhausted::range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>
+pub perl_parser_core::engine::error::ParseCompletion::BudgetExhausted::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::engine::error::ParseCompletion::BudgetExhausted::usage: core::option::Option<usize>
+pub perl_parser_core::engine::error::ParseCompletion::Cancelled
+pub perl_parser_core::engine::error::ParseCompletion::Cancelled::identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub perl_parser_core::engine::error::ParseCompletion::Cancelled::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::engine::error::ParseCompletion::Catastrophic
+pub perl_parser_core::engine::error::ParseCompletion::Catastrophic::cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::engine::error::ParseCompletion::Catastrophic::safe_partial: bool
+pub perl_parser_core::engine::error::ParseCompletion::CompletedClean
+pub perl_parser_core::engine::error::ParseCompletion::CompletedWithRecovery
+pub perl_parser_core::engine::error::ParseCompletion::CompletedWithRecovery::recovered_count: usize
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::budget_exhausted(dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension, limit: core::option::Option<usize>, usage: core::option::Option<usize>, stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::cancelled(stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::catastrophic(cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause, safe_partial: bool) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::class(self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::from_parser_terminal(stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>, recovered_count: usize, ast: &perl_ast::ast::Node) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::validate_against_output(self, output: &perl_parser_core::syntax::error::ParseOutput) -> core::result::Result<(), perl_parser_core::syntax::error::completion::ParseCompletionValidationError>
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletion) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCompletionClass
+pub perl_parser_core::engine::error::ParseCompletionClass::BudgetExhausted
+pub perl_parser_core::engine::error::ParseCompletionClass::Cancelled
+pub perl_parser_core::engine::error::ParseCompletionClass::Catastrophic
+pub perl_parser_core::engine::error::ParseCompletionClass::Clean
+pub perl_parser_core::engine::error::ParseCompletionClass::Recovered
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionClass) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCompletionStage
+pub perl_parser_core::engine::error::ParseCompletionStage::BeforeParse
+pub perl_parser_core::engine::error::ParseCompletionStage::BeforePublication
+pub perl_parser_core::engine::error::ParseCompletionStage::OrdinaryParsing
+pub perl_parser_core::engine::error::ParseCompletionStage::Recovery
+pub perl_parser_core::engine::error::ParseCompletionStage::Unspecified
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionStage) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCompletionValidationError
+pub perl_parser_core::engine::error::ParseCompletionValidationError::BudgetPayloadMismatch
+pub perl_parser_core::engine::error::ParseCompletionValidationError::BudgetPayloadMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::engine::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_limit: core::option::Option<usize>
+pub perl_parser_core::engine::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_usage: core::option::Option<usize>
+pub perl_parser_core::engine::error::ParseCompletionValidationError::BudgetWithoutBudgetCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CancelledWithoutCancelledCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CatastrophicCauseMismatch
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CatastrophicCauseMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CatastrophicCauseMismatch::recorded: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CatastrophicSafePartialMissingAst
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CleanWithRecovery
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CleanWithRecovery::recovered_count: usize
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CleanWithStopCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::CleanWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::RecoveredCountMismatch
+pub perl_parser_core::engine::error::ParseCompletionValidationError::RecoveredCountMismatch::actual: usize
+pub perl_parser_core::engine::error::ParseCompletionValidationError::RecoveredCountMismatch::recorded: usize
+pub perl_parser_core::engine::error::ParseCompletionValidationError::RecoveredWithStopCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::RecoveredWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::engine::error::ParseCompletionValidationError::RecoveredWithoutRecovery
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionValidationError
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionValidationError) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCoreDimension
 pub perl_parser_core::engine::error::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::engine::error::ParseCoreDimension::NodesConstructed
@@ -477,6 +574,9 @@ pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::Cancelled
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -657,20 +757,28 @@ pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::engine::error::ParseCompletionRange
+pub perl_parser_core::engine::error::ParseCompletionRange::end: usize
+pub perl_parser_core::engine::error::ParseCompletionRange::start: usize
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionRange
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionRange) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub struct perl_parser_core::engine::error::ParseOutput
 pub perl_parser_core::engine::error::ParseOutput::ast: perl_ast::ast::Node
 pub perl_parser_core::engine::error::ParseOutput::budget_usage: perl_parser_core::syntax::error::BudgetTracker
 pub perl_parser_core::engine::error::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::engine::error::ParseOutput::recovered_count: usize
+pub fn perl_parser_core::syntax::error::ParseOutput::completion(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
+pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
+pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
 pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
-pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
-pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::clone(&self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::engine::error::RecoverySalvageProfile
@@ -729,6 +837,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::engine::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
@@ -1003,6 +1112,102 @@ pub perl_parser_core::error::InvalidSignatureParameterKind::SlurpyDefault
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::error::ParseBudgetExhaustionDimension
+pub perl_parser_core::error::ParseBudgetExhaustionDimension::Core(perl_parser_core::syntax::error::ParseCoreDimension)
+pub perl_parser_core::error::ParseBudgetExhaustionDimension::HeredocScanBytes
+pub perl_parser_core::error::ParseBudgetExhaustionDimension::Lexer
+pub perl_parser_core::error::ParseBudgetExhaustionDimension::NestingOrDepth
+pub perl_parser_core::error::ParseBudgetExhaustionDimension::Recursion
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::clone(&self) -> perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::error::ParseCancellationIdentity
+pub perl_parser_core::error::ParseCancellationIdentity::CooperativeToken
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::error::ParseCatastrophicCause
+pub perl_parser_core::error::ParseCatastrophicCause::FutureTypedTerminal
+pub perl_parser_core::error::ParseCatastrophicCause::UnrecoverableParserOrLexerFailure
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCatastrophicCause) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::error::ParseCompletion
+pub perl_parser_core::error::ParseCompletion::BudgetExhausted
+pub perl_parser_core::error::ParseCompletion::BudgetExhausted::dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::error::ParseCompletion::BudgetExhausted::limit: core::option::Option<usize>
+pub perl_parser_core::error::ParseCompletion::BudgetExhausted::range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>
+pub perl_parser_core::error::ParseCompletion::BudgetExhausted::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::error::ParseCompletion::BudgetExhausted::usage: core::option::Option<usize>
+pub perl_parser_core::error::ParseCompletion::Cancelled
+pub perl_parser_core::error::ParseCompletion::Cancelled::identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub perl_parser_core::error::ParseCompletion::Cancelled::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::error::ParseCompletion::Catastrophic
+pub perl_parser_core::error::ParseCompletion::Catastrophic::cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::error::ParseCompletion::Catastrophic::safe_partial: bool
+pub perl_parser_core::error::ParseCompletion::CompletedClean
+pub perl_parser_core::error::ParseCompletion::CompletedWithRecovery
+pub perl_parser_core::error::ParseCompletion::CompletedWithRecovery::recovered_count: usize
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::budget_exhausted(dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension, limit: core::option::Option<usize>, usage: core::option::Option<usize>, stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::cancelled(stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::catastrophic(cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause, safe_partial: bool) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::class(self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::from_parser_terminal(stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>, recovered_count: usize, ast: &perl_ast::ast::Node) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::validate_against_output(self, output: &perl_parser_core::syntax::error::ParseOutput) -> core::result::Result<(), perl_parser_core::syntax::error::completion::ParseCompletionValidationError>
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletion) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::error::ParseCompletionClass
+pub perl_parser_core::error::ParseCompletionClass::BudgetExhausted
+pub perl_parser_core::error::ParseCompletionClass::Cancelled
+pub perl_parser_core::error::ParseCompletionClass::Catastrophic
+pub perl_parser_core::error::ParseCompletionClass::Clean
+pub perl_parser_core::error::ParseCompletionClass::Recovered
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionClass) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::error::ParseCompletionStage
+pub perl_parser_core::error::ParseCompletionStage::BeforeParse
+pub perl_parser_core::error::ParseCompletionStage::BeforePublication
+pub perl_parser_core::error::ParseCompletionStage::OrdinaryParsing
+pub perl_parser_core::error::ParseCompletionStage::Recovery
+pub perl_parser_core::error::ParseCompletionStage::Unspecified
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionStage) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::error::ParseCompletionValidationError
+pub perl_parser_core::error::ParseCompletionValidationError::BudgetPayloadMismatch
+pub perl_parser_core::error::ParseCompletionValidationError::BudgetPayloadMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_limit: core::option::Option<usize>
+pub perl_parser_core::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_usage: core::option::Option<usize>
+pub perl_parser_core::error::ParseCompletionValidationError::BudgetWithoutBudgetCause
+pub perl_parser_core::error::ParseCompletionValidationError::CancelledWithoutCancelledCause
+pub perl_parser_core::error::ParseCompletionValidationError::CatastrophicCauseMismatch
+pub perl_parser_core::error::ParseCompletionValidationError::CatastrophicCauseMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::error::ParseCompletionValidationError::CatastrophicCauseMismatch::recorded: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::error::ParseCompletionValidationError::CatastrophicSafePartialMissingAst
+pub perl_parser_core::error::ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause
+pub perl_parser_core::error::ParseCompletionValidationError::CleanWithRecovery
+pub perl_parser_core::error::ParseCompletionValidationError::CleanWithRecovery::recovered_count: usize
+pub perl_parser_core::error::ParseCompletionValidationError::CleanWithStopCause
+pub perl_parser_core::error::ParseCompletionValidationError::CleanWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::error::ParseCompletionValidationError::RecoveredCountMismatch
+pub perl_parser_core::error::ParseCompletionValidationError::RecoveredCountMismatch::actual: usize
+pub perl_parser_core::error::ParseCompletionValidationError::RecoveredCountMismatch::recorded: usize
+pub perl_parser_core::error::ParseCompletionValidationError::RecoveredWithStopCause
+pub perl_parser_core::error::ParseCompletionValidationError::RecoveredWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::error::ParseCompletionValidationError::RecoveredWithoutRecovery
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionValidationError
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionValidationError) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::error::ParseCoreDimension
 pub perl_parser_core::error::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::error::ParseCoreDimension::NodesConstructed
@@ -1036,6 +1241,9 @@ pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::Strin
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::error::ParseError::Cancelled
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -1216,20 +1424,28 @@ pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::error::ParseCompletionRange
+pub perl_parser_core::error::ParseCompletionRange::end: usize
+pub perl_parser_core::error::ParseCompletionRange::start: usize
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionRange
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionRange) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub struct perl_parser_core::error::ParseOutput
 pub perl_parser_core::error::ParseOutput::ast: perl_ast::ast::Node
 pub perl_parser_core::error::ParseOutput::budget_usage: perl_parser_core::syntax::error::BudgetTracker
 pub perl_parser_core::error::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::error::ParseOutput::recovered_count: usize
+pub fn perl_parser_core::syntax::error::ParseOutput::completion(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
+pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
+pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
 pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
-pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
-pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::clone(&self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::error::RecoverySalvageProfile
@@ -1411,6 +1627,7 @@ pub fn perl_parser_core::hir::AssignMode::clone(&self) -> perl_parser_core::hir:
 pub fn perl_parser_core::hir::AssignMode::eq(&self, other: &perl_parser_core::hir::AssignMode) -> bool
 pub fn perl_parser_core::hir::AssignMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::hir::BarewordRole
+pub perl_parser_core::hir::BarewordRole::DynamicIndirectObject
 pub perl_parser_core::hir::BarewordRole::Expression
 pub perl_parser_core::hir::BarewordRole::HashKey
 pub perl_parser_core::hir::BarewordRole::IndirectObject
@@ -1432,6 +1649,8 @@ pub fn perl_parser_core::hir::BinaryOp::clone(&self) -> perl_parser_core::hir::B
 pub fn perl_parser_core::hir::BinaryOp::eq(&self, other: &perl_parser_core::hir::BinaryOp) -> bool
 pub fn perl_parser_core::hir::BinaryOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::hir::BodyOwnerKind
+pub perl_parser_core::hir::BodyOwnerKind::Class
+pub perl_parser_core::hir::BodyOwnerKind::Class::name: alloc::string::String
 pub perl_parser_core::hir::BodyOwnerKind::Method
 pub perl_parser_core::hir::BodyOwnerKind::Method::name: alloc::string::String
 pub perl_parser_core::hir::BodyOwnerKind::ProgramRoot
@@ -1590,6 +1809,7 @@ pub fn perl_parser_core::hir::DataSectionMarker::eq(&self, other: &perl_parser_c
 pub fn perl_parser_core::hir::DataSectionMarker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::DataSectionMarker::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::hir::DeclStorageClass
+pub perl_parser_core::hir::DeclStorageClass::Field
 pub perl_parser_core::hir::DeclStorageClass::Local
 pub perl_parser_core::hir::DeclStorageClass::My
 pub perl_parser_core::hir::DeclStorageClass::Our
@@ -1644,6 +1864,13 @@ pub fn perl_parser_core::hir::FrameworkAdapterKind::clone(&self) -> perl_parser_
 pub fn perl_parser_core::hir::FrameworkAdapterKind::eq(&self, other: &perl_parser_core::hir::FrameworkAdapterKind) -> bool
 pub fn perl_parser_core::hir::FrameworkAdapterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::FrameworkAdapterKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::FrameworkExportMechanism
+pub perl_parser_core::hir::FrameworkExportMechanism::Direct
+pub perl_parser_core::hir::FrameworkExportMechanism::GeneratorBacked
+pub fn perl_parser_core::hir::FrameworkExportMechanism::clone(&self) -> perl_parser_core::hir::FrameworkExportMechanism
+pub fn perl_parser_core::hir::FrameworkExportMechanism::eq(&self, other: &perl_parser_core::hir::FrameworkExportMechanism) -> bool
+pub fn perl_parser_core::hir::FrameworkExportMechanism::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::FrameworkExportMechanism::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::FrameworkExportedSymbolKind
 pub perl_parser_core::hir::FrameworkExportedSymbolKind::Default
 pub perl_parser_core::hir::FrameworkExportedSymbolKind::Optional
@@ -1704,6 +1931,7 @@ pub perl_parser_core::hir::HirExpr::Heredoc::command: bool
 pub perl_parser_core::hir::HirExpr::Heredoc::delimiter: alloc::string::String
 pub perl_parser_core::hir::HirExpr::Heredoc::indented: bool
 pub perl_parser_core::hir::HirExpr::Heredoc::interpolated: bool
+pub perl_parser_core::hir::HirExpr::Literal(perl_parser_core::hir::HirLiteral)
 pub perl_parser_core::hir::HirExpr::Loop
 pub perl_parser_core::hir::HirExpr::Loop::body: perl_parser_core::hir::HirBlockId
 pub perl_parser_core::hir::HirExpr::Loop::condition: core::option::Option<perl_parser_core::hir::HirExprId>
@@ -1776,6 +2004,21 @@ pub const perl_parser_core::hir::HirKind::ALL_KIND_NAMES: &[&'static str]
 pub fn perl_parser_core::hir::HirKind::clone(&self) -> perl_parser_core::hir::HirKind
 pub fn perl_parser_core::hir::HirKind::eq(&self, other: &perl_parser_core::hir::HirKind) -> bool
 pub fn perl_parser_core::hir::HirKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::hir::HirLiteralKind
+pub perl_parser_core::hir::HirLiteralKind::Number
+pub perl_parser_core::hir::HirLiteralKind::String(perl_parser_core::hir::HirQuoteKind)
+pub perl_parser_core::hir::HirLiteralKind::Undef
+pub fn perl_parser_core::hir::HirLiteralKind::clone(&self) -> perl_parser_core::hir::HirLiteralKind
+pub fn perl_parser_core::hir::HirLiteralKind::eq(&self, other: &perl_parser_core::hir::HirLiteralKind) -> bool
+pub fn perl_parser_core::hir::HirLiteralKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::HirLiteralKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::HirQuoteKind
+pub perl_parser_core::hir::HirQuoteKind::Double
+pub perl_parser_core::hir::HirQuoteKind::Single
+pub fn perl_parser_core::hir::HirQuoteKind::clone(&self) -> perl_parser_core::hir::HirQuoteKind
+pub fn perl_parser_core::hir::HirQuoteKind::eq(&self, other: &perl_parser_core::hir::HirQuoteKind) -> bool
+pub fn perl_parser_core::hir::HirQuoteKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::HirQuoteKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::HirRegexTarget
 pub perl_parser_core::hir::HirRegexTarget::Bound
 pub perl_parser_core::hir::HirRegexTarget::Bound::ast_kind: &'static str
@@ -2078,6 +2321,7 @@ pub perl_parser_core::hir::Binding::scope_id: perl_parser_core::hir::HirScopeId
 pub perl_parser_core::hir::Binding::shadows: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::Binding::sigil: alloc::string::String
 pub perl_parser_core::hir::Binding::storage: perl_parser_core::hir::StorageClass
+pub perl_parser_core::hir::Binding::visible_from: usize
 pub fn perl_parser_core::hir::Binding::clone(&self) -> perl_parser_core::hir::Binding
 pub fn perl_parser_core::hir::Binding::eq(&self, other: &perl_parser_core::hir::Binding) -> bool
 pub fn perl_parser_core::hir::Binding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2243,6 +2487,7 @@ pub fn perl_parser_core::hir::DynamicBoundary::fmt(&self, f: &mut core::fmt::For
 #[non_exhaustive] pub struct perl_parser_core::hir::ExportDeclaration
 pub perl_parser_core::hir::ExportDeclaration::confidence: perl_parser_core::hir::StashConfidence
 pub perl_parser_core::hir::ExportDeclaration::declaration_item: core::option::Option<perl_parser_core::hir::HirId>
+pub perl_parser_core::hir::ExportDeclaration::generator_backed: alloc::vec::Vec<alloc::string::String>
 pub perl_parser_core::hir::ExportDeclaration::kind: perl_parser_core::hir::ExportDeclarationKind
 pub perl_parser_core::hir::ExportDeclaration::package: alloc::string::String
 pub perl_parser_core::hir::ExportDeclaration::provenance: perl_parser_core::hir::StashProvenance
@@ -2278,6 +2523,7 @@ pub perl_parser_core::hir::FrameworkExportedSymbolFact::adapter: perl_parser_cor
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::confidence: perl_semantic_facts::Confidence
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::declaration_item: core::option::Option<perl_parser_core::hir::HirId>
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::kind: perl_parser_core::hir::FrameworkExportedSymbolKind
+pub perl_parser_core::hir::FrameworkExportedSymbolFact::mechanism: perl_parser_core::hir::FrameworkExportMechanism
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::name: alloc::string::String
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::package: alloc::string::String
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::provenance: perl_semantic_facts::Provenance
@@ -2417,6 +2663,13 @@ pub perl_parser_core::hir::HirItem::scope_context: core::option::Option<perl_par
 pub fn perl_parser_core::hir::HirItem::clone(&self) -> perl_parser_core::hir::HirItem
 pub fn perl_parser_core::hir::HirItem::eq(&self, other: &perl_parser_core::hir::HirItem) -> bool
 pub fn perl_parser_core::hir::HirItem::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_parser_core::hir::HirLiteral
+pub perl_parser_core::hir::HirLiteral::kind: perl_parser_core::hir::HirLiteralKind
+pub perl_parser_core::hir::HirLiteral::payload: alloc::string::String
+pub perl_parser_core::hir::HirLiteral::synthesized: bool
+pub fn perl_parser_core::hir::HirLiteral::clone(&self) -> perl_parser_core::hir::HirLiteral
+pub fn perl_parser_core::hir::HirLiteral::eq(&self, other: &perl_parser_core::hir::HirLiteral) -> bool
+pub fn perl_parser_core::hir::HirLiteral::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::hir::HirLoopLabel
 pub perl_parser_core::hir::HirLoopLabel::name: alloc::string::String
 pub perl_parser_core::hir::HirLoopLabel::range: perl_position_tracking::span::SourceLocation
@@ -2435,6 +2688,7 @@ pub fn perl_parser_core::hir::HirLoopRegionId::hash<__H: core::hash::Hasher>(&se
 #[non_exhaustive] pub struct perl_parser_core::hir::HirRegex
 pub perl_parser_core::hir::HirRegex::analysis: perl_parser_core::hir::RegexAnalysisAnchor
 pub perl_parser_core::hir::HirRegex::embedded_code: bool
+pub perl_parser_core::hir::HirRegex::form: perl_ast::ast::RegexSurfaceForm
 pub perl_parser_core::hir::HirRegex::modifiers: alloc::string::String
 pub fn perl_parser_core::hir::HirRegex::clone(&self) -> perl_parser_core::hir::HirRegex
 pub fn perl_parser_core::hir::HirRegex::eq(&self, other: &perl_parser_core::hir::HirRegex) -> bool
@@ -2925,6 +3179,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
@@ -3240,6 +3495,9 @@ pub perl_parser_core::pir::PirOperation::LexicalWrite
 pub perl_parser_core::pir::PirOperation::LexicalWrite::name: perl_parser_core::pir::LexicalName
 pub perl_parser_core::pir::PirOperation::Literal
 pub perl_parser_core::pir::PirOperation::Literal::kind: perl_parser_core::pir::PirLiteralKind
+pub perl_parser_core::pir::PirOperation::Literal::quote: core::option::Option<perl_parser_core::hir::HirQuoteKind>
+pub perl_parser_core::pir::PirOperation::Literal::synthesized: bool
+pub perl_parser_core::pir::PirOperation::Literal::value: core::option::Option<alloc::string::String>
 pub perl_parser_core::pir::PirOperation::Loop
 pub perl_parser_core::pir::PirOperation::Loop::condition: core::option::Option<perl_parser_core::pir::PirId>
 pub perl_parser_core::pir::PirOperation::Match
@@ -3444,6 +3702,7 @@ pub fn perl_parser_core::pir::FilePirLexicalContributionV1::eq(&self, other: &pe
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 #[non_exhaustive] pub struct perl_parser_core::pir::LexicalBindingFact
+pub perl_parser_core::pir::LexicalBindingFact::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::pir::LexicalBindingFact::body_idx: usize
 pub perl_parser_core::pir::LexicalBindingFact::body_owner: perl_parser_core::hir::BodyOwnerKind
 pub perl_parser_core::pir::LexicalBindingFact::name: perl_parser_core::pir::LexicalName
@@ -3821,6 +4080,110 @@ pub fn perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::eq(&
 pub fn perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::default() -> perl_parser_core::engine::error::classifier::RecoverySalvageMetrics
 pub fn perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::classifier::classify_recovery_salvage(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError]) -> perl_parser_core::engine::error::classifier::RecoverySalvageMetrics
+pub mod perl_parser_core::syntax::error::completion
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::Core(perl_parser_core::syntax::error::ParseCoreDimension)
+pub perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::HeredocScanBytes
+pub perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::Lexer
+pub perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::NestingOrDepth
+pub perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::Recursion
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::clone(&self) -> perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub perl_parser_core::syntax::error::completion::ParseCancellationIdentity::CooperativeToken
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::syntax::error::completion::ParseCatastrophicCause::FutureTypedTerminal
+pub perl_parser_core::syntax::error::completion::ParseCatastrophicCause::UnrecoverableParserOrLexerFailure
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCatastrophicCause) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::completion::ParseCompletion
+pub perl_parser_core::syntax::error::completion::ParseCompletion::BudgetExhausted
+pub perl_parser_core::syntax::error::completion::ParseCompletion::BudgetExhausted::dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::syntax::error::completion::ParseCompletion::BudgetExhausted::limit: core::option::Option<usize>
+pub perl_parser_core::syntax::error::completion::ParseCompletion::BudgetExhausted::range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>
+pub perl_parser_core::syntax::error::completion::ParseCompletion::BudgetExhausted::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::syntax::error::completion::ParseCompletion::BudgetExhausted::usage: core::option::Option<usize>
+pub perl_parser_core::syntax::error::completion::ParseCompletion::Cancelled
+pub perl_parser_core::syntax::error::completion::ParseCompletion::Cancelled::identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub perl_parser_core::syntax::error::completion::ParseCompletion::Cancelled::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::syntax::error::completion::ParseCompletion::Catastrophic
+pub perl_parser_core::syntax::error::completion::ParseCompletion::Catastrophic::cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::syntax::error::completion::ParseCompletion::Catastrophic::safe_partial: bool
+pub perl_parser_core::syntax::error::completion::ParseCompletion::CompletedClean
+pub perl_parser_core::syntax::error::completion::ParseCompletion::CompletedWithRecovery
+pub perl_parser_core::syntax::error::completion::ParseCompletion::CompletedWithRecovery::recovered_count: usize
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::budget_exhausted(dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension, limit: core::option::Option<usize>, usage: core::option::Option<usize>, stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::cancelled(stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::catastrophic(cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause, safe_partial: bool) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::class(self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::from_parser_terminal(stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>, recovered_count: usize, ast: &perl_ast::ast::Node) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::validate_against_output(self, output: &perl_parser_core::syntax::error::ParseOutput) -> core::result::Result<(), perl_parser_core::syntax::error::completion::ParseCompletionValidationError>
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletion) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub perl_parser_core::syntax::error::completion::ParseCompletionClass::BudgetExhausted
+pub perl_parser_core::syntax::error::completion::ParseCompletionClass::Cancelled
+pub perl_parser_core::syntax::error::completion::ParseCompletionClass::Catastrophic
+pub perl_parser_core::syntax::error::completion::ParseCompletionClass::Clean
+pub perl_parser_core::syntax::error::completion::ParseCompletionClass::Recovered
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionClass) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::syntax::error::completion::ParseCompletionStage::BeforeParse
+pub perl_parser_core::syntax::error::completion::ParseCompletionStage::BeforePublication
+pub perl_parser_core::syntax::error::completion::ParseCompletionStage::OrdinaryParsing
+pub perl_parser_core::syntax::error::completion::ParseCompletionStage::Recovery
+pub perl_parser_core::syntax::error::completion::ParseCompletionStage::Unspecified
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionStage) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::completion::ParseCompletionValidationError
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::BudgetPayloadMismatch
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::BudgetPayloadMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_limit: core::option::Option<usize>
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_usage: core::option::Option<usize>
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::BudgetWithoutBudgetCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CancelledWithoutCancelledCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CatastrophicCauseMismatch
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CatastrophicCauseMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CatastrophicCauseMismatch::recorded: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CatastrophicSafePartialMissingAst
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CleanWithRecovery
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CleanWithRecovery::recovered_count: usize
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CleanWithStopCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::CleanWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::RecoveredCountMismatch
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::RecoveredCountMismatch::actual: usize
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::RecoveredCountMismatch::recorded: usize
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::RecoveredWithStopCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::RecoveredWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::completion::ParseCompletionValidationError::RecoveredWithoutRecovery
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionValidationError
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionValidationError) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::syntax::error::completion::ParseCompletionRange
+pub perl_parser_core::syntax::error::completion::ParseCompletionRange::end: usize
+pub perl_parser_core::syntax::error::completion::ParseCompletionRange::start: usize
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionRange
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionRange) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub mod perl_parser_core::syntax::error::recovery
 pub enum perl_parser_core::syntax::error::recovery::RecoveryResult
 pub perl_parser_core::syntax::error::recovery::RecoveryResult::AtSyncPoint
@@ -3899,6 +4262,102 @@ pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::SlurpyDefaul
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseBudgetExhaustionDimension
+pub perl_parser_core::syntax::error::ParseBudgetExhaustionDimension::Core(perl_parser_core::syntax::error::ParseCoreDimension)
+pub perl_parser_core::syntax::error::ParseBudgetExhaustionDimension::HeredocScanBytes
+pub perl_parser_core::syntax::error::ParseBudgetExhaustionDimension::Lexer
+pub perl_parser_core::syntax::error::ParseBudgetExhaustionDimension::NestingOrDepth
+pub perl_parser_core::syntax::error::ParseBudgetExhaustionDimension::Recursion
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::clone(&self) -> perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCancellationIdentity
+pub perl_parser_core::syntax::error::ParseCancellationIdentity::CooperativeToken
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCatastrophicCause
+pub perl_parser_core::syntax::error::ParseCatastrophicCause::FutureTypedTerminal
+pub perl_parser_core::syntax::error::ParseCatastrophicCause::UnrecoverableParserOrLexerFailure
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCatastrophicCause) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCompletion
+pub perl_parser_core::syntax::error::ParseCompletion::BudgetExhausted
+pub perl_parser_core::syntax::error::ParseCompletion::BudgetExhausted::dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::syntax::error::ParseCompletion::BudgetExhausted::limit: core::option::Option<usize>
+pub perl_parser_core::syntax::error::ParseCompletion::BudgetExhausted::range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>
+pub perl_parser_core::syntax::error::ParseCompletion::BudgetExhausted::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::syntax::error::ParseCompletion::BudgetExhausted::usage: core::option::Option<usize>
+pub perl_parser_core::syntax::error::ParseCompletion::Cancelled
+pub perl_parser_core::syntax::error::ParseCompletion::Cancelled::identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub perl_parser_core::syntax::error::ParseCompletion::Cancelled::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::syntax::error::ParseCompletion::Catastrophic
+pub perl_parser_core::syntax::error::ParseCompletion::Catastrophic::cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::syntax::error::ParseCompletion::Catastrophic::safe_partial: bool
+pub perl_parser_core::syntax::error::ParseCompletion::CompletedClean
+pub perl_parser_core::syntax::error::ParseCompletion::CompletedWithRecovery
+pub perl_parser_core::syntax::error::ParseCompletion::CompletedWithRecovery::recovered_count: usize
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::budget_exhausted(dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension, limit: core::option::Option<usize>, usage: core::option::Option<usize>, stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::cancelled(stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::catastrophic(cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause, safe_partial: bool) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::class(self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::from_parser_terminal(stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>, recovered_count: usize, ast: &perl_ast::ast::Node) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::validate_against_output(self, output: &perl_parser_core::syntax::error::ParseOutput) -> core::result::Result<(), perl_parser_core::syntax::error::completion::ParseCompletionValidationError>
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletion) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCompletionClass
+pub perl_parser_core::syntax::error::ParseCompletionClass::BudgetExhausted
+pub perl_parser_core::syntax::error::ParseCompletionClass::Cancelled
+pub perl_parser_core::syntax::error::ParseCompletionClass::Catastrophic
+pub perl_parser_core::syntax::error::ParseCompletionClass::Clean
+pub perl_parser_core::syntax::error::ParseCompletionClass::Recovered
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionClass) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCompletionStage
+pub perl_parser_core::syntax::error::ParseCompletionStage::BeforeParse
+pub perl_parser_core::syntax::error::ParseCompletionStage::BeforePublication
+pub perl_parser_core::syntax::error::ParseCompletionStage::OrdinaryParsing
+pub perl_parser_core::syntax::error::ParseCompletionStage::Recovery
+pub perl_parser_core::syntax::error::ParseCompletionStage::Unspecified
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionStage) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCompletionValidationError
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::BudgetPayloadMismatch
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::BudgetPayloadMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_limit: core::option::Option<usize>
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_usage: core::option::Option<usize>
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::BudgetWithoutBudgetCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CancelledWithoutCancelledCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CatastrophicCauseMismatch
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CatastrophicCauseMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CatastrophicCauseMismatch::recorded: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CatastrophicSafePartialMissingAst
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CleanWithRecovery
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CleanWithRecovery::recovered_count: usize
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CleanWithStopCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::CleanWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::RecoveredCountMismatch
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::RecoveredCountMismatch::actual: usize
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::RecoveredCountMismatch::recorded: usize
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::RecoveredWithStopCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::RecoveredWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::ParseCompletionValidationError::RecoveredWithoutRecovery
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionValidationError
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionValidationError) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::syntax::error::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::syntax::error::ParseCoreDimension::NodesConstructed
@@ -3932,6 +4391,9 @@ pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::Cancelled
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -4112,20 +4574,28 @@ pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::syntax::error::ParseCompletionRange
+pub perl_parser_core::syntax::error::ParseCompletionRange::end: usize
+pub perl_parser_core::syntax::error::ParseCompletionRange::start: usize
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionRange
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionRange) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub struct perl_parser_core::syntax::error::ParseOutput
 pub perl_parser_core::syntax::error::ParseOutput::ast: perl_ast::ast::Node
 pub perl_parser_core::syntax::error::ParseOutput::budget_usage: perl_parser_core::syntax::error::BudgetTracker
 pub perl_parser_core::syntax::error::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::syntax::error::ParseOutput::recovered_count: usize
+pub fn perl_parser_core::syntax::error::ParseOutput::completion(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
+pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
+pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
 pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
-pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
-pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::clone(&self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::syntax::error::RecoverySalvageProfile
@@ -4818,6 +5288,102 @@ pub perl_parser_core::InvalidSignatureParameterKind::SlurpyDefault
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
 pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::ParseBudgetExhaustionDimension
+pub perl_parser_core::ParseBudgetExhaustionDimension::Core(perl_parser_core::syntax::error::ParseCoreDimension)
+pub perl_parser_core::ParseBudgetExhaustionDimension::HeredocScanBytes
+pub perl_parser_core::ParseBudgetExhaustionDimension::Lexer
+pub perl_parser_core::ParseBudgetExhaustionDimension::NestingOrDepth
+pub perl_parser_core::ParseBudgetExhaustionDimension::Recursion
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::clone(&self) -> perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::ParseCancellationIdentity
+pub perl_parser_core::ParseCancellationIdentity::CooperativeToken
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCancellationIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::ParseCatastrophicCause
+pub perl_parser_core::ParseCatastrophicCause::FutureTypedTerminal
+pub perl_parser_core::ParseCatastrophicCause::UnrecoverableParserOrLexerFailure
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCatastrophicCause) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCatastrophicCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::ParseCompletion
+pub perl_parser_core::ParseCompletion::BudgetExhausted
+pub perl_parser_core::ParseCompletion::BudgetExhausted::dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::ParseCompletion::BudgetExhausted::limit: core::option::Option<usize>
+pub perl_parser_core::ParseCompletion::BudgetExhausted::range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>
+pub perl_parser_core::ParseCompletion::BudgetExhausted::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::ParseCompletion::BudgetExhausted::usage: core::option::Option<usize>
+pub perl_parser_core::ParseCompletion::Cancelled
+pub perl_parser_core::ParseCompletion::Cancelled::identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity
+pub perl_parser_core::ParseCompletion::Cancelled::stage: perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub perl_parser_core::ParseCompletion::Catastrophic
+pub perl_parser_core::ParseCompletion::Catastrophic::cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::ParseCompletion::Catastrophic::safe_partial: bool
+pub perl_parser_core::ParseCompletion::CompletedClean
+pub perl_parser_core::ParseCompletion::CompletedWithRecovery
+pub perl_parser_core::ParseCompletion::CompletedWithRecovery::recovered_count: usize
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::budget_exhausted(dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension, limit: core::option::Option<usize>, usage: core::option::Option<usize>, stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, range: core::option::Option<perl_parser_core::syntax::error::completion::ParseCompletionRange>) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::cancelled(stage: perl_parser_core::syntax::error::completion::ParseCompletionStage, identity: perl_parser_core::syntax::error::completion::ParseCancellationIdentity) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::catastrophic(cause: perl_parser_core::syntax::error::completion::ParseCatastrophicCause, safe_partial: bool) -> Self
+pub const fn perl_parser_core::syntax::error::completion::ParseCompletion::class(self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::from_parser_terminal(stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>, recovered_count: usize, ast: &perl_ast::ast::Node) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::validate_against_output(self, output: &perl_parser_core::syntax::error::ParseOutput) -> core::result::Result<(), perl_parser_core::syntax::error::completion::ParseCompletionValidationError>
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletion) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::ParseCompletionClass
+pub perl_parser_core::ParseCompletionClass::BudgetExhausted
+pub perl_parser_core::ParseCompletionClass::Cancelled
+pub perl_parser_core::ParseCompletionClass::Catastrophic
+pub perl_parser_core::ParseCompletionClass::Clean
+pub perl_parser_core::ParseCompletionClass::Recovered
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionClass
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionClass) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::ParseCompletionStage
+pub perl_parser_core::ParseCompletionStage::BeforeParse
+pub perl_parser_core::ParseCompletionStage::BeforePublication
+pub perl_parser_core::ParseCompletionStage::OrdinaryParsing
+pub perl_parser_core::ParseCompletionStage::Recovery
+pub perl_parser_core::ParseCompletionStage::Unspecified
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionStage
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionStage) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionStage::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::ParseCompletionValidationError
+pub perl_parser_core::ParseCompletionValidationError::BudgetPayloadMismatch
+pub perl_parser_core::ParseCompletionValidationError::BudgetPayloadMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_dimension: perl_parser_core::syntax::error::completion::ParseBudgetExhaustionDimension
+pub perl_parser_core::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_limit: core::option::Option<usize>
+pub perl_parser_core::ParseCompletionValidationError::BudgetPayloadMismatch::recorded_usage: core::option::Option<usize>
+pub perl_parser_core::ParseCompletionValidationError::BudgetWithoutBudgetCause
+pub perl_parser_core::ParseCompletionValidationError::CancelledWithoutCancelledCause
+pub perl_parser_core::ParseCompletionValidationError::CatastrophicCauseMismatch
+pub perl_parser_core::ParseCompletionValidationError::CatastrophicCauseMismatch::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::ParseCompletionValidationError::CatastrophicCauseMismatch::recorded: perl_parser_core::syntax::error::completion::ParseCatastrophicCause
+pub perl_parser_core::ParseCompletionValidationError::CatastrophicSafePartialMissingAst
+pub perl_parser_core::ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause
+pub perl_parser_core::ParseCompletionValidationError::CleanWithRecovery
+pub perl_parser_core::ParseCompletionValidationError::CleanWithRecovery::recovered_count: usize
+pub perl_parser_core::ParseCompletionValidationError::CleanWithStopCause
+pub perl_parser_core::ParseCompletionValidationError::CleanWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::ParseCompletionValidationError::RecoveredCountMismatch
+pub perl_parser_core::ParseCompletionValidationError::RecoveredCountMismatch::actual: usize
+pub perl_parser_core::ParseCompletionValidationError::RecoveredCountMismatch::recorded: usize
+pub perl_parser_core::ParseCompletionValidationError::RecoveredWithStopCause
+pub perl_parser_core::ParseCompletionValidationError::RecoveredWithStopCause::cause: perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::ParseCompletionValidationError::RecoveredWithoutRecovery
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionValidationError
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionValidationError) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::ParseCoreDimension
 pub perl_parser_core::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::ParseCoreDimension::NodesConstructed
@@ -4842,6 +5408,9 @@ pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::ParseError::CStyleForContinueBlock
 pub perl_parser_core::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::ParseError::Cancelled
+pub perl_parser_core::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::ParseError::CoreBudgetExhausted
 pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::ParseError::CoreBudgetExhausted::limit: usize
@@ -5062,20 +5631,28 @@ pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::ParseCompletionRange
+pub perl_parser_core::ParseCompletionRange::end: usize
+pub perl_parser_core::ParseCompletionRange::start: usize
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::clone(&self) -> perl_parser_core::syntax::error::completion::ParseCompletionRange
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::eq(&self, other: &perl_parser_core::syntax::error::completion::ParseCompletionRange) -> bool
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::completion::ParseCompletionRange::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub struct perl_parser_core::ParseOutput
 pub perl_parser_core::ParseOutput::ast: perl_ast::ast::Node
 pub perl_parser_core::ParseOutput::budget_usage: perl_parser_core::syntax::error::BudgetTracker
 pub perl_parser_core::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::ParseOutput::recovered_count: usize
+pub fn perl_parser_core::syntax::error::ParseOutput::completion(&self) -> perl_parser_core::syntax::error::completion::ParseCompletion
+pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
+pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
+pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
 pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
-pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
-pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::clone(&self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::Parser<'a>
@@ -5089,6 +5666,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget

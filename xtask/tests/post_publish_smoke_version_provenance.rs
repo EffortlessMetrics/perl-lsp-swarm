@@ -131,25 +131,99 @@ impl Resolution {
     }
 }
 
-/// Execute the resolver with a controlled receipt.
+/// What the upstream run's artifact metadata reports for the receipt, and
+/// therefore which arm of the #15481 classification the resolver must take.
+///
+/// The resolver reaches the artifact service through `gh api`, so the probe is
+/// a fake `gh` placed ahead of the real one on `PATH`: the proof still drives
+/// the resolver's actual run block, with only the remote answer controlled.
+enum ArtifactProbe {
+    /// `gh api` itself fails: the metadata evidence is unavailable, absence
+    /// and download failure are indistinguishable, and the resolver must
+    /// refuse rather than read either as a benign skip.
+    Unavailable,
+    /// The metadata service answers that the upstream run uploaded no
+    /// `publication-receipt` artifact: the legitimate dry-run absence.
+    Absent,
+    /// The metadata service answers that the artifact exists, so a missing
+    /// file can only mean the download failed.
+    Present,
+    /// The receipt file exists, so the resolver must decide without ever
+    /// reaching the probe; any `gh` call is a defect this stub turns red.
+    Forbidden,
+}
+
+const ARTIFACT: &str = "publication-receipt";
+
+fn write_gh_stub(dir: &Path, probe: &ArtifactProbe) -> Result<()> {
+    let body = match probe {
+        ArtifactProbe::Unavailable => "echo \"gh: artifact metadata service unreachable\" >&2\nexit 18\n".to_owned(),
+        ArtifactProbe::Absent => "printf '{\"total_count\":0,\"artifacts\":[]}'\n".to_owned(),
+        ArtifactProbe::Present => format!(
+            "printf '{{\"total_count\":1,\"artifacts\":[{{\"id\":7,\"name\":\"{ARTIFACT}\"}}]}}'\n"
+        ),
+        ArtifactProbe::Forbidden => "echo \"unexpected gh invocation: the resolver must decide from the receipt file alone\" >&2\nexit 99\n".to_owned(),
+    };
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).context("creating the gh stub directory")?;
+    let stub = bin.join("gh");
+    fs::write(&stub, format!("#!/usr/bin/env bash\n{body}"))
+        .with_context(|| format!("writing the gh stub at {}", stub.display()))?;
+    // The sandbox on a POSIX runner would otherwise carry a non-executable
+    // script, and the failure would be the stub's permissions, not the
+    // resolver's verdict.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod the gh stub at {}", stub.display()))?;
+    }
+    Ok(())
+}
+
+/// Execute the resolver with a controlled receipt and a controlled artifact
+/// service.
 ///
 /// `receipt` is the file content the download step would have produced;
-/// `None` means the upstream run published no receipt.
-fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resolution> {
+/// `None` means no file arrived, in which case `probe` is what the upstream
+/// run's artifact metadata answers — the second evidence source the #15481
+/// classification consults.
+fn resolve_with_probe(
+    event: &str,
+    conclusion: &str,
+    receipt: Option<&str>,
+    probe: ArtifactProbe,
+) -> Result<Resolution> {
     let dir = tempfile::tempdir().context("creating the resolver sandbox")?;
     let receipt_path = dir.path().join("publication-receipt.json");
     if let Some(body) = receipt {
         fs::write(&receipt_path, body).context("writing the fixture receipt")?;
     }
+    write_gh_stub(dir.path(), &probe)?;
+    let stub_bin = dir.path().join("bin");
+    let host_path = env::var_os("PATH").unwrap_or_default();
+    let path = env::join_paths(std::iter::once(stub_bin).chain(env::split_paths(&host_path)))
+        .context("joining the gh stub into PATH")?;
     let github_output = dir.path().join("github_output");
     fs::write(&github_output, "").context("creating GITHUB_OUTPUT")?;
 
     let run = resolve_run_block()?;
+    // Actions executes a run block as a script file, not a `bash -c`
+    // string, and the harness follows that shape: a large multi-line `-c`
+    // argument does not survive the Rust -> CreateProcess -> MSYS argv
+    // round trip on Windows, which reads as refusals the same block executed
+    // as a file never produces.
+    let script = dir.path().join("resolve_block.sh");
+    fs::write(&script, &run).context("writing the run block")?;
+    let script_arg = script.to_string_lossy().replace('\\', "/");
     let output = Command::new(bash_executable())
-        .args(["--noprofile", "--norc", "-c", &run])
+        .args(["--noprofile", "--norc", &script_arg])
         .current_dir(dir.path())
         .env("EVENT_NAME", event)
         .env("WORKFLOW_RUN_CONCLUSION", conclusion)
+        // The upstream run the receipt and the metadata both belong to; the
+        // assertions below read it back out of the refusal messages.
+        .env("WORKFLOW_RUN_ID", "42")
         // The dispatch input is empty on every workflow_run path, exactly as
         // Actions renders an absent input.
         .env("DISPATCH_VERSION", "")
@@ -159,8 +233,10 @@ fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resol
         // simply because the variable was absent, and would prove nothing.
         .env("WORKFLOW_RUN_HEAD_BRANCH", format!("v{FABRICATED}"))
         .env("RECEIPT_PATH", &receipt_path)
+        .env("RECEIPT_ARTIFACT", ARTIFACT)
         .env("DEFAULT_BRANCH", DEFAULT_BRANCH)
         .env("GITHUB_OUTPUT", &github_output)
+        .env("PATH", &path)
         .output()
         .context("executing the resolver under Actions bash semantics")?;
 
@@ -185,6 +261,18 @@ fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resol
         subject: read("subject"),
         output,
     })
+}
+
+/// The historical entry point, with the probe implied by the receipt.
+///
+/// A receipt on disk must decide everything without the artifact service, so
+/// any `gh` call is a defect and the Forbidden stub turns one red. A missing
+/// file reaches the probe by construction, and the Absent answer keeps the
+/// legitimate dry-run skip exercised — the control the issue requires to keep
+/// passing.
+fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resolution> {
+    let probe = if receipt.is_some() { ArtifactProbe::Forbidden } else { ArtifactProbe::Absent };
+    resolve_with_probe(event, conclusion, receipt, probe)
 }
 
 fn receipt_for(version: &str) -> String {
@@ -215,8 +303,16 @@ fn publish_receipt_run_block() -> Result<String> {
 fn produced_receipt(version: &str, subject: &str) -> Result<String> {
     let dir = tempfile::tempdir().context("creating the producer sandbox")?;
     let run = publish_receipt_run_block()?;
+    // Actions executes a run block as a script file, not a `bash -c`
+    // string, and the harness follows that shape: a large multi-line `-c`
+    // argument does not survive the Rust -> CreateProcess -> MSYS argv
+    // round trip on Windows, which reads as refusals the same block executed
+    // as a file never produces.
+    let script = dir.path().join("resolve_block.sh");
+    fs::write(&script, &run).context("writing the run block")?;
+    let script_arg = script.to_string_lossy().replace('\\', "/");
     let output = Command::new(bash_executable())
-        .args(["--noprofile", "--norc", "-c", &run])
+        .args(["--noprofile", "--norc", &script_arg])
         .current_dir(dir.path())
         .env("CRATES_JSON", r#"["perl-lsp","perl-parser"]"#)
         .env("PUBLISHED_VERSION", version)
@@ -259,6 +355,59 @@ fn release_shaped_ref_without_a_receipt_yields_no_verdict() -> Result<()> {
     }
     if !resolved.combined().contains("receipt") {
         bail!("the refusal must name the missing receipt:\n{}", resolved.combined());
+    }
+    Ok(())
+}
+
+/// The #15481 failure arm: the artifact metadata says the receipt exists on
+/// the upstream run, so a file that failed to arrive is a failed download,
+/// not a benign absence, and it must not read as a skip.
+#[test]
+fn a_download_that_failed_despite_an_existing_artifact_fails_closed() -> Result<()> {
+    let resolved = resolve_with_probe("workflow_run", "success", None, ArtifactProbe::Present)?;
+
+    if resolved.output.status.success() {
+        bail!(
+            "a failed download of an existing artifact must fail the resolver, got exit {:?}\n{}",
+            resolved.output.status.code(),
+            resolved.combined()
+        );
+    }
+    if resolved.runs() {
+        bail!("a failed download must not smoke-test anything:\n{}", resolved.combined());
+    }
+    for needle in [ARTIFACT, "download"] {
+        if !resolved.combined().contains(needle) {
+            bail!("the refusal must name the {needle}:\n{}", resolved.combined());
+        }
+    }
+    // The typed outcome names the run the artifact belongs to, so an operator
+    // can go straight to the failing download step.
+    if !resolved.combined().contains("42") {
+        bail!("the refusal must name the upstream run:\n{}", resolved.combined());
+    }
+    Ok(())
+}
+
+/// The #15481 instrument arm: when the metadata query itself cannot answer,
+/// absence and download failure are indistinguishable, and the only honest
+/// outcome is a refusal — an unqueryable instrument is not a verified skip.
+#[test]
+fn an_unanswerable_artifact_query_fails_closed() -> Result<()> {
+    let resolved = resolve_with_probe("workflow_run", "success", None, ArtifactProbe::Unavailable)?;
+
+    if resolved.output.status.success() {
+        bail!(
+            "an unanswerable metadata query must fail the resolver, got exit {:?}\n{}",
+            resolved.output.status.code(),
+            resolved.combined()
+        );
+    }
+    if resolved.runs() {
+        bail!("an unqueryable instrument must not smoke-test anything:\n{}", resolved.combined());
+    }
+    if !resolved.combined().contains(ARTIFACT) {
+        bail!("the refusal must name the receipt it could not establish:\n{}", resolved.combined());
     }
     Ok(())
 }
@@ -652,8 +801,16 @@ fn dispatch_executes_the_default_branch() -> Result<()> {
     fs::write(&github_output, "")?;
 
     let run = resolve_run_block()?;
+    // Actions executes a run block as a script file, not a `bash -c`
+    // string, and the harness follows that shape: a large multi-line `-c`
+    // argument does not survive the Rust -> CreateProcess -> MSYS argv
+    // round trip on Windows, which reads as refusals the same block executed
+    // as a file never produces.
+    let script = dir.path().join("resolve_block.sh");
+    fs::write(&script, &run).context("writing the run block")?;
+    let script_arg = script.to_string_lossy().replace('\\', "/");
     let output = Command::new(bash_executable())
-        .args(["--noprofile", "--norc", "-c", &run])
+        .args(["--noprofile", "--norc", &script_arg])
         .current_dir(dir.path())
         .env("EVENT_NAME", "workflow_dispatch")
         .env("DISPATCH_VERSION", PUBLISHED)
@@ -729,8 +886,16 @@ fn manual_dispatch_still_resolves_its_input() -> Result<()> {
     fs::write(&github_output, "")?;
 
     let run = resolve_run_block()?;
+    // Actions executes a run block as a script file, not a `bash -c`
+    // string, and the harness follows that shape: a large multi-line `-c`
+    // argument does not survive the Rust -> CreateProcess -> MSYS argv
+    // round trip on Windows, which reads as refusals the same block executed
+    // as a file never produces.
+    let script = dir.path().join("resolve_block.sh");
+    fs::write(&script, &run).context("writing the run block")?;
+    let script_arg = script.to_string_lossy().replace('\\', "/");
     let output = Command::new(bash_executable())
-        .args(["--noprofile", "--norc", "-c", &run])
+        .args(["--noprofile", "--norc", &script_arg])
         .current_dir(dir.path())
         .env("EVENT_NAME", "workflow_dispatch")
         .env("DISPATCH_VERSION", PUBLISHED)

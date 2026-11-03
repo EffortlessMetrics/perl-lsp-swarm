@@ -4,59 +4,59 @@
   "fixtures": [
     {
       "file": "fixtures/invalid-cohort-slice-5016-6239.json",
-      "sha256": "9546a9e808105f5c9f68b72fb35aa3890144f72d0f91f1b40f1c6e85465d9b7b"
+      "sha256": "a655e3d73d41ead56173120b002a55e4d6aa5316c70d823db9769fc9d17b887e"
     },
     {
       "file": "fixtures/invalid-completed-authority-4997-5022.json",
-      "sha256": "613ee638c1a22b002eee73ea000c4adcbe4b63bab33b67af9fdfa0938e18447d"
+      "sha256": "73d3a83cd00c420975c58f4fd37cc86d1ef0ff3699b0e91ab1648cd24a70db7f"
     },
     {
       "file": "fixtures/invalid-controller-fanin-missing.json",
-      "sha256": "ff01b269d2a8f79fea44514aa8d3f7307a8536575f38107bc2405e5430879485"
+      "sha256": "454484e53bb61cd349d88046aacc608d491d06e601c3fb850772944b160adfa3"
     },
     {
       "file": "fixtures/invalid-phase-terminal-5001-5023.json",
-      "sha256": "2a82b14cbe78830fc38383bb0cc962e52aa9862e8940f5fe9354fa880b8c5389"
+      "sha256": "2d33b98d35aa65052b8fd1add388f49acc435d448c1f27993324f939634d3f5e"
     },
     {
       "file": "fixtures/invalid-phases-deny-2333.json",
-      "sha256": "ea2dc1b53375053e3ee38a3a677a236afd46c4516693c843bdc99319e37d93e7"
+      "sha256": "a486abc983bbbc652fe492354ed47818eb2957642808de264bfaeca45357459e"
     },
     {
       "file": "fixtures/invalid-predecessor-successor-5231-5968.json",
-      "sha256": "6c64d29f856721dfa2bbb88ad6dff702c8cba47fb93b8bb8a61475e66c6d3648"
+      "sha256": "b66d12062710d53f41addc9aac7ad9e56c81988c558c7c7967b4989d44af1be0"
     },
     {
       "file": "fixtures/invalid-proof-level-5901-6282.json",
-      "sha256": "386602313888de40f3f7b9ad775ccb1e7f0408779b671f78e4538afb2db9fa5f"
+      "sha256": "f87c96002df7210b888b7ccbfede38dd2c87557d095af69d5e3263b477dfc4a9"
     },
     {
       "file": "fixtures/invalid-unproven-provenance-4998-5021.json",
-      "sha256": "a087d1d5fe109886312365fa37250ab7129af369c4b6628ad7f2dac8dd3d583e"
+      "sha256": "417a194b017b22ad03d048ac9189cdf0253ee2f91b7af252324ff0f5556da971"
     },
     {
       "file": "fixtures/valid-atomic-cohort-3020.json",
-      "sha256": "b12f97cda135ccfc51bfbdf64b9c46f13859431a02764e644cf4da9608536502"
+      "sha256": "c146f2e718950292bcc068e4b0611ea37aae8440a054bd5aa2d0168712a26de8"
     },
     {
       "file": "fixtures/valid-atomic-minimal-leaf.json",
-      "sha256": "40c3e26cd7668c3dec61e778a0114eb371ebc925cb0f089fb501e8a04400a5e8"
+      "sha256": "7040526d1d64a5427f3a49e2eedcc731deb9fdd7dcb08b637ff6a5e7f280cbf2"
     },
     {
       "file": "fixtures/valid-controller-fanin-present.json",
-      "sha256": "6b4b35f39b0dc8907ee485b50d8028b4d51059daa9c9e7e9fee345c4af870dd6"
+      "sha256": "1a19b0cb2e6d520968dc6ea9ffe11ad7e2b3aa894ee3b21957fc038b357f52ab"
     },
     {
       "file": "fixtures/valid-fanin-1929.json",
-      "sha256": "ce88f901fbd968a119e0ad63f9d93066bcef44663ca7c0f37775cd0f91d0144f"
+      "sha256": "4392a10e925fb3f86b61cbf5ea5e63b62be74392c844fb9b9278105a05b2b40b"
     },
     {
       "file": "fixtures/valid-phase-leaf-2624.json",
-      "sha256": "13f8bc6eb57b3c4a356b9b4044f209cc71c04e4e40c5f781630418af95efe102"
+      "sha256": "1ff4715531bbcc854db20e4e44fbde071d91d55c70ce1d8756ebd00f6f12a2d6"
     },
     {
       "file": "fixtures/valid-superseded-transfer.json",
-      "sha256": "8828029e95ba091db72c4e679b7fc18c69b75ac1fcbbbfa2c916dba14eee7c0c"
+      "sha256": "d873530682e2735f10c664b71643c780efdc24e6f607fa8281e3e5121b730843"
     },
     {
       "file": "fixtures/valid-true-duplicate.json",

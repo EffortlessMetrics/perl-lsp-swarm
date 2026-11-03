@@ -119,7 +119,7 @@ fn the_committed_audit_contract_loads_and_reconciles() -> Result<()> {
     assert_eq!(audit.ruling(), "absorb");
     assert_eq!(audit.public_item_count(), 39);
     assert_eq!(audit.reexport_count(), 6);
-    assert_eq!(audit.consumer_count(), 37);
+    assert_eq!(audit.consumer_count(), 36);
     Ok(())
 }
 
@@ -402,24 +402,6 @@ fn a_docs_only_reference_is_not_classified_as_production_use() -> Result<()> {
     let row = row_mut(&mut value, "consumers", "consumer_id", "c:lexer-tokenizer-doc")?;
     row["role"] = Value::String("production_implementation".to_string());
     assert_rejected(&value, "names no symbols")
-}
-
-#[test]
-fn the_unused_lexer_dev_dependency_is_recorded_rather_than_read_as_use() -> Result<()> {
-    let value = real_value()?;
-    let row = value["consumers"]
-        .as_array()
-        .ok_or_else(|| color_eyre::eyre::eyre!("missing consumers"))?
-        .iter()
-        .find(|row| row.get("consumer_id").and_then(Value::as_str) == Some("c:lexer-manifest"))
-        .ok_or_else(|| color_eyre::eyre::eyre!("no c:lexer-manifest row"))?;
-    let proposition = row["proposition"].as_str().unwrap_or_default();
-    assert!(
-        proposition.contains("no matching use"),
-        "the lexer row must record that the declared dev-dependency has no matching use"
-    );
-    assert_eq!(row["role"].as_str(), Some("package_dependency"));
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1295,7 +1277,9 @@ fn the_prose_report_summary_cannot_drift_from_the_inventory() -> Result<()> {
     //
     // The wake text no longer restates counts at all; a duplicate that cannot
     // drift is better than one that is checked. The report's table is a genuine
-    // human summary and stays, so it is pinned here instead.
+    // human summary and stays, so it is pinned here instead. The #8845
+    // successor row in the same file still restates the gating role mix and is
+    // pinned the same way — that sentence is what #8845 reads to size migration.
     let value = real_value()?;
     let report = std::fs::read_to_string(
         repo_root_for_tests()?.join(".spec/8843-ast-v2-lifecycle-audit/decision.md"),
@@ -1323,6 +1307,26 @@ fn the_prose_report_summary_cannot_drift_from_the_inventory() -> Result<()> {
              the manifest holds {expected} `{key}` entries"
         );
     }
+
+    let consumers = value["consumers"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("`consumers` is not an array"))?;
+    let gating_count = |role: &str| -> usize {
+        consumers.iter().filter(|row| row["role"].as_str() == Some(role)).count()
+    };
+    let expected_gating_sentence = format!(
+        "The migration set is this manifest's gating rows: {} production, {} re-export, {} \
+         package-dependency, {} test-fixture.",
+        gating_count("production_implementation"),
+        gating_count("public_reexport"),
+        gating_count("package_dependency"),
+        gating_count("test_fixture"),
+    );
+    assert!(
+        report.contains(&expected_gating_sentence),
+        "the #8845 successor row in decision.md has drifted from the manifest's gating role \
+         mix.\n  expected substring: {expected_gating_sentence}"
+    );
 
     // And the wake text must not reintroduce a hardcoded count.
     for wake in value["successor_wake_conditions"]

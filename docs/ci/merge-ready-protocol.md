@@ -55,6 +55,99 @@ is the external Codecov status context posted after Codecov processes an
 explicit coverage upload. Both are advisory and must not block normal PR or
 merge-queue flow.
 
+### The main-red refusal makes advisory gate shards de-facto required (#16196)
+
+`Perl LSP Rust Small Result` does more than report a candidate's own
+aggregate. The `Probe main-red refusal` step of
+`.github/workflows/em-ci-routed-rust.yml` classifies exact-SHA check runs for
+the eight `CI Gate shard (...)` contexts — `meta`, `foundation`,
+`parser_stack`, `analysis`, `lsp`, `support`, `corpus`, `policy` — on both
+`main` and the PR/merge-group subject, using
+`scripts/ci/main_red_refusal.py` (fetched from `main` itself at probe time so
+the classifier cannot be altered by the candidate):
+
+- a shard that is green, missing, or not completed on `main` never blocks
+  here;
+- while a shard is recorded red on `main` (`failure`, `timed_out`,
+  `startup_failure`, `action_required`), the required check refuses to return
+  a verdict until the candidate supplies its own completed, green exact-SHA
+  result for that shard; candidate reds block immediately, and candidate
+  evidence that stays missing or non-terminal through the bounded poll
+  (50 × 30 s) is converted to a blocking refusal by the final fail-closed
+  pass;
+- the probe degrades to a non-blocking warning when its own inputs are
+  unreliable: incomplete or failed API evidence, an unreadable canonical
+  `ci.yml` on `main`, or `main` moving between the before/after SHA reads —
+  a degradation `evaluate()` gates on `main`-side evidence only; candidate-side
+  probe failures are recorded as warnings, and candidate hard failures
+  (including candidate evidence that stays missing) still fail closed.
+
+A candidate whose `ci.yml` differs from canonical `main`'s is treated as
+having no comparable shard evidence: it is warned, then fail-closed after the
+bounded wait. So while `main` is red, a PR that also modifies `ci.yml` cannot
+clear the refusal with its own shard result; `main` has to be repaired first.
+
+Consequence: no `CI Gate shard` context is registered as required, but a
+shard red on `main` blocks the required lane for every candidate that cannot
+present its own green exact-SHA shard result. "Advisory" means a context is
+not registered as a required check; it does not mean nothing reads its
+result. Before treating an advisory red as harmless, check whether a required
+lane probes it — this one does. Triage the failing step, not the check name:
+the required check can fail naming a workflow the diff never touched
+(observed on #16172 during the #16011 ledger incident, where a single
+un-ratcheted ledger entry took the required lane down via
+`CI Gate shard (meta)`).
+
+Operator remedy: fix `main` (or get the red shard rerun green there). The
+only candidate-side escape is a completed, green exact-SHA result for the red
+shard under a `ci.yml` identical to `main`'s. The refusal has no override
+flag; it is fail-closed by design so repairs reach `main` unimpeded while
+everything else waits.
+
+## Required-check registration recovery (#16469)
+
+GitHub can refuse merge with `checks are expected` after every required
+context already shows green on the current head. That is a registration
+evaluation problem, not a missing red check, and it is distinct from
+[#14612](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14612)
+(a required producer never reported on the head).
+
+Historical PRs #16106 and #16095 were recovered with empty commits after the
+2026-09-24 sweep. GitHub no longer retains the exact pre-registration
+check-suite payload for those heads; this detector classifies current
+observations instead of reconstructing that lost state.
+
+Compare required `(name, app_id)` identities from
+`.ci/policies/required-checks.toml` (or the live ruleset) against check-runs
+on the classified subject SHA (`evaluated_sha`, defaulting to the PR head).
+A same-name run from another app does not satisfy the bound GitHub Actions
+integration. GitHub evaluates the test merge commit when that commit has
+checks; `COMPLETE_GREEN` is a subject-observation verdict unless
+`merge_commit_sha` matches the classified SHA.
+
+GitHub-accepted required-check conclusions are `success`, `skipped`, and
+`neutral`. A job skipped by a conditional reports a check-run and does not
+block merge. A **workflow** skipped by path/branch/message filters emits no
+check-run and leaves the name Pending (#14612).
+
+```bash
+python3 scripts/ci/detect_required_check_registration.py --fixture <observation.json>
+python3 scripts/ci/detect_required_check_registration.py --policy .ci/policies/required-checks.toml
+```
+
+| Verdict | Meaning | Recovery |
+| --- | --- | --- |
+| `COMPLETE_GREEN` | Bound-app required names have a GitHub-accepted conclusion (`success`, `skipped`, or `neutral`) on the classified SHA; merge evaluation is not expecting checks. `product_not_run` names skipped jobs. This is not a protected merge verdict unless `merge_commit_sha` matches that SHA | None |
+| `REQUIRED_ABSENT` | A required `(name, app_id)` has no check-run on any SHA (workflow-level silence, #14612) | Never treat absence as success. Manual dispatch does not satisfy a PR ruleset. Ordinary PR/push CI and empty commits are not authorized while #17900/#17903 G-only is inactive; recovery is `NOT_PROVEN` until that producer is live |
+| `REQUIRED_OTHER_SHA` | The name exists only on another SHA | Same authorization boundary as absence; do not dispatch against the PR head |
+| `EXPECTED_STALE` | All required names are GitHub-accepted on the classified SHA, and GitHub still expects checks (#16469) | Rerequest an existing suite produced by an admissible event (`POST /repos/{owner}/{repo}/check-suites/{id}/rerequest`). If no such suite exists, recovery is `NOT_PROVEN` until #17900/#17903. Do not dispatch, empty-commit, or start ordinary PR/push CI |
+| `NOT_PROVEN` | Missing evidence, incomplete app identity, a conflicted tree, empty merge evaluation, a merge-commit SHA that differs from the classified subject, or a blocked merge without an expected-checks signal | Do not infer a GitHub defect from the merge error alone |
+
+Two required jobs remain `applicability = "conditional"` on purpose
+(`check-all-targets` and `conflict-markers`): they skip drafts and superseded
+push SHAs. Converting them to always-or-scoped-noop is a separate `ci.yml`
+change and is not mixed into this diagnostic.
+
 ## Draft pull requests
 
 A draft PR is work in progress, not merge-ready. Every draft push still gets

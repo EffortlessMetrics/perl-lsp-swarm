@@ -1,10 +1,21 @@
 {
-  "master_sha": "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "master_sha": "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "ci_state": "green",
-  "pending_checks": [],
-  "running_checks": [],
-  "failed_checks": [],
-  "gate_policy": {
-    "pending_allows_merge_ready_if_candidate_current": true
-  }
+  "input_schema_version": 1,
+  "source_complete": true,
+  "expected_required_checks": ["merge-gate", "clippy"],
+  "required_check_evidence": [
+    {
+      "name": "merge-gate",
+      "evaluated_sha": "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "subject": "candidate_head",
+      "result": "SUCCESS"
+    },
+    {
+      "name": "clippy",
+      "evaluated_sha": "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "subject": "candidate_head",
+      "result": "SUCCESS"
+    }
+  ]
 }
