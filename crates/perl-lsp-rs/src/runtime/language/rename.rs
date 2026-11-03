@@ -1941,17 +1941,6 @@ impl LspServer {
                                     );
                                     return Self::rename_unavailable();
                                 }
-                                Some(Err(
-                                    RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
-                                )) => {
-                                    self.record_rename_provider_decision_trace(
-                                        Some(uri),
-                                        Some(symbol),
-                                        "package_local_live_pilot_unsupported",
-                                        0,
-                                        "workspace_index",
-                                    );
-                                }
                                 Some(Err(_)) => {
                                     self.record_rename_provider_decision_trace(
                                         Some(uri),

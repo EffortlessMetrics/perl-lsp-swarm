@@ -1,6 +1,9 @@
 use anyhow::{Result, anyhow};
-use perl_lsp_ux_tests::{FakeWorkspace, ScenarioConfig, UxClient};
-use serde_json::json;
+use perl_lsp_ux_tests::{
+    DefaultServerRequestDelivery, DefaultServerRequestPolicy, FakeWorkspace, ScenarioConfig,
+    UxClient,
+};
+use serde_json::{Value, json};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -59,6 +62,18 @@ fn active_client_round_trips_two_gated_requests_through_a_child_process() -> Res
             },
         ]
     );
+    let exchanges = client.peek_server_request_exchanges();
+    assert_eq!(exchanges.len(), 2);
+    assert_eq!(exchanges[0].id, json!(41));
+    assert_eq!(exchanges[0].method, "workspace/textDocumentContent/refresh");
+    assert_eq!(exchanges[0].policy, DefaultServerRequestPolicy::CapabilityRefused);
+    assert_eq!(exchanges[0].response["error"]["code"], -32601);
+    assert_eq!(exchanges[0].delivery, DefaultServerRequestDelivery::Sent);
+    assert_eq!(exchanges[1].id, json!("configuration-42"));
+    assert_eq!(exchanges[1].method, "workspace/configuration");
+    assert_eq!(exchanges[1].policy, DefaultServerRequestPolicy::CapabilityRefused);
+    assert_eq!(exchanges[1].response["error"]["code"], -32601);
+    assert_eq!(exchanges[1].delivery, DefaultServerRequestDelivery::Sent);
     let _drained_events = client.drain_events();
     assert_eq!(client.peek_server_requests().len(), 2);
     assert!(client.peek_transport_error().is_none());
@@ -118,6 +133,18 @@ fn did_close_registration_round_trip(advertised: bool) -> Result<()> {
     if client.peek_capability_violations() != expected_violations {
         return Err(anyhow!("didClose {mode} capability evidence did not match advertisement"));
     }
+    let exchanges = client.peek_server_request_exchanges();
+    assert_eq!(exchanges.len(), 1);
+    assert_eq!(exchanges[0].id, json!("did-close-registration"));
+    assert_eq!(exchanges[0].method, "client/registerCapability");
+    if advertised {
+        assert_eq!(exchanges[0].policy, DefaultServerRequestPolicy::Acknowledged);
+        assert_eq!(exchanges[0].response["result"], Value::Null);
+    } else {
+        assert_eq!(exchanges[0].policy, DefaultServerRequestPolicy::CapabilityRefused);
+        assert_eq!(exchanges[0].response["error"]["code"], -32601);
+    }
+    assert_eq!(exchanges[0].delivery, DefaultServerRequestDelivery::Sent);
     client.shutdown_and_exit(Duration::from_secs(2))?;
     if let Some(error) = client.peek_transport_error() {
         return Err(anyhow!("didClose {mode} shutdown failed: {error}"));

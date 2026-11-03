@@ -72,6 +72,47 @@ void test('omits unavailable phase values without inventing samples', () => {
   });
 });
 
+void test('rolls up per-feature registration and first-use metrics', () => {
+  const summary = summarizeReceipts([
+    {
+      receipt: {
+        outcome: 'completed',
+        startup: {
+          feature_activation: {
+            schema_version: 'feature_activation_metrics.v1',
+            measurements: [
+              { domain: 'mcp', registration_ms: 4, first_use_ms: 40 },
+              { domain: 'providers', registration_ms: 8, first_use_ms: null },
+            ],
+          },
+        },
+      },
+    },
+  ]);
+  assert.deepEqual(summary.metrics.feature_mcp_registration_ms, {
+    count: 1,
+    min: 4,
+    max: 4,
+    p50: 4,
+    p95: 4,
+  });
+  assert.deepEqual(summary.metrics.feature_mcp_first_use_ms, {
+    count: 1,
+    min: 40,
+    max: 40,
+    p50: 40,
+    p95: 40,
+  });
+  assert.deepEqual(summary.metrics.feature_providers_registration_ms, {
+    count: 1,
+    min: 8,
+    max: 8,
+    p50: 8,
+    p95: 8,
+  });
+  assert.equal(summary.metrics.feature_providers_first_use_ms.count, 0);
+});
+
 void test('projects installed accessibility verdicts and inventory contracts', () => {
   const withAccessibility = (verdict, digest) => ({
     receipt: {

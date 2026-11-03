@@ -410,6 +410,14 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<SourceLocation> {
+        self.resolve_inherited_method_location_ordered(receiver_class, method_name)
+    }
+
+    fn resolve_inherited_method_location_ordered(
+        &self,
+        receiver_class: &str,
+        method_name: &str,
+    ) -> Option<SourceLocation> {
         let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
             merged.iter().map(|model| (model.name.as_str(), model)).collect();
@@ -420,10 +428,14 @@ impl SemanticAnalyzer {
             MethodResolutionOrder::C3 => self.c3_ancestor_order(receiver_class, &models_by_name),
         };
 
-        for ancestor in ancestor_order {
-            if let Some(model) = models_by_name.get(ancestor.as_str()).copied()
-                && let Some(location) = self.method_location_in_model(model, method_name)
-            {
+        // Mirror Perl dispatch and `resolve_inherited_method_hover_ordered`: search
+        // the full ancestor order for an exact method before any AUTOLOAD fallback.
+        for ancestor in &ancestor_order {
+            let exact = match models_by_name.get(ancestor.as_str()).copied() {
+                Some(model) => self.exact_method_location_in_model(model, method_name),
+                None => self.plain_package_exact_method_location(ancestor, method_name),
+            };
+            if let Some(location) = exact {
                 return Some(location);
             }
         }
@@ -440,6 +452,16 @@ impl SemanticAnalyzer {
                     })
                 })
                 .map(|symbol| symbol.location);
+        }
+
+        for ancestor in &ancestor_order {
+            let autoload = match models_by_name.get(ancestor.as_str()).copied() {
+                Some(model) => self.autoload_method_location_in_model(model),
+                None => self.plain_package_autoload_method_location(ancestor),
+            };
+            if let Some(location) = autoload {
+                return Some(location);
+            }
         }
 
         None
@@ -541,7 +563,7 @@ impl SemanticAnalyzer {
         // Lexical `my sub`/`state sub` declarations are recorded in the model
         // for provenance, but they do not enter the package method table and
         // therefore cannot satisfy a package method dispatch.  Keep the exact
-        // hover path aligned with `method_location_in_model` and the modifier
+        // hover path aligned with `exact_method_location_in_model` and the modifier
         // resolver by requiring a package-level declarator.
         if !model
             .methods
@@ -633,7 +655,7 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn method_location_in_model(
+    fn exact_method_location_in_model(
         &self,
         model: &ClassModel,
         method_name: &str,
@@ -643,14 +665,56 @@ impl SemanticAnalyzer {
             .iter()
             .rev()
             .find(|method| method.name == method_name && method.declarator.is_none())
-            .or_else(|| {
-                model
-                    .methods
-                    .iter()
-                    .rev()
-                    .find(|method| method.name == "AUTOLOAD" && method.declarator.is_none())
-            })
             .map(|method| method.location)
+    }
+
+    fn autoload_method_location_in_model(&self, model: &ClassModel) -> Option<SourceLocation> {
+        model
+            .methods
+            .iter()
+            .rev()
+            .find(|method| method.name == "AUTOLOAD" && method.declarator.is_none())
+            .map(|method| method.location)
+    }
+
+    fn plain_package_exact_method_location(
+        &self,
+        package_name: &str,
+        method_name: &str,
+    ) -> Option<SourceLocation> {
+        let qualified = format!("{}::{}", package_name, method_name);
+        let matches = |symbol: &Symbol| {
+            is_package_method_symbol(symbol) && symbol.qualified_name == qualified
+        };
+        self.symbol_table
+            .symbols
+            .get(method_name)
+            .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            .or_else(|| {
+                self.symbol_table
+                    .symbols
+                    .get(&qualified)
+                    .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            })
+            .map(|symbol| symbol.location)
+    }
+
+    fn plain_package_autoload_method_location(&self, package_name: &str) -> Option<SourceLocation> {
+        let qualified_autoload = format!("{}::AUTOLOAD", package_name);
+        let matches = |symbol: &Symbol| {
+            is_package_method_symbol(symbol) && symbol.qualified_name == qualified_autoload
+        };
+        self.symbol_table
+            .symbols
+            .get("AUTOLOAD")
+            .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            .or_else(|| {
+                self.symbol_table
+                    .symbols
+                    .get(&qualified_autoload)
+                    .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            })
+            .map(|symbol| symbol.location)
     }
 
     /// Exact-method half of plain-package resolution, for a package that has no
@@ -1428,6 +1492,45 @@ sub AUTOLOAD { 2 }
             !hover.details.iter().any(|d| d == AUTOLOAD_DYNAMIC_DISPATCH_DETAIL),
             "exact inherited resolution must not carry the dynamic-dispatch detail, got: {:?}",
             hover.details
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_ancestor_exact_method_location_beats_intermediate_autoload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An intermediate ancestor's AUTOLOAD must not pre-empt a later ancestor's
+        // exact method when resolving inherited method locations (#1763).
+        let code = r#"
+package Base;
+sub target { 1 }
+
+package Middle;
+our @ISA = ('Base');
+sub AUTOLOAD { 2 }
+
+package Child;
+our @ISA = ('Middle');
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let resolved = analyzer
+            .resolve_inherited_method_location("Child", "target")
+            .ok_or("expected inherited exact-method location")?;
+
+        let resolved_snippet = code
+            .get(resolved.start..resolved.end.min(code.len()))
+            .ok_or("resolved location out of bounds")?;
+        assert!(
+            resolved_snippet.contains("target"),
+            "expected Base::target, got snippet: {resolved_snippet:?}"
+        );
+        assert!(
+            !resolved_snippet.contains("AUTOLOAD"),
+            "must not stop at an intermediate AUTOLOAD, got: {resolved_snippet:?}"
         );
         Ok(())
     }

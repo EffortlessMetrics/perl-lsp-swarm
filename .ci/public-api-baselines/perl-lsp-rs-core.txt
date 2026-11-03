@@ -3207,6 +3207,7 @@ pub fn perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_
 pub fn perl_lsp_rs_core::providers::completion::get_dbi_method_documentation(receiver_hint: &str, method_name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::completion::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
 pub fn perl_lsp_rs_core::providers::completion::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::completion::render_snippet_plaintext(body: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::providers::completion::snippet_body_defects(body: &str) -> alloc::vec::Vec<alloc::string::String>
@@ -4231,7 +4232,9 @@ pub const perl_lsp_rs_core::providers::htmx::HTMX_HEADERS: &[perl_lsp_rs_core::p
 pub const perl_lsp_rs_core::providers::htmx::MAX_MARKUP_SCAN_BYTES: usize
 pub fn perl_lsp_rs_core::providers::htmx::complete_attribute_names(source: &str, position: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>>
 pub fn perl_lsp_rs_core::providers::htmx::complete_header_names(context: &perl_lsp_rs_core::providers::FileCompletionContext) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>>
+pub fn perl_lsp_rs_core::providers::htmx::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
 pub fn perl_lsp_rs_core::providers::htmx::htmx_attribute_name_context(source: &str, position: usize) -> core::option::Option<perl_lsp_rs_core::providers::HtmxAttributeNameContext<'_>>
+pub fn perl_lsp_rs_core::providers::htmx::markup_attribute_name_suffix_end(source: &str, name_start: usize) -> usize
 pub mod perl_lsp_rs_core::providers::import_management
 pub struct perl_lsp_rs_core::providers::import_management::ImportManager
 pub fn perl_lsp_rs_core::providers::ImportManager::collect(&self, lines: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
@@ -5499,7 +5502,6 @@ pub fn perl_lsp_rs_core::providers::rename_shadow::RenameCutoverResult::fmt(&sel
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason
 pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::Blocked
 pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::EmptyPlan
-pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::UnsupportedEditCategory
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::clone(&self) -> perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::eq(&self, other: &perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason) -> bool
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -6443,7 +6445,6 @@ pub fn perl_lsp_rs_core::providers::rename_shadow::RenameCutoverResult::fmt(&sel
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::Blocked
 pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::EmptyPlan
-pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::UnsupportedEditCategory
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::clone(&self) -> perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::eq(&self, other: &perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason) -> bool
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -9799,12 +9800,15 @@ pub fn perl_lsp_rs_core::providers::get_shebang_lens(source: &str) -> core::opti
 pub fn perl_lsp_rs_core::providers::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<perl_position_tracking::span::SourceLocation>
 pub fn perl_lsp_rs_core::providers::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
+pub fn perl_lsp_rs_core::providers::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
 pub fn perl_lsp_rs_core::providers::htmx_attribute_name_context(source: &str, position: usize) -> core::option::Option<perl_lsp_rs_core::providers::HtmxAttributeNameContext<'_>>
 pub fn perl_lsp_rs_core::providers::identity_for_code(code: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::DeadCodeIdentity>
 pub fn perl_lsp_rs_core::providers::inlay_hint_label_str(hint: &serde_json::value::Value) -> core::option::Option<&str>
 pub fn perl_lsp_rs_core::providers::is_test_file(path: &str) -> bool
 pub fn perl_lsp_rs_core::providers::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::legend() -> perl_lsp_rs_core::providers::TokensLegend
+pub fn perl_lsp_rs_core::providers::markup_attribute_name_suffix_end(source: &str, name_start: usize) -> usize
 pub fn perl_lsp_rs_core::providers::matches_query(name: &str, query: &str) -> bool
 pub fn perl_lsp_rs_core::providers::merge_and_sort_completion_candidates(candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>
 pub fn perl_lsp_rs_core::providers::normalize_provider_decision_receipt(receipt: serde_json::value::Value) -> serde_json::value::Value
@@ -12388,5 +12392,11 @@ pub fn perl_lsp_rs_core::transport::read_message_outcome(reader: &mut dyn std::i
 pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn std::io::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> std::io::Result<()>
 pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::Result<()>
 pub mod perl_lsp_rs_core::uri
+pub struct perl_lsp_rs_core::uri::UriStrictParseError
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::clone(&self) -> perl_lsp_rs_core::uri::UriStrictParseError
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::eq(&self, other: &perl_lsp_rs_core::uri::UriStrictParseError) -> bool
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::uri::parse_uri(s: &str) -> lsp_types::uri::Uri
+pub fn perl_lsp_rs_core::uri::parse_uri_or_err(s: &str) -> core::result::Result<lsp_types::uri::Uri, perl_lsp_rs_core::uri::UriStrictParseError>
+pub fn perl_lsp_rs_core::uri::try_parse_uri(s: &str) -> core::option::Option<lsp_types::uri::Uri>
 pub macro perl_lsp_rs_core::check_cancellation!

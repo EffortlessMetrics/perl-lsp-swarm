@@ -1,3 +1,4 @@
+mod async_discipline;
 mod config;
 mod debt;
 mod disposition;
