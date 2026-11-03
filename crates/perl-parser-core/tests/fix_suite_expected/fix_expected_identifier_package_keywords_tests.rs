@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use crate::cpan_test_helpers::*;
 
 // Tests for issue #2150: expected_identifier — keyword tokens as package names
 // Corpus files: if.pm, mro.pm, Class/C3/next.pm

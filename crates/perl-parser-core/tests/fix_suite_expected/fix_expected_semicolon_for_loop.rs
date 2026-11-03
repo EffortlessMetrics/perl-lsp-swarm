@@ -11,8 +11,7 @@
 //! - Exactly 1 error is recorded (the missing semicolon), not a cascade of 6
 //! - The statement following the bad for loop still parses correctly
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use crate::cpan_test_helpers::*;
 use perl_parser_core::{NodeKind, Parser};
 use perl_tdd_support::must;
 

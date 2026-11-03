@@ -6,8 +6,7 @@
 //! a builtin argument with parens (`croak ref($x)`) or a sigil
 //! (`croak sprintf $fmt`), but not a quote-like first argument.
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use crate::cpan_test_helpers::*;
 
 use perl_parser_core::Parser;
 use perl_parser_core::error::{ParseError, RecoveryKind, RecoverySite};
