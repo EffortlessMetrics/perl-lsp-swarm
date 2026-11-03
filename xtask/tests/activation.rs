@@ -77,7 +77,10 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     // added by the #17154 ripr packet benchmark suite (#17170).
     // 16 -> 17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]] target
     // added by the #17159 LSP stdio round-trip latency benchmark (#17179).
-    ("benchmark", 17),
+    // 17 -> 18: `perl-lsp-rs/workspace_rename_benchmark` [[bench]] target
+    // added by the workspace-rename criterion bench (#18031, fixes the
+    // benchmark gap filed in #18031's survey).
+    ("benchmark", 18),
     // 94 -> 95: `unsafe_prod_check` entered .ci/gate-policy.yaml with #16215;
     // the committed inventory and these constants predate the merge that
     // carried it, so both fell one gate behind the authority.
@@ -108,7 +111,9 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // 16/16 -> 17/17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]]
     // target added by the #17159 LSP stdio round-trip latency benchmark
     // (#17179).
-    ("cargo-bench-targets", 17, 17),
+    // 17/17 -> 18/18: `perl-lsp-rs/workspace_rename_benchmark` [[bench]]
+    // target added by the workspace-rename criterion bench (#18031).
+    ("cargo-bench-targets", 18, 18),
     // 79/26 -> 80/27: `perl-lsp-rs-core/test-instrumentation`, declared in
     // crates/perl-lsp-rs-core/Cargo.toml by 234574a74 (#14272).
     ("cargo-test-features", 80, 27),

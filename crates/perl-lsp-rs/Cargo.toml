@@ -157,3 +157,7 @@ harness = false
 [[bench]]
 name = "lsp_stdio_roundtrip_benchmark"
 harness = false
+
+[[bench]]
+name = "workspace_rename_benchmark"
+harness = false
