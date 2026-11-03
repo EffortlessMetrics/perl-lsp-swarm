@@ -1616,9 +1616,15 @@ fn find_repo_root() -> Result<PathBuf> {
     }
 }
 
+/// Repository-relative path text for hygiene findings, logs, and receipts.
+///
+/// Always uses `/` separators so rendered evidence is identical across hosts.
+/// Callers must keep using `Path`/`PathBuf` for filesystem operations; this
+/// string is display-only and must not be parsed back into a path identity.
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .map_or_else(|_| path.display().to_string(), |relative| relative.display().to_string())
+        .replace('\\', "/")
 }
 
 fn path_has_component(path: &Path, target: &str) -> bool {
@@ -3208,6 +3214,20 @@ mod tests {
             unsafe_prod_site_key("crates\\demo\\src\\lib.rs", 42),
             "crates/demo/src/lib.rs:42"
         );
+    }
+
+    #[test]
+    fn display_path_repository_relative_text_uses_forward_slashes() {
+        let root = PathBuf::from("/repo");
+        let file = root.join("crates/nested/deep/lib.rs");
+        assert_eq!(display_path(&root, &file), "crates/nested/deep/lib.rs");
+    }
+
+    #[test]
+    fn display_path_normalizes_separator_characters_on_prefix_failure_fallback() {
+        let root = PathBuf::from("/repo");
+        let path = PathBuf::from("line\\with\\backslash.rs");
+        assert_eq!(display_path(&root, &path), "line/with/backslash.rs");
     }
 
     #[test]

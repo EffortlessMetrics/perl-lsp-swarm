@@ -1479,11 +1479,12 @@ gates:
     tier: merge_gate
     description: "LSP core library tests (heaviest single crate in the LSP surface)"
     required: true
-    # `--lib` excludes tests/. 82 integration targets in these crates are
+    # `--lib` excludes tests/. 114 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-rs-core             82
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-rs-core            114
     command: >-
       cargo test --locked --lib
       -p perl-lsp-rs-core
@@ -1502,15 +1503,16 @@ gates:
     tier: merge_gate
     description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
-    # `--lib` excludes tests/. 356 integration targets in these crates are
+    # `--lib` excludes tests/. 492 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-perltidy            10
-    #   perl-lsp-rs                 253  (19 covered by explicit --test elsewhere)
-    #   perl-lsp-ux-tests            82
-    #   perl-subprocess-runtime       3
-    #   perllsp                       8  (1 covered by explicit --test elsewhere)
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-perltidy            17
+    #   perl-lsp-rs                 337
+    #   perl-lsp-ux-tests           101
+    #   perl-subprocess-runtime       4
+    #   perllsp                      33
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs

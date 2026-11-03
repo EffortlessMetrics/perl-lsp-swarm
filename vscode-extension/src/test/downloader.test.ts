@@ -3600,7 +3600,7 @@ describe('update install progress labeling', () => {
 
       await downloader.ensureBinary(true, 'Updating Perl Language Server');
 
-      expect(progressSpy).toHaveBeenCalledWith('Updating Perl Language Server');
+      expect(progressSpy.mock.calls).toEqual([['Updating Perl Language Server', true]]);
     } finally {
       cleanup();
     }
@@ -3615,7 +3615,7 @@ describe('update install progress labeling', () => {
 
       await downloader.ensureBinary(false);
 
-      expect(progressSpy).toHaveBeenCalledWith('Downloading Perl Language Server');
+      expect(progressSpy.mock.calls).toEqual([['Downloading Perl Language Server', false]]);
     } finally {
       cleanup();
     }

@@ -5,13 +5,18 @@
 //! contract assertions together with the exact-message observation tests for
 //! every error variant its helpers can produce, so the seams stay revealed by
 //! assertions rather than flagged as reachable-but-unobserved drift.
+use perl_lsp_rs_core::product_identity::{
+    ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1,
+};
 use perl_lsp_rs_core::protocol::binary_identity::{
     BINARY_COMPATIBILITY_METHOD, BINARY_IDENTITY_FEATURE_VERSION, BINARY_IDENTITY_METHOD,
-    BinaryCompatibilityReason, BinaryCompatibilityState, CANONICAL_DAP_POSTURE,
-    CANONICAL_EXTENSION_ID, CANONICAL_EXTENSION_PACKAGE, CANONICAL_EXTENSION_PUBLISHER,
+    BinaryCompatibilityReason, BinaryCompatibilityState, BinaryIdentityRequestV1,
+    BinaryIdentityTransportStateV1, CANONICAL_DAP_POSTURE, CANONICAL_EXTENSION_ID,
+    CANONICAL_EXTENSION_PACKAGE, CANONICAL_EXTENSION_PUBLISHER, ExpectedExtensionIdentityV1,
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 fn repository_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -49,22 +54,151 @@ fn assert_reason_admitted_by_schema_token(
     schema: &Value,
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let token = &schema["$defs"]["reasonToken"];
-    let pattern = token["pattern"].as_str().ok_or("reasonToken pattern must be a string")?;
+    let token = &schema["$defs"]["compatibilityReasonToken"];
+    let pattern =
+        token["pattern"].as_str().ok_or("compatibilityReasonToken pattern must be a string")?;
     if pattern != "^[a-z0-9_]+$" {
-        return Err(format!("reasonToken grammar drifted: {pattern:?}").into());
+        return Err(format!("compatibilityReasonToken grammar drifted: {pattern:?}").into());
     }
-    let max_length =
-        token["maxLength"].as_u64().ok_or("reasonToken maxLength must be an integer")?;
+    let max_length = token["maxLength"]
+        .as_u64()
+        .ok_or("compatibilityReasonToken maxLength must be an integer")?;
     if name.is_empty()
         || name.len() > usize::try_from(max_length).map_err(|error| error.to_string())?
         || !name.chars().all(|character| {
             character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
         })
     {
+        return Err(format!(
+            "Rust reason {name:?} is not admissible as a schema compatibilityReasonToken"
+        )
+        .into());
+    }
+    let enumerated = token["enum"]
+        .as_array()
+        .ok_or("compatibilityReasonToken enum must enumerate the current reason vocabulary")?;
+    if !enumerated.iter().any(|value| value == name) {
+        return Err(format!(
+            "reason {name:?} is not listed in the schema compatibilityReasonToken enum"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn schema_reason_enum(schema: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    schema["$defs"]["compatibilityReasonToken"]["enum"]
+        .as_array()
+        .ok_or("compatibilityReasonToken enum must be an array")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "compatibilityReasonToken enum entries must be strings".into())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Observable oracle for schema reason parity against [`BinaryCompatibilityReason::ALL`].
+fn assert_schema_reason_inventory_matches_rust(
+    schema: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let enumerated = schema_reason_enum(schema)?;
+    let enum_set: HashSet<&str> = enumerated.iter().map(String::as_str).collect();
+    for &reason in BinaryCompatibilityReason::ALL {
+        let name = serde_name(reason)?;
+        if !enum_set.contains(name.as_str()) {
+            return Err(
+                format!("schema compatibilityReasonToken enum is missing reason {name:?}").into()
+            );
+        }
+    }
+    for name in &enumerated {
+        if serde_json::from_str::<BinaryCompatibilityReason>(&format!("\"{name}\"")).is_err() {
+            return Err(format!(
+                "schema compatibilityReasonToken enum lists orphan reason {name:?}"
+            )
+            .into());
+        }
+    }
+    if enumerated.len() != BinaryCompatibilityReason::ALL.len() {
+        return Err(format!(
+            "schema compatibilityReasonToken enum lists {} reasons but Rust inventory has {}",
+            enumerated.len(),
+            BinaryCompatibilityReason::ALL.len()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn extract_known_typescript_reason_literals(
+    typescript: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    const START: &str = "export type KnownBinaryCompatibilityReason =";
+    const END: &str = "export type BinaryCompatibilityReason =";
+    let start = typescript
+        .find(START)
+        .ok_or("TypeScript projection is missing KnownBinaryCompatibilityReason")?;
+    let end =
+        typescript.find(END).ok_or("TypeScript projection is missing BinaryCompatibilityReason")?;
+    if end <= start {
         return Err(
-            format!("Rust reason {name:?} is not admissible as a schema reasonToken").into()
+            "KnownBinaryCompatibilityReason must precede BinaryCompatibilityReason in the projection"
+                .into(),
         );
+    }
+    let block = &typescript[start..end];
+    let mut literals = Vec::new();
+    for line in block.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix('|') else {
+            continue;
+        };
+        let rest = rest.trim();
+        let rest = rest.strip_suffix(';').unwrap_or(rest);
+        let literal = rest
+            .strip_prefix('\'')
+            .and_then(|value| value.strip_suffix('\''))
+            .or_else(|| rest.strip_prefix('"').and_then(|value| value.strip_suffix('"')))
+            .ok_or_else(|| format!("could not parse reason literal from line {trimmed:?}"))?;
+        literals.push(literal.to_owned());
+    }
+    Ok(literals)
+}
+
+/// Observable oracle for reverse TypeScript reason parity: every
+/// `KnownBinaryCompatibilityReason` literal must deserialize to a Rust variant,
+/// and every Rust reason must appear in the union.
+fn assert_typescript_projection_matches_rust_inventory(
+    typescript: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let literals = extract_known_typescript_reason_literals(typescript)?;
+    let literal_set: HashSet<&str> = literals.iter().map(String::as_str).collect();
+    for &reason in BinaryCompatibilityReason::ALL {
+        let name = serde_name(reason)?;
+        if !literal_set.contains(name.as_str()) {
+            return Err(
+                format!("TypeScript projection is missing compatibility reason {name:?}").into()
+            );
+        }
+    }
+    for literal in &literals {
+        if serde_json::from_str::<BinaryCompatibilityReason>(&format!("\"{literal}\"")).is_err() {
+            return Err(format!(
+                "TypeScript projection lists orphan compatibility reason {literal:?}"
+            )
+            .into());
+        }
+    }
+    if literals.len() != BinaryCompatibilityReason::ALL.len() {
+        return Err(format!(
+            "TypeScript projection lists {} reasons but Rust inventory has {}",
+            literals.len(),
+            BinaryCompatibilityReason::ALL.len()
+        )
+        .into());
     }
     Ok(())
 }
@@ -135,6 +269,7 @@ fn checked_typescript_projection_contains_every_current_literal()
     }
 
     assert_projection_declares_every_reason(&typescript)?;
+    assert_typescript_projection_matches_rust_inventory(&typescript)?;
     assert_projection_bounds_unknown_reasons_and_redaction(&typescript)?;
     Ok(())
 }
@@ -202,7 +337,10 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
 
     assert_eq!(schema["properties"]["feature_version"]["const"], BINARY_IDENTITY_FEATURE_VERSION);
     assert_eq!(schema["properties"]["redacted"]["type"], "boolean");
-    assert_eq!(schema["properties"]["reasons"]["items"]["$ref"], "#/$defs/reasonToken");
+    assert_eq!(
+        schema["properties"]["reasons"]["items"]["$ref"],
+        "#/$defs/compatibilityReasonToken"
+    );
     assert_eq!(
         schema["$defs"]["extensionIdentity"]["properties"]["id"]["$ref"],
         "#/$defs/extensionId"
@@ -226,10 +364,9 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
         );
     }
 
-    // Every Rust state and reason must remain distinctly representable in the
-    // schema: the state enum must contain each serde name and every reason
-    // (including the field-specific partial and mismatch reasons) must satisfy
-    // the bounded reasonToken grammar the schema declares.
+    // Every Rust state must remain in the schema compatibility enum, and the
+    // reason inventory must match in both directions: Rust reasons are listed
+    // in the schema enum and every schema enum entry deserializes to Rust.
     for state in [
         BinaryCompatibilityState::ExactMatch,
         BinaryCompatibilityState::CompatiblePartial,
@@ -248,10 +385,7 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
             "schema compatibility enum is missing state {name:?}"
         );
     }
-    for &reason in BinaryCompatibilityReason::ALL {
-        let name = serde_name(reason)?;
-        assert_reason_admitted_by_schema_token(&schema, &name)?;
-    }
+    assert_schema_reason_inventory_matches_rust(&schema)?;
     Ok(())
 }
 
@@ -371,14 +505,14 @@ fn reason_token_grammar_drift_is_reported() -> Result<(), Box<dyn std::error::Er
     // longer admits the current snake_case reason grammar must be named,
     // not silently accepted.
     let drifted = serde_json::json!({
-        "$defs": {"reasonToken": {"pattern": "^[A-Z]+$", "maxLength": 64}}
+        "$defs": {"compatibilityReasonToken": {"pattern": "^[A-Z]+$", "maxLength": 64, "enum": ["server_product_mismatch"]}}
     });
     let error = match assert_reason_admitted_by_schema_token(&drifted, "server_product_mismatch") {
         Err(error) => error.to_string(),
-        Ok(()) => return Err("drifted reasonToken grammar must be rejected".into()),
+        Ok(()) => return Err("drifted compatibilityReasonToken grammar must be rejected".into()),
     };
     assert!(
-        error.contains("reasonToken grammar drifted"),
+        error.contains("compatibilityReasonToken grammar drifted"),
         "grammar drift must be reported with the drifted pattern, got: {error}"
     );
     assert!(
@@ -412,7 +546,7 @@ fn inadmissible_reason_names_are_rejected_by_the_schema_token_contract()
             Ok(()) => return Err("inadmissible reason name must be rejected".into()),
         };
         assert!(
-            error.contains("not admissible as a schema reasonToken"),
+            error.contains("not admissible as a schema compatibilityReasonToken"),
             "inadmissible name {inadmissible:?} must be reported as such, got: {error}"
         );
     }
@@ -446,5 +580,142 @@ fn projection_marker_drift_is_reported() -> Result<(), Box<dyn std::error::Error
         error, "TypeScript client lost its bounded unknown-reason representation",
         "unknown-reason drift must be reported with its exact message"
     );
+    Ok(())
+}
+
+#[test]
+fn schema_reason_inventory_matches_rust_authority() -> Result<(), Box<dyn std::error::Error>> {
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    assert_schema_reason_inventory_matches_rust(&schema)
+}
+
+#[test]
+fn workspace_response_with_packet_limitations_validates_against_schema()
+-> Result<(), Box<dyn std::error::Error>> {
+    let state = BinaryIdentityTransportStateV1 {
+        server: BinaryIdentityPacketV1::server("0.18.0", BinaryIdentityInput::default()),
+        dap: None,
+        server_instance_id: "server-1".to_owned(),
+        environment_snapshot_id: "env-1".to_owned(),
+    };
+    let request = BinaryIdentityRequestV1 {
+        feature_version: BINARY_IDENTITY_FEATURE_VERSION,
+        expected_extension: ExpectedExtensionIdentityV1 {
+            publisher: CANONICAL_EXTENSION_PUBLISHER.to_owned(),
+            package_name: CANONICAL_EXTENSION_PACKAGE.to_owned(),
+            id: CANONICAL_EXTENSION_ID.to_owned(),
+            version: "0.18.0".to_owned(),
+            candidate_identity: None,
+            target: None,
+            package_sha256: None,
+            server_sha256: None,
+            dap_sha256: None,
+            binary_artifact_role: ArtifactRole::Unknown,
+            authority_identity: "not_proven".to_owned(),
+        },
+        expected_server_instance_id: Some("server-1".to_owned()),
+        expected_environment_snapshot_id: Some("env-1".to_owned()),
+    };
+    let response = state.respond(request);
+    assert!(
+        response.server.limitations.iter().any(|value| value == "source_revision_not_embedded"),
+        "fixture must carry a limitation outside the compatibility-reason enum"
+    );
+
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    let validator = jsonschema::validator_for(&schema)?;
+    let instance = serde_json::to_value(&response)?;
+    validator
+        .validate(&instance)
+        .map_err(|error| format!("workspace identity response must validate: {error}"))?;
+    Ok(())
+}
+
+#[test]
+fn unknown_inventory_reason_is_rejected_by_schema_token_contract()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    let error = match assert_reason_admitted_by_schema_token(&schema, "throwaway_probe") {
+        Err(error) => error.to_string(),
+        Ok(()) => return Err("unknown inventory reason must be rejected by the schema enum".into()),
+    };
+    assert!(
+        error.contains("not listed in the schema compatibilityReasonToken enum"),
+        "unknown reason rejection must name the enum contract, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn schema_reason_enum_drift_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+
+    let missing = serde_name(BinaryCompatibilityReason::ServerProductMismatch)?;
+    let mut shortened = schema.clone();
+    let enum_values = shortened["$defs"]["compatibilityReasonToken"]["enum"]
+        .as_array_mut()
+        .ok_or("compatibilityReasonToken enum must be an array")?;
+    enum_values.retain(|value| value != &missing);
+    let error = match assert_schema_reason_inventory_matches_rust(&shortened) {
+        Err(error) => error.to_string(),
+        Ok(()) => return Err("schema enum missing a current reason must be rejected".into()),
+    };
+    assert!(
+        error.contains(&missing),
+        "missing schema enum entry must name the reason, got: {error}"
+    );
+
+    let mut orphan = schema;
+    orphan["$defs"]["compatibilityReasonToken"]["enum"]
+        .as_array_mut()
+        .ok_or("compatibilityReasonToken enum must be an array")?
+        .push(Value::String("orphaned_reason_literal".into()));
+    let error = match assert_schema_reason_inventory_matches_rust(&orphan) {
+        Err(error) => error.to_string(),
+        Ok(()) => return Err("schema enum listing an orphan reason must be rejected".into()),
+    };
+    assert!(
+        error.contains("orphaned_reason_literal"),
+        "orphan schema enum entry must be named, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn every_orphan_typescript_reason_literal_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+    let root = repository_root()?;
+    let typescript = read(&root.join("vscode-extension/src/binaryIdentityProtocol.generated.ts"))?;
+    let placeholder = "reason_withheld_by_this_control";
+
+    for literal in extract_known_typescript_reason_literals(&typescript)? {
+        let doctored = typescript
+            .replace(&format!("'{literal}'"), &format!("'{placeholder}'"))
+            .replace(&format!("\"{literal}\""), &format!("\"{placeholder}\""));
+        let error = match assert_typescript_projection_matches_rust_inventory(&doctored) {
+            Err(error) => error.to_string(),
+            Ok(()) => {
+                return Err(format!(
+                    "a projection withholding reason {literal:?} must be rejected"
+                )
+                .into());
+            }
+        };
+        assert!(
+            error.contains(&literal),
+            "the orphaned literal must be named in the report, got: {error}"
+        );
+    }
     Ok(())
 }
