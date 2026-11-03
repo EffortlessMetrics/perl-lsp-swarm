@@ -168,12 +168,17 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # is a new caller identity that seeds temp on-disk fixtures through
 # index_initial_file in index_temp_source. Owned by the existing
 # crates/perl-workspace/tests row; no compatibility call, no production caller.
-# Baseline stays 697: canonical index_initial_file only in #[cfg(test)].
-# Re-anchor 2026-11-02 (#2980 merge-forward): ledger
-# completion/request/context.rs (canonical index_initial_file fixture only).
-# Merge-forward compatibility drift 697 -> 698 on main (structural gap until
-# a dedicated ledger PR lands); baseline reconciled here so meta shard is green.
-compatibility_baseline = 698
+# Held at 697 by #18828 (#18760 regex-flag / mid-word method completion):
+# crates/perl-lsp-rs-core/src/providers/completion/completion/request/context.rs
+# is a new caller identity; cross_file_mid_word_method_offers_class_method seeds
+# Inventory.pm through index_initial_file (canonical initial API). Owned by the
+# existing crates/perl-lsp-rs-core row; no compatibility call, no production
+# caller. Introducing commit 09df595b29d0cab767ae0c4f49fe496ba12ef3dc.
+# The same PR added one fixture-only index_file_str seed in
+# crates/perl-lsp-rs/src/runtime/language/completion.rs
+# (runtime_workspace_package_prefix_excludes_subsequence_numeric_hits); resolved
+# by burndown to index_initial_file_str so compatibility_baseline stays 697.
+compatibility_baseline = 697
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through

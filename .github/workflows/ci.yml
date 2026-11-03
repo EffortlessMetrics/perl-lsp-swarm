@@ -701,10 +701,8 @@ jobs:
 
   semver-pr:
     name: Semver Compatibility (facade PR)
-    # Advisory per #2266: cargo-semver-checks stays continue-on-error until
-    # baseline noise-confidence is established; promote to a blocking verdict
-    # with the same evidence window that hardens public-api-pr.
-    continue-on-error: true
+    # Advisory per #2266: not in the merge-gate required set. Detected breaks
+    # must still fail the job (#17208); continue-on-error hid them as success.
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [draft-pr-check, preflight-latest-check]
@@ -775,26 +773,9 @@ jobs:
         if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
         env:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
-        # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
-        # list `just semver-check-all` and `just public-api-check` read (#14607).
-        run: |
-          mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
-          if [ "${#crates[@]}" -eq 0 ]; then
-            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists no crates; refusing a vacuous semver pass"
-            exit 1
-          fi
-          if [ -n "$(printf '%s\n' "${crates[@]}" | sort | uniq -d)" ]; then
-            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists a crate twice; fix the list rather than checking it twice"
-            exit 1
-          fi
-          for crate in "${crates[@]}"; do
-            if cargo semver-checks check-release -p "${crate}" \
-              --baseline-rev "${SEMVER_BASELINE}"; then
-              echo "semver: ${crate} compatible"
-            else
-              echo "::warning::Breaking changes detected in ${crate}"
-            fi
-          done
+        # Crate set and fail-closed guards live in scripts/ci/semver_pr_check.sh
+        # (#14607 list authority; #17208 truthful step outcome on detection).
+        run: bash scripts/ci/semver_pr_check.sh
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose

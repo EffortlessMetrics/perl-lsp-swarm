@@ -1513,6 +1513,7 @@ ci-policy:
     @python3 scripts/ci/test_validate_cargo_feature_roles.py
     @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
     @python3 scripts/ci/test_public_api_filter.py
+    @python3 scripts/ci/test_semver_pr_check.py
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
