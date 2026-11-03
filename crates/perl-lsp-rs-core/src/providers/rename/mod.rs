@@ -356,6 +356,8 @@ impl RenameProvider {
     /// declaration scope, with no earlier same-scope declaration already in
     /// effect there. Such a use (an initializer RHS) binds to an outer
     /// declaration or the package global, never to that lexical (#18115).
+    /// A use that precedes the declaration token cannot bind to it at
+    /// all: a lexical takes effect only after its statement ends.
     fn is_inside_target_declaring_statement(
         &self,
         reference: &perl_semantic_analyzer::symbol::SymbolReference,
@@ -373,7 +375,6 @@ impl RenameProvider {
             candidate.kind == kind
                 && candidate.scope_id == declaration_scope_id
                 && matches!(candidate.declaration.as_deref(), Some("my" | "state"))
-                && candidate.location.start <= reference.location.start
                 && reference.location.start
                     < statement_end(candidate.location.start, candidate.location.end)
         });
@@ -464,11 +465,12 @@ impl RenameProvider {
 
     /// Walk the scope parent chain to find the nearest scope that declares the symbol.
     ///
-    /// A use inside a declaration's own statement (an initializer RHS) binds
-    /// outward, never to that lexical (#18117): candidate scopes whose only
-    /// same-name declaration contains `position` are skipped so rename starts
-    /// from the true binder instead of renaming the wrong lexical while
-    /// leaving the token under the cursor untouched.
+    /// A `my`/`state` declaration takes effect only after its statement
+    /// ends: a use that precedes it cannot bind to it at all, and a use
+    /// inside its own declaring statement binds outward (#18115).
+    /// Candidate scopes whose declarations are not yet effective at
+    /// `position` are skipped so rename starts from the true binder
+    /// instead of a shadowing lexical (#18117).
     fn find_declaration_scope_up_chain(
         &self,
         start_scope: ScopeId,
@@ -482,7 +484,6 @@ impl RenameProvider {
                 for symbol in symbols {
                     if symbol.kind == kind && symbol.scope_id == scope_id {
                         if matches!(symbol.declaration.as_deref(), Some("my" | "state"))
-                            && symbol.location.start <= position
                             && position
                                 < self
                                     .symbol_table
@@ -575,7 +576,7 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_semantic_analyzer::symbol::SymbolKind;
-    use perl_test_must::{must, must_err, must_some};
+    use perl_test_must::{must, must_err, must_some, must_some_with};
 
     #[test]
     fn test_rename_variable() {
@@ -797,8 +798,8 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let provider = RenameProvider::new(&ast, code.to_string());
-        let rhs =
-            code.find("my $value = $value;").expect("inner declaration") + "my $value = ".len();
+        let rhs = must_some_with(code.find("my $value = $value;"), "inner declaration")
+            + "my $value = ".len();
         let result = provider.scoped_rename(rhs + 1, "outer_renamed", &RenameOptions::default());
         assert!(result.is_valid);
         let new_code = apply_rename_edits(code, &result.edits);
@@ -815,6 +816,25 @@ mod tests {
             new_code.matches("$outer_renamed").count(),
             3,
             "exactly the outer uses renamed: {new_code}"
+        );
+    }
+
+    #[test]
+    fn test_scoped_rename_use_before_inner_declaration_binds_outward() {
+        // A use that textually precedes a same-scope lexical cannot bind
+        // to it: the declaration takes effect only after its statement
+        // ends, so renaming the outer lexical must include that use.
+        let code = "my $value = 1;\n{ print $value; my $value = 2; }\nprint $value;\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let pos = must_some(code.find("$value")) + 1;
+        let result = provider.scoped_rename(pos, "renamed", &RenameOptions::default());
+        assert!(result.is_valid);
+        let new_code = apply_rename_edits(code, &result.edits);
+        assert_eq!(
+            new_code, "my $renamed = 1;\n{ print $renamed; my $value = 2; }\nprint $renamed;\n",
+            "outer declaration and its outward-bound uses renamed: {new_code}"
         );
     }
 

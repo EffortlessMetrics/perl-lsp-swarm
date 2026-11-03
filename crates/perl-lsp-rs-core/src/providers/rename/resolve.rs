@@ -87,7 +87,7 @@ mod tests {
         for position in decl..decl + "value".len() {
             let found = find_symbol_at_position(position, &table, code);
             assert_eq!(
-                found.map(|(name, kind)| (name, kind)),
+                found,
                 Some(("value".to_string(), SymbolKind::scalar())),
                 "position {position}"
             );
@@ -96,7 +96,7 @@ mod tests {
         let use_pos = must_some_with(code.rfind("$value"), "use") + 1;
         let found = find_symbol_at_position(use_pos, &table, code);
         assert_eq!(
-            found.map(|(name, kind)| (name, kind)),
+            found,
             Some(("value".to_string(), SymbolKind::scalar()))
         );
     }
