@@ -3986,9 +3986,21 @@ mod tests {
             let analyzer = crate::semantic::SemanticAnalyzer::analyze_with_source(&ast, &source);
             assert!(analyzer.resolve_inherited_method_location("Caller", name).is_none());
             let model = crate::semantic::SemanticModel::build(&ast, &source);
-            let candidate = model.definition_at(offset).ok_or("unproved terminal callable")?;
-            assert_eq!(candidate.kind, crate::symbol::SymbolKind::Subroutine, "{case}");
-            assert_eq!(candidate.qualified_name, "Caller::helper", "{case}");
+            // An unproved SUPER call binds outward and carries no definition at
+            // the call site (#18117): the terminal model must decline rather
+            // than credit the enclosing `Caller::helper`. The helper itself
+            // still exists in the symbol table for the refusal checks below.
+            assert!(model.definition_at(offset).is_none(), "{case}");
+            let candidate = model
+                .symbol_table()
+                .symbols
+                .values()
+                .flatten()
+                .find(|symbol| {
+                    symbol.kind == crate::symbol::SymbolKind::Subroutine
+                        && symbol.qualified_name == "Caller::helper"
+                })
+                .ok_or("source-built Caller helper")?;
             assert!(
                 !same_file_definition_matches_qualification(&source, offset, candidate, &ast),
                 "{case}: no name or ancestor proof permits the Caller fallback"
@@ -4270,9 +4282,21 @@ mod tests {
             "an unresolved call must reach the terminal model for this regression"
         );
         let model = crate::semantic::SemanticModel::build(&ast, caller);
-        let candidate = model.definition_at(offset).ok_or("enclosing package candidate")?;
-        assert_eq!(candidate.kind, crate::symbol::SymbolKind::Package);
-        assert_eq!(candidate.qualified_name, "Caller");
+        // An unresolved qualified call binds outward to the package global and
+        // carries no definition at the call site (#18117): the terminal model
+        // must decline rather than credit the enclosing package. The package
+        // itself still exists in the symbol table for the refusal checks below.
+        assert!(model.definition_at(offset).is_none());
+        let candidate = model
+            .symbol_table()
+            .symbols
+            .values()
+            .flatten()
+            .find(|symbol| {
+                symbol.kind == crate::symbol::SymbolKind::Package
+                    && symbol.qualified_name == "Caller"
+            })
+            .ok_or("enclosing package candidate")?;
         assert!(candidate.location.start <= offset && candidate.location.end >= offset);
         assert!(!same_file_definition_matches_qualification(caller, offset, candidate, &ast));
         assert!(same_file_definition_matches_qualification(caller, 10, candidate, &ast));
@@ -4465,15 +4489,13 @@ mod tests {
                     symbol.kind == expected_kind && symbol.qualified_name == expected_name
                 })
                 .ok_or("source-built container candidate")?;
-            // The retained historical server already refuses format value calls.
-            // Challenge its source-built Format metadata too, without assuming
-            // this container is reached in every parser/provider mode.
-            if !case.starts_with("format") {
-                let actual = model.definition_at(offset).ok_or("terminal container at call")?;
-                assert_eq!(actual.kind, expected_kind, "{case}");
-                assert_eq!(actual.qualified_name, expected_name, "{case}");
-                assert!(actual.location.start <= offset && actual.location.end >= offset, "{case}");
-            }
+            // Unresolved qualified calls bind outward to the package global and
+            // carry no definition at the call site (#18117): the terminal model
+            // must decline rather than credit the enclosing container. The
+            // symbol-table `candidate` above still proves the container exists
+            // for the `same_file_definition_matches_qualification` refusal
+            // check below.
+            assert!(model.definition_at(offset).is_none(), "{case}");
             assert!(
                 !same_file_definition_matches_qualification(caller, offset, candidate, &ast),
                 "{case}"
