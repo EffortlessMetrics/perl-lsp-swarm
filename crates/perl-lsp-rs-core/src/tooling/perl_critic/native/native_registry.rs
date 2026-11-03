@@ -543,12 +543,15 @@ impl NativeCriticRegistry {
         };
 
         // Build a context that carries the pre-computed scope results.
-        let rich_ctx = match (scope_issues_ref, pragma_map_ref) {
+        // Preserve caller-supplied parser error spans: with_scope resets them
+        // to None, and rules must not trust a unit overlapping such a span.
+        let mut rich_ctx = match (scope_issues_ref, pragma_map_ref) {
             (Some(si), Some(pm)) => {
                 CriticContext::with_scope(ctx.source, ctx.ast, ctx.config, si, pm)
             }
             _ => CriticContext::new(ctx.source, ctx.ast, ctx.config),
         };
+        rich_ctx.parse_error_spans = ctx.parse_error_spans;
 
         for rule in &self.rules {
             if !rule_enabled(rule.as_ref(), rich_ctx.config) {

@@ -6436,7 +6436,7 @@ if ($x = 1) { print $x; }
 
         assert!(!recommended.rule_ids().contains(&"native.maintainability.sub_too_long"));
         assert!(strict.rule_ids().contains(&"native.maintainability.sub_too_long"));
-        assert_eq!(strict.len(), 31);
+        assert_eq!(strict.len(), 32); // +TooManyBranchesRule
         assert_eq!(recommended.len(), 16);
     }
 
