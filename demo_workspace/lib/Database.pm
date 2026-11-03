@@ -2,27 +2,11 @@ package Database;
 use strict;
 use warnings;
 
-# DBI is optional for this demo — the save() stub prints rather than
-# connecting to a real database, so don't hard-require it.
-BEGIN {
-    eval { require DBI };
-}
-
-sub connect {
-    # Database connection logic
-    return 1;
-}
-
+# Print the result so this example needs no database or extra Perl modules.
 sub save {
     my ($data) = @_;
-    # Save data to database
-    print "Saving data...\n";
+    print "Saving summary: min=$data->{min}, max=$data->{max}, sum=$data->{sum}\n";
     return 1;
-}
-
-sub unused_query {
-    # This is dead code
-    return "SELECT * FROM table";
 }
 
 1;

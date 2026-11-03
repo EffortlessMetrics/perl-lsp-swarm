@@ -23,6 +23,8 @@
   "command.formatDocument.title": "Format Document",
   "command.showIncPaths.title": "Show @INC Paths",
   "command.openModule.title": "Open Module",
+  "command.createModule.title": "Create Module",
+  "command.createTest.title": "Create Test",
   "command.showParserAst.title": "Show Parser AST",
   "command.openConfigurationGuide.title": "Open Configuration Guide",
   "command.explainProviderDecision.title": "Explain Provider Decision",

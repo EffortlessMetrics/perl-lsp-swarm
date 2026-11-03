@@ -758,8 +758,10 @@ fn instrument_failure_reason(outcome: &DetectionOutcome) -> Option<String> {
 /// Reconcile the detection's current input identity with this adapter before
 /// its evidence may support exact activation: the identity must exist, carry
 /// the canonical descriptor, one terminal `Mojo::Base` selector evaluation
-/// whose matched module is `Mojo::Base`, and an observation receipt from the
-/// detection generation.
+/// whose matched module is `Mojo::Base`, an observation receipt from the
+/// detection generation, and returned `contributing_modules`,
+/// `version_evidence`, and `Detected { framework_version }` equal to that
+/// matched activation.
 fn identity_reconciliation_reason(detection: &AdapterDetectionResult) -> Option<String> {
     let Some(identity) = &detection.input_identity else {
         return Some(
@@ -799,6 +801,38 @@ fn identity_reconciliation_reason(detection: &AdapterDetectionResult) -> Option<
             if activation.module_name == MOJO_BASE_FRAMEWORK_NAME
                 && activation.generation == detection.project_generation =>
         {
+            // The result's own module and version evidence must be the input
+            // row's, not merely present. A deserialized or mutated result can
+            // carry a valid input identity beside fabricated contributing
+            // evidence; binding them here is what stops that from becoming
+            // exact activation.
+            if detection.contributing_modules.as_slice() != std::slice::from_ref(activation) {
+                return Some(
+                    "contributing module evidence does not equal the owned selector's matched \
+                     activation; fabricated identities cannot become exact activation"
+                        .to_string(),
+                );
+            }
+            if detection.version_evidence.as_ref() != activation.observed_version.as_ref() {
+                return Some(
+                    "version evidence does not equal the matched activation's observed version"
+                        .to_string(),
+                );
+            }
+            if let DetectionOutcome::Detected { framework_version, .. } = &detection.outcome {
+                // Unconditional: a result that simply omits the reported
+                // version must not slip past this binding and publish an
+                // exact fact with no observed version. Presence and equality
+                // are both required.
+                let observed =
+                    activation.observed_version.as_ref().map(|evidence| evidence.version.as_str());
+                if observed.is_none() || framework_version.as_deref() != observed {
+                    return Some(format!(
+                        "reported framework version {framework_version:?} does not equal the \
+                         matched activation's observed version {observed:?}"
+                    ));
+                }
+            }
             None
         }
         _ => Some(
@@ -858,6 +892,8 @@ fn staleness_reason(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FileId;
+    use perl_test_must::{must_some_with, must_with};
 
     #[test]
     fn descriptor_is_mojo_base_selective_and_shadow() {
@@ -1275,5 +1311,125 @@ mod tests {
             crate::framework::AdapterCancellation::active(),
         );
         detect_mojo_base(&input)
+    }
+
+    fn exact_base_anchor() -> MojoBaseSiteAnchor {
+        MojoBaseSiteAnchor::new(
+            Some("App".to_string()),
+            0,
+            1,
+            None,
+            SourceGeneration::known("gen-1"),
+        )
+    }
+
+    fn stale_reason(facts: &MojoBaseActivationFacts) -> Option<&str> {
+        match &facts.outcome {
+            MojoBaseActivationOutcome::StaleOrIncompleteInput { reason } => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn genuine_detection_is_exact_base_activation() {
+        let detection = detected_result_for_facts();
+        let facts =
+            mojo_base_activation_facts(&detection, &exact_base_anchor(), &parse(&["-base"]));
+        assert!(
+            matches!(facts.outcome, MojoBaseActivationOutcome::ExactBaseActivation),
+            "genuine detection must remain exact, got {:?}",
+            facts.outcome
+        );
+        assert_eq!(
+            facts.resolved_module.as_ref().map(|module| module.module_name.as_str()),
+            Some(MOJO_BASE_FRAMEWORK_NAME)
+        );
+        assert_eq!(facts.framework_version, "9.34");
+    }
+
+    #[test]
+    fn fabricated_contributing_module_cannot_become_exact_activation() {
+        // A result can be deserialized or mutated: it may carry a genuine
+        // input identity beside contributing evidence that was never observed.
+        let mut detection = detected_result_for_facts();
+        assert!(matches!(detection.outcome, DetectionOutcome::Detected { .. }));
+        detection.contributing_modules = vec![
+            ModuleActivationIdentity::new(
+                "Totally::Different",
+                Some(FileId(99)),
+                SourceGeneration::known("gen-1"),
+            )
+            .with_observed_version(crate::framework::ModuleVersionEvidence::new(
+                "9.34",
+                SourceGeneration::known("gen-1"),
+            )),
+        ];
+        let facts =
+            mojo_base_activation_facts(&detection, &exact_base_anchor(), &parse(&["-base"]));
+        let reason = must_some_with(
+            stale_reason(&facts),
+            "fabricated contributing module must be StaleOrIncompleteInput",
+        );
+        assert!(
+            reason.contains("contributing module evidence does not equal"),
+            "fabricated contributing module must name its reason, got {reason}"
+        );
+    }
+
+    #[test]
+    fn fabricated_version_evidence_cannot_become_exact_activation() {
+        let mut detection = detected_result_for_facts();
+        detection.version_evidence = Some(crate::framework::ModuleVersionEvidence::new(
+            "1.00",
+            SourceGeneration::known("gen-1"),
+        ));
+        let facts =
+            mojo_base_activation_facts(&detection, &exact_base_anchor(), &parse(&["-base"]));
+        let reason = must_some_with(
+            stale_reason(&facts),
+            "fabricated version evidence must be StaleOrIncompleteInput",
+        );
+        assert!(
+            reason.contains("version evidence does not equal the matched activation"),
+            "fabricated version evidence must name its reason, got {reason}"
+        );
+    }
+
+    #[test]
+    fn a_reported_framework_version_must_match_the_observed_one() {
+        let mut detection = detected_result_for_facts();
+        detection.outcome = DetectionOutcome::Detected {
+            confidence: Confidence::High,
+            framework_version: Some("9.99".to_string()),
+        };
+        let facts =
+            mojo_base_activation_facts(&detection, &exact_base_anchor(), &parse(&["-base"]));
+        let reason = must_some_with(
+            stale_reason(&facts),
+            "mismatched Detected framework_version must be StaleOrIncompleteInput",
+        );
+        assert!(
+            reason.contains("reported framework version"),
+            "mismatched Detected framework_version must name its reason, got {reason}"
+        );
+        assert!(
+            reason.contains("9.99"),
+            "the reason must name the fabricated reported version, got {reason}"
+        );
+    }
+
+    #[test]
+    fn json_round_trip_of_genuine_detection_stays_exact() {
+        let detection = detected_result_for_facts();
+        let encoded = must_with(serde_json::to_string(&detection), "serialize genuine detection");
+        let decoded: AdapterDetectionResult =
+            must_with(serde_json::from_str(&encoded), "deserialize genuine detection");
+        assert_eq!(decoded, detection, "JSON round-trip must preserve the genuine result");
+        let facts = mojo_base_activation_facts(&decoded, &exact_base_anchor(), &parse(&["-base"]));
+        assert!(
+            matches!(facts.outcome, MojoBaseActivationOutcome::ExactBaseActivation),
+            "a JSON-round-tripped genuine detection must still be exact, got {:?}",
+            facts.outcome
+        );
     }
 }

@@ -23,6 +23,7 @@ pub(super) fn complete_dispatch(
         context,
         source,
         position,
+        filepath,
         is_cancelled,
     ) {
         return CompletionFlow::SortAndReturn;
@@ -40,7 +41,8 @@ pub(super) fn complete_dispatch(
         return CompletionFlow::SortAndReturn;
     }
 
-    if let Some(flow) = complete_sigil_context(provider, completions, context, is_cancelled) {
+    if let Some(flow) = complete_sigil_context(provider, completions, context, source, is_cancelled)
+    {
         // If we were in a string and sigil completion matched, we're done.
         // Otherwise fall through to file-path for string context.
         if context.in_string {
@@ -49,7 +51,7 @@ pub(super) fn complete_dispatch(
         return flow;
     }
 
-    if complete_symbol_namespace_context(provider, completions, context) {
+    if complete_symbol_namespace_context(provider, completions, context, source) {
         return CompletionFlow::SortAndReturn;
     }
 
@@ -62,6 +64,7 @@ fn complete_use_or_structural_context(
     context: &CompletionContext,
     source: &str,
     position: usize,
+    filepath: Option<&str>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> bool {
     if let Some((module_name, qw_prefix)) =
@@ -122,7 +125,13 @@ fn complete_use_or_structural_context(
     }
 
     if !context.in_string && is_method_arrow_context(context) {
-        methods::add_method_completions(completions, context, source, &provider.symbol_table);
+        methods::add_method_completions(
+            completions,
+            context,
+            source,
+            &provider.symbol_table,
+            provider.type_engine.as_ref(),
+        );
         workspace::add_workspace_method_completions(
             completions,
             context,
@@ -131,11 +140,15 @@ fn complete_use_or_structural_context(
             provider.type_engine.as_ref(),
             &provider.workspace_index,
             &provider.used_modules,
+            // The request's document identity (canonical `file://` URL) feeds
+            // the same-document freshness seam; absent identity keeps the
+            // index-only behavior (#17084).
+            filepath.unwrap_or(""),
         );
         return true;
     }
 
-    if complete_indirect_method_context(provider, completions, context, source) {
+    if complete_indirect_method_context(provider, completions, context, source, filepath) {
         return true;
     }
 
@@ -435,6 +448,7 @@ fn complete_indirect_method_context(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     source: &str,
+    filepath: Option<&str>,
 ) -> bool {
     if context.in_string || context.in_regex || context.in_comment {
         return false;
@@ -494,14 +508,27 @@ fn complete_indirect_method_context(
         provider.type_engine.as_ref(),
         &provider.workspace_index,
         &provider.used_modules,
+        filepath.unwrap_or(""),
     );
-    methods::add_method_completions(&mut probe, &synth, source, &provider.symbol_table);
+    methods::add_method_completions(
+        &mut probe,
+        &synth,
+        source,
+        &provider.symbol_table,
+        provider.type_engine.as_ref(),
+    );
     if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_ref())) {
         return false;
     }
 
     let inserted_start = completions.len();
-    methods::add_method_completions(completions, &synth, source, &provider.symbol_table);
+    methods::add_method_completions(
+        completions,
+        &synth,
+        source,
+        &provider.symbol_table,
+        provider.type_engine.as_ref(),
+    );
     workspace::add_workspace_method_completions(
         completions,
         &synth,
@@ -510,6 +537,7 @@ fn complete_indirect_method_context(
         provider.type_engine.as_ref(),
         &provider.workspace_index,
         &provider.used_modules,
+        filepath.unwrap_or(""),
     );
 
     // The arrow-form providers emit parenthesized insert text (`run()`), which is
@@ -527,6 +555,7 @@ fn complete_sigil_context(
     provider: &CompletionProvider,
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
+    source: &str,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Option<CompletionFlow> {
     let (sigil, kind) = sigil_kind(context)?;
@@ -543,7 +572,7 @@ fn complete_sigil_context(
         }
     }
 
-    variables::add_variable_completions(completions, context, kind, &provider.symbol_table);
+    variables::add_variable_completions(completions, context, kind, &provider.symbol_table, source);
     if is_cancelled() {
         return Some(CompletionFlow::Cancelled);
     }
@@ -567,9 +596,14 @@ fn complete_symbol_namespace_context(
     provider: &CompletionProvider,
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
+    source: &str,
 ) -> bool {
     if context.prefix.starts_with('&') {
-        functions::add_function_completions(completions, context, &provider.symbol_table);
+        functions::add_function_completions(
+            completions,
+            &functions::context_with_function_suffix(context, source),
+            &provider.symbol_table,
+        );
         return true;
     }
 
@@ -658,7 +692,11 @@ fn complete_general_context(
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }
-        functions::add_function_completions(completions, context, &provider.symbol_table);
+        functions::add_function_completions(
+            completions,
+            &functions::context_with_function_suffix(context, source),
+            &provider.symbol_table,
+        );
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }
@@ -679,7 +717,13 @@ fn complete_general_context(
     // admission (#8941) as the sigil path; the identity merge keeps the
     // better-ranked candidate when both inventories produce one label.
     for kind in [SymbolKind::scalar(), SymbolKind::array(), SymbolKind::hash()] {
-        variables::add_variable_completions(completions, context, kind, &provider.symbol_table);
+        variables::add_variable_completions(
+            completions,
+            context,
+            kind,
+            &provider.symbol_table,
+            source,
+        );
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }

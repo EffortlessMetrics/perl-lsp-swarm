@@ -74,6 +74,18 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Added
 
+- **Folder-less debug launches are refused early with followable advice, and
+  `perl-lsp.debug.trustedRoots` supplies folder-less launch authority.**
+  Debugging a lone Perl file with no workspace folder open used to spawn
+  `perl-dap` with no startup authority and fail with a launch refusal naming
+  `--trusted-root` / `--allow-unbounded` CLI flags the extension UI does not
+  expose. Launch resolution and the `perl-lsp.debugTest` command now refuse
+  before the adapter starts, with one actionable warning, unless the launch
+  carries its own authority. The new machine-scoped `perl-lsp.debug.trustedRoots`
+  setting is forwarded to the adapter as `--trusted-root`, one per entry, so
+  the refusal's advice is followable from editor settings and folder-less
+  launches can be authorized deliberately; workspace settings can never set
+  it. (#16554)
 - **First-run include-path discovery**: on activation the extension scans
   common Perl module directories (`src`, `local`, `vendor`, `lib`, `t/lib`,
   `blib/lib`, `modules`) and offers a one-time suggestion to add any directory

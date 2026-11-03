@@ -35,7 +35,7 @@ version = "0.97.0"
 optional = true
 
 [dev-dependencies]
-perl-tdd-support = { path = "../perl-tdd-support" }
+perl-test-must = { workspace = true }
 perl-test-generators = { path = "../perl-test-generators" }
 proptest.workspace = true
 

@@ -164,7 +164,9 @@ def print_receipt(data: dict) -> int:
 
     Returns the total benchmark count so callers can fail closed when it is
     zero -- a receipt that always prints "STATUS: COMPLETE" regardless of
-    whether anything actually ran is a vacuous pass (#3979).
+    whether anything actually ran is a vacuous pass (#3979). Returns -1 when
+    any category carries a runner failure marker, so a partial run can never
+    read as complete (#17218).
     """
     # Extract metadata
     timestamp_raw = data.get("timestamp") or data.get("metadata", {}).get("date")
@@ -214,18 +216,38 @@ def print_receipt(data: dict) -> int:
                 total_benchmarks += 1
         print()
 
+    # Runner failure markers (#17218) live in the raw results beside the
+    # extracted entries; surface them before the completeness verdict.
+    failures = {}
+    raw_results = data.get("results")
+    if isinstance(raw_results, dict):
+        for category, benchmarks in raw_results.items():
+            if isinstance(benchmarks, dict) and benchmarks.get("_status") == "failed":
+                failures[category] = benchmarks.get("_error", "unknown error")
+
+    if failures:
+        print("FAILED CATEGORIES:")
+        for category in sorted(failures):
+            print(f"  {category}: {failures[category]}")
+        print()
+
     print("SUMMARY:")
     print(f"  Total benchmarks:  {total_benchmarks}")
     if passed > 0 or failed > 0:
         print(f"  Passed targets:    {passed}")
         print(f"  Failed targets:    {failed}")
     print()
-    if total_benchmarks == 0:
+    if failures:
+        names = ", ".join(sorted(failures))
+        print(f"STATUS: INCOMPLETE ({len(failures)} categories failed: {names})")
+    elif total_benchmarks == 0:
         print("STATUS: INVALID (0 benchmarks -- vacuous run, see #3979)")
     else:
         print("STATUS: COMPLETE")
     print("=" * 50)
 
+    if failures:
+        return -1
     return total_benchmarks
 
 
@@ -248,7 +270,7 @@ def main():
         print_markdown(data)
     elif args.receipt:
         total_benchmarks = print_receipt(data)
-        if total_benchmarks == 0:
+        if total_benchmarks <= 0:
             sys.exit(1)
     else:
         print_pretty(data)

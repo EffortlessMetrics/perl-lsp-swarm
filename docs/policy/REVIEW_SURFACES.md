@@ -269,8 +269,8 @@ Executable policy and public migration: suppression policy, receipt schemas, pub
 - Enforcement successor: #11796
 - Code-owner route: `not_proven` (resolution owner #11796): Routing promotion deferred to #11796.
 - Bound paths:
-  - `docs/agents/pr-ledger.schema.json`
   - `xtask/src/tasks/pr_ledger.rs`
+  - `xtask/src/tasks/agent_ledgers.rs`
 
 ### `public_api_baseline`
 

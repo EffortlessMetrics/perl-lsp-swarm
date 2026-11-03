@@ -26,15 +26,40 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
         with:
           toolchain: stable
 
       - name: Run methodology gate (advisory)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          cargo xtask methodology-gate \
-            --fixture "${GITHUB_EVENT_PATH}" \
-            --receipt target/receipts/methodology-gate.json
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            # Event-payload body/labels are an immutable snapshot replayed on
+            # reruns (issue #15759); prefer the binary's existing live `--pr`
+            # snapshot. A failed `gh` lookup fails the step (fail-closed) —
+            # never fall back to the stale fixture.
+            if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error title=invalid PR event::missing or invalid PR number"
+              exit 1
+            fi
+            echo "methodology-gate: live PR snapshot via gh pr view (pr=${PR_NUMBER})"
+            cargo xtask methodology-gate \
+              --pr "${PR_NUMBER}" \
+              --receipt target/receipts/methodology-gate.json
+          elif [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "merge_group" ]]; then
+            # push/merge_group: no PR to fetch; the fixture remains the
+            # locator input for non-PR events and offline self-tests.
+            cargo xtask methodology-gate \
+              --fixture "${GITHUB_EVENT_PATH}" \
+              --receipt target/receipts/methodology-gate.json
+          else
+            echo "::error title=invalid workflow event::missing or unsupported event name"
+            exit 1
+          fi
 
       - name: Upload methodology receipt
         if: always()
