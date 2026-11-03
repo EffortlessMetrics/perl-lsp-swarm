@@ -1040,6 +1040,61 @@ class WindowsJobSettlementTests(unittest.TestCase):
         self.assertTrue(any("member exit unconfirmed" in failure for failure in failures), failures)
         self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
 
+    def test_active_accounting_error_still_waits_members_and_samples_terminal_total(self):
+        job = self.job(iter([]))
+        job.process_handles.return_value = [123, 456]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        job.active_processes = mock.Mock(side_effect=OSError("active accounting refused"))
+        failures = job.terminate()
+        self.assertTrue(any("active accounting refused" in failure for failure in failures), failures)
+        self.assertEqual(
+            job._kernel32.WaitForSingleObject.call_args_list,
+            [mock.call(123, mock.ANY), mock.call(456, mock.ANY)],
+        )
+        self.assertEqual(job.total_processes.call_count, 2)
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(456), mock.call(42)])
+
+    def test_one_member_wait_failure_still_waits_remaining_handles(self):
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [111, 222, 333]
+        job._kernel32.WaitForSingleObject.side_effect = [generator.WAIT_FAILED, 0, 0]
+        with mock.patch.object(generator.WindowsJob, "_raise_last_error", side_effect=OSError("wait refused")):
+            failures = job.terminate()
+        self.assertTrue(any("wait refused" in failure for failure in failures), failures)
+        self.assertEqual(
+            job._kernel32.WaitForSingleObject.call_args_list,
+            [mock.call(111, mock.ANY), mock.call(222, mock.ANY), mock.call(333, mock.ANY)],
+        )
+
+    def test_terminal_accounting_error_still_closes_member_handles(self):
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [123]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        job.total_processes.side_effect = [7, OSError("terminal query refused")]
+        failures = job.terminate()
+        self.assertTrue(any("terminal query refused" in failure for failure in failures), failures)
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
+
+    def test_member_waits_use_nonnegative_bounded_timeouts(self):
+        grace_ms = int(generator.TERMINATION_GRACE_SECONDS * 1000)
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [123, 456]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        with mock.patch.object(generator.time, "monotonic", side_effect=[0] + [2] * 20):
+            job.terminate()
+        waits = [call.args[1] for call in job._kernel32.WaitForSingleObject.call_args_list]
+        self.assertEqual(waits, [3000, 3000])
+        for timeout_ms in waits:
+            self.assertGreaterEqual(timeout_ms, 0)
+            self.assertLessEqual(timeout_ms, grace_ms)
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [123, 456]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        with mock.patch.object(generator.time, "monotonic", side_effect=[0] + [10] * 20):
+            job.terminate()
+        waits = [call.args[1] for call in job._kernel32.WaitForSingleObject.call_args_list]
+        self.assertEqual(waits, [0, 0])
+
     def test_process_handle_snapshot_retries_a_growing_job_list(self):
         for partial_success in (False, True):
             with self.subTest(partial_success=partial_success):

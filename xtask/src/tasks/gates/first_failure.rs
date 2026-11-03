@@ -54,13 +54,14 @@ pub fn parse_first_failure(output: &str, exit_code: i32) -> Option<FirstFailure>
     // name with no readable block is reported alone rather than furnished with
     // another test's evidence.
     //
-    // The block boundary comes from `cargo_failure_blocks`, which already owns
-    // that read for the digest and UX receipts. A third splitter here would be
-    // the drift that module exists to prevent; the site and message *shape*
-    // stays local, because this receipt's `file:line` differs from the
-    // `file:line:col` those consumers publish. The panic line's location itself
-    // is the shared [`cargo_failure::panic_location`] read (#16907), which the
-    // UX regression receipt also uses; `first_panic` keeps the `file:line`
+    // The block boundary comes from [`cargo_failure`] via the
+    // `cargo_failure_blocks` adapter, which also trims cargo's run-level
+    // trailer. A third splitter here would be the drift that module exists
+    // to prevent; the site and message *shape* stays local, because this
+    // receipt's `file:line` differs from the `file:line:col` the digest
+    // publishes. The panic line's location itself is the shared
+    // [`cargo_failure::panic_location`] read (#16907), which the UX
+    // regression receipt also uses; `first_panic` keeps the `file:line`
     // shape via `line_only`.
     //
     // With no name recovered there is nothing to misattribute to, so a panic
