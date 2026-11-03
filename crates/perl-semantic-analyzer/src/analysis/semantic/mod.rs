@@ -324,9 +324,7 @@ impl SemanticAnalyzer {
         let definition = self
             .symbol_at(SourceLocation { start: position, end: position })
             .map(|symbol| self.resolve_definition_target(symbol));
-        let Some(definition) = definition else {
-            return None;
-        };
+        let definition = definition?;
         // A `use constant` statement synthesizes its constant over the whole
         // statement span, including the RHS (`use constant V => Other::f()`)
         // whose call the parser keeps as raw text, recording no reference.
