@@ -242,6 +242,12 @@ fn malformed_source_keeps_only_safe_items() {
     assert!(snapshot.items.iter().any(|item| {
         item.kind == TestItemKind::Subtest && item.name == TestItemName::Named("kept".to_string())
     }));
+    assert!(
+        !snapshot
+            .items
+            .iter()
+            .any(|item| { item.name == TestItemName::Named("broken".to_string()) })
+    );
 }
 
 #[test]
@@ -283,12 +289,27 @@ fn rename_add_and_remove_change_snapshot_identity() {
         NamedSubroutinePolicy::Off,
         None,
     );
+    let pruned = discover(
+        "subtest 'alpha' => sub { ok(1); };\n",
+        4,
+        &source_ref,
+        NamedSubroutinePolicy::Off,
+        None,
+    );
     let delta_rename = old.diff(&renamed).expect("rename diff");
     assert_eq!(delta_rename.changed.len(), 1);
     assert!(delta_rename.added.is_empty());
     assert!(delta_rename.removed.is_empty());
     let delta_add = old.diff(&added).expect("add diff");
     assert_eq!(delta_add.added.len(), 1);
+    let delta_remove = added.diff(&pruned).expect("remove diff");
+    assert_eq!(delta_remove.removed.len(), 1);
+    let removed_item = added
+        .items
+        .iter()
+        .find(|item| item.id == delta_remove.removed[0])
+        .expect("removed id must refer to an item from the prior snapshot");
+    assert_eq!(removed_item.name, TestItemName::Named("gamma".to_string()));
 }
 
 #[test]

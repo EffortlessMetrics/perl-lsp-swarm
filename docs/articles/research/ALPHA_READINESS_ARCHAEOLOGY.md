@@ -29,14 +29,14 @@ All claims below are bounded to the evidence available in:
 The canonical truth sources still separate shipped reality from the next
 milestone.
 
-[`Cargo.toml`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/Cargo.toml)
+[`Cargo.toml`](../../../Cargo.toml)
 still declares the workspace version as `0.11.0`.
 
-[`docs/project/CURRENT_STATUS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
+[`docs/project/CURRENT_STATUS.md`](../../project/CURRENT_STATUS.md)
 calls the current release line `v0.11.0` public alpha and names `v0.12.0`
 only as the active hardening sprint.
 
-[`docs/project/ROADMAP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/ROADMAP.md)
+[`docs/project/ROADMAP.md`](../../project/ROADMAP.md)
 keeps the same boundary:
 
 - current release line: `v0.11.0` public alpha
@@ -121,7 +121,7 @@ That is a tighter definition than “everything must be perfect.”
 
 The same readiness material is careful about what does not block the alpha.
 
-[`docs/project/ROADMAP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/ROADMAP.md)
+[`docs/project/ROADMAP.md`](../../project/ROADMAP.md)
 labels several items as post-alpha or later work:
 
 - diagnostic hardening
@@ -192,10 +192,10 @@ operating system for releases, not just a set of docs about a release.
 
 ## Evidence Pointers
 
-- [`Cargo.toml`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/Cargo.toml)
-- [`docs/project/CURRENT_STATUS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
-- [`docs/project/ROADMAP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/ROADMAP.md)
-- [`features.toml`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/features.toml)
+- [`Cargo.toml`](../../../Cargo.toml)
+- [`docs/project/CURRENT_STATUS.md`](../../project/CURRENT_STATUS.md)
+- [`docs/project/ROADMAP.md`](../../project/ROADMAP.md)
+- [`features.toml`](../../../features.toml)
 - [PR #2069](https://github.com/EffortlessMetrics/perl-lsp/pull/2069)
 - [PR #2035](https://github.com/EffortlessMetrics/perl-lsp/pull/2035)
 - [Issue #2195](https://github.com/EffortlessMetrics/perl-lsp/issues/2195)

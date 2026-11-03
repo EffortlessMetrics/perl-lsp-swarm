@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Report invalid spaced repetition assignment and missing repetition operands while preserving useful partial expressions for editing.
+time: 2026-09-20T08:12:08Z
+custom:
+  PR: "16145"
+  Slug: repetition-operand-recovery
+  Breaking: "no"

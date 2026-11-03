@@ -28,6 +28,7 @@ docs/migrations/**
 *.tgz
 .github/**
 **/*.md
+!assets/demo-project/README.md
 !README.md
 !CHANGELOG.md
 !LICENSE

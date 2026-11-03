@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "The manual Check for Binary Updates command now always performs a real check and reports the outcome, including a You-are-up-to-date confirmation, instead of being silently suppressed for up to a day by a recent background check; pinned tag-channel users are told why checks are disabled."
+time: 2026-09-27T11:00:00Z
+custom:
+  PR: 16573
+  Slug: manual-update-check-forced
+  Breaking: "no"

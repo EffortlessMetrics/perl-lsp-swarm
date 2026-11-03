@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+/// Wire version this producer emits and every consumer pins (#15372).
+const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTask {
@@ -40,7 +43,8 @@ pub fn acquire(task_path: &Path, out_path: &Path) -> Result<()> {
     let task = read_task(task_path)?;
     validate_task(&task)?;
 
-    let lease = AgentLease { schema_version: 1, issued_at: Utc::now(), task };
+    let lease =
+        AgentLease { schema_version: SUPPORTED_SCHEMA_VERSION, issued_at: Utc::now(), task };
 
     write_json(out_path, &lease)?;
     println!("Lease written to {}", out_path.display());
@@ -49,6 +53,12 @@ pub fn acquire(task_path: &Path, out_path: &Path) -> Result<()> {
 
 pub fn verify(lease_path: &Path, current_path: &Path) -> Result<()> {
     let lease = read_lease(lease_path)?;
+    if lease.schema_version != SUPPORTED_SCHEMA_VERSION {
+        bail!(
+            "unsupported agent lease schema_version: {} (expected {SUPPORTED_SCHEMA_VERSION})",
+            lease.schema_version
+        );
+    }
     validate_task(&lease.task)?;
 
     let now = Utc::now();
@@ -241,6 +251,41 @@ mod tests {
             .err()
             .ok_or_else(|| eyre!("stale head should fail"))?;
         ensure!(err.to_string().contains("stale head"), "got error: {err}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn agent_lease_verify_rejects_unsupported_and_missing_schema_version() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let lease_path = tmp.path().join("lease.json");
+        let current_path = tmp.path().join("current.json");
+        write_fixture_json(
+            &current_path,
+            &CurrentSnapshot { snapshot_id: "snap-1".to_owned(), head_sha: "head-a".to_owned() },
+        )?;
+
+        let mut future = valid_lease()?;
+        future.schema_version = 2;
+        write_fixture_json(&lease_path, &future)?;
+        let err = verify(&lease_path, &current_path)
+            .err()
+            .ok_or_else(|| eyre!("v2 lease should fail verification"))?;
+        ensure!(
+            err.to_string().contains("unsupported agent lease schema_version: 2 (expected 1)"),
+            "got error: {err}"
+        );
+
+        let mut value = serde_json::to_value(valid_lease()?)?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| eyre!("lease fixture should serialize to an object"))?
+            .remove("schema_version");
+        write_fixture_json(&lease_path, &value)?;
+        let err = verify(&lease_path, &current_path)
+            .err()
+            .ok_or_else(|| eyre!("lease without schema_version should fail"))?;
+        ensure!(format!("{err:?}").contains("schema_version"), "got error: {err:?}");
 
         Ok(())
     }

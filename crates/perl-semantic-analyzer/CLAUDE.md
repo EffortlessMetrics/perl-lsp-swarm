@@ -5,7 +5,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## Crate Overview
 
 - **Name**: `perl-semantic-analyzer`
-- **Version**: workspace (currently 0.12.3)
+- **Version**: tracks the workspace version.
 - **Tier**: 4 (three-level internal dependencies)
 - **Purpose**: Semantic analysis, symbol extraction, type inference, scope analysis, and dead code detection for Perl source code. Provides the core analysis layer consumed by LSP provider crates.
 

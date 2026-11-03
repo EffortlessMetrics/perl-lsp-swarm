@@ -42,3 +42,24 @@ fn output_is_deterministic() {
     assert_eq!(first, second);
     assert_eq!(first.inventory_digest, second.inventory_digest);
 }
+
+#[test]
+fn schema_version_is_project_wide_string_field() {
+    // Pin the #15289 fix: `workspace_doctor_inventory` must emit a `schema_version`
+    // string (project-wide convention), not the legacy short-form `schema: u32`.
+    let temp = fixture_root();
+    let inventory = build_inventory(temp.path()).expect("build inventory");
+    assert_eq!(inventory.schema_version, "workspace_doctor_inventory.v1");
+
+    let rendered = serde_json::to_value(&inventory).expect("serialize inventory");
+    let object = rendered.as_object().expect("inventory is a JSON object");
+    assert!(
+        !object.contains_key("schema"),
+        "legacy `schema` key must not appear in serialized inventory (object={object:?})",
+    );
+    assert_eq!(
+        object.get("schema_version").and_then(serde_json::Value::as_str),
+        Some("workspace_doctor_inventory.v1"),
+        "serialized inventory must expose schema_version: String for project-wide consumers",
+    );
+}

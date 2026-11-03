@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import * as https from 'https';
-import * as http from 'http';
+import type * as https from 'https';
+import type * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -10,15 +10,29 @@ import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
 import { downloadBoundedFile, unlinkPartialDownloadDest } from './boundedFileDownload';
 import { extractManagedArchive } from './managedArchiveExtract';
 import {
+  createManagedHttpRequest,
+  MANAGED_PROXY_ERROR_PREFIX,
+  redactCredentialUrl,
+  type ManagedProxySources,
+} from './managedHttpTransport';
+import {
   MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
   MANAGED_CHECKSUM_FILE_MAX_BYTES,
 } from './managedArchiveSafetyPolicy';
 import type { ManagedCandidateManifest } from './managedCacheProtocol';
 import {
+  acquireManagedCacheMutationLock,
+  buildManagedCacheMutationAttempt,
+  ManagedCacheMutationBusyError,
+  ManagedCacheMutationCancelledError,
+} from './managedCacheLock';
+import {
+  MANAGED_CURRENT_SELECTION_FILE,
   collectStaleManagedCandidates,
   commitManagedCandidateSelection,
   enumerateManagedCandidateCatalog,
   readManagedCurrentSelection,
+  readInstalledManagedCandidateManifest,
   readSessionManagedHostReference,
   writeInstalledManagedCandidateManifest,
 } from './managedCandidateRuntime';
@@ -39,8 +53,25 @@ import {
   managedUpdateCheckStateKey,
   probeBinaryIdentity,
   LEGACY_UPDATE_CHECK_STATE_KEY,
+  managedUpdatePromptSuppressionStateKey,
+  UPDATE_PROMPT_SUPPRESSION_STATE_KEY,
   type ManagedEmulation,
 } from './managedStorageIdentity';
+import {
+  decideManagedUpdateCheck,
+  type ManagedUpdateCheckDecision,
+  type ManagedUpdateCheckIntent,
+} from './managedUpdateCheckAdmission';
+import {
+  composeCheckSkippedOutcome,
+  composeUpdatedReloadRequiredOutcome,
+  composeUpdatedReloadUnverifiedOutcome,
+  composeUpToDateOutcome,
+  getSessionManagedUpdateOutcomeDedupe,
+  projectManagedUpdateOutcome,
+  type ManagedUpdateOutcome,
+  type ManagedUpdatePresentation,
+} from './managedUpdateOutcome';
 
 interface ReleaseAsset {
   name: string;
@@ -223,11 +254,32 @@ type ManagedInstallReason = 'force' | 'ensure';
 interface ActiveManagedInstall {
   promise: Promise<string | null>;
   reason: ManagedInstallReason;
+  owner: BinaryDownloader;
 }
 let activeManagedInstall: ActiveManagedInstall | undefined;
 
 export function __resetManagedInstallSingleflightForTesting(): void {
   activeManagedInstall = undefined;
+}
+
+/** Progress label for a first-run (or repair) managed download. */
+const DOWNLOAD_PROGRESS_TITLE = 'Downloading Perl Language Server';
+/**
+ * Progress label for an update install (#16531). An update that looks exactly
+ * like a first-run download gives an autoUpdate user no signal that the
+ * feature — not a stray download — is doing the work.
+ */
+const UPDATE_PROGRESS_TITLE = 'Updating Perl Language Server';
+
+/**
+ * Session guard for the `versionTag`-ignored warning (#16533). One warning per
+ * extension-host session: the mismatch is configuration, not progress, so it
+ * must not repeat on every update check or download.
+ */
+let versionTagIgnoredWarningShown = false;
+
+export function __resetVersionTagIgnoredWarningForTesting(): void {
+  versionTagIgnoredWarningShown = false;
 }
 
 function delay(ms: number): Promise<void> {
@@ -476,8 +528,34 @@ function describeManagedReleaseRefusal(
     case 'configured_incompatible':
       return `Configured release is not compatible: ${refusal.detail}`;
     case 'invalid_policy':
+      // A tag channel with no configured tag is half-finished pin configuration
+      // (#16533). The actionable remedy is the versionTag setting; the generic
+      // policy wrapper and the generic banner's manual-binary fallback both
+      // point somewhere that cannot fix it. The typed `configuredTag` field,
+      // not the selector's detail prose, identifies this case so the selector
+      // can reword its message without silently dropping the remedy.
+      if (channel === 'tag' && (refusal.configuredTag ?? '').trim() === '') {
+        return (
+          'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+          'set versionTag (for example v0.12.1) to pin a release.'
+        );
+      }
       return `Invalid managed release policy: ${refusal.detail}`;
   }
+}
+
+/**
+ * Whether an error means "GitHub has no release record for this exact request"
+ * (HTTP 404, as a status or as a Not Found response body).
+ *
+ * `fetchReleaseMetadata` converts both shapes to `No releases found`
+ * (#16533); the tag route rewrites that message to name the configured pin.
+ */
+function isMissingReleaseRecordError(error: unknown): boolean {
+  if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
+    return true;
+  }
+  return error instanceof Error && error.message === 'No releases found';
 }
 
 /**
@@ -734,6 +812,47 @@ export const MANAGED_INSTALL_TARGET_FILE = 'target.json';
  */
 export const UNSUPPORTED_COMPATIBILITY_KEY = 'unsupported-host-target';
 
+/**
+ * Cancellation thrown by the bounded transports and the download progress
+ * wrapper (#16532): `Download cancelled`, `Archive download cancelled`,
+ * `Release fetch cancelled`. These are user choices, not failures, so they
+ * must be classified before any error guidance.
+ */
+export function isDownloadCancellationMessage(message: string): boolean {
+  return /cancelled$/i.test(message.trim());
+}
+
+/**
+ * Transport-level failure signatures routed to network guidance (#16534).
+ *
+ * Beyond the original connection-refused/timeout set, this covers DNS
+ * failures (ENOTFOUND, EAI_AGAIN), unreachable networks and resets, and TLS
+ * certificate failures — Node surfaces those with "cert"/"certificate" in the
+ * message (or in codes like SELF_SIGNED_CERT_IN_CHAIN), so a lowercase
+ * substring check covers both spellings. "ssl" covers TLS-protocol failures
+ * such as handshakes answered with non-TLS bytes. "managed download proxy" is
+ * the stable prefix of the proxy-aware transport's bounded dispositions
+ * (unsupported configuration, refused CONNECT, unreachable proxy) so proxy
+ * failures reach the same guidance (#7804).
+ */
+const NETWORK_ERROR_PATTERNS = [
+  'econnrefused',
+  'etimedout',
+  'enotfound',
+  'eai_again',
+  'enetunreach',
+  'econnreset',
+  'timeout',
+  'cert',
+  'ssl',
+  MANAGED_PROXY_ERROR_PREFIX.toLowerCase(),
+] as const;
+
+export function isNetworkErrorMessage(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return NETWORK_ERROR_PATTERNS.some((pattern) => lowered.includes(pattern));
+}
+
 export class BinaryDownloader {
   private static readonly REPO_OWNER = 'EffortlessMetrics';
   private static readonly REPO_NAME = 'perl-lsp';
@@ -756,6 +875,8 @@ export class BinaryDownloader {
    * arrangement, not a rule. Gating the write on the owned run makes it one.
    */
   private ownedDownloadRunActive = false;
+  /** Background output dedupe for identical update outcomes (#16804). */
+  private readonly updateOutcomeDedupe = getSessionManagedUpdateOutcomeDedupe();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -795,10 +916,18 @@ export class BinaryDownloader {
       );
     }
 
-    return 'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit.';
+    // A 403 is not always a rate limit (#16534): proxies, VPNs, and captive
+    // portals return 403 too, so name the proxy alongside the rate-limit advice.
+    return (
+      'This may be a GitHub rate limit: wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit. ' +
+      'A proxy or VPN can also return HTTP 403 — check the "http.proxy" setting if one is configured.'
+    );
   }
 
-  async ensureBinary(forceDownload = false): Promise<string | null> {
+  async ensureBinary(
+    forceDownload = false,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     this.lastErrorMessage = undefined;
     const myReason: ManagedInstallReason = forceDownload ? 'force' : 'ensure';
 
@@ -808,12 +937,14 @@ export class BinaryDownloader {
     // that arrives while an ensure is in flight waits for it then runs
     // its own to honor the explicit reinstall intent.
     if (activeManagedInstall) {
-      const activeReason = activeManagedInstall.reason;
+      const active = activeManagedInstall;
+      const activeReason = active.reason;
       this.outputChannel.appendLine(
         `Managed install already in progress (${activeReason}); ${myReason} call will join.`,
       );
-      const joined = await activeManagedInstall.promise.catch(() => null);
+      const joined = await active.promise.catch(() => null);
       if (!forceDownload || activeReason === 'force') {
+        this.lastErrorMessage = active.owner.getLastErrorMessage();
         return joined;
       }
       this.outputChannel.appendLine(
@@ -826,8 +957,8 @@ export class BinaryDownloader {
     // its own metadata disposition. Resetting on entry would both leak that
     // value into this run's remedy and wipe the in-flight run's own record.
     this.releaseMetadata403Disposition = undefined;
-    const promise = this.runEnsureBinary(forceDownload);
-    activeManagedInstall = { promise, reason: myReason };
+    const promise = this.runEnsureBinary(forceDownload, progressTitle);
+    activeManagedInstall = { promise, reason: myReason, owner: this };
     try {
       return await promise;
     } finally {
@@ -837,16 +968,22 @@ export class BinaryDownloader {
     }
   }
 
-  private async runEnsureBinary(forceDownload: boolean): Promise<string | null> {
+  private async runEnsureBinary(
+    forceDownload: boolean,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     this.ownedDownloadRunActive = true;
     try {
-      return await this.runEnsureBinaryInner(forceDownload);
+      return await this.runEnsureBinaryInner(forceDownload, progressTitle);
     } finally {
       this.ownedDownloadRunActive = false;
     }
   }
 
-  private async runEnsureBinaryInner(forceDownload: boolean): Promise<string | null> {
+  private async runEnsureBinaryInner(
+    forceDownload: boolean,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -880,11 +1017,26 @@ export class BinaryDownloader {
       // needed depends on whether the target release carries a native ARM64
       // asset, which is not known until the release is fetched; rejecting up
       // front refused installs that would have succeeded natively (#6196).
-      return await this.downloadWithProgress();
+      return await this.downloadWithProgress(progressTitle, forceDownload);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.lastErrorMessage = errorMsg;
-      this.outputChannel.appendLine(`Failed to download binary: ${errorMsg}`);
+      if (isDownloadCancellationMessage(errorMsg)) {
+        this.outputChannel.appendLine(`Download cancelled: ${errorMsg}`);
+        void vscode.window.showInformationMessage('Perl LSP download cancelled.');
+        return null;
+      }
+      if (error instanceof ManagedCacheMutationBusyError) {
+        this.outputChannel.appendLine(`Managed cache busy: ${errorMsg}`);
+        void vscode.window.showWarningMessage(
+          'perl-lsp: Another window is installing or updating the managed server binary. Try again shortly.',
+        );
+        return null;
+      }
+      if (error instanceof ManagedCacheMutationCancelledError) {
+        throw new Error('Download cancelled');
+      }
+      this.outputChannel.appendLine(`Managed binary install failed: ${errorMsg}`);
 
       const manualInstallUrl = 'https://github.com/EffortlessMetrics/perl-lsp#install';
       const manualInstallNote =
@@ -893,19 +1045,20 @@ export class BinaryDownloader {
       let message: string;
       let buttons: string[];
 
-      if (errorMsg.includes('Windows ARM64 x64 emulation')) {
+      if (
+        errorMsg.includes('Managed binary was downloaded and verified, but selecting it failed')
+      ) {
+        message = `perl-lsp: ${errorMsg} Check the Perl Language Server output and retry the update.`;
+        buttons = ['View Logs'];
+      } else if (errorMsg.includes('Windows ARM64 x64 emulation')) {
         message = `perl-lsp: ${errorMsg} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
-      } else if (
-        errorMsg.includes('ECONNREFUSED') ||
-        errorMsg.includes('ETIMEDOUT') ||
-        errorMsg.includes('timeout')
-      ) {
-        // Network connectivity failure — proxy, VPN, or firewall
+      } else if (isNetworkErrorMessage(errorMsg)) {
+        // Network connectivity failure — connection, DNS, proxy, VPN, firewall,
+        // or TLS interception (#16534).
         message =
-          'perl-lsp: Binary download failed — network error ' +
-          `(${errorMsg.split('\n')[0]}). ` +
-          'Check your proxy/VPN settings (http.proxy in VS Code settings). ' +
+          'perl-lsp: Binary download failed — network unreachable. ' +
+          "Check your connection, VPN, or proxy, then run 'Perl: Reinstall Server Binary' to retry. " +
           manualInstallNote;
         buttons = ['Open Proxy Settings', 'Install Manually'];
       } else if (errorMsg.includes('No binary found for platform')) {
@@ -925,13 +1078,14 @@ export class BinaryDownloader {
         }
         buttons = ['Install Manually'];
       } else if (errorMsg.includes('HTTP 403')) {
-        // GitHub rate limit or auth failure. The banner follows the remedy: a
-        // withheld credential is not a rate-limit story, so it must not be
-        // labelled as one.
+        // GitHub rejection or network-path refusal. The banner follows the
+        // remedy: a withheld credential is not a rate-limit story, so it must
+        // not be labelled as one, and a plain 403 is not always a rate limit
+        // either (#16534).
         const withheldCredential = this.releaseMetadata403Disposition === 'withheld_unverified_tls';
         const banner = withheldCredential
           ? 'perl-lsp: Download blocked (HTTP 403 — request was unauthenticated).'
-          : 'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit).';
+          : 'perl-lsp: Download blocked (HTTP 403 — blocked by GitHub or your network/proxy).';
         message = `${banner} ${this.rateLimitRemedy()} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
       } else if (errorMsg.includes('HTTP 404')) {
@@ -941,13 +1095,30 @@ export class BinaryDownloader {
           'The release asset may not exist yet for this platform. ' +
           manualInstallNote;
         buttons = ['Install Manually', 'View Logs'];
-      } else if (errorMsg.toLowerCase().includes('checksum') || errorMsg.includes('SHA256SUMS')) {
-        // Corrupted or tampered download, or missing checksum file
+      } else if (
+        errorMsg.includes('No SHA256SUMS file found') ||
+        errorMsg.includes('not found in SHA256SUMS') ||
+        errorMsg.includes('Conflicting checksum entries') ||
+        errorMsg.includes('Malformed checksum entry')
+      ) {
+        // Checksum metadata is absent or invalid (#16532): the downloaded
+        // bytes were never judged, so do not imply corruption. Name the
+        // manifest and the mirror setting that usually owns the gap.
         message =
-          'perl-lsp: Checksum verification failed — download may be corrupted. ' +
-          'Please retry. If this persists, install manually. ' +
+          'perl-lsp: Download blocked — checksum metadata is missing or invalid. ' +
+          'The release (or the "perl-lsp.downloadBaseUrl" mirror) does not provide a usable SHA256SUMS manifest entry for this archive. ' +
+          'Fix the mirror configuration, wait for the release to be completed, or install manually. ' +
           manualInstallNote;
         buttons = ['Install Manually', 'View Logs'];
+      } else if (errorMsg.toLowerCase().includes('checksum')) {
+        // Genuine verification failure — a verdict on the bytes themselves.
+        // Offer the retry the message already asks for (#16532); the
+        // singleflight makes a force re-entry safe.
+        message =
+          'perl-lsp: Checksum verification failed — download may be corrupted. ' +
+          'Please retry; if this persists, install manually. ' +
+          manualInstallNote;
+        buttons = ['Retry Download', 'Install Manually', 'View Logs'];
       } else if (
         errorMsg.includes('tar') ||
         errorMsg.includes('unzip') ||
@@ -973,6 +1144,10 @@ export class BinaryDownloader {
           vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
         } else if (choice === 'View Logs') {
           this.outputChannel.show();
+        } else if (choice === 'Retry Download') {
+          // Reinstall owns the health check and lifecycle restart. A detached
+          // ensureBinary call can install bytes after its caller has stopped.
+          void vscode.commands.executeCommand('perl-lsp.reinstall');
         }
       });
 
@@ -982,11 +1157,14 @@ export class BinaryDownloader {
     }
   }
 
-  private async downloadWithProgress(): Promise<string> {
+  private async downloadWithProgress(
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+    forceDownload = false,
+  ): Promise<string> {
     return vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: 'Downloading Perl Language Server',
+        title: progressTitle,
         cancellable: true,
       },
       async (progress, token) => {
@@ -1064,187 +1242,213 @@ export class BinaryDownloader {
 
         this.outputChannel.appendLine(`Found matching asset: ${assetName}`);
 
-        // Find checksum file (SHA256SUMS file contains all checksums)
-        const checksumAsset = release.assets.find((a) => a.name === 'SHA256SUMS');
+        const baseDir = this.getManagedBaseDirForKey(compatibilityKey);
+        if (!fs.existsSync(baseDir)) {
+          fs.mkdirSync(baseDir, { recursive: true });
+        }
 
-        // Download to temp directory
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-'));
-        const archivePath = path.join(tempDir, assetName);
+        const mutationOperation = forceDownload ? 'repair' : 'install';
+        const cacheLock = await acquireManagedCacheMutationLock(
+          baseDir,
+          buildManagedCacheMutationAttempt(compatibilityKey, mutationOperation),
+          { isCancelled: () => token.isCancellationRequested },
+        );
 
         try {
-          // Download binary archive
-          progress.report({ increment: 10, message: 'Downloading binary...' });
-          await this.downloadFile(
-            asset.browser_download_url,
-            archivePath,
-            30000,
-            5,
-            MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
-            token,
-          );
-
-          if (token.isCancellationRequested) {
-            throw new Error('Download cancelled');
-          }
-
-          // Download and verify checksum (required for security)
-          if (!checksumAsset) {
-            throw new Error('Security check failed: No SHA256SUMS file found in release assets.');
-          }
-
-          progress.report({ increment: 40, message: 'Verifying checksum...' });
-          const checksumPath = path.join(tempDir, 'SHA256SUMS');
-          await this.downloadFile(
-            checksumAsset.browser_download_url,
-            checksumPath,
-            30000,
-            5,
-            MANAGED_CHECKSUM_FILE_MAX_BYTES,
-            token,
-          );
-
-          // Find the checksum entry for our file
-          const sumsEntry = lookupSha256SumsDigest(
-            fs.readFileSync(checksumPath, 'utf8'),
-            assetName,
-          );
-
-          let expectedChecksum: string;
-          switch (sumsEntry.status) {
-            case 'found':
-              expectedChecksum = sumsEntry.digest;
-              break;
-            case 'conflicting':
-              throw new Error(
-                `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+          if (!forceDownload) {
+            const reused = this.getLocalBinaryPath();
+            if (reused && fs.existsSync(reused)) {
+              this.outputChannel.appendLine(
+                `Using existing managed binary after cross-process cache lock: ${reused}`,
               );
-            case 'malformed':
-              throw new Error(
-                `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
-              );
-            case 'absent':
-              throw new Error(
-                `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
-              );
-          }
-          const actualChecksum = await this.calculateSHA256(archivePath);
-
-          if (expectedChecksum !== actualChecksum) {
-            throw new Error(
-              'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
-            );
-          }
-          this.outputChannel.appendLine('Checksum verified successfully');
-
-          // Inspect then extract only the documented executables (#7432).
-          progress.report({ increment: 30, message: 'Extracting binary...' });
-          const extractDir = path.join(tempDir, 'extracted');
-          const format = assetName.endsWith('.zip')
-            ? 'zip'
-            : assetName.endsWith('.tar.gz')
-              ? 'tar.gz'
-              : null;
-          if (format === null) {
-            throw new Error(`Unsupported archive format: ${assetName}`);
-          }
-          if (token.isCancellationRequested) {
-            throw new Error('Download cancelled');
-          }
-          const extracted = await extractManagedArchive({
-            archivePath,
-            extractDir,
-            format,
-            windows: format === 'zip',
-            cancellationToken: token,
-          });
-          const extractedBinary = extracted.serverPath;
-
-          // Move to final location. Each install lands in a unique
-          // versioned dir so a forced reinstall while perllsp.exe is
-          // running does not have to overwrite the running file. The
-          // active install is selected by an atomically-committed
-          // pointer file at the base dir.
-          progress.report({ increment: 15, message: 'Installing binary...' });
-          const baseDir = this.getManagedBaseDirForKey(compatibilityKey);
-          if (!fs.existsSync(baseDir)) {
-            fs.mkdirSync(baseDir, { recursive: true });
-          }
-          const installDirName = this.buildVersionedInstallDirName(release.tag_name);
-          const installDir = path.join(baseDir, installDirName);
-          fs.mkdirSync(installDir, { recursive: true });
-          this.writeInstallTargetRecord(installDir, compatibilityKey, target, emulation);
-
-          const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
-          const finalPath = path.join(installDir, binaryName);
-
-          await copyManagedFileWithRetry(extractedBinary, finalPath, 'perllsp', (message) =>
-            this.outputChannel.appendLine(message),
-          );
-
-          // Make executable on Unix
-          if (process.platform !== 'win32') {
-            fs.chmodSync(finalPath, 0o755);
-          }
-
-          // Best-effort: copy perl-dap when the archive carried exactly one.
-          const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
-          const extractedDap = extracted.dapPath;
-          let installedDapPath: string | null = null;
-          if (extractedDap) {
-            const dapDest = path.join(installDir, dapName);
-            try {
-              await copyManagedFileWithRetry(extractedDap, dapDest, 'perl-dap', (message) =>
-                this.outputChannel.appendLine(message),
-              );
-              if (process.platform !== 'win32') {
-                fs.chmodSync(dapDest, 0o755);
-              }
-              installedDapPath = dapDest;
-              this.outputChannel.appendLine(`Debug adapter installed to: ${dapDest}`);
-            } catch (e) {
-              this.outputChannel.appendLine(`Note: could not install perl-dap: ${e}`);
+              return reused;
             }
           }
 
-          // Mint the immutable candidate identity from the verified bytes
-          // (#10083): the archive checksum stands in for the release topology
-          // digest, and the installed binaries' digests bind the candidate to
-          // exactly the bytes this host will launch.
-          const perllspDigest = await this.calculateSHA256(finalPath);
-          const dapDigest =
-            installedDapPath === null ? null : await this.calculateSHA256(installedDapPath);
-          const manifest = writeInstalledManagedCandidateManifest(
-            installDir,
-            {
-              release: release.tag_name,
-              version: release.tag_name,
-              target,
-              topology_digest: actualChecksum,
-              perllsp_digest: perllspDigest,
-              perl_dap_digest: dapDigest,
-            },
-            (message) => this.outputChannel.appendLine(`Note: ${message}`),
-          );
+          // Find checksum file (SHA256SUMS file contains all checksums)
+          const checksumAsset = release.assets.find((a) => a.name === 'SHA256SUMS');
 
-          // Atomically activate the new install. The legacy `current` dir
-          // pointer stays authoritative for path resolution and rollback;
-          // the versioned selection record alongside it gives collectors and
-          // host selection the policy-governed view. Stale generations are
-          // then pruned only through the landed retention policy.
-          this.commitVersionedInstall(installDirName, compatibilityKey, manifest);
-          this.collectStaleManagedCandidates(baseDir);
+          // Download to temp directory
+          const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-'));
+          const archivePath = path.join(tempDir, assetName);
 
-          progress.report({ increment: 5, message: 'Complete!' });
-          this.outputChannel.appendLine(`Binary installed to: ${finalPath}`);
-
-          return finalPath;
-        } finally {
-          // Clean up temp directory
           try {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          } catch (e) {
-            this.outputChannel.appendLine(`Failed to clean up temp dir: ${e}`);
+            // Download binary archive
+            progress.report({ increment: 10, message: 'Downloading binary...' });
+            await this.downloadFile(
+              asset.browser_download_url,
+              archivePath,
+              30000,
+              5,
+              MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+              token,
+            );
+
+            if (token.isCancellationRequested) {
+              throw new Error('Download cancelled');
+            }
+
+            // Download and verify checksum (required for security)
+            if (!checksumAsset) {
+              throw new Error('Security check failed: No SHA256SUMS file found in release assets.');
+            }
+
+            progress.report({ increment: 40, message: 'Verifying checksum...' });
+            const checksumPath = path.join(tempDir, 'SHA256SUMS');
+            await this.downloadFile(
+              checksumAsset.browser_download_url,
+              checksumPath,
+              30000,
+              5,
+              MANAGED_CHECKSUM_FILE_MAX_BYTES,
+              token,
+            );
+
+            // Find the checksum entry for our file
+            const sumsEntry = lookupSha256SumsDigest(
+              fs.readFileSync(checksumPath, 'utf8'),
+              assetName,
+            );
+
+            let expectedChecksum: string;
+            switch (sumsEntry.status) {
+              case 'found':
+                expectedChecksum = sumsEntry.digest;
+                break;
+              case 'conflicting':
+                throw new Error(
+                  `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+                );
+              case 'malformed':
+                throw new Error(
+                  `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
+                );
+              case 'absent':
+                throw new Error(
+                  `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
+                );
+            }
+            const actualChecksum = await this.calculateSHA256(archivePath);
+
+            if (expectedChecksum !== actualChecksum) {
+              throw new Error(
+                'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
+              );
+            }
+            this.outputChannel.appendLine('Checksum verified successfully');
+
+            // Inspect then extract only the documented executables (#7432).
+            progress.report({ increment: 30, message: 'Extracting binary...' });
+            const extractDir = path.join(tempDir, 'extracted');
+            const format = assetName.endsWith('.zip')
+              ? 'zip'
+              : assetName.endsWith('.tar.gz')
+                ? 'tar.gz'
+                : null;
+            if (format === null) {
+              throw new Error(`Unsupported archive format: ${assetName}`);
+            }
+            if (token.isCancellationRequested) {
+              throw new Error('Download cancelled');
+            }
+            const extracted = await extractManagedArchive({
+              archivePath,
+              extractDir,
+              format,
+              windows: format === 'zip',
+              cancellationToken: token,
+            });
+            const extractedBinary = extracted.serverPath;
+
+            // Move to final location. Each install lands in a unique
+            // versioned dir so a forced reinstall while perllsp.exe is
+            // running does not have to overwrite the running file. The
+            // active install is selected by an atomically-committed
+            // pointer file at the base dir.
+            progress.report({ increment: 15, message: 'Installing binary...' });
+            const installDirName = this.buildVersionedInstallDirName(release.tag_name);
+            const installDir = path.join(baseDir, installDirName);
+            fs.mkdirSync(installDir, { recursive: true });
+            this.writeInstallTargetRecord(installDir, compatibilityKey, target, emulation);
+
+            const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
+            const finalPath = path.join(installDir, binaryName);
+
+            await copyManagedFileWithRetry(extractedBinary, finalPath, 'perllsp', (message) =>
+              this.outputChannel.appendLine(message),
+            );
+
+            // Make executable on Unix
+            if (process.platform !== 'win32') {
+              fs.chmodSync(finalPath, 0o755);
+            }
+
+            // Best-effort: copy perl-dap when the archive carried exactly one.
+            const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+            const extractedDap = extracted.dapPath;
+            let installedDapPath: string | null = null;
+            if (extractedDap) {
+              const dapDest = path.join(installDir, dapName);
+              try {
+                await copyManagedFileWithRetry(extractedDap, dapDest, 'perl-dap', (message) =>
+                  this.outputChannel.appendLine(message),
+                );
+                if (process.platform !== 'win32') {
+                  fs.chmodSync(dapDest, 0o755);
+                }
+                installedDapPath = dapDest;
+                this.outputChannel.appendLine(`Debug adapter installed to: ${dapDest}`);
+              } catch (e) {
+                this.outputChannel.appendLine(`Note: could not install perl-dap: ${e}`);
+              }
+            }
+
+            // Mint the immutable candidate identity from the verified bytes
+            // (#10083): the archive checksum stands in for the release topology
+            // digest, and the installed binaries' digests bind the candidate to
+            // exactly the bytes this host will launch.
+            const perllspDigest = await this.calculateSHA256(finalPath);
+            const dapDigest =
+              installedDapPath === null ? null : await this.calculateSHA256(installedDapPath);
+            const manifest = writeInstalledManagedCandidateManifest(
+              installDir,
+              {
+                release: release.tag_name,
+                version: release.tag_name,
+                target,
+                topology_digest: actualChecksum,
+                perllsp_digest: perllspDigest,
+                perl_dap_digest: dapDigest,
+              },
+              (message) => this.outputChannel.appendLine(`Note: ${message}`),
+            );
+
+            // Atomically activate the new install. The legacy `current` dir
+            // pointer stays authoritative for path resolution and rollback;
+            // the versioned selection record alongside it gives collectors and
+            // host selection the policy-governed view. Stale generations are
+            // then pruned only through the landed retention policy.
+            if (!this.commitVersionedInstall(installDirName, compatibilityKey, manifest)) {
+              throw new Error(
+                'Managed binary was downloaded and verified, but selecting it failed; the current selection was not changed.',
+              );
+            }
+            this.collectStaleManagedCandidates(baseDir);
+
+            progress.report({ increment: 5, message: 'Complete!' });
+            this.outputChannel.appendLine(`Binary installed to: ${finalPath}`);
+
+            return finalPath;
+          } finally {
+            // Clean up temp directory
+            try {
+              fs.rmSync(tempDir, { recursive: true, force: true });
+            } catch (e) {
+              this.outputChannel.appendLine(`Failed to clean up temp dir: ${e}`);
+            }
           }
+        } finally {
+          cacheLock.release();
         }
       },
     );
@@ -1283,6 +1487,17 @@ export class BinaryDownloader {
     }
     const channel: ManagedReleaseChannel = channelSetting;
 
+    // A pinned tag only takes effect on the tag channel (#16533). A user who
+    // set versionTag expecting a pin must not silently keep tracking the
+    // recency channel, so say so once per session.
+    if (versionTag && channel !== 'tag' && !versionTagIgnoredWarningShown) {
+      versionTagIgnoredWarningShown = true;
+      this.outputChannel.appendLine(
+        `[config] perl-lsp.versionTag "${versionTag}" is ignored unless perl-lsp.channel is "tag" ` +
+          `(current channel: "${channel}"). Set channel to "tag" to pin this release.`,
+      );
+    }
+
     const expectation = this.managedReleaseExpectation();
     const isWindowsArm64 = process.platform === 'win32' && process.arch === 'arm64';
     // On Windows ARM64 a release can serve this host natively or through the
@@ -1309,7 +1524,22 @@ export class BinaryDownloader {
 
     let releases: Release[] = [];
     if (url) {
-      const parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      let parsed: unknown;
+      try {
+        parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      } catch (error) {
+        if (channel === 'tag' && isMissingReleaseRecordError(error)) {
+          // On the exact-tag route a 404 means the configured pin has no
+          // release record (#16533) — not that the project publishes nothing.
+          // Name the pin so the one wrong setting is identifiable; the
+          // selector's own refusal is unreachable because the 404 throws
+          // before selection.
+          throw new Error(
+            `No release found for the configured tag "${versionTag}"; check the perl-lsp.versionTag setting.`,
+          );
+        }
+        throw error;
+      }
       if (channel === 'tag') {
         if (!isReleaseShape(parsed)) {
           throw new Error('Release metadata response has an invalid schema');
@@ -1392,7 +1622,10 @@ export class BinaryDownloader {
     timeoutMs: number,
     cancellationToken?: vscode.CancellationToken,
   ): Promise<unknown> {
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // transport and the redirect-downgrade guard must classify `HTTPS://`
+    // identically instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
     const authDisposition = resolveGitHubAuthDisposition({
@@ -1537,7 +1770,10 @@ export class BinaryDownloader {
       headers: { 'User-Agent': 'vscode-perl-lsp' },
       rejectUnauthorized: proxyStrictSSL,
     };
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // HTTPS→HTTP redirect-downgrade guard below must classify `HTTPS://`
+    // identically to the transport instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const bounded: Parameters<typeof downloadBoundedFile>[0] = {
       requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
       dest,
@@ -1546,15 +1782,27 @@ export class BinaryDownloader {
       operationName: 'Archive download',
       maxRedirects,
       followRedirect: async (location, remainingRedirects) => {
-        if (
-          isHttps &&
-          location.toLowerCase().startsWith('http:') &&
-          !location.toLowerCase().startsWith('https:')
-        ) {
+        // Location may be relative (RFC 7231 §7.1.2): resolve it against the
+        // URL this hop was made for instead of feeding a baseless reference to
+        // the next downloadFile, which threw `Invalid URL format` (#7804).
+        let resolvedRedirect: URL;
+        try {
+          resolvedRedirect = new URL(location, url);
+        } catch {
+          throw new Error(
+            `Security violation: Redirect location is not a resolvable URL: ${redactCredentialUrl(location)}`,
+          );
+        }
+        if (resolvedRedirect.protocol !== 'http:' && resolvedRedirect.protocol !== 'https:') {
+          throw new Error(
+            `Security violation: Redirect to unsupported protocol: ${resolvedRedirect.protocol}`,
+          );
+        }
+        if (isHttps && resolvedRedirect.protocol === 'http:') {
           throw new Error('Security violation: Redirect from HTTPS to HTTP prevented');
         }
         await this.downloadFile(
-          location,
+          resolvedRedirect.toString(),
           dest,
           timeoutMs,
           remainingRedirects,
@@ -1572,10 +1820,11 @@ export class BinaryDownloader {
   }
 
   /**
-   * Transport seam: the actual network GET, extracted so tests can stub it
-   * without mocking Node's `http`/`https` core modules (whose `get` exports
-   * are non-configurable). Behaviour is identical to calling the module's
-   * `get` directly.
+   * Transport seam: the actual network GET. Routes every managed request
+   * through the proxy-aware transport (#7804/#7851) so release metadata and
+   * artifact fetches share one proxy resolution, TLS policy, and failure
+   * classification. Extracted so tests can stub it without mocking Node's
+   * `http`/`https` core modules (whose `get` exports are non-configurable).
    */
   private httpGet(
     isHttps: boolean,
@@ -1583,7 +1832,31 @@ export class BinaryDownloader {
     options: https.RequestOptions,
     callback: (response: http.IncomingMessage) => void,
   ): http.ClientRequest {
-    return isHttps ? https.get(url, options, callback) : http.get(url, options, callback);
+    return createManagedHttpRequest({
+      isHttps,
+      url,
+      options,
+      callback,
+      proxySources: this.managedProxySources(),
+    });
+  }
+
+  /**
+   * The supported VS Code proxy sources for the managed transport, read from
+   * the `http.*` settings once per request. The transport itself resolves the
+   * route with VS Code's documented precedence (`http.noProxy`/`NO_PROXY`,
+   * then `http.proxy`, then the proxy environment variables) so plain-Node
+   * contexts and the patched extension host agree on one authority.
+   */
+  private managedProxySources(): ManagedProxySources {
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const settingProxyUrl = httpConfig.get<string>('proxy', '').trim();
+    const settingNoProxy = httpConfig.get<string[]>('noProxy', []);
+    return {
+      settingProxyUrl: settingProxyUrl || undefined,
+      settingNoProxy: Array.isArray(settingNoProxy) ? settingNoProxy : undefined,
+      env: process.env,
+    };
   }
 
   private createWriteStream(dest: string): fs.WriteStream {
@@ -1901,7 +2174,7 @@ export class BinaryDownloader {
 
   /**
    * Commits a freshly populated install dir: the versioned
-   * `managed_current_selection.v1` record first, then the legacy `current`
+   * `managed_current_selection.v1` record, then the legacy `current`
    * dir pointer. Ordering is the consistency contract (#10083): when the
    * selection record cannot be written (transient lock, full disk), the
    * pointer is left unmoved so the previous selection stays authoritative
@@ -1915,7 +2188,7 @@ export class BinaryDownloader {
     installDirName: string,
     compatibilityKey?: string,
     manifest?: ManagedCandidateManifest | null,
-  ): void {
+  ): boolean {
     const baseDir =
       compatibilityKey === undefined
         ? this.getManagedBaseDir()
@@ -1930,8 +2203,15 @@ export class BinaryDownloader {
         `Note: managed candidate manifest is absent for ${installDirName}; ` +
           'activation refused, the previous selection stays authoritative.',
       );
-      return;
+      return false;
     }
+    const tmpPath = `${pointerPath}.tmp`;
+    // A failed pointer-temp write must not advance the policy selection.
+    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
+    const previousSelection = readManagedCurrentSelection(baseDir);
+    const previousPointer = fs.existsSync(pointerPath)
+      ? fs.readFileSync(pointerPath, 'utf8').trim()
+      : null;
     if (manifest !== undefined) {
       const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
         this.outputChannel.appendLine(`Note: ${message}`),
@@ -1943,16 +2223,51 @@ export class BinaryDownloader {
         this.outputChannel.appendLine(
           `Note: managed selection commit refused; activation pointer left unchanged (${installDirName} remains inactive).`,
         );
-        return;
+        fs.rmSync(tmpPath, { force: true });
+        return false;
       }
       this.outputChannel.appendLine(
         `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
       );
     }
-    const tmpPath = `${pointerPath}.tmp`;
-    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
-    fs.renameSync(tmpPath, pointerPath);
+    try {
+      fs.renameSync(tmpPath, pointerPath);
+    } catch (error: unknown) {
+      fs.rmSync(tmpPath, { force: true });
+      // A failed rename follows the selection write. Restore the old
+      // candidate as a new generation; if that cannot be proven, surface
+      // uncertainty rather than claiming the previous selection survived.
+      let restored = manifest === undefined;
+      if (manifest !== undefined && previousSelection !== null && previousPointer !== null) {
+        const oldManifest = readInstalledManagedCandidateManifest(
+          path.join(baseDir, previousPointer),
+        );
+        if (oldManifest?.candidate_id === previousSelection.candidate_id) {
+          restored =
+            commitManagedCandidateSelection(baseDir, oldManifest, (message) =>
+              this.outputChannel.appendLine(`Note: ${message}`),
+            ) !== null;
+        }
+      } else if (manifest !== undefined && previousSelection === null && previousPointer === null) {
+        try {
+          fs.rmSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
+          restored = true;
+        } catch {
+          // Report uncertain state below.
+        }
+      }
+      if (!restored) {
+        throw new Error(
+          `Managed activation pointer failed and selection state is uncertain: ${String(error)}`,
+        );
+      }
+      this.outputChannel.appendLine(
+        `Note: managed activation pointer failed; previous selection restored: ${String(error)}`,
+      );
+      return false;
+    }
     this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
+    return true;
   }
 
   /**
@@ -2016,79 +2331,121 @@ export class BinaryDownloader {
   }
 
   /**
-   * Silent background update check. Fire-and-forget from activate().
+   * Silent background update check. Fire-and-forget from activate(), or run as
+   * an explicit user command with `force`.
    *
-   * No-ops when:
-   * - channel === 'tag' (user has pinned a version)
-   * - serverPath is user-configured (downloader doesn't own the binary)
-   * - binary is bundled (under extensionPath, not globalStorageUri)
-   * - updateCheckInterval === 0 (user disabled checks)
-   * - not enough time has elapsed since the last check
-   * - versions are equal or local is ahead
+   * Admission is owned by {@link decideManagedUpdateCheck}: this method
+   * assembles the facts, acts on the returned decision, and renders it. It no
+   * longer answers "should this check run?" with its own chain of early
+   * returns, so a refusal always carries an exact reason instead of a silent
+   * `return` (#16803).
    *
-   * All errors are logged to the output channel; none are shown to the user.
+   * `force` (the manual "Check for Binary Updates" command, #16530) is the
+   * `manual_force` intent: it bypasses interval and timestamp suppression, and
+   * reports its outcome, but it does not bypass a pinned tag, an invalid
+   * configuration, or the fact that the user owns their own binary.
+   *
+   * Background errors stay in the output channel; a manual check reports skips
+   * and failures so the command never silently appears to do nothing.
    */
-  async checkForUpdateSilent(): Promise<void> {
+  async checkForUpdateSilent(force = false): Promise<void> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
+    const intent: ManagedUpdateCheckIntent = force ? 'manual_force' : 'activation_background';
 
-    // Guard: skip if user pinned a specific version
-    const channel = config.get<string>('channel', 'latest');
-    if (channel === 'tag') {
-      return;
+    // The check interval and the prompt-suppression flag are properties of one
+    // target's managed row. A GNU host must not suppress a musl host's check
+    // or prompt merely because both hosts share one extension global state
+    // object (#9847). The unscoped pre-#9847 cadence value is read once as a
+    // seed; nothing is ever written back to it.
+    const hostKey = this.getHostCompatibilityKey();
+    const scopedStateKey = managedUpdateCheckStateKey(hostKey);
+    const scopedPromptKey = managedUpdatePromptSuppressionStateKey(hostKey);
+    const legacyCheck = this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
+    const scopedCheck =
+      scopedStateKey === null ? 0 : this.context.globalState.get<number>(scopedStateKey, 0);
+    // A pre-scope suppression is migrated once into this target's scoped
+    // row and then retired, so an upgrade does not resurrect a prompt the
+    // user already dismissed, but the unscoped legacy row cannot stay
+    // authoritative for every other target sharing this global state.
+    const legacySuppression = this.context.globalState.get<boolean>(
+      UPDATE_PROMPT_SUPPRESSION_STATE_KEY,
+      false,
+    );
+    let promptSuppressed: boolean;
+    if (scopedPromptKey === null) {
+      promptSuppressed = legacySuppression;
+    } else {
+      const scopedSuppression = this.context.globalState.get<boolean | undefined>(
+        scopedPromptKey,
+        undefined,
+      );
+      promptSuppressed = scopedSuppression ?? legacySuppression;
+      if (scopedSuppression === undefined && legacySuppression) {
+        await this.context.globalState.update(scopedPromptKey, true);
+      }
+      if (legacySuppression) {
+        await this.context.globalState.update(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, undefined);
+      }
     }
 
-    // Guard: skip if user manages their own binary
-    const userPath = config.get<string>('serverPath', '');
-    if (userPath) {
-      return;
-    }
-
-    // Guard: only applies to auto-downloaded binaries (under globalStorageUri)
     const binaryPath = this.getLocalBinaryPath();
     const storagePath = this.context.globalStorageUri.fsPath;
-    if (!binaryPath.startsWith(storagePath)) {
-      return;
-    }
-    if (!fs.existsSync(binaryPath)) {
+
+    const decision = decideManagedUpdateCheck({
+      intent,
+      channel: config.get<string>('channel', 'latest'),
+      versionTag: config.get<string>('versionTag', ''),
+      downloadBaseUrlConfigured: config.get<string>('downloadBaseUrl', '').trim().length > 0,
+      updateCheckIntervalHours: config.get<number>('updateCheckInterval', 24),
+      autoUpdate: config.get<boolean>('autoUpdate', false),
+      promptSuppressed,
+      configuredServerPath: config.get<string>('serverPath', ''),
+      hostCompatibilityProven: scopedStateKey !== null,
+      managedBinaryPath: binaryPath.startsWith(storagePath),
+      localBinaryPresent: fs.existsSync(binaryPath),
+      scopedStateKey: scopedStateKey ?? '',
+      lastCheckMs: scopedCheck > 0 ? scopedCheck : legacyCheck,
+      nowMs: Date.now(),
+    });
+
+    if (decision.kind !== 'run') {
+      this.reportUpdateCheckRefusal(decision);
       return;
     }
 
-    // Guard: check interval (treat negative values same as 0 — disabled)
-    const intervalHours = config.get<number>('updateCheckInterval', 24);
-    if (intervalHours <= 0) {
-      return;
+    // Background failures retain the ordinary throttle to avoid hammering, so
+    // the cadence row advances before the check. A manual attempt advances it
+    // only once the check actually reached the release endpoint, below: a
+    // failed manual check must not delay the next background check.
+    if (!force) {
+      await this.context.globalState.update(decision.stateKey, Date.now());
     }
-    // The check interval is a property of one target's managed row. A GNU host
-    // must not suppress a musl host's check merely because both hosts share
-    // one extension global state object (#9847). The unscoped pre-#9847 value
-    // is read once as a seed so upgrading does not force an immediate check.
-    const stateKey =
-      managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
-    const scopedCheck = this.context.globalState.get<number>(stateKey, 0);
-    const lastCheck =
-      scopedCheck > 0
-        ? scopedCheck
-        : this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
-    const elapsedHours = (Date.now() - lastCheck) / (1000 * 60 * 60);
-    if (elapsedHours < intervalHours) {
-      return;
-    }
-
-    // Record that we checked (even if the check fails) to avoid hammering
-    await this.context.globalState.update(stateKey, Date.now());
 
     try {
       const localVersion = await this.getLocalVersion(binaryPath);
       if (!localVersion) {
         this.outputChannel.appendLine('[update-check] Could not read local version — skipping');
+        if (force) {
+          void vscode.window
+            .showWarningMessage(
+              'Binary update check failed: could not read the installed version.',
+              'View Logs',
+            )
+            .then((choice) => {
+              if (choice === 'View Logs') this.outputChannel.show();
+            });
+        }
         return;
       }
 
       const release = await this.getLatestRelease();
       const remoteVersion = release.tag_name.replace(/^v/, '');
+      if (force) {
+        await this.context.globalState.update(decision.stateKey, Date.now());
+      }
 
       if (compareVersions(localVersion, remoteVersion) >= 0) {
-        this.outputChannel.appendLine(`[update-check] Up to date (${localVersion})`);
+        this.renderManagedUpdateOutcome(composeUpToDateOutcome(localVersion, force));
         return;
       }
 
@@ -2096,10 +2453,38 @@ export class BinaryDownloader {
         `[update-check] New version available: ${remoteVersion} (installed: ${localVersion})`,
       );
 
-      const autoUpdate = config.get<boolean>('autoUpdate', false);
-      if (autoUpdate) {
+      // The decision was taken before the version reads above; autoUpdate
+      // may have been disabled while they were in flight. Re-read it so a
+      // disabled auto-update never installs on a stale admission. A manual
+      // check still owes the user an offer even when prompts are suppressed,
+      // so the manual rule survives this fallback instead of collapsing
+      // into a log-only suppression.
+      const action =
+        decision.action === 'auto_update'
+          ? vscode.workspace.getConfiguration('perl-lsp').get<boolean>('autoUpdate', false)
+            ? 'auto_update'
+            : decision.reason === 'manual_forced'
+              ? 'prompt'
+              : promptSuppressed
+                ? 'prompt_suppressed'
+                : 'prompt'
+          : decision.action;
+
+      if (action === 'auto_update') {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);
-        await this.ensureBinary(true);
+        const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
+        if (installed) {
+          await this.confirmStagedUpdate(installed);
+        }
+        return;
+      }
+
+      if (action === 'prompt_suppressed') {
+        this.outputChannel.appendLine(
+          '[update-check] Update available, but update prompts are suppressed ' +
+            '("Don\'t ask again" was chosen earlier). Set perl-lsp.autoUpdate or run ' +
+            "'Perl: Check for Binary Updates' to install.",
+        );
         return;
       }
 
@@ -2111,15 +2496,122 @@ export class BinaryDownloader {
       );
 
       if (choice === 'Update') {
-        await this.ensureBinary(true);
+        const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
+        if (installed) {
+          await this.confirmStagedUpdate(installed);
+        }
       } else if (choice === "Don't ask again") {
-        await config.update('updateCheckInterval', 0, vscode.ConfigurationTarget.Global);
+        // Suppress the prompt for this compatibility target only (#16536,
+        // #9847, #16803). Writing `updateCheckInterval: 0` here would also
+        // disable interval checks and any later perl-lsp.autoUpdate=true.
+        await this.setUpdatePromptSuppressed(true);
       }
       // 'Dismiss' is a no-op — will check again next interval
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`[update-check] Skipping: ${msg}`);
+      if (force) {
+        void vscode.window
+          .showWarningMessage(
+            'Binary update check failed. See Perl LSP output for details.',
+            'View Logs',
+          )
+          .then((choice) => {
+            if (choice === 'View Logs') this.outputChannel.show();
+          });
+      }
     }
+  }
+
+  /**
+   * Render one non-run admission decision.
+   *
+   * Every refusal names itself and reaches the user as a typed reason, so a
+   * skipped or invalid check is never indistinguishable from "up to date".
+   * Only a decision the user asked for raises a notification; background
+   * refusals stay in the output channel.
+   */
+  private reportUpdateCheckRefusal(
+    decision: Exclude<ManagedUpdateCheckDecision, { kind: 'run' }>,
+  ): void {
+    this.renderManagedUpdateOutcome(composeCheckSkippedOutcome(decision));
+  }
+
+  /**
+   * Apply one projected outcome to the output channel and any owed notification.
+   */
+  private renderManagedUpdateOutcome(outcome: ManagedUpdateOutcome): void {
+    const presentation = projectManagedUpdateOutcome(outcome);
+    if (this.updateOutcomeDedupe.shouldEmitOutput(presentation)) {
+      this.outputChannel.appendLine(presentation.outputChannel.line);
+    }
+    this.showManagedUpdateNotification(presentation);
+  }
+
+  private showManagedUpdateNotification(presentation: ManagedUpdatePresentation): void {
+    const { notification, actions } = presentation;
+    if (notification.visibility === 'none' || notification.summary.length === 0) {
+      return;
+    }
+    const show = ((): typeof vscode.window.showInformationMessage => {
+      switch (notification.severity) {
+        case 'error':
+          return vscode.window.showErrorMessage.bind(vscode.window);
+        case 'warning':
+          return vscode.window.showWarningMessage.bind(vscode.window);
+        case 'information':
+          return vscode.window.showInformationMessage.bind(vscode.window);
+      }
+    })();
+    const prompt =
+      actions.length > 0
+        ? show(notification.summary, ...actions)
+        : show(notification.summary);
+    void prompt.then((choice) => {
+        if (choice === 'View Logs') {
+          this.outputChannel.show();
+        }
+      if (choice === 'Reload Window') {
+        void vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    });
+  }
+
+  /**
+   * Record the "Don't ask again" prompt state for this host's compatibility key.
+   *
+   * Fails closed: with no proven compatibility key there is no namespace to
+   * write, so the prompt simply reappears rather than being suppressed in a
+   * shared row that also governs a different target.
+   */
+  private async setUpdatePromptSuppressed(suppressed: boolean): Promise<void> {
+    const key = managedUpdatePromptSuppressionStateKey(this.getHostCompatibilityKey());
+    if (key === null) {
+      this.outputChannel.appendLine(
+        '[update-check] Cannot record prompt suppression: this host has no proven compatibility key',
+      );
+      return;
+    }
+    await this.context.globalState.update(key, suppressed);
+  }
+
+  /**
+   * Confirm a successful update install and offer the one action that switches
+   * the running server to it (#16531).
+   *
+   * An update install stages a versioned directory and moves the shared
+   * `current` pointer, but the running client stays bound to the exact binary
+   * it launched (`bound_running`) until the host restarts. Reusing the reload
+   * affordance keeps that handoff honest without duplicating the Reinstall
+   * command's stop/restart flow.
+   */
+  private async confirmStagedUpdate(installedPath: string): Promise<void> {
+    const version = await this.getLocalVersion(installedPath);
+    if (!version) {
+      this.renderManagedUpdateOutcome(composeUpdatedReloadUnverifiedOutcome(installedPath));
+      return;
+    }
+    this.renderManagedUpdateOutcome(composeUpdatedReloadRequiredOutcome(version));
   }
 
   private async getLocalVersion(binaryPath: string): Promise<string | null> {

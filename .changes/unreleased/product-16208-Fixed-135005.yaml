@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: "Enforce positional, named, and trailing-slurpy signature ordering without dropping or reordering parameters. Diagnostics identify the complete offending parameter and preserve known ordering state across invalid parameter forms. The existing non-exhaustive ParseError gains the additive InvalidSignatureOrdering variant and InvalidSignatureOrderingKind; ordering diagnostic kinds/messages change while location consumers retain the start anchor."
+time: 2026-09-20T13:50:05Z
+custom:
+  PR: "16208"
+  Slug: signature-ordering-8917
+  Breaking: "no"

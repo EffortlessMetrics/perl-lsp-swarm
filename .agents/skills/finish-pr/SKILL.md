@@ -67,6 +67,26 @@ Return PR/candidate identity, claim and non-goals, current finding dispositions,
 current or stale, substantive review result, integration posture, exact remote wait and
 wake event, limitations/`NOT_PROVEN`, merge/closeout result, and next route.
 
+## Just-in-time finishing questions
+
+At feedback entry ask: have I read complete paginated thread messages, ordinary issue
+comments, and review bodies, including substantive `COMMENTED` findings? Use
+`scripts/reviews/feedback <pr> <owner/repo>` via `$address-review-comments`; neither
+zero unresolved threads nor native convergence answers this content question.
+
+After a candidate change ask: which dimensions changed, and does the semantic review
+still bind? Run `python3 scripts/ci/check-pr-semantic-review-currentness.py <pr>
+<owner/repo> --expected-head <observed-head>` at the review-to-integration boundary.
+A stale or missing binding is `NOT_PROVEN`; refresh affected review rather than
+replaying every lens or treating the old green review as current. Preserve unaffected
+proof with its original subject. This check verifies binding, not finding disposition.
+
+At a CI handoff ask: who owns terminal inspection and the final judgment? Carry the
+selected request, head/merge subject, run/attempt, pending contexts, accountable owner,
+next action and exact wake event in the existing return packet. An unowned in-flight
+handoff is `NOT_PROVEN`; keep the invoking owner until a named receiver accepts it.
+GitHub owning a transition does not transfer responsibility for reading its result.
+
 ## Procedure
 
 Enter at the earliest useful point:
@@ -194,25 +214,26 @@ review, CI classification, and oracle work may assist.
 - a combined-tree interaction is repaired in the smallest affected candidate;
 - only affected proof and review are refreshed.
 
-When GitHub owns the next transition—pending checks, requested review, merge queue, or
-armed auto-merge—record the exact pending fact and wake event once when useful and
-return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
-remote integration wait does not make a still-current substantive review stale.
+After substantive review, select the candidate intended to land and consume the
+actual #17900 qualification operation through `verify-live-ci`. Missing capability
+is `NOT_PROVEN` with its producer blocker; a push or Ready toggle is not a request.
+Keep mandatory selected proof and reporting identity intact during staged cutover.
 
-Arm auto-merge only when substantive review is `REVIEW_CURRENT` and
-`scripts/reviews/threads <pr> --unresolved-only --json` reports `unresolved_count` of
-0: zero unresolved review threads is a precondition of arming auto-merge. The `main`
-ruleset requires review-thread resolution, so bot threads (Devin, Gemini, Codex,
-CodeRabbit, cubic) and outdated threads count exactly like human ones, and an armed PR
-with one open thread sits silently blocked. Disposition and resolve them through
-`address-review-comments` first; an open thread is `MERGE_BLOCKED`, not
-`PR_IN_FLIGHT`.
+Record an accepted matching run/attempt as `PR_IN_FLIGHT`. Keep the same useful lead
+through an ordinary in-window wait, terminal result inspection, separate final
+vision/current-repository judgment, protected merge and landing read-back. Use supported
+waits/events or bounded checks without a polling child. A real interruption, unusual
+capacity delay or exhausted window gets an exact resumable handoff. Pending checks do
+not stale otherwise current substantive review.
 
-An armed auto-merge that appears stalled is usually waiting on the slowest required
-context, not broken: `ripr+ New Gap Gate` is the tail of the required union. The
-manual probe merge mechanism, its compare-and-swap SHA guard, and the waiver bar are
-single-sourced in `$merge-reconcile` — follow that skill's text rather than a second
-copy here.
+Do not arm routine auto-merge or enqueue. Qualification completion has no merge side
+effect. Before explicit integration, require `REVIEW_CURRENT`, current mandatory
+results and live protection, and zero unresolved threads of any author. An open thread
+is `MERGE_BLOCKED`, routed through `address-review-comments`, not a pending-run excuse.
+The actual protected merge and read-back remain single-sourced in `merge-reconcile`.
+
+The live ruleset requires thread resolution: zero unresolved review threads is a
+precondition of protected integration.
 
 ## Useful GitHub boundary
 

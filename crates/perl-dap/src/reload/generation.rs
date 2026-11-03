@@ -130,17 +130,28 @@ impl GenerationAdvance {
 
     /// Whether the endpoints describe one contiguous step of the clock.
     ///
-    /// An advance moves to exactly the successor of where it started, and
-    /// an unchanged outcome stays put. At the saturating ceiling the
-    /// successor of `u64::MAX` is itself, so an exhausted advance reports
-    /// equal endpoints and remains contiguous.
+    /// An advance is contiguous exactly when it actually moves the
+    /// generation: the successor endpoint is strictly greater than the
+    /// bind point **and** equals `previous.next()`. An unchanged outcome
+    /// stays put, so it is contiguous exactly when both endpoints are
+    /// equal.
+    ///
+    /// The saturating ceiling (`u64::MAX`) cannot move: `next()` returns
+    /// the ceiling itself, so a witness that claims an advance at the
+    /// ceiling has equal endpoints. That is **not** a contiguous step —
+    /// the generation did not change — so [`is_contiguous`] returns
+    /// `false` for it. The wire projector then refuses the witness via
+    /// [`WireProjectionRefusal::GenerationAdvanceMismatch`](
+    /// crate::reload_family::WireProjectionRefusal::GenerationAdvanceMismatch)
+    /// because a published `previous == current, advanced == true` would
+    /// claim a transition the clock did not make (#14643).
     ///
     /// [`RuntimeModuleGenerationClock::apply`] can only produce contiguous
     /// witnesses. This predicate exists so a publisher can state that
     /// invariant at its own boundary rather than assume it (#14550).
     pub fn is_contiguous(self) -> bool {
         if self.advanced {
-            self.previous.next() == self.current
+            self.previous < self.current && self.previous.next() == self.current
         } else {
             self.previous == self.current
         }
@@ -221,6 +232,20 @@ impl RuntimeModuleGenerationClock {
     /// Apply one transaction outcome, advancing only for the two terminal
     /// mutation outcomes. Returns the resulting generation and whether it
     /// advanced.
+    ///
+    /// # Saturation
+    ///
+    /// At the saturating ceiling (`u64::MAX`) `next()` returns the
+    /// ceiling itself, so the successor endpoint is not strictly greater
+    /// than the bind point. An outcome that asks for an advance at the
+    /// ceiling therefore produces a witness with `advanced = false`:
+    /// the generation did not move, and pretending otherwise would let
+    /// the wire projector publish a transition the clock did not make.
+    /// The transaction is still refused upstream (`execute_reload` admits
+    /// only when the clock can move), so the saturated witness only
+    /// arises through direct test seams or future callers that bypass
+    /// admission — both of which the wire projector's
+    /// `GenerationAdvanceMismatch` guard now rejects (#14643).
     pub fn apply(
         &mut self,
         outcome: &LoadedModuleReloadOutcome,
@@ -230,7 +255,8 @@ impl RuntimeModuleGenerationClock {
             GenerationEffect::Advance => {
                 let previous = self.current;
                 self.current = self.current.next();
-                GenerationAdvance { previous, current: self.current, advanced: true, operation }
+                let advanced = previous != self.current;
+                GenerationAdvance { previous, current: self.current, advanced, operation }
             }
             GenerationEffect::None => GenerationAdvance {
                 previous: self.current,
@@ -455,11 +481,20 @@ mod tests {
         );
 
         // At the saturating ceiling the successor is the ceiling itself, so
-        // an exhausted advance still reports one contiguous step and stays
-        // publishable.
+        // an advance that "moves" the generation does not actually move it.
+        // The clock therefore cannot publish such a witness as a contiguous
+        // step — `is_contiguous` rejects the no-move advance so the wire
+        // projector refuses it with `GenerationAdvanceMismatch` rather than
+        // claiming a transition that did not happen (#14643).
         let exhausted = RuntimeModuleGeneration(u64::MAX);
         assert_eq!(exhausted.next(), exhausted);
-        assert!(GenerationAdvance::forged(exhausted, exhausted, true, OP).is_contiguous());
+        assert!(
+            !GenerationAdvance::forged(exhausted, exhausted, true, OP).is_contiguous(),
+            "an exhausted advance did not move the generation and is not contiguous"
+        );
+        // The unchanged branch still treats staying put at the ceiling as
+        // contiguous, matching every other unchanged witness.
+        assert!(GenerationAdvance::forged(exhausted, exhausted, false, OP).is_contiguous());
     }
 
     #[test]
@@ -470,6 +505,67 @@ mod tests {
         let near = RuntimeModuleGeneration(u64::MAX - 1);
         assert!(!near.is_exhausted());
         assert!(near.next().is_exhausted());
+    }
+
+    /// A mutating outcome applied at the saturating ceiling reports
+    /// `advanced = false`: the generation did not actually move, and
+    /// claiming otherwise would let the wire publish a transition the
+    /// clock did not make (#14643). The pre-ceiling `MAX - 1 → MAX`
+    /// boundary still advances as before — only the saturated ceiling
+    /// fails closed.
+    #[test]
+    fn a_mutating_outcome_at_the_ceiling_does_not_claim_an_advance() {
+        let near = RuntimeModuleGeneration::new(u64::MAX - 1);
+        let mut clock = RuntimeModuleGenerationClock::at_generation(near);
+
+        // Pre-ceiling advance: one step, still advances.
+        let pre_ceiling = clock.apply(&reloaded(), OP);
+        assert!(pre_ceiling.advanced(), "pre-ceiling advance must advance");
+        assert_eq!(pre_ceiling.previous(), near);
+        assert_eq!(pre_ceiling.generation(), RuntimeModuleGeneration::new(u64::MAX));
+        assert!(pre_ceiling.is_contiguous());
+
+        // Now exhausted. Both terminal mutation outcomes ask for an
+        // advance, but the clock has nowhere left to go — the witness
+        // must report `advanced = false` so the wire projector's
+        // direction check (`advance.advanced() != generation_effect()`)
+        // refuses any attempt to publish it for a `Reloaded` or
+        // `IndeterminatePossiblyApplied` outcome.
+        let reloaded_at_ceiling = clock.apply(&reloaded(), OP);
+        assert!(!reloaded_at_ceiling.advanced(), "exhausted advance must not claim advance");
+        assert_eq!(reloaded_at_ceiling.previous(), RuntimeModuleGeneration::new(u64::MAX));
+        assert_eq!(reloaded_at_ceiling.generation(), RuntimeModuleGeneration::new(u64::MAX));
+        assert_eq!(clock.current(), RuntimeModuleGeneration::new(u64::MAX));
+
+        let indeterminate_at_ceiling = clock.apply(&indeterminate(), OP);
+        assert!(
+            !indeterminate_at_ceiling.advanced(),
+            "exhausted indeterminate must not claim advance either"
+        );
+        assert_eq!(indeterminate_at_ceiling.previous(), RuntimeModuleGeneration::new(u64::MAX));
+        assert_eq!(indeterminate_at_ceiling.generation(), RuntimeModuleGeneration::new(u64::MAX));
+
+        // Refusals at the ceiling are unchanged: `None` effect, both
+        // endpoints equal, contiguous, not advanced.
+        let refused_at_ceiling = clock.apply(&refused(), OP);
+        assert!(!refused_at_ceiling.advanced());
+        assert_eq!(refused_at_ceiling.previous(), refused_at_ceiling.generation());
+        assert!(refused_at_ceiling.is_contiguous());
+    }
+
+    /// The ceiling refuses to advance at the very first saturating step,
+    /// not only after multiple passes — and it never decrements or
+    /// rolls over, even when asked to advance repeatedly.
+    #[test]
+    fn the_clock_never_moves_past_the_ceiling() {
+        let mut clock =
+            RuntimeModuleGenerationClock::at_generation(RuntimeModuleGeneration::new(u64::MAX));
+        for _ in 0..4 {
+            let witness = clock.apply(&reloaded(), OP);
+            assert_eq!(clock.current(), RuntimeModuleGeneration::new(u64::MAX));
+            assert!(!witness.advanced());
+            assert_eq!(witness.previous(), witness.generation());
+        }
     }
 
     #[test]

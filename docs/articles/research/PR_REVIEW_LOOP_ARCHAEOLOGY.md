@@ -126,8 +126,8 @@ This is trusted change in practice. The trust is not "never make mistakes." The 
 - [PR_LIFECYCLE_ARCHAEOLOGY.md](PR_LIFECYCLE_ARCHAEOLOGY.md)
 - [SWARM_SURFACE_EVOLUTION.md](SWARM_SURFACE_EVOLUTION.md)
 - [CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
-- [`.claude/commands/review-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/review-pr.md)
-- [`.claude/commands/pr-ready.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/pr-ready.md)
-- [`.claude/skills/triage-prs/SKILL.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/skills/triage-prs/SKILL.md)
+- [`.claude/commands/review-pr.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/20a0bd39e83e5b280f8150978af4f840b402969f/.claude/commands/review-pr.md)
+- [`.claude/commands/pr-ready.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/bb93a2f6bb057418a7c1e2b3ac80e8529b7b2264/.claude/commands/pr-ready.md)
+- [`.claude/skills/triage-prs/SKILL.md`](../../reference/archive/old-infrastructure/skills/triage-prs/SKILL.md)
 - `gh pr list --state all --limit 2000`
 - `gh pr list --state all --limit 2000 --json number,title,headRefName,createdAt,closedAt,mergedAt,isDraft,baseRefName`

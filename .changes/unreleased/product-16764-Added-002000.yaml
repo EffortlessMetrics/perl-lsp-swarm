@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: "`cargo xtask activation check/report/explain` evaluate the classified activation inventory with class-specific connection contracts. `unwired-scan` reports Cargo topology only and no longer treats dependency membership as product wiring."
+time: 2026-09-29T00:20:00Z
+custom:
+  PR: "16764"
+  Slug: activation-check-9205
+  Breaking: "no"

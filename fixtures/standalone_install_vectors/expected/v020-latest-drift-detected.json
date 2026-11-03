@@ -1,0 +1,67 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v020-latest-drift-detected",
+  "contract_generation": 1,
+  "route": "first_party_posix",
+  "mode": "release_archive",
+  "requested_product_unit": "server_only",
+  "effective_product_unit": "server_only",
+  "effective_path_policy": "persist",
+  "resolved_subject_digest": "sha256:5c4efb7a20a9cf62a89fed70d2c9d70bfb49655e006c1ea5f6acba4824ae9c66",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "failed",
+      "reason_family": "subject_mismatch"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:5c4efb7a20a9cf62a89fed70d2c9d70bfb49655e006c1ea5f6acba4824ae9c66",
+      "terminal_result": "failed",
+      "reason_family": "subject_mismatch"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:cdf04a422091bca8b71d41b1a5b2300512451ea573ca646b70f04fe79fa2f16f",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "result": "failed",
+      "reason_family": "subject_mismatch",
+      "receipt_digest": "sha256:e7c3db09b598e5da66df847629d35398a453121cd63608fa40212439abe6e2c4",
+      "predecessor_digests": []
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [],
+  "side_effect_ceiling": "none",
+  "claim_ceiling": "none",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "failed",
+    "stage_id": "transport",
+    "reason_family": "subject_mismatch",
+    "action_class": "abort_install"
+  },
+  "redaction_disposition": "roles_only"
+}

@@ -8,6 +8,8 @@
 //!
 //! Specification: GitHub Issue #449 - AC5.1, AC5.3, AC5.4, AC5.5
 
+mod common;
+
 use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
@@ -25,6 +27,10 @@ fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
+    // These scenarios exercise session lifecycle, not the launch-authority
+    // contract; without an installed authority every launch is refused before
+    // reaching the behavior under test (#8656).
+    common::install_unbounded_test_authority(&adapter);
     (adapter, rx)
 }
 
@@ -585,8 +591,15 @@ fn test_session_lifecycle_launch_nonexistent_program() {
     let (mut adapter, _rx) = create_test_adapter();
     initialize_adapter(&mut adapter);
 
+    // Authority-backed launches require an absolute `program` path (#8656);
+    // anchor the nonexistent path inside a unique retained temp directory so
+    // nonexistence is guaranteed regardless of machine state and the launch
+    // reaches the file-existence check this test asserts on every platform
+    // (a bare `/nonexistent/...` is not absolute on Windows).
+    let dir = must(tempfile::tempdir());
+    let nonexistent = dir.path().join("script.pl").to_str().map(str::to_string).unwrap_or_default();
     let args = json!({
-        "program": "/nonexistent/path/to/script.pl",
+        "program": nonexistent,
         "args": [],
         "stopOnEntry": false
     });
@@ -631,36 +644,37 @@ fn test_session_lifecycle_attach_missing_arguments() {
 
 #[test]
 // AC:5.5
-fn test_session_lifecycle_attach_validation() {
+fn test_session_lifecycle_attach_validation() -> Result<(), Box<dyn Error>> {
     // Test that attach validates a valid TCP attach via handle_request_mock, which now
     // routes through the real dispatch path instead of returning a stale stub.
     let (mut adapter, _rx) = create_test_adapter();
 
-    // Valid TCP attach arguments — will attempt a real TCP connection and fail
-    // because no listener is running on the port, but validation passes first.
+    // Own the endpoint instead of assuming the default port has no listener.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let port = listener.local_addr()?.port();
     let args = json!({
-        "host": "localhost",
-        "port": 13603,
+        "host": "127.0.0.1",
+        "port": port,
         "timeout": 5000
     });
 
     let response = adapter.handle_request_mock(1, "attach", Some(args));
 
     match response {
-        DapMessage::Response { success: _, command, message, .. } => {
+        DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "attach");
-            assert!(message.is_some());
-            // The real handler either connects successfully (unlikely in CI) or
-            // fails with a connection error — not "not yet fully implemented".
-            let msg = must_some(message);
-            assert!(
-                !msg.contains("not yet fully implemented"),
-                "Stale stub message must not appear: {}",
-                msg
-            );
+            assert!(success);
+            assert!(message.is_none());
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
+    let (_peer, _) = listener.accept()?;
+    assert!(matches!(
+        adapter.handle_request_mock(2, "disconnect", None),
+        DapMessage::Response { success: true, .. }
+    ));
+    Ok(())
 }
 
 #[test]
@@ -1562,9 +1576,13 @@ fn test_error_handling_launch_program_is_directory() {
     let (mut adapter, _rx) = create_test_adapter();
     initialize_adapter(&mut adapter);
 
-    // Use current directory as program (should fail)
+    // Authority-backed launches require an absolute `program` path (#8656);
+    // a bare "." is relative and would be refused at the path gate before the
+    // file-type check this test asserts. `temp_dir` is absolute on every
+    // platform and is always a directory.
+    let dir = std::env::temp_dir().to_str().map(str::to_string).unwrap_or_default();
     let args = json!({
-        "program": ".",
+        "program": dir,
         "args": []
     });
 

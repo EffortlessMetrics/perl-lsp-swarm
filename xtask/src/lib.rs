@@ -33,6 +33,7 @@ pub mod emacs_subject_fan_in;
 pub mod emacs_subject_manifest;
 pub mod file_identity;
 pub mod git_ancestry;
+pub mod git_environment;
 pub mod import_cleanup_train_manifest;
 pub mod init_environment;
 pub mod install_surface_route_units;
@@ -52,7 +53,9 @@ pub mod schema_apply;
 pub mod source_authority;
 pub mod stack_increment;
 pub mod standalone_diagnostics;
+pub mod unsupported_fact_catalog;
 pub mod utils;
+pub mod vendored_catalog;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
 pub mod vim_host_lifecycle_run;
@@ -67,5 +70,6 @@ pub mod worktree_cleanup;
 pub mod worktree_forensic_recovery;
 pub mod writer_preflight;
 
+pub mod pre_freeze_public_beta_acceptance;
 #[cfg(test)]
 mod test_support;

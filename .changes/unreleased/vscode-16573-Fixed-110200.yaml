@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "HTTP 403 download failures stop blaming the GitHub rate limit unconditionally and now name GitHub-or-network/proxy with a proxy hint, and network-failure guidance widens to DNS, unreachable-network, connection-reset, and TLS certificate errors with a concrete retry command."
+time: 2026-09-27T11:02:00Z
+custom:
+  PR: 16573
+  Slug: download-403-network-classification
+  Breaking: "no"

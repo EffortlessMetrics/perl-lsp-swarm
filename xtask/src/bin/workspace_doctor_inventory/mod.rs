@@ -30,7 +30,7 @@ pub use inventory::validate_rows;
 #[allow(unused_imports)]
 pub use rows::canonical_rows;
 
-pub(super) const SCHEMA: u32 = 1;
+pub(super) const SCHEMA_VERSION: &str = "workspace_doctor_inventory.v1";
 pub(super) const SOURCE_PATHS: [&str; 6] = [
     "justfile",
     "xtask/src/tasks/writer_admission.rs",
@@ -131,7 +131,7 @@ pub struct SourceDigest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inventory {
-    pub schema: u32,
+    pub schema_version: String,
     pub status: String,
     pub doctor_check_headings: Vec<DoctorHeading>,
     pub rows: Vec<CheckRow>,

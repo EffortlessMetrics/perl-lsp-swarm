@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { COEXISTENCE_CONFIGURATION_INPUTS } from '../coexistenceAdvisory';
 import {
   buildDisabledFeaturesFromConfig,
+  buildGlobalWorkspaceConfigurationPayload,
   buildLanguageClientConfigurationPayload,
   buildPerlCriticConfiguration,
   buildUserAiCompletionConfigurationPayload,
@@ -10,14 +11,18 @@ import {
   classifyConfigurationSetting,
   DEFAULT_INCLUDE_PATHS,
   hasExplicitPerlCriticOverrides,
+  invalidateFolderConfiguration,
   machineScopedExternalIncludePaths,
   syncLanguageClientConfiguration,
+  syncLiveLanguageClientConfiguration,
   syncPerlCriticConfiguration,
 } from '../languageClientConfiguration';
 
 function makeConfig(values: Record<string, unknown>, explicit = Object.keys(values)) {
   return {
-    get: jest.fn((key: string, defaultValue?: unknown) => values[key] ?? defaultValue),
+    get: jest.fn((key: string, defaultValue?: unknown) =>
+      values[key] === undefined ? defaultValue : values[key],
+    ),
     inspect: jest.fn((key: string) =>
       explicit.includes(key) ? { workspaceValue: values[key] } : undefined,
     ),
@@ -25,6 +30,9 @@ function makeConfig(values: Record<string, unknown>, explicit = Object.keys(valu
 }
 
 describe('language client configuration', () => {
+  afterEach(() => {
+    Object.assign(vscode.workspace, { workspaceFolders: undefined });
+  });
   test('does not turn built-in defaults into an explicit workspace override', () => {
     const payload = buildWorkspaceConfigurationPayload(makeConfig({}, []));
 
@@ -39,6 +47,48 @@ describe('language client configuration', () => {
 
     expect(payload).toEqual({
       workspace: { includePaths: ['vendor/lib', 'local/lib/perl5'] },
+    });
+  });
+
+  test('global payload answers from user scope only, never workspace/folder scope (#17334)', () => {
+    // The unscoped pull item feeds the server's session-global layer: a
+    // workspace/folder value visible to `get()` and to `inspect()`'s
+    // workspace fields must not be able to enter it.
+    const config = {
+      get: jest.fn(() => ['/folder-should-not-win']),
+      inspect: jest.fn((key: string) =>
+        key === 'includePaths'
+          ? { workspaceValue: ['/workspace-should-not-win'], workspaceFolderValue: ['/folder'] }
+          : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toBeUndefined();
+  });
+
+  test('global payload carries user-scoped include paths (#17334)', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'includePaths' ? { globalValue: ['user/lib', 42, null] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { includePaths: ['user/lib'] },
+    });
+  });
+
+  test('global payload forwards global external include paths', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths' ? { globalValue: ['/opt/perl/lib'] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { externalIncludePaths: ['/opt/perl/lib'] },
     });
   });
 
@@ -85,7 +135,10 @@ describe('language client configuration', () => {
     expect(machineScopedExternalIncludePaths(config)).toEqual(['/opt/perl/lib']);
   });
 
-  test('combines workspace and critic settings under the canonical perl payload', () => {
+  test('keeps folder include paths out of the unscoped push while retaining critic', () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/a') }],
+    });
     const config = makeConfig({
       includePaths: ['vendor/lib'],
       'critic.enabled': true,
@@ -97,7 +150,6 @@ describe('language client configuration', () => {
     expect(buildLanguageClientConfigurationPayload()).toEqual({
       settings: {
         perl: {
-          workspace: { includePaths: ['vendor/lib'] },
           critic: { enabled: true, severity: 4 },
           perlcritic: { severity: 2 },
         },
@@ -129,14 +181,102 @@ describe('language client configuration', () => {
     );
   });
 
-  test('uses the document scope for folder-specific initial synchronization', () => {
+  test('uses the document scope only for critic settings, not folder include paths', () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/folder') }],
+    });
     const documentUri = vscode.Uri.file('/workspace/folder/src/main.pl');
     const config = makeConfig({ includePaths: ['folder/lib'] });
     (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);
 
     buildLanguageClientConfigurationPayload(documentUri);
 
-    expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith('perl-lsp', documentUri);
+    expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith('perl-lsp', {
+      uri: documentUri,
+      languageId: 'perl',
+    });
+    expect(buildLanguageClientConfigurationPayload(documentUri)).toEqual({
+      settings: { perl: {} },
+    });
+  });
+
+  test('include path invalidation sends null settings and does not read one folder', async () => {
+    (vscode.workspace.getConfiguration as jest.Mock).mockClear();
+    const sendNotification = jest.fn(async () => undefined);
+    await invalidateFolderConfiguration({ sendNotification });
+    expect(sendNotification).toHaveBeenCalledWith('workspace/didChangeConfiguration', {
+      settings: null,
+    });
+    expect(vscode.workspace.getConfiguration).not.toHaveBeenCalled();
+  });
+
+  test('standalone-file mode pushes include paths because no scoped pull exists', async () => {
+    Object.assign(vscode.workspace, { workspaceFolders: undefined });
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(
+      makeConfig({ includePaths: ['standalone/lib'] }),
+    );
+    const sendNotification = jest.fn(async () => undefined);
+    await syncLanguageClientConfiguration({ sendNotification });
+    expect(sendNotification).toHaveBeenCalledWith('workspace/didChangeConfiguration', {
+      settings: {
+        perl: {
+          workspace: { includePaths: ['standalone/lib'] },
+          aiCompletion: { enabled: false, streaming: { enabled: true } },
+        },
+      },
+    });
+  });
+
+  test('combined Critic and include-path event pushes session settings without folder paths', async () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/a') }],
+    });
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(
+      makeConfig({ includePaths: ['a/lib'], 'critic.severity': 4 }),
+    );
+    const sendNotification = jest.fn(async () => undefined);
+    await syncLiveLanguageClientConfiguration(
+      { sendNotification },
+      {
+        affectsConfiguration: (key) =>
+          key === 'perl-lsp.includePaths' || key === 'perl-lsp.critic.severity',
+      },
+    );
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(sendNotification).toHaveBeenCalledWith('workspace/didChangeConfiguration', {
+      settings: {
+        perl: {
+          critic: { severity: 4 },
+          aiCompletion: { enabled: false, streaming: { enabled: true } },
+        },
+      },
+    });
+  });
+
+  test('include-path-only event uses null invalidation with folders but a push without them', async () => {
+    const config = makeConfig({ includePaths: ['standalone/lib'] });
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);
+    const sendNotification = jest.fn(async () => undefined);
+    const event = { affectsConfiguration: (key: string) => key === 'perl-lsp.includePaths' };
+
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/a') }],
+    });
+    await syncLiveLanguageClientConfiguration({ sendNotification }, event);
+    expect(sendNotification).toHaveBeenLastCalledWith('workspace/didChangeConfiguration', {
+      settings: null,
+    });
+
+    Object.assign(vscode.workspace, { workspaceFolders: undefined });
+    await syncLiveLanguageClientConfiguration({ sendNotification }, event);
+    expect(sendNotification).toHaveBeenLastCalledWith('workspace/didChangeConfiguration', {
+      settings: {
+        perl: {
+          workspace: { includePaths: ['standalone/lib'] },
+          aiCompletion: { enabled: false, streaming: { enabled: true } },
+        },
+      },
+    });
   });
 
   test('preserves project configuration when no editor setting is explicit', () => {
@@ -198,6 +338,55 @@ describe('language client configuration', () => {
     expect(disabledFeatures).toEqual(['lsp.hover']);
   });
 
+  test.each([null, true, false, 0, 42, {}, 'lsp.hover'])(
+    'ignores non-array disabledFeatures %p and retains boolean aliases',
+    (disabledFeatures) => {
+      expect(buildDisabledFeaturesFromConfig(makeConfig({ disabledFeatures }))).toEqual([]);
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+        ),
+      ).toEqual(['lsp.semantic_tokens', 'lsp.formatting']);
+    },
+  );
+
+  test('filters non-string disabled features while preserving strings and the input array', () => {
+    const disabledFeatures = Object.freeze(['lsp.hover', null, 42, false, {}, 'lsp.formatting']);
+
+    expect(
+      buildDisabledFeaturesFromConfig(
+        makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+      ),
+    ).toEqual(['lsp.hover', 'lsp.formatting', 'lsp.semantic_tokens']);
+    expect(disabledFeatures).toEqual(['lsp.hover', null, 42, false, {}, 'lsp.formatting']);
+  });
+
+  test.each([null, undefined, 0, 1, '', 'false', [], {}, true])(
+    'does not treat malformed or enabled boolean settings %p as false',
+    (value) => {
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ enableSemanticTokens: value, enableFormatting: false }),
+        ),
+      ).toEqual(['lsp.formatting']);
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ enableSemanticTokens: false, enableFormatting: value }),
+        ),
+      ).toEqual(['lsp.semantic_tokens']);
+    },
+  );
+
+  test('preserves an empty default and avoids appending existing aliases', () => {
+    expect(buildDisabledFeaturesFromConfig(makeConfig({}))).toEqual([]);
+    const disabledFeatures = Object.freeze(['lsp.semantic_tokens', 'lsp.formatting']);
+    expect(
+      buildDisabledFeaturesFromConfig(
+        makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+      ),
+    ).toEqual(disabledFeatures);
+  });
+
   test.each([
     ['perl-lsp.trace.server', 'live'],
     ['perl-lsp.includePaths', 'live'],
@@ -207,7 +396,7 @@ describe('language client configuration', () => {
     ['perl-lsp.aiCompletion.enabled', 'reconstruct'],
     ['perl-lsp.featureProfile', 'restart'],
     ['perl-lsp.enableFormatting', 'restart'],
-    ['perl-lsp.autoPopulateNewFiles', 'unrelated'],
+    ['editor.tabSize', 'unrelated'],
   ])('classifies %s as %s', (setting, expected) => {
     expect(classifyConfigurationSetting(setting)).toBe(expected);
   });

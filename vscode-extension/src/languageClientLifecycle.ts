@@ -47,6 +47,14 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
   onStarted?(client: TClient, serverPath: string): void | Promise<void>;
   onStopped?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onFailed?(snapshot: LifecycleSnapshot): void | Promise<void>;
+  /**
+   * Fired by ExtensionLanguageClientLifecycle when it consumes a queued
+   * server-path override instead of resolveServerPath (reinstall path).
+   * Never fired by the controller itself. Lets extension surfaces reset
+   * per-attempt state (e.g. a stale startup error) that normally clears
+   * inside resolveServerPath (#15592).
+   */
+  onServerPathOverrideConsumed?(serverPath: string): void | Promise<void>;
   onCallbackError?(error: unknown, phase: LifecycleCallbackPhase): void | Promise<void>;
   /**
    * Capture an observation of the client's external resources immediately
