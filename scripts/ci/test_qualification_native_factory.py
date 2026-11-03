@@ -150,6 +150,107 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(self.log.exists())
         self.assertEqual(json.loads((self.fixture.packet/'rust-small-proof.json').read_bytes())['subject']['git_sha'],self.fixture.plan['head'])
 
+    def install_local_composition_fixture(self, *, status=0):
+        """Real subprocess ports; planner/command/Rust semantics remain synthetic.
+
+        This proves factory composition and byte custody, not Cargo execution,
+        native import authentication, runner allocation or App publication.
+        """
+        workspace = Path(self.environment['GITHUB_WORKSPACE'])
+        plan = self.fixture.plan
+        output = self.root / 'local-proof'
+        calls = self.root / 'installed-owner-calls.jsonl'
+        prepush = dict(schema='pre_push_proof_plan.v1', posture='PROCEED',
+            base_sha=plan['base'], head_sha=plan['head'],
+            selected=[{'command': 'cargo check -p perl-parser --locked'}])
+        # Deliberate formatting makes reserialization detectable at export.
+        raw = (json.dumps(dict(schema_version='command-proof-set.v1',
+            result='SUCCESS' if status == 0 else 'FAILURE',
+            commands=[dict(id='pre-push-0', receipt=dict(
+                schema_version='command-evidence.v1',
+                argv=['cargo', 'check', '-p', 'perl-parser', '--locked'],
+                cwd=str(workspace), candidate_identity=plan['head'],
+                result='SUCCESS' if status == 0 else 'FAILURE', exit_code=status,
+                termination=f'exit_code:{status}'))]), indent=2) + '\n').encode()
+        self.tool.write_text('#!' + sys.executable + '\n' +
+            'import json,os,sys\nfrom pathlib import Path\n' +
+            f'workspace=Path({str(workspace)!r})\n' +
+            f'calls=Path({str(calls)!r})\n' +
+            f'output=Path({str(output)!r})\n' +
+            f'plan={plan!r}\n' +
+            'assert sys.argv[1:3]==["--worktree-root",str(workspace)]\n' +
+            'assert Path.cwd()==workspace\n' +
+            'assert not any(k.startswith("GIT_") or k in ' +
+            '{"GH_TOKEN","GITHUB_TOKEN","GH_ENTERPRISE_TOKEN","GITHUB_ENTERPRISE_TOKEN"} for k in os.environ)\n' +
+            'assert os.environ["RUSTUP_TOOLCHAIN"]=="1.95.0"\n' +
+            'assert os.environ["RUSTUP_AUTO_INSTALL"]=="0"\n' +
+            'arguments=sys.argv[3:]\n' +
+            'with calls.open("a") as stream: stream.write(json.dumps(arguments)+"\\n")\n' +
+            'if arguments[0]=="pre-push-plan":\n' +
+            '    assert arguments==["pre-push-plan","--base",plan["base"],"--head",plan["head"],"--format","json"]\n' +
+            f'    print({json.dumps(prepush)!r})\n' +
+            'elif arguments[:2]==["command-evidence","proof-set"]:\n' +
+            '    assert arguments==["command-evidence","proof-set","--spec",str(output/"spec.json"),"--json"]\n' +
+            '    assert os.environ["GITHUB_SHA"]==plan["control"]\n' +
+            '    assert os.environ["GITHUB_RUN_ID"]=="123" and os.environ["GITHUB_RUN_ATTEMPT"]=="2"\n' +
+            '    context=json.loads((output.parent/"em-ci-job-context.json").read_bytes())\n' +
+            '    assert context["qualification_subject"]["head"]==plan["head"] and "proof_started_at" in context\n' +
+            '    spec=json.loads((output/"spec.json").read_bytes())\n' +
+            '    assert spec=={"schema_version":"command-proof-set.v1","commands":[{"id":"pre-push-0",' +
+            '"program":"cargo","args":["check","-p","perl-parser","--locked"],"cwd":str(workspace),' +
+            '"candidate":plan["head"],"timeout_secs":10,"out_dir":str(output/"logs")}]}\n' +
+            f'    sys.stdout.buffer.write({raw!r})\n    raise SystemExit({status})\n' +
+            'else:\n    assert arguments==["rust-small-proof"]\n' +
+            '    assert os.environ["GITHUB_SHA"]==plan["control"]\n' +
+            f'    Path("target/receipts/rust-small-proof.json").write_text({json.dumps(self.fixture.bridge.receipt)!r})\n')
+        self.fixture.owners.canonical_owner = CanonicalOwner(verifier=self.tool,
+            verifier_sha256=hashlib.sha256(self.tool.read_bytes()).hexdigest(),
+            control_sha=plan['control'], workspace=workspace)
+        return output, calls, raw
+
+    def test_real_local_owner_then_rust_exports_exact_sidecar_and_preserves_native_transport(self):
+        output, calls, raw = self.install_local_composition_fixture()
+        # Assert orchestration failures as proof failures, retaining owner stderr
+        # in the diagnostic instead of mistaking a broken fixture for green proof.
+        try:
+            status, manifest = self.run_native(command_output=output, command_timeout_secs=10)
+        except (OSError, ValueError) as error:
+            stderr = output / 'owner-stderr.log'
+            self.fail(f'local-to-Rust composition did not complete: {error}; '
+                f'owner stderr: {stderr.read_text() if stderr.exists() else "not invoked"}')
+        self.assertEqual((status, manifest['result']), (0, 'success'))
+        self.assertEqual([json.loads(row)[0] for row in calls.read_text().splitlines()],
+            ['pre-push-plan', 'command-evidence', 'rust-small-proof'])
+        self.assertEqual(self.trace, ['capture', 'allocation', 'release'])
+        self.assertEqual((output / 'command-proof-set.json').read_bytes(), raw)
+        self.assertEqual(manifest.get('command_member'), dict(path='command-proof-set.json',
+            bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+        self.assertEqual((self.fixture.packet / 'command-proof-set.json').read_bytes(), raw)
+        self.assertEqual({key: manifest[key] for key in ('sha', 'run_id', 'run_attempt')},
+            dict(sha=self.fixture.plan['control'], run_id='123', run_attempt='2'))
+        self.assertNotEqual(manifest['sha'], self.fixture.plan['head'])
+        self.assertEqual(json.loads((self.fixture.packet / 'rust-small-proof.json').read_bytes())
+            ['subject']['git_sha'], self.fixture.plan['head'])
+        context = json.loads(self.context.read_bytes())
+        self.assertEqual(context['qualification_subject'], {key: self.fixture.plan[key]
+            for key in ('head', 'tree', 'base', 'control', 'request_key')})
+        self.assertEqual((context['sha'], context['run_id'], context['run_attempt']),
+            (self.fixture.plan['control'], '123', '2'))
+        self.assertEqual(self.environment['GITHUB_TOKEN'], 'metadata-only')
+        self.assertEqual(self.environment['GIT_DIR'], '/wrong')
+
+    def test_real_nonzero_local_owner_preserves_failure_and_prevents_rust_export(self):
+        output, calls, raw = self.install_local_composition_fixture(status=7)
+        with self.assertRaisesRegex(ValueError, 'actual selected local command failed'):
+            self.run_native(command_output=output, command_timeout_secs=10)
+        self.assertEqual((output / 'command-proof-set.json').read_bytes(), raw)
+        self.assertFalse((output / 'command-proof-set.json.partial').exists())
+        self.assertEqual([json.loads(row)[0] for row in calls.read_text().splitlines()],
+            ['pre-push-plan', 'command-evidence'])
+        self.assertEqual(self.trace, ['capture', 'allocation', 'release'])
+        self.assertFalse(self.log.exists())
+        self.assertEqual(list(self.fixture.packet.iterdir()), [])
+
     def test_failed_local_owner_stops_before_rust_and_releases_actual_owner_port(self):
         with mock.patch('scripts.ci.qualification_local_commands.produce',return_value=(1,self.root/'failed.json')):
             with self.assertRaisesRegex(ValueError,'local command failed'):
@@ -157,6 +258,37 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(self.trace,['capture','allocation','release'])
         self.assertFalse(self.log.exists())
         self.assertEqual(list(self.fixture.packet.iterdir()),[])
+
+    def test_duplicate_native_run_never_captures_allocates_or_launches_product(self):
+        self.fixture.api.extra_rows = [dict(self.fixture.api.row, id=122)]
+        result = self.run_native()
+        self.assertEqual(result['status'], 'NOT_PROVEN')
+        self.assertEqual(result['canonical_run_id'], 122)
+        self.assertFalse(result['rehearsal_elected'])
+        self.assertEqual((result['selected'], result['executed'], result['failed']), (0, 0, 0))
+        self.assertIsNone(result['check_run_id'])
+        self.assertEqual(self.trace, [])
+        self.assertFalse(self.context.exists())
+        self.assertFalse(self.log.exists())
+        self.assertEqual(list(self.fixture.packet.iterdir()), [])
+
+    def test_duplicate_discovered_while_waiting_for_allocation_releases_without_product(self):
+        @contextmanager
+        def raced(plan, selection):
+            self.trace.append('allocation')
+            self.fixture.api.extra_rows = [dict(self.fixture.api.row, id=122)]
+            try:
+                yield
+            finally:
+                self.trace.append('release')
+        with self.assertRaisesRegex(ValueError, 'admission moved while awaiting allocation'):
+            factory.execute_native(self.fixture.owners,
+                {'inputs': {'request': json.dumps(self.fixture.plan)}},
+                self.capture, allocation_owner=raced, log_path=self.log)
+        self.assertEqual(self.trace, ['capture', 'allocation', 'release'])
+        self.assertNotIn('proof_started_at', json.loads(self.context.read_bytes()))
+        self.assertFalse(self.log.exists())
+        self.assertEqual(list(self.fixture.packet.iterdir()), [])
 
     def test_stale_attempt_during_allocation_never_starts_proof(self):
         @contextmanager
