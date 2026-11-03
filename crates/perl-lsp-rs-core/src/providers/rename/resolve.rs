@@ -95,9 +95,6 @@ mod tests {
         // The later use resolves to the same lexical, not the enclosing sub.
         let use_pos = must_some_with(code.rfind("$value"), "use") + 1;
         let found = find_symbol_at_position(use_pos, &table, code);
-        assert_eq!(
-            found,
-            Some(("value".to_string(), SymbolKind::scalar()))
-        );
+        assert_eq!(found, Some(("value".to_string(), SymbolKind::scalar())));
     }
 }
