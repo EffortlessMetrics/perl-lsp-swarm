@@ -6,7 +6,7 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `4eef952c4bcd8203a0f44d16258ea462bf87e3bbfa029a249297618504573bfe`
+- Authority digest: `86df1fb90b81464dc69e269b771246f2b3daa611e2a5cfff5cd5774bf9701c2e`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
 - Public re-exports: 130
@@ -15,7 +15,7 @@ The native parser contract remains directly available while compatibility and pr
 - Production-context dependencies: 19
 - Development-only dependencies: 11
 - Workspace consumers: 9
-- Unresolved review rows: 47
+- Unresolved review rows: 40
 
 ## Feature isolation
 

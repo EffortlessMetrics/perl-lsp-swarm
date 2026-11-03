@@ -57,6 +57,20 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(self.run_safe(["build", *options]), 75, options)
             self.assertFalse(self.slot.exists())
 
+    def test_local_config_cli_args_injected_when_present(self):
+        seen = []
+
+        def cargo(command, env):
+            seen.append(command)
+            return 0
+
+        local_path = self.root / ".cargo" / "config.local.toml"
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text("[build]\njobs = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_safe(["check"], cargo), 0)
+        self.assertIn(str(local_path), seen[0])
+        self.assertLess(seen[0].index(str(local_path)), seen[0].index("unstable.unstable-options=false"))
+
     def test_separate_short_values_and_program_arguments_remain_supported(self):
         seen = []
         def cargo(command, env):
