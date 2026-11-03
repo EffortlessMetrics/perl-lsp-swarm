@@ -121,10 +121,12 @@ $env:RUSTUP_AUTO_INSTALL = '0'
 Selecting only `DEVPLANE` can still leave Cargo home or temporary files on an
 overfull system volume. Keep existing caches intact. Do not export target/build
 paths or enable compiler wrappers: the admitted route owns both private output
-paths. A copied `.cargo/config.local.toml` is not automatically loaded by Cargo's
-[configuration discovery](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure)
-and cannot configure Python's pre-admission resolver. The adjacent example no
-longer recommends shared output paths or sccache for this route.
+paths. Copy `.cargo/config.local.toml.example` to `.cargo/config.local.toml`
+(gitignored) for other machine-local knobs. `scripts/cargo-safe` and
+`scripts/cargo-admitted` pass `--config` when the file exists; for direct
+`cargo`, pass `--config .cargo/config.local.toml` explicitly (or use `CARGO_*`
+in the task shell). Admitted `--config` overrides still own target/build paths
+and jobs policy; do not put those keys in the local file.
 
 For missing hooks, use the existing lightweight installer owner (#17861), from
 the intended worktree with the repository-pinned native toolchain installed:
