@@ -875,9 +875,10 @@ impl LspServer {
 
                     // Append hint so users see actionable guidance in push fallback path too
                     let message =
-                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
+                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint_with_source(
                             e,
                             &base_message,
+                            &text,
                         ) {
                             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
                             None => base_message,
@@ -1064,9 +1065,10 @@ impl LspServer {
                     let base_message = parse_error_base_message(e);
                     let location = resolved_parse_diagnostic_offset(e, text);
                     let message =
-                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
+                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint_with_source(
                             e,
                             &base_message,
+                            &text,
                         ) {
                             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
                             None => base_message,
@@ -1306,9 +1308,10 @@ impl LspServer {
                     let base_message = parse_error_base_message(e);
                     let location = resolved_parse_diagnostic_offset(e, &text);
                     let message =
-                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
+                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint_with_source(
                             e,
                             &base_message,
+                            &text,
                         ) {
                             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
                             None => base_message,

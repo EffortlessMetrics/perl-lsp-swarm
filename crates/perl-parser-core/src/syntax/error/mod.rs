@@ -964,8 +964,11 @@ impl ErrorClass for ParseError {
 
 /// Error classification and diagnostic generation for parsed Perl code.
 pub mod classifier;
+pub mod hints;
 /// Error recovery strategies and traits for the Perl parser.
 pub mod recovery;
+
+pub use hints::{build_parse_error_hint, build_parse_error_hint_with_source};
 
 use perl_ast::Node;
 
@@ -1696,52 +1699,7 @@ impl ParseError {
 
     /// Generate a fix suggestion based on the error type
     pub fn suggestion(&self) -> Option<String> {
-        match self {
-            ParseError::UnexpectedToken { expected, found, .. } => {
-                // Check for common missing delimiters
-                if expected.contains(';') {
-                    return Some("add a semicolon ';' at the end of the statement".to_string());
-                }
-                if expected.contains('}') {
-                    return Some("add a closing brace '}' to end the block".to_string());
-                }
-                if expected.contains(')') {
-                    return Some("add a closing parenthesis ')' to end the group".to_string());
-                }
-                if expected.contains(']') {
-                    return Some("add a closing bracket ']' to end the array".to_string());
-                }
-                // Fat arrow found where expression expected — likely a missing value
-                // before a hash pair separator
-                if expected.contains("expression") && found.contains("=>") {
-                    return Some(
-                        "'=>' (fat arrow) is not valid here; \
-                         did you forget a value before it?"
-                            .to_string(),
-                    );
-                }
-                // Arrow found where expression expected
-                if expected.contains("expression") && found.contains("->") {
-                    return Some(
-                        "'->' (arrow) is not valid here; \
-                         did you forget the object or reference before it?"
-                            .to_string(),
-                    );
-                }
-                // Expected a variable (e.g. after my/our/local/state)
-                if expected.to_lowercase().contains("variable") {
-                    return Some(
-                        "expected a variable like $foo, @bar, or %hash after the declaration keyword"
-                            .to_string(),
-                    );
-                }
-                None
-            }
-            ParseError::UnclosedDelimiter { delimiter } => {
-                Some(format!("add closing '{}' to complete the literal", delimiter))
-            }
-            _ => None,
-        }
+        hints::build_parse_error_hint(self, "")
     }
 
     /// Return the parser-owned source anchor for this diagnostic.
@@ -1828,7 +1786,7 @@ pub fn get_error_contexts(errors: &[ParseError], source: &str) -> Vec<ErrorConte
                 line,
                 column: col,
                 source_line,
-                suggestion: error.suggestion(),
+                suggestion: hints::build_parse_error_hint_with_source(error, "", Some(source)),
             }
         })
         .collect()
