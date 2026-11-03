@@ -125,7 +125,12 @@ class DapProcess:
         trusted_root: Path | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
-        command = [str(binary), "--stdio", "--log-level", "error"]
+        # DIAGNOSTIC (dap-scorecard main-red investigation, 2026-11-03): allow
+        # elevating adapter tracing without changing the proof contract.
+        import os
+
+        log_level = os.environ.get("DAP_SCORECARD_ADAPTER_LOG_LEVEL", "error")
+        command = [str(binary), "--stdio", "--log-level", log_level]
         if trusted_root is not None:
             # Pass the original path through, never the resolved one: the
             # startup contract rejects symlink roots via symlink_metadata
