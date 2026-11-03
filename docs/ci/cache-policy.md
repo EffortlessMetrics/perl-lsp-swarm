@@ -164,6 +164,14 @@ Compensating controls, each contract-checked:
    produce branch guards the save, so a restored receipt is never re-saved, and a run
    that failed before the receipt step publishes nothing.
 
+5. **Mid-job checkpoint before long guidance (#17451).** When this run freshly
+   produced the repo-wide receipt, a checkpoint `actions/cache/save` runs immediately
+   after production and before `Generate review guidance`, keyed identically to the
+   final save.    The guard is the freshness marker with `always()` (not `success()`), so a runner
+   SIGTERM during the guidance pass still publishes the baseline receipt for same-head
+   reruns. The job-final save keeps the `success()` guard; either save writes the same
+   exact-head key and consumers still re-validate on restore.
+
 ---
 
 ## What this does not change

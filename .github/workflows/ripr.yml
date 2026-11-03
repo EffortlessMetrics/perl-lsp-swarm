@@ -892,6 +892,17 @@ jobs:
             printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
           fi
 
+      # #17451: publish a freshly produced repo-wide receipt before the long
+      # guidance pass so a runner SIGTERM during step 19 does not force the
+      # next same-head attempt to redo the ~44m baseline scan (#16431
+      # catch-22). Restored receipts skip this step via the freshness marker.
+      - name: Checkpoint save memoized ripr-plus receipt
+        if: always() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/receipts/quality/ripr-plus.json
+          key: ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}
+
       - name: Record exact RIPR badge producer
         if: always()
         run: |
@@ -1231,6 +1242,15 @@ jobs:
             printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
           fi
 
+      # #17451: checkpoint the freshly produced receipt before the long
+      # guidance pass (same contract as ripr-github above).
+      - name: Checkpoint save memoized ripr-plus receipt
+        if: always() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/receipts/quality/ripr-plus.json
+          key: ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}
+
       - name: Record exact RIPR badge producer
         if: always()
         run: |
@@ -1246,8 +1266,8 @@ jobs:
         # gaps because static-limitation credit is only paid from a completed
         # receipt. 3600s: #14897 then measured the guidance pass itself
         # exceeding 1800s on a 1600+-file closure (xtask SIGTERMed the ripr
-        # child at the bound, exit 143), so the bound is raised together with
-        # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
+        # child at the bound, exit 143), so the bound is raised on the
+        # 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
         run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
