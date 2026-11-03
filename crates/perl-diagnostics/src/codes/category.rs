@@ -82,7 +82,8 @@ impl DiagnosticCode {
             | Self::InvalidPrototype
             | Self::RoleConflict
             | Self::MissingPodCoverage
-            | Self::UnresolvedQualifiedCall => DiagnosticCategory::Subroutine,
+            | Self::UnresolvedQualifiedCall
+            | Self::UnresolvedMethodCall => DiagnosticCategory::Subroutine,
 
             Self::BarewordFilehandle
             | Self::TwoArgOpen
@@ -95,7 +96,8 @@ impl DiagnosticCode {
             | Self::DuplicateHashKey
             | Self::GotoUndefinedLabel
             | Self::LoopControlUndefinedLabel
-            | Self::IrrelevantWantarrayBranch => DiagnosticCategory::BestPractices,
+            | Self::IrrelevantWantarrayBranch
+            | Self::StrayPodCut => DiagnosticCategory::BestPractices,
 
             Self::VersionIncompatFeature => DiagnosticCategory::VersionCompatibility,
 
