@@ -557,17 +557,9 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         }
     }
     if !subject_matches_base && subject_version == PREAPPROVED_SUBJECT_CONTRACT_VERSION {
-        // The preapproved structural contract is the reviewed upgrade path; a
-        // candidate that is not byte-for-byte that contract may still land as
-        // an in-family change, but only if it survives the shape scan below.
-        // Both rejections are surfaced so the failing gate is explicit.
-        if let Err(structural) = validate_preapproved_subject_workflow(&text) {
-            return scan_trusted_workflow_shape(&text).map_err(|legacy| {
-                eyre!(
-                    "{legacy}; the subject is also not the preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} contract: {structural}"
-                )
-            });
-        }
+        // Preapproved contract upgrades are strict-only: in-family shape scan
+        // applies only when the subject is not on the reviewed v10 path.
+        validate_preapproved_subject_workflow(&text)?;
         return Ok(());
     }
     scan_trusted_workflow_shape(&text)
@@ -6349,6 +6341,39 @@ jobs:
         assert!(
             error.to_string().contains("unapproved variable"),
             "rejection must come from the structural validator, got: {error}"
+        );
+        Ok(())
+    }
+
+    /// Negative control for #15041: a v10 subject that fails strict preapproval
+    /// but survives `scan_trusted_workflow_shape` must not be accepted by the
+    /// integration gate.
+    #[test]
+    fn validate_subject_workflow_rejects_v7_shape_scan_bypass_tampering() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let mut workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        workflow = workflow.replacen("# contract-version: 9", "# contract-version: 10", 1);
+        workflow = workflow.replace("    steps:\n", "      EXTRA_BOUNDARY: '0'\n    steps:\n");
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "v10 in-family env tamper")?;
+        ensure!(
+            validate_preapproved_subject_workflow(&workflow).is_err(),
+            "strict preapproval must reject extra job env keys on v10 subjects"
+        );
+        ensure!(
+            scan_trusted_workflow_shape(&workflow).is_ok(),
+            "shape scan must not catch this tamper (negative control for #15041): {:?}",
+            scan_trusted_workflow_shape(&workflow).err(),
+        );
+        let error = must_err_with(
+            validate_subject_workflow(temp.path(), &base, &subject),
+            "integration path must reject v10 tampering that passes shape scan",
+        );
+        assert!(
+            error.to_string().contains("unapproved variable")
+                || error.to_string().contains("preapproved v10"),
+            "rejection must come from strict preapproval, got: {error}"
         );
         Ok(())
     }
