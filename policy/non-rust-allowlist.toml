@@ -2024,6 +2024,36 @@ created = "2026-08-14"
 review_after = "2026-11-14"
 
 [[allow]]
+id = "non-rust-ast-change-impact-contract"
+path = "contracts/compiler/ast_change_impact.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Versioned AST change impact packet contract for #5238; validated by cargo run -p xtask --bin compiler-ast-impact -- check."
+covered_by = [
+  "cargo run -p xtask --bin compiler-ast-impact -- check",
+]
+created = "2026-11-02"
+review_after = "2027-02-02"
+
+[[allow]]
+id = "non-rust-ast-change-impact-schema"
+path = "schemas/ast_change_impact.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for ast_change_impact.v1; validated by compiler-ast-impact check."
+covered_by = [
+  "cargo run -p xtask --bin compiler-ast-impact -- check",
+]
+created = "2026-11-02"
+review_after = "2027-02-02"
+
+[[allow]]
 id = "non-rust-compiler-concepts-schema"
 path = "schemas/perl_compiler_concepts.v1.schema.json"
 kind = "compiler_contract"

@@ -2068,6 +2068,21 @@ gates:
       - contract
       - generated
 
+  - name: compiler_ast_impact
+    tier: merge_gate
+    description: "Validate contracts/compiler/ast_change_impact.v1.toml and its generated status doc (#5238)"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-ast-impact -- check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
   # The compiler performance receipt (#9311) is a fail-closed contract in the
   # same family as compiler_concept_ledger above: it rejects counters published
   # without measurement, a cache hit without validated currentness, contradictory

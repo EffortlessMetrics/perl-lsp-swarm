@@ -6,10 +6,10 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `86df1fb90b81464dc69e269b771246f2b3daa611e2a5cfff5cd5774bf9701c2e`
+- Authority digest: `222007ce202ff0556defa19d8f256c279348827aad900b801195817a9983267b`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
-- Public re-exports: 130
+- Public re-exports: 139
 - Cargo features: 27
 - Declared dependencies: 30
 - Production-context dependencies: 19
@@ -54,7 +54,7 @@ workspace / semantic / refactor / LSP product adapters
 ## Incremental authority
 
 The production incremental surface is the reviewed export set below; `apply_edits` is its sole public function.
-Production exports: `diagnostics::LexRestartReport`, `diagnostics::LexRestartStrategy`, `diagnostics::ReparseResult`, `edit::Edit`, `snapshot::ParseGeneration`, `snapshot::ParseSnapshot`, `snapshot::ParseSnapshotStrategy`, `snapshot::ParseSnapshotValidationError`, `snapshot::ParseTerminalDisposition`, `state::IncrementalState`.
+Production exports: `diagnostics::LexRestartReport`, `diagnostics::LexRestartStrategy`, `diagnostics::ReparseResult`, `edit::Edit`, `snapshot::ParseGeneration`, `snapshot::ParseOperationFailure`, `snapshot::ParseSnapshot`, `snapshot::ParseSnapshotConstructionError`, `snapshot::ParseSnapshotStrategy`, `snapshot::ParseSnapshotValidationError`, `snapshot::ParseTerminalDisposition`, `state::IncrementalState`.
 Historical named generations remain non-production until their executable migration leaves implement their disposition.
 
 ## Next implementation PRs
