@@ -51,4 +51,17 @@ describe('feature activation metrics', () => {
       measurements: [],
     });
   });
+
+  test('records deferred registration for smoke-only deferral experiments', () => {
+    const metrics = new FeatureActivationMetrics();
+    metrics.beginActivation();
+    metrics.recordDeferred('mcp', false);
+
+    expect(metrics.snapshot().measurements[0]).toMatchObject({
+      domain: 'mcp',
+      registration_status: 'deferred',
+      registration_ms: 0,
+      activation_critical: false,
+    });
+  });
 });

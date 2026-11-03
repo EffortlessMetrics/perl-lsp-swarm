@@ -348,22 +348,20 @@ impl NativeFormatter {
         (formatted, edits)
     }
 
-    /// Apply the configured final-newline policy.
+    /// Apply the configured final-newline policy to [`Self::format_safe_subset`]'s
+    /// output.
     ///
-    /// The argument is [`Self::format_safe_subset`]'s output, not the caller's
-    /// original document, so the terminator appended here is the line-ending
-    /// convention [`inferred_line_ending`] infers from the *formatted* text's
-    /// last LF â€” not what that text happens to end with, which may be an
-    /// unterminated final line. That convention matches the caller's document
-    /// only because `format_safe_subset` preserves each line's existing
-    /// terminator; it is not independently guaranteed. Hence `formatted`
-    /// rather than `source`.
-    fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
+    /// `source` is the caller's original document. When a final newline is
+    /// synthesized, its terminator follows the convention inferred from that
+    /// document, not from `formatted`, so a formatting path that drops the
+    /// intermediate's trailing terminators cannot flip CRLF sources to LF
+    /// (#14276).
+    fn apply_final_newline(formatted: &str, source: &str, config: &FormatConfig) -> String {
         match config.final_newline {
             FinalNewline::Preserve => formatted.to_string(),
             FinalNewline::Insert => {
                 let trimmed = formatted.trim_end_matches(['\n', '\r']);
-                format!("{trimmed}{}", inferred_line_ending(formatted))
+                format!("{trimmed}{}", inferred_line_ending(source))
             }
             FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
@@ -567,8 +565,8 @@ impl PerlFormatter for NativeFormatter {
             return result;
         }
 
-        let formatted =
-            Self::apply_final_newline(&Self::format_safe_subset(source, config), config);
+        let safe_subset = Self::format_safe_subset(source, config);
+        let formatted = Self::apply_final_newline(&safe_subset, source, config);
         if let Err(diagnostic) =
             Self::validate_clean_parse(&formatted, counters::ParseGateKind::FormattedOutput)
         {
@@ -2628,7 +2626,7 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+        FinalNewline, FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
         byte_span_for_line_range, indent_unit, literal_preserve_region,
         literal_preserve_region_for_range, range_includes_line, split_line_ending,
         split_trailing_comment, token_literal_preserve_region_overlapping,
@@ -2639,6 +2637,20 @@ mod tests {
     fn indent_unit_caps_extreme_indent_width() {
         let config = FormatConfig { indent_width: u32::MAX, ..FormatConfig::default() };
         assert_eq!(indent_unit(&config).len(), MAX_INDENT_WIDTH as usize);
+    }
+
+    /// When the formatted intermediate loses trailing terminators, the synthesized
+    /// final newline must still follow the user's document convention (#14276).
+    #[test]
+    fn apply_final_newline_insert_uses_source_line_ending_convention()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $x = 1;\r\n";
+        let formatted_intermediate = "my $x = 1;";
+        let config =
+            FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
+        let result = NativeFormatter::apply_final_newline(formatted_intermediate, source, &config);
+        assert_eq!(result, "my $x = 1;\r\n");
+        Ok(())
     }
 
     #[test]
