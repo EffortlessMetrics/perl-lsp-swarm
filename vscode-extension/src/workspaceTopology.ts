@@ -38,6 +38,10 @@ export interface WorkspaceTopology {
   claim_boundary: string;
 }
 
+/** Manifest authority: unsupported modes must not project product `supported`. */
+export const MANIFEST_VIRTUAL_WORKSPACES_SUPPORTED = false;
+export const MANIFEST_UNTRUSTED_WORKSPACES_SUPPORTED = false;
+
 export const WORKSPACE_CAPABILITY_MATRIX: Readonly<
   Record<WorkspaceMode, WorkspaceTopology['capabilities']>
 > = {
@@ -59,9 +63,36 @@ export const WORKSPACE_CAPABILITY_MATRIX: Readonly<
   virtual: {
     workspace_root: 'degraded',
     file_backed_operations: 'unsupported',
-    language_server_documents: 'supported',
+    language_server_documents: 'degraded',
   },
 };
+
+const UNSUPPORTED_PRODUCT_CAPABILITIES: WorkspaceTopology['capabilities'] = {
+  workspace_root: 'unsupported',
+  file_backed_operations: 'unsupported',
+  language_server_documents: 'unsupported',
+};
+
+function applyManifestProductSupportGates(
+  mode: WorkspaceMode,
+  trust: WorkspaceTrust,
+  capabilities: WorkspaceTopology['capabilities'],
+  limitations: string[],
+): WorkspaceTopology['capabilities'] {
+  if (!MANIFEST_VIRTUAL_WORKSPACES_SUPPORTED && mode === 'virtual') {
+    limitations.push(
+      'virtual workspaces are unsupported in the extension manifest; capability statuses are product-declined',
+    );
+    return { ...UNSUPPORTED_PRODUCT_CAPABILITIES };
+  }
+  if (!MANIFEST_UNTRUSTED_WORKSPACES_SUPPORTED && (trust === 'untrusted' || trust === 'unknown')) {
+    limitations.push(
+      'untrusted workspaces are unsupported until Workspace Trust is granted; capability statuses are product-declined',
+    );
+    return { ...UNSUPPORTED_PRODUCT_CAPABILITIES };
+  }
+  return { ...capabilities };
+}
 
 function uriScheme(uri: { scheme?: string | undefined; fsPath?: string | undefined }): string {
   const scheme = uri.scheme?.trim();
@@ -115,17 +146,21 @@ export function describeWorkspaceTopology(input: WorkspaceTopologyInput): Worksp
     limitations.push('remote host behavior is identified but requires a remote-host receipt');
   }
 
+  const trust = trustState(input.isTrusted);
+  const hostCapabilities = { ...WORKSPACE_CAPABILITY_MATRIX[mode] };
+  const capabilities = applyManifestProductSupportGates(mode, trust, hostCapabilities, limitations);
+
   return {
     schema_version: 'workspace_topology.v1',
     mode,
-    trust: trustState(input.isTrusted),
+    trust,
     host_kind: remoteName ? 'remote' : 'local',
     remote_name: remoteName,
     folder_count: input.folders.length,
     folder_uri_schemes: folderUriSchemes,
     untitled_document_count: untitledDocumentCount,
     virtual_document_count: virtualDocumentCount,
-    capabilities: { ...WORKSPACE_CAPABILITY_MATRIX[mode] },
+    capabilities,
     limitations,
     claim_boundary:
       'Topology describes VS Code host state and capability classification. It does not prove server initialization, provider behavior, remote execution, or file-system access for unsupported URI schemes.',

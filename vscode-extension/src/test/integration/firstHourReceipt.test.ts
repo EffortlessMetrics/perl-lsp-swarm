@@ -515,6 +515,30 @@ suite('First-hour VS Code receipt', function () {
     try {
       activationExports = await withTimeout('extension activation', extension.activate(), 90_000);
     } catch (error: unknown) {
+      if (expectedTrust === 'untrusted') {
+        writeFirstHourReceipt({
+          ...baseReceipt,
+          outcome: 'untrusted_product_declined',
+          startup: {
+            extension_activation_status: 'declined_by_host',
+            extension_activation_ms: Math.round(monotonicNow() - activationStart),
+            language_client: {
+              lifecycle_state: 'stopped',
+              server_start_status: 'idle',
+              status: 'unavailable',
+            },
+            error: error instanceof Error ? error.message : String(error),
+          },
+          moments: null,
+          diagnostics_probe: null,
+          limitations: [
+            ...baseReceipt.limitations,
+            'Untrusted workspace smoke proves manifest decline; activation may remain disabled until trust is granted.',
+          ],
+          failures: [],
+        });
+        return;
+      }
       writeFirstHourReceipt({
         ...baseReceipt,
         outcome: 'activation_timeout',
@@ -547,6 +571,53 @@ suite('First-hour VS Code receipt', function () {
           stop?: () => Promise<void>;
         }
       | undefined;
+
+    if (expectedTrust === 'untrusted') {
+      assert.equal(
+        vscode.workspace.isTrusted,
+        false,
+        'untrusted capability smoke requires a genuinely untrusted workspace',
+      );
+      for (const [capability, status] of Object.entries(topology.capabilities)) {
+        assert.equal(
+          status,
+          'unsupported',
+          `untrusted workspace product capability ${capability} must be declined`,
+        );
+      }
+      const languageClientMetrics = extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+        status: 'unavailable',
+        lifecycle_state: 'stopped',
+        server_start_status: 'idle',
+      };
+      assert.notEqual(
+        languageClientMetrics.lifecycle_state,
+        'running',
+        'language server must not reach running in an untrusted workspace smoke',
+      );
+      assert.equal(
+        languageClientMetrics.server_start_status,
+        'idle',
+        'language server startup must remain idle until trust is granted',
+      );
+      writeFirstHourReceipt({
+        ...baseReceipt,
+        outcome: 'untrusted_product_declined',
+        startup: {
+          extension_activation_status: 'ok',
+          extension_activation_ms: activationMs,
+          language_client: languageClientMetrics,
+        },
+        moments: null,
+        diagnostics_probe: null,
+        limitations: [
+          ...baseReceipt.limitations,
+          'Untrusted workspace smoke proves manifest decline and deferred startup, not provider success.',
+        ],
+        failures: [],
+      });
+      return;
+    }
 
     const commandWaitStart = monotonicNow();
     await withTimeout(

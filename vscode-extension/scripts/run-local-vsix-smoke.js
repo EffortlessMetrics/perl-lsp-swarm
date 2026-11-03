@@ -979,7 +979,42 @@ function buildAccessibilityExpectation() {
  * earlier run would all produce it. Behavior only counts when the child wrote
  * a fresh receipt that binds itself to this candidate, this VSIX, this server,
  * and this matrix leg.
- *
+ */
+function validateUntrustedDeclineSmokeReceipt(receipt, violations) {
+  const topology = receipt.workspace?.topology;
+  if (!topology || typeof topology !== 'object') {
+    violations.push('untrusted decline receipt is missing workspace topology');
+    return;
+  }
+  if (topology.trust !== 'untrusted') {
+    violations.push(`untrusted decline topology trust is ${JSON.stringify(topology.trust)}`);
+  }
+  const capabilities = topology.capabilities;
+  if (!capabilities || typeof capabilities !== 'object') {
+    violations.push('untrusted decline receipt is missing capability projection');
+    return;
+  }
+  for (const [key, value] of Object.entries(capabilities)) {
+    if (value !== 'unsupported') {
+      violations.push(`untrusted decline capability ${key} is ${JSON.stringify(value)}`);
+    }
+  }
+  const languageClient = receipt.startup?.language_client;
+  if (!languageClient || typeof languageClient !== 'object') {
+    violations.push('untrusted decline receipt is missing language_client startup metrics');
+    return;
+  }
+  if (languageClient.lifecycle_state === 'running') {
+    violations.push('untrusted decline receipt recorded a running language client');
+  }
+  if (languageClient.server_start_status !== 'idle') {
+    violations.push(
+      `untrusted decline server_start_status is ${JSON.stringify(languageClient.server_start_status)}`,
+    );
+  }
+}
+
+/**
  * @param {{
  *   receiptFile: string,
  *   expectedRevision: string,
@@ -990,6 +1025,7 @@ function buildAccessibilityExpectation() {
  *   expectedExtensionsRoot?: string,
  *   expectedVscodeVersion: string,
  *   expectedSourceLabel: string,
+ *   expectedDeclineOutcome?: string | null,
  *   accessibilityExpectation?: ReturnType<typeof buildAccessibilityExpectation> | null,
  *   readFile?: (file: string) => string,
  *   exists?: (file: string) => boolean,
@@ -1003,6 +1039,7 @@ function validateChildSmokeReceipt({
   expectedServerSourceSha,
   expectedVscodeVersion,
   expectedSourceLabel,
+  expectedDeclineOutcome = null,
   accessibilityExpectation = null,
   expectedServerObservation,
   expectedVsixObservation,
@@ -1040,15 +1077,30 @@ function validateChildSmokeReceipt({
     return { ok: false, violations: ['first-hour receipt is missing its environment identity'] };
   }
 
-  if (receipt.outcome !== 'completed') {
-    violations.push(
-      `first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`,
-    );
+  if (expectedDeclineOutcome) {
+    if (receipt.outcome !== expectedDeclineOutcome) {
+      violations.push(
+        `untrusted decline receipt outcome is ${JSON.stringify(receipt.outcome)}, not ${JSON.stringify(expectedDeclineOutcome)}`,
+      );
+    }
+    if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
+      violations.push('untrusted decline receipt reported failures');
+    }
+    if (receipt.outcome === expectedDeclineOutcome) {
+      validateUntrustedDeclineSmokeReceipt(receipt, violations);
+    }
+  } else {
+    if (receipt.outcome !== 'completed') {
+      violations.push(
+        `first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`,
+      );
+    }
+
+    if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
+      violations.push('first-hour receipt reported failures');
+    }
   }
 
-  if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
-    violations.push('first-hour receipt reported failures');
-  }
   if (environment.source_revision !== expectedRevision) {
     violations.push(
       `first-hour receipt source revision ${JSON.stringify(environment.source_revision)} is not the smoke subject`,
@@ -1101,7 +1153,7 @@ function validateChildSmokeReceipt({
   // contract and VSIX, and survive the structural validator compiled with the
   // candidate (missing rows, invented surfaces, or claimed screen-reader proof
   // all reject).
-  if (accessibilityExpectation) {
+  if (accessibilityExpectation && !expectedDeclineOutcome) {
     const accessibility = receipt.accessibility;
     if (!accessibility || typeof accessibility !== 'object') {
       violations.push('first-hour receipt does not record the installed accessibility receipt');
@@ -1146,13 +1198,15 @@ function validateChildSmokeReceipt({
   }
 
   try {
-    validateInstalledByteIdentity(
-      receipt.installed_byte_identity,
-      expectedServerObservation,
-      expectedVsixObservation,
-      receipt,
-      expectedExtensionsRoot,
-    );
+    if (!expectedDeclineOutcome) {
+      validateInstalledByteIdentity(
+        receipt.installed_byte_identity,
+        expectedServerObservation,
+        expectedVsixObservation,
+        receipt,
+        expectedExtensionsRoot,
+      );
+    }
   } catch (error) {
     violations.push(
       `installed byte identity: ${error instanceof Error ? error.message : String(error)}`,
@@ -3294,6 +3348,10 @@ function main() {
                   expectedVscodeVersion:
                     (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
                   expectedSourceLabel: receipt.source_label,
+                  expectedDeclineOutcome:
+                    (process.env.PERL_LSP_EXPECTED_WORKSPACE_TRUST || '').trim() === 'untrusted'
+                      ? 'untrusted_product_declined'
+                      : null,
                   // The compiled inventory module exists by now: the child ran
                   // against it, so the accessibility expectation binds to the
                   // same artifact (or the require itself fails the instrument).
