@@ -1935,15 +1935,38 @@ impl LspServer {
                     // AST resolver, goto-label, Mason, etc.) so it covers all
                     // navigation, not just the module-reference path.
                     //
-                    // String-aware guarding is intentionally omitted: text-based
-                    // quote scanners produce false positives on real Perl code
-                    // (regexes, heredocs, qw(), POD).  The original guard used
+                    // String-aware guarding beyond the kinds below is
+                    // intentionally omitted: text-based quote scanners produce
+                    // false positives on real Perl code (regexes, heredocs,
+                    // qw(), POD).  The original guard used
                     // `is_in_comment && !is_in_string`, which was logically
                     // inverted — it only blocked when in a comment that was NOT
                     // also classified as a string.  This now blocks whenever the
                     // offset is inside a comment.
+                    //
+                    // #18761: non-code regions with no executable content gate
+                    // through the generation-bound source-region index, the
+                    // same predicate hover already answers under
+                    // (`token_fallback_is_proven_code`): heredoc bodies, POD,
+                    // `__DATA__`/`__END__` tails, and recovery-ambiguous
+                    // partial input are not navigable. String/quote-like/regex
+                    // spans stay navigable because interpolated spans can carry
+                    // real code — the index decides, not a text scan.
                     let text = &doc.text;
                     if is_in_comment_naive(offset, text) {
+                        return Ok(Some(Value::Null));
+                    }
+                    if matches!(
+                        doc.current_parsed()
+                            .as_deref()
+                            .map_or(perl_parser_core::SourceRegionKind::Code, |snapshot| snapshot
+                                .source_region_index()
+                                .kind_at_offset(offset),),
+                        perl_parser_core::SourceRegionKind::Heredoc
+                            | perl_parser_core::SourceRegionKind::Pod
+                            | perl_parser_core::SourceRegionKind::DataSection
+                            | perl_parser_core::SourceRegionKind::RecoveryAmbiguous
+                    ) {
                         return Ok(Some(Value::Null));
                     }
                     let current_parsed = doc.current_parsed();
@@ -2767,6 +2790,13 @@ impl LspServer {
                         }
                     }
 
+                    // #18761: the AST classification of the cursor's
+                    // `->method` selector, shared by every same-file tier
+                    // below: the arrow bytes name the call, and a chained
+                    // receiver makes any same-file sub answer wrong.
+                    let ast_selector =
+                        crate::declaration::method_call_selector_at(ast, offset, &doc.text);
+
                     // Try DeclarationProvider first (it handles function calls properly).
                     // `current_parsed()` is guaranteed `Some` here since `ast`
                     // (above) was derived from it.
@@ -2817,6 +2847,28 @@ impl LspServer {
                                 )
                             })
                         {
+                            // #18761: the provider's method arm falls back to
+                            // "any same-file sub with this name"
+                            // (`find_method_declaration`), which for a chained
+                            // receiver is exactly the wrong target the
+                            // current-package fallback used to produce — the
+                            // receiver's class is the accessor's `isa`, not
+                            // this file's package. A same-file answer for a
+                            // chain selector is a refusal, whatever the name.
+                            if ast_selector
+                                .as_ref()
+                                .is_some_and(|selector| selector.receiver_is_chain)
+                            {
+                                tracing::debug!(
+                                    offset,
+                                    method = ast_selector
+                                        .as_ref()
+                                        .map_or("", |selector| selector.method.as_str()),
+                                    "Suppressing same-file same-name sub for a chained \
+                                     method receiver (#18761)"
+                                );
+                                return Ok(Some(json!([])));
+                            }
                             return Ok(Some(json!(result)));
                         }
                     }
@@ -2942,39 +2994,74 @@ impl LspServer {
                         // callable both encloses the cursor and does not
                         // carry the method's name (same-name recursion still
                         // navigates to its own declaration).
+                        //
+                        // #18761: the selector identity comes from the AST
+                        // classification first — the arrow bytes name the call
+                        // too (the text regexes find no identifier to capture
+                        // there, so a cursor on `->` used to leak the
+                        // enclosing sub), and a chained receiver makes the
+                        // enclosing sub wrong *even when the names coincide*:
+                        // same-name recursion is only a plausible intent for a
+                        // plain variable receiver, while `$self->order->total`
+                        // resolves — when it resolves at all — to the
+                        // accessor's `isa` class, never to the enclosing sub.
                         let var_method_re = get_var_method_regex()?;
-                        let cursor_method_name = regex_capture_text_at_cursor(
-                            get_arrow_method_regex()?,
-                            &text_around,
-                            cursor_in_text,
-                            2,
-                        )
-                        .or_else(|| {
-                            regex_capture_text_at_cursor(
-                                var_method_re,
-                                &text_around,
-                                cursor_in_text,
-                                2,
-                            )
-                        });
-                        if let Some(method_name) = cursor_method_name
-                            && matches!(
-                                definition.kind,
-                                crate::symbol::SymbolKind::Subroutine
-                                    | crate::symbol::SymbolKind::Method
-                            )
-                            && definition.location.start <= offset
+                        let arrow_method_re = get_arrow_method_regex()?;
+                        let cursor_method_name = ast_selector
+                            .as_ref()
+                            .map(|selector| selector.method.as_str())
+                            .or_else(|| {
+                                regex_capture_text_at_cursor(
+                                    arrow_method_re,
+                                    &text_around,
+                                    cursor_in_text,
+                                    2,
+                                )
+                            })
+                            .or_else(|| {
+                                regex_capture_text_at_cursor(
+                                    var_method_re,
+                                    &text_around,
+                                    cursor_in_text,
+                                    2,
+                                )
+                            });
+                        if matches!(
+                            definition.kind,
+                            crate::symbol::SymbolKind::Subroutine
+                                | crate::symbol::SymbolKind::Method
+                        ) && definition.location.start <= offset
                             && offset <= definition.location.end
-                            && definition.name != method_name
                         {
-                            tracing::debug!(
-                                offset,
-                                method = %method_name,
-                                enclosing = %definition.name,
-                                "Suppressing same-file enclosing-sub fallback for an \
-                                 unresolvable method call (#18110)"
-                            );
-                            return Ok(Some(json!([])));
+                            // Chained receiver: the enclosing sub is never the
+                            // method's declaration, whatever its name.
+                            if ast_selector
+                                .as_ref()
+                                .is_some_and(|selector| selector.receiver_is_chain)
+                            {
+                                tracing::debug!(
+                                    offset,
+                                    method = ast_selector
+                                        .as_ref()
+                                        .map_or("", |selector| selector.method.as_str()),
+                                    enclosing = %definition.name,
+                                    "Suppressing same-file enclosing-sub fallback for a \
+                                     chained method receiver (#18761)"
+                                );
+                                return Ok(Some(json!([])));
+                            }
+                            if let Some(method_name) = cursor_method_name
+                                && definition.name != method_name
+                            {
+                                tracing::debug!(
+                                    offset,
+                                    method = %method_name,
+                                    enclosing = %definition.name,
+                                    "Suppressing same-file enclosing-sub fallback for an \
+                                     unresolvable method call (#18110)"
+                                );
+                                return Ok(Some(json!([])));
+                            }
                         }
                         // #17252: use the typed semantic identity at this tier.
                         // An alias span starts at its assignment, not a declaration

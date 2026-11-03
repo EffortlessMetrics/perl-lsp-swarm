@@ -1,0 +1,20 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Go-to-definition and hover on method calls now resolve the receiver honestly.
+  A chained receiver typed by the class model (`has order => (is => 'ro', isa =>
+  'Store::Order')` in front of `$self->order->total_cents`) navigates to the
+  accessor's `isa` class instead of a local same-named sub; the same chain
+  without `isa`, a sub-param or method-return receiver, and a cursor on the
+  `->` arrow itself now answer an honest empty result instead of attributing
+  the method to the caller's own package or the enclosing sub. Definition
+  inside heredoc, POD, `__DATA__`/`__END__`, and recovery-ambiguous bodies is
+  now refused through the source-region index, matching what hover already
+  did. Hovering a constructor-bound receiver call site shows the method card
+  instead of the bare token name, consistent with definition on the same call.
+time: 2026-11-03T00:00:00Z
+custom:
+  PR: "0"
+  Slug: method-receiver-navigation
+  Breaking: "no"
