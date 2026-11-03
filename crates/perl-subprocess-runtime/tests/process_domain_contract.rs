@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): census-clean on all targets; new findings move the crate back to non-C1.
 //! Contract proof for the supervised process domain.
 //!
 //! Each section below is a control: it fails when a specific wrong
@@ -3329,7 +3331,7 @@ fn a_script_describing_an_impossible_run_never_announces_success() -> TestResult
 
     let mut handle = supervisor
         .start(valid_linux_one_shot().validate()?)
-        .map_err(|_| "the fake refused to start a valid plan")?;
+        .map_err(|result| format!("the fake refused to start a valid plan: {result:?}"))?;
 
     let mut terminal = None;
     while let Some(event) = handle.next_event() {
@@ -3684,7 +3686,7 @@ fn a_rejected_chunk_settles_the_stream_it_rejected() -> TestResult {
 
     let mut handle = supervisor
         .start(valid_linux_one_shot().validate()?)
-        .map_err(|_| "the fake refused to start a valid plan")?;
+        .map_err(|result| format!("the fake refused to start a valid plan: {result:?}"))?;
 
     let mut terminal = None;
     let mut polls = 0;
@@ -3772,7 +3774,7 @@ fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResul
     supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
-        .map_err(|_| "the fake refused to start a valid plan")?;
+        .map_err(|result| format!("the fake refused to start a valid plan: {result:?}"))?;
 
     assert_eq!(handle.cancel(CancellationReason::Shutdown), CancellationAcknowledgement::Accepted);
     while handle.next_event().is_some() {}
@@ -3804,7 +3806,7 @@ fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResul
     supervisor.script(ScriptedOutcome::Run(Box::new(early_phase)))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
-        .map_err(|_| "the fake refused to start a valid plan")?;
+        .map_err(|result| format!("the fake refused to start a valid plan: {result:?}"))?;
     let first = handle.next_event().ok_or("the run emitted no events")?;
     assert!(matches!(first.kind(), ProcessEventKind::TerminationPhase(_)));
     assert_eq!(handle.cancel(CancellationReason::Shutdown), CancellationAcknowledgement::Accepted);
@@ -3822,7 +3824,7 @@ fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResul
     supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
-        .map_err(|_| "the fake refused to start a valid plan")?;
+        .map_err(|result| format!("the fake refused to start a valid plan: {result:?}"))?;
     let first = handle.next_event().ok_or("the run emitted no events")?;
     assert!(matches!(first.kind(), ProcessEventKind::Started));
     assert_eq!(handle.cancel(CancellationReason::Shutdown), CancellationAcknowledgement::Accepted);
@@ -3930,7 +3932,7 @@ fn output_before_the_child_starts_is_refused_not_reconciled() -> TestResult {
     supervisor.script(ScriptedOutcome::Run(Box::new(lying)))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
-        .map_err(|_| "the fake refused to start a valid plan")?;
+        .map_err(|result| format!("the fake refused to start a valid plan: {result:?}"))?;
     let mut terminal = None;
     let mut polls = 0;
     while let Some(event) = handle.next_event() {
@@ -3999,9 +4001,9 @@ fn a_run_starts_once_and_only_a_started_child_can_settle() -> TestResult {
         let mut fresh = perl_subprocess_runtime::process::EventLedger::new(
             perl_subprocess_runtime::process::RunId::new("run-3"),
         );
-        fresh
-            .admit(ProcessEventKind::Terminal(disposition.clone()))
-            .map_err(|_| format!("{disposition:?} was refused for a run that never started"))?;
+        fresh.admit(ProcessEventKind::Terminal(disposition.clone())).map_err(|e| {
+            format!("{disposition:?} was refused for a run that never started: {e}")
+        })?;
     }
     Ok(())
 }
@@ -4102,7 +4104,7 @@ fn every_event_that_presupposes_a_child_is_refused_before_the_start() -> TestRes
         started.admit(ProcessEventKind::Started)?;
         started
             .admit(kind.clone())
-            .map_err(|_| format!("{kind:?} was refused after the child started"))?;
+            .map_err(|e| format!("{kind:?} was refused after the child started: {e}"))?;
     }
 
     // A cancellation *request* is not an act on a child, and a deadline can
@@ -4119,7 +4121,7 @@ fn every_event_that_presupposes_a_child_is_refused_before_the_start() -> TestRes
         );
         fresh
             .admit(ProcessEventKind::TerminationPhase(phase))
-            .map_err(|_| format!("{phase:?} was refused before a start"))?;
+            .map_err(|e| format!("{phase:?} was refused before a start: {e}"))?;
     }
     Ok(())
 }
@@ -4303,7 +4305,7 @@ fn no_terminal_that_presupposes_a_child_is_admissible_before_the_start() -> Test
         started.admit(ProcessEventKind::Started)?;
         started
             .admit(ProcessEventKind::Terminal(disposition.clone()))
-            .map_err(|_| format!("{disposition:?} was refused after the child started"))?;
+            .map_err(|e| format!("{disposition:?} was refused after the child started: {e}"))?;
     }
 
     // A supervisor failure, a timeout, and a not-proven outcome can all happen
@@ -4318,7 +4320,7 @@ fn no_terminal_that_presupposes_a_child_is_admissible_before_the_start() -> Test
         );
         fresh
             .admit(ProcessEventKind::Terminal(disposition.clone()))
-            .map_err(|_| format!("{disposition:?} was refused before a start"))?;
+            .map_err(|e| format!("{disposition:?} was refused before a start: {e}"))?;
     }
     Ok(())
 }
