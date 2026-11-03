@@ -84,6 +84,13 @@ pub struct AdmissionConfig {
     pub floor_gb: f64,
     pub floor_pct: f64,
     pub large_staged_threshold: u32,
+    /// Additional branch names that count as the canonical base for the
+    /// root-checkout health check. The default is empty: a real branch
+    /// named, say, `master` is no longer silently treated as the canonical
+    /// base. Operators who genuinely use a non-`main` canonical branch
+    /// (e.g., a `master` upstream) must add it here explicitly
+    /// (#15083).
+    pub canonical_base_alternatives: Vec<String>,
 }
 
 // ---- Snapshot (fixture schema / live-gathered signal bundle) ---------------
@@ -409,7 +416,7 @@ pub fn run_checks(
         check_canonical_base(snapshot),
         check_shadow_ref(snapshot),
         check_symbolic_head(snapshot),
-        check_branch_worktree_mapping(snapshot),
+        check_branch_worktree_mapping(snapshot, config),
         check_dirty_unpushed(snapshot, config),
         check_disk_capacity(snapshot, config),
         check_remote_branch_identity(snapshot),
@@ -460,20 +467,22 @@ fn check_canonical_base(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
 /// A caller-supplied `--expected-base-sha` is commonly a short/abbreviated
 /// SHA (this is how commits are conventionally referenced in issues, PR
 /// descriptions, and plan-review comments — e.g. "currently 6fade008c"),
-/// not necessarily the full 40-hex-character SHA. Exact string equality
-/// would false-BLOCK every short-SHA caller even when the base is exactly
-/// correct. Accept a full match OR a case-insensitive hex-prefix match, with
-/// a minimum prefix length (git's own historical default abbreviation is 7
-/// hex characters) to avoid a degenerate short prefix matching too loosely.
+/// not necessarily the full 40-hex-character SHA. Both operands are
+/// unvalidated caller/git strings: require non-empty ASCII hex on each side,
+/// a minimum prefix length, and `remote_sha.len() >= selected_sha.len()`
+/// before comparing prefixes case-insensitively. Malformed input never
+/// panics and never silently passes (mirrors
+/// `writer_preflight::decision::sha_matches`).
 fn sha_matches(remote_sha: &str, selected_sha: &str) -> bool {
     const MIN_PREFIX_LEN: usize = 4;
-    if selected_sha.eq_ignore_ascii_case(remote_sha) {
-        return true;
+    let hex_token = |token: &str| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit());
+    if !hex_token(remote_sha) || !hex_token(selected_sha) {
+        return false;
     }
-    selected_sha.len() >= MIN_PREFIX_LEN
-        && selected_sha.len() <= remote_sha.len()
-        && selected_sha.chars().all(|c| c.is_ascii_hexdigit())
-        && remote_sha[..selected_sha.len()].eq_ignore_ascii_case(selected_sha)
+    if selected_sha.len() < MIN_PREFIX_LEN || remote_sha.len() < selected_sha.len() {
+        return false;
+    }
+    remote_sha[..selected_sha.len()].eq_ignore_ascii_case(selected_sha)
 }
 
 fn check_shadow_ref(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
@@ -537,7 +546,10 @@ fn canonical_main_name(base: &str) -> &str {
     base.rsplit('/').next().unwrap_or(base)
 }
 
-fn check_branch_worktree_mapping(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
+fn check_branch_worktree_mapping(
+    snapshot: &WriterAdmissionSnapshot,
+    config: &AdmissionConfig,
+) -> CheckResult {
     let name = "branch-worktree-mapping".to_string();
     let info = &snapshot.worktree_mapping;
     if let Some(err) = &info.error {
@@ -552,11 +564,20 @@ fn check_branch_worktree_mapping(snapshot: &WriterAdmissionSnapshot) -> CheckRes
     // checkout in place — it must stay on the canonical base (or detached
     // at it), never drift onto a feature branch (#3957's "root checkout on
     // a feature branch" negative case).
+    //
+    // The canonical base name comes from the requested base (e.g.
+    // `origin/main` → `main`). Operators who genuinely run on a non-`main`
+    // canonical branch (e.g., a `master` upstream) enumerate those names
+    // explicitly via `config.canonical_base_alternatives`. A real branch
+    // named `master` is no longer silently accepted as canonical: the
+    // default list is empty (#15083).
     if snapshot.is_root_checkout {
         if let Some(sym) = &snapshot.head.symbolic_ref {
             let current_branch = sym.strip_prefix("refs/heads/").unwrap_or(sym);
             let canonical = canonical_main_name(&snapshot.requested_base);
-            if current_branch != canonical && current_branch != "master" {
+            if current_branch != canonical
+                && !config.canonical_base_alternatives.iter().any(|alt| alt == current_branch)
+            {
                 return CheckResult {
                     name,
                     status: CheckStatus::Block,
@@ -824,6 +845,12 @@ fn worktrees_matching_target_branch(snapshot: &WriterAdmissionSnapshot) -> Vec<&
 /// root. Short-circuit unconditionally on `is_root_checkout`, not only when
 /// it's the sole match — being invoked from the root is never itself a
 /// reusable-worktree signal, regardless of how many entries matched.
+///
+/// The lib-side twin for registration refusal is
+/// `writer_preflight::decision::evaluate_registration_conflicts` (exactly
+/// one branch-bound worktree for resume/mutate). This helper only surfaces
+/// an unambiguous REUSE path (`matches.len() == 1`); zero or many matches
+/// stay `None` here while checks/decide carry the refusal semantics.
 pub fn compute_guidance(snapshot: &WriterAdmissionSnapshot) -> AdmissionGuidance {
     let existing_worktree_path = if snapshot.is_root_checkout {
         None
@@ -875,10 +902,11 @@ fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
 
 /// Builds the early-return `HeadInfo` for a `git` spawn failure encountered
 /// while gathering HEAD info. Carries forward whatever fields an earlier
-/// `git` call already resolved (e.g. `symbolic_ref`) so a later spawn error
-/// can never silently discard already-known state via `..Default::default()`.
+/// `git` call already resolved (e.g. `symbolic_ref`) and leaves every other
+/// field at its explicit unknown/clean sentinel — never rebuilds from a
+/// partial update that would drop a prior `symbolic_ref`.
 fn head_info_spawn_error(symbolic_ref: Option<String>, message: String) -> HeadInfo {
-    HeadInfo { symbolic_ref, error: Some(message), ..Default::default() }
+    HeadInfo { symbolic_ref, resolved_sha: None, dangling: false, error: Some(message) }
 }
 
 fn gather_head_info(root: &Path) -> HeadInfo {
@@ -1391,6 +1419,7 @@ mod tests {
             floor_gb: 200.0,
             floor_pct: 5.0,
             large_staged_threshold: 1000,
+            canonical_base_alternatives: Vec::new(),
         }
     }
 
@@ -1455,6 +1484,54 @@ mod tests {
     }
 
     #[test]
+    fn root_checkout_on_real_master_branch_blocks_by_default() -> Result<()> {
+        // #15083: a real branch named `master` (distinct from the canonical
+        // `main`) must not be silently accepted as canonical. The previous
+        // hardcoded comparison against the literal `"master"` made a
+        // legitimate feature branch collide with the sentinel. With the
+        // default empty `canonical_base_alternatives`, the verdict must be
+        // `Block`.
+        let mut snapshot = base_snapshot();
+        snapshot.is_root_checkout = true;
+        snapshot.head.symbolic_ref = Some("refs/heads/master".to_string());
+        let checks = run_checks(&snapshot, &default_config());
+        if aggregate_verdict(&checks) != AdmissionVerdict::Block {
+            color_eyre::eyre::bail!("expected aggregate Block, got {checks:?}");
+        }
+        if !checks
+            .iter()
+            .any(|c| c.name == "branch-worktree-mapping" && c.status == CheckStatus::Block)
+        {
+            color_eyre::eyre::bail!(
+                "expected branch-worktree-mapping check present and blocking: {checks:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn root_checkout_on_master_passes_when_explicitly_listed_as_alternative() -> Result<()> {
+        // #15083: operators who genuinely run on a non-`main` canonical
+        // branch (e.g., a `master` upstream) enumerate those names
+        // explicitly via `canonical_base_alternatives`. The branch must
+        // then be treated as canonical, not blocked.
+        let mut snapshot = base_snapshot();
+        snapshot.is_root_checkout = true;
+        snapshot.head.symbolic_ref = Some("refs/heads/master".to_string());
+        let mut config = default_config();
+        config.canonical_base_alternatives = vec!["master".to_string()];
+        let checks = run_checks(&snapshot, &config);
+        let branch_check =
+            checks.iter().find(|c| c.name == "branch-worktree-mapping").ok_or_else(|| {
+                color_eyre::eyre::eyre!("branch-worktree-mapping check missing from {checks:?}")
+            })?;
+        if branch_check.status != CheckStatus::Pass {
+            color_eyre::eyre::bail!("expected branch check Pass, got {checks:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn duplicate_worktree_mapping_blocks() {
         let mut snapshot = base_snapshot();
         snapshot.worktree_mapping.entries.push(WorktreeEntry {
@@ -1506,6 +1583,36 @@ mod tests {
             "longer than the remote SHA must not match"
         );
         assert!(!sha_matches("deadbeef", "dead-bad"), "non-hex characters must not match");
+    }
+
+    #[test]
+    fn sha_matches_bin_side_matches_writer_preflight_table() {
+        let cases: [(&str, &str, bool); 12] = [
+            ("deadbeef", "deadbeef", true),
+            ("deadbeef", "DEADBEEF", true),
+            ("deadbeef", "DEAD", true),
+            ("deadbeef", "dea", false),
+            ("deadbeef", "deadbeefff", false),
+            ("deadbeef", "beef", false),
+            ("deadbeef", "dead-bad", false),
+            ("deadzzzz", "dead", false),
+            ("deadböef", "dead", false),
+            ("not-a-sha", "not-a-sha", false),
+            ("", "dead", false),
+            ("deadbeef", "", false),
+        ];
+        for (remote, selected, want) in cases {
+            assert_eq!(
+                sha_matches(remote, selected),
+                want,
+                "remote={remote:?} selected={selected:?}"
+            );
+            assert_eq!(
+                sha_matches(remote, selected),
+                xtask::writer_preflight::sha_matches_bin_parity(remote, selected),
+                "bin/lib mismatch for remote={remote:?} selected={selected:?}"
+            );
+        }
     }
 
     #[test]
@@ -1927,7 +2034,10 @@ mod tests {
     fn detached_spelling_remains_a_real_target_through_live_gathering() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let git = |args: &[&str]| -> Result<String> {
-            let output = Command::new("git").args(args).current_dir(dir.path()).output()?;
+            let output = xtask::git_environment::isolate(Command::new("git"))
+                .args(args)
+                .current_dir(dir.path())
+                .output()?;
             assert!(
                 output.status.success(),
                 "git {args:?}: {}",
@@ -2012,7 +2122,10 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let remote = tempfile::tempdir()?;
         let git = |root: &Path, args: &[&str]| -> Result<String> {
-            let output = Command::new("git").args(args).current_dir(root).output()?;
+            let output = xtask::git_environment::isolate(Command::new("git"))
+                .args(args)
+                .current_dir(root)
+                .output()?;
             assert!(
                 output.status.success(),
                 "git {args:?}: {}",
@@ -2093,7 +2206,13 @@ mod tests {
             vec!["remote", "add", "origin", "."],
             vec!["config", "remote.origin.uploadpack", "sleep 10; git-upload-pack"],
         ] {
-            assert!(Command::new("git").args(args).current_dir(dir.path()).status()?.success());
+            assert!(
+                xtask::git_environment::isolate(Command::new("git"))
+                    .args(args)
+                    .current_dir(dir.path())
+                    .status()?
+                    .success()
+            );
         }
         let started = Instant::now();
         let result = observe_remote_branch(dir.path(), "candidate", Duration::from_millis(100));
@@ -2112,9 +2231,12 @@ mod tests {
     #[test]
     fn gather_remote_branch_info_on_a_nonexistent_branch_is_none_not_an_error() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let init = Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status()?;
+        let init = xtask::git_environment::isolate(Command::new("git"))
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()?;
         assert!(init.success(), "git init must succeed in the temp dir");
-        let remote = Command::new("git")
+        let remote = xtask::git_environment::isolate(Command::new("git"))
             .args(["remote", "add", "origin", "."])
             .current_dir(dir.path())
             .status()?;

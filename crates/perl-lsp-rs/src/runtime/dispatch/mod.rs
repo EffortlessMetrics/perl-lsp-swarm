@@ -118,6 +118,160 @@ mod tests {
         assert_eq!(after_initialize, Some(-32601));
     }
 
+    /// #17346: a `shutdown` sent before `initialize` must be rejected with
+    /// ServerNotInitialized (-32002) and must not latch the shutdown state.
+    /// Previously the pre-initialize gate exempted `shutdown`, so the request
+    /// latched `shutdown_received` on a never-initialized session and every
+    /// later request — including a valid `initialize` — was rejected with
+    /// -32600 "Server has been shutdown", bricking the session until the
+    /// client restarted the process.
+    #[test]
+    fn pre_initialize_shutdown_is_rejected_and_does_not_wedge_the_session() {
+        let server = LspServer::new();
+
+        let pre_init_shutdown = server
+            .handle_request(request(1, "shutdown", None))
+            .and_then(|response| response.error)
+            .map(|error| error.code);
+        assert_eq!(
+            pre_init_shutdown,
+            Some(-32002),
+            "pre-initialize shutdown must be ServerNotInitialized, not an accepted shutdown"
+        );
+        assert!(
+            !server.shutdown_received.load(std::sync::atomic::Ordering::Acquire),
+            "a rejected pre-initialize shutdown must not latch the shutdown state"
+        );
+
+        let initialize = server.handle_request(request(2, "initialize", Some(json!({}))));
+        assert!(
+            initialize.as_ref().is_some_and(|response| response.error.is_none()),
+            "a valid initialize after a rejected pre-initialize shutdown must be accepted: {initialize:?}"
+        );
+
+        // The recovered session actually serves: unknown methods pass the
+        // lifecycle gates and reach method resolution (-32601, not -32002 or
+        // -32600).
+        let serving = server
+            .handle_request(request(3, "custom/unknown", None))
+            .and_then(|response| response.error)
+            .map(|error| error.code);
+        assert_eq!(serving, Some(-32601), "session must serve after recovery");
+
+        // The real lifecycle remains reachable on the recovered session.
+        let shutdown = server.handle_request(request(4, "shutdown", None));
+        assert!(
+            shutdown.as_ref().is_some_and(|response| response.error.is_none()),
+            "post-initialize shutdown must still succeed: {shutdown:?}"
+        );
+    }
+
+    #[test]
+    fn utf8_only_initialize_accepts_via_utf16_mandatory_fallback() {
+        let server = LspServer::new();
+        let accepted = server.handle_request(request(
+            1,
+            "initialize",
+            Some(json!({
+                "capabilities": {
+                    "general": {
+                        "positionEncodings": ["utf-8"]
+                    }
+                }
+            })),
+        ));
+        assert!(
+            accepted.as_ref().is_some_and(|response| response.error.is_none()),
+            "utf-8-only initialize must accept via mandatory UTF-16 fallback: {accepted:?}"
+        );
+        let encoding = accepted
+            .as_ref()
+            .and_then(|response| response.result.as_ref())
+            .and_then(|result| result.pointer("/capabilities/positionEncoding"))
+            .and_then(Value::as_str);
+        assert_eq!(encoding, Some("utf-16"));
+        assert!(server.initialize_requested.load(std::sync::atomic::Ordering::Acquire));
+        assert!(server.initialization_accepted());
+
+        let after_accepted = server
+            .handle_request(request(2, "custom/unknown", None))
+            .and_then(|response| response.error)
+            .map(|error| error.code);
+        assert_eq!(
+            after_accepted,
+            Some(-32601),
+            "accepted omit-utf16 initialize must open serving"
+        );
+    }
+
+    #[test]
+    fn malformed_encoding_initialize_consumes_one_shot_and_does_not_serve() {
+        let server = LspServer::new();
+        let rejected = server.handle_request(request(
+            1,
+            "initialize",
+            Some(json!({
+                "capabilities": {
+                    "general": {
+                        "positionEncodings": [1]
+                    }
+                }
+            })),
+        ));
+        let error = rejected.and_then(|response| response.error);
+        assert_eq!(
+            error.as_ref().map(|e| e.code),
+            Some(-32602),
+            "malformed encodings must fail InvalidParams: {error:?}"
+        );
+        assert!(
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "failed initialize must consume the one-shot"
+        );
+        assert!(
+            !server.initialization_accepted(),
+            "rejected initialize must not open an accepted session"
+        );
+        assert!(!server.is_initialized());
+
+        let initialized = server.handle_initialized_dispatch();
+        assert!(initialized.is_err(), "initialized must not succeed after rejected initialize");
+        assert_eq!(
+            initialized.err().map(|e| e.code),
+            Some(-32002),
+            "initialized after rejected initialize is ServerNotInitialized"
+        );
+
+        let after_rejected = server
+            .handle_request(request(2, "custom/unknown", None))
+            .and_then(|response| response.error)
+            .map(|error| error.code);
+        assert_eq!(after_rejected, Some(-32002), "normal requests must stay ServerNotInitialized");
+        assert!(
+            !server.is_initialized(),
+            "compat auto-initialize must not treat a rejected initialize as success"
+        );
+
+        let retried = server.handle_request(request(
+            3,
+            "initialize",
+            Some(json!({
+                "capabilities": {
+                    "general": {
+                        "positionEncodings": ["utf-16"]
+                    }
+                }
+            })),
+        ));
+        let retry_error = retried.and_then(|response| response.error);
+        assert_eq!(
+            retry_error.as_ref().map(|e| e.code),
+            Some(-32600),
+            "corrected initialize must not retry after a consumed first attempt: {retry_error:?}"
+        );
+        assert!(!server.initialization_accepted());
+    }
+
     #[test]
     fn first_use_hot_paths_are_wrapped_by_shared_latency_recorder() {
         let routing = include_str!("routing.rs");

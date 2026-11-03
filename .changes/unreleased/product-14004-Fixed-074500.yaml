@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Made the parser-accuracy legacy-population trust contract fail closed symmetrically — one canonical lowercase digest authority, checked count arithmetic, a unique aggregate row, schema-forbidden fields refused on investigation rows, and validation gated on publication rather than only on --check.
+time: 2026-09-05T07:45:00Z
+custom:
+  PR: "14004"
+  Slug: parser-accuracy-trust-contract-fail-closed
+  Breaking: "no"

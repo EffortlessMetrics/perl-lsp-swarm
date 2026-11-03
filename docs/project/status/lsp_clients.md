@@ -9,7 +9,7 @@
 | Trae (ByteDance) | `vscode_compatible_host` | `configuration_documented` | Shared extension protocol facts do not prove Trae-specific installation or activation. |
 | IntelliJ IDEA / LSP4IJ | `lsp4ij_plugin` | `configuration_documented` | The repository proves an LSP4IJ-shaped inline-completion profile, not an actual IntelliJ/LSP4IJ launch or the complete client journey. |
 | Neovim | `generic_stdio_client` | `configuration_documented` | The current UX trace is a hand-authored Neovim-shaped capability profile; it does not launch Neovim. |
-| Vim | `vim_lsp_plugin` | `configuration_documented` | Configuration is documented; no current actual Vim/vim-lsp receipt is registered. |
+| Vim | `vim_lsp_plugin` | `real_generic_client_proven` | An actual headless Vim + vim-lsp host journey (initialize, request/response exchange, clean teardown) is registered as a typed actual-client receipt bound to its recorded subject, platform, and revision; it is not a packaged product or full-editor-surface claim. |
 | coc.nvim | `coc_language_server` | `configuration_documented` | Configuration is documented; no current actual coc.nvim receipt is registered. |
 | Emacs | `eglot_or_lsp_mode` | `configuration_documented` | Configuration is documented; no current actual Emacs client receipt is registered. |
 | Helix | `generic_stdio_client` | `configuration_documented` | Configuration is documented; no current actual Helix receipt is registered. |
@@ -21,4 +21,4 @@
 | Codex Desktop | `no_documented_lsp_surface` | `not_proven_unsupported` | No documented upstream surface registers a language server with Codex Desktop; direct support is unsupported/not proven and no client capability or execution receipt is registered. |
 | OpenCode | `custom_stdio_server` | `configuration_documented` | The workaround is documented and implemented, but no protocol-profile or actual OpenCode journey is registered. |
 
-No row is currently promoted to `packaged_product_proven` or `real_generic_client_proven`. Promotion requires typed actual-client or packaged-product evidence under issue #6739.
+Current executable promotions: `Vim` (`real_generic_client_proven`). Each promotion is validated against its typed evidence class.

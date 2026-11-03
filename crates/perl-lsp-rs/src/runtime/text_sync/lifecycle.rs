@@ -103,6 +103,11 @@ impl LspServer {
                 }
             }
 
+            // Closing hands project metadata authority back to disk (or to
+            // definite absence for an unsaved metadata file). The open buffer
+            // has been evicted and no document/folder lock is held here.
+            self.refresh_metadata_for_document_uri(uri);
+
             // Notify coordinator that cleanup is complete
             #[cfg(feature = "workspace")]
             if let Some(coordinator) = self.coordinator() {
@@ -155,13 +160,36 @@ impl LspServer {
                 let replacement = {
                     let documents = self.documents.lock();
                     self.get_document(&documents, &normalized_uri).and_then(|doc| {
-                        (doc.text.as_str() != saved_text)
+                        // Identical-text is a no-op only while the buffer is
+                        // already synchronized. After a Full-sync violation the
+                        // retained predecessor still equals the saved snapshot,
+                        // but current answers stay closed until an admitted
+                        // full replacement recovers the document.
+                        (doc.full_sync_required() || doc.text.as_str() != saved_text)
                             .then(|| (saved_text.to_owned(), doc.version))
                     })
                 };
                 if let Some((saved_text, version)) = replacement {
                     tracing::debug!(uri, "didSave text differs from in-memory buffer; reconciling");
-                    return self.handle_did_save_text_replacement(uri, &saved_text, version);
+                    let result = self.handle_did_save_text_replacement(uri, &saved_text, version);
+                    // didSave is a notification: an unstorable replacement can
+                    // return Ok while marking Full-sync required. Refresh only
+                    // when the saved text became the current admitted buffer.
+                    if result.is_ok() {
+                        let accepted = {
+                            let documents = self.documents_guard();
+                            self.get_document(&documents, &normalized_uri).is_some_and(|doc| {
+                                !doc.full_sync_required() && doc.text_str() == saved_text.as_str()
+                            })
+                        };
+                        if accepted {
+                            self.refresh_metadata_for_document_uri(uri);
+                            // The accepted parse ticket owns the consumer
+                            // refresh after its index commit (#18116). Enqueue
+                            // success alone does not establish fresh facts.
+                        }
+                    }
+                    return result;
                 }
             }
 
@@ -188,6 +216,12 @@ impl LspServer {
                 let doc_info = {
                     let documents = self.documents_guard();
                     self.get_document(&documents, &normalized_uri).and_then(|d| {
+                        // A didSave without includeText cannot recover Full-sync.
+                        // Predecessor `text_str` stays evidence only; generation-only
+                        // index admission must not republish it as current.
+                        if d.full_sync_required() {
+                            return None;
+                        }
                         let doc_gen_val = NonZeroU32::new(d.current_generation())?;
                         let needs_commit = backing_transition.is_some()
                             || self.coordinator().is_some_and(|coordinator| {
@@ -199,6 +233,7 @@ impl LspServer {
                             .then(|| (doc_gen_val, d.generation.clone(), d.text_str().to_string()))
                     })
                 };
+                let mut index_reconciled = false;
                 if let Some((doc_gen_val, instance, text)) = doc_info
                     && let Some(coordinator) = self.coordinator()
                 {
@@ -210,7 +245,7 @@ impl LspServer {
                             "Re-cohering workspace index from saved buffer for {} (#8041)",
                             normalized_uri
                         );
-                        self.commit_live_save_reconciliation(
+                        let outcome = self.commit_live_save_reconciliation(
                             index,
                             &normalized_uri,
                             url,
@@ -218,6 +253,10 @@ impl LspServer {
                             &instance,
                             text,
                             "#8041 backing-file re-cohere",
+                        );
+                        index_reconciled = matches!(
+                            outcome,
+                            Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp)
                         );
                     } else if index.is_index_generation_stale(&normalized_uri, doc_gen_val.get())
                         && let Ok(url) = url::Url::parse(&normalized_uri)
@@ -230,7 +269,7 @@ impl LspServer {
                         // #11305: the captured accepted generation is the
                         // commit identity -- it is no longer discarded in
                         // favor of the initial-import path.
-                        self.commit_live_save_reconciliation(
+                        let outcome = self.commit_live_save_reconciliation(
                             index,
                             &normalized_uri,
                             url,
@@ -239,7 +278,19 @@ impl LspServer {
                             text,
                             "stale-index reconciliation",
                         );
+                        index_reconciled = matches!(
+                            outcome,
+                            Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp)
+                        );
                     }
+                }
+
+                // Reconciliation restores source-generation freshness, even
+                // for same-content NoOp outcomes. Republish consumers the
+                // same way the watched-file tails do (#18116); relying on the
+                // client's watcher to echo the save is client-dependent.
+                if index_reconciled {
+                    self.refresh_diagnostics_after_watched_change();
                 }
             }
 

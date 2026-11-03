@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use xtask::release_live_controls::encode_path_segment;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequiredContext {
@@ -70,6 +71,33 @@ pub fn run_backfill_prefixed_labels(apply: bool) -> Result<()> {
 /// Collect candidate facts for composition by another factual instrument.
 pub fn candidate_facts(pr: u64) -> Result<CandidateFacts> {
     collect_candidate(pr)
+}
+
+/// Current repository slug (`owner/name`) for factual GitHub instruments.
+pub fn repository_name_with_owner() -> Result<String> {
+    Ok(command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?
+        .trim()
+        .to_string())
+}
+
+/// Resolve a branch or tag name to its commit SHA via the GitHub REST API.
+pub fn resolve_git_ref_head_sha(repository: &str, git_ref: &str) -> Result<String> {
+    let encoded = encode_path_segment(git_ref);
+    let endpoint = format!("repos/{repository}/commits/{encoded}");
+    let raw = command_text("gh", &["api", &endpoint, "--jq", ".sha"])?;
+    let sha = raw.trim();
+    if sha.is_empty() {
+        bail!("GitHub returned an empty head SHA for ref {git_ref}");
+    }
+    Ok(sha.to_string())
+}
+
+/// Discover required merge contexts for a base ref (branch protection + rulesets).
+pub fn required_contexts_for_base(
+    repository: &str,
+    base_ref: &str,
+) -> Result<Vec<RequiredContext>> {
+    collect_required_contexts(repository, base_ref)
 }
 
 pub fn run_candidate(
@@ -250,25 +278,6 @@ fn merge_required_contexts(
             app_id,
         })
         .collect()
-}
-
-fn encode_path_segment(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for &byte in value.as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push('%');
-            encoded.push(hex_digit(byte >> 4));
-            encoded.push(hex_digit(byte & 0x0f));
-        }
-    }
-    encoded
-}
-
-fn hex_digit(value: u8) -> char {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    HEX[usize::from(value & 0x0f)] as char
 }
 
 pub(crate) fn command_text(program: &str, args: &[&str]) -> Result<String> {

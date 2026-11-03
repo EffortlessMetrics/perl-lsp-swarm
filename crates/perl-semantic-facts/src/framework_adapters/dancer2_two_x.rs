@@ -9,23 +9,23 @@
 //! - **pinned evidence:** `lib/Dancer2/Core/DSL.pm` and `lib/Dancer2.pm` at
 //!   Dancer2 `2.0.0` (`09f316678b8dd237d4c4ea0242e70e32591f5d64`), `2.0.1`
 //!   (`674837ce095db3bffb5acfccd50fdac57771d50b`), and `2.1.0`
-//!   (`09e9376288ddc3571f226883eb99753fecce818d`). The `dsl_keywords` map is
-//!   byte-identical across the three pins; the `sub import` body is
-//!   byte-identical to the 1.1.1 pin, so the import semantics modeled here
-//!   are the reviewed 2.x import semantics.
+//!   (`09e9376288ddc3571f226883eb99753fecce818d`). The 1.x comparison pins
+//!   are `1.1.1` (`36bdd7aa4e9b97585ad545180a2135fe26278ad1`) and terminal
+//!   1.x `1.1.2` (`126be702b5628a8ab91e8ec6883f7c975c8898f1`). The
+//!   `dsl_keywords` map is byte-identical across the three 2.x pins; the
+//!   `sub import` body is byte-identical to the 1.1.1 pin, so the import
+//!   semantics modeled here are the reviewed 2.x import semantics.
 //! - **L2 registry:** exactly 82 keywords — 43 `is_global => 1` (global) and
 //!   39 route-handler-only — with prototypes only on `delayed` (`&@`) and
 //!   `prepare_app` (`&`). No registry row is deprecated; deprecation lives in
 //!   keyword *bodies* as runtime croaks (`header`, `headers`, `push_header`,
 //!   `context`), carried here as the upstream replacement keyword.
-//! - **repo correction (#13616):** the 1.x table
-//!   ([`crate::framework_adapters::dancer2::DANCER2_DSL_KEYWORDS`])
-//!   misclassifies `cookie` and `redirect` as global and carries
-//!   `route`, `before`, `after`, and `body`, none of which are upstream DSL
-//!   keywords. This 2.x registry is transcribed from the pinned upstream map
-//!   instead: `cookie` and `redirect` are route-handler-only, and
-//!   `route`/`before`/`after`/`body` are absent. The 1.x contract itself is
-//!   owned by #13089/#13178 and is deliberately not mutated here.
+//! - **repo correction (#13616):** this 2.x registry is transcribed from the
+//!   pinned upstream map: `cookie` and `redirect` are route-handler-only, and
+//!   `route`/`before`/`after`/`body` are absent. The 1.x table
+//!   ([`crate::framework_adapters::dancer2::DANCER2_DSL_KEYWORDS`]) was later
+//!   aligned to the same upstream map by #13089/#13178; both contracts now
+//!   agree on those rows and remain independently owned.
 //! - **L1 import semantics** model the pinned `sub import` exactly:
 //!   `:script`/`:syntax`/`:tests` are silent no-ops; `:nopragmas` skips the
 //!   `strict`/`warnings`/`utf8` import into the caller; `!keyword` arguments
@@ -497,6 +497,7 @@ pub struct Dancer2TwoXKeywordView<'a> {
 }
 
 impl<'a> Dancer2TwoXKeywordView<'a> {
+    /// Construct a keyword view over the given 2.x activation facts.
     pub fn new(facts: &'a Dancer2TwoXActivationFacts) -> Self {
         Self { facts }
     }

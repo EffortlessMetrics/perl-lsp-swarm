@@ -88,7 +88,14 @@ pub enum MooseImportDisposition {
     /// spelling (`use Moose ();`): the module loads without applying its
     /// activation sugar, so the spelling is retained as inspectable evidence
     /// rather than silently folded into [`MooseImportDisposition::Exact`].
-    Unmodeled { arguments: Vec<String> },
+    Unmodeled {
+        /// Import arguments carried by the source spelling, normalized for
+        /// inspection. An empty list records the explicit-empty import
+        /// spelling (`use Moose ();`); the `<invalid-source-span>`
+        /// placeholder records a site whose source text could not be
+        /// extracted, so the real arguments were not captured.
+        arguments: Vec<String>,
+    },
 }
 
 impl MooseImportDisposition {

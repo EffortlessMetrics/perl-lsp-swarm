@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Performance
+body: Repeated initialize-time and diagnostics-cycle environment probes (Perl interpreter discovery, perltidy/perlcritic tool presence) are memoized per process with environment-keyed invalidation, removing a repeated PATH walk from every diagnostics cycle.
+time: 2026-08-28T12:10:00Z
+custom:
+  PR: "13651"
+  Slug: initialize-probe-memoization
+  Breaking: "no"

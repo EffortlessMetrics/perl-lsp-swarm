@@ -1,13 +1,15 @@
 use super::super::token;
 use super::accuracy::{
     ParserAccuracyArtifactSummary, ParserAccuracyDenominator, ParserAccuracyFamilySummary,
-    ParserAccuracyMetricSummary,
+    ParserAccuracyLegacyPopulation, ParserAccuracyMetricSummary,
 };
 use super::failure::{
     FailureCluster, build_failure_bucket_details, build_failure_worklist, classify_failure_bucket,
 };
 use super::*;
 use color_eyre::eyre::Result;
+
+use crate::tasks::parser_corpus_sweep::SCHEMA_VERSION;
 
 const PARSER_STATUS_MARKER_NAMES: [&str; 13] = [
     "PARSER_TRACKING_TABLE",
@@ -496,18 +498,41 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
                     metric: "denominator_fixture_count".to_string(),
                     value: 2.0,
                     sample_count: 2,
+                    unmodeled_fields: serde_json::Map::new(),
                 },
                 ParserAccuracyMetricSummary::Measured {
                     metric: "line_construct_f1".to_string(),
                     value: 1.0,
                     sample_count: 6,
+                    unmodeled_fields: serde_json::Map::new(),
                 },
-                ParserAccuracyMetricSummary::Measured {
+                ParserAccuracyMetricSummary::InvestigationOnly {
                     metric: "whitespace_invariance_rate".to_string(),
                     value: 0.32,
                     sample_count: 44,
+                    transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+                    evidence_class: "investigation_only".to_string(),
+                    terminal_disposition: "not_proven".to_string(),
+                    reason: "legacy_hash_oracle_untrusted".to_string(),
+                    packet_policy: "none".to_string(),
+                    floor_eligible: false,
+                    unknown_fields: serde_json::Map::new(),
                 },
             ],
+            legacy_population: ParserAccuracyLegacyPopulation {
+                transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+                population_identity: format!("sha256:{}", "b".repeat(64)),
+                aggregate_metric: "whitespace_invariance_rate".to_string(),
+                quarantined_metrics: vec![
+                    "whitespace_invariance_rate".to_string(),
+                    "comment_invariance_rate".to_string(),
+                    "newline_style_invariance_rate".to_string(),
+                ],
+                population_total_count: 44,
+                population_applied_count: 44,
+                population_unclassified_count: 0,
+                manifest_schema_version: 1,
+            },
             failure_packets: vec![],
         }),
         token_metrics: token::token_metrics_fixture(),
@@ -531,9 +556,9 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
     );
     assert!(
         result.contains(
-            "whitespace_invariance_rate: investigation_only (legacy_oracle_untrusted; trailing whitespace; observed=0.3; n=44)"
+            "whitespace_invariance_rate: investigation_only (not_proven; legacy_hash_oracle_untrusted; trailing_horizontal_whitespace.legacy.v1; observed=0.3; n=44)"
         ),
-        "legacy whitespace observations must render as untrusted investigation evidence"
+        "typed investigation rows must render their disposition from artifact fields"
     );
     assert!(
         !result.contains("whitespace_invariance_rate=0.3"),
@@ -588,8 +613,30 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
       "reason": "line-level gold scorer is not wired yet",
       "sample_count": 0,
       "confidence": "low"
+    },
+    {
+      "state": "investigation_only",
+      "metric": "whitespace_invariance_rate",
+      "value": 0.0,
+      "sample_count": 1,
+      "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+      "evidence_class": "investigation_only",
+      "terminal_disposition": "not_proven",
+      "reason": "legacy_hash_oracle_untrusted",
+      "packet_policy": "none",
+      "floor_eligible": false
     }
   ],
+  "legacy_population": {
+    "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+    "population_identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aggregate_metric": "whitespace_invariance_rate",
+    "quarantined_metrics": ["whitespace_invariance_rate", "comment_invariance_rate", "newline_style_invariance_rate"],
+    "population_total_count": 2,
+    "population_applied_count": 1,
+    "population_unclassified_count": 1,
+    "manifest_schema_version": 1
+  },
   "failure_packets": [],
   "gold_drift": {},
   "metric_runtime": {}
@@ -599,7 +646,53 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
     let artifact = read_parser_accuracy_artifact(tmp.path())
         .ok_or_else(|| color_eyre::eyre::eyre!("valid parser accuracy artifact should load"))?;
     assert_eq!(artifact.denominator.fixture_count, 2);
-    assert_eq!(artifact.metrics.len(), 1);
+    assert_eq!(artifact.metrics.len(), 2);
+    assert_eq!(artifact.legacy_population.population_applied_count, 1);
+    Ok(())
+}
+
+#[test]
+fn test_read_parser_accuracy_artifact_rejects_missing_population_evidence() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let metrics_dir = tmp.path().join("target").join("metrics");
+    std::fs::create_dir_all(&metrics_dir)?;
+    // A pre-typing artifact without retained population evidence must not be
+    // silently consumed as current status input.
+    std::fs::write(
+        metrics_dir.join("parser_accuracy.json"),
+        r#"{
+  "schema_version": 1,
+  "subsystem": "parser_accuracy",
+  "generated_at": "2026-05-02T15:00:00Z",
+  "commit": "abc123",
+  "cadence": "pr",
+  "denominator": {
+    "fixture_count": 2,
+    "fixture_family_count": 2,
+    "scored_line_count": 3,
+    "scored_symbol_count": 2,
+    "fully_labeled_region_count": 1,
+    "partial_labeled_region_count": 1,
+    "unknown_region_count": 1,
+    "negative_region_count": 1,
+    "dynamic_boundary_case_count": 1,
+    "unsupported_construct_case_count": 0,
+    "real_project_file_count": 0,
+    "generated_fixture_count": 0,
+    "hand_labeled_fixture_count": 2
+  },
+  "families": [],
+  "metrics": [],
+  "failure_packets": [],
+  "gold_drift": {},
+  "metric_runtime": {}
+}"#,
+    )?;
+
+    assert!(
+        read_parser_accuracy_artifact(tmp.path()).is_none(),
+        "artifact without legacy population evidence must fail closed"
+    );
     Ok(())
 }
 
@@ -766,7 +859,7 @@ fn parser_failure_worklist_builds_cluster_and_bucket_details_with_populated_rece
     );
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -850,7 +943,7 @@ fn parser_failure_worklist_replaces_cluster_and_bucket_status_markers() -> Resul
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -911,7 +1004,7 @@ fn parser_failure_worklist_handles_empty_buckets() {
     use std::collections::BTreeMap;
 
     let report = SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -964,7 +1057,7 @@ fn parser_failure_worklist_handles_empty_buckets() {
 fn test_parser_strict_clean_row_with_receipt() -> Result<()> {
     use std::collections::BTreeMap;
     let receipt = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-11T00:00:00Z".to_string(),
         corpus_profile: "common".to_string(),
@@ -1016,7 +1109,7 @@ fn test_parser_tracking_old_cpan_receipt_missing_recovery_shape_reports_insuffic
     use std::collections::BTreeMap;
 
     let receipt = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.2.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "old".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "cpan".to_string(),
@@ -1159,7 +1252,7 @@ fn test_parser_error_density_and_salvage_rows_with_populated_receipt() -> Result
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1220,7 +1313,7 @@ fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> R
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1272,5 +1365,39 @@ fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> R
         ),
         "zero dirty files must not fabricate salvage rate"
     );
+    Ok(())
+}
+
+#[test]
+fn sweep_report_fixtures_share_envelope_schema_version() -> Result<()> {
+    // #15363: fixtures across this file share exactly one schema_version —
+    // the shared integer constant. The envelope is negotiated fail-closed:
+    // the current version carries recovery claims, legacy string versions are
+    // refused, and unknown integer versions parse without recovery claims.
+    assert_eq!(SCHEMA_VERSION, 1);
+
+    let dir = std::env::temp_dir().join(format!("lane3b-schema-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let envelope = |version: &str| {
+        format!(
+            r#"{{"schema_version":{version},"commit":"abc","timestamp":"now","corpus_roots":[],"total_files":2,"files_unreadable":0,"clean_files":1,"files_with_errors":1,"total_error_nodes":1,"first_error_buckets":{{}},"elapsed_secs":1.0,"files_with_structured_recovery_only":1,"files_with_error_nodes":1,"files_with_catastrophic_parse_failure":0,"total_dirty_files":1}}"#
+        )
+    };
+    let shape_for = |body: String| -> Option<bool> {
+        let path = dir.join("envelope.json");
+        std::fs::write(&path, body).ok()?;
+        super::read_sweep_report(&path).map(|receipt| receipt.has_recovery_shape)
+    };
+
+    let current = shape_for(envelope("1")).expect("current envelope must load");
+    assert!(current, "current version must negotiate recovery shape");
+
+    let legacy = shape_for(envelope("\"1\""));
+    assert!(legacy.is_none(), "legacy string version must fail closed");
+
+    let unknown = shape_for(envelope("2")).expect("unknown integer version still parses");
+    assert!(!unknown, "unknown version must not render recovery claims");
+
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

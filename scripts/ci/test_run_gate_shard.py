@@ -307,6 +307,107 @@ def fake_sleeping_xtask(root: Path, marker: Path) -> Path:
     return path
 
 
+LEDGER_CHECKER = Path(__file__).with_name("check_source_commit_api.py")
+LEDGER_CHECKER_SPEC = importlib.util.spec_from_file_location(
+    "check_source_commit_api", LEDGER_CHECKER
+)
+assert LEDGER_CHECKER_SPEC and LEDGER_CHECKER_SPEC.loader
+ledger_checker = importlib.util.module_from_spec(LEDGER_CHECKER_SPEC)
+sys.modules[LEDGER_CHECKER_SPEC.name] = ledger_checker
+LEDGER_CHECKER_SPEC.loader.exec_module(ledger_checker)
+
+COMBINED_TREE_JOB = "source-commit-api-ledger"
+COMBINED_TREE_COMMAND = "python3 scripts/ci/check_source_commit_api.py"
+
+
+def workflow_job_block(workflow_text: str, job: str) -> str:
+    header = f"\n  {job}:\n"
+    start = workflow_text.index(header) + 1
+    rest = workflow_text[start:]
+    newline = rest.find("\n")
+    if newline < 0:
+        return rest
+    offset = newline + 1
+    while True:
+        next_nl = rest.find("\n", offset)
+        if next_nl < 0:
+            return rest
+        line = rest[next_nl + 1 :]
+        if (
+            line.startswith("  ")
+            and not line.startswith("   ")
+            and not line.startswith("  #")
+        ):
+            return rest[:next_nl]
+        offset = next_nl + 1
+
+
+def source_commit_api_combined_tree_wiring_errors(workflow_text: str) -> list[str]:
+    """Return structural gaps that would let ledger drift land un-rechecked."""
+    errors: list[str] = []
+    on_start = workflow_text.find("\non:\n")
+    if on_start < 0:
+        return ["workflow has no on: block"]
+    on_end = workflow_text.find("\nconcurrency:\n", on_start)
+    on_block = workflow_text[on_start : on_end if on_end > 0 else on_start + 800]
+    if "merge_group:" not in on_block:
+        errors.append("workflow on: is missing merge_group")
+    if not re.search(r"push:\s*\n\s*branches:\s*\[\s*main,\s*master\s*\]", on_block):
+        errors.append("workflow on: is missing push to main/master")
+    try:
+        job = workflow_job_block(workflow_text, COMBINED_TREE_JOB)
+    except ValueError:
+        return errors + [f"job {COMBINED_TREE_JOB} is missing"]
+    if_match = re.search(r"^    if: >-\n(?P<body>(?:      .+\n)+)", job, re.M)
+    if_body = if_match.group("body") if if_match else ""
+    if "github.event_name == 'merge_group'" not in if_body:
+        errors.append("combined-tree job if: is missing merge_group")
+    if "github.event_name == 'push'" not in if_body:
+        errors.append("combined-tree job if: is missing push")
+    if "refs/heads/main" not in if_body or "refs/heads/master" not in if_body:
+        errors.append("combined-tree job if: is missing push to main/master")
+    if "github.event_name == 'pull_request'" in if_body:
+        errors.append("combined-tree job must not be pull_request-gated")
+    if "continue-on-error: true" in job:
+        errors.append("combined-tree job must not continue-on-error")
+    if COMBINED_TREE_COMMAND not in job:
+        errors.append(f"combined-tree job must run {COMBINED_TREE_COMMAND}")
+    if "ledger count drifted" in job:
+        errors.append("combined-tree annotation must not label every failure as count drift")
+    if "::error title=source_commit_api_check::source-commit API ledger check failed" not in job:
+        errors.append("combined-tree annotation must be generic and point at checker output")
+    if "see checker output for the failure" not in job:
+        errors.append("combined-tree annotation must send readers to the checker output")
+    checkout_refs = [
+        line.strip()
+        for line in job.splitlines()
+        if line.strip().startswith("ref: ")
+    ]
+    if not checkout_refs:
+        errors.append("combined-tree job has no checkout ref")
+    else:
+        checkout_ref = checkout_refs[0]
+        if "github.event.merge_group.head_sha" not in checkout_ref:
+            errors.append("combined-tree checkout must name merge_group.head_sha")
+        if "github.sha" not in checkout_ref:
+            errors.append("combined-tree checkout must name github.sha for push")
+        if "github.event.pull_request.head.sha" in checkout_ref:
+            errors.append("combined-tree job must not check out the PR head")
+    shards_start = workflow_text.find("  merge-gate-shards:\n")
+    if shards_start < 0:
+        errors.append("merge-gate-shards job is missing")
+        return errors
+    shards_end = workflow_text.find("    permissions:\n", shards_start)
+    shards_matrix = workflow_text[shards_start:shards_end]
+    if "source_commit_api_check" not in shards_matrix:
+        errors.append("merge-gate-shards matrix dropped source_commit_api_check")
+    shards_header = workflow_text[shards_start : shards_start + 1200]
+    shards_if = re.search(r"^    if: (?P<body>.+)$", shards_header, re.M)
+    if shards_if and "github.event_name == 'pull_request'" in shards_if.group("body"):
+        errors.append("merge-gate-shards if: must not be pull_request-only")
+    return errors
+
+
 def extract_gate_shard_runner_step(workflow_text: str) -> str:
     """Return the body of the "Run merge-gate shard with receipts" step.
 
@@ -343,6 +444,113 @@ class RunningFakeProcess:
 
 
 class GateShardTests(unittest.TestCase):
+    def test_required_producer_non_success_is_not_masked_by_later_success(self) -> None:
+        for receipt_status, exit_code, result in (
+            ("error", 1, "not_proven"),
+            ("error", -signal.SIGTERM, "not_proven"),
+            ("fail", 1, "failure"),
+            ("timeout", 1, "timeout"),
+            ("skip", 1, "not_proven"),
+            ("pass", 1, "instrument_failure"),
+            ("cancelled", 1, "instrument_failure"),
+            ("unknown", 1, "instrument_failure"),
+        ):
+            with self.subTest(status=receipt_status, exit=exit_code):
+                with tempfile.TemporaryDirectory() as tmp:
+                    status, summary, invoked, _ = run_direct(
+                        Path(tmp),
+                        {
+                            "producer": {"status": receipt_status, "exit": exit_code},
+                            "later": {"status": "pass", "exit": 0},
+                        },
+                        ["producer", "later"],
+                    )
+                self.assertEqual(1, status, summary)
+                self.assertEqual(["producer", "later"], invoked)
+                self.assertEqual(
+                    [result, "success"], [row["result"] for row in summary["gates"]]
+                )
+                self.assertEqual(exit_code, summary["gates"][0]["exit_code"])
+                self.assertEqual("failed", summary["summary"]["overall_status"])
+                self.assertEqual(["producer"], summary["summary"]["non_success_gates"])
+
+    def test_zero_exit_skip_and_success_preserve_successful_shard(self) -> None:
+        for gates in (["skipped", "passed"], ["passed", "skipped"]):
+            with self.subTest(gates=gates):
+                with tempfile.TemporaryDirectory() as tmp:
+                    status, summary, invoked, _ = run_direct(
+                        Path(tmp),
+                        {
+                            "skipped": {"status": "skip", "exit": 0},
+                            "passed": {"status": "pass", "exit": 0},
+                        },
+                        gates,
+                    )
+                self.assertEqual(0, status, summary)
+                self.assertEqual(gates, invoked)
+                rows = {row["gate_name"]: row for row in summary["gates"]}
+                self.assertEqual("not_proven", rows["skipped"]["result"])
+                self.assertEqual("skip", rows["skipped"]["receipt_status"])
+                self.assertEqual(0, rows["skipped"]["exit_code"])
+                self.assertEqual("success", rows["passed"]["result"])
+                self.assertEqual(["skipped"], summary["summary"]["non_success_gates"])
+
+    def test_non_success_producer_blocks_dependent_and_fails_shard(self) -> None:
+        for receipt_status, exit_code in (("error", 1), ("skip", 0)):
+            with self.subTest(status=receipt_status):
+                with tempfile.TemporaryDirectory() as tmp:
+                    status, summary, invoked, _ = run_direct(
+                        Path(tmp),
+                        {
+                            "producer": {"status": receipt_status, "exit": exit_code},
+                            "later": {"status": "pass", "exit": 0},
+                            # A blocked dependent must never be invoked.
+                        },
+                        ["dependent", "later", "producer"],
+                        dependencies={"producer": [], "dependent": ["producer"], "later": []},
+                    )
+                self.assertEqual(1, status, summary)
+                self.assertEqual(["later", "producer"], invoked)
+                rows = {row["gate_name"]: row for row in summary["gates"]}
+                self.assertEqual("not_proven", rows["producer"]["result"])
+                self.assertEqual(receipt_status, rows["producer"]["receipt_status"])
+                self.assertEqual("blocked_not_proven", rows["dependent"]["result"])
+                self.assertEqual(["producer"], rows["dependent"]["blocked_by"])
+                self.assertEqual("success", rows["later"]["result"])
+
+    def test_unknown_cancelled_or_unstarted_observation_fails_closed(self) -> None:
+        run_gate = shard.ShardRunner._run_gate
+        for result, receipt_status, exit_code in (
+            ("cancelled", None, None),
+            ("unknown_result", "skip", 0),
+            ("not_proven", None, None),
+            ("blocked_not_proven", None, None),
+        ):
+            with self.subTest(result=result):
+                def terminal_observation(
+                    runner: shard.ShardRunner, gate: str
+                ) -> shard.GateObservation:
+                    if gate != "unproven":
+                        return run_gate(runner, gate)
+                    observed = runner._unstarted_observation(gate, message="terminal control")
+                    observed.result = result
+                    observed.receipt_status = receipt_status
+                    observed.exit_code = exit_code
+                    return observed
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    with mock.patch.object(shard.ShardRunner, "_run_gate", terminal_observation):
+                        status, summary, invoked, _ = run_direct(
+                            Path(tmp),
+                            {"later": {"status": "pass", "exit": 0}},
+                            ["unproven", "later"],
+                        )
+                self.assertEqual(1, status, summary)
+                self.assertEqual(["later"], invoked)
+                self.assertEqual(
+                    [result, "success"], [row["result"] for row in summary["gates"]]
+                )
+
     def test_first_failure_does_not_mask_later_gates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             status, summary, invoked, _ = run_direct(
@@ -672,6 +880,103 @@ class GateShardTests(unittest.TestCase):
         invocation_end = runner_step.index("          status=$?", invocation_start)
         runner_invocation = runner_step[invocation_start:invocation_end]
         self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_invocation)
+
+    def test_source_commit_api_check_is_wired_for_merge_group_and_push(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
+
+    def test_source_commit_api_combined_tree_wiring_rejects_pr_only_and_head_checkout(
+        self,
+    ) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
+        mutants = {
+            "drop-merge-group-trigger": workflow.replace("  merge_group: {}\n", "", 1),
+            "drop-merge-group-if": workflow.replace(
+                "github.event_name == 'merge_group' ||\n", "", 1
+            ),
+            "drop-push-if": workflow.replace(
+                "(github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))",
+                "false",
+                1,
+            ),
+            "wrong-command": workflow.replace(
+                COMBINED_TREE_COMMAND, "python3 scripts/ci/missing.py", 1
+            ),
+            "pr-head-checkout": workflow.replace(
+                "ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}",
+                "ref: ${{ github.event.pull_request.head.sha }}",
+                1,
+            ),
+            "continue-on-error": workflow.replace(
+                f"  {COMBINED_TREE_JOB}:\n",
+                f"  {COMBINED_TREE_JOB}:\n    continue-on-error: true\n",
+                1,
+            ),
+            "drop-matrix-gate": workflow.replace("source_commit_api_check ", "", 1),
+            "count-drift-annotation": workflow.replace(
+                "source-commit API ledger check failed on the ${EVENT_NAME} tree (${TREE_SHA}); see checker output for the failure.",
+                "ledger count drifted on the ${EVENT_NAME} tree (${TREE_SHA}). The checker names the ledger file, compatibility_baseline value, and per-file counts.",
+                1,
+            ),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(
+                    mutant,
+                    workflow,
+                    "mutant must change the workflow",
+                )
+                self.assertTrue(
+                    source_commit_api_combined_tree_wiring_errors(mutant),
+                    "mutant must fail the combined-tree wiring contract",
+                )
+
+    def test_compatibility_baseline_mismatch_names_ledger_file_and_per_file_counts(
+        self,
+    ) -> None:
+        message = ledger_checker.compatibility_baseline_mismatch_message(
+            ledger_path=ledger_checker.LEDGER_RELATIVE,
+            ledger_baseline=707,
+            compatibility=[
+                ("crates/perl-workspace/benches/workspace_index_benchmark.rs", "index_file"),
+                ("crates/perl-workspace/benches/workspace_index_benchmark.rs", "index_files_batch"),
+                ("crates/perl-workspace/src/workspace/workspace_index.rs", "index_file"),
+            ],
+            owners=[
+                {
+                    "prefix": "crates/perl-workspace/benches",
+                    "removal_condition": "benchmark contract is next revised",
+                },
+                {
+                    "prefix": "crates/perl-workspace/src",
+                    "removal_condition": "initial profile and internal tests use canonical initial names",
+                },
+            ],
+        )
+        self.assertIn("ledger=707, source=3", message)
+        self.assertIn(
+            "ledger file: .spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml",
+            message,
+        )
+        self.assertIn("ledger field: compatibility_baseline=707", message)
+        self.assertIn(
+            "crates/perl-workspace/benches/workspace_index_benchmark.rs: 2",
+            message,
+        )
+        self.assertIn(
+            "crates/perl-workspace/src/workspace/workspace_index.rs: 1",
+            message,
+        )
+        self.assertIn(
+            "crates/perl-workspace/benches: benchmark contract is next revised",
+            message,
+        )
+        self.assertIn(
+            "initial profile and internal tests use canonical initial names",
+            message,
+        )
+        self.assertIn("prefer burn-down", message)
 
     def test_multiline_commands_match_actual_yaml_loader(self) -> None:
         yaml_spec = importlib.util.find_spec("yaml")
@@ -1940,8 +2245,13 @@ class IntegrationSubjectTests(unittest.TestCase):
             git("checkout", "-qb", "base", ancestor)
             tests = root / "scripts/ci"
             tests.mkdir(parents=True)
-            # Both actual hosted meta invocations run a base-introduced test.
-            for filename in ("test_run_gate_shard.py", "test_scope_cache_key.py"):
+            # Every hosted meta invocation runs a base-introduced test.
+            for filename in (
+                "test_run_gate_shard.py",
+                "test_scope_cache_key.py",
+                "test_candidate_meta_self_tests.py",
+                "test_local_publication_containment.py",
+            ):
                 (tests / filename).write_text(
                     "import unittest\nfrom pathlib import Path\nPath('gate-script-executed').touch()\n"
                     "class Probe(unittest.TestCase):\n"
@@ -1999,15 +2309,30 @@ class IntegrationSubjectTests(unittest.TestCase):
                 raise RuntimeError("produced receipts do not bind the integration tree")
             if not find_stale_artifacts([receipts], candidate):
                 raise RuntimeError("integration receipt accepted as candidate-only proof")
-            for step in ("Verify complete shard runner falsifiers", "Verify scope cache key composition"):
-                block = job.split("      - name: " + step + "\n", 1)[1].split("      - name:", 1)[0]
-                command = block.split("        run: ", 1)[1].strip().split()
-                result = subprocess.run([sys.executable, *command[1:]], cwd=root, capture_output=True)
+            # The consolidated "Verify candidate meta self-tests" step runs one
+            # `python3 -m unittest <file>` per listed self-test; stale-head
+            # tolerance lives in the bash loop, not in this structural probe,
+            # so assert every listed file executes here and propagates failure.
+            block = job.split("      - name: Verify candidate meta self-tests\n", 1)[1].split(
+                "      - name:", 1
+            )[0]
+            listed = re.findall(r"scripts/ci/test_\w+\.py", block)
+            for expected in (
+                "scripts/ci/test_run_gate_shard.py",
+                "scripts/ci/test_scope_cache_key.py",
+                "scripts/ci/test_candidate_meta_self_tests.py",
+                "scripts/ci/test_local_publication_containment.py",
+            ):
+                if expected not in listed:
+                    raise RuntimeError(f"consolidated meta step no longer runs {expected}")
+            for self_test in listed:
+                command = [sys.executable, "-m", "unittest", self_test]
+                result = subprocess.run(command, cwd=root, capture_output=True)
                 if result.returncode != 0 or not (root / "meta-executed").exists():
-                    raise RuntimeError("merge-tree meta test was not executed")
+                    raise RuntimeError(f"merge-tree meta test was not executed: {self_test}")
                 (root / "force-failure").touch()
-                if subprocess.run([sys.executable, *command[1:]], cwd=root, capture_output=True).returncode == 0:
-                    raise RuntimeError("present meta test failure was swallowed")
+                if subprocess.run(command, cwd=root, capture_output=True).returncode == 0:
+                    raise RuntimeError(f"present meta test failure was swallowed: {self_test}")
                 (root / "force-failure").unlink()
                 (root / "meta-executed").unlink()
             (root / "build-marker").unlink()

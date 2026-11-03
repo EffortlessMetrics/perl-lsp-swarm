@@ -21,6 +21,27 @@ use std::sync::LazyLock;
 use std::time::Instant;
 use walkdir::WalkDir;
 
+/// Envelope version of [`SweepReport`].
+///
+/// Ruling on #15990: the envelope version is a plain integer. Producers stamp
+/// this constant and every consumer (ratchet baseline load, receipt rendering)
+/// negotiates on it fail-closed before trusting field shape.
+pub(crate) const SCHEMA_VERSION: u32 = 1;
+
+/// Fail-closed envelope negotiation for a parsed report version.
+///
+/// The error names both the expected and the found version so a drifted
+/// baseline is diagnosable from the failure alone.
+pub(crate) fn validate_schema_version(found: u32) -> Result<()> {
+    if found == SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(color_eyre::eyre::eyre!(
+            "unsupported SweepReport schema_version: expected {SCHEMA_VERSION}, found {found}"
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Lazy-compiled regexes for error normalization
 // ---------------------------------------------------------------------------
@@ -176,7 +197,7 @@ pub struct MeasureOptions {
 /// Overall sweep report (serialized to JSON)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepReport {
-    pub schema_version: String,
+    pub schema_version: u32,
     pub commit: String,
     pub timestamp: String,
     /// Corpus profile identifier (for example "system", "common", or "cpan")
@@ -546,17 +567,7 @@ pub fn resolve_manifest_modules(
         }
 
         let stdout = String::from_utf8(output.stdout).context("Invalid UTF-8 in perl output")?;
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some((_module_file, path)) = line.split_once('=')
-                && let Some(p) = resolve_manifest_module_path(path)
-            {
-                resolved.push(p);
-            }
-        }
+        resolved.extend(resolve_manifest_output(&stdout, &unresolved));
     }
 
     resolved.sort();
@@ -574,6 +585,30 @@ pub fn resolve_manifest_modules(
 
     resolved.dedup();
     Ok(resolved)
+}
+
+/// Accept at most one existing path for each requested fallback module. Unrelated
+/// or repeated output rows must not fill another module's missing row.
+fn resolve_manifest_output(stdout: &str, modules: &[&str]) -> Vec<PathBuf> {
+    let mut pending = modules
+        .iter()
+        .map(|module| format!("{}.pm", module.replace("::", "/")))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut resolved = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some((module_file, path)) = line.split_once('=') else {
+            continue;
+        };
+        if !pending.contains(module_file) {
+            continue;
+        }
+        if let Some(path) = resolve_manifest_module_path(path) {
+            pending.remove(module_file);
+            resolved.push(path);
+        }
+    }
+    resolved
 }
 
 fn resolve_module_in_roots(module: &str, roots: &[PathBuf]) -> Option<PathBuf> {
@@ -848,6 +883,10 @@ pub fn run(config: SweepConfig) -> Result<()> {
             fs::read_to_string(baseline_path).context("Failed to read baseline file")?;
         let baseline: SweepReport =
             serde_json::from_str(&baseline_json).context("Failed to parse baseline JSON")?;
+        // Fail closed on the envelope version before any metric comparison
+        // (#15361); this guards both the system and CPAN ratchet entrypoints.
+        validate_schema_version(baseline.schema_version)
+            .with_context(|| format!("Baseline {} rejected", baseline_path.display()))?;
 
         println!("\n--- Baseline comparison ---");
         println!(
@@ -1159,7 +1198,7 @@ fn measure_files(
     };
     let slowest_files = top_n_slowest(&measurements, SLOWEST_FILES_LIMIT);
     Ok(SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: get_git_commit(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         corpus_profile: options.corpus_profile.clone(),
@@ -1417,7 +1456,7 @@ mod tests {
         first_error_buckets: BTreeMap<String, usize>,
     ) -> SweepReport {
         SweepReport {
-            schema_version: "1.2.0".to_string(),
+            schema_version: SCHEMA_VERSION,
             commit: "abc".to_string(),
             timestamp: "now".to_string(),
             corpus_profile: "system".to_string(),
@@ -1776,9 +1815,9 @@ mod tests {
 
     #[test]
     fn test_backward_compatible_deserialization() {
-        // Old 1.0.0 schema without the new fields should deserialize cleanly
+        // Minimal envelope without the optional fields should deserialize cleanly
         let old_json = r#"{
-            "schema_version": "1.0.0",
+            "schema_version": 1,
             "commit": "abc",
             "timestamp": "now",
             "corpus_roots": ["/usr/share/perl"],
@@ -1794,6 +1833,46 @@ mod tests {
         assert_eq!(report.corpus_profile, "system");
         assert_eq!(report.resolved_roots_count, 0);
         assert_eq!(report.perl_version, "unknown");
+    }
+
+    #[test]
+    fn test_producer_and_test_helper_share_schema_version_constant() {
+        // #15360: producer, test helper, and fixtures stamp one shared const.
+        let report = test_report(1, 0, 0, 0, BTreeMap::new());
+        assert_eq!(report.schema_version, SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn test_string_schema_version_fails_closed_at_deserialization() {
+        // #15361: legacy string envelopes ("1.3.0") must not deserialize into
+        // the integer envelope version.
+        let json = r#"{
+            "schema_version": "1",
+            "commit": "abc",
+            "timestamp": "now",
+            "corpus_roots": ["/usr/share/perl"],
+            "total_files": 1,
+            "files_unreadable": 0,
+            "clean_files": 1,
+            "files_with_errors": 0,
+            "total_error_nodes": 0,
+            "first_error_buckets": {},
+            "elapsed_secs": 1.0
+        }"#;
+        assert!(
+            serde_json::from_str::<SweepReport>(json).is_err(),
+            "string schema_version must be refused"
+        );
+    }
+
+    #[test]
+    fn test_validate_schema_version_names_expected_and_found() {
+        // #15361: the typed error must diagnose the drift without re-deriving it.
+        let err = validate_schema_version(SCHEMA_VERSION + 1).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("expected 1"), "message should name expected: {msg}");
+        assert!(msg.contains("found 2"), "message should name found: {msg}");
     }
 
     #[test]
@@ -2250,10 +2329,10 @@ mod tests {
 
     #[test]
     fn test_files_by_bucket_absent_in_old_schema_deserializes_empty() {
-        // The existing backward-compat JSON (schema 1.0.0) has no files_by_bucket
+        // A minimal envelope has no files_by_bucket
         // field — must deserialize as empty BTreeMap.
         let old_json = r#"{
-            "schema_version": "1.0.0",
+            "schema_version": 1,
             "commit": "abc",
             "timestamp": "now",
             "corpus_roots": ["/usr/share/perl"],
@@ -2349,6 +2428,49 @@ mod tests {
         let manifest = discover_manifest(manifest_path.clone(), vec![])?;
         assert_eq!(manifest.min_resolved, 2);
         assert_eq!(manifest.path, manifest_path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_resolution_output_rejects_unknown_rows() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let found = dir.path().join("Found.pm");
+        fs::write(&found, "1;\n")?;
+        let stdout = format!("Unrequested.pm={}\nFound.pm={}\n", found.display(), found.display());
+        let resolved = resolve_manifest_output(&stdout, &["Found", "Missing"]);
+        assert_eq!(resolved, vec![found]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_resolution_output_rejects_duplicate_rows() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let found = dir.path().join("Found.pm");
+        fs::write(&found, "1;\n")?;
+        let stdout = format!("Found.pm={}\nFound.pm={}\n", found.display(), found.display());
+        let resolved = resolve_manifest_output(&stdout, &["Found", "Missing"]);
+        assert_eq!(resolved, vec![found]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_resolution_output_accepts_exact_rows_after_noise() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let first = dir.path().join("First.pm");
+        let second = dir.path().join("Second.pm");
+        fs::write(&first, "1;\n")?;
+        fs::write(&second, "1;\n")?;
+        let absent = dir.path().join("Absent.pm");
+        let stdout = format!(
+            "load-time output\n\nUnrequested.pm={}\nFirst.pm={}\nFirst.pm={}\nNested/Second.pm={}\nFirst.pm={}\n",
+            first.display(),
+            absent.display(),
+            first.display(),
+            second.display(),
+            first.display(),
+        );
+        let resolved = resolve_manifest_output(&stdout, &["First", "Nested::Second"]);
+        assert_eq!(resolved, vec![first, second]);
         Ok(())
     }
 
@@ -2537,10 +2659,10 @@ mod tests {
 
     #[test]
     fn test_sweep_report_old_schema_deserializes_with_none_fields() {
-        // schema 1.2.0 JSON (no phase_timings / median / slowest_files)
+        // Minimal JSON (no phase_timings / median / slowest_files)
         // must deserialize cleanly with None / empty defaults.
         let old_json = r#"{
-            "schema_version": "1.2.0",
+            "schema_version": 1,
             "commit": "abc",
             "timestamp": "2026-04-09T00:00:00Z",
             "corpus_profile": "system",

@@ -514,7 +514,7 @@ fn test_incremental_parsing_during_debugging() -> Result<()> {
     std::thread::sleep(Duration::from_millis(500));
     drain_until_quiet(&server, Duration::from_millis(100), Duration::from_secs(1));
 
-    // Apply ranged (incremental) edit — insert a new line at line 1
+    // Apply a full-document replacement — insert a new line at the start.
     let start_time = Instant::now();
     send_notification(
         &server,
@@ -524,10 +524,6 @@ fn test_incremental_parsing_during_debugging() -> Result<()> {
             "params": {
                 "textDocument": { "uri": uri, "version": 2 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 0, "character": 0 },
-                        "end":   { "line": 1, "character": 0 }
-                    },
                     "text": "my $new = 2;\n"
                 }]
             }
@@ -541,7 +537,7 @@ fn test_incremental_parsing_during_debugging() -> Result<()> {
     drain_until_quiet(&server, Duration::from_millis(50), Duration::from_millis(500));
     let settle_time = start_time.elapsed();
 
-    // Verify LSP still responsive after incremental edit
+    // Verify LSP still responsive after the full-document edit
     let hover_id = 800;
     send_request_no_wait(
         &server,

@@ -7,6 +7,7 @@ use super::{
     Arc, AtomicBool, ContentLengthFramer, DapMessage, DebugAdapter, EVENT_QUEUE_CAPACITY, Mutex,
     Read, Write, io, lock_or_recover, sync_channel, thread,
 };
+use perl_lsp_rs_core::transport::framing::FramingError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::time::Duration;
@@ -557,6 +558,14 @@ impl DebugAdapter {
                     let body = match framer.try_next() {
                         Ok(Some(body)) => body,
                         Ok(None) => break,
+                        Err(error @ FramingError::FrameTooLarge { .. }) => {
+                            // The rejected body has no trusted next-frame boundary.
+                            // Stop intake before its bytes can be dispatched as requests.
+                            break 'transport Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                error,
+                            ));
+                        }
                         Err(error) => {
                             tracing::warn!(%error, "Failed to parse DAP transport frame");
                             continue;
@@ -2419,6 +2428,77 @@ mod framing_tests {
         Ok(())
     }
 
+    struct CountedReader {
+        input: Cursor<Vec<u8>>,
+        reads: Arc<AtomicUsize>,
+        chunk_size: usize,
+    }
+
+    impl BoundedRead for CountedReader {
+        fn read_with_timeout(
+            &mut self,
+            target: &mut [u8],
+            _timeout: Duration,
+        ) -> io::Result<Option<usize>> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            let amount = target.len().min(self.chunk_size);
+            self.input.read(&mut target[..amount]).map(Some)
+        }
+    }
+
+    #[test]
+    fn test_transport_oversized_header_stops_without_reading_body() {
+        for length in [perl_lsp_rs_core::transport::framing::MAX_FRAME_SIZE + 1, usize::MAX] {
+            let header = format!("Content-Length: {length}\r\n\r\n").into_bytes();
+            let header_len = header.len();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let input = CountedReader {
+                input: Cursor::new(header),
+                reads: Arc::clone(&reads),
+                chunk_size: header_len,
+            };
+            let output = SharedBuf::new();
+            let result = DebugAdapter::new().run_with_io(input, output.clone());
+
+            assert_eq!(
+                result.as_ref().err().map(io::Error::kind),
+                Some(io::ErrorKind::InvalidData)
+            );
+            assert_eq!(reads.load(Ordering::Relaxed), 1, "must not read the rejected body");
+            assert!(output.bytes_snapshot().is_empty(), "header alone cannot dispatch a request");
+        }
+    }
+
+    #[test]
+    fn test_transport_oversized_body_cannot_dispatch_embedded_requests() {
+        let length = perl_lsp_rs_core::transport::framing::MAX_FRAME_SIZE + 1;
+        let header = format!("Content-Length: {length}\r\n\r\n").into_bytes();
+        let header_len = header.len();
+        let mut bytes = header;
+        bytes.extend(framed_request(1, "initialize", Some(json!({"adapterID": "perl"}))));
+        bytes.extend(framed_request(2, "disconnect", None));
+
+        // Body bytes already buffered, body bytes on a later read, and a
+        // fragmented header must all terminate at the same oversized declaration.
+        for chunk_size in [bytes.len(), header_len, header_len - 1] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let input = CountedReader {
+                input: Cursor::new(bytes.clone()),
+                reads: Arc::clone(&reads),
+                chunk_size,
+            };
+            let output = SharedBuf::new();
+            let result = DebugAdapter::new().run_with_io(input, output.clone());
+
+            assert!(output.bytes_snapshot().is_empty(), "rejected body dispatched a request");
+            assert_eq!(
+                result.as_ref().err().map(io::Error::kind),
+                Some(io::ErrorKind::InvalidData)
+            );
+            assert_eq!(reads.load(Ordering::Relaxed), header_len.div_ceil(chunk_size));
+        }
+    }
+
     // ── 4. Valid header + malformed JSON body ──────────────────────────────────
 
     #[test]
@@ -2667,10 +2747,7 @@ mod framing_tests {
 
     impl io::Write for SlowEventWriter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            if buf
-                .windows(b"\"event\":\"continued\"".len())
-                .any(|w| w == b"\"event\":\"continued\"")
-            {
+            if buf.windows(b"\"event\":\"".len()).any(|w| w == b"\"event\":\"") {
                 std::thread::sleep(std::time::Duration::from_millis(60));
             }
             self.inner.write(buf)
@@ -2701,66 +2778,122 @@ mod framing_tests {
             .spawn()
     }
 
-    /// Writer that delays stopped-event payload writes, so the two
-    /// stopped events a PID attach with `stopOnEntry` emits accumulate
-    /// in a single consumer batch.
-    struct SlowStoppedWriter {
-        inner: SharedBuf,
-    }
-
-    impl SlowStoppedWriter {
-        fn new(inner: SharedBuf) -> Self {
-            Self { inner }
-        }
-    }
-
-    impl io::Write for SlowStoppedWriter {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            if buf.windows(b"\"event\":\"stopped\"".len()).any(|w| w == b"\"event\":\"stopped\"") {
-                std::thread::sleep(std::time::Duration::from_millis(60));
-            }
-            self.inner.write(buf)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.inner.flush()
-        }
-    }
-
     #[test]
     fn multi_event_batch_releases_the_full_drain_count() -> io::Result<()> {
-        // FC-DRAIN-PHANTOM-BATCH: a PID attach with `stopOnEntry` emits
-        // two stopped events. If the consumer completed only one latch
-        // count per batch, phantom residue would push every later
-        // response through the full drain timeout. The follow-up request
-        // must therefore answer well under that bound, with both events
-        // ahead of the attach response on the wire.
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        use crate::debug_adapter::variable_cache::VariableCache;
+        use crate::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
+        use crate::reload::{LoadedModuleReloadOutcome, RuntimeModuleGenerationClock};
+        use crate::reload_family::{LOADED_MODULE_RELOAD_FAMILY, LOADED_MODULE_RELOAD_REQUEST};
+        use std::collections::HashMap;
+
+        // FC-DRAIN-PHANTOM-BATCH: one request that emits a multi-event batch
+        // must release every per-epoch reservation it reserved; a consumer
+        // that completed only one count per batch would leave phantom
+        // residue and push the request's response through the full drain
+        // timeout. #8109 retired the PID-attach producer this test
+        // originally used; the surviving same-epoch multi-event producer is
+        // the loadedModuleReload route, which emits `invalidated` plus one
+        // `breakpoint` changed event per affected record inside the
+        // request's epoch. The `initialize` request's trailing
+        // `initialized` event keeps the consumer writing while the reload
+        // handler enqueues its pair, so both land in a single batch.
+        let dir = tempfile::tempdir()?;
+        let source_file = dir.path().join("reloaded_module.pl");
+        let body: String = (0..8).map(|index| format!("my $v{index} = {index};\n")).collect();
+        std::fs::write(&source_file, body)?;
+        let source_path = source_file.to_string_lossy().into_owned();
+
         let mut adapter = DebugAdapter::new();
-        let own_pid = std::process::id();
-        let mut input =
-            framed_request(1, "attach", Some(json!({"processId": own_pid, "stopOnEntry": true})));
-        input.extend(framed_request(2, "threads", None));
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1]).map_err(io::Error::other)?;
+        adapter.seed_loaded_module_reload_subject_for_test(
+            "opaque-module-token-drain-batch",
+            &source_path,
+            "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+            "perl-lsp-subject:epoch=1;observation=3",
+            3,
+        );
+        adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "transport.test.drain.session");
+            *guard = Some(DebugSession {
+                process: exited_child()?,
+                state: DebugState::Stopped,
+                stack_frames: Vec::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                debuggee_cwd: std::path::PathBuf::from("."),
+                last_resume_mode: ResumeMode::Unknown,
+                initial_stop_pending: false,
+                entry_stop_pending: false,
+                stopped_generation: 3,
+                module_generation: RuntimeModuleGenerationClock::new(),
+            });
+        }
+        let breakpoints = adapter.breakpoints.set_breakpoints(&SetBreakpointsArguments {
+            source: Source { name: None, path: Some(source_path) },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 2,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        });
+        assert!(
+            breakpoints.first().is_some_and(|breakpoint| breakpoint.verified),
+            "the seeded breakpoint must verify against real Perl source"
+        );
+
+        let mut input = framed_request(1, "initialize", None);
+        input.extend(framed_request(
+            2,
+            LOADED_MODULE_RELOAD_REQUEST,
+            Some(json!({
+                "family": LOADED_MODULE_RELOAD_FAMILY,
+                "familyVersion": 1,
+                "sessionEpoch": 1,
+                "operationId": 1,
+                "subject": {
+                    "moduleIdentity": "opaque-module-token-drain-batch",
+                    "savedSourceDigest":
+                        "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+                    "logicalSourceUri": "perl-lsp-subject:epoch=1;observation=3",
+                    "observationGeneration": 3
+                },
+                "deadlineMs": 5000
+            })),
+        ));
+        input.extend(framed_request(3, "threads", None));
         let output = SharedBuf::new();
         let started = std::time::Instant::now();
-        adapter.run_with_io(Cursor::new(input), SlowStoppedWriter::new(output.clone()))?;
+        adapter.run_with_io(Cursor::new(input), SlowEventWriter::new(output.clone()))?;
         let elapsed = started.elapsed();
         assert!(
             elapsed < std::time::Duration::from_millis(950),
-            "follow-up response must not wait out the drain timeout: took {elapsed:?}"
+            "the reload response must not wait out the drain timeout: took {elapsed:?}"
         );
 
         let snapshot = output.bytes_snapshot();
-        let Some(response_offset) = windows_find(&snapshot, b"\"command\":\"attach\"") else {
-            return Err(io::Error::other("attach response must be written"));
+        let Some(response_offset) =
+            windows_find(&snapshot, b"\"command\":\"perl-lsp/loadedModuleReload\"")
+        else {
+            return Err(io::Error::other("reload response must be written"));
         };
-        let stopped_before = snapshot[..response_offset]
-            .windows(b"\"event\":\"stopped\"".len())
-            .filter(|w| *w == b"\"event\":\"stopped\"")
-            .count();
-        assert_eq!(
-            stopped_before, 2,
-            "both attach stopped events must precede the attach response"
-        );
+        for event_name in ["invalidated", "breakpoint"] {
+            let needle = format!("\"event\":\"{event_name}\"").into_bytes();
+            let count = snapshot[..response_offset]
+                .windows(needle.len())
+                .filter(|w| *w == needle.as_slice())
+                .count();
+            assert_eq!(
+                count, 1,
+                "exactly one {event_name} event must precede the reload response on the wire"
+            );
+        }
         Ok(())
     }
 

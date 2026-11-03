@@ -18,6 +18,10 @@ enum ReviewVerdict {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewReceipt {
+    /// Envelope version of the review-receipt document. Receipts written before
+    /// this field existed validate as version 1 via the serde default (#15355).
+    #[serde(default)]
+    schema_version: u32,
     kind: String,
     producer: String,
     pr: u64,
@@ -34,6 +38,10 @@ struct ReviewReceipt {
 /// Validate review receipt invariants that are easy to keep in sync with tests.
 pub fn validate_review_receipt(value: &Value) -> Result<()> {
     let receipt: ReviewReceipt = serde_json::from_value(value.clone())?;
+
+    if receipt.schema_version != 1 {
+        bail!("schema_version must be 1, observed {}", receipt.schema_version);
+    }
 
     if receipt.kind != "review" {
         bail!("kind must be 'review'");

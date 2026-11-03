@@ -359,7 +359,7 @@ fn configured_fsmonitor_and_hooks_are_suppressed_during_observation() -> Result<
     let hooks_path = path_text(&hooks_dir)?.replace('\\', "/");
     run_git(&fixture.candidate, &["config", "core.hooksPath", hooks_path.as_str()])?;
 
-    let configured_status = Command::new("git")
+    let configured_status = xtask::git_environment::isolate(Command::new("git"))
         .current_dir(&fixture.candidate)
         .args(["status", "--porcelain=v1"])
         .stdin(Stdio::null())
@@ -503,15 +503,12 @@ fn real_observer_controls_detached_lock_and_identity_absence() -> Result<()> {
         );
     } else {
         ensure!(
-            identity_plan.classification == RecoveryClassification::IdentityConflict,
+            identity_plan.classification == RecoveryClassification::DirtyOrIndexUnknown,
             "missing administrative commondir had an unexpected Windows classification: {identity_plan:?}"
         );
         ensure!(
-            identity_plan
-                .reasons
-                .iter()
-                .any(|reason| reason.starts_with("CANDIDATE_git-dir_IDENTITY_UNAVAILABLE:")),
-            "missing administrative commondir lacked its exact candidate identity refusal reason: {identity_plan:?}"
+            identity_plan.reasons.iter().any(|reason| reason == "ADMIN_COMMONDIR_UNKNOWN"),
+            "missing administrative commondir lacked its exact refusal reason: {identity_plan:?}"
         );
     }
     #[cfg(not(windows))]
@@ -636,7 +633,7 @@ fn run_git(root: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    Command::new("git")
+    xtask::git_environment::isolate(Command::new("git"))
         .current_dir(root)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args)

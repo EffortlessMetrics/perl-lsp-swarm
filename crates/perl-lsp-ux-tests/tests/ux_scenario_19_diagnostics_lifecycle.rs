@@ -116,7 +116,10 @@ fn scenario_19_diagnostics_clear_after_fix() -> anyhow::Result<()> {
     let uri = harness.workspace.uri(FILE);
 
     // When: diagnostics are first published for the broken content.
-    let broken_diagnostics = harness.wait_for_diagnostics(FILE, Duration::from_secs(5));
+    let broken_diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", FILE),
+        harness.wait_for_diagnostics(FILE, Duration::from_secs(5)),
+    )?;
     assert!(
         !broken_diagnostics.is_empty(),
         "Expected diagnostics for broken source, but none were published."

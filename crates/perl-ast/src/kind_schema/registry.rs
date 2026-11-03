@@ -121,6 +121,7 @@ pub const NODE_KIND_STRUCTURAL_REGISTRY: &[KindStructuralRow<'static>] = &[
     kind_row!("Return", ChildBearing, recovery = false, boundary = false, children = [VALUE: Optional], static "return"),
     kind_row!("LoopControl", Leaf, recovery = false, boundary = false, children = [], runtime ["op"]),
     kind_row!("Goto", ChildBearing, recovery = false, boundary = false, children = [TARGET: Required], static "goto"),
+    kind_row!("TargetlessGoto", Leaf, recovery = false, boundary = false, children = [], static "goto_targetless"),
     kind_row!("MethodCall", ChildBearing, recovery = false, boundary = false, children = [OBJECT: Required, ARGS: Repeated], static "method_call"),
     kind_row!("FunctionCall", ChildBearing, recovery = false, boundary = false, children = [ARGS: Repeated], runtime ["name", "args"]),
     kind_row!("AmperCall", ChildBearing, recovery = false, boundary = false, children = [ARGS: Repeated], runtime ["args"]),

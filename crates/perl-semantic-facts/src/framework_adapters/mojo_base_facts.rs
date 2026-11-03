@@ -216,6 +216,7 @@ impl MojoBaseExecutionPhase {
     }
 }
 
+/// Whether a same-named explicit method exists in the owning package.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MojoBaseExplicitMethodState {

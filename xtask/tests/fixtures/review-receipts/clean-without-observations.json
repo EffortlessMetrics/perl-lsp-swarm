@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "kind": "review",
   "producer": "review-bot",
   "pr": 6853,

@@ -34,6 +34,8 @@ DEFAULT_DOCS = Path("docs/ci/gate-policy-economics.md")
 DEFAULT_GATE_POLICY = Path(".ci/gate-policy.yaml")
 DEFAULT_LANES = Path("policy/ci-lanes.toml")
 
+SCHEMA_VERSION = "gate_lane_mapping.v1"
+
 # Many-to-one and one-to-many mappings between gate-policy.yaml gate names and
 # policy/ci-lanes.toml lane keys. Right-hand side is a list of lane keys (a
 # single gate may map to multiple lanes, e.g. an aggregate gate that runs in
@@ -55,6 +57,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The serialization ratchet runs in pr-fast and again in the required
     # merge-gate policy shard, so both execution lanes own its economics.
     "serial_test_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    # The regex-static ratchet (#16260) mirrors serial_test_ratchet: pr-fast
+    # shift-left plus the required merge-gate meta shard, so both execution
+    # lanes own its economics.
+    "regex_static_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is
@@ -64,9 +70,16 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_scoped": {"lanes": ["pr_smoke"]},
     "check_tests_scoped": {"lanes": ["pr_smoke"]},
     "unit_routed_full": {"lanes": ["pr_smoke"]},
+    "unit_routed_full_build": {"lanes": ["pr_smoke"]},
     # The gate runs inside the existing pr-fast invocation in advisory
     # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
     "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
+    # Focused control-plane owner proofs (#13698). Declared immediately before
+    # `unit_routed_full` in gate-policy.yaml so a deterministic control-plane
+    # defect surfaces (and short-circuits the cohort) before the broad run;
+    # both roll up under the same advisory pr_smoke lane.
+    "ci_subject_digest_oracle": {"lanes": ["pr_smoke"]},
+    "unit_control_plane_bins": {"lanes": ["pr_smoke"]},
     # Former `inline_completion_contract` (&&-composite, issue #6845) split
     # into four independent gates.  All four remain in the pr_smoke tier lane.
     "inline_completion_registration": {"lanes": ["pr_smoke"]},
@@ -100,9 +113,20 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # workflows (#14628). Lives in the policy shard so deleting one of those
     # path-filtered workflows cannot silently stop enforcement.
     "docs_agents_contract_workflows": {"lanes": ["merge_gate_shards"]},
+    # #13774: the doctest route executes the workspace's compile_fail contracts
+    # in the required policy shard, and the ratchet keeps the route's package
+    # list a floor. Both ride the same shard, so both share its economics.
+    "doctest_contract_proof": {"lanes": ["merge_gate_shards"]},
+    "doctest_enforcement": {"lanes": ["merge_gate_shards"]},
     # The agent-ledger validator (#15380) runs in the required merge-gate
     # policy shard, so it shares that shard's economics.
     "agent_ledgers_validate": {"lanes": ["merge_gate_shards"]},
+    # The production-unsafe SAFETY-reasoning ratchet (#16215) runs in the
+    # required merge-gate policy shard, so it shares that shard's economics.
+    "unsafe_prod_check": {"lanes": ["merge_gate_shards"]},
+    # The code-action generation ledger ratchet runs in the required merge-gate
+    # policy shard (#15764), so its economics live on this lane.
+    "code_action_generation_ledger": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
@@ -121,6 +145,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "nested_lock_check": {"lanes": ["pr_smoke"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
+    "completion_candidate_ledger": {"lanes": ["merge_gate_shards"]},
     "lint_policy": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
@@ -538,6 +563,7 @@ def main() -> int:
 
     if args.json_out:
         report = {
+            "schema_version": SCHEMA_VERSION,
             "gate_policy": str(args.gate_policy),
             "lanes": str(args.lanes),
             "gate_count": len(gate_names),

@@ -41,10 +41,9 @@ The Marketplace package is designed to work with `PATH`, `serverPath`, or runtim
 | `perl-lsp.perltidyConfig` | `""` | Path to a `.perltidyrc` compatibility file. Native formatting is the default path. |
 | `perl-lsp.includePaths` | `["lib", "local/lib/perl5"]` | Additional Perl include paths passed to the server. |
 | `perl-lsp.enableTestIntegration` | `true` | Enable test integration for `.t` and runnable `.pl` files. |
-| `perl-lsp.autoPopulateNewFiles` | `true` | Auto-populate new `.pm` files with a `package` declaration and new `.t` files with `Test::More` boilerplate. Set to `false` to disable. |
 | `perl-lsp.featureProfile` | `"auto"` | Forward a concrete feature profile to `perl-lsp` when needed. |
 | `perl-lsp.disabledFeatures` | `[]` | Array of LSP feature IDs to disable (e.g. `["lsp.hover", "lsp.semantic_tokens"]`). See the feature catalog via `perllsp --features-json`. |
-| `perl-lsp.aiCompletion.enabled` | `false` | Enable AI-assisted inline completion. |
+| `perl-lsp.aiCompletion.enabled` | `false` | Client preference for AI-assisted inline completion. The prompt requires explicit activation capability and registered inline support. Server activation rules depend on the connected build; see [the AI completion reference](reference/AI_COMPLETION.md). |
 | `perl-lsp.critic.enabled` | `true` | Enable Perl::Critic diagnostics. |
 | `perl-lsp.critic.engine` | `"native"` | Critic engine: `native` (Rust-native) or `legacy` (shells out to `perlcritic`). |
 | `perl-lsp.critic.severity` | `3` | Minimum critic severity to report (1 = least severe, 5 = most severe). |
@@ -76,6 +75,7 @@ Refactoring is exposed through server-backed code actions when available. The ex
 | `Perl: Show Output Channel` | Open the extension output channel. |
 | `Perl: Show Status Menu` | Open the quick status/action menu. |
 | `Perl: Run Tests in Current File` | Run tests for the active `.t` or `.pl` file. |
+| `Perl: Create Module` / `Perl: Create Test` | Choose a new file in a local workspace folder and create it with starter content. Ordinary file creation never inserts boilerplate. |
 | `Perl: Extract Variable` | Extract the selected expression into a new variable (`Shift+Alt+V`). |
 | `Perl: Extract Method` | Extract the selected code into a new subroutine (`Shift+Alt+M`). |
 

@@ -1,0 +1,240 @@
+{
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/clients/sublime/sublime-package-control-receipt.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activation": {
+      "additionalProperties": false,
+      "properties": {
+        "pl": { "$ref": "#/$defs/cell" },
+        "pm": { "$ref": "#/$defs/cell" },
+        "t": { "$ref": "#/$defs/cell" }
+      },
+      "required": ["pl", "pm", "t"],
+      "type": "object"
+    },
+    "binary": {
+      "additionalProperties": false,
+      "properties": {
+        "archive_sha256": { "type": ["string", "null"] },
+        "command": {
+          "items": { "type": ["string", "null"] },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "path": { "type": ["string", "null"] },
+        "release": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"] }
+      },
+      "required": ["path", "sha256", "command", "release", "archive_sha256"],
+      "type": "object"
+    },
+    "clean_profile": {
+      "additionalProperties": false,
+      "properties": {
+        "competing_perl_provider_absent": { "type": ["boolean", "null"] },
+        "custom_package_source_absent": { "type": ["boolean", "null"] },
+        "isolated": { "type": ["boolean", "null"] },
+        "manual_perl_server_absent": { "type": ["boolean", "null"] },
+        "prior_cache_absent": { "type": ["boolean", "null"] },
+        "prior_managed_server_absent": { "type": ["boolean", "null"] },
+        "prior_package_absent": { "type": ["boolean", "null"] },
+        "workspace_does_not_replace_server_authority": { "type": ["boolean", "null"] }
+      },
+      "required": [
+        "isolated",
+        "prior_package_absent",
+        "prior_managed_server_absent",
+        "manual_perl_server_absent",
+        "custom_package_source_absent",
+        "prior_cache_absent",
+        "competing_perl_provider_absent",
+        "workspace_does_not_replace_server_authority"
+      ],
+      "type": "object"
+    },
+    "compatibility": {
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": ["string", "null"] },
+        "result": {
+          "enum": ["compatible", "incompatible", "not_proven", null]
+        }
+      },
+      "required": ["result", "record_id"],
+      "type": "object"
+    },
+    "fixtures": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": { "type": ["string", "null"] },
+        "pl": { "type": ["string", "null"] },
+        "pm": { "type": ["string", "null"] },
+        "t": { "type": ["string", "null"] }
+      },
+      "required": ["pl", "pm", "t", "digest"],
+      "type": "object"
+    },
+    "helper_package": {
+      "additionalProperties": false,
+      "properties": {
+        "installed_digest": { "type": ["string", "null"] },
+        "name": { "const": "LSP-perllsp" },
+        "source": { "type": ["string", "null"] },
+        "tag": { "type": ["string", "null"] },
+        "tree_sha256": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] }
+      },
+      "required": ["name", "source", "version", "tag", "tree_sha256", "installed_digest"],
+      "type": "object"
+    },
+    "host": {
+      "additionalProperties": false,
+      "properties": {
+        "arch": { "enum": ["x64", "arm64", null] },
+        "name": { "enum": ["Sublime Text", null] },
+        "platform": { "enum": ["linux", "osx", "windows", null] },
+        "version": { "type": ["string", "null"] }
+      },
+      "required": ["name", "version", "platform", "arch"],
+      "type": "object"
+    },
+    "install_route": {
+      "enum": [
+        "package_control_default_channel",
+        "custom_channel",
+        "extra_packages",
+        "local_checkout",
+        "manual_copy",
+        "exact_source_local",
+        null
+      ]
+    },
+    "journey": {
+      "additionalProperties": false,
+      "properties": {
+        "clean_shutdown": { "$ref": "#/$defs/cell" },
+        "command_7704": { "$ref": "#/$defs/cell" },
+        "completion": { "$ref": "#/$defs/cell" },
+        "custom_semantic_mapping": { "$ref": "#/$defs/cell" },
+        "default_channel_install": { "$ref": "#/$defs/cell" },
+        "definition": { "$ref": "#/$defs/cell" },
+        "hover": { "$ref": "#/$defs/cell" },
+        "initialize": { "$ref": "#/$defs/cell" },
+        "lsp_dependency_resolved": { "$ref": "#/$defs/cell" },
+        "managed_perllsp_verified": { "$ref": "#/$defs/cell" },
+        "public_packed_or_unpacked_layout": { "$ref": "#/$defs/cell" },
+        "pull_diagnostics_after_edit": { "$ref": "#/$defs/cell" },
+        "pull_diagnostics_open": { "$ref": "#/$defs/cell" },
+        "restart": { "$ref": "#/$defs/cell" },
+        "semantic_tokens": { "$ref": "#/$defs/cell" },
+        "stdio_process_identity": { "$ref": "#/$defs/cell" },
+        "workspace_edit_applied": { "$ref": "#/$defs/cell" }
+      },
+      "required": [
+        "default_channel_install",
+        "lsp_dependency_resolved",
+        "public_packed_or_unpacked_layout",
+        "managed_perllsp_verified",
+        "initialize",
+        "stdio_process_identity",
+        "pull_diagnostics_open",
+        "pull_diagnostics_after_edit",
+        "completion",
+        "hover",
+        "definition",
+        "workspace_edit_applied",
+        "semantic_tokens",
+        "custom_semantic_mapping",
+        "command_7704",
+        "restart",
+        "clean_shutdown"
+      ],
+      "type": "object"
+    },
+    "listing": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": { "const": "package_control_default" },
+        "observable": { "type": ["boolean", "null"] },
+        "package_name": { "const": "LSP-perllsp" },
+        "status": {
+          "enum": ["blocked_pending_listing", "listed", null]
+        }
+      },
+      "required": ["channel", "package_name", "observable", "status"],
+      "type": "object"
+    },
+    "lsp_package": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": ["string", "null"] },
+        "repository": { "enum": ["sublimelsp/LSP", null] },
+        "version": { "type": ["string", "null"] }
+      },
+      "required": ["repository", "version", "ref"],
+      "type": "object"
+    },
+    "promotion": {
+      "additionalProperties": false,
+      "properties": {
+        "package_control_leading_setup": { "enum": ["not_proven"] },
+        "public_artifact_installed": { "enum": ["not_proven", "eligible"] }
+      },
+      "required": ["public_artifact_installed", "package_control_leading_setup"],
+      "type": "object"
+    },
+    "public_subject": {
+      "additionalProperties": false,
+      "properties": {
+        "relative_path": {
+          "const": "clients/sublime/package-control-subject.v1.json"
+        },
+        "sha256": { "type": ["string", "null"] }
+      },
+      "required": ["relative_path", "sha256"],
+      "type": "object"
+    },
+    "recorded_at": { "type": ["string", "null"] },
+    "resolution_route": {
+      "enum": ["managed_download", "binary_override", "worktree_path", null]
+    },
+    "result": { "enum": ["pass", "fail", "not_proven", "not_run"] },
+    "schema_version": { "const": 1 },
+    "stage": { "const": "package_control_public" }
+  },
+  "required": [
+    "schema_version",
+    "stage",
+    "result",
+    "recorded_at",
+    "listing",
+    "install_route",
+    "host",
+    "lsp_package",
+    "helper_package",
+    "binary",
+    "resolution_route",
+    "compatibility",
+    "fixtures",
+    "clean_profile",
+    "activation",
+    "journey",
+    "promotion",
+    "public_subject"
+  ],
+  "title": "Sublime Package Control public-install receipt",
+  "type": "object",
+  "$defs": {
+    "cell": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": { "type": ["string", "null"] },
+        "result": { "enum": ["pass", "fail", "not_proven", "not_run"] }
+      },
+      "required": ["result", "evidence"],
+      "type": "object"
+    }
+  }
+}

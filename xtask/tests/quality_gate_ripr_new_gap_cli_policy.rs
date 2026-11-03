@@ -1476,7 +1476,10 @@ fn repo_root() -> TestResult<PathBuf> {
 }
 
 fn current_head(root: &Path) -> TestResult<String> {
-    let output = StdCommand::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output()?;
+    let output = xtask::git_environment::isolate(StdCommand::new("git"))
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()?;
     if !output.status.success() {
         return Err(format!("git rev-parse HEAD failed with status {}", output.status).into());
     }
@@ -1487,7 +1490,7 @@ fn write_ripr_plus_receipt(path: &Path, head: &str) -> TestResult {
     write_json(
         path,
         json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "ripr_plus_baseline",
             "head": head,
             "unresolved": 0,

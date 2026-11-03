@@ -17,7 +17,11 @@ Runs on every pull request for fast feedback.
 
 ### Merge Gate
 
-Runs on `merge-ready`, pushes to `main` or `master`, and manual workflow runs.
+Runs on pull request activity against `main` or `master` (`opened`,
+`synchronize`, `reopened`, `ready_for_review`, `converted_to_draft`), merge
+queue events, pushes to `main` or `master`, and manual workflow runs. PR labels
+(including `merge-ready`) do not trigger the Merge Gate or `ci.yml`; `ci.yml` deliberately excludes
+`labeled` and `unlabeled`.
 This is the server-side equivalent of the local `nix develop -c just ci-gate`
 gate.
 
@@ -80,8 +84,10 @@ That file is the source of truth for reserved labels such as `ci:lsp`,
 Public-API compatibility is not label-only: the `public-api-pr` and
 advisory `semver-pr` jobs in `ci.yml` auto-run whenever a PR touches a
 published facade crate surface or `.ci/public-api-baselines/`, and settle as
-green scoped-noops otherwise (#2266). The nightly workflow keeps schedule and
-manual-label widening.
+green scoped-noops otherwise (#2266). `public-api-pr` also ratchets every
+push to `main`/`master` against that landed SHA, including commits whose
+changed files sit outside facade/API scope (#16815). The nightly workflow
+keeps schedule and manual-label widening.
 
 ## Release Prep
 

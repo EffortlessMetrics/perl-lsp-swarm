@@ -235,13 +235,14 @@ macro_rules! visit_kind_children {
                 }
             }
             NodeKind::Goto { target, .. } => $emit!(FieldId::TARGET, target),
+            NodeKind::TargetlessGoto {} => {}
             NodeKind::Signature { parameters } => {
                 for param in parameters {
                     $emit!(FieldId::PARAMETERS, param);
                 }
             }
             NodeKind::MandatoryParameter { variable } => $emit!(FieldId::VARIABLE, variable),
-            NodeKind::OptionalParameter { variable, default_value } => {
+            NodeKind::OptionalParameter { variable, default_value, .. } => {
                 $emit!(FieldId::VARIABLE, variable);
                 $emit!(FieldId::DEFAULT_VALUE, default_value);
             }

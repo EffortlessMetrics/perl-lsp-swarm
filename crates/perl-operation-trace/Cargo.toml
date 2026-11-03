@@ -1,0 +1,31 @@
+[package]
+name = "perl-operation-trace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Ephemeral operation_trace.v1 correlation identity, event vocabulary, and bounded in-memory recorder"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["perl", "tracing", "correlation", "observability", "lsp"]
+categories = ["data-structures", "development-tools"]
+# No external consumer yet: keeping this private is the honest, smaller claim
+# and avoids the `[workspace.metadata.publish] allow` allowlist.
+publish = false
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE*"]
+
+[lib]
+doctest = false
+
+[dependencies]
+# serde: stable serialization for identity/kind/registry/schema types. This is
+# the crate's *only* runtime dependency — see tests/dependency_contract.rs.
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

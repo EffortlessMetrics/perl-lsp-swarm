@@ -210,7 +210,7 @@ Worktrees are created in `.claude/worktrees/` and cleaned up between sessions. T
 
 ### Scale
 
-90 memory files stored in `/home/steven/.claude/projects/-home-steven-code-Rust-perl-lsp-tree-sitter-perl-rs/memory/`:
+90 memory files stored in `~/.claude/projects/<encoded-checkout-path>/memory/`:
 
 - **21 project memories** (cycles, state, roadmaps)
 - **45+ feedback memories** (learnings, anti-patterns, process rules)

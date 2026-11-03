@@ -4826,6 +4826,62 @@ mod tests {
         }
     }
 
+    /// Regression guard for #15909. Scenario 55's database-handle source
+    /// (verbatim from `ux_scenario_55_dbi_receiver_inline_completion_quality`)
+    /// must yield DBI receiver methods under the cold-start path — that is,
+    /// without any `InlineCompletionEnvironment` populated from the workspace
+    /// index. The provider must detect the `use DBI;` import from source text
+    /// alone, so the response is never zero candidates for a freshly analyzed
+    /// document whose workspace-index module list has not yet been built.
+    #[test]
+    fn dbi_database_handle_receiver_completes_without_workspace_environment() {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "use strict;\nuse warnings;\nuse DBI;\n\nmy $dbh = DBI->connect($dsn);\n$dbh->";
+        let character = "$dbh->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 5, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        for expected in ["prepare()", "do()", "disconnect()"] {
+            assert!(
+                insert_texts.contains(&expected),
+                "scenario_55 cold-start must surface DBI database-handle method `{expected}`: {insert_texts:?}"
+            );
+        }
+        assert!(
+            !insert_texts.contains(&"new()"),
+            "scenario_55 cold-start must not fall back to a generic constructor guess: {insert_texts:?}"
+        );
+    }
+
+    /// Regression guard for #15909. Scenario 55's statement-handle source
+    /// (verbatim from `ux_scenario_55_dbi_receiver_inline_completion_quality`)
+    /// must yield DBI statement-handle methods under the cold-start path.
+    /// Mirrors the database-handle sibling test: the source-based import and
+    /// assignment detection alone must surface statement methods without
+    /// relying on workspace-index facts.
+    #[test]
+    fn dbi_statement_handle_receiver_completes_without_workspace_environment() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use strict;\nuse warnings;\nuse DBI;\n\nmy $dbh = DBI->connect($dsn);\nmy $sth = $dbh->prepare($sql);\n$sth->";
+        let character = "$sth->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 6, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        for expected in ["fetchrow_hashref()", "fetchrow_array()", "finish()"] {
+            assert!(
+                insert_texts.contains(&expected),
+                "scenario_55 cold-start must surface DBI statement-handle method `{expected}`: {insert_texts:?}"
+            );
+        }
+        assert!(
+            !insert_texts.contains(&"new()"),
+            "scenario_55 cold-start must not fall back to a generic constructor guess: {insert_texts:?}"
+        );
+    }
+
     #[test]
     fn return_partial_variable_completes_visible_scalar_with_range()
     -> Result<(), Box<dyn std::error::Error>> {

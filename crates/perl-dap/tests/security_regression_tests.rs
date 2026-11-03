@@ -4,6 +4,7 @@
 //! in the debug adapter's program launch functionality.
 
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_tdd_support::must_with;
 use serde_json::json;
 use std::sync::mpsc::sync_channel;
 
@@ -23,9 +24,17 @@ fn initialize_adapter(adapter: &mut DebugAdapter) -> TestResult {
 ///
 /// Vulnerability: If program argument accepts "-e", Perl would interpret the
 /// "args" as code to execute rather than script arguments.
+///
+/// Since the launch-authority gate (#8656), an authority-backed launch with
+/// a relative `program` is rejected up front — `-e` never reaches file
+/// resolution, let alone a Perl command line. The rejection reason moved
+/// from "Cannot find '-e'" to the absolute-path requirement; this test pins
+/// the deterministic gate rejection (#17174A) while keeping the security
+/// assertions (`!success`, no executed payload).
 #[test]
 fn test_command_injection_via_program_argument() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -37,12 +46,16 @@ fn test_command_injection_via_program_argument() -> TestResult {
 
     let response = adapter.handle_request(2, "launch", Some(args));
 
-    // Verify response indicates failure (due to file "-e" not found)
+    // Verify response indicates failure (relative `-e` rejected by the gate)
     match response {
         DapMessage::Response { success, message, .. } => {
-            assert!(!success, "Launch should fail because file '-e' does not exist");
+            assert!(!success, "Launch should reject the relative '-e' program");
             let msg = message.ok_or("Expected error message")?;
-            assert!(msg.contains("Cannot find"), "Should fail with access error: {}", msg);
+            assert!(
+                msg.contains("absolute `program` path"),
+                "relative program must be rejected by the authority absolute-path gate: {}",
+                msg
+            );
         }
         _ => return Err("Expected Response".into()),
     }
@@ -68,15 +81,23 @@ fn test_command_injection_via_program_argument() -> TestResult {
 }
 
 /// Test that non-existent files are rejected gracefully
+///
+/// The `program` must be absolute so the authority launch gate (#8656)
+/// admits it and the file-not-found remediation is what answers (#17174A);
+/// a bare relative filename is now rejected before file resolution.
 #[test]
 fn test_launch_with_nonexistent_file_errors_gracefully() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
 
+    let fixture = tempfile::tempdir()?;
+    let program = fixture.path().join("nonexistent_file_12345.pl");
+    assert!(!program.exists(), "fixture program must not exist");
     let args = json!({
-        "program": "nonexistent_file_12345.pl",
+        "program": program.display().to_string(),
         "args": []
     });
 
@@ -97,6 +118,7 @@ fn test_launch_with_nonexistent_file_errors_gracefully() -> TestResult {
 #[test]
 fn test_launch_with_empty_program_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -127,6 +149,7 @@ fn test_launch_with_empty_program_rejected() -> TestResult {
 #[test]
 fn test_launch_with_whitespace_program_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -157,6 +180,7 @@ fn test_launch_with_whitespace_program_rejected() -> TestResult {
 #[test]
 fn test_launch_with_directory_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -187,6 +211,7 @@ fn test_launch_with_directory_rejected() -> TestResult {
 #[test]
 fn test_other_flag_injection_blocked() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -209,4 +234,26 @@ fn test_other_flag_injection_blocked() -> TestResult {
         }
     }
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

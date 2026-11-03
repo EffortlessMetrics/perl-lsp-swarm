@@ -15,7 +15,7 @@ the loader reconciles it against current source on every run.
 |---|---:|
 | public items (incl. every enum variant) | 39 |
 | public re-export paths | 6 |
-| consumer rows | 37 |
+| consumer rows | 36 |
 | package/release surfaces | 7 |
 | external evidence rows | 5 |
 
@@ -105,7 +105,7 @@ as an inventory row; removing it is outside this issue's claim ceiling.
 `crates/perl-parser-core/tests/diagnostic_id_tests.rs` uses
 `use perl_parser_core::DiagnosticId;` and contains none of the package's four
 name tokens, because `perl-parser-core` re-exports two v2 types under
-unqualified names at `crates/perl-parser-core/src/lib.rs:97`. The first revision
+unqualified names at `crates/perl-parser-core/src/lib.rs:100`. The first revision
 of this audit recorded that path as a blind spot and then asserted no consumer
 used it — while this one already did, at the same evidence pin. The loader now
 matches that path directly rather than documenting it, so the row is checked.
@@ -134,7 +134,7 @@ semantics, and it does **not** authorize deleting the published package.
 | successor | wake |
 |---|---|
 | #8844 | **May start now.** This ruling is its start condition. |
-| #8845 | After #8844 lands. The migration set is this manifest's gating rows: 4 production, 5 re-export, 5 package-dependency, 8 test-fixture. |
+| #8845 | After #8844 lands. The migration set is this manifest's gating rows: 4 production, 5 re-export, 4 package-dependency, 8 test-fixture. |
 | #8847 | After #8845 **and** the window closes on **re-observed** registry evidence. #8847 must re-run the reverse-dependency observation; it may not inherit this snapshot. |
 
 **Reversal condition.** Move to `RETAIN` only on a third-party reverse dependency,

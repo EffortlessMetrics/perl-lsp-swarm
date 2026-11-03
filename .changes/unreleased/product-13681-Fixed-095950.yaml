@@ -1,0 +1,9 @@
+project: product
+component: Editor and LSP
+kind: Fixed
+body: Preserve distinct dependency declarations across metadata phases, constraints, and sources.
+time: 2026-08-29T09:59:50Z
+custom:
+  PR: "13681"
+  Slug: preserve-prerequisite-facts
+  Breaking: "no"

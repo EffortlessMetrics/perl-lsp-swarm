@@ -74,6 +74,18 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Added
 
+- **Folder-less debug launches are refused early with followable advice, and
+  `perl-lsp.debug.trustedRoots` supplies folder-less launch authority.**
+  Debugging a lone Perl file with no workspace folder open used to spawn
+  `perl-dap` with no startup authority and fail with a launch refusal naming
+  `--trusted-root` / `--allow-unbounded` CLI flags the extension UI does not
+  expose. Launch resolution and the `perl-lsp.debugTest` command now refuse
+  before the adapter starts, with one actionable warning, unless the launch
+  carries its own authority. The new machine-scoped `perl-lsp.debug.trustedRoots`
+  setting is forwarded to the adapter as `--trusted-root`, one per entry, so
+  the refusal's advice is followable from editor settings and folder-less
+  launches can be authorized deliberately; workspace settings can never set
+  it. (#16554)
 - **First-run include-path discovery**: on activation the extension scans
   common Perl module directories (`src`, `local`, `vendor`, `lib`, `t/lib`,
   `blib/lib`, `modules`) and offers a one-time suggestion to add any directory
@@ -91,6 +103,21 @@ All notable changes to the Perl Language Server extension will be documented in 
   Get Started walkthrough's "Open a Perl Project" step now links to it. (#1635)
 
 ### Fixed
+
+- **A coexistence conflict caused by one global setting is no longer repeated
+  for every workspace root.** The advisory evaluates one host-wide pass plus
+  one pass per workspace folder, and each folder pass re-read the same global
+  and workspace settings. Because a finding's suppression identity includes
+  its scope and folder name, a single condition — for example the native
+  critic running alongside an installed Perl Navigator, which is the default
+  configuration — was reported once host-wide and again under every root:
+  twice in a single-root window and N+1 times across N roots. "Disable for
+  this exact conflict" then dismissed only one of those identities, so the
+  same advisory returned on the next window and could not be cleared in one
+  action. A conflict already established host-wide is now reported once, at
+  user scope; a folder still reports a conflict it genuinely establishes
+  itself, such as a real folder override or a folder-local `.perltidyrc`.
+  (#16000)
 
 - **Extension activation no longer blocks on language-server startup.** UI and
   commands now register and activation returns immediately while the language

@@ -284,14 +284,6 @@
         "refactor::import_optimizer",
         "refactor::modernize",
         "refactor::modernize_refactored",
-        "refactor::refactoring",
-        "refactoring::ModernizationPattern",
-        "refactoring::RefactoringConfig",
-        "refactoring::RefactoringEngine",
-        "refactoring::RefactoringOperation",
-        "refactoring::RefactoringResult",
-        "refactoring::RefactoringScope",
-        "refactoring::RefactoringType",
         "scope_analyzer::IssueKind",
         "scope_analyzer::ScopeAnalyzer",
         "scope_analyzer::ScopeIssue",
@@ -1186,6 +1178,16 @@
       "exit_condition": "Inventory row for a test-only target."
     },
     {
+      "name": "dead_code_api_compat",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#9777",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target; retire with the surface under #9777."
+    },
+    {
       "name": "declaration_edge_cases_tests",
       "kind": "test",
       "classification": "product_composition",
@@ -1571,6 +1573,16 @@
       "classification": "product_composition",
       "disposition": "retain",
       "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_state_read_only_authority",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#13774",
       "target_owner": "perl-parser",
       "required_features": [],
       "exit_condition": "Inventory row for a test-only target."
@@ -2497,6 +2509,16 @@
     },
     {
       "name": "regex_delimiters_issue_444",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "rename_transaction_validity",
       "kind": "test",
       "classification": "product_composition",
       "disposition": "retain",

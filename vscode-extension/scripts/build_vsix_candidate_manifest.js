@@ -19,6 +19,8 @@ process.stdin.on('end', () => {
     );
     if (!projection) throw new Error(`projection has no target ${value.target}`);
     const manifest = buildVsixCandidatePayloadManifest({
+      schema: value.schema,
+      preRelease: value.preRelease,
       extension: value.extension,
       candidate: value.candidate,
       releaseTopologySha256: value.releaseTopologySha256,

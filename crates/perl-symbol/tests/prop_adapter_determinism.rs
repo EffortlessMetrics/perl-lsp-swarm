@@ -207,8 +207,8 @@ proptest! {
             .map(|(i, r)| (r.qualified_name.clone(), EntityId(i as u64 + 100)))
             .collect();
 
-        let first = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map);
-        let second = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map);
+        let first = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map, &BTreeMap::new());
+        let second = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map, &BTreeMap::new());
         prop_assert_eq!(&first, &second, "SymbolRefSemanticFacts differed across two runs");
     }
 }

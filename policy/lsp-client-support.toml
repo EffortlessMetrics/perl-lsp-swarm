@@ -105,16 +105,17 @@ claim_boundary = "The current UX trace is a hand-authored Neovim-shaped capabili
 id = "vim"
 display_name = "Vim"
 integration_mode = "vim_lsp_plugin"
-tier = "configuration_documented"
+tier = "real_generic_client_proven"
 owner_issue = 6739
-requires_actual_client_receipt = true
+requires_actual_client_receipt = false
 synthetic_profile = false
 evidence = [
   { path = "docs/EDITORS/VIM_SETUP.md", kind = "documentation" },
+  { path = "docs/receipts/lsp-clients/actual/vim.json", kind = "actual_client" },
 ]
 known_overrides = []
 external_dependency = "vim-lsp"
-claim_boundary = "Configuration is documented; no current actual Vim/vim-lsp receipt is registered."
+claim_boundary = "An actual headless Vim + vim-lsp host journey (initialize, request/response exchange, clean teardown) is registered as a typed actual-client receipt bound to its recorded subject, platform, and revision; it is not a packaged product or full-editor-surface claim."
 
 [[client]]
 id = "coc_nvim"

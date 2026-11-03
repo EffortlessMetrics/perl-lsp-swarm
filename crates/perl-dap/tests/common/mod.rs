@@ -8,6 +8,7 @@
 use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
+use perl_tdd_support::must_with;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fs;
@@ -111,6 +112,7 @@ impl DapWorkflowSession {
         let mut adapter = DebugAdapter::new();
         let (tx, rx) = sync_channel(64);
         adapter.set_event_sender(tx);
+        install_unbounded_test_authority(&adapter);
 
         let mut session = Self {
             adapter,
@@ -225,11 +227,11 @@ impl DapWorkflowSession {
         Ok(self.perl_path.clone())
     }
 
-    /// Attach to a running process with optional stopOnEntry.
+    /// Request native PID attach with optional stopOnEntry.
     ///
-    /// Callers must call `set_breakpoints` and `configuration_done` before
-    /// `wait_stopped` to follow the DAP ordering requirement (though attach
-    /// emits a stopped event immediately).
+    /// Native PID attach is currently unsupported (#8109), so refusal tests
+    /// use the returned error as their observable contract. A future real
+    /// transport must update this helper and its proof together.
     pub fn attach(&mut self, process_id: u32, stop_on_entry: bool) -> Result<(), String> {
         let args = json!({
             "processId": process_id,
@@ -3545,4 +3547,25 @@ pub fn wait_for_event(
             }
         }
     }
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// Workflow scenarios exercise debugging behavior, not the launch-authority
+/// contract; without an installed authority every launch is refused.
+pub fn install_unbounded_test_authority(adapter: &DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

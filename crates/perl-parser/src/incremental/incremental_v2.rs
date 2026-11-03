@@ -1653,8 +1653,9 @@ mod tests {
         assert_eq!(parser.reused_nodes, 3); // Program, VarDecl, Variable can be reused
         assert_eq!(parser.reparsed_nodes, 1); // Only Number needs reparsing
 
-        // Performance validation
-        assert!(incremental_time.as_micros() < 500, "Incremental update should be <500µs");
+        // The reuse counts below are the deterministic contract for this tiny edit. A single
+        // wall-clock sample is too sensitive to scheduler and runner load for a unit-test gate;
+        // sustained performance belongs in the incremental parser benchmarks.
         let efficiency =
             parser.reused_nodes as f64 / (parser.reused_nodes + parser.reparsed_nodes) as f64;
         assert!(

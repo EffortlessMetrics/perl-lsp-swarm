@@ -155,6 +155,8 @@ pub(crate) enum CliCommand {
         #[arg(long, value_name = "PATH", conflicts_with = "inventory")]
         identity_registry: Option<PathBuf>,
     },
+    /// Enforce that every `compile_fail` doctest contract sits inside the gate that runs `--doc` (#13774).
+    CheckDoctestEnforcement,
     /// Enforce no raw print macros in library source (println!/eprintln! belong in tracing).
     CheckPrintInLib,
     /// Enforce regex constructors live in LazyLock/OnceLock statics, never per-call.

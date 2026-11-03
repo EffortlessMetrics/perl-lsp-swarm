@@ -13,6 +13,10 @@
 /// ```compile_fail
 /// let _ = perl_module::rename::plan_module_rename_edits;
 /// ```
+///
+/// ```compile_fail
+/// let _ = perl_module::module_move::ModuleMovePlan;
+/// ```
 // name module
 pub use crate::name::legacy_package_separator;
 pub use crate::name::module_variant_pairs;
@@ -101,6 +105,20 @@ pub use crate::rename::line_references_package_declaration;
 pub use crate::rename::line_references_qualified_call;
 pub use crate::rename::plan_module_rename_edits;
 pub use crate::rename::replace_module_name_prefix;
+
+// module_move module — pure, generation-bound conventional source-module
+// move planning (#7448); fact identities come from perl-semantic-facts.
+pub use crate::module_move::MODULE_MOVE_SCHEMA_VERSION;
+pub use crate::module_move::ModuleMoveBlocker;
+pub use crate::module_move::ModuleMoveDisposition;
+pub use crate::module_move::ModuleMoveEdit;
+pub use crate::module_move::ModuleMoveFileGeneration;
+pub use crate::module_move::ModuleMoveInvalidPlan;
+pub use crate::module_move::ModuleMoveOccurrence;
+pub use crate::module_move::ModuleMovePlan;
+pub use crate::module_move::ModuleMoveResourceTransition;
+pub use crate::module_move::ModuleMoveSource;
+pub use crate::module_move::ModuleMoveTarget;
 
 // resolution module
 pub use crate::resolution::IncRoot;

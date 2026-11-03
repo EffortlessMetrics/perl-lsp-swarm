@@ -563,6 +563,13 @@ fn test_explain_provider_decision_preserves_tracked_identifier_shapes()
             scenario,
             "legitimate scenario must round-trip unchanged"
         );
+        let message =
+            result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+        assert!(!message.contains(receipt_id), "identity must stay structured: {message}");
+        assert!(!message.contains("docs/project/status"), "{message}");
+        if let Some(scenario) = scenario {
+            assert!(!message.contains(scenario), "scenario must stay structured: {message}");
+        }
     }
     Ok(())
 }
@@ -1384,7 +1391,10 @@ fn test_run_builtin_critic_with_valid_file() -> Result<(), Box<dyn std::error::E
     let result_value = result?;
     assert_eq!(result_value["status"], "success");
     assert!(result_value["violations"].is_array());
-    assert_eq!(result_value["analyzerUsed"], "native");
+    // #16550: the fallback analyzer is labeled `builtin`, distinct from the
+    // native registry engine's `native`, so the client can tell which rule
+    // set produced the verdict.
+    assert_eq!(result_value["analyzerUsed"], "builtin");
     Ok(())
 }
 
@@ -1481,31 +1491,47 @@ fn run_critic_native_matches_pull_diagnostics_registry() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn run_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+fn run_critic_profile_token_normalizes_and_defaults_to_recommended()
 -> Result<(), Box<dyn std::error::Error>> {
+    // `native.variables.unused_lexical` is strict-only (see
+    // `for_profile_with_config` docs), so its absence proves the
+    // Recommended rule set ran. Both a case/whitespace variant of a valid
+    // token and a garbage token must resolve to Recommended (#17657):
+    // the diagnostics path parses canonically and defaults to
+    // Recommended, and the command path must agree.
     let source = "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n";
     let tmp = tempdir()?;
     let file = tmp.path().join("unused.pl");
     fs::write(&file, source)?;
 
-    let provider = ExecuteCommandProvider::new().with_native_critic_config(
-        " RECOMMENDED ".to_string(),
-        Vec::new(),
-        Vec::new(),
-        3,
-    );
-    let result = provider.run_native_critic(&file)?;
-    let policies: Vec<&str> = result["violations"]
-        .as_array()
-        .ok_or("violations is not an array")?
-        .iter()
-        .filter_map(|violation| violation["policy"].as_str())
-        .collect();
+    // Positive control first: explicit strict (exact and padded) must fire
+    // the strict-only rule on this fixture, so its absence below proves the
+    // Recommended rule set ran rather than the fixture not triggering it.
+    // The padded " STRICT " case also separates canonical normalization
+    // from the Recommended fallback.
+    for (token, expect_strict) in
+        [("strict", true), (" STRICT ", true), (" RECOMMENDED ", false), ("not-a-profile", false)]
+    {
+        let provider = ExecuteCommandProvider::new().with_native_critic_config(
+            token.to_string(),
+            Vec::new(),
+            Vec::new(),
+            3,
+        );
+        let result = provider.run_native_critic(&file)?;
+        let policies: Vec<&str> = result["violations"]
+            .as_array()
+            .ok_or("violations is not an array")?
+            .iter()
+            .filter_map(|violation| violation["policy"].as_str())
+            .collect();
 
-    assert!(
-        policies.contains(&"native.variables.unused_lexical"),
-        "legacy invalid profile fallback must remain strict: {policies:?}"
-    );
+        assert_eq!(
+            policies.contains(&"native.variables.unused_lexical"),
+            expect_strict,
+            "profile token {token:?} resolved to the wrong rule set: {policies:?}"
+        );
+    }
     Ok(())
 }
 
@@ -1669,24 +1695,140 @@ fn external_critic_requested_for_legacy_engine() {
     let provider = ExecuteCommandProvider::new().with_critic_engine(CriticEngine::Legacy);
     assert!(
         provider.external_critic_requested(),
-        "explicit legacy/external critic engine must select external perlcritic"
+        "explicit legacy/external critic engine must be detected so the public command can refuse it"
     );
+}
+
+#[test]
+fn public_critic_refuses_external_policy_without_claiming_native_equivalence()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Unopened-file public command: refuse Legacy/external intent before PATH
+    // lookup or spawn, and without returning native/builtin findings (#18377).
+    let tmp = tempdir()?;
+    let file = tmp.path().join("unopened.pl");
+    fs::write(&file, "use strict; use warnings; my $x = 1;\n")?;
+    let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_critic_engine(CriticEngine::Legacy);
+    let error = provider
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])
+        .err()
+        .ok_or("legacy command must refuse without claiming native equivalence")?;
+    assert!(error.contains("External critic engines are retired"), "{error}");
+    assert!(error.contains("critic.engine = native"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn public_critic_native_engine_still_reports_native_findings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempdir()?;
+    let file = tmp.path().join("unopened.pl");
+    fs::write(&file, "my $c = '1';\neval $c;\nprint $c;\n")?;
+    let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_critic_engine(CriticEngine::Native);
+    let result = provider
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])?;
+    assert_eq!(result["status"], "success");
+    assert_eq!(result["analyzerUsed"], "native");
+    let policies: Vec<&str> = result["violations"]
+        .as_array()
+        .ok_or("violations is not an array")?
+        .iter()
+        .filter_map(|v| v["policy"].as_str())
+        .collect();
+    assert!(
+        policies.iter().any(|policy| policy.starts_with("native.")),
+        "native public command must still report native findings: {policies:?}"
+    );
+    Ok(())
 }
 
 #[test]
 fn test_command_exists_behavior() {
     let provider = ExecuteCommandProvider::new();
 
-    // Test with a command that definitely exists
-    let exists = provider.command_exists("echo");
-    // Note: We can't assert true here because the mutation test replaces return value
-    // But we can verify it returns a boolean (this always passes but validates function call)
-    assert!(matches!(exists, true | false), "Should return a boolean");
+    // A name that cannot be installed must report absent. The previous form of
+    // this test asserted only `matches!(exists, true | false)`, which no
+    // implementation can fail.
+    assert!(
+        !provider.command_exists("definitely_nonexistent_command_12345"),
+        "a name that is not installed must report absent"
+    );
+    // Positive admission is proven hermetically by the command_exists_in
+    // fixture rows in perl-subprocess-runtime's availability tests; asserting
+    // a host-installed tool here would depend on the runner's PATH.
+}
 
-    // Test with a command that definitely doesn't exist
-    let exists = provider.command_exists("definitely_nonexistent_command_12345");
-    // This should be false, but mutation testing may change the logic
-    assert!(matches!(exists, true | false), "Should return a boolean");
+/// The module must expose exactly one bare-name availability authority.
+///
+/// `ExecuteCommandProvider::command_exists` (which gated the test runners) and
+/// the free `command_exists` (which gates the external critic, `detect_tool`
+/// capability advertisement, and the perlcritic diagnostics paths) previously
+/// used different resolvers with different admission rules. They must now agree
+/// on every input, including the inputs that distinguish the two policies.
+#[test]
+fn test_command_exists_probes_share_one_authority() {
+    let provider = ExecuteCommandProvider::new();
+
+    // Mutable only on unix, where the absolute-path row below is pushed.
+    #[allow(unused_mut)]
+    let mut names = vec![
+        "sh",
+        "perlcritic",
+        "perltidy",
+        "yath",
+        "prove",
+        "perl",
+        "definitely_nonexistent_command_12345",
+        "./perlcritic",
+        "tools/perlcritic",
+    ];
+    // An absolute path to a real executable is the input the two historical
+    // resolvers answered differently: a `which`-style lookup validates it in
+    // place and says "available", while the admission policy refuses it as not
+    // a bare name. Without a row like this, a reintroduced second resolver
+    // would agree everywhere the two policies happen to coincide.
+    #[cfg(unix)]
+    names.push("/bin/sh");
+
+    for name in names {
+        assert_eq!(
+            provider.command_exists(name),
+            super::provider::command_exists(name),
+            "the instance and free availability probes disagreed on {name:?}; \
+             the module must have one admission policy"
+        );
+    }
+}
+
+/// A path-bearing input is not a `PATH` lookup and must be refused.
+///
+/// This is the row that discriminates the current authority from the previous
+/// `which::which` implementation: `which` accepts a path-bearing argument and
+/// validates it in place, so an absolute or workspace-relative path answered
+/// "available". Availability here means "found in an absolute PATH directory",
+/// and an explicit configured path carries its own trust policy at its own call
+/// site rather than borrowing this probe's answer.
+#[test]
+fn test_command_exists_refuses_path_bearing_input() {
+    let provider = ExecuteCommandProvider::new();
+
+    // A cwd-relative spelling must never resolve against the workspace.
+    assert!(!provider.command_exists("./sh"), "a cwd-relative name must be refused");
+    assert!(!provider.command_exists("tools/sh"), "a nested relative name must be refused");
+
+    // An absolute path to a real executable is still not a bare name.
+    #[cfg(unix)]
+    {
+        assert!(
+            std::path::Path::new("/bin/sh").exists(),
+            "precondition: /bin/sh exists on this host"
+        );
+        assert!(
+            !provider.command_exists("/bin/sh"),
+            "an absolute path is not a bare PATH name and must be refused here"
+        );
+    }
 }
 
 #[test]

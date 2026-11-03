@@ -180,6 +180,105 @@ class ReleaseTopologyTests(unittest.TestCase):
             ):
                 yield root, manifest, frozen_sha
 
+    def test_mapped_rc_v4_preserves_frozen_product_and_exact_mapping(self):
+        from release_vsix_mapping import mapped_vsix_identity
+        with self.valid_manifest_fixture(schema_version=3) as (root, frozen, frozen_sha):
+            schema4 = MODULE.schema_relative_path(4)
+            (root / schema4).write_bytes((MODULE_PATH.parents[1] / schema4).read_bytes())
+            package_path = root / "vscode-extension/package.json"
+            package = json.loads(package_path.read_text())
+            package["publisher"] = "fixture-publisher"
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            frozen["sources"]["vscode-extension/package.json"]["sha256"] = MODULE.sha256(package_path)
+            helper = "scripts/release_vsix_mapping.py"
+            (root / helper).write_bytes((MODULE_PATH.parents[1] / helper).read_bytes())
+            frozen_root = root.parent / "mapped-frozen"
+            copytree(root, frozen_root)
+            authority = root.parent / "mapped-authority.json"
+            authority.write_text(json.dumps(frozen), encoding="utf-8")
+            frozen_digest = MODULE.sha256(authority)
+            release, prepared_sha = "0.18.0-rc.7", "b" * 40
+            for relative in ("Cargo.toml", "Cargo.lock", "fixture/Cargo.toml"):
+                path = root / relative
+                path.write_text(path.read_text().replace("0.18.0", release), encoding="utf-8")
+            package["version"] = "0.19.7"
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            mapping = {
+                "extension": {"id": "fixture-publisher.perl-lsp-rs", "version": "0.19.7", "sourceSha": prepared_sha},
+                "candidate": {"id": "synthetic-rc-seven", "release": release, "sourceSha": prepared_sha},
+                "preRelease": True,
+            }
+            metadata = deepcopy(MODULE.cargo_metadata(root))
+            metadata["packages"][0]["version"] = release
+            def head(path):
+                return frozen_sha if Path(path).resolve() == frozen_root.resolve() else prepared_sha
+            args = (root, release, frozen_sha, prepared_sha, frozen, frozen_digest, authority, frozen_root)
+            with patch.object(MODULE, "cargo_metadata", return_value=metadata), patch.object(MODULE, "git_head", side_effect=head):
+                result = MODULE.build_manifest(*args, schema_version=4, vsix_mapping=mapping)
+                MODULE.validate_manifest(result, root, frozen_sha, prepared_sha, frozen, frozen_digest, authority, frozen_root, vsix_mapping=mapping)
+                self.assertEqual(result, MODULE.build_manifest(*args, schema_version=4, vsix_mapping=mapping))
+                wrong_candidate = deepcopy(result); wrong_candidate["vsix"]["candidate_id"] = "another-candidate"
+                with self.assertRaisesRegex(MODULE.TopologyError, "exact explicit VSIX mapping"):
+                    MODULE.validate_manifest(wrong_candidate, root, frozen_sha, prepared_sha, frozen, frozen_digest, authority, frozen_root, vsix_mapping=mapping)
+                self.assertEqual(result["vsix"]["asset_name"], "perl-lsp-rs-0.19.7-0.18.0-rc.7.vsix")
+                for mutate in (
+                    lambda x: x["candidate"].update(release="0.18.0-rc.8"),
+                    lambda x: x["extension"].update(version="0.19.8"),
+                    lambda x: x["candidate"].update(sourceSha="c" * 40),
+                    lambda x: x.update(preRelease=False),
+                    lambda x: x.pop("preRelease"),
+                ):
+                    wrong = deepcopy(mapping); mutate(wrong)
+                    with self.assertRaises(MODULE.TopologyError):
+                        MODULE.build_manifest(*args, schema_version=4, vsix_mapping=wrong)
+                for mutate in (
+                    lambda x: x["binary_targets"][0].update(required_members=["perllsp"]),
+                    lambda x: x["published_crates"][0].update(name="another-product"),
+                    lambda x: x.update(primary_channels=["github_release"]),
+                    lambda x: x["subject_projection"].update(extra="changed-claim"),
+                ):
+                    wrong = deepcopy(result); mutate(wrong)
+                    with self.assertRaises(MODULE.TopologyError):
+                        MODULE.validate_prepared_projection(frozen, wrong, frozen_digest, authority, frozen_root, root)
+                helper_bytes = (root / helper).read_bytes()
+                (root / helper).write_bytes(helper_bytes + b"\n")
+                changed = deepcopy(result)
+                changed["sources"][helper]["sha256"] = MODULE.sha256(root / helper)
+                with self.assertRaisesRegex(MODULE.TopologyError, "changed the mapping helper"):
+                    MODULE.validate_prepared_projection(frozen, changed, frozen_digest, authority, frozen_root, root)
+                (root / helper).write_bytes(helper_bytes)
+                MODULE.validate_prepared_projection(frozen, result, frozen_digest, authority, frozen_root, root)
+                (root / schema4).write_text((root / schema4).read_text() + "\n", encoding="utf-8")
+                result["sources"][schema4]["sha256"] = MODULE.sha256(root / schema4)
+                with self.assertRaisesRegex(MODULE.TopologyError, "changed a topology schema"):
+                    MODULE.validate_prepared_projection(frozen, result, frozen_digest, authority, frozen_root, root)
+
+    def test_mapping_utf8_and_duplicate_fields_fail_structurally(self):
+        import subprocess
+        import sys
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapping = root / "mapping.json"
+            for raw in (b"\xff", b'{"preRelease":true,"preRelease":true}'):
+                mapping.write_bytes(raw)
+                run = subprocess.run([sys.executable, str(MODULE_PATH), "--schema-version", "4",
+                    "--release", "0.18.0-rc.7", "--frozen-product-sha", "a" * 40,
+                    "--vsix-mapping", str(mapping), "--output", str(root / "out.json")],
+                    capture_output=True, text=True, check=False)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("NOT_PROVEN", run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+
+    def test_legacy_v1_v2_are_not_implicitly_upgraded_to_mapped_v4(self):
+        for version in (1, 2):
+            with self.valid_manifest_fixture(schema_version=version) as (root, frozen, _):
+                prepared = deepcopy(frozen); prepared["schema"] = 4
+                # Reach the semantic transition check without an incidental v4
+                # missing-field failure; full v4 generation is covered above.
+                with patch.object(MODULE, "schema_validate"), patch.object(MODULE, "load_frozen_authority", return_value=(frozen, "a" * 64)):
+                    with self.assertRaisesRegex(MODULE.TopologyError, "explicit frozen v3"):
+                        MODULE.validate_prepared_projection(frozen, prepared, "a" * 64, root / "authority", root, root)
+
     def test_v3_generation_binds_subject_projection(self):
         with self.valid_manifest_fixture(schema_version=3) as (root, manifest, frozen_sha):
             generated = MODULE.build_manifest(root, "0.18.0", frozen_sha, schema_version=3)
@@ -307,6 +406,14 @@ class ReleaseTopologyTests(unittest.TestCase):
                     load_topology_json(raw)
                 self.assertEqual(load_topology_json(raw, supported_versions=(1, 2, 3))["schema"], 3)
 
+    def test_v4_requires_explicit_raw_json_consumer_admission(self):
+        from release_topology_json import load_topology_json
+        for token in ("4", "4.0", "4e0"):
+            raw = '{"schema":' + token + '}'
+            with self.assertRaises(ValueError):
+                load_topology_json(raw)
+            self.assertEqual(load_topology_json(raw, supported_versions=(1, 2, 3, 4))["schema"], 4)
+
     def test_target_derivation_preserves_runner_and_archive_identity(self):
         workflow = """
         matrix:
@@ -356,7 +463,7 @@ class ReleaseTopologyTests(unittest.TestCase):
             ('"schema":2.0000000000000001', False),
             ('"schema":1.99999999999999999', False),
             ('"schema":true', False), ('"schema":"2"', False),
-            ('"schema":3', True), ('"schema":4', False), ('"schema":1,"schema":2', False),
+            ('"schema":3', True), ('"schema":5', False), ('"schema":1,"schema":2', False),
             ('"schema":1,"sche\\u006da":2', False),
             ('"decoy":{"schema":3},"sche\\u006da":2e0', True),
             ('"schema":2,"unrelated":1e9999999999999999999999999', True),
@@ -1986,6 +2093,163 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(
             MODULE.derive_downloader_targets(commented_return, workflow_targets), set()
         )
+
+    def test_downloader_target_derivation_rejects_regex_literal_pseudo_returns(self):
+        """TypeScript regex literals must not satisfy a Windows target return.
+
+        ``/return 'x86_64-pc-windows-msvc'/g`` is lexically a regex literal, not
+        code; the downloader's mask must treat it as a non-code region.  This is
+        the regression fixed alongside the existing comment/string coverage.
+        """
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        regex_in_assignment = """
+        const pseudo = /return 'x86_64-pc-windows-msvc'/g;
+        """
+        regex_after_newline = """
+        /return 'x86_64-pc-windows-msvc'/;
+        """
+        regex_with_flags = """
+        const re = /return 'x86_64-pc-windows-msvc'/gim;
+        """
+        regex_inside_block = """
+        const arr = [
+            /return 'x86_64-pc-windows-msvc'/,
+        ];
+        """
+        # The same shape, but inside a string literal, must also be rejected.
+        string_with_regex_text = """
+        const doc = "/return 'x86_64-pc-windows-msvc'/";
+        """
+        # And division on the same source must NOT be confused with a regex
+        # literal — this is the lexer-disambiguation surface.
+        division_safe = """
+        const a = numerator;
+        const b = a / denominator;
+        return 'x86_64-pc-windows-msvc';
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_in_assignment, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_after_newline, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_with_flags, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_inside_block, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(string_with_regex_text, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(division_safe, workflow_targets),
+            {"x86_64-pc-windows-msvc"},
+        )
+
+    def test_downloader_target_derivation_rejects_commented_darwin_ternary(self):
+        """A commented macOS target ternary must not satisfy darwin targets.
+
+        The downloader constructs both darwin targets in one ternary
+        expression.  Commenting out that ternary (line or block comment)
+        must remove the targets from the admitted set.
+        """
+        workflow_targets = {"aarch64-apple-darwin", "x86_64-apple-darwin"}
+        live = """
+        return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        """
+        commented_line = """
+        // return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        """
+        commented_block = """
+        /* return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'; */
+        """
+        regex_pseudo = """
+        const re = /return arch === 'arm64' \\? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'/;
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(live, workflow_targets),
+            workflow_targets,
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_line, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_block, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_pseudo, workflow_targets),
+            set(),
+        )
+
+    def test_downloader_target_derivation_rejects_comment_linux_construction(self):
+        """Commented Linux target construction must not satisfy Linux targets.
+
+        ``derive_downloader_targets`` admits every ``*-unknown-linux-{gnu,musl}``
+        workflow target when the downloader constructs the Linux triple with
+        ``return `${archPrefix}-unknown-linux-${libc}``` *and* sets ``archPrefix``
+        *and* recognises both ``gnu`` and ``musl`` libc branches.  Each of those
+        signals must be present in executable code; a commented-out form of any
+        one of them must not be admitted.
+        """
+        workflow_targets = {
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+        }
+        full = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(full, workflow_targets),
+            workflow_targets,
+        )
+        commented_template = """
+        // return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        commented_arch = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        // archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        commented_gnu = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        // value === 'gnu';
+        value === 'musl';
+        """
+        commented_musl = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        // value === 'musl';
+        """
+        for name, source in (
+            ("commented template", commented_template),
+            ("commented arch", commented_arch),
+            ("commented gnu", commented_gnu),
+            ("commented musl", commented_musl),
+        ):
+            with self.subTest(case=name):
+                self.assertEqual(
+                    MODULE.derive_downloader_targets(source, workflow_targets),
+                    set(),
+                )
 
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):

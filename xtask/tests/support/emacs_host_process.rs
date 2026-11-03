@@ -189,14 +189,23 @@ pub fn run_owned_process(
         }
         thread::sleep(Duration::from_millis(10));
     };
+    // Observe the fake host's recorded leak descendant at host-exit time,
+    // before the capture join, and stop it immediately. On Windows the
+    // descendant inherits the host's stdio pipe handles despite its null
+    // stdio (#15424), so a leak left running keeps the join below blocked
+    // until the descendant's own lifetime ends, and any leak probe delayed
+    // until after the join would always find it dead. The ready-marker gives
+    // direct run-local attribution, so remediation does not need to wait for
+    // the bulk baseline: killing at observation still leaves the run's
+    // ledger naming the leak via the recorded PID promoted below.
+    let leaked_descendant_at_exit = leaked_marker_descendant_alive(layout, pid, &needle);
+    if let Some(descendant_pid) = leaked_descendant_at_exit {
+        stop_owned_pid(descendant_pid);
+    }
     // Timeout/force cleanup owns this run's candidate identity, not only the
     // host PID. Kill needle-matching survivors that were absent from the
     // before-probe (never image-wide, never the pre-existing set) before the
     // after-probe so timeout cannot report those PIDs as still running.
-    // Descendants spawned with null stdio do not hold the host pipes;
-    // join_capture still unblocks on host EOF. Clean-exit leaks are observed
-    // first (cleanup Fail) and reaped after the after-probe so the ledger
-    // still names the leak.
     if (timed_out || kill_requested) && before_usable {
         reap_this_run_survivors(pid, &before_lines, &needle);
     }
@@ -234,7 +243,36 @@ pub fn run_owned_process(
             match (&probe_before, &probe_after) {
                 (Some(Ok(_)), Some(Ok(after_text))) => match parse_probe(after_text) {
                     Ok(after_lines) => {
-                        let survivors = surviving_processes(&before_lines, &after_lines, &needle);
+                        let mut survivors =
+                            surviving_processes(&before_lines, &after_lines, &needle);
+                        // Windows fallback for #15424: a detached candidate descendant
+                        // can be missing from the bulk `tasklist` snapshot, and the
+                        // capture join above can outlive the descendant itself, so the
+                        // after-probe alone cannot observe the leak. The host-exit
+                        // observation (`leaked_descendant_at_exit`) checked the fake
+                        // host's ready-marker against the kernel while the descendant
+                        // could still be alive; union that recorded PID into the
+                        // ledger on every pass — not only when the bulk set is empty —
+                        // so a bulk-visible sibling cannot keep the marked-but-missed
+                        // descendant out of remediation. The marker path
+                        // identity-checks the recorded PID before stopping it, so a
+                        // recycled PID is never killed or promoted into remediation.
+                        // A
+                        // timed-out/force-killed host never promotes the marker
+                        // descendant: it was already stopped at observation time,
+                        // before the after-probe, so the post-reap ledger stays
+                        // empty and the killed-host rule classifies the run.
+                        union_leaked_descendant(
+                            &mut survivors,
+                            timed_out,
+                            kill_requested,
+                            leaked_descendant_at_exit,
+                            plan.paths
+                                .candidate_executable
+                                .file_name()
+                                .and_then(OsStr::to_str)
+                                .unwrap_or("perllsp"),
+                        );
                         if survivors.is_empty() {
                             (
                                 CleanupResult::Pass,
@@ -295,9 +333,11 @@ pub fn run_owned_process(
         // probe may briefly skip a process whose exec name now spans a
         // newline boundary, or the line may be reordered under load, leaving
         // a leak that the test then observes as still running. The recorded
-        // PID list is the source of truth. Do not flip `cleanup` to Pass on
-        // a clean re-probe: remediation is not Pass.
-        reap_recorded_survivors(&survivors);
+        // PID list is the source of truth for who is owed a kill; each entry
+        // still gets a same-process identity re-probe before the kill so a
+        // recycled PID cannot turn remediation into collateral. Do not flip
+        // `cleanup` to Pass on a clean re-probe: remediation is not Pass.
+        reap_recorded_survivors(&survivors, &needle);
     }
     if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
         cleanup = CleanupResult::NotProven;
@@ -936,9 +976,78 @@ fn persist_text(path: &Path, text: &str) -> Result<()> {
 /// run's leak. Timeout/force callers use [`reap_this_run_survivors`]
 /// (probe-driven) instead, since no after-probe yet exists at that
 /// point.
-fn reap_recorded_survivors(survivors: &[ProcessProbeLine]) {
+fn reap_recorded_survivors(survivors: &[ProcessProbeLine], needle: &str) {
     for survivor in survivors {
-        stop_owned_pid(survivor.pid);
+        match probe_owned_pid_identity(survivor.pid) {
+            Some(identity) if matches_needle(&identity, needle) => stop_owned_pid(survivor.pid),
+            _ => {}
+        }
+    }
+}
+
+/// Union the marker-recorded leaked descendant into the observed survivors
+/// ledger (see `leaked_marker_descendant_alive`). The bulk `tasklist`
+/// snapshot can miss a detached candidate descendant, so a bulk-visible
+/// sibling must not keep the marked PID out of the ledger — union it on
+/// every pass, deduplicated by PID so a bulk-observed entry is not
+/// recorded twice. A timed-out or force-killed host never promotes the
+/// marker descendant: it was already stopped at observation time and the
+/// killed-host rule owns that classification.
+fn union_leaked_descendant(
+    survivors: &mut Vec<ProcessProbeLine>,
+    timed_out: bool,
+    kill_requested: bool,
+    leaked_descendant_at_exit: Option<u32>,
+    candidate_name: &str,
+) {
+    if timed_out || kill_requested {
+        return;
+    }
+    let Some(descendant_pid) = leaked_descendant_at_exit else {
+        return;
+    };
+    if survivors.iter().any(|line| line.pid == descendant_pid) {
+        return;
+    }
+    survivors.push(ProcessProbeLine { pid: descendant_pid, args: candidate_name.to_string() });
+}
+
+/// Per-PID identity probe for remediation-time verification. Windows
+/// returns the `tasklist` row's image name; Unix returns the live `ps`
+/// command line. `None` means the process is gone or the probe failed — in
+/// both cases the recorded PID must not be killed: a dead PID needs no
+/// reap, and an unverifiable one may have been recycled to an unrelated
+/// process.
+fn probe_owned_pid_identity(pid: u32) -> Option<String> {
+    if cfg!(windows) {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("No tasks are running") {
+            return None;
+        }
+        let line = stdout.lines().next()?;
+        let image = line.trim_start_matches('"').split('"').next()?;
+        if image.is_empty() { None } else { Some(image.to_string()) }
+    } else {
+        let output = Command::new("ps")
+            .args(["-o", "args=", "-p", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let args = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if args.is_empty() { None } else { Some(args) }
     }
 }
 
@@ -1002,6 +1111,56 @@ fn stop_owned_pid(pid: u32) {
             .stderr(Stdio::null())
             .status();
     }
+}
+
+/// Compute the path the fake host uses to publish its spawned descendant's
+/// PID when entering leak mode. The fake host joins
+/// `<event_file_parent>/descendant-ready-<fake_host_pid>`; the descendant
+/// writes `ready pid=<N>` there. Callers read this only when the host's
+/// supervision mode promised a leaked descendant — non-leak modes do not
+/// create the file and the reader returns `None`.
+fn descendant_ready_marker_path(
+    layout: &HermeticLayout,
+    host_pid: u32,
+) -> Option<std::path::PathBuf> {
+    layout.event_file().parent().map(|parent| parent.join(format!("descendant-ready-{host_pid}")))
+}
+
+/// Read the descendant PID the fake host's leak mode recorded for this run.
+/// The marker file is best-effort: missing files mean the host did not
+/// enter leak mode and the per-PID fallback below is skipped.
+fn read_descendant_pid(layout: &HermeticLayout, host_pid: u32) -> Option<u32> {
+    let path = descendant_ready_marker_path(layout, host_pid)?;
+    let bytes = fs::read(&path).ok()?;
+    let text = std::str::from_utf8(&bytes).ok()?;
+    // Marker format is `ready pid=<u32>` written by `descendant_sleep`.
+    let (_, after) = text.split_once("pid=")?;
+    let trimmed = after.trim().trim_end_matches(|c: char| !c.is_ascii_digit());
+    trimmed.parse::<u32>().ok()
+}
+
+/// Identity-verify the fake host's recorded leak descendant at host-exit
+/// time. Returns the recorded PID only when the marker names a foreign PID
+/// whose live process still matches this run's candidate needle, so a
+/// descendant that died with the host, a missing/garbled marker, a failed
+/// probe, or a PID recycled to an unrelated process keeps the prior
+/// classification untouched instead of fabricating a survivor or killing a
+/// stranger.
+fn leaked_marker_descendant_alive(
+    layout: &HermeticLayout,
+    host_pid: u32,
+    needle: &str,
+) -> Option<u32> {
+    let descendant_pid = read_descendant_pid(layout, host_pid)?;
+    if descendant_pid == host_pid {
+        return None;
+    }
+    // Numeric liveness alone is not identity: the descendant may have exited
+    // and had its PID reused by an unrelated process between the marker write
+    // and this observation. Re-probe the live process's identity and only
+    // stop it when it matches this run's candidate needle.
+    let identity = probe_owned_pid_identity(descendant_pid)?;
+    matches_needle(&identity, needle).then_some(descendant_pid)
 }
 
 fn diagnostic_probe_failure(phase: &str, probe: &Option<Result<String>>) -> Option<String> {
@@ -1071,7 +1230,7 @@ mod process_tests {
         // we owe a kill to. Verify that the survivors list is the
         // authoritative input (no needle, no before-baseline, no
         // host_pid subtraction).
-        let recorded = vec![
+        let recorded = [
             ProcessProbeLine { pid: 100, args: "/tmp/run/perllsp serve".into() },
             ProcessProbeLine { pid: 200, args: "/tmp/run/perllsp --stdio".into() },
         ];
@@ -1206,6 +1365,135 @@ mod process_tests {
             captured.full_sha256 != super::bytes_sha256(&captured.retained)?,
             "full-stream identity must not be the hash of the retained window"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn descendant_pid_reader_returns_none_when_marker_missing() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
+        assert!(
+            read_descendant_pid(&layout, 4242).is_none(),
+            "missing ready-marker file must mean the host did not enter leak mode"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn descendant_pid_reader_parses_fake_host_marker_format() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
+        let event_file = layout.event_file();
+        let marker_parent =
+            event_file.parent().context("event file must have a parent directory")?;
+        fs::write(marker_parent.join("descendant-ready-4242"), b"ready pid=98765\n")?;
+        let pid = read_descendant_pid(&layout, 4242).context("marker must parse to a PID")?;
+        ensure!(pid == 98765, "PID must round-trip through the marker, got {pid}");
+        Ok(())
+    }
+
+    #[test]
+    fn descendant_pid_reader_rejects_garbage_marker() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
+        let event_file = layout.event_file();
+        let marker_parent = event_file.parent().context("event file parent")?;
+        fs::write(marker_parent.join("descendant-ready-1"), b"not a pid line\n")?;
+        assert!(
+            read_descendant_pid(&layout, 1).is_none(),
+            "a malformed marker must not silently pass as a recorded descendant PID"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn leaked_descendant_unions_when_bulk_snapshot_missed_it() {
+        // The #15424 failure mode: the bulk snapshot missed the marked
+        // descendant during both observation and cleanup. The recorded PID
+        // must still enter the ledger so classification fails and
+        // remediation reaps exactly that PID.
+        let mut survivors = Vec::new();
+        union_leaked_descendant(&mut survivors, false, false, Some(98765), "perllsp");
+        assert_eq!(
+            survivors,
+            vec![ProcessProbeLine { pid: 98765, args: "perllsp".to_string() }],
+            "a bulk-missed marked descendant must be promoted into the survivors ledger"
+        );
+    }
+
+    #[test]
+    fn leaked_descendant_unions_alongside_a_bulk_visible_sibling() {
+        // A bulk-visible sibling must not keep the marked-but-missed
+        // descendant out of the ledger: gating promotion on
+        // `survivors.is_empty()` left that descendant alive and unrecorded.
+        let mut survivors =
+            vec![ProcessProbeLine { pid: 111, args: "perllsp --stdio".to_string() }];
+        union_leaked_descendant(&mut survivors, false, false, Some(222), "perllsp");
+        assert_eq!(
+            survivors.iter().map(|line| line.pid).collect::<Vec<_>>(),
+            vec![111, 222],
+            "the marked descendant must union into the ledger on every pass"
+        );
+    }
+
+    #[test]
+    fn leaked_descendant_union_deduplicates_a_bulk_recorded_pid() {
+        let mut survivors = vec![ProcessProbeLine { pid: 222, args: "perllsp.exe".to_string() }];
+        union_leaked_descendant(&mut survivors, false, false, Some(222), "perllsp.exe");
+        assert_eq!(survivors.len(), 1, "a bulk-recorded PID must not be recorded twice");
+    }
+
+    #[test]
+    fn leaked_descendant_is_never_promoted_after_timeout_or_force_kill() {
+        for (timed_out, kill_requested) in [(true, false), (false, true), (true, true)] {
+            let mut survivors = Vec::new();
+            union_leaked_descendant(
+                &mut survivors,
+                timed_out,
+                kill_requested,
+                Some(98765),
+                "perllsp",
+            );
+            assert!(
+                survivors.is_empty(),
+                "timed_out={timed_out} kill_requested={kill_requested}: the killed-host \
+                 rule owns the classification and the ledger must stay empty"
+            );
+        }
+    }
+
+    #[test]
+    fn owned_pid_identity_resolves_a_live_process_and_misses_a_dead_one() {
+        // The current test process is guaranteed live: the probe must
+        // return a non-empty identity on both platforms (tasklist image
+        // name on Windows, `ps` args on Unix).
+        let own = probe_owned_pid_identity(std::process::id());
+        assert!(own.as_deref().is_some_and(|identity| !identity.is_empty()));
+        // u32::MAX cannot be a live PID on either platform.
+        assert!(probe_owned_pid_identity(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn leaked_marker_descendant_requires_needle_matching_identity() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
+        let event_file = layout.event_file();
+        let marker_parent = event_file.parent().context("event file parent")?;
+        let own_pid = std::process::id();
+        // A foreign host PID keeps the self-PID guard out of the way.
+        let host_pid = own_pid + 1;
+        fs::write(
+            marker_parent.join(format!("descendant-ready-{host_pid}")),
+            format!("ready pid={own_pid}\n"),
+        )?;
+        // A live PID whose identity does not match the run needle must not be
+        // returned for termination — numeric liveness alone is not identity.
+        assert!(leaked_marker_descendant_alive(&layout, host_pid, "zzz-unrelated-image").is_none());
+        // The same recorded PID is returned when its live identity matches the
+        // run needle, mirroring the real descendant's staged candidate image.
+        let identity =
+            probe_owned_pid_identity(own_pid).context("self identity probe must succeed")?;
+        assert_eq!(leaked_marker_descendant_alive(&layout, host_pid, &identity), Some(own_pid));
         Ok(())
     }
 }

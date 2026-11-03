@@ -1656,7 +1656,8 @@ fn local_return_statement_blocks_static_fact(node: &Node, returned_name: &str) -
         | NodeKind::StatementModifier { .. }
         | NodeKind::Return { .. }
         | NodeKind::LoopControl { .. }
-        | NodeKind::Goto { .. } => true,
+        | NodeKind::Goto { .. }
+        | NodeKind::TargetlessGoto { .. } => true,
         _ => node_mentions_variable(node, returned_name),
     }
 }

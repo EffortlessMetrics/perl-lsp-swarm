@@ -52,7 +52,7 @@
 schema_version = 1
 policy = "self-hosted-runner-isolation"
 owner = "EffortlessMetrics"
-updated = "2026-09-07"
+updated = "2026-09-15"
 
 # =============================================================================
 # Rust small lanes on persistent CX53/CX43 capacity
@@ -70,22 +70,8 @@ updated = "2026-09-07"
 
 [[profile]]
 workflow = ".github/workflows/ripr.yml"
-job = "ripr-cx53"
-runner = "self_hosted_cx53"
-lifecycle = "persistent"
-candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
-per_run_namespaced = [
-  "$GITHUB_WORKSPACE",
-  "/mnt/ci-scratch/perl-lsp-swarm/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
-  "/mnt/ci-scratch/tmp/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
-]
-runtime_proof = "#7414"
-review_after = "2027-03-07"
-
-[[profile]]
-workflow = ".github/workflows/ripr.yml"
-job = "ripr-cx43"
-runner = "self_hosted_cx43"
+job = "ripr-selfhosted"
+runner = "self_hosted_rust_standard"
 lifecycle = "persistent"
 candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
 per_run_namespaced = [
@@ -167,31 +153,4 @@ candidate_writable = [
 ]
 per_run_namespaced = ["$GITHUB_WORKSPACE"]
 runtime_proof = "#7414"
-review_after = "2027-03-07"
-
-# =============================================================================
-# Droid review lane
-#
-# Recorded, not endorsed. #7414 explicitly does not rehabilitate Droid automatic
-# execution; #6098 owns that lane's trust decision. This profile exists so the
-# lane cannot be altered or duplicated silently, and so its secret exposure on a
-# persistent host stays visible.
-# =============================================================================
-
-[[profile]]
-workflow = ".github/workflows/droid.yml"
-job = "droid"
-runner = "self_hosted_droid_review"
-lifecycle = "persistent"
-# `$HOME/.factory/settings.local.json` is written after checkout and contains
-# MINIMAX_API_KEY in cleartext. It is outside the workspace, so no workspace
-# cleanup reaches it, and it persists on the host between candidates. #6098
-# already names "persistent state in user-scope directories" as the open
-# problem for this lane; recording the exact path is the point of this row.
-candidate_writable = [
-  "runner work directory",
-  "$HOME/.factory/settings.local.json (contains MINIMAX_API_KEY)",
-]
-per_run_namespaced = ["$GITHUB_WORKSPACE"]
-runtime_proof = "#6098"
 review_after = "2027-03-07"

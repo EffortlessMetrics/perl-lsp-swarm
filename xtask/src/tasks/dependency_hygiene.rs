@@ -31,6 +31,7 @@
 //! integration or hosted proof.
 
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::process::Command;
 
@@ -188,6 +189,13 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
         ProbeOutcome::Available(v) => v,
         ProbeOutcome::NotInstalled(msg) => {
             return not_proven(root, format!("cargo-machete not installed: {msg}"), None);
+        }
+        ProbeOutcome::MalformedOutput(msg) => {
+            return not_proven(
+                root,
+                format!("cargo-machete installed but probe returned unexpected output: {msg}"),
+                None,
+            );
         }
         ProbeOutcome::ProbeFailed(msg) => {
             return not_proven(root, format!("cargo-machete probe failed: {msg}"), None);
@@ -386,18 +394,42 @@ pub enum ProbeOutcome {
     Available(String),
     /// cargo is on PATH but the machete subcommand is not registered.
     NotInstalled(String),
+    /// Instrument is present but probe output is not a version line (e.g. analysis banner).
+    MalformedOutput(String),
     /// Probe command could not be executed (spawn failure or unexpected error).
     ProbeFailed(String),
 }
 
-/// Probe for cargo-machete by running `cargo machete --version`.
-///
-/// Captures the version string from stdout on success.
+const MACHETE_INSTALL_HINT: &str = "install with: cargo install cargo-machete --locked";
+
+/// Probe for cargo-machete: prefer the standalone binary, then fall back to the cargo subcommand.
 pub fn probe_machete_version() -> ProbeOutcome {
-    probe_machete_with_cargo("cargo")
+    match probe_machete_binary("cargo-machete") {
+        ProbeOutcome::NotInstalled(_) => probe_machete_with_cargo("cargo"),
+        other => other,
+    }
 }
 
-/// Probe using an explicit cargo binary path.
+/// Probe by running `{binary} --version` (direct cargo-machete invocation).
+///
+/// Public for unit testing with a fake instrument binary.
+pub fn probe_machete_binary(binary: &str) -> ProbeOutcome {
+    let output = match Command::new(binary).arg("--version").output() {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return ProbeOutcome::NotInstalled(MACHETE_INSTALL_HINT.to_string());
+        }
+        Err(e) => {
+            return ProbeOutcome::ProbeFailed(format!("spawn of `{binary}` failed: {e}"));
+        }
+        Ok(o) => o,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    classify_probe_output(output.status.code(), stdout.trim(), stderr.trim())
+}
+
+/// Probe using an explicit cargo binary path and the `machete --version` subcommand shape.
 ///
 /// Public for unit testing with an alternative (or non-existent) binary.
 pub fn probe_machete_with_cargo(cargo: &str) -> ProbeOutcome {
@@ -411,13 +443,33 @@ pub fn probe_machete_with_cargo(cargo: &str) -> ProbeOutcome {
     classify_probe_output(output.status.code(), stdout.trim(), stderr.trim())
 }
 
-/// Classify a cargo probe exit code + captured output into a `ProbeOutcome`.
+/// True when stdout looks like a `--version` line, not cargo-machete's analysis banner.
+pub fn is_version_shaped_probe_stdout(stdout: &str) -> bool {
+    let line = stdout.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return false;
+    }
+    if line.contains("Analyzing dependencies") || line.contains("Done!") {
+        return false;
+    }
+    let token = line.split_whitespace().last().unwrap_or(line);
+    token.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && token.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Classify a probe exit code + captured output into a `ProbeOutcome`.
 ///
 /// Public for unit testing with crafted inputs.
 pub fn classify_probe_output(exit_code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
     if exit_code == Some(0) {
-        let version = if stdout.is_empty() { "unknown".to_string() } else { stdout.to_string() };
-        return ProbeOutcome::Available(version);
+        if is_version_shaped_probe_stdout(stdout) {
+            return ProbeOutcome::Available(
+                stdout.lines().next().unwrap_or(stdout).trim().to_string(),
+            );
+        }
+        let detail =
+            if stdout.is_empty() { "empty stdout".to_string() } else { stdout.to_string() };
+        return ProbeOutcome::MalformedOutput(detail);
     }
 
     // cargo returns exit 101 with "no such command" on missing subcommands.
@@ -425,12 +477,27 @@ pub fn classify_probe_output(exit_code: Option<i32>, stdout: &str, stderr: &str)
         || stderr.contains("no such subcommand")
         || stderr.contains("Unknown command")
     {
-        return ProbeOutcome::NotInstalled(
-            "install with: cargo install cargo-machete --locked".to_string(),
-        );
+        return ProbeOutcome::NotInstalled(MACHETE_INSTALL_HINT.to_string());
     }
 
-    ProbeOutcome::ProbeFailed(stderr.to_string())
+    if looks_like_machete_analysis_banner(stdout, stderr) {
+        return ProbeOutcome::MalformedOutput(combined_probe_output(stdout, stderr));
+    }
+
+    ProbeOutcome::ProbeFailed(combined_probe_output(stdout, stderr))
+}
+
+fn looks_like_machete_analysis_banner(stdout: &str, stderr: &str) -> bool {
+    stdout.contains("Analyzing dependencies") || stderr.contains("Analyzing dependencies")
+}
+
+fn combined_probe_output(stdout: &str, stderr: &str) -> String {
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("{stdout}; {stderr}"),
+    }
 }
 
 // ─── Structured cargo-machete output ─────────────────────────────────────────
@@ -694,9 +761,63 @@ mod tests {
 
     #[test]
     fn test_classify_probe_available_empty_version() {
-        // stdout is empty but exit 0 → version becomes "unknown"
         let outcome = classify_probe_output(Some(0), "", "");
-        assert_eq!(outcome, ProbeOutcome::Available("unknown".to_string()));
+        assert!(matches!(outcome, ProbeOutcome::MalformedOutput(_)));
+    }
+
+    #[test]
+    fn test_classify_probe_analysis_banner_exit_two_is_malformed_not_install_hint() {
+        let stdout = "Analyzing dependencies of crates in machete,--version...";
+        let outcome = classify_probe_output(Some(2), stdout, "");
+        assert!(matches!(outcome, ProbeOutcome::MalformedOutput(_)));
+        if let ProbeOutcome::MalformedOutput(msg) = outcome {
+            assert!(!msg.contains("cargo install"));
+        }
+    }
+
+    #[test]
+    fn test_is_version_shaped_probe_stdout_rejects_banner() {
+        assert!(!is_version_shaped_probe_stdout(
+            "Analyzing dependencies of crates in machete,--version..."
+        ));
+        assert!(is_version_shaped_probe_stdout("0.9.2"));
+        assert!(is_version_shaped_probe_stdout("cargo-machete 0.9.2"));
+    }
+
+    #[test]
+    fn test_probe_machete_binary_with_fake_banner_script() {
+        let dir =
+            std::env::temp_dir().join(format!("dep-hygiene-fake-machete-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let script = dir.join("fake-cargo-machete");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' 'Analyzing dependencies of crates in machete,--version...'\nexit 2\n",
+        )
+        .expect("write fake probe script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+                .expect("chmod fake probe script");
+        }
+        let outcome = probe_machete_binary(script.to_str().expect("utf8 path"));
+        assert!(
+            matches!(outcome, ProbeOutcome::MalformedOutput(_)),
+            "fake banner probe must fail closed as malformed, got {outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_probe_machete_version_uses_real_binary_when_installed() {
+        let outcome = probe_machete_version();
+        if Command::new("cargo-machete").arg("--version").output().is_ok() {
+            assert!(
+                matches!(outcome, ProbeOutcome::Available(_)),
+                "expected Available when cargo-machete is on PATH, got {outcome:?}"
+            );
+        }
     }
 
     #[test]

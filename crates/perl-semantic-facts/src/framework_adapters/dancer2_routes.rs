@@ -80,6 +80,7 @@ pub struct Dancer2RouteDeclaration {
     pub file_id: FileId,
     /// Full declaration range (keyword start to last operand end).
     pub declaration_start_byte: u32,
+    /// End of the full declaration range.
     pub declaration_end_byte: u32,
     /// Canonical route payload (name/methods/pattern/effective/options/handler).
     pub route: RouteDeclaration,
@@ -146,8 +147,11 @@ pub trait RouteFamilyKeywordView {
     /// The adapter identity every minted leaf carries — 2.x facts must
     /// attribute to the 2.x adapter, never the 1.x one (#15006 review).
     fn adapter_id(&self) -> crate::framework::AdapterId;
+    /// Application name the activation established, when exact.
     fn application_name(&self) -> Option<&str>;
+    /// Observed framework version, when known.
     fn framework_version(&self) -> Option<&str>;
+    /// Source generation of the activation, when known.
     fn source_generation(&self) -> Option<&SourceGeneration>;
     /// State of one DSL keyword under this activation.
     fn keyword_state(&self, keyword: &str) -> Option<Dancer2KeywordState>;

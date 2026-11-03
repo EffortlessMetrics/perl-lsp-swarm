@@ -14,6 +14,11 @@ members = [
     # publish = false: internal evidence infrastructure until it has
     # consumers. Dependency contract asserted in tests/dependency_contract.rs.
     "crates/perl-evidence-envelope",
+    # perl-operation-trace: ephemeral operation_trace.v1 correlation identity,
+    # event vocabulary, and bounded in-memory recorder (#15021). Tier 1 leaf
+    # — serde only, no parser/workspace/LSP/DAP/hash-function deps.
+    # Dependency contract asserted in tests/dependency_contract.rs.
+    "crates/perl-operation-trace",
     "crates/perl-pragma",
     "crates/perl-regex",
     "crates/perl-lexer",
@@ -248,6 +253,9 @@ perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0
 # ProjectId) — the last being its only internal one. Exact closure asserted
 # by crates/perl-evidence-envelope/tests/dependency_contract.rs.
 perl-evidence-envelope = { path = "crates/perl-evidence-envelope", version = "0.17.0" }
+# perl-operation-trace: operation_trace.v1 correlation identity/event/recorder
+# contract (#15021). No internal deps.
+perl-operation-trace = { path = "crates/perl-operation-trace", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }
 perl-lexer = { path = "crates/perl-lexer", version = "0.17.0" }
@@ -280,7 +288,8 @@ perl-uri = { path = "crates/perl-uri", version = "0.17.0" }
 # (perl-lsp-protocol absorbed into perl-lsp-rs-core::protocol — Wave G3 step 2)
 # Wave D absorbed: perl-path-normalize → perl-parser-core::path_normalize
 # Wave D absorbed: perl-path-security → perl-parser-core::path_security
-perl-lsp-rs-core = { path = "crates/perl-lsp-rs-core", version = "0.17.0" }
+# Tooling may decline core defaults; product/test consumers explicitly retain them.
+perl-lsp-rs-core = { path = "crates/perl-lsp-rs-core", version = "0.17.0", default-features = false }
 perl-ci-hygiene = { path = "crates/perl-ci-hygiene", version = "0.17.0" }
 # Legacy mixed release-readiness evaluator. Private (publish = false); consumed
 # by xtask's perl-kwalitee command. Receipt kind remains `perl_kwalitee`.
@@ -428,6 +437,8 @@ dbg_macro = "deny"
 # Async discipline: lock-across-await is a deadlock/perf risk (#2899).
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
+# async_yields_async: async fn must not return a nested Future without awaiting (#2323).
+async_yields_async = "deny"
 # let_underscore_lock: activated by #14444 after a zero-site confirmation on a
 # complete workspace --all-targets measurement (force-warn pierces allows).
 # This row covers non-std guards only — borrowed `parking_lot` mutex and
@@ -439,8 +450,8 @@ await_holding_refcell_ref = "deny"
 # #11240), while `drop(m.lock())` is seen by no Clippy lint at any level and
 # stays with the #11236 deliberate-discard contract.
 let_underscore_lock = "deny"
-# mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
-mutex_atomic = "warn"
+# mutex_atomic: workspace deny after a zero-finding lib measurement (#2323 / #9884).
+mutex_atomic = "deny"
 # collapsible_if: activated by #6305 after the 293-site burn-down (#6375-#6380)
 # and a warn-forced zero-finding all-targets remeasurement plus 38 fresh fixes.
 # Seven crates retain historical blanket allows over 257 force-warn-measured

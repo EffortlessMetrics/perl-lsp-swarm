@@ -198,8 +198,8 @@ class HostedFormatterProducerTests(unittest.TestCase):
 
     def test_undeclared_cargo_fmt_in_meta_shard_job_fails_closed(self) -> None:
         broken = self.retired_ci.replace(
-            "python3 -m unittest scripts/ci/test_run_gate_shard.py",
-            "cargo fmt --all -- --check\n          python3 -m unittest scripts/ci/test_run_gate_shard.py",
+            'python3 -m unittest "$self_test"',
+            'cargo fmt --all -- --check\n            python3 -m unittest "$self_test"',
             1,
         )
         with self.assertRaisesRegex(AssertionError, "undeclared hosted formatter producer"):

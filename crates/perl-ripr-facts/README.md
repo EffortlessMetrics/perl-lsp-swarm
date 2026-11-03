@@ -35,12 +35,50 @@ Three entry points:
   paths and resolved by the process current working directory; `diff` is not
   rebased onto `--root`. The diff file is read as unified diff text and
   forwarded to `RiprFactsRequest.diff`.
-- **`run_ripr_facts(schema, root, base, head, fact_classes, out) -> i32`** —
-  the thin CLI wrapper the `perl-lsp` / `perllsp` `ripr-facts` subcommand
-  calls. It forwards its args to `build_ripr_facts_packet`, then validates the
-  output path, writes the packet to `out`, and maps the outcome to a process
-  exit code (`0` success, `1` on any validation or write failure). Use
-  `run_ripr_facts_with_diff` when the caller already has diff text.
+- **`run_ripr_facts_with_diff_path(schema, root, base, head, fact_classes,
+  diff_path, out) -> i32`** — the thin CLI wrapper the `perl-lsp` /
+  `perllsp` `--ripr-facts` flag calls. It reads `--ripr-diff` diff text from
+  `diff_path` (`None` = no-diff packet), forwards its args to
+  `build_ripr_facts_packet`, then validates the output path, writes the packet
+  to `out`, and maps the outcome to a process exit code (`0` success, `1` on
+  any validation or write failure). `run_ripr_facts` is the retained no-diff
+  wrapper; use `run_ripr_facts_with_diff` when the caller already has diff
+  text.
+
+### Output safety
+
+The wrapper **replaces** `out`; it never rewrites it in place (#16022, #8165
+"Output safety"). The packet is serialized in full, staged in a temporary
+sibling inside the destination's own directory, synced, and only then renamed
+over `out`.
+
+A consumer reading `out` therefore observes either the previous complete packet
+or the new complete packet — never a truncated or half-written one — and a
+failed generation, whether it fails at request validation, serialization, or
+the write itself, leaves the previous packet byte-identical. Staging is
+confined to the destination directory so the rename stays on one filesystem.
+The staged sibling never survives the call: on success it is renamed into
+place, and on failure it is removed.
+
+Replacing a file is not the same operation as rewriting one, so the two
+differences a caller could otherwise observe are held to the previous
+behavior:
+
+- a **symlinked** `out` is followed to the file it names, which is then
+  replaced atomically. The link is preserved rather than overwritten by a
+  regular file, so a `latest.json -> packet-vN.json` publication keeps working.
+- an existing destination's **permissions** are carried onto the replacement,
+  so a `chmod` on the packet is not reset to the process umask on the next run.
+
+Written bytes are `serde_json::to_string_pretty` output with no trailing
+newline, unchanged by the staging.
+
+Durability is bounded: the staged file is synced before the rename, but the
+containing directory is not, so a crash can lose the rename itself. That
+still leaves a complete packet — the old one or the new one — never a partial
+one. On Windows the rename can fail with a sharing violation if another
+process holds `out` open without delete sharing; that surfaces as a normal
+write failure with the previous packet intact, not as corruption.
 
 ```rust
 use perl_ripr_facts::{build_ripr_facts_packet, RiprFactsRequest};
@@ -80,6 +118,13 @@ RIPR's semantic packet-fingerprint recipe) instead of `null`:
   `cmp_ok`, `throws_ok`, `exception`, …), each with the call's real source range,
   a schema `kind`/`strength`, and the call's source text as `expression`. No
   string-scan counting, no placeholder `1:1` ranges.
+  Exception matchers are graded from the call's arguments
+  (`oracle_matcher_grading` in `producer.capabilities`): `throws_ok` with a
+  string-literal class or a regex literal, and `like(dies {...}, MATCHER)` /
+  `like(exception {...}, MATCHER)` with the same, are `strong_exact`; a bare
+  `dies_ok`, a variable matcher, an empty literal, and a value `like` stay
+  `weak_broad`. The exception block nested in a graded `like` is part of that
+  one oracle, never a second one.
 - `changes[]` — one fact per contiguous added-line hunk of a **caller-supplied**
   unified diff (`RiprFactsRequest.diff`), attributed to the smallest enclosing
   `owners[]` fact by line containment. A hunk outside every owner, or in a file
@@ -98,14 +143,52 @@ RIPR's semantic packet-fingerprint recipe) instead of `null`:
 This uses the clean leaf crates `perl-parser-core` (parse + `LineIndex`
 byte→line/column) and `perl-symbol` (`extract_symbol_decls` /
 `extract_symbol_refs`) — not `perl-workspace` (which pulls `lsp-types`).
-Relations (including a heuristic `direct_owner_call`) and dynamic boundaries
-remain from earlier conservative slices. The canonical `perl-ripr-facts
-ripr-facts` CLI accepts `--diff <cwd-relative-file>` and supplies that unified
-diff text to the packet builder. Compatibility wrappers that call
-`run_ripr_facts` without diff text still yield an empty `changes[]` plus a
-`no-diff-supplied` limitation when `changes` is requested. The managed-producer
-diff source and the parser-backed/semantic relations that will replace the
-string-heuristic `direct_owner_call` land in later slices.
+Relations (parser-backed `direct_owner_call` via test-call AST facts since #3293
+PR 6, plus `file_proximity`) and dynamic boundaries are emitted. Block
+`eval { ... }` in a test file is not a boundary (it only traps the exception
+the test observes, and `like($@, MATCHER)` is graded like the other exception
+matchers); block `eval` in a source file and every string form
+(`eval $code`, `eval "..."`, `eval '...'`, `eval(`, bare `eval;`, `evalbytes`,
+`CORE::eval`) still emit
+`eval_or_string_code` and fail closed. The
+canonical `perl-ripr-facts ripr-facts` CLI accepts `--diff
+<cwd-relative-file>` and supplies that unified diff text to the packet
+builder. Compatibility wrappers that call `run_ripr_facts` without diff text
+still yield an empty `changes[]` plus a `no-diff-supplied` limitation when
+`changes` is requested. The managed-producer diff source (deriving diff text
+from base/head instead of accepting caller-supplied bytes) lands in a later
+slice.
 
-The `perl-lsp` / `perllsp` binaries retain the `ripr-facts` subcommand as a
-thin wrapper that calls [`run_ripr_facts`].
+The `perl-lsp` / `perllsp` binaries retain the `--ripr-facts` flag as a
+thin wrapper that calls [`run_ripr_facts_with_diff_path`], threading
+`--ripr-diff` into `changes[]` (#17152); without the flag the packet keeps
+the no-diff contract (empty `changes[]` plus `no-diff-supplied`).
+
+### Fingerprint contract (identity-only)
+
+The fingerprint is **not** a content-change detector. It hashes stable semantic
+**identity tuples** only (see `ripr_packet_fingerprint` in `src/packet.rs`):
+
+| Packet slice | Hashed identity tuple(s) |
+| --- | --- |
+| `files[]` | `(file_id, slash-normalized path)` |
+| `owners[]` | `owner_id` |
+| `changes[]` | `change_id` (span-derived, e.g. `change:{file}:{start}:{end}`) |
+| `oracles[]` | `(oracle_id, target_owner_id, observed_sink, expected_expression)` |
+| `relations[]` | `(relation_id, change_id, owner_id, test_id, oracle_id)` |
+
+**Excluded from the hash:** entire `tests[]`, `dynamic_boundaries[]`,
+`verify_commands[]`, `limitations[]`, and `provenance[]` arrays; top-level
+`packet_id`; and on every fact row all digests, all source ranges, and every
+other field not listed above (including oracle `expression`, file `role`, change
+`changed_text_digest`, and so on).
+
+**Consequence:** a same-span edit that keeps the same `change_id` (and leaves
+other identity tuples unchanged) yields a **byte-identical** fingerprint even
+when `files[].digest` or `changes[].changed_text_digest` differ. Use those
+digests or the underlying source/diff text when you need content-level change
+detection, not `packet_fingerprint`.
+
+**Related fields (not hashed):** file `digest` values use a `sha256:` prefix;
+`changes[].changed_text_digest` uses `fnv64:`. The emitter currently sets
+`input.diff_id` to `null` on every path.
