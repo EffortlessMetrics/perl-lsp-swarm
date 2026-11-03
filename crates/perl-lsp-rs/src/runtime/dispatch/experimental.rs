@@ -6,7 +6,7 @@
 use super::super::JsonRpcId;
 use super::super::{JsonRpcError, LspServer, Value};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-use crate::protocol::{request_cancelled_error, server_cancelled_error};
+use crate::protocol::{invalid_params, request_cancelled_error, server_cancelled_error};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use serde_json::json;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -19,6 +19,72 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         self.handle_test_discovery(params)
+    }
+
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(super) fn handle_test_parse_worker_barrier_dispatch(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        let params = params
+            .as_ref()
+            .ok_or_else(|| invalid_params("Missing params for $/test/parseWorkerBarrier"))?;
+        let action = params
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_params("Missing string field: action"))?;
+        match action {
+            "arm" | "armSideEffect" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_params("Missing string field: uri"))?;
+                let generation = params
+                    .get("generation")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| invalid_params("Missing unsigned field: generation"))?;
+                if action == "arm" {
+                    self.test_parse_worker_arm_barrier(uri, generation);
+                } else {
+                    self.test_parse_worker_arm_side_effect_barrier(uri, generation);
+                }
+                Ok(Some(json!({"ok": true})))
+            }
+            "waitPaused" => {
+                self.test_parse_worker_wait_until_paused();
+                Ok(Some(json!({"ok": true})))
+            }
+            "waitSideEffectPaused" => {
+                self.test_parse_worker_wait_until_side_effects_paused();
+                Ok(Some(json!({"ok": true})))
+            }
+            "release" => {
+                self.test_parse_worker_release_barrier();
+                Ok(Some(json!({"ok": true})))
+            }
+            "releaseSideEffect" => {
+                self.test_parse_worker_release_side_effect_barrier();
+                Ok(Some(json!({"ok": true})))
+            }
+            "metrics" => {
+                let metrics = self.test_parse_worker_metrics().ok_or_else(|| {
+                    invalid_params("parse worker is not installed on this server")
+                })?;
+                Ok(Some(json!({
+                    "jobsEnqueued": metrics.jobs_enqueued,
+                    "jobsStarted": metrics.jobs_started,
+                    "jobsCoalesced": metrics.jobs_coalesced,
+                    "jobsCancelled": metrics.jobs_cancelled,
+                    "jobsRejectedStale": metrics.jobs_rejected_stale,
+                    "jobsPublished": metrics.jobs_published,
+                    "failuresPublished": metrics.failures_published,
+                    "queueDepthMax": metrics.queue_depth_max,
+                    "jobsPanicked": metrics.jobs_panicked,
+                })))
+            }
+            other => Err(invalid_params(&format!("Unknown parseWorkerBarrier action: {other}"))),
+        }
     }
 
     #[cfg(any(test, feature = "expose_lsp_test_api"))]

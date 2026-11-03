@@ -208,9 +208,9 @@ crate = "perl-lsp-rs"
 name = "expose_lsp_test_api"
 role = "test_only"
 owner = "#8409"
-consumers = ["cfg_gated", "composition"]
+consumers = ["cfg_gated", "composition", "propagated"]
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
-note = "Widest test-only surface in the workspace; forwards to perl-parser/expose_lsp_test_api."
+note = "Widest test-only surface in the workspace; forwards to perl-parser/expose_lsp_test_api; propagated by perllsp for exact-process integration tests (#7079)."
 
 [[feature]]
 crate = "perl-lsp-rs"
@@ -706,6 +706,15 @@ name = "workspace"
 role = "build_composition"
 owner = "#8409"
 consumers = ["cfg_gated", "propagated"]
+
+[[feature]]
+crate = "perllsp"
+name = "expose_lsp_test_api"
+role = "test_only"
+owner = "#7079"
+consumers = ["cfg_gated", "composition"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Forwards to perl-lsp-rs/expose_lsp_test_api so exact-process integration tests can arm parse-worker barriers (#7079)."
 
 [[feature]]
 crate = "tree-sitter-perl-c"

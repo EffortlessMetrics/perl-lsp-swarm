@@ -401,6 +401,12 @@ pub(crate) const REGISTRY: &[MethodDescriptor] = &[
         MethodDirection::ClientToServer,
         LifecyclePhase::Anytime,
     ),
+    ext(
+        "$/test/parseWorkerBarrier",
+        EnvelopeKind::Request,
+        MethodDirection::ClientToServer,
+        LifecyclePhase::RequiresInitialized,
+    ),
 ];
 
 /// Look up the descriptor for a method, if classified.
