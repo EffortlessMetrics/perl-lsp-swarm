@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Pattern B from issue #2149: Hash variable with keyword name after block close
 //

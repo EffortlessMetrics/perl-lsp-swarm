@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::{assert_clean_parse, parse};
+use super::cpan_test_helpers::{assert_clean_parse, parse};
 
 // Tests for issue #4168: fat arrow (=>) inside array ref literals should be
 // treated as list context (comma with autoquoting), not hash/block context.

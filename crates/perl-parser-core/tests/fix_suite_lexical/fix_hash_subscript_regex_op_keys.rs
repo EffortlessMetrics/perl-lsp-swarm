@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Bug A: direct hash subscript with regex-operator name (no arrow)
 // e.g. $h{m} = 1  — the lexer was treating `m}` as start of m}...{ regex

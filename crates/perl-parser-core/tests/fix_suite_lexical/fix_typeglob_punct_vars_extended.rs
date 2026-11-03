@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Extended typeglob punctuation variable tests.
 // Covers the remaining punct typeglob forms that appeared in CPAN corpus files

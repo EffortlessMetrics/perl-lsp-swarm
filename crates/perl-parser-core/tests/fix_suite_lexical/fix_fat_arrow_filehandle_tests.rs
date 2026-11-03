@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Issue #2392: print STDERR => "msg" was misclassified as indirect-call syntax
 // because the is_indirect_call_pattern() guard checked for Comma and Arrow but

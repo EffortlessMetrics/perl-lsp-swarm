@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Test typeglob aliases for Perl's punctuation special variables
 // These appear in English.pm (core Perl module)

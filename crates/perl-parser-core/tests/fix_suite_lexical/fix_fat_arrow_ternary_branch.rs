@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Tests for fat-arrow pairs as ternary branch expressions — issue #2402
 // Root cause: parse_ternary uses parse_assignment for the then-branch,

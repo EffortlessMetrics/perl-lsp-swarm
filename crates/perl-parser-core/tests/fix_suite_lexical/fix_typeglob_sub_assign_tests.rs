@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // *GLOB = sub { ... } — typeglob assignment with anonymous sub as RHS
 

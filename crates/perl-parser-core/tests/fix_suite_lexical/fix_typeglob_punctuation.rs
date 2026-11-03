@@ -4,8 +4,7 @@
 //! bucket. They are aliases for punctuation variables and must be accepted as
 //! typeglob names rather than routed through generic expression recovery.
 
-mod cpan_test_helpers;
-use cpan_test_helpers::assert_clean_parse;
+use super::cpan_test_helpers::assert_clean_parse;
 use perl_ast::ast::{Node, NodeKind};
 use perl_parser_core::Parser;
 use perl_tdd_support::must;
