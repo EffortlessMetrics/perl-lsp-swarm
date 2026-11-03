@@ -40,6 +40,8 @@ use crate::utils::project_root;
 pub mod disposition;
 mod first_failure;
 mod planning_types;
+#[cfg(not(windows))]
+mod posix_shell;
 pub mod route_profile;
 mod routed_result_adapter;
 
@@ -2843,23 +2845,7 @@ fn shell_command_process(command: &str, _timeout_secs: u64) -> Command {
 }
 
 #[cfg(not(windows))]
-fn shell_command_process(command: &str, timeout_secs: u64) -> Command {
-    use std::os::unix::process::CommandExt;
-
-    let mut cmd = Command::new("bash");
-    let timeout_arg = format!("{timeout_secs}s");
-    cmd.arg("-lc")
-        .arg(
-            "if command -v timeout >/dev/null 2>&1; then \
-             exec timeout --signal=TERM --kill-after=60s \"$1\" bash -lc \"$2\"; \
-             else exec bash -lc \"$2\"; fi",
-        )
-        .arg("xtask-gate-timeout")
-        .arg(timeout_arg)
-        .arg(command);
-    cmd.process_group(0);
-    cmd
-}
+pub(crate) use posix_shell::shell_command_process;
 
 #[cfg(windows)]
 fn terminate_shell_command(child: &mut Child) {
