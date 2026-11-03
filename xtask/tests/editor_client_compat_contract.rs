@@ -5,13 +5,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use walkdir::WalkDir;
+use xtask::actual_host_receipt::receipt_content_digest;
 use xtask::editor_client_compat::{
     ArtifactKind, CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, CapabilityBasis,
     CapabilityIdentity, CleanupResult, ClientSourceState, DiagnosticMode, DiagnosticsIdentity,
     EditorClientCompatReceipt, EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity,
     IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult,
     PROTOCOL_EVIDENCE_SCHEMA_VERSION, PlatformIdentity, PositionEncodingBasis, ProtocolEvidence,
-    RegistrationState, SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
+    RegistrationState, SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity, bounds,
     canonical_expectation_set_digest, fixture_digest,
 };
 
@@ -191,7 +192,7 @@ fn with_protocol_evidence(
 
     receipt.protocol_evidence = Some(ProtocolEvidence {
         run_id: run_id.to_string(),
-        receipt_sha256: sha256('0'),
+        receipt_sha256: receipt_content_digest(&payload)?,
         receipt: payload,
     });
     Ok(receipt)
@@ -676,6 +677,162 @@ fn subject_invalidation_is_identity_based_not_age_based() -> Result<()> {
             ]),
         "subject invalidation did not report every changed identity dimension"
     );
+    Ok(())
+}
+
+#[test]
+fn stale_protocol_receipt_digest_rejects_one_field_nested_mutation() -> Result<()> {
+    let mut stale = with_protocol_evidence(valid_receipt()?, |_| ())?;
+    stale.protocol_evidence.as_mut().unwrap().receipt["editor"]["version"] =
+        Value::String("31.2".to_string());
+    ensure!(
+        stale.validate().is_err(),
+        "a nested mutation with a stale protocol receipt digest was accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn protocol_receipt_digest_rejects_an_unrelated_receipt_payload() -> Result<()> {
+    let other = with_protocol_evidence(valid_receipt()?, |payload| {
+        payload["run_id"] = Value::String("other-run-id".to_string());
+    })?;
+    let mut mismatched = with_protocol_evidence(valid_receipt()?, |_| ())?;
+    mismatched.protocol_evidence = Some(ProtocolEvidence {
+        run_id: mismatched.protocol_evidence.as_ref().unwrap().run_id.clone(),
+        receipt_sha256: other
+            .protocol_evidence
+            .as_ref()
+            .context("other receipt missing protocol evidence")?
+            .receipt_sha256
+            .clone(),
+        receipt: mismatched.protocol_evidence.as_ref().unwrap().receipt.clone(),
+    });
+    ensure!(mismatched.validate().is_err(), "a digest from another receipt payload was accepted");
+    Ok(())
+}
+
+#[test]
+fn canonical_protocol_receipt_digest_is_stable_across_a_second_run() -> Result<()> {
+    let receipt = valid_receipt()?;
+    let first = with_protocol_evidence(receipt.clone(), |_| ())?;
+    let second = with_protocol_evidence(receipt, |_| ())?;
+    let first_digest = first
+        .protocol_evidence
+        .as_ref()
+        .context("first receipt missing protocol evidence")?
+        .receipt_sha256
+        .clone();
+    let second_digest = second
+        .protocol_evidence
+        .as_ref()
+        .context("second receipt missing protocol evidence")?
+        .receipt_sha256
+        .clone();
+    ensure!(
+        first_digest == second_digest,
+        "protocol receipt digest changed across a second canonical run"
+    );
+    first.validate()?;
+    Ok(())
+}
+
+#[test]
+fn validate_and_bind_returns_the_typed_handoff_without_revalidation() -> Result<()> {
+    let receipt = with_protocol_evidence(valid_receipt()?, |_| ())?;
+    let bound = receipt.validate_and_bind()?;
+    ensure!(
+        bound.bounds_version() == xtask::editor_client_compat::RECEIPT_BOUNDS_VERSION,
+        "validated handoff did not expose the current bounds version"
+    );
+    ensure!(
+        bound.protocol_receipt_digest().is_some(),
+        "validated handoff omitted the embedded protocol digest"
+    );
+    Ok(())
+}
+
+#[test]
+fn protocol_run_id_is_bounded_and_embedded_extension_null_values_digest() -> Result<()> {
+    let mut long_run = "r".repeat(bounds::MAX_REASON_TOKEN_LEN + 1);
+    long_run.insert(0, 'a');
+    let mut stale = with_protocol_evidence(valid_receipt()?, |_| ())?;
+    stale.protocol_evidence.as_mut().unwrap().run_id = long_run.clone();
+    stale.protocol_evidence.as_mut().unwrap().receipt["run_id"] = Value::String(long_run);
+    ensure!(stale.validate().is_err(), "oversized protocol run_id was accepted");
+
+    let mut with_null_extension = with_protocol_evidence(valid_receipt()?, |payload| {
+        payload["extensions"] = serde_json::json!({ "vendor.note": null });
+    })?;
+    with_null_extension.validate_and_bind()?;
+    Ok(())
+}
+
+#[test]
+fn receipt_bounds_reject_oversized_collections_and_accept_exact_boundaries() -> Result<()> {
+    let mut over_journey = valid_receipt()?;
+    over_journey.journey = (0..=bounds::MAX_JOURNEY_CELLS)
+        .map(|index| JourneyCell {
+            id: format!("cell.{index:02}"),
+            capability_basis: CapabilityBasis::NotApplicable,
+            observed: false,
+            result: ObservationResult::Unsupported,
+            evidence: Vec::new(),
+            limitation: Some("not exercised in this proof".to_string()),
+        })
+        .collect();
+    ensure!(
+        over_journey.validate().is_err(),
+        "receipt with one too many journey cells was accepted"
+    );
+
+    let mut at_boundary = valid_receipt()?;
+    at_boundary.journey = (0..bounds::MAX_JOURNEY_CELLS)
+        .map(|index| JourneyCell {
+            id: format!("cell.{index:02}"),
+            capability_basis: CapabilityBasis::NotApplicable,
+            observed: index == 0,
+            result: if index == 0 {
+                ObservationResult::Pass
+            } else {
+                ObservationResult::Unsupported
+            },
+            evidence: if index == 0 {
+                vec!["host-event.definition".to_string()]
+            } else {
+                vec!["artifacts/evidence.log".to_string(); bounds::MAX_JOURNEY_EVIDENCE_PER_CELL]
+            },
+            limitation: if index == 0 {
+                None
+            } else {
+                Some("not exercised in this proof".to_string())
+            },
+        })
+        .collect();
+    at_boundary.validate()?;
+
+    let mut over_identity = valid_receipt()?;
+    over_identity.claim_boundary = "x".repeat(bounds::MAX_CLAIM_BOUNDARY_LEN + 1);
+    ensure!(
+        over_identity.validate().is_err(),
+        "receipt with an oversized claim boundary was accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn embedded_protocol_receipt_size_is_bounded() -> Result<()> {
+    let receipt = valid_receipt()?;
+    let oversized = with_protocol_evidence(receipt, |payload| {
+        payload["extensions"] = Value::Object(
+            std::iter::once((
+                "editor_client_compat.padding".to_string(),
+                Value::String("x".repeat(70_000)),
+            ))
+            .collect(),
+        );
+    })?;
+    ensure!(oversized.validate().is_err(), "oversized embedded protocol receipt was accepted");
     Ok(())
 }
 

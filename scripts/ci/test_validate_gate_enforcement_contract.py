@@ -1137,5 +1137,25 @@ class QualificationCallerTests(unittest.TestCase):
         self.assertEqual(result['qualification_status'], 'NOT_PROVEN')
 
 
+def load_tests(loader, standard_tests, pattern):
+    """Keep #16469 registration falsifiers on the existing contract job.
+
+    `.github/workflows/gate-enforcement-contract.yml` names this module
+    explicitly. Discovering the sibling file here avoids editing that
+    workflow while dependabot and other PRs are touching it.
+    """
+    del pattern
+    sibling = Path(__file__).with_name("test_detect_required_check_registration.py")
+    spec = importlib.util.spec_from_file_location(
+        "test_detect_required_check_registration", sibling
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to load {sibling}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    standard_tests.addTests(loader.loadTestsFromModule(module))
+    return standard_tests
+
+
 if __name__ == "__main__":
     unittest.main()
