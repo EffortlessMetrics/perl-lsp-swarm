@@ -837,6 +837,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::engine::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
@@ -3178,6 +3179,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
@@ -5664,6 +5666,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
