@@ -137,7 +137,10 @@ impl NativeFormatter {
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
-            if literal_lines.contains(&line_index) {
+            // Line directives are preserved exactly: Perl honors them only
+            // at column zero, so reindenting one inside a block would
+            // change source-location semantics (PR #17704 review).
+            if literal_lines.contains(&line_index) || is_perl_line_directive(body) {
                 formatted.push_str(body);
                 formatted.push_str(line_ending);
                 continue;
@@ -189,6 +192,7 @@ impl NativeFormatter {
                             // cannot change meaning.
                             None if closes
                                 || opens
+                                || body.trim_start().starts_with('#')
                                 || literal_lines.contains(&(line_index + 1)) =>
                             {
                                 candidate
@@ -243,7 +247,10 @@ impl NativeFormatter {
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if literal_lines.contains(&line_index) || body.trim().is_empty() {
+            let formatted_body = if literal_lines.contains(&line_index)
+                || is_perl_line_directive(body)
+                || body.trim().is_empty()
+            {
                 None
             } else if is_rendered_block_boundary_line(body, config) {
                 let role = rendered_boundary_role(body);
@@ -284,6 +291,7 @@ impl NativeFormatter {
                                 Some(formatted) => Some(formatted),
                                 None if closes
                                     || opens
+                                    || body.trim_start().starts_with('#')
                                     || literal_lines.contains(&(line_index + 1)) =>
                                 {
                                     Some(candidate)
@@ -334,26 +342,48 @@ impl NativeFormatter {
         (formatted, edits)
     }
 
-    /// Apply the configured final-newline policy.
+    /// Apply the configured final-newline policy to [`Self::format_safe_subset`]'s
+    /// output.
     ///
-    /// The argument is [`Self::format_safe_subset`]'s output, not the caller's
-    /// original document, so the terminator appended here is the line-ending
-    /// convention [`inferred_line_ending`] infers from the *formatted* text's
-    /// last LF â€” not what that text happens to end with, which may be an
-    /// unterminated final line. That convention matches the caller's document
-    /// only because `format_safe_subset` preserves each line's existing
-    /// terminator; it is not independently guaranteed. Hence `formatted`
-    /// rather than `source`.
-    fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
+    /// `source` is the caller's original document. When a final newline is
+    /// synthesized, its terminator follows the convention inferred from that
+    /// document, not from `formatted`, so a formatting path that drops the
+    /// intermediate's trailing terminators cannot flip CRLF sources to LF
+    /// (#14276).
+    fn apply_final_newline(formatted: &str, source: &str, config: &FormatConfig) -> String {
         match config.final_newline {
             FinalNewline::Preserve => formatted.to_string(),
             FinalNewline::Insert => {
                 let trimmed = formatted.trim_end_matches(['\n', '\r']);
-                format!("{trimmed}{}", inferred_line_ending(formatted))
+                format!("{trimmed}{}", inferred_line_ending(source))
             }
             FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
     }
+}
+
+/// Whether `line` has the shape of a Perl `#line` directive: `#line 100
+/// "generated.pl"`, `# line 100 "generated.pl"`, or `#line 100` (verified
+/// against Perl: the `line` keyword must be a separate word followed by a
+/// decimal line number; `# 100 "file"`, `#line100`, and `#linear` are plain
+/// comments). Perl honors the directive only when `#` sits in column zero,
+/// so reindenting one out of a block would silently change `__LINE__`,
+/// `__FILE__`, and error locations (PR #17704 review). The check is
+/// deliberately fail-closed on the trimmed line: directive-shaped text is
+/// preserved wherever it sits rather than risk moving a real directive.
+pub(super) fn is_perl_line_directive(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('#') else { return false };
+    let Some(rest) = rest.trim_start().strip_prefix("line") else { return false };
+    if !rest.starts_with([' ', '\t']) {
+        return false;
+    }
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let digit_len = rest.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return false;
+    }
+    let rest = &rest[digit_len..];
+    rest.is_empty() || rest.starts_with([' ', '\t'])
 }
 
 /// Line indices (0-based) that belong to a literal-preserve region and must
@@ -529,8 +559,8 @@ impl PerlFormatter for NativeFormatter {
             return result;
         }
 
-        let formatted =
-            Self::apply_final_newline(&Self::format_safe_subset(source, config), config);
+        let safe_subset = Self::format_safe_subset(source, config);
+        let formatted = Self::apply_final_newline(&safe_subset, source, config);
         if let Err(diagnostic) =
             Self::validate_clean_parse(&formatted, counters::ParseGateKind::FormattedOutput)
         {
@@ -2585,11 +2615,25 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+        FinalNewline, FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
         byte_span_for_line_range, literal_preserve_region, literal_preserve_region_for_range,
         range_includes_line, split_line_ending, split_trailing_comment,
         token_literal_preserve_region_overlapping,
     };
+
+    /// When the formatted intermediate loses trailing terminators, the synthesized
+    /// final newline must still follow the user's document convention (#14276).
+    #[test]
+    fn apply_final_newline_insert_uses_source_line_ending_convention()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $x = 1;\r\n";
+        let formatted_intermediate = "my $x = 1;";
+        let config =
+            FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
+        let result = NativeFormatter::apply_final_newline(formatted_intermediate, source, &config);
+        assert_eq!(result, "my $x = 1;\r\n");
+        Ok(())
+    }
 
     #[test]
     fn split_trailing_comment_ignores_hash_inside_backticks()
