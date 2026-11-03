@@ -139,6 +139,11 @@ import {
 } from './languageClientDocumentSync';
 import { settleLspProviderCallWithDisposition } from './lspProviderCall';
 import {
+  captureProviderRequestSubject,
+  isProviderRequestSubjectCurrent,
+  type ProviderRequestSubject,
+} from './providerRequestSubject';
+import {
   CrashRecoveryArbiter,
   type CrashObservationSource,
   type CrashRecoveryDecision,
@@ -2721,45 +2726,36 @@ export function createLanguageClient(serverPath: string): LanguageClient {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return [];
         }
-        try {
-          const lenses = await next(document, token);
-          return lenses?.map(rewriteTestLensCommand);
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return [];
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return [];
-          }
-          outputChannel?.warn(`[provider] CodeLens failed: ${message}`);
-          return [];
-        }
+        return settleDocumentListMiddlewareProviderCall(
+          'CodeLens',
+          document,
+          async () => {
+            const lenses = await next(document, token);
+            return lenses?.map(rewriteTestLensCommand) ?? [];
+          },
+          [],
+        );
       },
       resolveCodeLens: async (codeLens, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return rewriteTestLensCommand(codeLens);
         }
-        try {
-          const resolved = await next(codeLens, token);
-          return rewriteTestLensCommand(resolved ?? codeLens);
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return rewriteTestLensCommand(codeLens);
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return rewriteTestLensCommand(codeLens);
-          }
-          outputChannel?.warn(`[provider] CodeLens resolve failed: ${message}`);
-          return rewriteTestLensCommand(codeLens);
-        }
+        return settleResolveMiddlewareProviderCall(
+          'CodeLens resolve',
+          rewriteTestLensCommand(codeLens),
+          async () => rewriteTestLensCommand((await next(codeLens, token)) ?? codeLens),
+        );
       },
       provideDocumentFormattingEdits: async (document, options, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleFormattingProviderCall(async () => next(document, options, token), null);
+        return settleFormattingProviderCall(
+          async () => next(document, options, token),
+          null,
+          false,
+          document,
+        );
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
@@ -2769,173 +2765,105 @@ export function createLanguageClient(serverPath: string): LanguageClient {
           async () => next(document, range, options, token),
           null,
           true,
+          document,
         );
       },
       provideFoldingRanges: async (document, context, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return [];
         }
-        try {
-          const result = await next(document, context, token);
-          return result ?? [];
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return [];
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return [];
-          }
-          outputChannel?.warn(`[provider] FoldingRanges failed: ${message}`);
-          return [];
-        }
+        return settleDocumentListMiddlewareProviderCall(
+          'FoldingRanges',
+          document,
+          async () => (await next(document, context, token)) ?? [],
+          [],
+        );
       },
       provideInlayHints: async (document, range, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return [];
         }
-        try {
-          const result = await next(document, range, token);
-          return result ?? [];
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return [];
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return [];
-          }
-          outputChannel?.warn(`[provider] InlayHints failed: ${message}`);
-          return [];
-        }
+        return settleDocumentListMiddlewareProviderCall(
+          'InlayHints',
+          document,
+          async () => (await next(document, range, token)) ?? [],
+          [],
+        );
       },
       provideDocumentSemanticTokens: async (document, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          return (await next(document, token)) ?? null;
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return null;
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return null;
-          }
-          outputChannel?.warn(`[provider] SemanticTokens failed: ${message}`);
-          return null;
-        }
+        return settleNullableDocumentMiddlewareProviderCall(
+          'SemanticTokens',
+          document,
+          async () => (await next(document, token)) ?? null,
+          null,
+        );
       },
       provideDocumentRangeSemanticTokens: async (document, range, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          return (await next(document, range, token)) ?? null;
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return null;
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return null;
-          }
-          outputChannel?.warn(`[provider] RangeSemanticTokens failed: ${message}`);
-          return null;
-        }
+        return settleNullableDocumentMiddlewareProviderCall(
+          'RangeSemanticTokens',
+          document,
+          async () => (await next(document, range, token)) ?? null,
+          null,
+        );
       },
       provideDocumentSemanticTokensEdits: async (document, previousResultId, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          return (await next(document, previousResultId, token)) ?? null;
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return null;
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return null;
-          }
-          outputChannel?.warn(`[provider] SemanticTokensEdits failed: ${message}`);
-          return null;
-        }
+        return settleNullableDocumentMiddlewareProviderCall(
+          'SemanticTokensEdits',
+          document,
+          async () => (await next(document, previousResultId, token)) ?? null,
+          null,
+        );
       },
       provideCodeActions: async (document, range, context, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return [];
         }
-        try {
-          const result = await next(document, range, context, token);
-          return result ?? [];
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return [];
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return [];
-          }
-          outputChannel?.warn(`[provider] CodeActions failed: ${message}`);
-          return [];
-        }
+        return settleDocumentListMiddlewareProviderCall(
+          'CodeActions',
+          document,
+          async () => (await next(document, range, context, token)) ?? [],
+          [],
+        );
       },
       resolveCodeAction: async (item, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return item;
         }
-        try {
-          return (await next(item, token)) ?? item;
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return item;
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return item;
-          }
-          outputChannel?.warn(`[provider] CodeAction resolve failed: ${message}`);
-          return item;
-        }
+        return settleResolveMiddlewareProviderCall(
+          'CodeAction resolve',
+          item,
+          async () => (await next(item, token)) ?? item,
+        );
       },
       provideDocumentLinks: async (document, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return [];
         }
-        try {
-          const result = await next(document, token);
-          return result ?? [];
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return [];
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return [];
-          }
-          outputChannel?.warn(`[provider] DocumentLinks failed: ${message}`);
-          return [];
-        }
+        return settleDocumentListMiddlewareProviderCall(
+          'DocumentLinks',
+          document,
+          async () => (await next(document, token)) ?? [],
+          [],
+        );
       },
       resolveDocumentLink: async (link, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return link;
         }
-        try {
-          return (await next(link, token)) ?? link;
-        } catch (error: unknown) {
-          if (isRequestCancellation(error)) {
-            return link;
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Client got disposed')) {
-            return link;
-          }
-          outputChannel?.warn(`[provider] DocumentLink resolve failed: ${message}`);
-          return link;
-        }
+        return settleResolveMiddlewareProviderCall(
+          'DocumentLink resolve',
+          link,
+          async () => (await next(link, token)) ?? link,
+        );
       },
       handleWorkDoneProgress: (token, params, next) => {
         healthWidget?.onProgress(token, params);
@@ -2979,6 +2907,7 @@ export function createLanguageClient(serverPath: string): LanguageClient {
 function recordLspProviderOutcome(
   label: string,
   document: vscode.TextDocument,
+  subject: ProviderRequestSubject,
   result: unknown,
   emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
 ): void {
@@ -2988,6 +2917,7 @@ function recordLspProviderOutcome(
       result,
       activeDocumentReadiness.isReady(document.uri.toString()),
       emptyOutcome,
+      isProviderRequestSubjectCurrent(subject, document),
     );
     healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
   } catch {
@@ -3002,12 +2932,44 @@ async function settleMiddlewareProviderCall<T>(
   fallback: T,
   emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
 ): Promise<T> {
+  const subject = captureProviderRequestSubject(document);
   const settlement = await settleLspProviderCallWithDisposition(call, fallback);
   if (settlement.kind === 'returned') {
     safelyObserveProviderOutcome(() =>
-      recordLspProviderOutcome(label, document, settlement.value, emptyOutcome),
+      recordLspProviderOutcome(label, document, subject, settlement.value, emptyOutcome),
     );
   } else if (settlement.kind === 'failed') {
+    safelyObserveProviderOutcome(() => handleLspProviderError(label, settlement.error));
+  }
+  return settlement.wireValue;
+}
+
+async function settleDocumentListMiddlewareProviderCall<T>(
+  label: string,
+  document: vscode.TextDocument,
+  call: () => Promise<T[]>,
+  fallback: T[],
+): Promise<T[]> {
+  return settleMiddlewareProviderCall(label, document, call, fallback);
+}
+
+async function settleNullableDocumentMiddlewareProviderCall<T>(
+  label: string,
+  document: vscode.TextDocument,
+  call: () => Promise<T | null>,
+  fallback: T | null,
+): Promise<T | null> {
+  return settleMiddlewareProviderCall(label, document, call, fallback);
+}
+
+async function settleResolveMiddlewareProviderCall<T>(
+  label: string,
+  unresolvedFallback: T,
+  call: () => Promise<T>,
+): Promise<T> {
+  // Resolve hooks retain typed settlement separately from the wire fallback (#14446).
+  const settlement = await settleLspProviderCallWithDisposition(call, unresolvedFallback);
+  if (settlement.kind === 'failed') {
     safelyObserveProviderOutcome(() => handleLspProviderError(label, settlement.error));
   }
   return settlement.wireValue;
@@ -3016,14 +2978,18 @@ async function settleMiddlewareProviderCall<T>(
 export async function settleFormattingProviderCall<T>(
   call: () => Promise<T>,
   fallback: T,
-  range: boolean = false,
+  range: boolean,
+  document: vscode.TextDocument,
 ): Promise<T> {
+  const subject = captureProviderRequestSubject(document);
   const settlement = await settleLspProviderCallWithDisposition(call, fallback);
   if (settlement.kind === 'returned') {
     safelyObserveProviderOutcome(() => {
+      const subjectCurrent = isProviderRequestSubjectCurrent(subject, document);
       const presentation = presentFormattingProviderOutcome(
         Array.isArray(settlement.value) ? settlement.value.length : 0,
         range,
+        subjectCurrent,
       );
       healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
     });
@@ -3069,15 +3035,6 @@ function handleLspProviderError(label: string, error: unknown): void {
   }
 }
 
-function isRequestCancellation(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === 'object' &&
-    'code' in error &&
-    (error as { code?: unknown }).code === -32800
-  );
-}
-
 function providerResultHasValue(result: unknown): boolean {
   if (result === undefined || result === null) {
     return false;
@@ -3097,8 +3054,14 @@ export function presentLspProviderOutcome(
   result: unknown,
   ready: boolean,
   emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
+  subjectCurrent: boolean = true,
 ): {
-  providerOutcome: 'exact_current' | 'legitimate_empty' | 'safe_refusal' | 'not_ready';
+  providerOutcome:
+    | 'exact_current'
+    | 'legitimate_empty'
+    | 'safe_refusal'
+    | 'not_ready'
+    | 'bounded_fallback';
   detail: string;
   action?: string;
   reasonCode: string;
@@ -3112,10 +3075,26 @@ export function presentLspProviderOutcome(
     };
   }
   if (providerResultHasValue(result)) {
+    if (!subjectCurrent) {
+      return {
+        providerOutcome: 'bounded_fallback',
+        detail: `${label} returned a result after the request subject changed; exact currentness is not proven.`,
+        action: 'Retry the request on the current document version.',
+        reasonCode: `${label.toLowerCase()}_subject_superseded`,
+      };
+    }
     return {
       providerOutcome: 'exact_current',
       detail: `${label} returned a current source-backed result.`,
       reasonCode: `${label.toLowerCase()}_result_available`,
+    };
+  }
+  if (!subjectCurrent) {
+    return {
+      providerOutcome: 'bounded_fallback',
+      detail: `${label} returned no wire result after the request subject changed; exact emptiness is not proven.`,
+      action: 'Retry the request on the current document version.',
+      reasonCode: `${label.toLowerCase()}_empty_subject_superseded`,
     };
   }
   return emptyOutcome === 'safe_refusal'
@@ -3153,11 +3132,23 @@ export function presentLspProviderError(
 export function presentFormattingProviderOutcome(
   editCount: number,
   range: boolean = false,
+  subjectCurrent: boolean = false,
 ): {
-  providerOutcome: 'exact_current' | 'legitimate_empty';
+  providerOutcome: 'exact_current' | 'legitimate_empty' | 'bounded_fallback';
   detail: string;
   reasonCode: string;
+  action?: string;
 } {
+  if (!subjectCurrent) {
+    return {
+      providerOutcome: 'bounded_fallback',
+      detail: range
+        ? 'Formatter returned edits after the request subject changed; exact currentness is not proven.'
+        : 'Formatter returned a response after the request subject changed; exact currentness is not proven.',
+      action: 'Retry formatting on the current document version.',
+      reasonCode: range ? 'range_formatting_subject_superseded' : 'formatting_subject_superseded',
+    };
+  }
   if (editCount > 0) {
     return {
       providerOutcome: 'exact_current',
