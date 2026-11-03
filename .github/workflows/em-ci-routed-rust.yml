@@ -650,6 +650,11 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      pull-requests: read
     steps:
       - name: Checkout rustfmt prevention contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -970,6 +975,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
           ROUTE_RESULT: ${{ needs.route-rust-small.result }}
           ROUTER_TARGET: ${{ needs.route-rust-small.outputs.target }}
           ROUTER_REASON: ${{ needs.route-rust-small.outputs.reason }}
@@ -1152,10 +1158,36 @@ jobs:
                 *) return 0 ;;
               esac
               if [ "$waited" -ge "${MIRROR_WAIT_SECONDS:-60}" ]; then
+                printf 'pending'
                 return 0
               fi
               sleep "$poll"
               waited=$(( waited + poll ))
+            done
+          }
+
+          withdraw_stale_draft_verdict() {
+            echo "RUST_SMALL_GATE_VERDICT=superseded-awaiting-proof"
+            echo "- verdict: superseded-awaiting-proof (NOT_PROVEN; authoritative run still pending)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::This run carries a stale draft snapshot and the run analyzing ${HEAD_SHA:-} has not published a verdict yet; requesting cancellation so no required failure is manufactured (#16240)."
+            if [ "${IS_FORK_PR:-false}" = "true" ]; then
+              echo "RUST_SMALL_GATE_VERDICT=superseded-no-proof"
+              echo "- verdict: superseded-no-proof (NOT_PROVEN; published: \`pending\`; fork token cannot cancel)" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::This run carries a stale draft snapshot on a fork pull request; the default token cannot cancel it, so this required context stays NOT_PROVEN until the authoritative run publishes."
+              exit 1
+            fi
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel" \
+              || echo "::warning::Could not cancel this workflow run; waiting for runner cancellation."
+            if [ -n "${STALE_DRAFT_WITHDRAW_DRAIN_SECONDS:-}" ]; then
+              sleep "${STALE_DRAFT_WITHDRAW_DRAIN_SECONDS}"
+              exit 0
+            fi
+            trap 'exit 0' TERM INT
+            while true; do
+              sleep 30
             done
           }
 
@@ -1178,6 +1210,9 @@ jobs:
                   echo "- verdict: superseded-draft-snapshot (mirroring published success)" >> "$GITHUB_STEP_SUMMARY"
                   echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; mirroring the success already published for ${HEAD_SHA:-}."
                   exit 0
+                fi
+                if [ "$published" = "pending" ]; then
+                  withdraw_stale_draft_verdict
                 fi
                 echo "RUST_SMALL_GATE_VERDICT=superseded-no-proof"
                 echo "- verdict: superseded-no-proof (NOT_PROVEN; published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"

@@ -344,12 +344,17 @@ fn write_gh_shim(dir: &Path, shim: &GhShim, gate_name: &str) -> Result<()> {
          \x20   check_name=*) cname=\"${{arg#check_name=}}\" ;;\n\
          \x20   */pulls/*) want=pull ;;\n\
          \x20   */check-runs*) want=checks ;;\n\
+         \x20   */actions/runs/*/cancel) want=cancel ;;\n\
          \x20 esac\n\
+         \x20 if [ \"$prev\" = \"run\" ] && {{ [ \"$arg\" = \"cancel\" ] || [ \"$arg\" = \"watch\" ]; }}; then\n\
+         \x20   want=\"$arg\"\n\
+         \x20 fi\n\
          \x20 prev=\"$arg\"\n\
          done\n\
          case \"$want\" in\n\
          \x20 pull) {draft}; exit 0 ;;\n\
          \x20 checks) {checks}; exit $? ;;\n\
+         \x20 cancel|watch) exit 0 ;;\n\
          esac\n\
          echo \"unexpected gh invocation: $*\" >&2\n\
          exit 64\n"
@@ -404,6 +409,8 @@ fn evaluate(gate: Gate, route_result: &str, is_draft: &str, shim: GhShim) -> Res
         .env("PR_NUMBER", "16094")
         .env("HEAD_SHA", "c9bf380f4")
         .env("IS_DRAFT_PR", is_draft)
+        .env("IS_FORK_PR", "false")
+        .env("STALE_DRAFT_WITHDRAW_DRAIN_SECONDS", "0")
         // The block polls until an attempt other than its own is terminal.
         // Every fixture but the settling one answers terminally on its first
         // read, so their budget is zero and the loop reads once; the settling
@@ -455,11 +462,11 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
         );
     }
 
-    // Only an authoritative success is mirrored. Ordering between the two runs
-    // is not guaranteed in either direction, so a published red, a run that
-    // reached no verdict, an unreadable read and an empty read must all stay
-    // non-successful — AGENTS.md makes missing evidence NOT_PROVEN.
-    for published in [Some("failure"), Some("cancelled"), Some(""), None] {
+    // Only an authoritative success is mirrored. A published red or cancellation
+    // is contradictory evidence and stays a required failure; an unreadable read
+    // stays fail-closed the same way — AGENTS.md makes missing evidence
+    // NOT_PROVEN.
+    for published in [Some("failure"), Some("cancelled"), None] {
         let run = evaluate(gate, "skipped", "true", GhShim::new(Some("false"), published))?;
         if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
             bail!(
@@ -469,9 +476,21 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
             );
         }
     }
+
+    // When the authoritative run has not published yet, the mirror wait expires
+    // while the population is still pending. That is not evidence of failure —
+    // #16240 — so the stale snapshot must withhold a required verdict instead of
+    // manufacturing superseded-no-proof.
     let run = evaluate(gate, "skipped", "true", GhShim::new(Some("false"), Some("")))?;
-    if !run.summary.contains("superseded-no-proof (NOT_PROVEN; published: `none`)") {
-        bail!("{}: the summary must record why it is not proven: {}", gate.workflow, run.summary);
+    if run.code != 0 || !run.verdict_is(gate, "superseded-awaiting-proof") {
+        bail!(
+            "{}: an empty pending population must withhold, not red: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+    if !run.summary.contains("superseded-awaiting-proof") {
+        bail!("{}: the summary must record the withhold verdict: {}", gate.workflow, run.summary);
     }
 
     // A pull request that is still a draft is unchanged, and a draft state that
@@ -541,6 +560,14 @@ fn assert_live_read_bindings(gate: Gate) -> Result<()> {
             );
         }
     }
+    if permissions.get("actions").and_then(Value::as_str) != Some("write") {
+        bail!(
+            "{}: job {} must grant `actions: write` so stale draft snapshots can \
+             cancel instead of manufacturing a required failure (#16240)",
+            gate.workflow,
+            gate.job
+        );
+    }
     Ok(())
 }
 
@@ -556,9 +583,10 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         run.id = 106_028_999_999;
     });
     let run = evaluate(gate, "skipped", "true", GhShim::with_runs(Some("false"), vec![foreign]))?;
-    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+    if run.code != 0 || !run.verdict_is(gate, "superseded-awaiting-proof") {
         bail!(
-            "{}: a same-name success from another app must not be mirrored: {}",
+            "{}: a same-name success from another app must not be mirrored and \
+             must not manufacture a required failure while proof is absent: {}",
             gate.workflow,
             run.stdout
         );
@@ -578,9 +606,9 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         "true",
         GhShim::with_runs(Some("false"), vec![older_success.clone(), newer_pending]),
     )?;
-    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+    if run.code != 0 || !run.verdict_is(gate, "superseded-awaiting-proof") {
         bail!(
-            "{}: a pending newer attempt must outrank an older success: {}",
+            "{}: a pending newer attempt must withhold rather than red the head: {}",
             gate.workflow,
             run.stdout
         );
@@ -626,9 +654,9 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         "true",
         GhShim::with_runs(Some("false"), vec![older_success.clone(), newer_queued]),
     )?;
-    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+    if run.code != 0 || !run.verdict_is(gate, "superseded-awaiting-proof") {
         bail!(
-            "{}: a queued attempt beside an older success must not be mirrored: {}",
+            "{}: a queued attempt beside an older success must withhold, not mirror or red: {}",
             gate.workflow,
             run.stdout
         );
@@ -655,9 +683,9 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         "true",
         GhShim::with_runs(Some("false"), vec![stale_queued, later_success]),
     )?;
-    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+    if run.code != 0 || !run.verdict_is(gate, "superseded-awaiting-proof") {
         bail!(
-            "{}: an attempt that never completed must withhold proof, whatever its id: {}",
+            "{}: an attempt that never completed must withhold a required verdict: {}",
             gate.workflow,
             run.stdout
         );
