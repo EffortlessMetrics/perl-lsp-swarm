@@ -113,8 +113,11 @@ pub use engine::{error, parser, position};
 
 /// Recursive descent Perl parser with error recovery and AST generation.
 pub use core::{
-    ErrorCategory, ErrorClass, Node, NodeKind, ParseDiagnosticAnchor, ParseError, ParseOutput,
-    ParseResult, Parser, ResolvedParseDiagnosticAnchor, SourceLocation,
+    ErrorCategory, ErrorClass, Node, NodeKind, ParseBudgetExhaustionDimension,
+    ParseCancellationIdentity, ParseCatastrophicCause, ParseCompletion, ParseCompletionClass,
+    ParseCompletionRange, ParseCompletionStage, ParseCompletionValidationError,
+    ParseDiagnosticAnchor, ParseError, ParseOutput, ParseResult, ParseStopCause, Parser,
+    ResolvedParseDiagnosticAnchor, SourceLocation,
 };
 /// Abstract Syntax Tree (AST) definitions for Perl parsing.
 pub use engine::ast;
