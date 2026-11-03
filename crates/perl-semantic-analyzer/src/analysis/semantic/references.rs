@@ -46,7 +46,17 @@ impl SemanticAnalyzer {
                 }
                 results
             } else {
-                self.symbol_table.find_symbol(name, reference.scope_id, reference.kind)
+                // The qualifier names no declared package (#18117): an
+                // explicitly qualified call must agree with the complete
+                // identity. A typeglob alias (`*Other::foo = sub {}`) still
+                // carries its qualified name, so it keeps resolving; a
+                // same-named symbol from another package (e.g. the enclosing
+                // `Caller::helper` for `SUPER::helper`) must not bind.
+                self.symbol_table
+                    .find_symbol(name, reference.scope_id, reference.kind)
+                    .into_iter()
+                    .filter(|symbol| symbol.qualified_name == reference.name)
+                    .collect()
             }
         } else {
             self.symbol_table.find_symbol(&reference.name, reference.scope_id, reference.kind)

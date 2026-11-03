@@ -151,6 +151,31 @@ pub struct SemanticAnalyzer {
     generated_members: Vec<GeneratedMember>,
 }
 
+/// The qualified-or-bare identifier token at a cursor offset, if any.
+///
+/// `:` is a token byte here so a cursor anywhere on `Other::compute_0`
+/// (including on the `::` itself) yields the whole qualified token.
+fn qualified_token_at(source: &str, offset: usize) -> Option<&str> {
+    let bytes = source.as_bytes();
+    let is_token = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b':';
+    let probe = if offset < bytes.len() && is_token(bytes[offset]) {
+        offset
+    } else if offset > 0 && is_token(bytes[offset - 1]) {
+        offset - 1
+    } else {
+        return None;
+    };
+    let mut start = probe;
+    while start > 0 && is_token(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = probe + 1;
+    while end < bytes.len() && is_token(bytes[end]) {
+        end += 1;
+    }
+    source.get(start..end)
+}
+
 impl SemanticAnalyzer {
     /// Create a new semantic analyzer from an AST.
     ///
@@ -296,8 +321,25 @@ impl SemanticAnalyzer {
         }
 
         // If no reference found, check if we're on a definition itself
-        self.symbol_at(SourceLocation { start: position, end: position })
-            .map(|symbol| self.resolve_definition_target(symbol))
+        let definition = self
+            .symbol_at(SourceLocation { start: position, end: position })
+            .map(|symbol| self.resolve_definition_target(symbol));
+        let Some(definition) = definition else {
+            return None;
+        };
+        // A `use constant` statement synthesizes its constant over the whole
+        // statement span, including the RHS (`use constant V => Other::f()`)
+        // whose call the parser keeps as raw text, recording no reference.
+        // The constant name itself still resolves; a qualified call token at
+        // the cursor (`Other::f`) is unresolvable here, not the constant
+        // (#18117).
+        if definition.kind == crate::symbol::SymbolKind::Constant
+            && definition.declaration.as_deref() == Some("constant")
+            && qualified_token_at(&self.source, position).is_some_and(|token| token.contains("::"))
+        {
+            return None;
+        }
+        Some(definition)
     }
 
     /// Redirect method modifier definitions to the underlying method they modify.
