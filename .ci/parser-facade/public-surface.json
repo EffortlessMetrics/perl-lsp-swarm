@@ -233,10 +233,19 @@
         "core::ErrorClass",
         "core::Node",
         "core::NodeKind",
+        "core::ParseBudgetExhaustionDimension",
+        "core::ParseCancellationIdentity",
+        "core::ParseCatastrophicCause",
+        "core::ParseCompletion",
+        "core::ParseCompletionClass",
+        "core::ParseCompletionRange",
+        "core::ParseCompletionStage",
+        "core::ParseCompletionValidationError",
         "core::ParseDiagnosticAnchor",
         "core::ParseError",
         "core::ParseOutput",
         "core::ParseResult",
+        "core::ParseStopCause",
         "core::Parser",
         "core::ResolvedParseDiagnosticAnchor",
         "core::SourceLocation",
@@ -2498,16 +2507,6 @@
       "exit_condition": "Inventory row for a test-only target."
     },
     {
-      "name": "rename_transaction_validity",
-      "kind": "test",
-      "classification": "product_composition",
-      "disposition": "retain",
-      "owner": "#18209",
-      "target_owner": "perl-parser",
-      "required_features": [],
-      "exit_condition": "Inventory row for workspace-rename writer control tests (#18209)."
-    },
-    {
       "name": "regex_arbitrary_delimiters_comprehensive",
       "kind": "test",
       "classification": "product_composition",
@@ -2519,6 +2518,16 @@
     },
     {
       "name": "regex_delimiters_issue_444",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "rename_transaction_validity",
       "kind": "test",
       "classification": "product_composition",
       "disposition": "retain",

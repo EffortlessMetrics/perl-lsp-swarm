@@ -2753,9 +2753,25 @@ owner = "parser/incremental"
 reason = "Versioned evidence-convergence ledger classifying every compatibility test, source-test module, benchmark, and governed document in the perl-incremental-parsing adapter with owner, plane, disposition, and claim boundary (#6971)."
 covered_by = [
   "cargo test -p perl-incremental-parsing --locked --test authority_disposition_contract",
+  "cargo test -p perl-incremental-parsing --locked --test disposition_contract_falsifiers",
 ]
 created = "2026-08-18"
 review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-behavior-disposition-falsifier-fixtures"
+glob = "crates/perl-incremental-parsing/tests/fixtures/behavior_disposition/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "parser/incremental"
+reason = "Negative-control disposition ledger manifests for #7752: omitted Cargo targets, phantom autotest paths, invalid enum tokens, and semantic disposition violations."
+covered_by = [
+  "cargo test -p perl-incremental-parsing --locked --test disposition_contract_falsifiers",
+]
+created = "2026-11-02"
+review_after = "2026-12-02"
 
 [[allow]]
 id = "non-rust-current-upstream-subject-manifest"
