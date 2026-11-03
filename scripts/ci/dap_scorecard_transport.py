@@ -158,10 +158,24 @@ class DapProcess:
         self._retained_messages = 0
         self._retained_bytes = 0
         self._reader_error: BaseException | None = None
+        # DIAGNOSTIC (dap-scorecard main-red investigation, 2026-11-03): a
+        # bounded, monotonic message timeline used to explain disconnect-time
+        # EPIPE failures. Read-only for the proof contract.
+        self._timeline: list[tuple[float, str]] = []
+        self._timeline_started = time.monotonic()
         self._reader = threading.Thread(target=self._reader_loop, daemon=True)
         self._stderr_reader = threading.Thread(target=self._stderr_loop, daemon=True)
         self._reader.start()
         self._stderr_reader.start()
+
+    def _note(self, label: str) -> None:
+        elapsed = round(time.monotonic() - self._timeline_started, 3)
+        self._timeline.append((elapsed, label))
+        if len(self._timeline) > 80:
+            del self._timeline[: len(self._timeline) - 80]
+
+    def timeline_tail(self, limit: int = 40) -> list[str]:
+        return [f"{elapsed:+.3f}s {label}" for elapsed, label in self._timeline[-limit:]]
 
     def __enter__(self) -> DapProcess:
         return self
@@ -211,6 +225,7 @@ class DapProcess:
         try:
             while True:
                 message = read_framed_message(self.process.stdout)
+                self._note(self._label(message))
                 size = _message_size(message)
                 self._retain_message(size)
                 try:
@@ -222,6 +237,7 @@ class DapProcess:
                         f"{MESSAGE_QUEUE_CAPACITY} messages"
                     ) from exc
         except EOFError as exc:
+            self._note("stdout EOF (adapter closed its output)")
             self._record_reader_error(exc, terminate=False)
         except BaseException as exc:  # propagate framing/reader failures to the driver
             self._record_reader_error(exc, terminate=True)
@@ -301,7 +317,8 @@ class DapProcess:
                 if self.process.poll() is not None:
                     raise ScorecardError(
                         f"perl-dap exited with {self.process.returncode} while waiting for "
-                        f"{description}; stderr={self.stderr_tail() or '<empty>'}"
+                        f"{description}; timeline={self.timeline_tail()}; "
+                        f"stderr={self.stderr_tail() or '<empty>'}"
                     )
                 continue
             if isinstance(item, BaseException):
@@ -334,8 +351,11 @@ class DapProcess:
         except OSError as exc:
             raise ScorecardError(
                 f"cannot write DAP request {command!r}: {exc}; "
+                f"poll={self.process.poll()!r}; "
+                f"timeline={self.timeline_tail()}; "
                 f"stderr={self.stderr_tail() or '<empty>'}"
             ) from exc
+        self._note(f"sent {command}")
         return seq
 
     def request(

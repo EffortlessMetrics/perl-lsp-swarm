@@ -42,9 +42,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: target
   RUST_BACKTRACE: 1
-  # DIAGNOSTIC (dap-scorecard main-red investigation, 2026-11-03): capture the
-  # adapter's tracing narrative in the failure detail. Revert after diagnosis.
-  DAP_SCORECARD_ADAPTER_LOG_LEVEL: debug
   DAP_SCORECARD_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   DAP_SCORECARD_RUN_ID: ${{ github.run_id }}
   DAP_SCORECARD_RUN_ATTEMPT: ${{ github.run_attempt }}
