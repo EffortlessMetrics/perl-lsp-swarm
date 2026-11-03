@@ -2553,6 +2553,18 @@ impl LspServer {
                             {
                                 return Ok(Some(result));
                             }
+                            if is_universal_method(method_name)
+                                && let Some(result) = lookup_workspace_definition(
+                                    self.coordinator(),
+                                    "UNIVERSAL",
+                                    method_name,
+                                    Some(uri),
+                                    true,
+                                )
+                                && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
+                            }
                             #[cfg(feature = "workspace")]
                             {
                                 if let Some(coordinator) = self.coordinator()
@@ -2569,18 +2581,6 @@ impl LspServer {
                                 {
                                     return Ok(Some(json!([lsp_location])));
                                 }
-                            }
-                            if is_universal_method(method_name)
-                                && let Some(result) = lookup_workspace_definition(
-                                    self.coordinator(),
-                                    "UNIVERSAL",
-                                    method_name,
-                                    Some(uri),
-                                    true,
-                                )
-                                && workspace_index_is_fresh()
-                            {
-                                return Ok(Some(result));
                             }
                             // Partial/None: fall through to same-file resolution
                             break;
@@ -2613,6 +2613,18 @@ impl LspServer {
                                         Some(uri),
                                         true,
                                     ) && workspace_index_is_fresh()
+                                    {
+                                        return Ok(Some(result));
+                                    }
+                                    if is_universal_method(method_name)
+                                        && let Some(result) = lookup_workspace_definition(
+                                            self.coordinator(),
+                                            "UNIVERSAL",
+                                            method_name,
+                                            Some(uri),
+                                            true,
+                                        )
+                                        && workspace_index_is_fresh()
                                     {
                                         return Ok(Some(result));
                                     }

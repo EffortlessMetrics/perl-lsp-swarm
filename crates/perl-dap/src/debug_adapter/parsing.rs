@@ -208,8 +208,8 @@ impl DebugAdapter {
         match scope_type {
             // Locals
             1 => !name.contains("::"),
-            // Package variables (qualified)
-            2 => name.contains("::"),
+            // Package variables from perl5db `V Package` (unqualified names in output)
+            2 => !name.is_empty(),
             // Globals/specials
             3 => {
                 matches!(name, "$_" | "@ARGV" | "%ENV" | "$!" | "$@" | "$/" | "$|" | "$0" | "$^W")

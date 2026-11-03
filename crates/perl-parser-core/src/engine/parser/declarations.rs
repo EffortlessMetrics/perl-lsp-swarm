@@ -138,6 +138,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(crate) fn register_declared_nullary_sub(&mut self, name: &str) {
+        self.declared_nullary_subs.insert(name.to_string());
+    }
+
+    pub(crate) fn is_declared_nullary_sub(&self, name: &str) -> bool {
+        self.declared_nullary_subs.contains(name)
+    }
+
     /// Parse declaration attributes like `:lvalue` or `:prototype($)`.
     ///
     /// `extra_known` is retained for call-site compatibility but is no longer
@@ -341,6 +349,11 @@ impl<'a> Parser<'a> {
                 // Parse as prototype
                 let proto_start = self.current_position();
                 let proto_content = self.parse_prototype()?;
+                if proto_content.is_empty()
+                    && let Some(ref sub_name) = name
+                {
+                    self.register_declared_nullary_sub(sub_name);
+                }
                 let proto_node = self.charge_node(
                     NodeKind::Prototype { content: proto_content },
                     SourceLocation { start: proto_start, end: self.previous_position() },

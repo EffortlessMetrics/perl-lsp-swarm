@@ -2522,10 +2522,10 @@
       "kind": "test",
       "classification": "product_composition",
       "disposition": "retain",
-      "owner": "#18209",
+      "owner": "#11373",
       "target_owner": "perl-parser",
       "required_features": [],
-      "exit_condition": "Prove workspace-rename writer invalid-range controls without widening production surface."
+      "exit_condition": "Inventory row for a test-only target."
     },
     {
       "name": "ripr_seam_proof_concept_ast_invariant_contract",
