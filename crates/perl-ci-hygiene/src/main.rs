@@ -50,6 +50,7 @@ use crate::process::{
     command_with_output, command_with_output_all, command_with_output_allow_empty_match,
     command_with_output_allow_failure,
 };
+use crate::test_scope::{cfg_test_spans, line_is_test_scope};
 
 const RED: &str = "\x1b[0;31m";
 const GREEN: &str = "\x1b[0;32m";
@@ -1269,8 +1270,9 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
     let mut argv: Vec<String> = vec![compare_py.to_string_lossy().to_string()];
     argv.extend_from_slice(args);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    command_status_strict(repo_root, "python3", &refs, &[])?;
-    Ok(0)
+    // A comparator refusal or regression is an ordinary child outcome. Preserve
+    // its diagnostic and status rather than turning it into an eyre report.
+    command_status(repo_root, "python3", &refs, &[])
 }
 
 fn cmd_simple_lsp_test(repo_root: &Path) -> Result<i32> {
@@ -1615,9 +1617,15 @@ fn find_repo_root() -> Result<PathBuf> {
     }
 }
 
+/// Repository-relative path text for hygiene findings, logs, and receipts.
+///
+/// Always uses `/` separators so rendered evidence is identical across hosts.
+/// Callers must keep using `Path`/`PathBuf` for filesystem operations; this
+/// string is display-only and must not be parsed back into a path identity.
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .map_or_else(|_| path.display().to_string(), |relative| relative.display().to_string())
+        .replace('\\', "/")
 }
 
 fn path_has_component(path: &Path, target: &str) -> bool {
@@ -1642,17 +1650,21 @@ fn walk_rust_sources(root: &Path) -> Vec<PathBuf> {
     walk_rs_files(root).into_iter().filter(|path| !is_excluded_test_path(path)).collect()
 }
 
-fn count_pattern_before_cfg_test(
+fn count_pattern_outside_test_scope(
     path: &Path,
     pattern: &Regex,
     exclude_self_context: bool,
 ) -> Result<Vec<(usize, String)>> {
     let mut out = Vec::new();
     let lines = read_lines(path)?;
-    let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
+    // Scoped to the inline test modules rather than truncated at the first gate:
+    // a production match after `mod tests { … }` was previously never seen
+    // (#16523). The panic-inventory sweep keeps the start-line reader, because
+    // there over-inclusion is the safe direction.
+    let test_spans = cfg_test_spans(&lines);
     for (index, line) in lines.iter().enumerate() {
         let line_number = index + 1;
-        if line_number >= test_start {
+        if line_is_test_scope(&test_spans, line_number) {
             continue;
         }
         if pattern.is_match(line) {
@@ -2393,10 +2405,10 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     for path in sources.iter() {
         let rel = display_path(repo_root, path);
         let lines = read_lines(path)?;
-        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
+        let test_spans = cfg_test_spans(&lines);
         for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
-            if line_no >= test_start {
+            if line_is_test_scope(&test_spans, line_no) {
                 continue;
             }
             if comment_re.is_match(line) {
@@ -2503,7 +2515,7 @@ fn run_module_ratchet(
     }
     let mut offenders = Vec::new();
     for path in walk_rs_files(dir) {
-        for (line_no, text) in count_pattern_before_cfg_test(&path, pattern, false)? {
+        for (line_no, text) in count_pattern_outside_test_scope(&path, pattern, false)? {
             offenders.push(format!("{}:{line_no}:{text}", display_path(repo_root, &path)));
         }
     }
@@ -2569,6 +2581,123 @@ pub(crate) fn production_source_files_for_ci_checks(repo_root: &Path) -> Result<
     let walked = walk_rust_source_files_for_ci_checks(repo_root)?;
     let test_only = crate::test_scope::test_only_source_files(&walked)?;
     Ok(walked.into_iter().filter(|path| !test_only.contains(path)).collect())
+}
+
+pub(crate) fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+    let report = scan_prod_unwraps_and_panics(repo_root)?;
+    report.print_and_exit()
+}
+
+/// The two production-line checks share a single walk so neither scanner
+/// reads ahead of the other. Splitting them apart used to mean an early
+/// return on the first failure hid the second; keeping them in one struct
+/// forces the printing layer to see both lists before deciding an exit
+/// code. #16253.
+pub(crate) struct ProdUnwrapsAndPanicsReport {
+    pub unwrap_offenders: Vec<String>,
+    pub panic_offenders: Vec<String>,
+    pub unwrap_baseline: usize,
+    pub panic_baseline: usize,
+}
+
+impl ProdUnwrapsAndPanicsReport {
+    fn print_and_exit(&self) -> Result<i32> {
+        let mut failed = false;
+        println!(
+            "unwrap/expect: {} (baseline: {})",
+            self.unwrap_offenders.len(),
+            self.unwrap_baseline
+        );
+        if self.unwrap_offenders.len() > self.unwrap_baseline {
+            failed = true;
+            println!(
+                "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
+                self.unwrap_offenders.len(),
+                self.unwrap_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.unwrap_offenders.iter().take(10) {
+                println!("{line}");
+            }
+        }
+
+        println!(
+            "panic-family macros: {} (baseline: {})",
+            self.panic_offenders.len(),
+            self.panic_baseline
+        );
+        if self.panic_offenders.len() > self.panic_baseline {
+            failed = true;
+            println!(
+                "FAIL: panic-family count ({}) exceeds baseline ({})",
+                self.panic_offenders.len(),
+                self.panic_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.panic_offenders.iter().take(10) {
+                println!("{line}");
+            }
+            println!(
+                "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
+            );
+        }
+        Ok(if failed { 1 } else { 0 })
+    }
+}
+
+pub(crate) fn scan_prod_unwraps_and_panics(repo_root: &Path) -> Result<ProdUnwrapsAndPanicsReport> {
+    let unwrap_re = Regex::new(r"\.unwrap\(|\.expect\(")?;
+    let panic_re = Regex::new(r"(panic!\(|todo!\(|unimplemented!\(|unreachable!\()")?;
+    let comment_re = Regex::new(r"^\s*//")?;
+    let mut unwrap_offenders = Vec::new();
+    let mut panic_offenders = Vec::new();
+
+    let sources = production_source_files_for_ci_checks(repo_root)?;
+
+    for path in sources.iter() {
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_spans = cfg_test_spans(&lines);
+        for (index, line) in lines.iter().enumerate() {
+            let line_no = index + 1;
+            if line_is_test_scope(&test_spans, line_no) {
+                continue;
+            }
+            if !comment_re.is_match(line)
+                && unwrap_re.is_match(line)
+                && !(line.contains("self.expect(")
+                    || line.contains("s.expect(")
+                    || line.contains("self.context.expect("))
+            {
+                unwrap_offenders.push(format!("{rel}:{line_no}:{line}"));
+            }
+            if panic_re.is_match(line)
+                && !comment_re.is_match(line)
+                && !is_allowlisted_prod_panic_hit(&rel, line)
+            {
+                panic_offenders.push(format!("{rel}:{line_no}:{line}"));
+            }
+        }
+    }
+
+    let unwrap_baseline = read_usize_file(&repo_root.join("ci/unwrap_prod_baseline.txt"), 0)?;
+    let panic_baseline = read_usize_file(&repo_root.join("ci/panic_prod_baseline.txt"), 0)?;
+    Ok(ProdUnwrapsAndPanicsReport {
+        unwrap_offenders,
+        panic_offenders,
+        unwrap_baseline,
+        panic_baseline,
+    })
+}
+
+fn is_allowlisted_prod_panic_hit(_rel_path: &str, line: &str) -> bool {
+    // Static LazyLock<Regex> initializers that use unreachable!() for known-good patterns
+    // are exempt regardless of which file they live in.  Two message conventions:
+    //   • "... regex failed to compile" — used in heredoc anti-pattern initializers
+    //   • "... is a known-good static pattern ..." — used in other static regex initializers
+    line.contains("regex failed to compile") || line.contains("known-good static pattern")
 }
 
 fn cmd_quick_check(repo_root: &Path) -> Result<i32> {
@@ -2999,6 +3128,20 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 mod tests {
     use super::*;
     use color_eyre::eyre::ensure;
+
+    #[test]
+    fn display_path_repository_relative_text_uses_forward_slashes() {
+        let root = PathBuf::from("/repo");
+        let file = root.join("crates/nested/deep/lib.rs");
+        assert_eq!(display_path(&root, &file), "crates/nested/deep/lib.rs");
+    }
+
+    #[test]
+    fn display_path_normalizes_separator_characters_on_prefix_failure_fallback() {
+        let root = PathBuf::from("/repo");
+        let path = PathBuf::from("line\\with\\backslash.rs");
+        assert_eq!(display_path(&root, &path), "line/with/backslash.rs");
+    }
 
     #[test]
     fn cargo_wrapper_keeps_cargo_args_before_test_harness_separator() {

@@ -82,11 +82,32 @@ def summarize(receipt: Path) -> tuple[str, list[tuple[str, str]], str | None]:
     else:
         try:
             data = json.loads(receipt.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            # This advisory reader needs only the shape it renders, not a second
+            # gate schema validator. Missing gates must not look like a clean run.
+            if not isinstance(data, dict):
+                raise ValueError("receipt must be a JSON object")
+            gates = data.get("gates")
+            if not isinstance(gates, list):
+                raise ValueError("gates must be an array")
+            for index, gate in enumerate(gates):
+                if not isinstance(gate, dict):
+                    raise ValueError(f"gates[{index}] must be a JSON object")
+                # A lone surrogate (for example "\ud800") parses as a JSON
+                # string but cannot be written as UTF-8, which would crash
+                # the summary write instead of reporting the bad receipt.
+                for field in ("gate_name", "status", "exit_code"):
+                    value = gate.get(field)
+                    if isinstance(value, str):
+                        try:
+                            value.encode("utf-8")
+                        except UnicodeError as error:
+                            raise ValueError(
+                                f"gates[{index}].{field} must contain valid UTF-8"
+                            ) from error
+        except (OSError, UnicodeError, ValueError) as error:
             lines.append(f"- Receipt: unreadable ({error})")
             receipt_problem = f"receipt unreadable: {error}"
         else:
-            gates = data.get("gates", [])
             failures = [
                 gate
                 for gate in gates

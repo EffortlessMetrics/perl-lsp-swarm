@@ -41,6 +41,7 @@
     "tests/test_dap_support.py",
     "tests/test_host_contract.py",
     "tests/test_integration_status.py",
+    "tests/test_package_control_receipt.py",
     "tests/test_package_source.py",
     "tests/test_release.py",
     "unittesting.json"

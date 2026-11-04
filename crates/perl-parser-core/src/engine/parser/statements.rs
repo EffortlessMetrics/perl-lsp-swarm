@@ -195,7 +195,7 @@ impl<'a> Parser<'a> {
                 stmt = self.parse_statement_modifier(stmt)?;
             }
             self.finish_statement_terminator(&stmt)?;
-            self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+            self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt)?;
             return Ok(stmt);
         }
 
@@ -556,7 +556,7 @@ impl<'a> Parser<'a> {
         self.finish_statement_terminator(&stmt)?;
 
         // Drain pending heredocs after statement completion (attach content to AST)
-        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt)?;
 
         Ok(stmt)
     }
@@ -594,9 +594,16 @@ impl<'a> Parser<'a> {
             if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
                 let start = stmt.location.start.min(self.src_bytes.len());
                 let end = stmt.location.end.min(self.src_bytes.len());
-                let first_line_is_tag = std::str::from_utf8(&self.src_bytes[start..end])
-                    .map(|text| text.lines().next().map(str::trim) == Some(tag))
-                    .unwrap_or(false);
+                // A statement span can be inverted (start > end) on
+                // malformed input; clamping each end independently does
+                // not order them, and slicing an inverted range panics.
+                let first_line_is_tag = if start <= end {
+                    std::str::from_utf8(&self.src_bytes[start..end])
+                        .map(|text| text.lines().next().map(str::trim) == Some(tag))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
                 if first_line_is_tag {
                     self.heredoc_recovery_tag = None;
                 }
@@ -700,7 +707,13 @@ impl<'a> Parser<'a> {
         if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
             let start = stmt.location.start.min(self.src_bytes.len());
             let end = stmt.location.end.min(self.src_bytes.len());
-            let source = std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("");
+            // Same inverted-span guard as the semicolon path above: an
+            // inverted range slices to nothing rather than panicking.
+            let source = if start <= end {
+                std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("")
+            } else {
+                ""
+            };
             if source.trim() == tag {
                 // Pure delimiter line: the body ends here; skip it.
                 self.heredoc_recovery_tag = None;
@@ -915,24 +928,43 @@ impl<'a> Parser<'a> {
 
     /// Whether the subtree declares a heredoc.
     fn contains_heredoc(node: &Node) -> bool {
-        matches!(node.kind, NodeKind::Heredoc { .. })
-            || node.children().into_iter().any(Self::contains_heredoc)
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if matches!(node.kind, NodeKind::Heredoc { .. }) {
+                return true;
+            }
+            stack.extend(node.children());
+        }
+        false
     }
 
     /// Ordinary shift expressions can contain a quoted word immediately after
     /// `<<`, but that word is not a heredoc delimiter. Keep them out of the
     /// narrow leaked-heredoc recovery path.
     fn contains_left_shift(node: &Node) -> bool {
-        matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=")
-            || node.children().into_iter().any(Self::contains_left_shift)
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=") {
+                return true;
+            }
+            stack.extend(node.children());
+        }
+        false
     }
 
     fn contains_identifier_left_shift(node: &Node) -> bool {
-        matches!(
-            &node.kind,
-            NodeKind::Binary { op, left, .. }
-                if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
-        ) || node.children().into_iter().any(Self::contains_identifier_left_shift)
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if matches!(
+                &node.kind,
+                NodeKind::Binary { op, left, .. }
+                    if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
+            ) {
+                return true;
+            }
+            stack.extend(node.children());
+        }
+        false
     }
 
     fn can_arm_heredoc_recovery(node: &Node) -> bool {
@@ -1714,6 +1746,14 @@ impl<'a> Parser<'a> {
                                     self.parse_args()?
                                 };
                                 args.extend(paren_args);
+                            } else if func_name.as_ref() == "sort" {
+                                // `sort mycmp LIST`: the first slot names the
+                                // comparator sub, so bare-call promotion is
+                                // suppressed while it is parsed.
+                                self.in_sort_comparator = true;
+                                let first = self.parse_assignment_or_declaration();
+                                self.in_sort_comparator = false;
+                                args.push(first?);
                             } else {
                                 // For builtins, use parse_assignment_or_declaration to handle
                                 // my/our/local/state declarations inside argument lists

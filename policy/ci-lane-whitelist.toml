@@ -1128,14 +1128,35 @@ default_pr = false
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "ci"
-intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Fail-overs to the hosted lane whenever the trusted lane does not succeed, and reports actionable deadline diagnostics when the trusted lane stays queued without a runner (#15854, #15900)."
+intent = "Publish the single stable Validate CI policy ledgers status after hosted validation and the fallback contract, without waiting for trusted-lane diagnostics (#15854, #15900)."
 failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, a validator failure masks as a routing skip, a trusted-lane failure blocks a hosted success, or a queued-forever trusted lane leaves the run and its check permanently pending without diagnostics."
-proof_obligation = "Run both lanes; aggregate passes on agreement or on a hosted success whenever the trusted lane does not succeed (failure, skip, cancel, or outage timeout), and fail-closes on hosted failure or trusted/hosted divergence; report deadline diagnostics for a trusted lane still queued without a runner; run the fallback contract and aggregate decision-table tests."
+proof_obligation = "Run both lanes with identical validator steps; the unchanged aggregate truth table passes exactly when hosted succeeds and fails every hosted non-success. Run the fallback contract, negative controls, and decision-table tests in the required job; preserve the full trusted/hosted comparison and deadline reporting in the independent diagnostic job."
 evidence = ["job output", "step-summary"]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 expensive = false
 duplicate_of = []
 review_after = "2026-09-18"
+expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_diagnostics"
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate-diagnostics"
+tier = "frontdoor"
+kind = "control"
+blocking = false
+default_pr = false
+runner = "ubuntu_latest"
+base_lem = 1
+owner = "ci"
+intent = "Report the full trusted/hosted Policy Validators comparison and bounded outage diagnostics independently of the required verdict (#15854, #15900)."
+failure_mode = "Diagnostic waiting delays the required verdict, lane agreement/divergence/failover/failure evidence disappears, or a failed API read or comparison receives green diagnostic credit."
+proof_obligation = "Poll native trusted conclusions for up to 900 seconds after hosted validation; use the unchanged aggregate decision table, preserve failures, publish all comparisons in logs and the step summary, and retain actionable outage/reaper diagnostics without write authority."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-10-10"
 expires = "2027-02-18"
 
 [[lane]]
