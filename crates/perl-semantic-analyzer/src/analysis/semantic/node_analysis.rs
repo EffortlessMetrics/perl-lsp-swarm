@@ -20,6 +20,30 @@ use super::hover::HoverInfo;
 use super::tokens::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 use perl_semantic_facts::Confidence;
 
+/// Return the single POD block that ends `before`, if one does.
+///
+/// The block must end with a `=cut` line as the last non-blank line. Its
+/// start is the first POD directive line after the previous `=cut` (or
+/// file start); code lines between that boundary and the opening
+/// directive belong to an earlier declaration and are excluded (#17298).
+fn trailing_pod_block(before: &str) -> Option<String> {
+    let lines: Vec<&str> = before.lines().collect();
+    let last = lines.iter().rposition(|line| !line.trim().is_empty())?;
+    if lines[last].trim_end() != "=cut" {
+        return None;
+    }
+    let boundary = (0..last).rev().find(|&i| lines[i].trim_end() == "=cut").map_or(0, |i| i + 1);
+    // POD directives begin at column 0 (perlpod); an indented `=foo` line
+    // in preceding code is not a block opening.
+    let opening = (boundary..last).find(|&i| {
+        let line = lines[i];
+        line.len() > 1
+            && line.starts_with('=')
+            && line.as_bytes().get(1).is_some_and(u8::is_ascii_alphanumeric)
+    })?;
+    Some(lines[opening..=last].join("\n"))
+}
+
 impl SemanticAnalyzer {
     /// Analyze a node and generate semantic information
     pub(super) fn analyze_node(&mut self, node: &Node, scope_id: ScopeId) {
@@ -1081,8 +1105,14 @@ impl SemanticAnalyzer {
     /// the `m` flag, `$` matches at the end of every line, which made the
     /// previous regex match POD blocks anywhere in `before` and leak them
     /// into hover docs for unrelated subs that followed.
+    ///
+    /// The POD branch is line-based, not a single end-anchored regex: a
+    /// leftmost regex match starts at the *first* `=directive` in the file
+    /// and expands across intermediate `=cut`s and sub source to reach the
+    /// final `=cut` (#17298). Instead, the trailing block is bounded by
+    /// the previous `=cut` (or file start), and any code lines between
+    /// that boundary and the block's opening directive are excluded.
     pub(super) fn extract_documentation(&self, start: usize) -> Option<String> {
-        static POD_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
         static COMMENT_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
         if self.source.is_empty() || start > self.source.len() {
@@ -1090,17 +1120,16 @@ impl SemanticAnalyzer {
         }
         let before = &self.source[..start];
 
-        // Check for POD blocks ending with =cut, anchored at end of string.
-        let pod_re = POD_RE
-            .get_or_init(|| Regex::new(r"(?s)(=[a-zA-Z0-9].*?\r?\n=cut(?:\r?\n)?)\s*\z"))
-            .as_ref()
-            .ok()?;
-        if let Some(caps) = pod_re.captures(before)
-            && let Some(pod_text) = caps.get(1)
-        {
-            // Strip POD inline formatting codes (B<>, I<>, C<>, L<>, E<>, etc.)
-            // so hover displays clean text, not raw POD markup.
-            return Some(perl_pod::strip_pod_formatting(pod_text.as_str().trim()));
+        // Check for a POD block ending with =cut at the very end.
+        if let Some(pod_text) = trailing_pod_block(before) {
+            // Render the block (directive lines dropped, inline formatting
+            // codes stripped) so hover displays clean text, not raw POD.
+            // A block with no renderable text (only `=pod`/`=cut`) must not
+            // shadow the comment fallback below with an empty document.
+            let rendered = render_pod_block_documentation(pod_text.trim());
+            if !rendered.is_empty() {
+                return Some(rendered);
+            }
         }
 
         // Check for consecutive comment lines, anchored at end of string.
@@ -1150,8 +1179,8 @@ impl SemanticAnalyzer {
     ///
     /// Matches any POD block (`=pod`, `=head1`, `=item`, etc.) that ends
     /// with a `=cut` directive. The returned string is trimmed of
-    /// surrounding whitespace and includes the opening directive through
-    /// the closing `=cut`, mirroring the format produced by
+    /// surrounding whitespace and rendered through
+    /// [`render_pod_block_documentation`], mirroring the format produced by
     /// `extract_documentation` for leading POD blocks.
     ///
     /// **Deliberate divergence from perlpod:** the regex allows optional
@@ -1178,8 +1207,8 @@ impl SemanticAnalyzer {
             .as_ref()
             .ok()?;
         let caps = pod_re.captures(body_src)?;
-        let pod_text = caps.get(1)?.as_str().trim().to_string();
-        Some(pod_text)
+        let pod_text = caps.get(1)?.as_str();
+        Some(render_pod_block_documentation(pod_text))
     }
 
     /// Extract the POD `=head1 NAME` section for a package.
@@ -1416,6 +1445,73 @@ fn format_signature_params(sig_node: &Node) -> String {
     format!("({})", labels.join(", "))
 }
 
+/// Render a selected POD block as compact hover documentation (#17298).
+///
+/// [`perl_pod::strip_pod_formatting`] handles the inline codes (`B<>`, `C<>`,
+/// `L<>`, ...); block directive lines need their own handling so a hover never
+/// carries raw `=head1`/`=cut` markup: `=headN` and `=item` keep their
+/// argument as plain text (`=item X` becomes a `- X` bullet), while purely
+/// structural directives (`=cut`, `=pod`, `=encoding`, `=over`, `=back`,
+/// `=begin`, `=end`, `=for`) and unknown commands are dropped. The result is
+/// trimmed of surrounding whitespace and blank-line runs are preserved as
+/// paragraph separators.
+fn render_pod_block_documentation(block: &str) -> String {
+    let stripped = perl_pod::strip_pod_formatting(block);
+    let mut lines: Vec<String> = Vec::new();
+    // Content inside a non-POD format region (`=begin html` .. `=end html`)
+    // belongs to that format's renderer, not to plain hover text.
+    let mut in_format_region = false;
+    for line in stripped.lines() {
+        match pod_directive_word(line) {
+            Some(("begin", arg)) => {
+                if arg.split_whitespace().next() != Some("pod") {
+                    in_format_region = true;
+                }
+            }
+            Some(("end", _)) => in_format_region = false,
+            _ if in_format_region => {}
+            _ => match pod_directive_word(line) {
+                Some((word, arg)) => match word {
+                    // Heading text survives as plain text; a bare `=headN` with no
+                    // argument carries nothing.
+                    "head1" | "head2" | "head3" | "head4" | "head5" | "head6"
+                        if !arg.is_empty() =>
+                    {
+                        lines.push(arg.to_string());
+                    }
+                    "item" => {
+                        if arg.is_empty() {
+                            lines.push("-".to_string());
+                        } else {
+                            lines.push(format!("- {arg}"));
+                        }
+                    }
+                    // Structural directives carry no user-facing text.
+                    _ => {}
+                },
+                None => lines.push(line.to_string()),
+            },
+        }
+    }
+    lines.join("\n").trim().to_string()
+}
+
+/// Split a line into its POD command word and trimmed argument if the line is
+/// a block directive (`=word ...`) starting at column 0.
+///
+/// The full alphanumeric word is matched (as in `perl_pod`'s command-word
+/// handling, #13575): `=cutlery` is not `=cut`. A line that merely contains
+/// `=` mid-line is not a directive.
+fn pod_directive_word(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix('=')?;
+    let word_len = rest.find(|ch: char| !ch.is_ascii_alphanumeric()).unwrap_or(rest.len());
+    let word = &rest[..word_len];
+    if word.is_empty() {
+        return None;
+    }
+    Some((word, rest[word_len..].trim()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::SemanticAnalyzer;
@@ -1444,6 +1540,44 @@ mod tests {
         // The NestedVariableList arm was reached; no assertion on tokens needed --
         // leaf Variable nodes inside produce Variable-reference tokens (no decl context).
         let _ = analyzer.semantic_tokens();
+    }
+
+    // Issue #17298: a selected POD block renders without raw directives.
+    #[test]
+    fn render_pod_block_documentation_strips_directives_and_keeps_text() {
+        let block = "=head2 add_widgets\n\nAdds widgets.\n\n=over 4\n\n=item add($count)\n\n=back\n\n=cut\n";
+        let rendered = super::render_pod_block_documentation(block);
+        assert!(rendered.contains("add_widgets"), "heading text kept, got: {rendered}");
+        assert!(rendered.contains("Adds widgets."), "body text kept, got: {rendered}");
+        assert!(rendered.contains("- add($count)"), "item rendered as bullet, got: {rendered}");
+        for directive in ["=head", "=cut", "=over", "=item", "=back"] {
+            assert!(
+                !rendered.contains(directive),
+                "raw directive {directive} must be dropped, got: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_pod_block_documentation_excludes_format_regions() {
+        let block =
+            "=head1 NAME\n\nText.\n\n=begin html\n\n<p>html</p>\n\n=end html\n\nMore.\n\n=cut\n";
+        let rendered = super::render_pod_block_documentation(block);
+        assert!(rendered.contains("Text."), "plain text kept, got: {rendered}");
+        assert!(rendered.contains("More."), "text after the region kept, got: {rendered}");
+        assert!(!rendered.contains("<p>html</p>"), "format content excluded, got: {rendered}");
+        assert_eq!(super::render_pod_block_documentation("=pod\n\n=cut\n"), "");
+    }
+
+    // Issue #17298: directive detection matches the whole command word.
+    #[test]
+    fn pod_directive_word_requires_exact_word() {
+        assert_eq!(super::pod_directive_word("=cut extra"), Some(("cut", "extra")));
+        assert_eq!(super::pod_directive_word("=cut"), Some(("cut", "")));
+        assert_eq!(super::pod_directive_word("=cutlery"), Some(("cutlery", "")));
+        assert_eq!(super::pod_directive_word("x =cut"), None);
+        assert_eq!(super::pod_directive_word("plain"), None);
+        assert_eq!(super::pod_directive_word("="), None);
     }
 
     // Covers line 947: _ => SemanticTokenType::Variable branch in register_nested_decl_vars

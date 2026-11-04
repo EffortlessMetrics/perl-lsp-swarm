@@ -2,14 +2,15 @@
 //! relations to diff-owned changes, and computes the deterministic
 //! `packet_fingerprint`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::emitter::{
-    emit_boundaries_and_commands, emit_changes_from_diff, emit_files_and_owners,
-    emit_relations_and_discriminators, emit_tests_and_oracles,
+    diff_provenance_unverified_limitation, discovery_scope_skips, emit_boundaries_and_commands,
+    emit_changes_from_diff, emit_files_and_owners, emit_relations_and_discriminators,
+    emit_tests_and_oracles,
 };
 use crate::request::{
     EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsError, RiprFactsRequest, normalize_fact_classes,
@@ -40,14 +41,62 @@ pub fn build_ripr_facts_packet(
     // Validate root is repo-relative (forward-slash, no host/drive/temp).
     validate_ripr_facts_path(root, "root").map_err(RiprFactsError::InvalidRoot)?;
 
+    // Name the root condition (#17257): a missing root, or a root that is not a
+    // directory, would otherwise scan silently (the discovery walks return
+    // early on `read_dir` failure) and exit 0 with an undifferentiated
+    // `unavailable` packet. Surface it as a limitation, mirroring the packet's
+    // soft-failure posture, so a typo'd root cannot masquerade as an empty one.
+    let not_a_directory_limitation = || {
+        serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` cannot be scanned because a path component is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })
+    };
+    let root_limitations = match std::fs::metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if root_has_non_directory_ancestor(root) {
+                vec![not_a_directory_limitation()]
+            } else {
+                vec![serde_json::json!({
+                    "limitation_id": "root-missing",
+                    "kind": "missing_input",
+                    "message": format!("The requested root `{root}` does not exist under the current directory, so no files were scanned. An empty packet here means \"root not found\", not \"root is empty\"."),
+                    "evidence_refs": []
+                })]
+            }
+        }
+        Err(_) if root_has_non_directory_ancestor(root) => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+            vec![not_a_directory_limitation()]
+        }
+        Err(error) => vec![serde_json::json!({
+            "limitation_id": "root-inspection-failed",
+            "kind": "read_failure",
+            "message": format!("The requested root `{root}` could not be inspected ({error}), so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(metadata) if !metadata.is_dir() => vec![serde_json::json!({
+            "limitation_id": "root-not-a-directory",
+            "kind": "missing_input",
+            "message": format!("The requested root `{root}` exists but is not a directory, so no files were scanned."),
+            "evidence_refs": []
+        })],
+        Ok(_) => Vec::new(),
+    };
+
     // Validate + normalize fact classes.
     let normalized_classes =
         normalize_fact_classes(fact_classes).map_err(RiprFactsError::InvalidFactClasses)?;
 
     // Emit the packet. Parser-backed tests/oracles (#3293 PR 4), relations/
-    // discriminators (#2594), boundaries/commands (#2595), and parser-backed
-    // files/owners (#3293 PR 3) are populated; diff-derived changes still land in
-    // a later slice. When any facts are found, `packet_status` upgrades from
+    // discriminators (#2594, parser-backed `direct_owner_call` #3293 PR 6),
+    // boundaries/commands (#2595), parser-backed files/owners (#3293 PR 3),
+    // and diff-derived changes from caller-supplied diff text (#3293 PR 5)
+    // are populated. When any facts are found, `packet_status` upgrades from
     // `unavailable` to `partial`.
     //
     // PR 4: parse test files only when `tests`/`oracles` — or `relations`, a
@@ -58,7 +107,45 @@ pub fn build_ripr_facts_packet(
     let wants_tests = normalized_classes.iter().any(|c| c == "tests");
     let wants_oracles = normalized_classes.iter().any(|c| c == "oracles");
     let wants_relations = normalized_classes.iter().any(|c| c == "relations");
-    let (tests, oracles, test_provenance, test_limitations) =
+    // `#17259`: `files[]` walks the whole root, but tests/oracles/verify scan
+    // only `<root>/t` and boundaries/relations only `<root>/lib`. When a
+    // scope-sensitive class is requested and files exist outside those dirs,
+    // name the skips — a `.t` outside `t/` would otherwise sit in `files[]`
+    // (role `test`) with silently zero test facts.
+    //
+    // Split gating (verified against each emitter's actual consumption):
+    // `.t` feeds every scoped class — tests/oracles via `test_facts`,
+    // relations via the test side, dynamic_boundaries via the boundary scan,
+    // verify_commands one-per-`.t` — so `.t` skips apply to any
+    // scope-sensitive request; `.pm`/`.pl`/`.psgi` feed only relations +
+    // dynamic_boundaries, so a tests-only request must not report unrelated
+    // source skips. The limitation describes REQUESTED facts (post-#17256
+    // subset semantics), not leaked ones.
+    //
+    // The skip *list* is computed here (the gating decision needs it before
+    // emission), but the limitation JSON is built after the files
+    // force-include decision below is known — see the `scope_limitations`
+    // site for why the message must be conditional on `files[]` presence.
+    let wants_scoped_facts = normalized_classes.iter().any(|c| {
+        c == "tests"
+            || c == "oracles"
+            || c == "relations"
+            || c == "dynamic_boundaries"
+            || c == "verify_commands"
+    });
+    let wants_pm_scope =
+        normalized_classes.iter().any(|c| c == "relations" || c == "dynamic_boundaries");
+    let scope_skips: Vec<String> = if wants_scoped_facts {
+        discovery_scope_skips(root)
+            .into_iter()
+            .filter(|rel| wants_pm_scope || rel.ends_with(".t"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let wants_dynamic_boundaries = normalized_classes.iter().any(|c| c == "dynamic_boundaries");
+    let wants_verify_commands = normalized_classes.iter().any(|c| c == "verify_commands");
+    let (tests, oracles, mut test_provenance, mut test_limitations) =
         if wants_tests || wants_oracles || wants_relations {
             emit_tests_and_oracles(root)
         } else {
@@ -69,6 +156,26 @@ pub fn build_ripr_facts_packet(
         emit_relations_and_discriminators(root, &tests, &oracles);
     let has_relation_candidates = !relations.is_empty();
 
+    // Gate `dynamic_boundaries[]`/`verify_commands[]` on the requested classes
+    // (#17256): subset requests must not carry facts outside the advertised
+    // `requested_fact_classes`. The emitter runs when either class is wanted
+    // (one fused walk feeds both, mirroring the "computed for internal need"
+    // split), then each array is dropped unless explicitly requested. Boundary
+    // limitations describe boundary facts, so they flow only when boundaries
+    // are in the packet.
+    let (boundaries, boundary_limitations, verify_commands) =
+        if wants_dynamic_boundaries || wants_verify_commands {
+            emit_boundaries_and_commands(root)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+    let boundaries = if wants_dynamic_boundaries { boundaries } else { Vec::new() };
+    let boundary_limitations =
+        if wants_dynamic_boundaries { boundary_limitations } else { Vec::new() };
+    let verify_commands = if wants_verify_commands { verify_commands } else { Vec::new() };
+    let has_boundary_facts = !boundaries.is_empty();
+    let has_verify_facts = !verify_commands.is_empty();
+
     // Emit `tests[]`/`oracles[]` only for the specifically-requested classes; the
     // facts computed above may exist solely to feed `relations`. But referential
     // integrity trumps strict gating: an `oracle` carries a required `test_id` and
@@ -77,16 +184,37 @@ pub fn build_ripr_facts_packet(
     // request (nothing references an oracle — relations set `oracle_id: null` in
     // this slice), then keep `tests[]` whenever a relation OR an oracle references
     // one. This preserves the referential integrity origin/main had by always
-    // populating `tests[]`.
+    // populating `tests[]`. A `verify_commands[]` entry likewise carries a
+    // required `test_id`, so it forces `tests[]` too (#17256).
     let mut oracles = if wants_oracles { oracles } else { Vec::new() };
     let has_oracle_facts = !oracles.is_empty();
-    let tests =
-        if wants_tests || has_relation_candidates || has_oracle_facts { tests } else { Vec::new() };
+    let tests = if wants_tests || has_relation_candidates || has_oracle_facts || has_verify_facts {
+        // `#17256`: when neither tests, oracles, nor relations were requested,
+        // the tests parse above never ran — but a `verify_commands` request
+        // needs the referenced `test` facts. Re-run the parse for internal
+        // need (mirroring how PR 4 shared the gate for relations) and adopt
+        // its provenance + limitations: the forced tests reference their
+        // `test_discovery` provenance by id, and dropping it would dangle.
+        // Relations stay empty here — the relation pass above already ran on
+        // empty inputs — so no unrequested class leaks.
+        if !wants_tests && !wants_oracles && !wants_relations {
+            let (forced_tests, _, forced_provenance, forced_limitations) =
+                emit_tests_and_oracles(root);
+            test_provenance = forced_provenance;
+            test_limitations = forced_limitations;
+            forced_tests
+        } else {
+            tests
+        }
+    } else {
+        Vec::new()
+    };
     let has_test_facts = !tests.is_empty();
 
-    let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
-    let has_boundary_facts = !boundaries.is_empty();
-
+    // `has_verify_facts` is computed above from the gated `verify_commands`
+    // array (#17256); main's unconditional emission lived here before the
+    // subset gate moved it up. Same status rule as main (verify facts count),
+    // subset-honoring value.
     // PR 3 (perl-lsp-swarm#3293): emit parser-backed files + owners facts (plus
     // per-file provenance and parse/read limitations) by parsing every Perl
     // source/test file under `root`. Only do the (potentially expensive) walk +
@@ -103,42 +231,70 @@ pub fn build_ripr_facts_packet(
         .any(|class| class == "files" || class == "owners" || class == "provenance");
     // `changes` needs the parsed owners to attribute diff hunks, and a
     // `relation` now carries a resolvable `owner_id` (#3342) — so its referenced
-    // `owners[]`/`files[]` facts must be present in the packet. Run the walk
-    // whenever files/owners/provenance or changes are requested, or a relation
-    // was emitted, mirroring how PR 4 kept `tests[]` for a relation's `test_id`.
-    let (files, owners, file_provenance, file_limitations) =
-        if wants_file_facts_explicit || wants_changes || has_relation_candidates {
-            emit_files_and_owners(root)
-        } else {
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-        };
+    // `owners[]`/`files[]` facts must be present in the packet. Likewise a kept
+    // `verify_commands[]` entry forces its referenced `tests[]` above, and each
+    // forced test carries a `file_id` — so the walk must run then too, or the
+    // forced tests dangle against an empty `files[]` (#17256). A kept
+    // `dynamic_boundaries[]` entry carries a required `file_id` (plus a resolved
+    // `owner_id`), so the walk must run then too (#17270 review). Run the walk
+    // whenever files/owners/provenance or changes are requested, or a relation,
+    // boundary, or verify command was emitted, mirroring how PR 4 kept `tests[]`
+    // for a relation's `test_id`.
+    let (files, owners, file_provenance, file_limitations) = if wants_file_facts_explicit
+        || wants_changes
+        || has_relation_candidates
+        || has_boundary_facts
+        || has_verify_facts
+    {
+        emit_files_and_owners(root)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    };
 
     // PR 5 (perl-lsp-swarm#3293): emit diff-owned `changes[]` from a caller-
     // supplied unified diff (`RiprFactsRequest.diff`). No git, no subprocess —
     // the diff is opaque text. `changes` requested without a diff yields an empty
     // array plus a `no-diff-supplied` limitation, so a downstream consumer can
     // distinguish "not analyzed" from "nothing changed".
-    let (changes, change_limitations) = if wants_changes {
+    let (changes, mut change_limitations) = if wants_changes {
         match diff {
             Some(diff_text) if !diff_text.trim().is_empty() => {
                 emit_changes_from_diff(diff_text, root, &files, &owners)
             }
-            _ => (
-                Vec::new(),
-                vec![serde_json::json!({
+            _ => {
+                let limitations = vec![serde_json::json!({
                     "limitation_id": "no-diff-supplied",
                     "kind": "missing_input",
-                    "message": "`changes` was requested but no diff was supplied on RiprFactsRequest.diff; the batch/CLI path does not yet produce one. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
+                    "message": "`changes` was requested but no diff text was supplied; no caller derives diff text from base/head yet. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
                     "evidence_refs": []
-                })],
-            ),
+                })];
+                (Vec::new(), limitations)
+            }
         }
     } else {
         (Vec::new(), Vec::new())
     };
+    // `#17258`: `input.base`/`input.head` echo caller strings verbatim —
+    // including garbage — whenever no diff was analyzed, not only when
+    // `changes` was requested. A caller supplying base/head with `files` or
+    // `tests,oracles,relations` (and no diff) previously got unverified refs
+    // echoed with no caveat. So derive the `diff-provenance-unverified`
+    // disclosure independently of `wants_changes`: refs present AND no diff
+    // analyzed (no/blank diff, or `changes` not requested). The diff-supplied
+    // path already carries exactly one via `emit_changes_from_diff`, so it is
+    // excluded here — one caveat per packet, never a duplicate. Packets
+    // without base/head gain no new noise. This rides `change_limitations`
+    // so both merge arms (has-facts + no-facts) surface it — provenance-
+    // about-absence must not depend on fact presence — while the no-diff
+    // golden keeps its exact limitation order.
+    let diff_analyzed =
+        wants_changes && matches!(diff, Some(diff_text) if !diff_text.trim().is_empty());
+    if (base.is_some() || head.is_some()) && !diff_analyzed {
+        change_limitations.push(diff_provenance_unverified_limitation());
+    }
     let has_change_facts = !changes.is_empty();
     let mut relations = bind_relations_to_changes(relations, &changes);
-    annotate_oracles_for_bound_relations(&mut oracles, &mut relations, &changes);
+    annotate_oracles_for_bound_relations(root, &mut oracles, &mut relations, &changes);
     let has_relation_facts = !relations.is_empty();
 
     // Referential integrity: a change's `file_id`/`owner_id` — and an
@@ -150,17 +306,28 @@ pub fn build_ripr_facts_packet(
     // referenced a `test_id`. `diff-file-not-found` references an UNparsed path
     // (genuinely absent), so it needs no force-include. A `relation`'s resolved
     // `owner_id` (#3342) likewise references an `owners[]` fact, so force
-    // files+owners in whenever a relation was emitted.
+    // files+owners in whenever a relation was emitted. A kept `verify_commands[]`
+    // entry forces `tests[]` whose `file_id`s reference `files[]` (#17256), so
+    // force files+owners in then too. A kept `dynamic_boundaries[]` entry
+    // carries a required `file_id` (+ resolved `owner_id`), so force
+    // files+owners in then too (#17270 review). All force-includes mirror the
+    // relations precedent wholesale: keep ALL files+owners, not just the
+    // referenced subset — filtering to referenced ids would fork the full-class
+    // packet shape subset consumers diff against.
     let changes_reference_known_file = has_change_facts
         || change_limitations.iter().any(|l| {
             l["limitation_id"].as_str().is_some_and(|id| id.starts_with("unattributable-change:"))
         });
-    let (files, owners) =
-        if wants_file_facts_explicit || changes_reference_known_file || has_relation_candidates {
-            (files, owners)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+    let (files, owners) = if wants_file_facts_explicit
+        || changes_reference_known_file
+        || has_relation_candidates
+        || has_boundary_facts
+        || has_verify_facts
+    {
+        (files, owners)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let has_file_facts = !files.is_empty();
     let has_owner_facts = !owners.is_empty();
 
@@ -171,6 +338,111 @@ pub fn build_ripr_facts_packet(
     // class as `oracle-representation`.
     let file_limitations =
         if wants_file_facts_explicit || has_file_facts { file_limitations } else { Vec::new() };
+
+    // `#17259`: the scope limitation JSON is built HERE — after the files
+    // force-include decision above is known — because subset packets without a
+    // `files[]` force-include (tests-only) carry empty `files[]`: claiming the
+    // skips "appear in `files[]`" there would be a self-contradiction with
+    // dangling evidence. The files-present wording names `files[]` + `file:`
+    // refs; the files-absent wording describes the path-derived `file:` ids
+    // without claiming presence (the same about-absence reference class as
+    // `diff-file-not-found`, which points at genuinely unparsed paths). Two
+    // refinements keep the claim exact:
+    // (1) presence: a skip whose file failed `read_to_string` has no `files[]`
+    // fact even when other files read fine (`emit_files_and_owners` emits a
+    // `read-failed:` limitation instead), so skips are checked against the
+    // actually emitted `files[]` — absent ones get path-derived-id wording,
+    // never a presence claim;
+    // (2) reason: `.pl`/`.psgi` skips are excluded by extension (no scoped
+    // collector scans them, anywhere — even under `lib/`), while `.t`/`.pm`
+    // skips are excluded by directory; each group is labeled with its reason
+    // in both the files-present and files-absent wordings.
+    let scope_limitations = if scope_skips.is_empty() {
+        Vec::new()
+    } else {
+        let evidence_refs: Vec<serde_json::Value> =
+            scope_skips.iter().map(|rel| serde_json::json!(format!("file:{rel}"))).collect();
+        let emitted: HashSet<&str> = files
+            .iter()
+            .filter_map(|file| file["file_id"].as_str()?.strip_prefix("file:"))
+            .collect();
+        let mut present_dir: Vec<&str> = Vec::new();
+        let mut present_ext: Vec<&str> = Vec::new();
+        let mut absent_dir: Vec<&str> = Vec::new();
+        let mut absent_ext: Vec<&str> = Vec::new();
+        for rel in &scope_skips {
+            let group = if emitted.contains(rel.as_str()) {
+                if rel.ends_with(".pl") || rel.ends_with(".psgi") {
+                    &mut present_ext
+                } else {
+                    &mut present_dir
+                }
+            } else if rel.ends_with(".pl") || rel.ends_with(".psgi") {
+                &mut absent_ext
+            } else {
+                &mut absent_dir
+            };
+            group.push(rel.as_str());
+        }
+        let label_groups = |dir: &[&str], ext: &[&str]| {
+            let mut groups = Vec::new();
+            if !dir.is_empty() {
+                groups.push(format!("{} (outside the directory scope)", dir.join(", ")));
+            }
+            if !ext.is_empty() {
+                groups.push(format!("{} (unscanned `.pl`/`.psgi` extensions)", ext.join(", ")));
+            }
+            groups
+        };
+        let present_groups: Vec<String> = label_groups(&present_dir, &present_ext);
+        let absent_groups: Vec<String> = label_groups(&absent_dir, &absent_ext);
+        let message = if has_file_facts {
+            let mut message = String::from(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib` while `files[]` walks the whole root; ",
+            );
+            if present_groups.is_empty() {
+                // Every skip is unreadable: `files[]` is in the packet, but
+                // none of the skips is in it — path-derived wording only.
+                message.push_str("these files are excluded from the requested scoped facts or commands but absent from `files[]` (unreadable — see the `read-failed:` limitation); their `file:` evidence refs are path-derived ids, not references to present facts: ");
+                message.push_str(&absent_groups.join("; "));
+                message.push('.');
+            } else {
+                message.push_str("these files appear in `files[]` but are excluded from the requested scoped facts or commands: ");
+                message.push_str(&present_groups.join("; "));
+                message.push('.');
+                if !absent_groups.is_empty() {
+                    message.push(' ');
+                    message.push_str("Also excluded but absent from `files[]` (unreadable — see the `read-failed:` limitation); their `file:` evidence refs are path-derived ids, not references to present facts: ");
+                    message.push_str(&absent_groups.join("; "));
+                    message.push('.');
+                }
+            }
+            message
+        } else if absent_ext.is_empty() {
+            // Directory-only files-absent: every skip genuinely falls outside
+            // the `<root>/t` + `<root>/lib` scope, so the direct wording stays.
+            format!(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib`; these files fall outside that scope and are excluded from the requested scoped facts or commands: {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                scope_skips.join(", ")
+            )
+        } else if absent_dir.is_empty() {
+            format!(
+                "test/source discovery scans only `.t` files under `<root>/t` and `.pm` files under `<root>/lib`; these files are excluded from the requested scoped facts or commands because no scoped collector scans their extensions (`.pl` and `.psgi` are unscanned wherever they live): {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                scope_skips.join(", ")
+            )
+        } else {
+            format!(
+                "test/source discovery is scoped to `<root>/t` + `<root>/lib`; these files are excluded from the requested scoped facts or commands: {}. (`files[]` is not in this packet — the `file:` evidence refs are path-derived ids, not references to present facts.)",
+                absent_groups.join("; ")
+            )
+        };
+        vec![serde_json::json!({
+            "limitation_id": "discovery-scope-split",
+            "kind": "discovery_scope",
+            "message": message,
+            "evidence_refs": evidence_refs
+        })]
+    };
 
     let mut packet = build_unavailable_packet(schema, root, base, head, &normalized_classes);
 
@@ -240,11 +512,14 @@ pub fn build_ripr_facts_packet(
 
     // Upgrade status + merge limitations if we found any facts. Parse/read
     // limitations from the test and files passes are always surfaced (even with
-    // no facts).
+    // no facts). `verify_commands[]` counts (a verify-only packet carries
+    // usable commands and reads `partial`), computed from the gated array
+    // (#17256) so unrequested verify facts can neither leak nor upgrade.
     let has_facts = has_test_facts
         || has_oracle_facts
         || has_relation_facts
         || has_boundary_facts
+        || has_verify_facts
         || has_change_facts
         || has_file_facts
         || has_owner_facts;
@@ -266,31 +541,62 @@ pub fn build_ripr_facts_packet(
         // because its package exposed no `owners[]` fact. Empty `evidence_refs`,
         // so no referential dependency — always safe to surface.
         all_limitations.extend(relation_limitations);
+        // `#17257`: a bad root can still coexist with diff-derived `changes[]`
+        // (the diff is opaque text, not a scan), so surface the root condition
+        // alongside facts too — never silently.
+        all_limitations.extend(root_limitations);
+        // `#17259`: discovery-scope skips are about absence (like
+        // `diff-file-not-found`), so they surface alongside facts too.
+        all_limitations.extend(scope_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
         || !relation_limitations.is_empty()
+        || !root_limitations.is_empty()
+        || !scope_limitations.is_empty()
     {
         // No facts, but a pass produced limitations (test/file parse failures, a
-        // `changes` request with no diff, or a relation omitted for an
-        // unresolvable owner) — surface them next to the base
+        // `changes` request with no diff, a relation omitted for an
+        // unresolvable owner, a missing/non-directory root, or test/source
+        // files outside the discovery scope) — surface them next to the base
         // `emitter-not-yet-implemented` limitation so they are never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
             limitations.extend(relation_limitations);
+            limitations.extend(root_limitations);
+            limitations.extend(scope_limitations);
         }
     }
 
-    // RIPR-SPEC-0064: match RIPR's consumer-side packet integrity recipe. The
-    // fingerprint covers stable semantic identity tuples, not host paths, temp
-    // dirs, timestamps, or serde_json object ordering.
     let fingerprint = ripr_packet_fingerprint(&packet);
     packet["packet_fingerprint"] = serde_json::Value::String(fingerprint);
 
     Ok(packet)
+}
+
+/// `true` when an existing ancestor of `root` is provably not a directory.
+///
+/// Windows reports `<file>/child` metadata failure as `NotFound` rather than
+/// `NotADirectory`, so a bare `ErrorKind` match would misname that root as
+/// missing. Probing ancestors keeps the limitation honest on every platform:
+/// a positive hit means a path component is provably not a directory, while
+/// any inconclusive probe conservatively keeps the caller's `ErrorKind`
+/// reading.
+fn root_has_non_directory_ancestor(root: &str) -> bool {
+    for ancestor in std::path::Path::new(root).ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) => return !metadata.is_dir(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Value> {
@@ -335,7 +641,45 @@ fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Va
     bound
 }
 
+/// Per oracle id, the source of the `eval { ... }` block a `like($@, ...)`
+/// oracle observes (#18498). Such an oracle is about the callees inside that
+/// block, which its own call text does not name.
+fn trapped_block_text_by_oracle(root: &str, oracles: &[Value]) -> HashMap<String, String> {
+    let mut by_oracle = HashMap::new();
+    let mut scopes_by_file: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+    for oracle in oracles {
+        let Some(oracle_id) = oracle["oracle_id"].as_str() else { continue };
+        if !oracle["expression"].as_str().is_some_and(|e| e.trim_start().starts_with("like(")) {
+            continue;
+        }
+        // `oracle:{path}:{name}:{start}-{end}`
+        let Some(rest) = oracle_id.strip_prefix("oracle:") else { continue };
+        let mut tail = rest.rsplitn(3, ':');
+        let (Some(span), Some(_name), Some(path)) = (tail.next(), tail.next(), tail.next()) else {
+            continue;
+        };
+        let Some(start) = span.split('-').next().and_then(|s| s.parse::<usize>().ok()) else {
+            continue;
+        };
+        let scopes = scopes_by_file.entry(path.to_owned()).or_insert_with(|| {
+            let Ok(content) = std::fs::read_to_string(std::path::Path::new(root).join(path)) else {
+                return Vec::new();
+            };
+            let mut parser = perl_parser_core::Parser::new(&content);
+            match parser.parse() {
+                Ok(ast) => crate::emitter::trapped_error_scopes(&ast, &content),
+                Err(_) => Vec::new(),
+            }
+        });
+        if let Some((_, text)) = scopes.iter().find(|(like_start, _)| *like_start == start) {
+            by_oracle.insert(oracle_id.to_owned(), text.clone());
+        }
+    }
+    by_oracle
+}
+
 fn annotate_oracles_for_bound_relations(
+    root: &str,
     oracles: &mut [Value],
     relations: &mut [Value],
     changes: &[Value],
@@ -344,6 +688,7 @@ fn annotate_oracles_for_bound_relations(
         .iter()
         .filter_map(|change| change["change_id"].as_str().map(|change_id| (change_id, change)))
         .collect();
+    let trapped = trapped_block_text_by_oracle(root, oracles);
 
     for relation in relations {
         let Some(owner_id) = relation["owner_id"].as_str() else {
@@ -369,7 +714,11 @@ fn annotate_oracles_for_bound_relations(
         let fallback_index = || {
             oracles.iter().position(|oracle| {
                 oracle["test_id"].as_str() == Some(test_id)
-                    && oracle_expression_mentions_callable(oracle, callable_name)
+                    && (oracle_expression_mentions_callable(oracle, callable_name)
+                        || oracle["oracle_id"]
+                            .as_str()
+                            .and_then(|id| trapped.get(id))
+                            .is_some_and(|text| text.contains(callable_name)))
             })
         };
         let Some(oracle_index) = exact_index.or_else(fallback_index) else {
@@ -412,6 +761,26 @@ fn callable_name_from_owner_id(owner_id: &str) -> Option<&str> {
     None
 }
 
+/// Consumer-side `packet_fingerprint` (RIPR-SPEC-0064): SHA-256 over sorted
+/// semantic **identity** tuples, not whole-packet JSON, host paths, temp dirs,
+/// timestamps, or serde object order.
+///
+/// **Hashed tuples** (missing fields hash as empty strings):
+///
+/// - `files[]` — `(file_id, slash-normalized path)` per file
+/// - `owners[]` — `owner_id` per owner
+/// - `changes[]` — `change_id` per change (line-span derived; content digests do not feed the hash)
+/// - `oracles[]` — `(oracle_id, target_owner_id, observed_sink, expected_expression)` per oracle
+/// - `relations[]` — `(relation_id, change_id, owner_id, test_id, oracle_id)` per relation
+///
+/// **Excluded** (including entire top-level arrays and non-tuple fields): `tests[]`,
+/// `dynamic_boundaries[]`, `verify_commands[]`, `limitations[]`, `provenance[]`,
+/// `packet_id`, and every digest, range, and other non-identity field on hashed rows.
+///
+/// **Consequence:** the fingerprint detects identity-tuple drift, not file or hunk
+/// content edits that leave the same ids/spans (e.g. `return 1` → `return 2` on
+/// unchanged lines). Compare `files[].digest`, `changes[].changed_text_digest`, or
+/// raw source for content-level change detection.
 fn ripr_packet_fingerprint(packet: &Value) -> String {
     let mut hasher = Sha256::new();
 
@@ -528,6 +897,15 @@ fn producer_capabilities(fact_classes: &[String]) -> Vec<String> {
     if has_test_facts && !capabilities.iter().any(|capability| capability == "test_facts") {
         capabilities.push("test_facts".to_string());
     }
+    // The producer grades `throws_ok` and `like(dies {...}, ...)` by their
+    // literal matcher and reports a nested exception block once
+    // (perl-lsp-swarm#18499). ripr reads this to treat `weak_broad`
+    // exception observers as real gaps and pinned ones as `static_unknown`.
+    if has_test_facts
+        && !capabilities.iter().any(|capability| capability == "oracle_matcher_grading")
+    {
+        capabilities.push("oracle_matcher_grading".to_string());
+    }
     capabilities
 }
 
@@ -541,13 +919,22 @@ pub(crate) fn build_unavailable_packet(
     fact_classes: &[String],
 ) -> serde_json::Value {
     let capabilities = producer_capabilities(fact_classes);
+    // #17260 platform rule: on Windows backslash is a separator, so normalize
+    // to forward-slash under the `posix` claim; on Unix backslash is a literal
+    // filename char and the emitters scan `Path::new(root)` verbatim, so the
+    // echo must stay verbatim to name the scanned directory.
+    #[cfg(windows)]
+    let echo_root = normalize_repo_relative(root);
+    #[cfg(not(windows))]
+    let echo_root = root.to_owned();
     serde_json::json!({
         "schema_version": schema,
         // M1 contract convergence: deterministic packet ID (no timestamp).
-        // The ID is derived from the schema + root + fact_classes so the same
-        // input always produces the same packet ID.
+        // The ID is derived from the schema + normalized root + fact_classes
+        // so the same input always produces the same packet ID, and equivalent
+        // Windows spellings (`project/lib` vs `project\lib`) share one ID.
         "packet_id": format!(
-            "perl-lsp-ripr-facts-{schema}-{root}-{}",
+            "perl-lsp-ripr-facts-{schema}-{echo_root}-{}",
             fact_classes.join(",")
         ),
         "packet_status": "unavailable",
@@ -558,7 +945,10 @@ pub(crate) fn build_unavailable_packet(
             "capabilities": capabilities,
         },
         "root": {
-            "repo_relative": root,
+            // #17260: `echo_root` per the platform rule above — normalized on
+            // Windows, verbatim elsewhere (a verbatim backslash is valid
+            // posix). Forward-slash roots are byte-identical on both.
+            "repo_relative": echo_root,
             "vcs_head": head,
             "path_style": "posix",
         },
@@ -579,7 +969,7 @@ pub(crate) fn build_unavailable_packet(
         "limitations": [{
             "limitation_id": "emitter-not-yet-implemented",
             "kind": "missing_emitter",
-            "message": "The ripr-facts emitter body lands in PRs 5-8 (perl-lsp-swarm#2592-#2595). Today every call produces an unavailable packet.",
+            "message": "The ripr-facts emitter produced no facts for the requested classes under this root, so this call yields an unavailable packet.",
             "evidence_refs": []
         }],
         "provenance": [{
@@ -593,7 +983,7 @@ pub(crate) fn build_unavailable_packet(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::{must_some, must_some_with};
 
     /// A valid request against the crate root (`"."`, no `t/` dir → unavailable).
     fn valid_request<'a>(fact_classes: &'a str) -> RiprFactsRequest<'a> {
@@ -1125,6 +1515,58 @@ mod tests {
         }
     }
 
+    fn trapped_error_relation_oracle(root: &str, test_body: &str) -> serde_json::Value {
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(
+            format!("{root}/lib/Foo.pm"),
+            "package Foo;\nsub run {\n    die \"boom\\n\";\n}\n1;\n",
+        )
+        .expect("write Foo.pm");
+        std::fs::write(format!("{root}/t/Foo.t"), test_body).expect("write t");
+        let diff = "--- a/lib/Foo.pm\n+++ b/lib/Foo.pm\n@@ -2,3 +2,3 @@\n sub run {\n-    die \"bang\\n\";\n+    die \"boom\\n\";\n }\n";
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "tests,oracles,relations,changes",
+            diff: Some(diff),
+        })
+        .expect("packet");
+        let relations = p["relations"].as_array().expect("relations array");
+        let relation = relations
+            .iter()
+            .find(|r| r["owner_id"].as_str().is_some_and(|o| o.contains("Foo::run")))
+            .expect("relation for Foo::run")
+            .clone();
+        let _ = std::fs::remove_dir_all(root);
+        relation["oracle_id"].clone()
+    }
+
+    #[test]
+    fn like_on_the_trapped_error_binds_to_the_callee_in_the_eval_block() {
+        // #18498: `eval { Foo::run() }; like($@, ...)` observes Foo::run.
+        let bound = trapped_error_relation_oracle(
+            "target/ripr-18498-trapped-bound",
+            "use Test::More;\nuse Foo;\neval { Foo::run() };\nlike($@, qr/boom/, 'n');\n",
+        );
+        assert!(
+            bound.as_str().is_some_and(|id| id.contains(":like:")),
+            "the like oracle must bind to the trapped callee: {bound}"
+        );
+    }
+
+    #[test]
+    fn like_on_the_error_does_not_bind_across_an_intervening_statement() {
+        let bound = trapped_error_relation_oracle(
+            "target/ripr-18498-trapped-intervening",
+            "use Test::More;\nuse Foo;\neval { Foo::run() };\nmy $x = 1;\nlike($@, qr/boom/, 'n');\n",
+        );
+        assert!(bound.is_null(), "no adjacent eval, no binding: {bound}");
+    }
+
     #[test]
     fn build_packet_preserves_unbound_relations_when_diff_targets_other_owner() {
         let root = "target/ripr-p4-relations-unbound-preserved";
@@ -1575,6 +2017,45 @@ mod tests {
     }
 
     #[test]
+    fn build_packet_propagates_diff_unparseable_limitation() {
+        // Packet-level proof: garbage diff text flows through assembly with
+        // the `diff-unparseable` limitation attached (#17266 review).
+        let p = packet_for_diff("garbage", "changes", Some("this is not a diff\n"));
+        assert!(changes_of(&p).is_empty(), "garbage diff → no changes");
+        assert!(has_limitation(&p, "diff-unparseable"), "must propagate diff-unparseable");
+    }
+
+    #[test]
+    fn build_packet_verify_only_request_reads_partial_not_unavailable() {
+        // A root with one pattern-free .t file, requesting only
+        // `verify_commands`: the packet carries a usable command, so it must
+        // read `partial` — never `unavailable` claiming no facts.
+        let root = "target/ripr-verify-only";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/t/plain.t"), "use strict;\n1;\n").expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "verify_commands",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+        assert!(
+            !p["verify_commands"].as_array().expect("verify_commands[]").is_empty(),
+            "one .t file → one verify command"
+        );
+        assert_eq!(p["packet_status"], "partial", "verify facts count toward status");
+        assert!(
+            !has_limitation(&p, "emitter-not-yet-implemented"),
+            "partial packet must not claim no facts were produced"
+        );
+    }
+
+    #[test]
     fn build_packet_emits_no_diff_supplied_limitation_for_blank_diff() {
         let p = packet_for_diff("blankdiff", "changes", Some("   \n  "));
         assert!(changes_of(&p).is_empty(), "blank diff behaves like no diff");
@@ -1730,9 +2211,9 @@ mod tests {
     }
 
     #[test]
-    fn build_packet_fingerprint_changes_with_content() {
-        // Same dir (→ same root/packet_id), different `.t` content: isolates
-        // "fact content differs → fingerprint differs" from any root/id change.
+    fn build_packet_fingerprint_changes_with_oracle_identity() {
+        // Same dir (→ same root/packet_id), different `.t` content adds oracle
+        // identity tuples — not a content-only fingerprint change.
         let a = packet_for_t("fp-content", "use Test::More;\nok(1);\n", "tests,oracles");
         let b = packet_for_t("fp-content", "use Test::More;\nis(1, 1);\nok(2);\n", "tests,oracles");
         assert_ne!(
@@ -1770,6 +2251,161 @@ mod tests {
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "empty semantic tuples should hash to SHA-256(empty), not SHA-256(SHA-256(empty))"
         );
+    }
+
+    #[test]
+    fn packet_fingerprint_doc_contract_covered_and_excluded_fields() {
+        // Table-driven guard (#17249): README/rustdoc tuple lists must match
+        // `ripr_packet_fingerprint` — excluded mutations are stable, covered
+        // mutations always change the hash.
+        let baseline = serde_json::json!({
+            "packet_id": "packet:abc",
+            "files": [{
+                "file_id": "file:lib/App.pm",
+                "path": "lib/App.pm",
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "start_line": 0,
+                "end_line": 10
+            }],
+            "owners": [{
+                "owner_id": "owner:lib/App.pm:sub:App::run:1-5",
+                "start_line": 1,
+                "end_line": 5
+            }],
+            "changes": [{
+                "change_id": "change:file:lib/App.pm:3:3",
+                "changed_text_digest": "fnv64:bbbbbbbbbbbbbbbb"
+            }],
+            "tests": [{
+                "test_id": "test:t/app.t",
+                "framework": "Test::More"
+            }],
+            "oracles": [{
+                "oracle_id": "oracle:t/app.t:is:1-10",
+                "target_owner_id": "owner:lib/App.pm:sub:App::run:1-5",
+                "observed_sink": "return_value",
+                "expected_expression": "1",
+                "expression": "is(1, 1)"
+            }],
+            "relations": [{
+                "relation_id": "relation:direct:1",
+                "change_id": "change:file:lib/App.pm:3:3",
+                "owner_id": "owner:lib/App.pm:sub:App::run:1-5",
+                "test_id": "test:t/app.t",
+                "oracle_id": "oracle:t/app.t:is:1-10"
+            }],
+            "dynamic_boundaries": [{ "boundary_id": "boundary:eval:1" }],
+            "verify_commands": [{ "command_id": "cmd:prove:1" }],
+            "limitations": [{ "limitation_id": "limitation:example:1" }],
+            "provenance": [{ "provenance_id": "prov:syntax:1" }]
+        });
+        let base_fp = ripr_packet_fingerprint(&baseline);
+
+        let excluded: &[(&str, fn(&mut serde_json::Value))] = &[
+            ("packet_id", |p| p["packet_id"] = serde_json::json!("packet:xyz")),
+            ("files[].digest", |p| {
+                p["files"][0]["digest"] = serde_json::json!(
+                    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                );
+            }),
+            ("files[].range", |p| {
+                p["files"][0]["start_line"] = serde_json::json!(99);
+            }),
+            ("owners[].range", |p| {
+                p["owners"][0]["end_line"] = serde_json::json!(99);
+            }),
+            ("changes[].changed_text_digest", |p| {
+                p["changes"][0]["changed_text_digest"] =
+                    serde_json::json!("fnv64:dddddddddddddddd");
+            }),
+            ("oracles[].expression", |p| {
+                p["oracles"][0]["expression"] = serde_json::json!("ok(0)");
+            }),
+            ("tests[]", |p| {
+                must_some_with(p["tests"].as_array_mut(), "tests").push(serde_json::json!({
+                    "test_id": "test:t/other.t"
+                }));
+            }),
+            ("dynamic_boundaries[]", |p| {
+                must_some_with(p["dynamic_boundaries"].as_array_mut(), "boundaries")
+                    .push(serde_json::json!({ "boundary_id": "boundary:eval:2" }));
+            }),
+            ("verify_commands[]", |p| {
+                must_some_with(p["verify_commands"].as_array_mut(), "commands")
+                    .push(serde_json::json!({ "command_id": "cmd:prove:2" }));
+            }),
+            ("limitations[]", |p| {
+                must_some_with(p["limitations"].as_array_mut(), "limitations")
+                    .push(serde_json::json!({ "limitation_id": "limitation:extra:1" }));
+            }),
+            ("provenance[]", |p| {
+                must_some_with(p["provenance"].as_array_mut(), "provenance")
+                    .push(serde_json::json!({ "provenance_id": "prov:extra:1" }));
+            }),
+        ];
+        for (label, mutate) in excluded {
+            let mut perturbed = baseline.clone();
+            mutate(&mut perturbed);
+            assert_eq!(
+                ripr_packet_fingerprint(&perturbed),
+                base_fp,
+                "excluded field {label} must not change packet_fingerprint"
+            );
+        }
+
+        let covered: &[(&str, fn(&mut serde_json::Value))] = &[
+            ("files[].path", |p| {
+                p["files"][0]["path"] = serde_json::json!("lib/Other.pm");
+            }),
+            ("files[].file_id", |p| {
+                p["files"][0]["file_id"] = serde_json::json!("file:lib/Other.pm");
+            }),
+            ("owners[].owner_id", |p| {
+                p["owners"][0]["owner_id"] =
+                    serde_json::json!("owner:lib/App.pm:sub:App::other:1-5");
+            }),
+            ("changes[].change_id", |p| {
+                p["changes"][0]["change_id"] = serde_json::json!("change:file:lib/App.pm:4:4");
+            }),
+            ("oracles[].oracle_id", |p| {
+                p["oracles"][0]["oracle_id"] = serde_json::json!("oracle:t/app.t:ok:2-11");
+            }),
+            ("oracles[].target_owner_id", |p| {
+                p["oracles"][0]["target_owner_id"] =
+                    serde_json::json!("owner:lib/App.pm:sub:App::other:1-5");
+            }),
+            ("oracles[].observed_sink", |p| {
+                p["oracles"][0]["observed_sink"] = serde_json::json!("exception_path");
+            }),
+            ("oracles[].expected_expression", |p| {
+                p["oracles"][0]["expected_expression"] = serde_json::json!("2");
+            }),
+            ("relations[].relation_id", |p| {
+                p["relations"][0]["relation_id"] = serde_json::json!("relation:direct:2");
+            }),
+            ("relations[].change_id", |p| {
+                p["relations"][0]["change_id"] = serde_json::json!("change:file:lib/App.pm:4:4");
+            }),
+            ("relations[].owner_id", |p| {
+                p["relations"][0]["owner_id"] =
+                    serde_json::json!("owner:lib/App.pm:sub:App::other:1-5");
+            }),
+            ("relations[].test_id", |p| {
+                p["relations"][0]["test_id"] = serde_json::json!("test:t/other.t");
+            }),
+            ("relations[].oracle_id", |p| {
+                p["relations"][0]["oracle_id"] = serde_json::json!("oracle:t/app.t:ok:2-11");
+            }),
+        ];
+        for (label, mutate) in covered {
+            let mut perturbed = baseline.clone();
+            mutate(&mut perturbed);
+            assert_ne!(
+                ripr_packet_fingerprint(&perturbed),
+                base_fp,
+                "covered tuple field {label} must change packet_fingerprint"
+            );
+        }
     }
 
     #[test]

@@ -38,8 +38,8 @@ impl<'a> Parser<'a> {
                 }
                 // Form 2: variable filehandle `print $fh $msg` (no comma after $fh)
                 if next_text.as_deref().unwrap_or("").starts_with('$') {
-                    // If next-next starts with a sigil or string, or is a numeric term
-                    // accepted by an output builtin, it is likely `print $fh EXPR`.
+                    // A numeric term or heredoc message is also accepted by output
+                    // builtins: `print $fh 1` and `print $fh <<'END'`.
                     // A comma means it is a regular `print $var, $other` list.
                     if third_kind != Some(TokenKind::Comma)
                         && let Some(ref txt) = third_text
@@ -47,8 +47,10 @@ impl<'a> Parser<'a> {
                             || txt.starts_with('@')
                             || txt.starts_with('%')
                             || third_kind == Some(TokenKind::String)
-                            || (third_kind == Some(TokenKind::Number)
-                                && matches!(name, "print" | "printf" | "say")))
+                            || (matches!(
+                                third_kind,
+                                Some(TokenKind::Number | TokenKind::HeredocStart)
+                            ) && matches!(name, "print" | "printf" | "say")))
                     {
                         return true;
                     }
@@ -83,6 +85,7 @@ impl<'a> Parser<'a> {
             };
             let next_kind = next_token.kind();
             let next_text = next_token.text.to_string();
+            let next_end = next_token.end();
 
             // These tokens *cannot* start an indirect object
             match next_kind {
@@ -140,8 +143,8 @@ impl<'a> Parser<'a> {
                         third.kind(),
                         TokenKind::String       // print $fh "x"
                         | TokenKind::LeftParen    // print $fh ($x)
-                    ) || (third.kind() == TokenKind::Number
-                        && matches!(name, "print" | "printf" | "say")) // print $fh 1
+                    ) || (matches!(third.kind(), TokenKind::Number | TokenKind::HeredocStart)
+                        && matches!(name, "print" | "printf" | "say")) // print $fh 1 / <<'END'
                       || third_text.starts_with('$')    // print $fh $x
                       || third_text.starts_with('@')    // print $fh @array
                       || third_text.starts_with('%'); // print $fh %hash
@@ -165,7 +168,15 @@ impl<'a> Parser<'a> {
                 }
 
                 if next_text.chars().next().is_some_and(|c| c.is_uppercase()) {
-                    return true;
+                    // An adjacent `(` makes this a subroutine argument, even
+                    // for uppercase or qualified names: print Foo::bar(1).
+                    // A separated `(` can still start an explicit handle's
+                    // output list: print STDOUT (1, 2). Scalar and braced
+                    // handles, and other indirect-builtin families, retain
+                    // their existing admission rules (#17078).
+                    return !(matches!(name, "print" | "printf" | "say")
+                        && third.kind() == TokenKind::LeftParen
+                        && next_end == third.start());
                 }
 
                 let third_text = &third.text;
@@ -260,6 +271,7 @@ impl<'a> Parser<'a> {
         argument.kind() == TokenKind::String
             || argument.kind() == TokenKind::LeftParen
             || argument.kind() == TokenKind::Number
+            || argument.kind() == TokenKind::HeredocStart
             || argument.text.starts_with('$')
             || argument.text.starts_with('@')
             || argument.text.starts_with('%')

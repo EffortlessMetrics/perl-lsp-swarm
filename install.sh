@@ -57,6 +57,14 @@ if [ "${1:-}" != "" ] && [[ "${1:-}" != -* ]]; then
         shift
     fi
 
+    # Canonical env-wins will silently occupy an already-filled slot, so a
+    # leftover leading positional after the two wrapper slots would be ignored
+    # rather than rejected (#16310 / #16767). Fail here, before exec or fetch.
+    if [ "${1:-}" != "" ] && [[ "${1:-}" != -* ]]; then
+        echo "Error: unexpected argument: $1 (expected at most positional VERSION and INSTALL_DIR)" >&2
+        exit 1
+    fi
+
     ARGS=("$@")
 fi
 

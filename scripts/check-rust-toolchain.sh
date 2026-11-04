@@ -2,6 +2,12 @@
 set -euo pipefail
 
 MODE="${1:-check}"
+# Reject wrapper usage errors before probing or launching a Rust toolchain.
+if [[ "$#" -gt 1 ]] || [[ "$MODE" != check && "$MODE" != doctor ]]; then
+  echo "Usage: $0 [check|doctor]" >&2
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
@@ -36,9 +42,5 @@ case "$MODE" in
   doctor)
     cd "$REPO_ROOT"
     exec "${CARGO_CMD[@]}" xtask check-toolchain --doctor
-    ;;
-  *)
-    echo "Usage: $0 [check|doctor]" >&2
-    exit 2
     ;;
 esac

@@ -5,6 +5,9 @@
 > Current workspace version is taken from [../../Cargo.toml](../../Cargo.toml);
 > published release state must be verified against GitHub Releases;
 > current capability truth is taken from [../../features.toml](../../features.toml).
+> Dated wave and convergence plans linked below (including `EDITOR_TRUST_WAVE.md`
+> and `plans/2026-06-convergence-to-release.md`) are `historical` per
+> `docs/agents/authority_status.toml`; do not treat them as active plans.
 
 ## Current Focus (2026-08-10): Multi-Lane Trust Hardening
 

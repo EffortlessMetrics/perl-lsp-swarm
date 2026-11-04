@@ -231,3 +231,24 @@ owner_issue = "#6658"
 composition_dimensions = ["perl_version", "value_context", "value_shape", "recovery_state", "feature_state"]
 basis = ["#6658", "#6689"]
 evidence = []
+
+[[requirements]]
+concept_id = "values.plain_decimal"
+owner_issue = "#6658"
+composition_dimensions = ["value_context", "value_shape", "recovery_state", "evaluation_demand"]
+basis = ["#6658", "#6689", "#17538"]
+evidence = []
+
+[[requirements]]
+concept_id = "values.noninterpolating_string"
+owner_issue = "#6658"
+composition_dimensions = ["value_context", "value_shape", "recovery_state", "evaluation_demand"]
+basis = ["#6658", "#6689", "#17538"]
+evidence = []
+
+[[requirements]]
+concept_id = "values.undef"
+owner_issue = "#6658"
+composition_dimensions = ["value_context", "value_shape", "recovery_state", "evaluation_demand"]
+basis = ["#6658", "#6689", "#17538"]
+evidence = []
