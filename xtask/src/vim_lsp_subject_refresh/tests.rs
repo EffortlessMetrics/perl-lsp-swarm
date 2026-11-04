@@ -17,6 +17,8 @@
 
 use std::collections::BTreeMap;
 
+use perl_tdd_support::{must_err, must_err_with, must_with};
+
 use crate::vim_lsp_subject_refresh::classify::{PinnedSubject, classify};
 use crate::vim_lsp_subject_refresh::model::{
     DriftClass, FloorObservation, HeadTreeProbe, ObservationPacket, ObservedFile,
@@ -154,7 +156,7 @@ fn unchanged_packet() -> ObservationPacket {
 }
 
 fn run(packet: &ObservationPacket) -> RefreshArtifact {
-    classify(packet, &pinned()).expect("classification of a valid packet succeeds")
+    must_with(classify(packet, &pinned()), "classification of a valid packet succeeds")
 }
 
 fn classes(artifact: &RefreshArtifact) -> Vec<DriftClass> {
@@ -219,8 +221,10 @@ fn all_green_packet_classifies_no_change_with_explicit_positive_findings() {
     assert_eq!(artifact.recommended_disposition, vec!["retain_pin"]);
     assert!(artifact.proposed_subject_field_changes.is_empty());
     // Artifact serializes within boundedness rules.
-    crate::vim_lsp_subject_refresh::validate_artifact_boundedness(&artifact)
-        .expect("all-green artifact is bounded");
+    must_with(
+        crate::vim_lsp_subject_refresh::validate_artifact_boundedness(&artifact),
+        "all-green artifact is bounded",
+    );
 }
 
 #[test]
@@ -297,8 +301,10 @@ fn unreachable_pinned_packet_validates_and_classifies_without_instrument_error()
     packet.pinned_commit_probe.resolved_tree = None;
     packet.pinned_commit_probe.entry_file_blobs.clear();
     packet.pinned_commit_probe.error = Some("fetch failed".to_string());
-    crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned())
-        .expect("unreachable-ref packet must validate");
+    must_with(
+        crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned()),
+        "unreachable-ref packet must validate",
+    );
     let artifact = run(&packet);
     let fired = classes(&artifact);
     assert_eq!(fired, vec![DriftClass::SelectedRefChangedMissingOrUnreachable], "got {fired:?}");
@@ -603,8 +609,10 @@ fn failed_head_packet_validates_and_classifies_instrument_failed() {
     packet.head_tree_probe.snippet_note_present = None;
     packet.head_tree_probe.surface_findings.clear();
     packet.head_tree_probe.error = Some("head fetch failed".to_string());
-    crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned())
-        .expect("a failed head probe must validate so it can classify instrument_failed");
+    must_with(
+        crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned()),
+        "a failed head probe must validate so it can classify instrument_failed",
+    );
     let artifact = run(&packet);
     let fired = classes(&artifact);
     assert!(fired.contains(&DriftClass::InstrumentFailed), "got {fired:?}");
@@ -635,8 +643,10 @@ fn masterless_refs_observation_is_valid_and_tracks_head() {
     // Default branch renamed away: refs/heads/master is gone, HEAD remains.
     let mut packet = unchanged_packet();
     packet.refs_probe.master = None;
-    crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned())
-        .expect("a masterless refs observation must validate");
+    must_with(
+        crate::vim_lsp_subject_refresh::validate_packet(&packet, &pinned()),
+        "a masterless refs observation must validate",
+    );
     let artifact = run(&packet);
     assert_eq!(classes(&artifact), vec![DriftClass::NoChange]);
     assert_eq!(artifact.release_observation.master_matches_pin, Some(true));
@@ -675,8 +685,10 @@ fn multiple_missing_needles_of_one_surface_coalesce_into_one_class_entry() {
         finding.found = false;
     }
     let artifact = run(&packet);
-    crate::vim_lsp_subject_refresh::validate_artifact_boundedness(&artifact)
-        .expect("all-needles-missing artifact stays bounded and unique per class");
+    must_with(
+        crate::vim_lsp_subject_refresh::validate_artifact_boundedness(&artifact),
+        "all-needles-missing artifact stays bounded and unique per class",
+    );
     assert!(artifact.drift_classes.len() <= DriftClass::ALL.len());
 }
 
@@ -726,19 +738,22 @@ fn contradicting_head_bytes_under_the_pin_fail_closed() {
 #[test]
 fn proposal_writer_refuses_paths_resolving_outside_the_repository() {
     let artifact = run(&unchanged_packet());
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = must_with(tempfile::tempdir(), "tempdir");
     let outside = std::env::temp_dir().join("vim-lsp-subject-refresh-escape.json");
-    let error = crate::vim_lsp_subject_refresh::write_proposal(root.path(), &outside, &artifact)
-        .expect_err("an absolute path outside the repository must be refused");
+    let error = must_err_with(
+        crate::vim_lsp_subject_refresh::write_proposal(root.path(), &outside, &artifact),
+        "an absolute path outside the repository must be refused",
+    );
     assert!(
         error.to_string().contains("repository-local"),
         "the refusal must name the boundary; got {error:#}"
     );
     let as_directory = root.path().join("target");
-    std::fs::create_dir_all(&as_directory).expect("mkdir target");
-    let error =
-        crate::vim_lsp_subject_refresh::write_proposal(root.path(), &as_directory, &artifact)
-            .expect_err("a directory target must be refused");
+    must_with(std::fs::create_dir_all(&as_directory), "mkdir target");
+    let error = must_err_with(
+        crate::vim_lsp_subject_refresh::write_proposal(root.path(), &as_directory, &artifact),
+        "a directory target must be refused",
+    );
     assert!(error.to_string().contains("regular file"), "got {error:#}");
 }
 
@@ -746,13 +761,15 @@ fn proposal_writer_refuses_paths_resolving_outside_the_repository() {
 fn bounded_git_runner_enforces_its_output_ceiling() {
     // `git --version` emits more than 4 bytes: the ceiling must trip without
     // buffering unbounded output, entirely offline.
-    let error = crate::vim_lsp_subject_refresh::observe::run_git_bounded(
-        None,
-        &["--version"],
-        4,
-        std::time::Duration::from_secs(60),
-    )
-    .expect_err("an oversized output must be rejected");
+    let error = must_err_with(
+        crate::vim_lsp_subject_refresh::observe::run_git_bounded(
+            None,
+            &["--version"],
+            4,
+            std::time::Duration::from_mins(1),
+        ),
+        "an oversized output must be rejected",
+    );
     assert!(
         error.to_string().contains("ceiling"),
         "the error must name the ceiling; got {error:#}"
@@ -763,7 +780,7 @@ fn bounded_git_runner_enforces_its_output_ceiling() {
             None,
             &["--version"],
             1024 * 1024,
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_mins(1),
         )
         .is_ok()
     );
@@ -771,14 +788,13 @@ fn bounded_git_runner_enforces_its_output_ceiling() {
 
 #[test]
 fn oversized_blob_is_rejected_by_size_before_buffering() {
-    let scratch = tempfile::tempdir().expect("tempdir");
+    let scratch = must_with(tempfile::tempdir(), "tempdir");
     let cwd = scratch.path();
     let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .expect("spawning git");
+        let output = must_with(
+            crate::git_environment::command().args(args).current_dir(cwd).output(),
+            "spawning git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -799,20 +815,24 @@ fn oversized_blob_is_rejected_by_size_before_buffering() {
         "-m",
         "seed",
     ]);
-    std::fs::write(cwd.join("small.txt"), b"small").expect("small file");
+    must_with(std::fs::write(cwd.join("small.txt"), b"small"), "small file");
     let big = vec![0u8; 3 * 1024 * 1024];
-    std::fs::write(cwd.join("big.bin"), &big).expect("big file");
+    must_with(std::fs::write(cwd.join("big.bin"), &big), "big file");
     git(&["add", "."]);
     git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "files"]);
-    let head = String::from_utf8(
-        std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(cwd)
-            .output()
-            .expect("rev-parse")
+    let head = must_with(
+        String::from_utf8(
+            must_with(
+                crate::git_environment::command()
+                    .args(["rev-parse", "HEAD"])
+                    .current_dir(cwd)
+                    .output(),
+                "rev-parse",
+            )
             .stdout,
-    )
-    .expect("utf8 head");
+        ),
+        "utf8 head",
+    );
     let head = head.trim();
     assert_eq!(
         crate::vim_lsp_subject_refresh::observe::read_file_from_for_tests(cwd, head, "small.txt"),
@@ -923,7 +943,7 @@ fn packet_with_wrong_repository_is_rejected() {
 fn packet_attributing_files_to_another_commit_is_rejected() {
     let mut packet = unchanged_packet();
     packet.head_tree_probe.files[0].commit = MOVED_MASTER.to_string();
-    let error = validated(&packet).unwrap_err();
+    let error = must_err(validated(&packet));
     assert!(error.to_string().contains("another ref's facts"), "got: {error:#}");
 }
 
@@ -981,12 +1001,12 @@ fn packet_with_non_version_floor_is_rejected() {
 #[test]
 fn proposal_writer_refuses_the_authority_tree_and_leaves_the_pin_untouched() {
     let artifact = run(&unchanged_packet());
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = must_with(tempfile::tempdir(), "tempdir");
     let ci_dir = root.path().join(".ci");
-    std::fs::create_dir_all(&ci_dir).expect("mkdir .ci");
+    must_with(std::fs::create_dir_all(&ci_dir), "mkdir .ci");
     let pin_path = ci_dir.join("vim-vim-lsp-subject.v1.json");
-    std::fs::write(&pin_path, "{\"pinned\":true}").expect("seed pin");
-    let before = std::fs::read(&pin_path).expect("read pin");
+    must_with(std::fs::write(&pin_path, "{\"pinned\":true}"), "seed pin");
+    let before = must_with(std::fs::read(&pin_path), "read pin");
 
     let into_authority = std::path::Path::new(".ci/editor-clients/vim-vim-lsp-subject.v1.json");
     assert!(
@@ -1000,14 +1020,19 @@ fn proposal_writer_refuses_the_authority_tree_and_leaves_the_pin_untouched() {
     );
 
     let allowed = std::path::Path::new("target/vim-lsp-subject-refresh.json");
-    crate::vim_lsp_subject_refresh::write_proposal(root.path(), allowed, &artifact)
-        .expect("writing outside .ci succeeds");
-    let after = std::fs::read(&pin_path).expect("re-read pin");
+    must_with(
+        crate::vim_lsp_subject_refresh::write_proposal(root.path(), allowed, &artifact),
+        "writing outside .ci succeeds",
+    );
+    let after = must_with(std::fs::read(&pin_path), "re-read pin");
     assert_eq!(before, after, "the landed pin must stay byte-identical");
-    let written: ObservationPacketProbe = serde_json::from_str(
-        &std::fs::read_to_string(root.path().join(allowed)).expect("read artifact"),
-    )
-    .expect("artifact parses as JSON");
+    let written: ObservationPacketProbe = must_with(
+        serde_json::from_str(&must_with(
+            std::fs::read_to_string(root.path().join(allowed)),
+            "read artifact",
+        )),
+        "artifact parses as JSON",
+    );
     assert_eq!(written.schema_version, "vim_lsp_subject_refresh.v1");
 }
 

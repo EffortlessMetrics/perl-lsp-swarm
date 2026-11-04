@@ -17,6 +17,10 @@
 //! - no host path, URI, traversal-order counter, or process-local value becomes
 //!   stable identity;
 //! - IDs of different kinds never collide even when their material inputs match.
+//! - Every hashed field is length-prefixed with a big-endian `u32` length so
+//!   `["a", "bc"]` and `["ab", "c"]` differ, for field sizes up to
+//!   [`SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]. Longer fields are rejected at
+//!   construction rather than silently truncating the prefix.
 //!
 //! # Identity hierarchy
 //!
@@ -77,6 +81,7 @@
 
 mod digest;
 mod envelope;
+mod field_length;
 mod generation;
 mod ids;
 mod logical_path;
@@ -85,6 +90,8 @@ mod origin;
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use digest::{CONTENT_DIGEST_SCHEMA_VERSION, ContentDigest};
+
+pub use field_length::{SOURCE_IDENTITY_V1_MAX_FIELD_BYTES, SourceIdentityFieldLengthError};
 
 pub use ids::{LogicalSourceId, ProjectId, WorkspaceRootId};
 

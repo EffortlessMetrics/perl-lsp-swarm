@@ -4,7 +4,7 @@ expression: normalized
 ---
 - has_command: false
   has_edit: true
-  kind: refactor.extract
+  kind: refactor.extract.variable
   title: "Extract 'open(my $fh, '<', 'data.txt')' to variable"
 - has_command: false
   has_edit: true

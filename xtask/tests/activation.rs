@@ -75,11 +75,17 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("test_api", 28),
     ("lab", 21),
     ("oracle", 1),
-    ("benchmark", 15),
+    // 15 -> 16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]] target
+    // added by the #17154 ripr packet benchmark suite (#17170).
+    // 16 -> 17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]] target
+    // added by the #17159 LSP stdio round-trip latency benchmark (#17179).
+    ("benchmark", 17),
     // 94 -> 95: `unsafe_prod_check` entered .ci/gate-policy.yaml with #16215;
     // the committed inventory and these constants predate the merge that
     // carried it, so both fell one gate behind the authority.
-    ("gate", 95),
+    // 95 -> 96: routed integration-test compilation preparation (#17459).
+    // 96 -> 97: `regex_static_ratchet` entered .ci/gate-policy.yaml (#16260).
+    ("gate", 97),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -96,8 +102,15 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // in c02237eda (#16102) and code_action_generation_ledger in 3752ae836 (#15946).
     // 94/94 -> 95/95: unsafe_prod_check (#16215) entered .ci/gate-policy.yaml and
     // the merge carrying it onto this branch predates the last inventory write.
-    ("gate-policy-gates", 95, 95),
-    ("cargo-bench-targets", 15, 15),
+    // 95/95 -> 96/96: unit_routed_full_build adds one required compilation gate (#17459).
+    // 96/96 -> 97/97: regex_static_ratchet adds one required pr_fast gate (#16260).
+    ("gate-policy-gates", 97, 97),
+    // 15/15 -> 16/16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]]
+    // target added by the #17154 ripr packet benchmark suite (#17170).
+    // 16/16 -> 17/17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]]
+    // target added by the #17159 LSP stdio round-trip latency benchmark
+    // (#17179).
+    ("cargo-bench-targets", 17, 17),
     // 79/26 -> 80/27: `perl-lsp-rs-core/test-instrumentation`, declared in
     // crates/perl-lsp-rs-core/Cargo.toml by 234574a74 (#14272).
     // 80/27 -> 81/28: `perl-lsp-ux-tests/cold-index-proof` (#16650).

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Classic sub prototypes now paint as parameters and sub attribute names as modifiers in semantic tokens, and the TextMate grammar scopes prototypes as variable.parameter.prototype and attribute names as entity.other.attribute-name so $$ inside a prototype no longer paints as the PID variable."
+time: 2026-10-21T00:00:00Z
+custom:
+  PR: "16589"
+  Slug: prototypes-sub-attributes-highlighting
+  Breaking: "no"

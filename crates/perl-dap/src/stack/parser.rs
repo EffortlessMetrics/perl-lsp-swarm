@@ -85,6 +85,22 @@ static SIMPLE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(||
     )
 });
 
+/// Pattern for bare 'T' command frames without an argument list.
+/// Matches formats like:
+/// - `@ = DB::DB called from file 'script.pl' line 9`
+/// - `$ = main called from file `script.pl' line 13`
+///
+/// perl5db's `T` report prints the debugger's own `DB::DB` frame — and any
+/// argument-less user frame — without the `(...)` argument list that
+/// VERBOSE_FRAME_RE and SIMPLE_FRAME_RE require (#17171). The frame's
+/// `called from` position is the line execution is actually suspended on,
+/// which the first *user* frame of the same report lacks.
+static BARE_FRAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*[\$\@\.]\s*=\s*(?P<func>[A-Za-z_][\w:]*+?)\s+called\s+from\s+(?:file\s+)?[`'](?P<file>[^'`]+)[`']\s+line\s+(?P<line>\d+)",
+    )
+});
+
 /// Pattern for eval context in stack traces.
 /// Matches formats like:
 /// - `(eval 10)[/path/file.pm:42]`
@@ -110,6 +126,9 @@ fn verbose_frame_re() -> Option<&'static Regex> {
 }
 fn simple_frame_re() -> Option<&'static Regex> {
     SIMPLE_FRAME_RE.as_ref().ok()
+}
+fn bare_frame_re() -> Option<&'static Regex> {
+    BARE_FRAME_RE.as_ref().ok()
 }
 fn eval_context_re() -> Option<&'static Regex> {
     EVAL_CONTEXT_RE.as_ref().ok()
@@ -263,6 +282,11 @@ impl PerlStackParser {
 
         // Try simple frame format
         if let Some(caps) = simple_frame_re().and_then(|re| re.captures(line)) {
+            return self.build_frame_from_captures(&caps, id, false);
+        }
+
+        // Try bare frame format (no argument list)
+        if let Some(caps) = bare_frame_re().and_then(|re| re.captures(line)) {
             return self.build_frame_from_captures(&caps, id, false);
         }
 
@@ -631,6 +655,53 @@ $ = main::run() called from file `script.pl' line 5
         assert_eq!(frames[0].id, 1);
         assert_eq!(frames[1].id, 2);
         assert_eq!(frames[2].id, 3);
+    }
+
+    #[test]
+    fn test_parse_bare_t_frame_without_argument_list() {
+        use perl_tdd_support::must_some;
+        let mut parser = PerlStackParser::new();
+        // perl5db's `T` prints the debugger's own frame — and argument-less
+        // user frames — without a `(...)` argument list (#17171).
+        let frame = must_some(
+            parser.parse_frame("@ = DB::DB called from file 'F:/dbg/hello.pl' line 9", 0),
+        );
+        assert_eq!(frame.name, "DB::DB");
+        assert_eq!(frame.line, 9);
+        assert_eq!(frame.file_path(), Some("F:/dbg/hello.pl"));
+    }
+
+    #[test]
+    fn test_parse_bare_t_frame_with_backquoted_file_and_no_args() {
+        use perl_tdd_support::must_some;
+        let mut parser = PerlStackParser::new();
+        let frame =
+            must_some(parser.parse_frame("$ = main called from file `script.pl' line 13", 0));
+        assert_eq!(frame.name, "main");
+        assert_eq!(frame.line, 13);
+        assert_eq!(frame.file_path(), Some("script.pl"));
+    }
+
+    #[test]
+    fn test_parse_stack_trace_multi_line_with_debugger_frame() {
+        let mut parser = PerlStackParser::new();
+        // A suspension inside a called sub: the debugger frame carries the
+        // suspension line, the user frame carries only the caller line.
+        let output = r#"
+@ = DB::DB called from file 'hello.pl' line 9
+$ = main::add(2, 3) called from file 'hello.pl' line 12
+"#;
+        let frames = parser.parse_stack_trace(output);
+        assert_eq!(frames.len(), 2, "both T frames must parse: {frames:?}");
+        assert_eq!(frames[0].name, "DB::DB");
+        assert_eq!(frames[0].line, 9);
+        assert_eq!(frames[1].name, "main::add");
+        assert_eq!(frames[1].line, 12);
+        assert_eq!(
+            frames[1].arguments,
+            vec!["2".to_string(), "3".to_string()],
+            "verbose frames keep their argument capture"
+        );
     }
 
     #[test]

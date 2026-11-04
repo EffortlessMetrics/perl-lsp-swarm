@@ -115,9 +115,19 @@ def find_criterion_results(base_path: Path) -> "tuple[dict, set]":
     Returns a 2-tuple `(results, ids)`: `results` is a dict of
     category -> {bench_name: {...}}, and `ids` is the set of canonical
     benchmark_id() strings found, for --expect-id matching.
+
+    Keys are bare bench names when the name is unique within its
+    category. When two groups reuse one bench name in one category
+    (e.g. packet_build/large and packet_fingerprint/large), both
+    entries are stored under their qualified benchmark_id() so neither
+    measurement is silently dropped (#17170).
     """
     results = {}
     ids = set()
+    # (category, stored_key) -> group that stored it, plus the set of
+    # (category, bench_name) slots already known to span groups.
+    key_groups = {}
+    collided = set()
 
     criterion_path = base_path / "target" / "criterion"
     if not criterion_path.exists():
@@ -167,13 +177,35 @@ def find_criterion_results(base_path: Path) -> "tuple[dict, set]":
         # Categorize by group name
         category = categorize_benchmark(group, bench_name)
 
-        results.setdefault(category, {})[bench_name] = {
+        entry = {
             "mean_ns": mean_ns,
             "low_ns": low_ns,
             "high_ns": high_ns,
             "unit": unit,
             "display": display,
         }
+        slot = (category, bench_name)
+        if slot in collided:
+            key = benchmark_id(group, bench_name)
+        elif slot in key_groups and key_groups[slot] != group:
+            # A second group reuses this bare bench name in the same
+            # category. Migrate the incumbent to its qualified id so the
+            # newcomer cannot silently overwrite it.
+            prior = key_groups.pop(slot)
+            qualified_prior = benchmark_id(prior, bench_name)
+            results[category][qualified_prior] = results[category].pop(bench_name)
+            key_groups[(category, qualified_prior)] = prior
+            collided.add(slot)
+            key = benchmark_id(group, bench_name)
+            print(
+                f"Warning: bench name {bench_name!r} in category {category!r} "
+                f"spans groups; storing qualified ids",
+                file=sys.stderr,
+            )
+        else:
+            key = bench_name
+        results.setdefault(category, {})[key] = entry
+        key_groups[(category, key)] = group
         ids.add(benchmark_id(group, bench_name))
 
     return results, ids
@@ -184,14 +216,35 @@ def categorize_benchmark(group: str, bench_name: str) -> str:
     group_lower = group.lower()
     bench_lower = bench_name.lower()
 
-    if "parser" in group_lower or "parse" in bench_lower:
+    if "parser" in group_lower or "parse" in bench_lower or bench_lower == "scope_analysis":
+        # scope_analysis is a direct parser bench whose name carries no parse
+        # marker; without the exact-name rule it falls to the scope branch
+        # while the baseline stores it under parser (#17380 review).
         return "parser"
     elif "lexer" in group_lower or "token" in bench_lower:
         return "lexer"
-    elif "rope" in group_lower or "lsp" in group_lower or "position" in bench_lower:
+    elif "document_insertions" == group_lower or "rope" in group_lower or "rope" in bench_lower or "lsp" in group_lower or "position" in bench_lower:
+        # The document_insertions group holds rope_insertion and
+        # string_insertion siblings, both stored under lsp in the baseline;
+        # matching the group joins both, while a rope-only name match would
+        # leave string_insertion in "other" (#17380 review).
         return "lsp"
     elif "index" in group_lower or "workspace" in group_lower or "symbol" in bench_lower:
         return "index"
+    elif "packet" in group_lower or "ripr" in group_lower:
+        # RIPR packet benches (packet_build/*, packet_fingerprint/*). Group
+        # match only: no other current benchmark_group contains these
+        # markers, and matching bench names would risk stealing unrelated
+        # benches into this category.
+        return "ripr"
+    elif "scope" in group_lower or "scope" in bench_lower:
+        # Scope-analysis benches (scope_benchmark's scope_analysis_many_vars
+        # and scope_analysis_strict_barewords), which otherwise fall into the
+        # baseline-less "other" bucket (#17380). No other current bench name
+        # contains "scope" except parser's scope_analysis and the cpan/pragma
+        # scope-labeled benches, which have no baseline rows and stay dropped
+        # at the row join either way.
+        return "scope"
     else:
         return "other"
 

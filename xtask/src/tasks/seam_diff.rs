@@ -242,7 +242,7 @@ mod tests {
     use std::process::Command;
 
     fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
-        let status = Command::new("git")
+        let status = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(dir)
             .args(args)
             .status()
@@ -278,7 +278,7 @@ mod tests {
     }
 
     fn head_sha(dir: &Path) -> Result<String> {
-        let output = Command::new("git")
+        let output = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(dir)
             .args(["rev-parse", "HEAD"])
             .output()

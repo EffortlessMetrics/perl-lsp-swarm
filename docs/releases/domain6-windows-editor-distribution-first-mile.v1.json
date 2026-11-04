@@ -22,7 +22,7 @@
     "total_rows 705 = 682 unit-mapping rows + 20 merge rows + 3 true-NOREF watchlist rows; the 3 watchlist rows intentionally duplicate commits already mapped once (unique commits 702)"
   ],
   "coverage": {
-    "digest": "sha256:3bbe962026b677135f2fa4673341126dcf5f24d9806b9b9d79463d8670b80321",
+    "digest": "sha256:4a11b2157484ea1dc7d43591ddd2bd49ce970f8dd154156c255a85fedbc3c3b0",
     "duplicate_records": 0,
     "duplicate_work_units": 0,
     "omitted_records": 0,
@@ -12700,7 +12700,7 @@
       "api_schema_package_effects": [],
       "artifact_or_route_effects": [
         "xtask install-surface-check gains installer-script scan scope (root install.ps1, install.sh, scripts/, ps1 scan candidates) after its first proof reported a clean tree while install.ps1 advertised the piped one-liner as its own usage and scripts/install.sh routed MINGW/MSYS/CYGWIN users to the exact command known to 404; the scan widens from 1283 to 1604 files",
-        "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying the #5461/#4348 reason; only the executable piped form is forbidden, prose explaining the breakage stays clean (test-pinned), and installer_scripts_are_in_scan_scope pins all three paths so a scan-root edit cannot drop the installers from coverage",
+        "new FORBIDDEN_PATTERNS entry for the install.ps1 piped-to-iex one-liner carrying the #5461/#4348 reason; only the executable piped form is forbidden, prose explaining the breakage stays clean (test-pinned), and installer_scripts_are_in_scan_scope pins all three paths so a scan-root edit cannot drop the installers from coverage",
         "install.ps1 documents clone-or-download invocation instead of the piped one-liner; scripts/install.sh MINGW fallback points Windows users at the working release archive"
       ],
       "commits": [

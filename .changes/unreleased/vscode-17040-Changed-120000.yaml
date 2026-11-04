@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Changed
+body: Binary identity status now offers working follow-up actions — managed-binary repair runs the governed reinstall flow, refresh re-reads identity, and inspect shows the resolved server path — and identity requests carry a version-independent packaged authority token plus the installed managed candidate and target when known.
+time: 2026-10-01T12:00:00Z
+custom:
+  PR: 17040
+  Slug: binary-identity-remediation
+  Breaking: "no"

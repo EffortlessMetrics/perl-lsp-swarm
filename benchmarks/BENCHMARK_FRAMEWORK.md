@@ -72,6 +72,11 @@ cargo bench -p perl-parser --bench incremental_benchmark --features incremental
 
 ### 3. LSP Server Benchmarks
 
+> **STALE — NEEDS REMAP.** The commands below reference the old `perl-lsp`
+> crate and the `behavioral` / `user_stories` / `workspace_navigation` test
+> targets, none of which exist under those names anymore. Do not run them as
+> written; remap each to its current crate/test target first.
+
 **Test-based benchmarks:**
 ```bash
 # LSP behavioral tests (0.31s target)
@@ -98,7 +103,7 @@ cargo bench -p perl-lexer
 
 **Workspace indexing:**
 ```bash
-cargo bench -p perl-workspace-index
+cargo bench -p perl-workspace
 ```
 
 **DAP protocol:**
@@ -108,7 +113,12 @@ cargo bench -p perl-dap
 
 **Rope performance:**
 ```bash
-cargo bench -p perl-lsp --bench rope_performance_benchmark
+cargo bench -p perl-lsp-rs --bench rope_performance_benchmark
+```
+
+**RIPR facts packet:**
+```bash
+cargo bench -p perl-ripr-facts --bench ripr_facts_benchmark
 ```
 
 ## Performance Baseline Targets
@@ -125,6 +135,12 @@ cargo bench -p perl-lsp --bench rope_performance_benchmark
 ### Incremental Parsing
 - **Updates**: <1ms with 70-99% node reuse efficiency
 - **Statistical Validation**: Node reuse percentages tracked in metrics
+
+### RIPR Facts Packet
+- **Small tree build** (2 modules + 2 tests): <100ms
+- **Medium tree build** (20 modules + 20 tests): <1s
+- **Large tree build** (100 modules + 100 tests): <10s
+- **Fingerprint re-derivation** (large packet): <100ms
 
 ### Unicode Processing
 - **Performance**: >10k chars/sec Unicode classification

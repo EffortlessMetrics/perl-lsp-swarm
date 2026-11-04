@@ -1,0 +1,66 @@
+# agentic_task_battery.v1 — Task 5: Open a well-formed PR (draft)
+# Source: recovered usability-battery design, Task 5.
+# Live-GitHub task: all steps are MANUAL with exact verification commands.
+# The runner never opens, edits, or merges PRs.
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-05-draft-pr"
+title = "Open a well-formed PR (draft)"
+goal = "Open a draft PR with `gh` targeting `main`, titled per convention with the real issue number, with the repo PR template filled. Verify with `gh pr view`. Do not mark ready, do not merge."
+starting_state = "Branch `fix/<slug>-<issue>` with one coherent committed change, pushed; controlling issue number `<NNNN>` supplied."
+instruction = "Open a **draft** PR with `gh` targeting `main`. Title must be `type(crate): description (#NNNN)` with the real issue number. Fill the repo PR template's six load-bearing sections: Claim, Controlling issue, Proof, Hosted proof, Non-goals, Risk and rollback. Verify with `gh pr view` and paste the URL. Do not mark ready, do not merge."
+max_duration = "15 min"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Placeholder title ref (`(#0000)`) or missing issue number, which fails the `validate-title` CI check."
+automation = "manual-only"
+
+allowed_commands = [
+  "gh pr create --draft --base main --head <branch> --title '<type>(<crate>): <description> (#NNNN)' --body-file <filled-template>",
+  "gh pr view <number> --json number,title,baseRefName,headRefName,isDraft,url",
+  "gh pr view <number>",
+]
+
+[params]
+  "issue-number" = "Controlling issue number supplied by the grader"
+  branch = "Pushed feature branch name"
+
+[[rubric]]
+  step_id = "t5-s1"
+  description = "PR is draft, base is `main`, head is the feature branch"
+  points = 2
+  mode = "manual"
+  verify = "gh pr view <number> --json number,title,baseRefName,headRefName,isDraft,url"
+  evidence = "isDraft=true, baseRefName=main, headRefName=<branch>, plus the URL."
+
+[[rubric]]
+  step_id = "t5-s2"
+  description = "Title matches convention with the real (non-placeholder) issue ref"
+  points = 3
+  mode = "manual"
+  verify = "gh pr view <number> --json title --jq .title"
+  evidence = "Title of the form `type(crate): description (#NNNN)` where NNNN is the real controlling issue."
+
+[[rubric]]
+  step_id = "t5-s3"
+  description = "The six load-bearing body sections non-empty and specific to the change (Claim, Controlling issue, Proof, Hosted proof, Non-goals, Risk and rollback)"
+  points = 3
+  mode = "manual"
+  verify = "gh pr view <number> --json body --jq .body"
+  evidence = "Each of the six sections present, non-template, and specific to the change."
+
+[[rubric]]
+  step_id = "t5-s4"
+  description = "`gh pr view` output / URL presented as verification"
+  points = 1
+  mode = "manual"
+  verify = "gh pr view <number>"
+  evidence = "View output or URL quoted in the report."
+
+[[rubric]]
+  step_id = "t5-s5"
+  description = "Still draft at end (not ready, not merged)"
+  points = 1
+  mode = "manual"
+  verify = "gh pr view <number> --json isDraft,state --jq '[.isDraft, .state] | @tsv'"
+  evidence = "isDraft=true and state=OPEN at scoring time."

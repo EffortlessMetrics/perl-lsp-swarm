@@ -39,6 +39,10 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
 
 GIT_DIFF_TIMEOUT_SECONDS = 30
 
@@ -525,6 +529,13 @@ def load_learned_history(path: Path) -> dict[str, Any]:
     `schema_version == HISTORY_SCHEMA_VERSION` is consumed. A v2 (or
     unenveloped) payload that still carries `lanes` must not be read as v1
     and substituted into each lane's `base_lem` (#15320).
+
+    Tolerant means "fall back to static floors", not "accept any shape". A
+    payload whose `schema_version` is not the one this planner understands is
+    refused rather than handed to `apply_learned_estimates`, which resolves
+    `p50` and `static_floor` by name: read with the wrong names, a renamed
+    `static_floor` falls out of its `isinstance` guard and the lane is priced
+    at a bare `p50 * 1.15` with the floor protection silently gone (#15286).
 
     Issue #15320 cites this helper as `load_history_payload`; the current
     name is `load_learned_history`.
