@@ -237,11 +237,11 @@ fn regression_to_lsp_kind_mapping_is_exhaustive_and_stable() -> Result<()> {
 
     // Workspace profile — all variables collapse to LSP Variable (13).
     let workspace_codes: Vec<u32> = all.iter().map(|k| k.to_lsp_kind()).collect();
-    assert_eq!(workspace_codes, vec![2, 5, 8, 12, 6, 13, 13, 13, 14, 2, 12, 20, 23]);
+    assert_eq!(workspace_codes, vec![2, 5, 11, 12, 6, 13, 13, 13, 14, 2, 12, 20, 23]);
 
     // Document profile — scalar/array/hash get richer codes.
     let doc_codes: Vec<u32> = all.iter().map(|k| k.to_lsp_kind_document_symbol()).collect();
-    assert_eq!(doc_codes, vec![2, 5, 8, 12, 6, 13, 18, 19, 14, 2, 12, 20, 23]);
+    assert_eq!(doc_codes, vec![2, 5, 11, 12, 6, 13, 18, 19, 14, 2, 12, 20, 23]);
     Ok(())
 }
 

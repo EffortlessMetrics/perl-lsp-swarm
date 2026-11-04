@@ -48,6 +48,7 @@ pub struct RepoTreeSource {
 }
 
 impl RepoTreeSource {
+    #[cfg(test)]
     pub fn from_project_root() -> Result<Self> {
         Self::from_root(crate::utils::project_root()?, None)
     }
@@ -123,29 +124,29 @@ struct NodeProbeContract {
 /// source index.
 fn semantic_anchor_present_in_file(file: &syn::File, anchor: &str) -> bool {
     if let Some(name) = anchor.strip_prefix("pub fn ") {
-        return function_present(&file, name, true);
+        return function_present(file, name, true);
     }
     if let Some(name) = anchor.strip_prefix("fn ") {
-        return function_present(&file, name, false);
+        return function_present(file, name, false);
     }
     if let Some(name) = anchor.strip_prefix("pub struct ") {
-        return type_present(&file, name, TypeKind::Struct);
+        return type_present(file, name, TypeKind::Struct);
     }
     if let Some(name) = anchor.strip_prefix("pub enum ") {
-        return type_present(&file, name, TypeKind::Enum);
+        return type_present(file, name, TypeKind::Enum);
     }
 
     if anchor.starts_with("ModuleTrainCommand::") || anchor.starts_with("ModuleTrainLiveCommand::")
     {
-        return dispatch_variant_present(&file, anchor);
+        return dispatch_variant_present(file, anchor);
     }
     if anchor.starts_with("module_train::") || anchor.starts_with("module_train_live::") {
-        return dispatch_call_present(&file, anchor);
+        return dispatch_call_present(file, anchor);
     }
 
     let segments: Vec<&str> = anchor.split("::").collect();
     let mut visitor = PathVisitor { expected: segments, found: false };
-    visitor.visit_file(&file);
+    visitor.visit_file(file);
     visitor.found
 }
 

@@ -437,6 +437,8 @@ fn antip_body_mask_covers_every_heredoc_delimiter_spelling() {
         ("double-quoted", "qr/x(?{ print <<\"M\";\nhas { brace\nM\n})/;\n"),
         ("backtick", "qr/x(?{ print <<`CMD`;\nhas { brace\nCMD\n})/;\n"),
         ("backslash-escaped", "qr/x(?{ print <<\\LAB;\nhas { brace\nLAB\n})/;\n"),
+        ("numeric", "qr/x(?{ print <<123;\nhas { brace\n123\n})/;\n"),
+        ("indented numeric", "qr/x(?{ print <<~123;\nhas { brace\n  123\n})/;\n"),
     ] {
         assert!(
             has_regex_code_block(code),
@@ -626,6 +628,145 @@ fn antip_eval_keyword_is_not_matched_as_an_identifier_suffix() {
     assert!(
         has_eval_string("my %h = (k => eval 'print <<EOF;');\n"),
         "eval after a fat comma is the builtin and must still be reported"
+    );
+}
+
+#[test]
+fn antip_left_shift_in_regex_code_block_is_not_a_heredoc() {
+    // PL804 (#13836): `<<` is also Perl's left-shift operator. A shift inside
+    // a `(?{ ... })` block declares no heredoc, on one line or several.
+    for (label, code) in [
+        ("single-line shift by a literal", "m/a(?{ $v = 1 << 3 })c/;\n"),
+        ("multi-line shift by a literal", "m/a(?{\n    $v = 1 << 3;\n})c/;\n"),
+        ("shift by a variable", "m/a(?{ $v = $y << 2 })c/;\n"),
+        ("spelled-out shift operand", "m/a(?{ $v = 1<<FOO })c/;\n"),
+        ("postponed block shift", "m/a(??{ $v = 1 << 3 })c/;\n"),
+        ("postfix increment shift", "m/a(?{ $v++ <<FOO })c/;\n"),
+        ("postfix decrement shift", "m/a(?{ $v-- <<FOO })c/;\n"),
+        ("postfix increment adjacent shift", "m/a(?{ $v++<<FOO })c/;\n"),
+        ("postfix increment quoted shift", "m/a(?{ $v++ <<'FOO' })c/;\n"),
+        ("postfix increment numeric shift", "m/a(?{ $v++ <<3 })c/;\n"),
+    ] {
+        assert!(
+            !has_regex_code_block(code),
+            "{label}: a left shift must not be reported as PL804; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Positive controls: every heredoc spelling still fires.
+    for (label, code) in [
+        ("dynamic delimiter", "m/a(?{ print <<$var; })c/;\n"),
+        ("indented heredoc", "qr/x(?{ print <<~EOF;\nbody\nEOF\n})/;\n"),
+        ("spaced double-quoted heredoc", "qr/x(?{ print << \"EOF\";\nbody\nEOF\n})/;\n"),
+        ("single-quoted heredoc", "m/a(?{ print <<'EOF'; })c/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: a heredoc must still be reported as PL804; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_left_shift_in_eval_string_is_not_a_heredoc() {
+    // PL805 (#13836): the eval twin of the regex-code-block shift.
+    for (label, code) in [
+        ("single-line shift by a literal", "eval '$v = 1 << 3;';\n"),
+        ("multi-line shift by a literal", "eval '$v = 1 << 3;\n$v = 2 << 4;';\n"),
+        ("shift by a variable", "eval '$v = $y << 2;';\n"),
+        ("spelled-out shift operand", "eval '$v = 1<<FOO;';\n"),
+        ("double-quoted eval shift", "eval \"$v = 1 << 3;\";\n"),
+        ("postfix increment shift", "eval '$v++ <<FOO;';\n"),
+        ("postfix decrement shift", "eval '$v-- <<FOO;';\n"),
+        ("postfix increment adjacent shift", "eval '$v++<<FOO;';\n"),
+        ("postfix increment quoted shift", "eval \"$v++ <<'FOO';\";\n"),
+        ("postfix increment numeric shift", "eval '$v++ <<3;';\n"),
+    ] {
+        assert!(
+            !has_eval_string(code),
+            "{label}: a left shift must not be reported as PL805; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Positive controls: every heredoc spelling still fires.
+    for (label, code) in [
+        ("dynamic delimiter", "eval 'print <<$var;';\n"),
+        ("indented heredoc", "eval 'print <<~EOF;\nbody\nEOF\n';\n"),
+        ("spaced double-quoted heredoc", "eval 'print << \"EOF\";\nbody\nEOF\n';\n"),
+        ("bare heredoc", "eval 'print <<EOF;';\n"),
+    ] {
+        assert!(
+            has_eval_string(code),
+            "{label}: a heredoc must still be reported as PL805; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_numeric_heredoc_delimiter_is_detected_and_numeric_shift_is_not() {
+    // Perl admits purely numeric (and digit-led) heredoc delimiters:
+    // verified on perl 5.42, `print <<123;`, `print <<~123;` and
+    // `print <<123abc;` all read lines until the delimiter line.
+    for (label, code) in [
+        ("eval numeric heredoc", "eval 'print <<123;\nbody\n123\n';\n"),
+        ("eval indented numeric heredoc", "eval 'print <<~123;\n  body\n  123\n';\n"),
+    ] {
+        assert!(
+            has_eval_string(code),
+            "{label}: a numeric heredoc must be reported as PL805; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+    for (label, code) in [
+        ("regex numeric heredoc", "qr/x(?{ print <<123;\nbody\n123\n})/;\n"),
+        ("regex indented numeric heredoc", "qr/x(?{ print <<~123;\n  body\n  123\n})/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: a numeric heredoc must be reported as PL804; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // A numeric left shift in term-operand position is not a heredoc, in
+    // either detector, adjacent or spaced.
+    for (label, code) in [
+        ("eval spaced numeric shift", "eval '$v = 1 << 3;';\n"),
+        ("eval adjacent numeric shift", "eval '$v = 1<<3;';\n"),
+        ("eval adjacent numeric shift operand", "eval '$v = 1 <<123;';\n"),
+        ("eval variable numeric shift", "eval '$v = $y <<123;';\n"),
+    ] {
+        assert!(
+            !has_eval_string(code),
+            "{label}: a left shift must not be reported as PL805; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+    for (label, code) in [
+        ("regex spaced numeric shift", "m/a(?{ $v = 1 << 3 })c/;\n"),
+        ("regex adjacent numeric shift", "m/a(?{ $v = 1<<3 })c/;\n"),
+        ("regex adjacent numeric shift operand", "m/a(?{ $v = 1 <<123 })c/;\n"),
+        ("regex variable numeric shift", "m/a(?{ $v = $y <<123 })c/;\n"),
+    ] {
+        assert!(
+            !has_regex_code_block(code),
+            "{label}: a left shift must not be reported as PL804; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // The body of a top-level numeric heredoc is text, not code: a `(?{ })`
+    // block spelled inside it must not fabricate PL804. This pins that the
+    // shared declaration pattern also feeds the heredoc body mask.
+    let body_is_text = "print <<123;\nqr/x(?{ print <<EOF })/\n123\n";
+    assert!(
+        !has_regex_code_block(body_is_text),
+        "a numeric heredoc body must be masked as text; got {:?}",
+        detect(body_is_text).iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 

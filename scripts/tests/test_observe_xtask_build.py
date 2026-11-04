@@ -1,12 +1,16 @@
 """Small mock-command controls; never invoke a Rust compiler or Cargo build."""
 from pathlib import Path
 import json
+import hashlib
 import os
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
+import socket
+import sys
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 OBSERVER = ROOT / "scripts/ci/observe-xtask-build.sh"
@@ -39,12 +43,22 @@ class ObservationTests(unittest.TestCase):
         self.stub("git", '''case "$*" in
 "rev-parse HEAD") cat "$FAKE_STATE/head" ;;
 "rev-parse HEAD^{tree}") printf '%040d' 1 ;;
+"rev-parse --show-toplevel") printf '%s\\n' "$FAKE_NATIVE_ROOT" ;;
+"rev-parse --path-format=absolute --git-common-dir") printf '%s\\n' "$FAKE_NATIVE_COMMON" ;;
 *) exit 2 ;; esac
 ''')
         self.stub("rustc", '''if [[ "$*" == "--print sysroot" ]]; then echo /test/toolchain; else cat "$FAKE_STATE/rustc"; fi
 ''')
         self.stub("cargo", '''if [[ "$*" == "-vV" ]]; then echo 'cargo 1.95.0 (test)'; exit 0; fi
 printf '%s\\0' "$@" > "$FAKE_STATE/args"
+if [[ -n ${FAKE_DESCRIPTOR:-} ]]; then
+  printf 'cargo-admitted resources: ' >&2
+  cat "$FAKE_DESCRIPTOR" >&2
+  printf '\\n' >&2
+  if [[ ${FAKE_DESCRIPTOR_DUPLICATE:-no} == yes ]]; then
+    printf 'cargo-admitted resources: ' >&2; cat "$FAKE_DESCRIPTOR" >&2; printf '\\n' >&2
+  fi
+fi
 if [[ ${FAKE_TRACE:-yes} == yes ]]; then
   if [[ ${FAKE_WARM:-no} == yes ]]; then
     echo '0.01 TRACE cargo::core::compiler::fingerprint: fingerprint at: target/debug/.fingerprint/serde' >&2
@@ -79,12 +93,13 @@ exit "${FAKE_EXIT:-0}"
         path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8", newline="\n")
         path.chmod(0o755)
 
-    def observe(self, **extra):
+    def observe(self, command=None, **extra):
         env = dict(os.environ, FAKE_STATE=posix(self.state), HOME=posix(self.work),
                    CARGO_HOME=posix(self.work / "cargo-home"), CARGO_TARGET_DIR="target",
+                   FAKE_NATIVE_ROOT=str(self.work.resolve()), FAKE_NATIVE_COMMON=str((self.work / ".git").resolve()),
                    GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2")
         env.update(extra)
-        command = ["cargo", "xtask", "ripr-plus", "--receipt", "target/path with space.json"]
+        command = command or ["cargo", "xtask", "ripr-plus", "--receipt", "target/path with space.json"]
         result = subprocess.run(
             [BASH, "--noprofile", "--norc", "-c", 'export PATH="$1:$PATH"; shift; exec bash "$@"',
              "observation-control", posix(self.bin), posix(OBSERVER), "host-test", "out", "--", *command],
@@ -92,7 +107,7 @@ exit "${FAKE_EXIT:-0}"
         )
         records = list((self.work / "out").glob("*.observation.json"))
         self.assertEqual(len(records), 1, result.stderr[-2500:])
-        observation = json.loads(records[0].read_text())
+        observation = json.loads(records[0].read_text(encoding="utf-8"))
         actual_args = (self.state / "args").read_bytes().decode().split("\0")[:-1]
         self.assertEqual(actual_args, command[1:])
         self.assertEqual(observation["command"], command)
@@ -103,11 +118,108 @@ exit "${FAKE_EXIT:-0}"
         result, record = self.observe()
         self.assertEqual(result.returncode, 0)
         self.assertTrue(record["identity_stable"])
-        self.assertEqual(record["before"]["target_dir_hint"], "target")
+        self.assertEqual(record["before"]["target_dir_hint_sha256"], hashlib.sha256(b"target").hexdigest())
+        self.assertIn("NOT_PROVEN", record["before"]["resource_authority"])
+        self.assertFalse(record["storage"]["descriptor_valid"])
         self.assertTrue(record["selected_trace_complete"])
         self.assertEqual(record["stderr"]["compiling_messages"], 1)
         self.assertEqual(record["stderr"]["dirty_lines"], 2)
         self.assertEqual((record["run_id"], record["run_attempt"]), ("123", "2"))
+
+    def test_command_receipt_preserves_empty_whitespace_unicode_and_newline_arguments(self):
+        command = ["cargo", "xtask", "", "receipt path with spaces.json", "雪だるま ☃", "line one\nline two"]
+        _, record = self.observe(command=command)
+        actual_args = (self.state / "args").read_bytes().decode().split("\0")[:-1]
+        self.assertEqual(actual_args, command[1:])
+        self.assertEqual(record["command"], command)
+        receipt = next((self.work / "out").glob("*.observation.json"))
+        # Windows' default cp1252 codec cannot decode this UTF-8 receipt;
+        # this negative control guards against reintroducing locale decoding.
+        with self.assertRaises(UnicodeDecodeError):
+            receipt.read_text(encoding="cp1252")
+
+    def test_command_receipt_preserves_empty_final_argument(self):
+        command = ["cargo", "empty-final", ""]
+        _, record = self.observe(command=command)
+        actual_args = (self.state / "args").read_bytes().decode().split("\0")[:-1]
+        self.assertEqual(actual_args, command[1:])
+        self.assertEqual(record["command"], command)
+
+    def test_sparse_stderr_is_redacted_and_visible_before_command_exit(self):
+        secret = "CONTROL-SYNTHETIC-LIVE-SECRET"
+        marker = "ordinary live stderr after redaction"
+        cargo = self.bin / "cargo"
+        payload = f"""cat >&2 <<'DIAGNOSTIC'
+0.01 INFO cargo::core::compiler::fingerprint: dirty: RustflagsChanged {{ old: "{secret}" }}
+0.01 INFO cargo::core::compiler::fingerprint: fingerprint error for fixture {secret}
+0.01 INFO cargo::core::compiler::fingerprint: err: failed to read {secret}
+Caused by:
+    {secret}
+{marker}
+DIAGNOSTIC
+printf 'stdout control\\n'
+while [[ ! -f "$FAKE_STATE/release" ]]; do sleep 0.05; done
+"""
+        cargo.write_text(cargo.read_text().replace("case ${FAKE_CHANGE:-none} in",
+                                                  payload + "case ${FAKE_CHANGE:-none} in"),
+                         encoding="utf-8", newline="\n")
+        env = dict(os.environ, FAKE_STATE=posix(self.state), FAKE_EXIT="37",
+                   CARGO_HOME=posix(self.work / "cargo-home"), CARGO_TARGET_DIR="target")
+        log = self.work / "live.stderr"
+        with log.open("wb") as stderr:
+            process = subprocess.Popen(
+                [BASH, "--noprofile", "--norc", "-c", 'export PATH="$1:$PATH"; shift; exec bash "$@"',
+                 "live-control", posix(self.bin), posix(OBSERVER), "host-test", "out", "--",
+                 "cargo", "xtask", "ripr-plus"],
+                cwd=self.work, env=env, stdout=subprocess.PIPE, stderr=stderr)
+            try:
+                deadline = time.monotonic() + 3
+                while marker not in log.read_text() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertIsNone(process.poll(), "command must still own its open stderr pipe")
+                self.assertIn(marker, log.read_text(), "sparse stderr was buffered until EOF")
+                self.assertNotIn(secret, log.read_text())
+            finally:
+                (self.state / "release").touch()
+                stdout, _ = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 37)
+        self.assertEqual(stdout, b"stdout control\n")
+        for path in (self.work / "out").iterdir():
+            self.assertNotIn(secret, path.read_text(), str(path))
+        record = json.loads(next((self.work / "out").glob("*.observation.json")).read_text())
+        self.assertFalse(record["reader_timed_out"])
+        self.assertFalse(record["selected_trace_complete"])
+        self.assertGreater(record["stderr"]["filtered_error_continuations"], 0)
+
+    def check_other_awk_probe(self, version, status):
+        # A non-mawk may ignore -W and read its stdin. The version probe must
+        # see EOF without stealing command diagnostics, even when it fails.
+        real_awk = subprocess.check_output(
+            [BASH, "--noprofile", "--norc", "-c", "command -v awk"], text=True).strip()
+        self.stub("awk", '''if [[ "$1" == -W && "$2" == version ]]; then
+  IFS= read -r -t 1 line
+  printf '%s' "$?" > "$FAKE_STATE/probe-read-status"
+  printf '%s\\n' "$FAKE_AWK_VERSION"
+  exit "$FAKE_AWK_PROBE_STATUS"
+fi
+printf '%s' "$1" > "$FAKE_STATE/collector-first-arg"
+exec "$REAL_OBSERVER_AWK" "$@"
+''')
+        result, record = self.observe(REAL_OBSERVER_AWK=real_awk, FAKE_AWK_VERSION=version,
+                                      FAKE_AWK_PROBE_STATUS=str(status), FAKE_EXIT="37")
+        self.assertEqual((self.state / "probe-read-status").read_text(), "1")
+        self.assertEqual((self.state / "collector-first-arg").read_text(), "-v")
+        self.assertEqual(result.returncode, 37)
+        self.assertTrue(record["selected_trace_complete"])
+        self.assertNotIn(version, result.stdout + result.stderr)
+        for path in (self.work / "out").iterdir():
+            self.assertNotIn(version, path.read_text(), str(path))
+
+    def test_other_awk_probe_does_not_consume_diagnostics_or_receive_mawk_option(self):
+        self.check_other_awk_probe("OTHER-AWK-CONTROL-VERSION", 0)
+
+    def test_failed_mawk_identification_does_not_select_interactive_mode(self):
+        self.check_other_awk_probe("mawk CONTROL-FAILED-VERSION", 17)
 
     def test_failed_cargo_is_not_rescued(self):
         result, record = self.observe(FAKE_EXIT="37")
@@ -133,16 +245,107 @@ exit "${FAKE_EXIT:-0}"
         self.assertEqual(record["stderr"]["compiling_messages"], 0)
         self.assertEqual(record["stderr"]["dirty_lines"], 0)
 
-    def test_u64_fingerprint_differences_are_not_rounded_away(self):
-        unit = self.work / "target/debug/.fingerprint/serde-test/lib-serde.json"
-        unit.parent.mkdir(parents=True)
-        unit.write_text('{"path":18446744073709551613}\n')
-        _, record = self.observe(FAKE_CHANGE="fingerprint")
-        before = record["before"]["fingerprints"][0]
-        after = record["after"]["fingerprints"][0]
-        self.assertEqual(before["hashes"]["path"], "18446744073709551613")
-        self.assertEqual(after["hashes"]["path"], "18446744073709551614")
-        self.assertNotEqual(before["sha256"], after["sha256"])
+    def descriptor(self):
+        # Independent projection of the established host/common/worktree shape.
+        subprocess.run(["git", "init", "-q", str(self.work)], check=True,
+                       env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")})
+        common = str((self.work / ".git").resolve())
+        common_key = hashlib.sha256(os.fsencode(common.casefold() if os.name == "nt" else common)).hexdigest()[:16]
+        work_key = hashlib.sha256(os.fsencode(self.work.resolve())).hexdigest()
+        slot = self.work / "private-CONTROL-DESCRIPTOR-SECRET" / (socket.gethostname() + "-" + sys.platform + "-" + common_key)
+        paths = {"target": slot / "worktrees" / work_key / "target",
+                 "build": slot / "worktrees" / work_key / "build",
+                 "cargo_home": self.work / "private-home", "temp": self.work / "private-tmp"}
+        for path in paths.values():
+            path.mkdir(parents=True, exist_ok=True)
+        resources = {key: str(path.resolve()) for key, path in paths.items()}
+        scope = {"hostname": socket.gethostname(), "platform": sys.platform,
+                 "working_directory": str(self.work.resolve()), "worktree": str(self.work.resolve()),
+                 "operation": "check", "cargo_argv_sha256": "a" * 64,
+                 "resources": resources, "jobs": 2, "build_environment_sha256": "b" * 64}
+        data = {"scope": scope, "resources": resources, "worktree": str(self.work.resolve()),
+                "lease": str(slot / "cargo-active"), "pid": 123,
+                "admission": {"secret": "CONTROL-DESCRIPTOR-SECRET"}}
+        filename = self.state / "descriptor.json"
+        filename.write_text(json.dumps(data), encoding="utf-8")
+        return filename, paths
+
+    def test_late_descriptor_finds_separated_triple_and_profile_without_rebinding_before(self):
+        filename, paths = self.descriptor()
+        for name, relative, value in (("target", "agent/.fingerprint/xtask-a/lib.json", 2**64-3),
+                ("build", "aarch64-unknown-linux-gnu/custom/.fingerprint/serde-b/lib.json", 2**64-2)):
+            unit = paths[name] / relative
+            unit.parent.mkdir(parents=True)
+            unit.write_text(json.dumps({"path": value, "rustflags": ["CONTROL-DESCRIPTOR-SECRET"]}))
+        result, record = self.observe(FAKE_DESCRIPTOR=posix(filename), FAKE_EXIT="37")
+        self.assertEqual(result.returncode, 37)
+        inventory = record["storage"]
+        self.assertTrue(inventory["descriptor_valid"], inventory)
+        self.assertTrue(inventory["inventory_complete"], inventory)
+        self.assertEqual({entry["hashes"]["path"] for entry in inventory["fingerprints"]}, {str(2**64-3), str(2**64-2)})
+        self.assertFalse(inventory["admitted_before_sample"])
+        self.assertEqual(record["before"]["fingerprints"], [])
+        self.assertFalse(record["before"]["fingerprints_complete"])
+        self.assertEqual(inventory["observation_kind"], "historical_only")
+        self.assertEqual(inventory["status"], "NOT_PROVEN")
+        self.assertIsNone(inventory["peak_bytes"])
+        for content in [result.stdout, result.stderr, *(p.read_text() for p in (self.work / "out").iterdir())]:
+            self.assertNotIn("CONTROL-DESCRIPTOR-SECRET", content)
+            self.assertNotIn(str(self.work), content)
+
+    def test_duplicate_and_invalid_descriptor_preserve_original_command_status(self):
+        filename, _ = self.descriptor()
+        for status in (0, 37):
+            with self.subTest(status=status):
+                result, record = self.observe(FAKE_DESCRIPTOR=posix(filename), FAKE_EXIT=str(status), FAKE_DESCRIPTOR_DUPLICATE="yes")
+                self.assertEqual(result.returncode, status)
+                self.assertFalse(record["storage"]["descriptor_valid"])
+                # Each call normally creates one record; preserve earlier artifacts
+                # outside this invocation's output glob for the next assertion.
+                (self.work / "out").rename(self.work / f"out-{status}")
+        filename.write_text('{"scope":NaN,"private":"CONTROL-DESCRIPTOR-SECRET"}')
+        result, record = self.observe(FAKE_DESCRIPTOR=posix(filename), FAKE_EXIT="37")
+        self.assertEqual(result.returncode, 37)
+        self.assertFalse(record["storage"]["descriptor_valid"])
+        self.assertNotIn("CONTROL-DESCRIPTOR-SECRET", result.stderr)
+
+    def test_incomplete_reader_cannot_certify_first_descriptor(self):
+        filename, _ = self.descriptor()
+        result, record = self.observe(FAKE_DESCRIPTOR=posix(filename), FAKE_EXIT="37", FAKE_DETACHED_STDERR="yes")
+        self.assertEqual(result.returncode, 37)
+        self.assertTrue(record["reader_timed_out"])
+        self.assertFalse(record["storage"]["descriptor_valid"])
+        self.assertFalse(record["storage"]["inventory_complete"])
+
+    def test_observer_instrument_failure_does_not_replace_success_or_failure(self):
+        filename, _ = self.descriptor()
+        copied = self.work / "instrument/scripts/ci/observe-xtask-build.sh"
+        copied.parent.mkdir(parents=True)
+        copied.write_bytes(OBSERVER.read_bytes())
+        (copied.parent.parent / "storage_observation.py").write_text('raise RuntimeError("CONTROL-DESCRIPTOR-SECRET")\n')
+        for status in (0, 37):
+            with self.subTest(status=status), mock.patch(__name__ + ".OBSERVER", copied):
+                result, record = self.observe(FAKE_DESCRIPTOR=posix(filename), FAKE_EXIT=str(status))
+                self.assertEqual(result.returncode, status)
+                self.assertFalse(record["storage"]["descriptor_valid"])
+                self.assertNotIn("CONTROL-DESCRIPTOR-SECRET", result.stderr)
+                (self.work / "out").rename(self.work / f"instrument-out-{status}")
+
+    def test_schema_only_or_promoted_helper_output_cannot_qualify_inventory(self):
+        filename, _ = self.descriptor()
+        copied = self.work / "instrument/scripts/ci/observe-xtask-build.sh"
+        copied.parent.mkdir(parents=True)
+        copied.write_bytes(OBSERVER.read_bytes())
+        helper = copied.parent.parent / "storage_observation.py"
+        for label, record in (("schema-only", {"schema_version": "cargo_storage_inventory.v1"}),
+                              ("promoted", {"schema_version": "cargo_storage_inventory.v1", "status": "OBSERVED", "inventory_complete": True})):
+            with self.subTest(label=label), mock.patch(__name__ + ".OBSERVER", copied):
+                helper.write_text("print(" + repr(json.dumps(record)) + ")\n")
+                result, observed = self.observe(FAKE_DESCRIPTOR=posix(filename), FAKE_EXIT="37")
+                self.assertEqual(result.returncode, 37)
+                self.assertFalse(observed["storage"]["descriptor_valid"])
+                self.assertEqual(observed["storage"]["status"], "NOT_PROVEN")
+                (self.work / "out").rename(self.work / label)
 
     def test_multiline_fingerprint_errors_are_redacted_and_cargo_status_retained(self):
         cargo = self.bin / "cargo"

@@ -353,7 +353,7 @@ const MODULES: &[ModuleRow] = &[
         "watched_delete_republish_tests",
         PerlApplication,
         "perl-lsp-rs",
-        "retain as cfg(test) falsifiers of external-mutation diagnostic republish beside its subject",
+        "retain as cfg(test) falsifiers of watched-file and file-operation DELETED diagnostic republish beside its subject",
         "#17332"
     ),
     module_row!(

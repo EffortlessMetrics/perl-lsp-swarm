@@ -8,6 +8,9 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 repo_name="$(basename "$repo_root")"
 
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-local-config.sh"
+cargo_local_config_prepare "$repo_root"
+
 # Machine may override this. Default is user-cache, not repo-local.
 devplane="${DEVPLANE:-${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$repo_name}"
 lock_root="$devplane/locks"
@@ -82,12 +85,12 @@ case "$heavy" in
     if command -v flock >/dev/null 2>&1; then
       exec flock -w "${CARGO_LOCK_WAIT:-180}" \
         "$lock_root/cargo-build.lock" \
-        cargo "$@"
+        cargo "${CARGO_LOCAL_CONFIG_ARGS[@]}" "$@"
     else
-      exec cargo "$@"
+      exec cargo "${CARGO_LOCAL_CONFIG_ARGS[@]}" "$@"
     fi
     ;;
   *)
-    exec cargo "$@"
+    exec cargo "${CARGO_LOCAL_CONFIG_ARGS[@]}" "$@"
     ;;
 esac

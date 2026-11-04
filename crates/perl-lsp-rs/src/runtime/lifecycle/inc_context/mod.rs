@@ -52,6 +52,36 @@ pub(crate) struct EffectiveIncContext {
 }
 
 impl EffectiveIncContext {
+    /// Fingerprint for session-local negative module-resolution caching (#18776).
+    ///
+    /// Must change when any input to [`LspServer::effective_inc_context_for_doc`]
+    /// would change the ordered effective-root set or resolution budget.
+    pub(crate) fn negative_cache_fingerprint(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.root.hash(&mut hasher);
+        self.use_system_inc.hash(&mut hasher);
+        self.use_perl5lib.hash(&mut hasher);
+        self.resolution_timeout_ms.hash(&mut hasher);
+        if let Some(folder_uri) = &self.folder_uri {
+            folder_uri.hash(&mut hasher);
+        }
+        if let Some(doc_uri) = &self.doc_uri {
+            doc_uri.hash(&mut hasher);
+        }
+        self.system_inc_state.attempts_consumed.hash(&mut hasher);
+        format!("{:?}", self.system_inc_state.outcome).hash(&mut hasher);
+        for root in &self.effective_roots {
+            format!("{:?}", root.kind).hash(&mut hasher);
+            root.path.hash(&mut hasher);
+            root.precedence.hash(&mut hasher);
+            root.source.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     /// Build labeled search paths suitable for PL701 display.
     ///
     /// This is intentionally lazy so completion can consume the same
@@ -60,7 +90,7 @@ impl EffectiveIncContext {
     #[must_use]
     #[allow(dead_code)]
     pub(crate) fn search_display_paths(&self) -> Vec<ModuleSearchPathDisplay> {
-        display::search_display_paths(&self.effective_roots)
+        display::search_display_paths(&self.effective_roots, &self.root)
     }
 
     /// Returns `true` if `symbol_uri` is directly reachable through one of the
@@ -599,6 +629,8 @@ mod tests {
         let script = workspace.join("script").join("run.pl");
         std::fs::create_dir_all(script.parent().ok_or("missing script parent")?)?;
 
+        std::fs::create_dir_all(workspace.join("t").join("lib"))?;
+        std::fs::create_dir_all(workspace.join("lib"))?;
         let workspace_uri = file_uri(&workspace)?;
         let doc_uri = file_uri(&script)?;
         let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();

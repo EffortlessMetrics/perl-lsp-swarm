@@ -134,6 +134,10 @@ pub fn classify_diff(files: &[String]) -> String {
             has_prose = true;
         } else if is_ci_config_file(file) {
             has_ci_config = true;
+        } else if is_vscode_types_contract_input(file) {
+            // These JSON/YAML inputs carry an executable Rust policy guard;
+            // docs_as_code would skip RustScoped gates even with xtask selected.
+            has_code = true;
         } else if is_docs_as_code_file(file) {
             has_docs_as_code = true;
         } else {
@@ -158,6 +162,30 @@ pub fn classify_diff(files: &[String]) -> String {
         return "prose_only".to_string();
     }
     "code".to_string()
+}
+
+/// Prove the bounded prose/script composition admitted by PR-fast (#17825).
+/// Keep aggregate `mixed` semantics: machine configuration and unknown inputs
+/// do not acquire this optimization. `scripts/` is the existing governed CI
+/// tooling root; only its Python/shell surface is admitted here. Package
+/// ownership must still be checked by the consumer.
+pub(crate) fn is_known_non_rust_composition(files: &[String]) -> bool {
+    !files.is_empty()
+        && files.iter().all(|file| {
+            if crate::tasks::file_policy::is_rust_file(file) {
+                return false;
+            }
+            match classify_diff(std::slice::from_ref(file)).as_str() {
+                "prose_only" => {
+                    PROSE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
+                        || matches!(file.as_str(), "LICENSE" | "CHANGELOG")
+                }
+                "ci_config" => {
+                    file.starts_with("scripts/") && (file.ends_with(".py") || file.ends_with(".sh"))
+                }
+                _ => false,
+            }
+        })
 }
 
 fn is_prose_file(file: &str) -> bool {
@@ -208,6 +236,9 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // Windows directory identity and its replacement witness live
             // in this shared file; select the exact seam, not its module.
             || normalized == "crates/perl-dap/src/security/launch_authority.rs"
+            // Reader lifecycle fixtures and bounded child cleanup are a
+            // demonstrated Windows startup/termination seam (#17757).
+            || normalized == "crates/perl-dap/src/debug_adapter/process.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
@@ -219,6 +250,15 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // empty on Windows, but the target still needs Windows compile
             // admission so the platform boundary cannot silently bit-rot.
             || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
+            // #18072: the archive-entry path-containment guard in this file
+            // resolves entry names against the extraction destination with
+            // `Path::join`, whose Windows semantics differ from POSIX: a
+            // rooted-but-prefixless name has a root but no drive prefix, so
+            // an `is_absolute`-only guard admits a name that resolves
+            // against the drive root. The proof for that guard only
+            // discriminates on Windows, so the file is admitted to the
+            // Windows runner rather than leaving the proof POSIX-only.
+            || normalized == "xtask/src/vim_host_toolchain.rs"
     })
 }
 
@@ -482,6 +522,10 @@ fn has_features_toml_change(files: &[String]) -> bool {
     files.iter().any(|f| f == "features.toml")
 }
 
+fn is_vscode_types_contract_input(file: &str) -> bool {
+    matches!(file, "vscode-extension/package.json" | ".github/dependabot.yml")
+}
+
 /// Repository inputs that xtask's policy guards assert over, but which are not
 /// xtask source.
 ///
@@ -521,6 +565,9 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // routing, a gate-policy-only PR would skip both focused owner gates
         // and the very proof that pins the policy's shape (#14409 review).
         || file == ".ci/gate-policy.yaml"
+        // vscode_extension_types_fence reads both inputs (#13476). Route
+        // manifest-only and Dependabot-only edits to its owning test package.
+        || is_vscode_types_contract_input(file)
         // The required-context ledger is asserted by
         // `xtask/tests/required_context_binding_contract.rs` (#15348): a
         // required row's producer binding (`ruleset_integration_id`,
@@ -530,6 +577,10 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // binding would sail through every required check green (#15995
         // review).
         || file == ".ci/policies/required-checks.toml"
+        // The #8401 selection guard in lsp_internal_dependency_layers reads
+        // this facade-owned target. With the reverse core dev edge removed,
+        // facade-only edits no longer reach xtask through reverse dependencies.
+        || file == "crates/perl-lsp-rs/tests/core_facade_contract.rs"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -690,6 +741,29 @@ pub fn classify_files(
     workspace_root: &str,
 ) -> Result<ScopeOutput> {
     let diff_class = classify_diff(files);
+
+    // The new mixed optimization needs positive ownership evidence. Missing
+    // package identity must reach the planner's acquisition fallback rather
+    // than masquerade as an empty, proven-unowned package set. `--no-deps`
+    // metadata legitimately has resolve=null; only package identity is needed.
+    if diff_class == "mixed" && is_known_non_rust_composition(files) {
+        let packages = metadata
+            .get("packages")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| eyre!("non-Rust composition requires cargo package metadata"))?;
+        if packages.is_empty()
+            || packages.iter().any(|package| {
+                ["name", "id", "manifest_path"].iter().any(|field| {
+                    package
+                        .get(*field)
+                        .and_then(|value| value.as_str())
+                        .is_none_or(|value| value.trim().is_empty())
+                })
+            })
+        {
+            return Err(eyre!("non-Rust composition requires complete cargo package identities"));
+        }
+    }
 
     // Empty diff or prose-only → empty output (no lanes)
     if files.is_empty() || diff_class == "prose_only" {
@@ -1212,6 +1286,7 @@ mod tests {
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
             "xtask/tests/release_artifact_size_smoke_script.rs",
+            "xtask/src/vim_host_toolchain.rs",
             "crates/perllsp/src/main.rs",
             "crates/perl-lsp-rs/src/cli.rs",
             "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
@@ -1323,6 +1398,22 @@ mod tests {
     }
 
     // --- xtask policy-guarded inputs (#5036) ---
+
+    #[test]
+    fn core_facade_contract_change_selects_its_crate_and_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-lsp-rs", "crates/perl-lsp-rs"), ("xtask", "xtask")]);
+        let files = vec!["crates/perl-lsp-rs/tests/core_facade_contract.rs".to_string()];
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert_eq!(crates, BTreeSet::from(["perl-lsp-rs".to_string(), "xtask".to_string()]));
+
+        let unrelated = vec!["crates/perl-lsp-rs/tests/unrelated.rs".to_string()];
+        assert_eq!(
+            crates_from_files(&unrelated, &metadata, "/workspace")?,
+            BTreeSet::from(["perl-lsp-rs".to_string()]),
+            "the guard route must stay specific to the source it reads"
+        );
+        Ok(())
+    }
     //
     // `unit_routed_full` is scope-aware, so a guard only runs when its crate is
     // selected. The binstall tests in `release_artifact_check` read
@@ -1339,6 +1430,27 @@ mod tests {
             crates.contains("xtask"),
             "changing the hermetic Vim lane must route to the contract tests that assert on it"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn vscode_types_contract_inputs_select_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        for file in ["vscode-extension/package.json", ".github/dependabot.yml"] {
+            let scope = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert_eq!(scope.diff_class, "code", "{file} must not skip Rust gates");
+            assert!(
+                scope.direct_crates.iter().any(|krate| krate.name == "xtask"),
+                "{file} must select its types fence"
+            );
+            assert!(!scope.lanes.parser_ratchet.selected, "{file} is not parser work");
+        }
+        let crates = crates_from_files(
+            &["vscode-extension/README.md".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(!crates.contains("xtask"), "unrelated extension docs must not widen scope");
         Ok(())
     }
 
@@ -1676,6 +1788,23 @@ mod tests {
             assert!(output.platform_overrides.windows_runner, "{file} must execute on Windows");
             assert_eq!(output.platform_overrides.windows_test_crates, expected, "{file}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_dap_reader_lifecycle_selects_only_dap_for_windows_smoke() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-dap", "crates/perl-dap")]);
+        let output = classify_files(
+            &["crates/perl-dap/src/debug_adapter/process.rs".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(output.platform_overrides.windows_runner);
+        assert_eq!(output.platform_overrides.windows_test_crates, vec!["perl-dap"]);
+        assert!(!requires_windows_runner(&[
+            "crates/perl-dap/src/debug_adapter/process.rs.backup".to_string(),
+            "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
+        ]));
         Ok(())
     }
 

@@ -529,8 +529,17 @@ function validateInstalledByteIdentity(
       throw new Error('installed server differs from observed input bytes');
     requireSmokeObservation(identity.before_provider, observed);
   }
-  requireSmokeObservation(identity.vsix_before, expectedVsix);
-  requireSmokeObservation(identity.vsix_after, expectedVsix);
+  // The child observes its invocation-owned snapshot, which is removed before
+  // this parent reads the receipt. Bind its stable path and bytes across phases,
+  // then compare bytes to the independently re-observed parent-owned package.
+  requireSmokeObservation(identity.vsix_before, identity.vsix_after);
+  if (
+    typeof identity.vsix_before.path !== 'string' ||
+    !path.isAbsolute(identity.vsix_before.path) ||
+    identity.vsix_before.sha256 !== expectedVsix.sha256 ||
+    identity.vsix_before.size !== expectedVsix.size
+  )
+    throw new Error('VSIX snapshot observation differs from parent-owned package bytes');
 }
 
 function safeFilePart(value) {
@@ -938,6 +947,33 @@ function childReceiptPath() {
 }
 
 /**
+ * Load the compiled accessibility inventory module the published-smoke build
+ * emitted. The orchestrator must derive its expected digest from the exact
+ * compiled artifact the extension-host child ran against, never from a
+ * parallel re-derivation.
+ */
+function loadAccessibilityInventory(rootDir = root) {
+  return require(path.join(rootDir, 'out', 'accessibilityInventory.js'));
+}
+
+/**
+ * The orchestrator-side expectation for the installed accessibility receipt
+ * (#7865): the inventory contract of this candidate, its digest, and the
+ * receipt validator compiled alongside it. The VSIX identity itself is
+ * validated against the run's `expectedVsixSha256` argument, so the
+ * expectation carries no duplicate copy of it.
+ */
+function buildAccessibilityExpectation() {
+  const inventoryModule = loadAccessibilityInventory();
+  const inventory = inventoryModule.CURRENT_ACCESSIBILITY_INVENTORY;
+  return {
+    inventory,
+    digest: inventoryModule.accessibilityInventoryDigest(inventory),
+    validate: inventoryModule.validateAccessibilityReceipt,
+  };
+}
+
+/**
  * A zero exit code from the extension-host smoke is not behavioral proof: a
  * no-op script, a swallowed receipt write, or a receipt left behind by an
  * earlier run would all produce it. Behavior only counts when the child wrote
@@ -954,6 +990,7 @@ function childReceiptPath() {
  *   expectedExtensionsRoot?: string,
  *   expectedVscodeVersion: string,
  *   expectedSourceLabel: string,
+ *   accessibilityExpectation?: ReturnType<typeof buildAccessibilityExpectation> | null,
  *   readFile?: (file: string) => string,
  *   exists?: (file: string) => boolean,
  * }} input
@@ -966,6 +1003,7 @@ function validateChildSmokeReceipt({
   expectedServerSourceSha,
   expectedVscodeVersion,
   expectedSourceLabel,
+  accessibilityExpectation = null,
   expectedServerObservation,
   expectedVsixObservation,
   expectedExtensionsRoot,
@@ -1058,6 +1096,55 @@ function validateChildSmokeReceipt({
     );
   }
 
+  // The installed accessibility receipt (#7865) is part of the behavioral
+  // binding: it must be present on a completed run, name this run's inventory
+  // contract and VSIX, and survive the structural validator compiled with the
+  // candidate (missing rows, invented surfaces, or claimed screen-reader proof
+  // all reject).
+  if (accessibilityExpectation) {
+    const accessibility = receipt.accessibility;
+    if (!accessibility || typeof accessibility !== 'object') {
+      violations.push('first-hour receipt does not record the installed accessibility receipt');
+    } else {
+      if (accessibility.schema_version !== 'vscode_accessibility.v1') {
+        violations.push('accessibility receipt schema is not vscode_accessibility.v1');
+      }
+      if (accessibility.candidate?.inventory_digest !== accessibilityExpectation.digest) {
+        violations.push('accessibility receipt inventory digest does not bind this run');
+      }
+      if (accessibility.candidate?.vsix_sha256 !== expectedVsixSha256) {
+        violations.push("accessibility receipt VSIX digest is not this run's package");
+      }
+      // The candidate block was written by the same child process that wrote
+      // the validated environment block, so it must name the same launched
+      // host: evidence from a different matrix leg cannot ride along.
+      if (accessibility.candidate?.vscode_version !== environment.vscode_version) {
+        violations.push("accessibility receipt candidate VS Code version is not this run's host");
+      }
+      if (accessibility.candidate?.platform !== process.platform) {
+        violations.push("accessibility receipt candidate platform is not this run's host");
+      }
+      // A malformed accessibility section is a bounded receipt violation, not
+      // an instrumentation failure: catch validator throws and fail closed.
+      let structural = [];
+      try {
+        structural = accessibilityExpectation.validate(
+          accessibility,
+          accessibilityExpectation.inventory,
+        );
+      } catch (error) {
+        violations.push(
+          `accessibility receipt validator threw: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      for (const error of Array.isArray(structural) ? structural : []) {
+        violations.push(`accessibility receipt: ${error}`);
+      }
+    }
+  }
+
   try {
     validateInstalledByteIdentity(
       receipt.installed_byte_identity,
@@ -1121,9 +1208,24 @@ function validateVerifiedCandidateReceipt({
         `verified child status ${JSON.stringify(receipt.status)} is not executable evidence`,
       );
     }
+    let sourceBytes;
+    let sourceReceipt;
+    try {
+      // Hash and parse one snapshot; a producer may replace the receipt between reads.
+      sourceBytes = fs.readFileSync(sourceReceiptFile);
+      sourceReceipt = JSON.parse(sourceBytes.toString('utf8'));
+    } catch (error) {
+      violations.push(
+        `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     if (!receipt.source_receipt_sha256 || !sourceReceiptFile) {
       violations.push('verified child receipt does not bind its packaged source receipt');
-    } else if (receipt.source_receipt_sha256 !== sha256File(sourceReceiptFile)) {
+    } else if (
+      sourceBytes &&
+      receipt.source_receipt_sha256 !==
+        crypto.createHash('sha256').update(sourceBytes).digest('hex')
+    ) {
       violations.push('verified child source receipt digest does not match this run');
     }
     if (receipt.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
@@ -1131,14 +1233,6 @@ function validateVerifiedCandidateReceipt({
     }
     if (receipt.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
       violations.push("verified child bundled-server digest is not this run's server");
-    }
-    let sourceReceipt;
-    try {
-      sourceReceipt = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
-    } catch (error) {
-      violations.push(
-        `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
     if (sourceReceipt?.repository_sha !== env.PERL_LSP_CURRENT_SOURCE_SHA) {
       violations.push('packaged source receipt does not bind this candidate source');
@@ -3200,6 +3294,10 @@ function main() {
                   expectedVscodeVersion:
                     (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
                   expectedSourceLabel: receipt.source_label,
+                  // The compiled inventory module exists by now: the child ran
+                  // against it, so the accessibility expectation binds to the
+                  // same artifact (or the require itself fails the instrument).
+                  accessibilityExpectation: buildAccessibilityExpectation(),
                 });
           receipt.stages.behavioral_smoke = childReceipt.ok
             ? {
@@ -3321,6 +3419,7 @@ module.exports = {
   ACTIVATION_FAILURE_RECEIPTS,
   CRASH_RECOVERY_RECEIPTS,
   activationFailureLegEnv,
+  buildAccessibilityExpectation,
   bundleTargetForPlatform,
   candidateManifestConstructionRequested,
   constructCandidateArtifactManifest,

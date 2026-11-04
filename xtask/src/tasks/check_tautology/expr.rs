@@ -108,10 +108,12 @@ impl Default for TypeEnv {
 }
 
 impl TypeEnv {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn with_shadows(shadows: PreludeShadow) -> Self {
         Self {
             scopes: vec![BTreeMap::new()],
@@ -149,6 +151,7 @@ impl TypeEnv {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn bind(&mut self, ident: String, kind: QueryKind) {
         self.shadow(ident, Some(kind));
     }
@@ -324,6 +327,7 @@ fn bind_unknown_pat(env: &mut TypeEnv, pat: &Pat) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn option_or_result_kind(ty: &Type) -> Option<QueryKind> {
     option_or_result_kind_in(ty, &TypeEnv::new())
 }

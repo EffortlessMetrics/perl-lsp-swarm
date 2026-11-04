@@ -150,7 +150,9 @@ def parse_receipt(data: Any) -> Optional[ParsedReceipt]:
             raise ValueError(
                 "atomic result envelope has unknown fields: " + ", ".join(sorted(unknown))
             )
-        if data.get("test_results_schema") != ATOMIC_SCHEMA_VERSION:
+        version = data.get("test_results_schema")
+        # JSON booleans are not schema numbers, even though Python's True == 1.
+        if isinstance(version, bool) or version != ATOMIC_SCHEMA_VERSION:
             return None
         entries = _mapping_entries(
             data.get("test_results"),
@@ -175,7 +177,8 @@ def parse_receipt(data: Any) -> Optional[ParsedReceipt]:
         return ParsedReceipt(kind, entries)
 
     if "result" in data or "failure_class" in data:
-        if data.get("schema_version") not in UX_REGRESSION_SCHEMA_VERSIONS:
+        version = data.get("schema_version")
+        if isinstance(version, bool) or version not in UX_REGRESSION_SCHEMA_VERSIONS:
             return None
         return ParsedReceipt(AGGREGATE_TEST_GATE, (data,))
 

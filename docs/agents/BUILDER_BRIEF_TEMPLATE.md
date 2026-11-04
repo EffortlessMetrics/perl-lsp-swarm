@@ -89,23 +89,27 @@ cargo machete           # Unused dependency check
 Claim-only deletions (no guard output) are rejected by reviewer-deep. See
 [QUEUE_CONVERGENCE_DOCTRINE.md](../reference/QUEUE_CONVERGENCE_DOCTRINE.md) Rule 3.
 
-### 4. Arm-then-verify auto-merge state
+### 4. Merge only by a separate exact-head judgment
 
-When enabling auto-merge on a PR:
-
-```bash
-gh pr merge --auto --squash <PR>
-```
-
-Verify it was armed immediately after:
+Do not arm auto-merge or enqueue a PR. Under #3390, qualification completion
+has no merge side effect: the owning lead makes a separate merge judgment on
+the qualified head and merges with the current head SHA as compare-and-swap
+protection:
 
 ```bash
-gh pr view <PR> --json autoMergeRequest
+gh pr merge <PR> --squash --match-head-commit <current-head-sha>
 ```
 
-Auto-merge silently fails if the PR is in draft state, has a missing required
-label, or the branch protection ruleset blocks squash. Arm-then-verify prevents
-the "I thought it would auto-merge" class of stuck PRs.
+Verify the landing immediately after:
+
+```bash
+gh pr view <PR> --json state,mergedAt,mergeCommit
+```
+
+An armed auto-merge lands the moment the slowest required check turns green,
+before that final judgment can catch a late substantive finding (#18057). If a
+PR already has `autoMergeRequest` armed, disarm it and merge explicitly once
+required checks pass and unresolved review threads are zero.
 
 ### 5. Windows `core.longpaths` requirement
 
