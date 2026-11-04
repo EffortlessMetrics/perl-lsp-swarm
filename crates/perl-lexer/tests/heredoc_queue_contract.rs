@@ -1,9 +1,9 @@
 //! Lexer-owned contract for heredoc openers, queued bodies, and resumption.
 //!
 //! The public token stream currently exposes the whole opener token and a body
-//! event with authoritative `start..end` geometry. Quoting/interpolation/command
-//! metadata is not yet carried by `HeredocSpec`; #6727 owns that representation
-//! follow-up. Ordinary trailing-whitespace terminator rejection also remains a
+//! event with authoritative `start..end` geometry. Declaration identity at
+//! queue admission is pinned by `heredoc_queue_identity_contract.rs` (#13502).
+//! Ordinary trailing-whitespace terminator rejection also remains a
 //! named production gap rather than a passing conformance row in this suite.
 
 use std::fmt::Debug;

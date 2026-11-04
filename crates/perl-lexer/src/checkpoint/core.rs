@@ -1,3 +1,4 @@
+use crate::heredoc::HeredocQueueIdentity;
 use crate::mode::LexerMode;
 use crate::{LexerConfig, Position};
 use perl_source_identity::SourceGeneration;
@@ -17,6 +18,8 @@ pub struct PendingHeredocCheckpoint {
     /// Whether the body interpolates (#8779). Part of the replay-safe state:
     /// a restored checkpoint must keep the body's interpolation disposition.
     pub interpolates: bool,
+    /// Complete admission identity captured with this queued entry (#13502).
+    pub identity: HeredocQueueIdentity,
 }
 
 /// Replay-safe representation of an in-progress quote-like operator.
@@ -90,6 +93,8 @@ pub(crate) struct ReplayState {
     pub(crate) current_pos: Position,
     pub(crate) after_newline: bool,
     pub(crate) pending_heredocs: Vec<PendingHeredocCheckpoint>,
+    /// Next declaration ordinal to assign after restore (#13502).
+    pub(crate) next_heredoc_ordinal: u32,
     pub(crate) line_start_offset: usize,
     pub(crate) current_quote_op: Option<QuoteOperatorCheckpoint>,
     pub(crate) eof_emitted: bool,
@@ -379,6 +384,7 @@ impl LexerCheckpoint {
                 return false;
             };
             pending.body_start = body_start;
+            pending.identity.set_body_start(body_start);
         }
 
         let mut current_quote_op = self.replay.current_quote_op.clone();
@@ -647,6 +653,7 @@ mod tests {
             current_pos: Position::start(),
             after_newline: false,
             pending_heredocs: Vec::new(),
+            next_heredoc_ordinal: 0,
             line_start_offset: 0,
             current_quote_op: None,
             eof_emitted: false,

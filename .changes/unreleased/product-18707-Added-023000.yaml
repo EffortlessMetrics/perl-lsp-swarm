@@ -1,0 +1,13 @@
+project: product
+component: Language intelligence
+kind: Added
+body: >-
+  Capture an immutable heredoc opener identity at queue admission, including
+  declaration ordinal, #4851 source snapshot, opener/operator/raw-label
+  ranges, raw versus decoded spelling, form, and interpolation/command/indent
+  dispositions.
+time: 2026-11-02T02:30:00Z
+custom:
+  PR: "18707"
+  Slug: heredoc-queue-opener-identity
+  Breaking: "no"

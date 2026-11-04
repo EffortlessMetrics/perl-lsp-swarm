@@ -28,6 +28,7 @@ impl<'a> PerlLexer<'a> {
             current_pos: Position::start(),
             after_newline: true,
             pending_heredocs: Vec::new(),
+            next_heredoc_ordinal: 0,
             line_start_offset: 0,
             emit_heredoc_body_tokens: false,
             current_quote_op: None,

@@ -205,6 +205,10 @@ pub use checkpoint::{
 };
 pub use config::LexerConfig;
 pub use error::{LexerError, Result};
+pub use heredoc::{
+    HeredocAdmittedSource, HeredocByteRange, HeredocOpenerForm, HeredocOperator,
+    HeredocQueueIdentity,
+};
 pub use lexer::PerlLexer;
 pub use limits::MAX_REGEX_PARSE_STEPS;
 pub use mode::LexerMode;
@@ -215,7 +219,7 @@ pub use unicode::is_perl_identifier_continue;
 
 use unicode::{is_perl_identifier_start, is_perl_package_segment_start};
 
-use crate::heredoc::HeredocSpec;
+use crate::heredoc::{HeredocAdmission, HeredocSpec};
 use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast, is_nullary_builtin,
     is_perl_punctuation_variable, is_quote_op_word_prefix,
@@ -237,6 +241,21 @@ impl<'a> PerlLexer<'a> {
         let mut lexer = Self::with_config(input, config);
         lexer.emit_heredoc_body_tokens = true;
         lexer
+    }
+
+    /// Queued heredoc declaration identities in FIFO order (#13502).
+    ///
+    /// Each entry is the immutable identity captured at admission. This is the
+    /// consumer seam for #7285; it is not carried on [`Token`].
+    #[must_use]
+    pub fn pending_heredoc_identities(&self) -> Vec<HeredocQueueIdentity> {
+        self.pending_heredocs.iter().map(|spec| spec.identity.clone()).collect()
+    }
+
+    /// Identity of the front queued heredoc, if any.
+    #[must_use]
+    pub fn front_heredoc_identity(&self) -> Option<&HeredocQueueIdentity> {
+        self.pending_heredocs.first().map(|spec| &spec.identity)
     }
 
     /// Set the lexer mode (for resetting state at statement boundaries)
@@ -406,7 +425,7 @@ impl<'a> PerlLexer<'a> {
                             if let Some(next) = self.pending_heredocs.first_mut()
                                 && next.body_start == 0
                             {
-                                next.body_start = self.position;
+                                next.set_body_start(self.position);
                             }
 
                             if self.emit_heredoc_body_tokens {
@@ -691,6 +710,7 @@ impl<'a> PerlLexer<'a> {
         let saved_current_pos = self.current_pos;
         let saved_after_newline = self.after_newline;
         let saved_pending_heredocs = self.pending_heredocs.clone();
+        let saved_next_heredoc_ordinal = self.next_heredoc_ordinal;
         let saved_line_start_offset = self.line_start_offset;
         let saved_current_quote_op = self.current_quote_op.clone();
         let saved_eof_emitted = self.eof_emitted;
@@ -713,6 +733,7 @@ impl<'a> PerlLexer<'a> {
         self.current_pos = saved_current_pos;
         self.after_newline = saved_after_newline;
         self.pending_heredocs = saved_pending_heredocs;
+        self.next_heredoc_ordinal = saved_next_heredoc_ordinal;
         self.line_start_offset = saved_line_start_offset;
         self.current_quote_op = saved_current_quote_op;
         self.eof_emitted = saved_eof_emitted;
@@ -756,6 +777,7 @@ impl<'a> PerlLexer<'a> {
         self.current_pos = Position::start();
         self.after_newline = true;
         self.pending_heredocs.clear();
+        self.next_heredoc_ordinal = 0;
         self.line_start_offset = 0;
         self.current_quote_op = None;
         self.eof_emitted = false;
@@ -832,7 +854,7 @@ impl<'a> PerlLexer<'a> {
                     if !self.pending_heredocs.is_empty() {
                         for spec in &mut self.pending_heredocs {
                             if spec.body_start == 0 {
-                                spec.body_start = self.position;
+                                spec.set_body_start(self.position);
                                 // The next physical line belongs to the heredoc,
                                 // including POD/comment-shaped text or whitespace.
                                 // Return to next_token's pending-body dispatcher.
@@ -1033,13 +1055,14 @@ impl<'a> PerlLexer<'a> {
         self.position += 2; // Skip <<
 
         // Check for indented heredoc (~)
-        let allow_indent = if self.current_char() == Some('~') {
+        let operator = if self.current_char() == Some('~') {
             text.push('~');
             self.advance();
-            true
+            HeredocOperator::Indented
         } else {
-            false
+            HeredocOperator::Ordinary
         };
+        let operator_end = self.position;
 
         // Skip whitespace
         while let Some(ch) = self.current_char() {
@@ -1050,6 +1073,8 @@ impl<'a> PerlLexer<'a> {
                 break;
             }
         }
+
+        let raw_label_start = self.position;
 
         // Optional backslash disables interpolation, treat like single-quoted label
         let backslashed = if self.current_char() == Some('\\') {
@@ -1063,22 +1088,27 @@ impl<'a> PerlLexer<'a> {
         // Parse delimiter. `quoted` records the interpolation disposition of
         // a quoted delimiter (#8779): `"` interpolates, `'` and backtick do
         // not (backtick is the intentional command boundary).
-        let mut quoted_interpolates: Option<bool> = None;
+        let form;
         let delimiter = if self.position < self.input.len() {
             match self.current_char() {
                 Some('"') if !backslashed => {
-                    quoted_interpolates = Some(true);
+                    form = HeredocOpenerForm::DoubleQuoted;
                     self.parse_quoted_heredoc_delimiter('"', &mut text)?
                 }
                 Some('\'') if !backslashed => {
-                    quoted_interpolates = Some(false);
+                    form = HeredocOpenerForm::SingleQuoted;
                     self.parse_quoted_heredoc_delimiter('\'', &mut text)?
                 }
                 Some('`') if !backslashed => {
-                    quoted_interpolates = Some(false);
+                    form = HeredocOpenerForm::Backtick;
                     self.parse_quoted_heredoc_delimiter('`', &mut text)?
                 }
                 Some(c) if is_perl_identifier_start(c) => {
+                    form = if backslashed {
+                        HeredocOpenerForm::Backslash
+                    } else {
+                        HeredocOpenerForm::Bare
+                    };
                     // Bare word delimiter
                     let mut delim = String::new();
                     while self.position < self.input.len() {
@@ -1109,6 +1139,31 @@ impl<'a> PerlLexer<'a> {
             return None;
         };
 
+        let Some(operator_range) = HeredocByteRange::new(start, operator_end) else {
+            self.position = start;
+            return None;
+        };
+        let Some(raw_label_range) = HeredocByteRange::new(raw_label_start, self.position) else {
+            self.position = start;
+            return None;
+        };
+        let Some(opener_range) = HeredocByteRange::new(start, self.position) else {
+            self.position = start;
+            return None;
+        };
+        if !self.input.is_char_boundary(start)
+            || !self.input.is_char_boundary(operator_end)
+            || !self.input.is_char_boundary(raw_label_start)
+            || !self.input.is_char_boundary(self.position)
+        {
+            self.position = start;
+            return None;
+        }
+        let Some(raw_label_spelling) = raw_label_range.slice(self.input).map(Arc::from) else {
+            self.position = start;
+            return None;
+        };
+
         // For now, return a placeholder token
         // The actual heredoc body would be parsed later when we encounter it
         self.mode = LexerMode::ExpectOperator;
@@ -1123,16 +1178,29 @@ impl<'a> PerlLexer<'a> {
             });
         }
 
-        // Queue the heredoc spec with its label. `interpolates` follows the
-        // #8779 disposition: bareword and `<<"EOF"` bodies interpolate;
-        // `<<'EOF'`, `<<\EOF`, and backtick bodies do not.
-        let interpolates = !backslashed && quoted_interpolates.unwrap_or(true);
-        self.pending_heredocs.push(HeredocSpec {
-            label: Arc::from(delimiter.as_str()),
-            body_start: 0, // Will be set when we see the newline after this line
-            allow_indent,
-            interpolates,
+        // Queue the complete admission identity (#13502). Scanner fields stay
+        // the existing label/body_start/allow_indent/interpolates projection.
+        let content = self
+            .content_digest
+            .get_or_init(|| crate::checkpoint::compute_content_digest(self.input))
+            .clone();
+        let identity = HeredocQueueIdentity::admitted(HeredocAdmission {
+            ordinal: self.next_heredoc_ordinal,
+            source: HeredocAdmittedSource::snapshot(
+                self.logical_source.clone(),
+                content,
+                self.generation.clone(),
+            ),
+            opener_range,
+            operator_range,
+            operator,
+            raw_label_range,
+            raw_label_spelling,
+            decoded_label: Arc::from(delimiter.as_str()),
+            form,
         });
+        self.next_heredoc_ordinal = self.next_heredoc_ordinal.saturating_add(1);
+        self.pending_heredocs.push(HeredocSpec::from_identity(identity));
 
         Some(Token {
             token_type: TokenType::HeredocStart,
