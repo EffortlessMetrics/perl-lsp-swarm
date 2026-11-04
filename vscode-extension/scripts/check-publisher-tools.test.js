@@ -14,6 +14,7 @@ void test('publisher CLIs resolve from exact local dependencies without network 
       { packageName: 'ovsx', executable: 'ovsx' },
     ],
   );
-  for (const tool of tools) assert.equal(tool.reportedVersion, tool.expectedVersion);
+  // `verifyPublisherTools` itself throws when a reported version differs
+  // from the manifest pin, so version equality is enforced there, not here.
   for (const tool of tools) assert.match(tool.packagePath, /node_modules/);
 });
