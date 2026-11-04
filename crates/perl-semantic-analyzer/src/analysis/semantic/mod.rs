@@ -160,7 +160,7 @@ fn qualified_token_at(source: &str, offset: usize) -> Option<&str> {
     let is_token = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b':';
     let probe = if offset < bytes.len() && is_token(bytes[offset]) {
         offset
-    } else if offset > 0 && is_token(bytes[offset - 1]) {
+    } else if offset > 0 && bytes.get(offset - 1).is_some_and(|b| is_token(*b)) {
         offset - 1
     } else {
         return None;
@@ -1142,6 +1142,23 @@ sub fold {
             body_def.location.start, loop_offset,
             "body $x must resolve to the loop lexical, got: {body_def:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_definition_sourceless_constant_does_not_panic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Production references/rename paths build the sourceless analyzer
+        // (`SemanticAnalyzer::analyze`, empty source). A cursor on a
+        // `use constant` declaration reaches the qualified-token guard with
+        // offset > 0 against an empty byte slice; it must not panic.
+        let code = "use constant PI => 3;\nprint PI;\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze(&ast);
+        let decl_pos = code.find("PI").ok_or("constant not found")?;
+        let definition = analyzer.find_definition(decl_pos).ok_or("constant definition missing")?;
+        assert_eq!(definition.name, "PI");
         Ok(())
     }
 
