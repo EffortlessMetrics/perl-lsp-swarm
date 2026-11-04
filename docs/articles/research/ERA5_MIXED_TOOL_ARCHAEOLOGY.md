@@ -114,10 +114,10 @@ So the era is best described as a mixed-tool operating window with short swarm r
 
 ## 6. Evidence Pointers
 
-- [docs/project/AGENTIC_SWARM_ERA.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_SWARM_ERA.md)
-- [docs/articles/research/BLOG_MATERIAL_INDEX.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/BLOG_MATERIAL_INDEX.md)
-- [docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-- [docs/articles/research/SWARM_SURFACE_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
+- [docs/project/AGENTIC_SWARM_ERA.md](../../project/AGENTIC_SWARM_ERA.md)
+- [docs/articles/research/BLOG_MATERIAL_INDEX.md](BLOG_MATERIAL_INDEX.md)
+- [docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
+- [docs/articles/research/SWARM_SURFACE_EVOLUTION.md](SWARM_SURFACE_EVOLUTION.md)
 - `.claude/README.md`
 
 Key commits:

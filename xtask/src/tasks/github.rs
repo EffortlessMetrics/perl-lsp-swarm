@@ -73,6 +73,33 @@ pub fn candidate_facts(pr: u64) -> Result<CandidateFacts> {
     collect_candidate(pr)
 }
 
+/// Current repository slug (`owner/name`) for factual GitHub instruments.
+pub fn repository_name_with_owner() -> Result<String> {
+    Ok(command_text("gh", &["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])?
+        .trim()
+        .to_string())
+}
+
+/// Resolve a branch or tag name to its commit SHA via the GitHub REST API.
+pub fn resolve_git_ref_head_sha(repository: &str, git_ref: &str) -> Result<String> {
+    let encoded = encode_path_segment(git_ref);
+    let endpoint = format!("repos/{repository}/commits/{encoded}");
+    let raw = command_text("gh", &["api", &endpoint, "--jq", ".sha"])?;
+    let sha = raw.trim();
+    if sha.is_empty() {
+        bail!("GitHub returned an empty head SHA for ref {git_ref}");
+    }
+    Ok(sha.to_string())
+}
+
+/// Discover required merge contexts for a base ref (branch protection + rulesets).
+pub fn required_contexts_for_base(
+    repository: &str,
+    base_ref: &str,
+) -> Result<Vec<RequiredContext>> {
+    collect_required_contexts(repository, base_ref)
+}
+
 pub fn run_candidate(
     pr: u64,
     expected_head: Option<String>,
