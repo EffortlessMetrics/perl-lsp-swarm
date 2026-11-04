@@ -500,8 +500,7 @@ describe('transactional production activation (#7854)', () => {
     await activate(makeContext(extensionRoot));
 
     const registrations = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls;
-    // The health data source listens for file counts; no scaffold listener is registered.
-    expect(registrations).toHaveLength(1);
+    expect(registrations).toHaveLength(2);
     const createdFileEvent = { files: [vscode.Uri.file('/ws/lib/Wired.pm')] };
     for (const registration of registrations) {
       const onDidCreateFiles = registration[0] as (

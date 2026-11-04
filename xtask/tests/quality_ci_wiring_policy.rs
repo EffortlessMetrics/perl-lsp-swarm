@@ -1011,6 +1011,32 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             "coverage setup step `{setup_step}` must not carry PR routing conditions"
         );
     }
+    let coverage_proof_step =
+        must_some(workflow_step(coverage_job, "Run workspace coverage proof"));
+    assert!(
+        coverage_proof_step.contains("if:")
+            && coverage_proof_step
+                .contains("steps.coverage_route.outputs.coverage_required == 'true'")
+            && coverage_proof_step.contains("routing_classification == 'routing_skip'"),
+        "coverage proof must run for routed packs or baseline routing_skip nightly/manual runs"
+    );
+    let skipped_receipt_step =
+        must_some(workflow_step(coverage_job, "Emit skipped coverage proof receipt"));
+    assert!(
+        skipped_receipt_step.contains("if:")
+            && skipped_receipt_step
+                .contains("steps.coverage_route.outputs.coverage_required != 'true'")
+            && skipped_receipt_step.contains("routing_classification != 'routing_skip'"),
+        "skipped receipt must emit only when baseline proof does not run"
+    );
+    assert!(
+        skipped_receipt_step.contains("routing_bug") && skipped_receipt_step.contains("exit 1"),
+        "routing_bug must fail the job after writing the receipt"
+    );
+    assert!(
+        coverage_job.contains("routing_classification=$routing_classification"),
+        "coverage route must export routing_classification for proof gating"
+    );
     let codecov_upload_start = must_some(coverage_job.find("- name: Upload coverage to Codecov"));
     let enforced_coverage_steps = &coverage_job[..codecov_upload_start];
     let after_codecov_upload = &coverage_job[codecov_upload_start..];

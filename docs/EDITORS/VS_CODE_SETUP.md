@@ -709,6 +709,7 @@ those paths; omit either path when the project does not need it.
 
 ## See Also
 
+- [Competing Perl tooling (coexistence)](COEXISTENCE.md) - Bounded overlap detection and advisory remediation in VS Code
 - [Getting Started](../tutorials/GETTING_STARTED.md) - Quick start guide
 - [Configuration Reference](../reference/CONFIG.md) - Complete configuration options
 - [Troubleshooting Guide](../how-to/TROUBLESHOOTING.md) - Common issues and solutions
