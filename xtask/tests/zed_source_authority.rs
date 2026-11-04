@@ -607,7 +607,7 @@ fn a_tracked_file_is_still_unclassified_content() -> anyhow::Result<()> {
 /// output written afterwards.
 fn git_init_with_commit(root: &Path) -> anyhow::Result<()> {
     let git = |args: &[&str]| -> anyhow::Result<()> {
-        let status = std::process::Command::new("git")
+        let status = xtask::git_environment::isolate(std::process::Command::new("git"))
             .arg("-C")
             .arg(root)
             .args(args)

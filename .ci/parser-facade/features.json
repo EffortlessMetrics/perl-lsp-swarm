@@ -167,7 +167,7 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "isolation": "source_only",
+      "isolation": "taxonomy_only",
       "default": true,
       "exit_condition": "Remove from broad defaults and retain only through explicit product composition."
     },
@@ -177,7 +177,7 @@
       "disposition": "gate",
       "owner": "#2477",
       "target_owner": "#7063",
-      "isolation": "source_only",
+      "isolation": "taxonomy_only",
       "default": false,
       "exit_condition": "Move modernization composition behind an explicit product feature or owner."
     },

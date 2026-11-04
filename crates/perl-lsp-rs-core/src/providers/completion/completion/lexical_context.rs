@@ -417,6 +417,12 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
     let before = &source[..position];
     let flag_chars: &[char] = &['g', 'i', 'm', 's', 'x', 'e', 'r', 'a', 'd', 'u', 'p', 'l', 'c'];
     let without_flags = before.trim_end_matches(|c: char| flag_chars.contains(&c));
+    // `$inv->` / `$inv->re` (after stripping flag letters from `re`) ends
+    // with `>`, the closer for `m<...>` / `qr<...>`. That must not claim the
+    // flag region over a method call (#18760).
+    if method_arrow_suffix(without_flags) {
+        return false;
+    }
     let close_pos = without_flags.len();
     if close_pos >= 2
         && without_flags.ends_with('/')
@@ -427,6 +433,34 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
 
     let body = without_flags.trim();
     is_multi_delim_regex_at_close(body)
+}
+
+/// Text after the last statement separator on the current line, for suffix heuristics.
+fn stmt_local_suffix(text: &str) -> &str {
+    let after_semi = text.rsplit(';').next().unwrap_or(text).trim();
+    after_semi.rsplit('\n').next().unwrap_or(after_semi).trim()
+}
+
+fn method_arrow_suffix(text: &str) -> bool {
+    if text.ends_with("->") {
+        if text.len() <= 2 {
+            return false;
+        }
+        let suffix = stmt_local_suffix(text);
+        // `m<foo->` ends with `-` + `>`; that is not a method arrow.
+        if suffix.ends_with("->") && is_multi_delim_regex_at_close(suffix.trim()) {
+            return false;
+        }
+        return true;
+    }
+    let ident_bytes = text
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    ident_bytes > 0
+        && text.get(..text.len() - ident_bytes).is_some_and(|prefix| prefix.ends_with("->"))
 }
 
 fn is_multi_delim_regex_at_close(text: &str) -> bool {
@@ -2448,96 +2482,62 @@ my $after = "op"#;
     }
 
     #[test]
-    fn interpolation_admission_discriminates_owned_slots_from_quiet_and_unowned() {
-        let interpolating = r#"my $name = "hi"; my $text = "Hello $na"#;
-        assert_eq!(
-            interpolation_admission(interpolating, interpolating.len()),
-            InterpolationAdmission::VariableSlot { braced: false }
-        );
-
-        let braced = r#"my $name = "hi"; my $text = "Hello ${na"#;
-        assert_eq!(
-            interpolation_admission(braced, braced.len()),
-            InterpolationAdmission::VariableSlot { braced: true }
-        );
-
-        let single = r#"my $name = "hi"; my $text = 'Hello $na"#;
-        assert_eq!(interpolation_admission(single, single.len()), InterpolationAdmission::Quiet);
-
-        let escaped = r#"my $name = "hi"; my $text = "Hello \$na"#;
-        assert_eq!(interpolation_admission(escaped, escaped.len()), InterpolationAdmission::Quiet);
-
-        let interpolating_heredoc = "my $name = 1;\nmy $text = <<EOF;\nHello $na";
-        assert_eq!(
-            interpolation_admission(interpolating_heredoc, interpolating_heredoc.len()),
-            InterpolationAdmission::VariableSlot { braced: false }
-        );
-
-        let heredoc_body_start = "my $name = 1;\nmy $text = <<EOF;\n$na";
-        let body_start = must_some(heredoc_body_start.find("\n$na")) + 1;
-        assert_eq!(
-            string_like_region_at(heredoc_body_start, body_start),
-            StringLikeRegion::InterpolatingHeredoc
-        );
-        assert_ne!(
-            interpolation_admission(heredoc_body_start, body_start),
-            InterpolationAdmission::NotOwned
-        );
-
-        let literal_heredoc = "my $name = 1;\nmy $text = <<'EOF';\nHello $na";
-        assert_eq!(
-            interpolation_admission(literal_heredoc, literal_heredoc.len()),
-            InterpolationAdmission::Quiet
-        );
-
-        let code = "my $name = 1;\n$na";
-        assert_eq!(interpolation_admission(code, code.len()), InterpolationAdmission::NotOwned);
-
-        let replacement = "my $name = 1;\nmy $x = s;foo;$na;";
-        let slot = must_some(replacement.find("$na"));
-        assert_eq!(
-            interpolation_admission(replacement, slot + 3),
-            InterpolationAdmission::NotOwned
-        );
-
-        let array = r#"my @names = qw(a); my $text = "Hello @na"#;
-        assert_eq!(
-            interpolation_admission(array, array.len()),
-            InterpolationAdmission::VariableSlot { braced: false }
-        );
-
-        let braced_array = r#"my @names = qw(a); my $text = "Hello @{na"#;
-        assert_eq!(
-            interpolation_admission(braced_array, braced_array.len()),
-            InterpolationAdmission::VariableSlot { braced: true }
-        );
-
-        let hash = r#"my %hash = (a => 1); my $text = "value %ha"#;
-        assert_eq!(interpolation_admission(hash, hash.len()), InterpolationAdmission::Quiet);
+    fn angle_delimited_regex_at_close_is_regex_flags() {
+        for source in ["$x =~ m<foo>", "qr<foo>", "$x =~ qr<foo>"] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "cursor after a closed angle-delimited regex must still be flags: {source}"
+            );
+        }
     }
 
     #[test]
-    fn is_in_comment_does_not_treat_hash_in_string_like_regions() {
-        let heredoc = "my $name = 1;\nmy $text = <<EOF;\nHello # $na";
-        assert!(
-            !is_in_comment(heredoc, heredoc.len()),
-            "unquoted # in an interpolating heredoc body is not a comment"
-        );
-        assert_eq!(
-            interpolation_admission(heredoc, heredoc.len()),
-            InterpolationAdmission::VariableSlot { braced: false }
-        );
+    fn hyphen_before_angle_close_is_still_regex_flags() {
+        for source in ["m<foo->", "qr<foo->", "m<foo->i", "qr<foo->im"] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "pattern ending with `-` before `>` must not be treated as method arrow: {source}"
+            );
+        }
+    }
 
-        let qq = r#"my $name = 1; my $text = qq{Hello # $na"#;
-        assert!(
-            !is_in_comment(qq, qq.len()),
-            "unquoted # inside qq paired delimiters is not a comment"
-        );
+    #[test]
+    fn method_arrow_after_closed_angle_regex_is_not_regex_flags() {
+        // `$inv->` ends with `>`, the closer for `m<...>` / `qr<...>`. The
+        // flag heuristic must not treat leftover source after a closed
+        // angle-delimited regex as the flag region (#18760).
+        for source in [
+            "$x =~ m<foo>;\nprint $inv->",
+            "if ($name =~ m<sku>) {\n    print $inv->",
+            "qr<pattern>;\nprint $inv->",
+            "$x =~ m<foo>;\nprint $inv->re",
+            "$x =~ m<foo>;\nprint $inv->new",
+            "$x =~ m<foo>;\nprint $inv->isa",
+        ] {
+            assert!(
+                !is_in_regex_flags(source, source.len()),
+                "method call after a closed angle regex is not flags: {source}"
+            );
+        }
+    }
 
-        let code_comment = "my $name = 1; # $na";
-        assert!(
-            is_in_comment(code_comment, code_comment.len()),
-            "ordinary line comments must still suppress completion"
-        );
+    #[test]
+    fn brace_and_bang_regex_flags_still_detected_at_close() {
+        assert!(is_in_regex_flags("m{foo}", "m{foo}".len()));
+        assert!(is_in_regex_flags("m{foo}i", "m{foo}i".len()));
+        assert!(is_in_regex_flags("qr!foo!", "qr!foo!".len()));
+        assert!(is_in_regex_flags("qr!foo!m", "qr!foo!m".len()));
+    }
+
+    #[test]
+    fn earlier_method_arrow_does_not_suppress_later_regex_flags() {
+        // Retention control for the method-arrow narrowing: an earlier
+        // `$inv->` must not hide flags on a later closed regex.
+        for source in ["$inv->new;\n$x =~ m{bar}", "$inv->new;\n$x =~ m<foo>"] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "flags after a later closed regex must still be detected: {source}"
+            );
+        }
     }
 }

@@ -236,6 +236,12 @@ fn collect_explicit_import_names(
     };
 
     for name in names {
+        // Dash-prefixed words are Sub::Exporter group requests or import flags,
+        // not literal symbol names (#14532). Tag expansion happens in
+        // `collect_import_tags` when the exporter declares a matching group.
+        if name.starts_with('-') {
+            continue;
+        }
         result.push(VisibleSymbol {
             name: name.clone(),
             entity_id: None,
@@ -252,17 +258,33 @@ fn collect_import_tags(
     import_export_index: &ImportExportIndex,
     context: &VisibleSymbolContext,
 ) {
-    let tag_names = match &import.symbols {
-        ImportSymbols::Tags(tags) => tags.as_slice(),
-        ImportSymbols::Mixed { tags, .. } => tags.as_slice(),
-        _ => return,
-    };
-
     let Some(export_set) = import_export_index.get_exports_for_module(&import.module) else {
         return;
     };
 
-    for tag_name in tag_names {
+    let mut tag_names: Vec<String> = match &import.symbols {
+        ImportSymbols::Tags(tags) => tags.clone(),
+        ImportSymbols::Mixed { tags, .. } => tags.clone(),
+        ImportSymbols::Explicit(_) => Vec::new(),
+        _ => return,
+    };
+
+    let explicit_names = match &import.symbols {
+        ImportSymbols::Explicit(names) => names.as_slice(),
+        ImportSymbols::Mixed { names, .. } => names.as_slice(),
+        _ => &[],
+    };
+
+    for name in explicit_names {
+        let Some(group) = name.strip_prefix('-') else {
+            continue;
+        };
+        if export_set.tags.iter().any(|tag| tag.name == group) {
+            tag_names.push(group.to_string());
+        }
+    }
+
+    for tag_name in &tag_names {
         for tag in &export_set.tags {
             if tag.name != *tag_name {
                 continue;
@@ -669,6 +691,94 @@ mod tests {
             Some("HIR::SubExporter")
         );
         assert!(visible_names(&symbols).contains(&"defaulted"));
+        Ok(())
+    }
+
+    #[test]
+    fn dash_prefixed_export_groups_reach_importer_visible_set_14532()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let exporter = lower_hir_source(
+            "package HIR::E;\n\
+             use Sub::Exporter -setup => {\n\
+                 exports => [ qw(foo bar) ],\n\
+                 groups  => { tools => [ qw(foo) ] },\n\
+             };\n",
+        );
+        let export_set = exporter
+            .stash_graph
+            .export_sets()
+            .into_iter()
+            .find(|set| set.module_name.as_deref() == Some("HIR::E"))
+            .ok_or("expected HIR::E export set")?;
+        assert!(
+            export_set.tags.iter().any(|tag| tag.name == "tools"),
+            "Sub::Exporter -setup groups must lower to ExportTag (#14530): {:?}",
+            export_set.tags
+        );
+
+        let mut index = ImportExportIndex::new();
+        index.add_module_exports("file:///lib/HIR/E.pm", "HIR::E", export_set);
+
+        let mut visible_for_import =
+            |import_list: &str,
+             file_id: FileId|
+             -> Result<Vec<VisibleSymbol>, Box<dyn std::error::Error>> {
+                let importer_source =
+                    format!("package HIR::Consumer;\nuse HIR::E {import_list};\nfoo();\nbar();\n");
+                let importer = lower_hir_source(&importer_source);
+                let shard = empty_shard(file_id);
+                let import_specs = importer.compile_environment.import_specs(file_id);
+                index.add_file_imports("file:///lib/HIR/Consumer.pm", file_id, import_specs);
+                let after_import =
+                    importer_source.find("foo();").ok_or("expected post-import call")? as u32;
+                Ok(visible_symbols_at(file_id, after_import, None, &shard, &index))
+            };
+
+        let dash_tools = visible_for_import("qw(-tools)", FileId(14_532))?;
+        visible_symbol(&dash_tools, "foo", VisibleSymbolSource::ExportTag)?;
+        assert!(
+            !visible_names(&dash_tools).contains(&"-tools"),
+            "dash group spelling must not publish the literal prefix: {:?}",
+            visible_names(&dash_tools)
+        );
+
+        let colon_tools = visible_for_import("qw(:tools)", FileId(14_533))?;
+        let dash_names: Vec<String> =
+            visible_names(&dash_tools).into_iter().map(str::to_string).collect();
+        let colon_names: Vec<String> =
+            visible_names(&colon_tools).into_iter().map(str::to_string).collect();
+        assert_eq!(dash_names, colon_names, ":tools and -tools must match");
+
+        let mixed = visible_for_import("qw(-tools bar)", FileId(14_534))?;
+        visible_symbol(&mixed, "foo", VisibleSymbolSource::ExportTag)?;
+        visible_symbol(&mixed, "bar", VisibleSymbolSource::ExplicitImport)?;
+
+        let nosuch = visible_for_import("qw(-nosuchgroup)", FileId(14_535))?;
+        assert!(
+            visible_names(&nosuch).is_empty(),
+            "unknown dash group must not invent symbols: {:?}",
+            visible_names(&nosuch)
+        );
+
+        let parent_source = "package HIR::Child;\nuse parent qw(-norequire Foo::Base);\n1;\n";
+        let parent = lower_hir_source(parent_source);
+        let parent_file_id = FileId(14_536);
+        let parent_shard = empty_shard(parent_file_id);
+        let mut parent_index = ImportExportIndex::new();
+        let parent_import_specs = parent.compile_environment.import_specs(parent_file_id);
+        parent_index.add_file_imports(
+            "file:///lib/HIR/Child.pm",
+            parent_file_id,
+            parent_import_specs,
+        );
+        let parent_symbols =
+            visible_symbols_at(parent_file_id, 1, None, &parent_shard, &parent_index);
+        let parent_names = visible_names(&parent_symbols);
+        assert!(
+            !parent_names.contains(&"-norequire") && !parent_names.contains(&"norequire"),
+            "parent -norequire flag must not become an imported visible symbol: {parent_names:?}"
+        );
+
         Ok(())
     }
 
