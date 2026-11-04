@@ -10,7 +10,7 @@ use perl_lsp_rs_core::runtime::launcher::{
     catalog_advertised_feature_ids, help_text, logging_filter, parse_args, should_enable_logging,
     to_json_for_profile,
 };
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_err_with};
 use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
 
@@ -795,9 +795,7 @@ fn error_display_invalid_port() {
 
     for case in cases {
         let result = parse_args(case.argv.iter().copied());
-        let Err(err) = result else {
-            panic!("argv {argv:?} must be rejected", argv = case.argv);
-        };
+        let err = must_err_with(result, format!("argv {:?} must be rejected", case.argv));
         let msg = err.to_string();
         assert!(
             msg.contains(case.raw_echo),
