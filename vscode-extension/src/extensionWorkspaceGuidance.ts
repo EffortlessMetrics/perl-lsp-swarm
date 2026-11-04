@@ -895,10 +895,9 @@ export async function suggestAiCompletionIfSupported(
     );
     try {
       await context.workspaceState.update(stateKey, true);
-    } catch (error: unknown) {
+    } catch {
       // A failed receipt can allow a later re-offer, but must not discard the
       // choice the user has already made in this prompt.
-      console.warn('Perl LSP: could not persist AI completion prompt receipt:', error);
     }
 
     if (choice === 'Enable') {

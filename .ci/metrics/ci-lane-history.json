@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "generated_at": "2026-09-28T05:32:40Z",
+  "content_digest": "e420c927a96950a160070c31c12d2b40c8638814239ab42070e567ba1d0bb951",
   "window_days": 14,
   "min_samples_for_learned": 5,
   "lane_count": 26,
