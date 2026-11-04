@@ -7,6 +7,7 @@
 
 mod check;
 mod derive;
+mod gate_control;
 mod model;
 mod overrides;
 mod render;

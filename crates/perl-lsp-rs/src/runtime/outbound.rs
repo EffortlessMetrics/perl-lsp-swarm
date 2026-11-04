@@ -188,7 +188,27 @@ impl WriterCompletion {
         // so `failed` must never be observable before the outcome it
         // promises. The `Release` store below and the snapshot's `Acquire`
         // load give that snapshot its happens-before edge.
-        *self.outcome.lock() = Some(outcome);
+        let mut slot = self.outcome.lock();
+        let store = match slot.as_ref() {
+            // First causal I/O failure is sticky (#8088 / #8402).
+            Some(existing) if existing.is_io_failure() => false,
+            // A settled normal close must not be rewritten by a duplicate
+            // terminal transition.
+            Some(_) if !outcome.is_io_failure() => false,
+            None => {
+                *slot = Some(outcome);
+                true
+            }
+            Some(_) => {
+                // A later sink I/O failure still dominates normal close.
+                *slot = Some(outcome);
+                true
+            }
+        };
+        if !store {
+            return;
+        }
+        drop(slot);
         if io_failure {
             self.failed.store(true, Ordering::Release);
             self.failure_notify.notify_waiters();
@@ -1347,6 +1367,32 @@ pub(crate) mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Err(io::Error::new(self.flush_kind, "controlled flush failure (#8402)"))
         }
+    }
+
+    #[test]
+    fn writer_completion_rejects_duplicate_terminal_publish() {
+        let completion = Arc::new(WriterCompletion::default());
+        let first = WriterTerminalOutcome::WriteFailed {
+            kind: io::ErrorKind::ConnectionAborted,
+            queued: 2,
+            batch_messages: 1,
+            batch_bytes: 16,
+        };
+        completion.publish(first.clone());
+        completion.publish(WriterTerminalOutcome::NormalClose);
+        completion.publish(WriterTerminalOutcome::FlushFailed {
+            kind: io::ErrorKind::BrokenPipe,
+            queued: 0,
+            batch_messages: 1,
+            batch_bytes: 8,
+        });
+
+        let retained = completion.outcome.lock().clone();
+        assert_eq!(
+            retained,
+            Some(first),
+            "duplicate terminal publish must not overwrite the first causal I/O failure"
+        );
     }
 
     /// #8402: a forced `write_all` failure must surface as the typed
