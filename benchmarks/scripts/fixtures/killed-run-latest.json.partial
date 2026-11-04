@@ -1,0 +1,12 @@
+{
+  "version": "0.9.0",
+  "timestamp": "2026-10-22T00:00:00Z",
+  "git_sha": "killed-run-fixture",
+  "git_dirty": false,
+  "environment": {
+    "os": "Linux",
+    "rust_version": "rustc fixture",
+    "quick_mode": true
+  },
+  "results": {
+    "parser": {

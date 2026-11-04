@@ -1949,3 +1949,55 @@ fn test_malformed_rename_requests_are_invalid_params_not_refusals() -> TestResul
 
     Ok(())
 }
+
+/// A native `class` name must refuse at `prepareRename` like a `package` name.
+///
+/// Class rename is not implemented, and before this guard the server answered
+/// `prepareRename` on `class Widget` with a range and a `"Widget"` placeholder
+/// — so the editor opened a rename box — and then answered `rename` itself
+/// with `null`. That is the #9827 mismatch in its class form: an advertised
+/// rename that will not be performed.
+#[test]
+fn test_class_rename_is_refused_rather_than_silently_dropped() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let uri = "file:///Widget.pm";
+    harness.open(
+        uri,
+        "use feature 'class';\nclass Widget {\n  method greet { return 1; }\n}\nmy $w = Widget->new();\n",
+    )?;
+
+    // `Widget` starts at character 6 on line 1 (`class Widget {`).
+    let prepared = answered_result(
+        &raw_prepare_rename(&mut harness, uri, 1, 8),
+        "prepareRename on a class name",
+    )?;
+    assert_eq!(
+        prepared,
+        Value::Null,
+        "prepareRename must not offer a rename box on a class name; got: {prepared}"
+    );
+
+    let renamed = answered_result(&raw_rename(&mut harness, uri, 1, 8), "rename on a class name")?;
+    assert_not_an_empty_successful_edit(&renamed, "rename on a class name")?;
+    assert_eq!(
+        renamed,
+        Value::Null,
+        "rename on a class name must report the position as unavailable; got: {renamed}"
+    );
+
+    // Negative control: the refusal is bound to the class name specifically.
+    // A method in the very same class body still prepares.
+    let prepared_method = answered_result(
+        &raw_prepare_rename(&mut harness, uri, 2, 10),
+        "prepareRename on a method name",
+    )?;
+    assert_eq!(
+        prepared_method.get("placeholder").and_then(Value::as_str),
+        Some("greet"),
+        "method rename must still be advertised; got: {prepared_method}"
+    );
+
+    Ok(())
+}

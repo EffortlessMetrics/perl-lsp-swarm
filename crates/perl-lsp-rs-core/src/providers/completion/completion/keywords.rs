@@ -240,7 +240,7 @@ pub fn add_keyword_completions(
                 ))),
                 filter_text: Some(Cow::Borrowed(keyword)),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::for_authored_body(insert_text),
                 label_details: None,

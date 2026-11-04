@@ -1,5 +1,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(clippy, allow(missing_docs))]
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): census-clean on all targets; new findings move the crate back to non-C1.
 
 //! `perl-operation-trace` — the versioned `operation_trace.v1` contract:
 //! ephemeral operation identity, a closed operation-kind vocabulary, a

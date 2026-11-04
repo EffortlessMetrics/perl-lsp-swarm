@@ -7,7 +7,10 @@ use super::super::session_warning_dedup::SessionWarningCode;
 use super::super::*;
 use super::super::{LspServer, MessageType};
 use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter_cached};
-use perl_lsp_rs_core::config::WorkspaceConfig;
+use perl_lsp_rs_core::config::{
+    ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource, WorkspaceConfig,
+    WorkspaceConfigUpdateContext,
+};
 use perl_uri::uri_to_fs_path;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -220,6 +223,9 @@ impl LspServer {
         } else {
             SingleFileConfigDiscovery::not_searched()
         };
+        // Snapshot accumulated notification patches before locking folders.
+        // Rebuilding the project layer must not erase accepted client settings.
+        let client_settings = self.last_client_settings.lock().clone();
         let mut complete = true;
         let mut folders = self.workspace_folders.lock();
 
@@ -428,6 +434,31 @@ impl LspServer {
                                     }
                                 }
                             },
+                        );
+                    }
+                }
+
+                // Match notification precedence: init options < TOML < client
+                // patches, including missing or malformed TOML replacements.
+                if let Some(settings) = client_settings.as_ref() {
+                    let rejected =
+                        folder.effective_workspace_config.update_from_value_with_context(
+                            settings,
+                            WorkspaceConfigUpdateContext {
+                                workspace_root: Some(&folder_path),
+                                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                                    UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
+                                ),
+                            },
+                        );
+                    self.warn_rejected_client_include_paths(&rejected);
+                    for entry in rejected {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            folder_uri = %folder.uri,
+                            entry = %entry.entry,
+                            reason = %entry.render(),
+                            "rejected client includePaths entry"
                         );
                     }
                 }
@@ -1151,6 +1182,85 @@ include_paths = ["other_lib"]
         assert!(folder_state.project_config.is_none());
         // Should have default include paths
         assert!(!folder_state.effective_workspace_config.include_paths.is_empty());
+    }
+
+    #[test]
+    fn project_config_reload_preserves_client_workspace_patches() -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("project");
+        let peer = temp.path().join("peer");
+        std::fs::create_dir_all(folder.join("client_lib"))?;
+        std::fs::create_dir_all(peer.join("client_lib"))?;
+        let config_path = folder.join(".perl-lsp.toml");
+        std::fs::write(&config_path, "[perl]\ninclude_paths = [\"project_lib\"]\n")?;
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        let peer_uri = url::Url::from_directory_path(&peer)
+            .map_err(|()| anyhow::anyhow!("failed to create peer URI"))?
+            .to_string();
+        *server.root_path.lock() = Some(folder.clone());
+        *server.initialization_options_perl_settings.lock() = Some(serde_json::json!({
+            "workspace": { "includePaths": ["init_lib"], "resolutionTimeout": 111 }
+        }));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri.clone())
+                .with_path(folder.clone()),
+        );
+        assert!(server.load_and_apply_project_config());
+        let doc_uri = format!("{folder_uri}main.pl");
+        assert_eq!(
+            server
+                .config_for_doc(&doc_uri)
+                .ok_or_else(|| anyhow::anyhow!("missing config"))?
+                .include_paths,
+            vec!["project_lib"],
+            "without a client override the TOML layer must win over initialization options",
+        );
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "includePaths": ["client_lib"] } } }
+        })));
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "resolutionTimeout": 321 } } }
+        })));
+        let accepted = server
+            .config_for_doc(&doc_uri)
+            .ok_or_else(|| anyhow::anyhow!("missing accepted client config"))?;
+        assert_eq!(accepted.include_paths, vec!["client_lib"]);
+        assert_eq!(accepted.resolution_timeout_ms, 321);
+        let assert_client_settings = || -> anyhow::Result<()> {
+            for (uri, path) in [(&folder_uri, &folder), (&peer_uri, &peer)] {
+                let document = format!("{uri}main.pl");
+                let config = server
+                    .config_for_doc(&document)
+                    .ok_or_else(|| anyhow::anyhow!("missing config for {uri}"))?;
+                assert_eq!(config.include_paths, vec!["client_lib"]);
+                assert_eq!(config.resolution_timeout_ms, 321);
+                assert!(server.include_paths_for_doc(&document).contains(&path.join("client_lib")));
+            }
+            Ok(())
+        };
+        assert!(!server.client_capabilities.lock().workspace_configuration_support);
+        server.handle_did_change_workspace_folders(Some(serde_json::json!({
+            "event": { "added": [{ "uri": peer_uri, "name": "peer" }], "removed": [] }
+        })))?;
+        assert_client_settings()?;
+        for (contents, complete) in [
+            (Some("[perl]\ninclude_paths = [\"project_lib\"]\n"), true),
+            (Some("[perl"), false),
+            (Some("[perl]\ninclude_paths = [\"recovered_lib\"]\n"), true),
+            (None, true),
+        ] {
+            if let Some(contents) = contents {
+                std::fs::write(&config_path, contents)?;
+            } else {
+                std::fs::remove_file(&config_path)?;
+            }
+            assert_eq!(server.load_and_apply_project_config(), complete);
+            assert_client_settings()?;
+        }
+        Ok(())
     }
 
     #[test]

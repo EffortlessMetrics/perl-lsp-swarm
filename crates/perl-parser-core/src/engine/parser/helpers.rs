@@ -72,10 +72,11 @@ impl<'a> Parser<'a> {
         // Identifier that starts with a sigil char (e.g. `$name`, `@items`)
         if next == TokenKind::Identifier
             && let Ok(t) = self.tokens.peek_second()
-                && let Some(ch) = t.text.chars().next()
-                    && matches!(ch, '$' | '@' | '%' | '*' | '&') {
-                        return true;
-                    }
+            && let Some(ch) = t.text.chars().next()
+            && matches!(ch, '$' | '@' | '%' | '*' | '&')
+        {
+            return true;
+        }
 
         false
     }
@@ -215,10 +216,7 @@ impl<'a> Parser<'a> {
     /// that aliases `&mut Parser`. Depth is unwound on success, parse error,
     /// recovery, cancellation, exhaustion (never entered), and early return.
     #[inline]
-    fn with_depth<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> ParseResult<T>,
-    ) -> ParseResult<T> {
+    fn with_depth<T>(&mut self, f: impl FnOnce(&mut Self) -> ParseResult<T>) -> ParseResult<T> {
         self.enter_production_depth()?;
         let result = f(self);
         self.exit_production_depth();
@@ -259,6 +257,13 @@ impl<'a> Parser<'a> {
         perl_lexer::builtins::builtin_signatures_phf::is_builtin(name)
             && !Self::is_nullary_builtin(name)
             && !Self::is_keyword_handled_builtin(name)
+    }
+
+    /// Expression builtins whose first argument is commonly a string/quote.
+    /// Used to admit nested list-operator calls such as `_croak sprintf qq{...}`
+    /// without treating `foo print "hi"` as a single call.
+    fn is_string_taking_expression_builtin(name: &str) -> bool {
+        matches!(name, "sprintf" | "join")
     }
 
     /// Strip `CORE::` prefix from a name and return the bare builtin name if it
@@ -457,6 +462,7 @@ impl<'a> Parser<'a> {
                 kind,
                 TokenKind::Dot
                     | TokenKind::Range
+                    | TokenKind::Ellipsis
                     | TokenKind::LeftShift
                     | TokenKind::RightShift
                     | TokenKind::BitwiseAnd
@@ -648,11 +654,12 @@ impl<'a> Parser<'a> {
         }
         // The lexer sometimes emits variables as Identifier("$x") tokens
         if self.peek_kind() == Some(TokenKind::Identifier)
-            && let Ok(tok) = self.peek_token() {
-                return tok.text.starts_with('$')
-                    || tok.text.starts_with('@')
-                    || tok.text.starts_with('%');
-            }
+            && let Ok(tok) = self.peek_token()
+        {
+            return tok.text.starts_with('$')
+                || tok.text.starts_with('@')
+                || tok.text.starts_with('%');
+        }
         false
     }
 
@@ -808,10 +815,9 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                if !was_comma
-                    && let Some(last) = expressions.last_mut() {
-                        self.auto_quote_bareword_before_fat_comma(last)?;
-                    }
+                if !was_comma && let Some(last) = expressions.last_mut() {
+                    self.auto_quote_bareword_before_fat_comma(last)?;
+                }
                 self.consume_token()?; // consume =>
             }
 
@@ -1440,10 +1446,7 @@ impl<'a> Parser<'a> {
         self.flatten_qw_list_argument(node)
     }
 
-    fn flatten_qw_list_argument(
-        &mut self,
-        node: Node,
-    ) -> ParseResult<(Vec<Node>, SourceLocation)> {
+    fn flatten_qw_list_argument(&mut self, node: Node) -> ParseResult<(Vec<Node>, SourceLocation)> {
         match node.into_parts() {
             (NodeKind::ArrayLiteral { elements }, location) => Ok((elements, location)),
             (kind, location) => Ok((vec![self.charge_node(kind, location)?], location)),
@@ -1489,6 +1492,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::QuoteDouble
                         | TokenKind::QuoteCommand
                         | TokenKind::Number
+                        | TokenKind::Backslash
                 )
             }) {
                 return false;
@@ -1552,6 +1556,20 @@ impl<'a> Parser<'a> {
                 true
             }
             TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => true,
+
+            // `func \&name`, `func \@arr`, `func \\$x` — a reference-taking
+            // unary expression is a valid bare-call argument (upstream
+            // t/comp/proto.t: `testing \&no_proto, undef;`). Without this
+            // arm the call loses its argument uptake and the reference is
+            // left as same-line residue. An operand must follow: a bare
+            // `func \;` is not a call with a reference argument.
+            TokenKind::Backslash => self.tokens.peek_second().ok().is_some_and(|second| {
+                Self::is_sigil_argument_start(second.kind(), second.text.as_ref())
+                    || matches!(
+                        second.kind(),
+                        TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::LeftBracket
+                    )
+            }),
 
             // Imported Test::More-style helpers can take typeglob expressions
             // as list arguments. Keep this scoped to known helper names so
@@ -1637,16 +1655,39 @@ impl<'a> Parser<'a> {
                 //     croak ref(shift) . " is not a valid class"
                 //     confess ref($self) . "::new() is abstract"
                 //
+                // Pattern C (quote arg): `func sprintf qq{"%s"}, $arg`,
+                //   `func join ',', @list` — the builtin is a list operator whose
+                //   first argument is a string or quote-like. Without this, the
+                //   outer identifier is left as a bare term and the ternary colon
+                //   is reported as missing (`Test/Needs.pm`, #2721).
+                //
                 // Without the `LeftParen` check, the early-return here prevented
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
                 if Self::is_builtin_function(&next_text)
+                    && !self.is_declared_nullary_sub(name)
                     && let Ok(third) = self.tokens.peek_second()
                 {
                     let third_text: &str = &third.text;
                     if third.kind() == TokenKind::LeftParen {
                         // builtin(args) — the builtin is called with parens,
                         // producing a value that is the outer function's argument.
+                        return true;
+                    }
+                    // Quote/string first args prove a nested *expression* builtin
+                    // (`sprintf qq{...}`, `join ',', @list`). Statement-like
+                    // builtins (`print "hi"`) more often start the next
+                    // statement, so treating them as nested calls swallowed
+                    // genuine missing-semicolon diagnostics.
+                    if Self::is_string_taking_expression_builtin(&next_text)
+                        && matches!(
+                            third.kind(),
+                            TokenKind::String
+                                | TokenKind::QuoteSingle
+                                | TokenKind::QuoteDouble
+                                | TokenKind::QuoteCommand
+                        )
+                    {
                         return true;
                     }
                     return Self::is_sigil_argument_start(third.kind(), third_text);
