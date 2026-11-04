@@ -27,7 +27,12 @@ concurrency:
 jobs:
   package-contract:
     name: Sublime package contract
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: the contract tests run under Python 3.8,
+    # and actions/python-versions ships no 3.8 build newer than 24.04 because 3.8
+    # is end-of-life. ubuntu-latest moving to 26.04 therefore fails this job in
+    # setup-python before any test runs (#18390). Revisit when 24.04 retires, as
+    # a decision about whether 3.8 is still the target, not a silent bump.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

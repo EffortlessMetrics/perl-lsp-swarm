@@ -10,6 +10,9 @@ on:
       - "policy/release-tag-provenance.toml"
       - "scripts/check_release_history.sh"
       - "scripts/check_release_tag_provenance.py"
+      - "scripts/git_environment.py"
+      - "scripts/tests/test_git_environment.py"
+      - "scripts/tests/test_release_tag_provenance.py"
       - "scripts/tests/test_release_channel_actuals.py"
       - "scripts/test_release_build_identity.py"
       - "scripts/test_release_package_evidence.py"
@@ -25,6 +28,9 @@ on:
       - "policy/release-tag-provenance.toml"
       - "scripts/check_release_history.sh"
       - "scripts/check_release_tag_provenance.py"
+      - "scripts/git_environment.py"
+      - "scripts/tests/test_git_environment.py"
+      - "scripts/tests/test_release_tag_provenance.py"
       - "scripts/tests/test_release_channel_actuals.py"
       - "scripts/test_release_build_identity.py"
       - "scripts/test_release_package_evidence.py"
@@ -91,6 +97,10 @@ jobs:
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
+      - name: Setup release schema Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
       - name: Install pinned release schema dependencies
         run: python3 -m pip install -r scripts/requirements-release.txt
 

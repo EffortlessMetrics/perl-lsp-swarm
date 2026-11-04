@@ -89,6 +89,21 @@ fn a_bound_target_still_contributes_its_own_reads_beside_the_operator_count() {
         "a bound substitution must still lower its target into receipt-visible nodes"
     );
     assert_eq!(graph.receipt.schema_version, PIR_RECEIPT_VERSION);
+
+    // #14639: the emitted target fact is a modify, not a read, because the
+    // substitution writes back to $x.
+    let ops: Vec<String> = graph.nodes.iter().map(|n| format!("{:?}", n.operation)).collect();
+    assert!(
+        ops.iter().any(|op| op.contains("Modify")),
+        "a mutating substitution target must emit a Modify fact, got {ops:?}"
+    );
+    // /r leaves the target untouched, so its fact stays a read.
+    let graph = parse_and_lower("$x =~ s/a/b/r;");
+    let ops: Vec<String> = graph.nodes.iter().map(|n| format!("{:?}", n.operation)).collect();
+    assert!(
+        !ops.iter().any(|op| op.contains("Modify")),
+        "a /r substitution target must not emit a Modify fact, got {ops:?}"
+    );
 }
 
 #[test]

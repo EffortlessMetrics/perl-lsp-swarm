@@ -704,6 +704,7 @@ fn atomic_write(path: &Path, text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
     fn bundle() -> EvidenceBundle {
         let sha = "a".repeat(40);
         EvidenceBundle {
@@ -737,7 +738,7 @@ mod tests {
     }
     #[test]
     fn exact_populations_reconcile() {
-        let p = construct(&bundle()).unwrap();
+        let p = must_with(construct(&bundle()), "fixture bundle must construct");
         assert_eq!((p.cells[0].passed, p.cells[0].skipped, p.cells[0].expected), (1, 1, 2));
         assert_eq!(p.cells[0].verdict, "proven")
     }
@@ -745,7 +746,7 @@ mod tests {
     fn deleted_child_is_limited() {
         let mut e = bundle();
         e.cells[0].results.pop();
-        let p = construct(&e).unwrap();
+        let p = must_with(construct(&e), "mutated bundle must still construct");
         assert_eq!(p.cells[0].verdict, "limited");
         assert_eq!(p.cells[0].not_run, 1)
     }
@@ -757,26 +758,34 @@ mod tests {
         for row in &mut e.cells[0].results {
             row.outcome = Outcome::Skip;
         }
-        let p = construct(&e).unwrap();
+        let p = must_with(construct(&e), "mutated bundle must still construct");
         assert_eq!((p.cells[0].passed, p.cells[0].skipped), (0, 2));
         assert_eq!(p.cells[0].completeness, "complete");
         assert_eq!(p.cells[0].verdict, "limited");
         assert!(p.cells[0].limitations.iter().any(|l| l.contains("no population member passed")));
         // The deliberate contrast: skips beside at least one pass stay `proven`.
-        let p = construct(&bundle()).unwrap();
+        let p = must_with(construct(&bundle()), "fixture bundle must construct");
         assert_eq!(p.cells[0].verdict, "proven");
     }
     #[test]
     fn another_head_is_rejected() {
         let mut e = bundle();
         e.cells[0].results[0].subject_sha = "b".repeat(40);
-        assert!(construct(&e).unwrap_err().to_string().contains("cross-head"))
+        assert!(
+            must_err_with(construct(&e), "mutated bundle must be rejected")
+                .to_string()
+                .contains("cross-head")
+        )
     }
     #[test]
     fn mixed_run_is_rejected() {
         let mut e = bundle();
         e.cells[0].results[0].run_id = "copied-run".into();
-        assert!(construct(&e).unwrap_err().to_string().contains("mixed-run"))
+        assert!(
+            must_err_with(construct(&e), "mutated bundle must be rejected")
+                .to_string()
+                .contains("mixed-run")
+        )
     }
     #[test]
     fn count_verdict_disagreement_cannot_be_manufactured() {
@@ -786,19 +795,23 @@ mod tests {
     }
     #[test]
     fn stale_source_time_is_rejected() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-08-12T10:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let now = must_with(
+            chrono::DateTime::parse_from_rfc3339("2026-08-12T10:00:00Z"),
+            "fixture timestamp must parse",
+        )
+        .with_timezone(&chrono::Utc);
         assert!(
-            validate_freshness("2026-08-01T00:00:00Z", 24, now)
-                .unwrap_err()
-                .to_string()
-                .contains("stale evidence")
+            must_err_with(
+                validate_freshness("2026-08-01T00:00:00Z", 24, now),
+                "stale evidence must be rejected"
+            )
+            .to_string()
+            .contains("stale evidence")
         );
     }
 
     fn surface_fixture(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = must_with(tempfile::tempdir(), "temp dir");
         let contract = r#"
 schema_version = 1
 policy = "generated-status-contract"
@@ -826,11 +839,17 @@ begin_marker = "<!-- BEGIN: QUALITY_CRATE_TABLE -->"
 end_marker = "<!-- END: QUALITY_CRATE_TABLE -->"
 claim_boundary = "fixture"
 "#;
-        fs::write(dir.path().join("contract.toml"), contract).unwrap();
+        must_with(fs::write(dir.path().join("contract.toml"), contract), "write fixture contract");
         for (name, text) in files {
             let target = dir.path().join(name);
-            fs::create_dir_all(target.parent().unwrap()).unwrap();
-            fs::write(target, text).unwrap();
+            must_with(
+                fs::create_dir_all(must_some_with(
+                    target.parent(),
+                    "fixture target must have a parent directory",
+                )),
+                "create fixture directory",
+            );
+            must_with(fs::write(target, text), "write fixture surface");
         }
         let contract_path = dir.path().join("contract.toml");
         (dir, contract_path)
@@ -869,7 +888,8 @@ no data yet
             ("status/tests.md", TESTS_OK),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let checked = check_surfaces(dir.path(), &contract).unwrap();
+        let checked =
+            must_with(check_surfaces(dir.path(), &contract), "consistent surfaces must pass");
         assert_eq!(checked.len(), 3);
     }
 
@@ -880,7 +900,10 @@ no data yet
             ("status/tests.md", TESTS_OK),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("CONTRADICTORY"));
     }
 
@@ -898,7 +921,10 @@ no data yet
             ("status/tests.md", TESTS_OK),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("computes to 98% but 97% is rendered"));
     }
 
@@ -915,7 +941,8 @@ no data yet
             ("status/tests.md", TESTS_OK),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let checked = check_surfaces(dir.path(), &contract).unwrap();
+        let checked =
+            must_with(check_surfaces(dir.path(), &contract), "consistent surfaces must pass");
         assert_eq!(checked.len(), 3, "123/123 is internally consistent arithmetic");
         // …but it must still disagree with the real table. The guard for the
         // #6648 case is the headline/table comparison itself:
@@ -929,7 +956,10 @@ no data yet
             ("status/tests.md", TESTS_OK),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("CONTRADICTORY"));
     }
 
@@ -942,7 +972,10 @@ no data yet
             ("status/tests.md", TESTS_ZERO),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("0% beside PASS"));
     }
 
@@ -956,7 +989,10 @@ no data yet
             ("status/tests.md", TESTS_PARTIAL),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("88% beside PASS"));
         const TESTS_PARTIAL_RATIO: &str = "| **Tier A Tests** | 9000/10161 lib tests pass | PASS |
 ";
@@ -965,7 +1001,10 @@ no data yet
             ("status/tests.md", TESTS_PARTIAL_RATIO),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("9000/10161 beside PASS"));
     }
 
@@ -979,7 +1018,10 @@ no data yet
             ("status/tests.md", TESTS_BYPASS),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("BYPASS"));
     }
 
@@ -993,7 +1035,10 @@ no data yet
             ("status/tests.md", TESTS_BOTH),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("PASS and FAIL"));
     }
 
@@ -1006,7 +1051,10 @@ no data yet
             ("status/tests.md", TESTS_NO_EVIDENCE),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("no count, ratio, or percentage"));
     }
 
@@ -1024,14 +1072,18 @@ no data yet
             name: String,
             path: String,
         }
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-        let raw = fs::read_to_string(root.join("xtask/Cargo.toml")).unwrap();
-        let manifest: Manifest = toml::from_str(&raw).unwrap();
-        let target = manifest
-            .bin
-            .iter()
-            .find(|b| b.name == "generated-status-contract")
-            .expect("xtask must register a generated-status-contract bin target");
+        let root = must_some_with(
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent(),
+            "xtask manifest directory must have a workspace parent",
+        )
+        .to_path_buf();
+        let raw =
+            must_with(fs::read_to_string(root.join("xtask/Cargo.toml")), "read xtask manifest");
+        let manifest: Manifest = must_with(toml::from_str(&raw), "parse xtask manifest");
+        let target = must_some_with(
+            manifest.bin.iter().find(|b| b.name == "generated-status-contract"),
+            "xtask must register a generated-status-contract bin target",
+        );
         assert!(root.join("xtask").join(&target.path).is_file());
     }
 
@@ -1042,7 +1094,10 @@ no data yet
             ("status/tests.md", TESTS_BAD),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("CONTRADICTORY"));
     }
 
@@ -1053,7 +1108,10 @@ no data yet
             ("status/tests.md", TESTS_OK),
             ("status/quality.md", QUALITY_BAD),
         ]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("NOT_PROVEN"));
     }
 
@@ -1061,7 +1119,10 @@ no data yet
     fn a_missing_registered_surface_fails_closed() {
         let (dir, contract) =
             surface_fixture(&[("status/lsp.md", LSP_OK), ("status/tests.md", TESTS_OK)]);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("cannot read"));
     }
 
@@ -1083,7 +1144,7 @@ Counts are navigation only (#6731).
 ";
 
     fn containment_fixture(content: &str) -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = must_with(tempfile::tempdir(), "temp dir");
         let contract = r#"
 schema_version = 1
 policy = "generated-status-contract"
@@ -1096,9 +1157,12 @@ begin_marker = "<!-- BEGIN: LSP_COVERAGE -->"
 end_marker = "<!-- END: COMPLIANCE_TABLE -->"
 claim_boundary = "fixture"
 "#;
-        fs::write(dir.path().join("contract.toml"), contract).unwrap();
-        fs::create_dir_all(dir.path().join("status")).unwrap();
-        fs::write(dir.path().join("status/lsp.md"), content).unwrap();
+        must_with(fs::write(dir.path().join("contract.toml"), contract), "write fixture contract");
+        must_with(fs::create_dir_all(dir.path().join("status")), "create fixture status directory");
+        must_with(
+            fs::write(dir.path().join("status/lsp.md"), content),
+            "write fixture status surface",
+        );
         let contract_path = dir.path().join("contract.toml");
         (dir, contract_path)
     }
@@ -1106,7 +1170,8 @@ claim_boundary = "fixture"
     #[test]
     fn contained_navigation_surface_passes() {
         let (dir, contract) = containment_fixture(CONTAINED_LSP);
-        let checked = check_surfaces(dir.path(), &contract).unwrap();
+        let checked =
+            must_with(check_surfaces(dir.path(), &contract), "consistent surfaces must pass");
         assert_eq!(checked, vec!["lsp.claim_containment".to_string()]);
     }
 
@@ -1119,7 +1184,10 @@ claim_boundary = "fixture"
         );
         assert!(content.contains("PASS"));
         let (dir, contract) = containment_fixture(&content);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("passing verdict"));
     }
 
@@ -1130,7 +1198,10 @@ claim_boundary = "fixture"
         let content = CONTAINED_LSP.replace("**123** | **125**", "**123** | **125** | 98%");
         assert!(content.contains("98%"));
         let (dir, contract) = containment_fixture(&content);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("aggregate percentage 98%"));
     }
 
@@ -1144,7 +1215,10 @@ claim_boundary = "fixture"
         );
         assert!(!content.contains("not_proven"));
         let (dir, contract) = containment_fixture(&content);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("NOT_PROVEN marker is missing"));
     }
 
@@ -1152,7 +1226,10 @@ claim_boundary = "fixture"
     fn removed_containment_markers_fail_closed() {
         let content = "no generated regions here";
         let (dir, contract) = containment_fixture(content);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("containment markers are gone"));
     }
 
@@ -1160,19 +1237,25 @@ claim_boundary = "fixture"
     fn missing_selected_end_marker_fails_closed() {
         let content = CONTAINED_LSP.replace("<!-- END: COMPLIANCE_TABLE -->", "");
         let (dir, contract) = containment_fixture(&content);
-        let error = check_surfaces(dir.path(), &contract).unwrap_err();
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "contradictory surfaces must fail closed",
+        );
         assert!(format!("{error:#}").contains("no matching end marker"));
     }
 
     #[test]
     fn navigation_row_is_accepted_but_reintroduced_status_wording_is_not() {
         let (dir, contract) = containment_fixture(CONTAINED_LSP);
-        check_surfaces(dir.path(), &contract).unwrap();
+        must_with(check_surfaces(dir.path(), &contract), "consistent surfaces must pass");
 
         for forbidden in ["coverage", "compliance"] {
             let content = CONTAINED_LSP.replace("catalog rows below", forbidden);
             let (dir, contract) = containment_fixture(&content);
-            let error = check_surfaces(dir.path(), &contract).unwrap_err();
+            let error = must_err_with(
+                check_surfaces(dir.path(), &contract),
+                "contradictory surfaces must fail closed",
+            );
             assert!(
                 format!("{error:#}").contains("status wording"),
                 "reintroduced {forbidden} wording must fail closed"
@@ -1182,41 +1265,55 @@ claim_boundary = "fixture"
 
     #[test]
     fn committed_registry_surfaces_are_consistent() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-        let checked =
-            check_surfaces(&root, &root.join("policy/generated-status-contract.toml")).unwrap();
+        let root = must_some_with(
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent(),
+            "xtask manifest directory must have a workspace parent",
+        )
+        .to_path_buf();
+        let checked = must_with(
+            check_surfaces(&root, &root.join("policy/generated-status-contract.toml")),
+            "committed registry surfaces must be consistent",
+        );
         assert_eq!(checked.len(), 3);
     }
 
     #[test]
     fn bootstrap_evidence_never_hits_the_freshness_window() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-08-19T10:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let now = must_with(
+            chrono::DateTime::parse_from_rfc3339("2026-08-19T10:00:00Z"),
+            "fixture timestamp must parse",
+        )
+        .with_timezone(&chrono::Utc);
         assert!(
             enforce_evidence_class_freshness("bootstrap", "2026-08-12T00:00:00Z", 168, now).is_ok()
         );
         assert!(
-            enforce_evidence_class_freshness("live_run", "2026-08-12T00:00:00Z", 168, now)
-                .unwrap_err()
-                .to_string()
-                .contains("stale evidence")
+            must_err_with(
+                enforce_evidence_class_freshness("live_run", "2026-08-12T00:00:00Z", 168, now),
+                "stale live_run evidence must be rejected",
+            )
+            .to_string()
+            .contains("stale evidence")
         );
         assert!(
-            enforce_evidence_class_freshness("copied", "2026-08-19T09:00:00Z", 168, now)
-                .unwrap_err()
-                .to_string()
-                .contains("unknown evidence_class")
+            must_err_with(
+                enforce_evidence_class_freshness("copied", "2026-08-19T09:00:00Z", 168, now),
+                "unknown evidence_class must be rejected",
+            )
+            .to_string()
+            .contains("unknown evidence_class")
         );
     }
 
     #[test]
     fn copied_stale_markdown_fails_check() {
-        let d = tempfile::tempdir().unwrap();
+        let d = must_with(tempfile::tempdir(), "temp dir");
         let p = d.path().join("x.md");
-        fs::write(&p, "old projection").unwrap();
+        must_with(fs::write(&p, "old projection"), "write stale projection fixture");
         assert!(
-            check_file(&p, "new projection").unwrap_err().to_string().contains("stale or copied")
+            must_err_with(check_file(&p, "new projection"), "stale projection must be rejected")
+                .to_string()
+                .contains("stale or copied")
         )
     }
 }

@@ -93,7 +93,7 @@ probes, each reverted immediately after:
 - **Real error detection**: added `src/__ts7_watch_error_probe.ts` with a
   genuine type mismatch (`const x: number = 'not a number'`) — watcher
   reported `error TS2322: Type 'string' is not assignable to type
-'number'.` and "Found 1 error." Removed the file — watcher recompiled and
+  'number'.` and "Found 1 error." Removed the file — watcher recompiled and
   cleared back to "Found 0 errors." Confirms the watcher genuinely
   type-checks under TS7, not a stale pass-through. (File never committed.)
 

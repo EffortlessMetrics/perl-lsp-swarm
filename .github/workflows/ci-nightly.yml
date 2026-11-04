@@ -132,7 +132,10 @@ jobs:
 
   benchmark:
     name: Performance Benchmarks
-    timeout-minutes: 45
+    # Headroom above the measured full-target runtime: at 45 the job deadline
+    # landed mid-`native_pipeline_benchmark` (~46 min in) and cancelled the
+    # nightly before extraction, comparison, and receipts could run (#18350).
+    timeout-minutes: 75
     if: |
       (github.event_name == 'workflow_dispatch' && inputs.run_benchmarks) ||
       github.event_name == 'schedule' ||
@@ -173,6 +176,7 @@ jobs:
         python3 benchmarks/scripts/test_benchmark_targets.py -v
         bash benchmarks/scripts/test_run_benchmarks_parse.sh
         bash benchmarks/scripts/test_run_benchmarks_failure.sh
+        bash benchmarks/scripts/test_run_benchmarks_rustc_probe.sh
 
     - name: Build perllsp binary for real-repo UX perf lane
       run: cargo build -p perllsp --bin perllsp --locked
@@ -216,7 +220,7 @@ jobs:
         # | select(.kind == ["bench"])`) -- since this REPLACES the blanket
         # `cargo bench --workspace`, an omitted target here is silent
         # coverage loss the old command wouldn't have had. Verified against
-        # the current metadata (16 bench targets, all 16 listed below); if a
+        # the current metadata (17 bench targets, all 17 listed below); if a
         # new bench target is added to the workspace, add it here too.
         export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_SHA}"
         RUSTC_VV="$(rustc -vV)"
@@ -227,7 +231,7 @@ jobs:
         RUSTC_OS="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p' | cut -d- -f3)"
         export NATIVE_PIPELINE_TOOLCHAIN_TAG="rustc-${RUSTC_RELEASE}-${RUSTC_COMMIT_HASH}-${RUSTC_ARCH}-${RUSTC_OS}"
         declare -a BENCH_TARGETS=(
-          "perl-workspace:workspace_index_benchmark:workspace"
+          "perl-workspace:workspace_index_benchmark:"
           "perl-token:token_scorecard:"
           "perl-symbol:symbol_benchmarks:"
           "perl-pragma:pragma_benchmarks:"
@@ -238,6 +242,7 @@ jobs:
           "perl-parser:positions_bench:"
           "perl-parser:substitution_performance:"
           "perl-lsp-rs:rope_performance_benchmark:"
+          "perl-lsp-rs:lsp_stdio_roundtrip_benchmark:"
           "perl-lsp-perltidy:native_pipeline_benchmark:"
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"
@@ -721,14 +726,21 @@ jobs:
             --manifest .ci/coverage-packs.toml \
             --receipt target/receipts/quality/ci-route.json \
             --summary target/receipts/quality/ci-route.md
-          coverage_required="$(python3 -c 'import json; from pathlib import Path; route = json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")); print("true" if route.get("coverage_proof_packs") else "false")')"
+          coverage_required="$(python3 <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          route = json.loads(
+              Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")
+          )
+          schema = route.get("schema_version")
+          if schema != "ci-route.v1":
+              sys.exit(f"unsupported ci-route schema: {schema!r}")
+          print("true" if route.get("coverage_proof_packs") else "false")
+          PY
+          )"
           echo "coverage_required=$coverage_required" >> "$GITHUB_OUTPUT"
-          if [ "$coverage_required" != "true" ]; then
-            printf '# Patch Coverage Proof\n\n- decision: `skipped-by-policy`\n- reason: changed-file routing selected no LCOV coverage proof packs\n' \
-              > target/receipts/quality/quality-gate-coverage.md
-            printf '{"schema_version":"quality_gate.v1","mode":"enforce-patch-coverage","decision":"skipped-by-policy","reason":"changed-file routing selected no LCOV coverage proof packs"}\n' \
-              > target/receipts/quality/quality-gate-coverage.json
-          fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # nightly (master)
@@ -769,6 +781,22 @@ jobs:
           git fetch --no-tags --depth=200 origin "$base_ref" || true
           just coverage-proof "origin/$base_ref"
 
+      - name: Emit skipped coverage proof receipt
+        if: always() && steps.coverage_route.outputs.coverage_required != 'true'
+        run: |
+          set -euo pipefail
+          routing_classification="$(python3 -c 'import json; from pathlib import Path; print(json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8"))["routing_classification"])')"
+          decision="skipped-by-policy"
+          reason="changed-file routing selected no LCOV coverage proof packs"
+          if [ "$routing_classification" = "routing_bug" ]; then
+            decision="routing_bug"
+            reason="LCOV source changed but no LCOV coverage proof pack was selected"
+          fi
+          printf '# Patch Coverage Proof\n\n- decision: `%s`\n- reason: %s\n' "$decision" "$reason" \
+            > target/receipts/quality/quality-gate-coverage.md
+          printf '{"schema_version":"quality_gate.v1","mode":"enforce-patch-coverage","decision":"%s","reason":"%s"}\n' "$decision" "$reason" \
+            > target/receipts/quality/quality-gate-coverage.json
+
       - name: Append coverage proof summary
         if: always()
         shell: bash
@@ -798,7 +826,7 @@ jobs:
         if: |
           env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/lcov.info
@@ -1199,7 +1227,10 @@ jobs:
   fuzz:
     name: Fuzz Target (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 600s fuzz budget plus cold toolchain/cargo-fuzz build headroom, so the
+    # job deadline cannot land inside the fuzz run and eat the crash-artifact
+    # upload window (#17028).
+    timeout-minutes: 30
     if: |
       (github.event_name == 'workflow_dispatch' && inputs.run_fuzz) ||
       github.event_name == 'schedule'
@@ -1256,8 +1287,11 @@ jobs:
         DURATION=600
         ./scripts/fuzz-bounded --duration "$DURATION" -- ${{ matrix.target }}
 
+    # Upload on cancellation as well as failure: a crash found just before
+    # the job timeout concludes `cancelled`, which `failure()` never matches,
+    # and the reproducer was lost with the job (#17028).
     - name: Upload crash artifacts
-      if: failure()
+      if: ${{ failure() || cancelled() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: fuzz-artifacts-${{ matrix.target }}-${{ github.sha }}
