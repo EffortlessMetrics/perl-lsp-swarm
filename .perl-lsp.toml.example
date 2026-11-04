@@ -120,13 +120,16 @@
 # Add trailing commas (default: false).
 # perltidy_add_trailing_commas = false
 
-# Vertical alignment (default: true).
+# Vertical alignment (default: true). External legacy formatter only;
+# the native formatter ignores this and warns when it is set.
 # perltidy_vertical_alignment = true
 
-# Block comment indentation (default: 0).
+# Block comment indentation (default: 0). External legacy formatter only;
+# the native formatter ignores this and warns when it is set.
 # perltidy_block_comment_indentation = 0
 
-# Extra perltidy arguments (default: []).
+# Extra perltidy arguments (default: []). External legacy formatter only;
+# the native formatter ignores these and warns when they are set.
 # perltidy_extra_args = ["--no-check-syntax"]
 
 # Timeout in seconds (default: 10).

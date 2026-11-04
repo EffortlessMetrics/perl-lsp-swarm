@@ -38,17 +38,6 @@ export interface HealthCheckResult {
 // Startup failure classifier
 // ---------------------------------------------------------------------------
 
-/**
- * User-facing message surfaced when Perl interpreter is not found.
- * Shown instead of the generic "Restart the server" message so the user
- * immediately knows the root cause and what to do.
- */
-export const PERL_MISSING_MESSAGE =
-  'Perl interpreter not found on PATH. ' +
-  'Install Perl 5.10+ (Windows: Strawberry Perl at https://strawberryperl.com/, macOS: `brew install perl`, Linux: use your distro package manager) ' +
-  'and reload the window. ' +
-  'For module resolution, you can also configure include paths in `.perl-lsp.toml` under `[perl] include_paths`.';
-
 /** User-facing boundary when the diagnostic instrument cannot establish a cause. */
 export const STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE =
   'Perl Language Server failed to start, and the setup health check could not determine the cause. ' +
@@ -58,19 +47,13 @@ export const STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE =
  * Given the results of a health check, return a specific user-facing error
  * string when the evidence establishes a root cause.
  *
- * Priority: explicit Perl error > explicit binary error > unavailable evidence
- * > unknown crash with complete healthy checks.
+ * Priority: explicit binary error > unavailable binary evidence > unknown crash.
+ * Perl is optional for the core language server and cannot explain its startup failure.
  */
 export function classifyStartupFailure(results: HealthCheckResult[]): string {
-  const perlResult = results.find((r) => r.label === 'Perl interpreter');
   const binaryResult = results.find((r) => r.label === 'LSP binary');
 
-  // Report Perl missing only when the Perl check actually established an error.
-  if (perlResult?.ok === false && perlResult.status === HealthCheckStatus.Error) {
-    return PERL_MISSING_MESSAGE;
-  }
-
-  // LSP binary not found — use the explicit binary result rather than inference.
+  // Use the explicit binary error for missing, nonfile, and inspection failures.
   if (
     binaryResult &&
     binaryResult.ok === false &&
@@ -79,18 +62,18 @@ export function classifyStartupFailure(results: HealthCheckResult[]): string {
     const detail = binaryResult.detail.trimEnd();
     const detailWithPeriod = detail.endsWith('.') ? detail : `${detail}.`;
     return (
-      'Perl Language Server binary (perllsp) not found. ' +
+      'Perl Language Server binary (perllsp) is unavailable. ' +
       detailWithPeriod +
       ' Check the Output panel for download details or reinstall the extension.'
     );
   }
 
-  // Missing required result rows mean the instrument did not establish a cause.
-  if (!perlResult || !binaryResult) {
+  // Missing binary evidence means the instrument did not establish a cause.
+  if (!binaryResult) {
     return STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE;
   }
 
-  // All required checks completed without an explicit root cause — unknown crash.
+  // No explicit binary root cause was established — unknown crash.
   return (
     'Perl Language Server failed to start. ' +
     'Check the Output panel for details. ' +
@@ -264,12 +247,30 @@ export class OnboardingManager {
         detail: 'perl-lsp binary not found. Check Output for download details.',
       };
     }
-    if (!fs.existsSync(serverPath)) {
+    try {
+      const stat = fs.statSync(serverPath, { throwIfNoEntry: false });
+      if (!stat) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        };
+      }
+      if (!stat.isFile()) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path is not a regular file: ${serverPath}`,
+        };
+      }
+    } catch {
       return {
         label,
         ok: false,
         status: HealthCheckStatus.Error,
-        detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        detail: `Unable to inspect perl-lsp binary path: ${serverPath}`,
       };
     }
     return {

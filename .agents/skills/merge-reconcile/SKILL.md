@@ -29,7 +29,9 @@ Inspect the live PR state first.
 For an open PR, establish the current provider-native substantive result before reading
 integration green as permission to merge.
 
-Read cumulative submitted reviews and useful clean conclusions, localized findings and
+Read complete paginated feedback with `scripts/reviews/feedback <pr> <owner/repo>`:
+ordinary issue comments, full review bodies (including substantive `COMMENTED` concerns),
+cumulative submitted reviews and useful clean conclusions, localized findings and
 evidence-backed dispositions (terminal `fixed`, `refuted`, `superseded`, and
 `post-merge-follow-up`; non-terminal `current-blocker`, `blocked-by-prerequisite`, and
 `not-proven` whose threads stay open), the current candidate
@@ -96,7 +98,8 @@ non-zero result is `MERGE_BLOCKED`, routed to `$address-review-comments`, and is
 Verify live GitHub facts:
 
 - PR is ready, not draft;
-- required checks are current for the candidate;
+- the union of applicable branch rulesets and classic branch protection is known,
+  with required contexts and producer/app identity current for the candidate;
 - the sanctioned thread enumerator reports `unresolved_count` of 0;
 - no current `CHANGES_REQUESTED` review remains;
 - deliberately requested reviewers are not still pending where their judgment is part
@@ -117,6 +120,9 @@ INTEGRATION_READY
 → protected squash merge
 ```
 
+The live ruleset requires thread resolution: zero unresolved review threads is a
+precondition of protected integration.
+
 ## Protected merge
 
 Use the current head SHA only as compare-and-swap protection at the instant of merge:
@@ -125,46 +131,34 @@ Use the current head SHA only as compare-and-swap protection at the instant of m
 gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
 
-zero unresolved review threads is a precondition of arming auto-merge. Re-run
-`scripts/reviews/threads <pr> --unresolved-only --json` immediately before the
-command. If `unresolved_count` is non-zero, return `MERGE_BLOCKED` and route to
-`$address-review-comments`.
+Re-run `scripts/reviews/threads <pr> --unresolved-only --json` immediately before
+merge. A non-zero `unresolved_count` is `MERGE_BLOCKED`; route through
+`address-review-comments`. Reacquire current head, base applicability, required
+results, review/findings and protection together before the final judgment.
+Read ordinary-comment dispositions as well as thread resolution, and verify semantic
+review binding with `check-pr-semantic-review-currentness.py --expected-head` for this
+observed head. Missing/stale binding or unavailable protection is `NOT_PROVEN`.
+Inspect terminal selected qualification evidence (skipped/draft-no-proof is not passing
+proof), then explicitly assess whether the candidate still fits current repository
+behavior and accepted product vision. Record that separate final judgment before the
+expected-head protected merge. A new substantive finding routes back to repair even
+when the SHA is unchanged. These boundary reads do not require rerunning unchanged
+proof or a full review on every routine push.
 
-When the required union is still pending, arm auto-merge with the current head SHA:
+Under #3390, pending qualification does not authorize auto-merge, enqueueing, or a
+probe that bypasses missing proof. Retain the owning lead through ordinary in-window
+waits using supported events or bounded checks, then inspect terminal evidence and
+make the separate integration decision. A real interruption gets an exact resumable
+handoff. Never use administrative bypass, an empty push or a waiver invented to save
+time. A bounded writer/reviewer does not gain integration authority from its role.
 
-```text
-gh pr merge <n> --auto --squash --match-head-commit <current-head-sha>
-```
-
-The command request is not evidence that GitHub persisted the transition. Immediately
-re-read the live PR. Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms a
-non-null `autoMergeRequest` for the same PR, the unchanged current head, and the squash
-method. If the request is absent, the head moved, or the method differs, return
-`MERGE_BLOCKED` or `NOT_PROVEN` with the observed state; do not report auto-merge as
-armed.
-
-A confirmed auto-merge request leaves `REVIEW_CURRENT` intact and returns
-`PR_IN_FLIGHT`. The read-back and current-head compare-and-swap prevent a command success
-or stale branch observation from stranding the claim behind a transition GitHub never
-accepted. That prevents racing a moving branch. It does not make review currentness
-depend on the SHA.
-
-If the head moves before merge, re-read the candidate. Refresh only proof, review, and
-integration dimensions affected by the new commit. Never use administrative bypass to
-discover what is failing or to outrun unresolved review/integration evidence.
-
-If an armed auto-merge has not fired, one manual probe merge through the REST endpoint
-(`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash -f
-sha=<current-head-sha>`) is the sanctioned no-polling probe only after the required
-union is green on the head SHA, or after an explicit evidence-backed waiver is recorded
-on the PR/issue naming the head SHA it was issued against and every unmet requirement.
-A waiver authorizes a probe of that head only; after any head movement the waiver is
-void until re-issued for the new head. A waiver recorded merely to save wall-clock is
-not a waiver.
-
-The **accountable root** records any such waiver, owns the compare-and-swap transition,
-and either merges or arms auto-merge. A bounded writer/reviewer does not inherit this
-authority merely because it handled the claim's candidate.
+The expected-head guard prevents racing a moving candidate.
+It does not make review currentness depend on the SHA.
+Refresh only proof, review, and integration dimensions affected by the new commit.
+If the head moves, consume a new explicit request for the selected candidate. Do not inherit old qualification or force an unrelated
+rebase. The expected-head guard protects head identity; it does not atomically freeze
+the base. A successful merge call is not landing evidence: read the durable PR/commit
+state before reconciliation.
 
 For automation-authored PRs whose `pull_request` runs remain `action_required`, green
 `workflow_dispatch` runs on the same head do not substitute for required PR contexts.
