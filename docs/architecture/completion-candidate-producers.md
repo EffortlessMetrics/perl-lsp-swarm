@@ -10,7 +10,7 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against the shipped (non-test) surface of the files listed here. A change to that shipped surface invalidates the audit and `check` fails until the rows are re-checked; test-only or formatting-only edits do not.
 
-- Digest: `sha256:af6006d2a7b834904d8dc1f395da61c7cffad441a58e790cc61cc19bbba876f5`
+- Digest: `sha256:393918b93e6d55430a241d2663ed91d5b72ee4e35019cb08424232aa69943a7d`
 - Files (41):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
@@ -60,7 +60,7 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 
 | Population | Count |
 | --- | --- |
-| producers | 59 |
+| producers | 60 |
 | candidate classes | 18 |
 | construction-only files | 0 |
 | delegated modules | 2 |
@@ -98,7 +98,7 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_option_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_type_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_hash_key_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #9478 |
-| `perl_lsp_rs_core::providers::htmx::complete_attribute_names` | key_or_constant | returned | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #15014 |
+| `perl_lsp_rs_core::providers::htmx::complete_attribute_names` | key_or_constant | returned | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | complete_or_empty | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #14116 |
 | `perl_lsp_rs_core::providers::htmx::complete_header_names` | key_or_constant | returned | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | complete_or_empty | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions_with_cancellation` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
@@ -117,6 +117,7 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::get_completions_with_path_cancellable` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::complete` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::context::complete_regex_context` | router | append_and_returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
+| `perl_lsp_rs_core::providers::completion::completion::request::context::try_complete_htmx_attributes` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #14116 |
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_dispatch` | router | append_and_returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_file_path_context` | router | append | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_general_context` | router | append_and_returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
@@ -201,7 +202,7 @@ flowchart LR
   nhandle_completion --> nsnippet_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nsnippet_handle_completion_handle_completion_cancellable
   nsnippet_handle_completion_handle_completion_cancellable --> pool
-  nkey_or_constant_handle_completion_handle_completion_cancellable["key_or_constant ×4"]
+  nkey_or_constant_handle_completion_handle_completion_cancellable["key_or_constant ×5"]
   nhandle_completion --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nkey_or_constant_handle_completion_handle_completion_cancellable --> pool
@@ -231,7 +232,7 @@ flowchart LR
   nrouter_handle_completion["router ×1"]
   nhandle_completion --> nrouter_handle_completion
   nrouter_handle_completion --> pool
-  nrouter_handle_completion_handle_completion_cancellable["router ×9"]
+  nrouter_handle_completion_handle_completion_cancellable["router ×10"]
   nhandle_completion --> nrouter_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nrouter_handle_completion_handle_completion_cancellable
   nrouter_handle_completion_handle_completion_cancellable --> pool
@@ -242,7 +243,6 @@ flowchart LR
   final --> wire
   subgraph unreached ["reached by no entry point"]
     nunreached_module["module ×1"]
-    nunreached_key_or_constant["key_or_constant ×1"]
     nunreached_file_path["file_path ×2"]
     nunreached_router["router ×1"]
   end
