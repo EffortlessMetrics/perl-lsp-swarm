@@ -101,11 +101,11 @@ ai-provider = ["dep:ureq"]
 test-instrumentation = []
 
 [dev-dependencies]
+jsonschema = { version = "0.58", default-features = false }
 perl-test-must.workspace = true
 perl-tdd-support.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
-perl-lsp-rs.workspace = true
 perl-subprocess-runtime.workspace = true
 tempfile.workspace = true
 insta = { workspace = true, features = ["yaml"] }

@@ -37,22 +37,13 @@ const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((m) => `n
 const external = (id) => id === 'vscode' || nodeBuiltins.has(id);
 
 const PINNED_LANGUAGE_CLIENT_SOURCE_SHA256 =
-    'FB34F029620E1990B00F351D9A79CEEDA40432AA5D177FD4245BD62053DF05A8';
-const PINNED_JSONRPC_CONNECTION_SOURCE_SHA256 =
-    '0A3A46FAD254B78FC2EE371D8438037C860B9BC73124FDDB038BF3BB5A3C94F4';
+    '457CF63D6AFF5F6DEA29AEC63CB473ED2802FDE98661A34070551C2EF0146AC6';
 const resolvedLanguageClientEntry = createRequire(import.meta.url).resolve('vscode-languageclient');
-const resolvedJsonRpcEntry = createRequire(import.meta.url).resolve('vscode-jsonrpc');
 const LANGUAGE_CLIENT_SOURCE_ID = join(
     dirname(dirname(dirname(resolvedLanguageClientEntry))),
     'lib',
     'common',
     'client.js',
-);
-const JSONRPC_CONNECTION_SOURCE_ID = join(
-    dirname(dirname(dirname(resolvedJsonRpcEntry))),
-    'lib',
-    'common',
-    'connection.js',
 );
 
 function normalizeModuleId(id) {
@@ -60,7 +51,7 @@ function normalizeModuleId(id) {
 }
 
 /**
- * vscode-languageclient 10.1.1 returns the mutable `_onStart` field after
+ * vscode-languageclient 10.1.2 returns the mutable `_onStart` field after
  * `handleConnectionClosed` can clear it. That can orphan the rejection from
  * the start operation. Keep this narrowly pinned to the exact resolved source
  * and hash until the dependency ships the equivalent upstream correction.
@@ -105,67 +96,23 @@ export function patchPinnedLanguageClientSource(source, id) {
     return `${source.slice(0, details.start)}        return promise;${source.slice(details.end)}`;
 }
 
-function patchPinnedJsonRpcConnectionDetails(source, id) {
-    // vscode-jsonrpc 9.0.2 rejects the public response promise and then throws
-    // from an async Promise executor. The throw creates a second, orphaned
-    // rejection when a stream write fails; return after the explicit rejection.
-    if (normalizeModuleId(id) !== normalizeModuleId(JSONRPC_CONNECTION_SOURCE_ID)) {
-        return null;
-    }
-    const sourceSha256 = createHash('sha256').update(source).digest('hex').toUpperCase();
-    if (sourceSha256 !== PINNED_JSONRPC_CONNECTION_SOURCE_SHA256) {
-        throw new Error(
-            `Refusing to patch unexpected vscode-jsonrpc source ${id}: expected ${PINNED_JSONRPC_CONNECTION_SOURCE_SHA256}, got ${sourceSha256}.`,
-        );
-    }
-    const rejectText =
-        "                    responsePromise.reject(new messages_1.ResponseError(messages_1.ErrorCodes.MessageWriteError, error.message ? error.message : 'Unknown reason'));";
-    const loggerText = '                    logger.error(`Sending request failed.`);';
-    const throwText = '                    throw error;';
-    const rejectOffset = source.indexOf(rejectText);
-    const loggerOffset = source.indexOf(loggerText, rejectOffset + rejectText.length);
-    const throwOffset = source.indexOf(throwText, loggerOffset + loggerText.length);
-    if (rejectOffset < 0 || loggerOffset < 0 || throwOffset < 0) {
-        throw new Error(`Refusing to patch unexpected vscode-jsonrpc sendRequest shape: ${id}.`);
-    }
-    return { start: throwOffset, end: throwOffset + throwText.length };
-}
-
-export function patchPinnedJsonRpcConnectionSource(source, id) {
-    const details = patchPinnedJsonRpcConnectionDetails(source, id);
-    if (details === null) return null;
-    return `${source.slice(0, details.start)}                    return;${source.slice(details.end)}`;
-}
-
+// vscode-jsonrpc 9.0.3 already rejects the public response promise and
+// returns from the write-failure handler without throwing, so the 9.0.2
+// bundle patch is obsolete and intentionally no longer applied.
 let pinnedLanguageClientPatchApplied = false;
-let pinnedJsonRpcPatchApplied = false;
 const pinnedLanguageClientPatch = {
-    name: 'patch-pinned-languageclient-and-jsonrpc-promises',
+    name: 'patch-pinned-languageclient-promise',
     transform(source, id) {
         const details = patchPinnedLanguageClientDetails(source, id);
-        const jsonRpcDetails = patchPinnedJsonRpcConnectionDetails(source, id);
-        if (details === null && jsonRpcDetails === null) return null;
+        if (details === null) return null;
         const magic = new RolldownMagicString(source);
-        if (details !== null) {
-            pinnedLanguageClientPatchApplied = true;
-            magic.overwrite(details.start, details.end, '        return promise;');
-        }
-        if (jsonRpcDetails !== null) {
-            pinnedJsonRpcPatchApplied = true;
-            magic.overwrite(
-                jsonRpcDetails.start,
-                jsonRpcDetails.end,
-                '                    return;',
-            );
-        }
+        pinnedLanguageClientPatchApplied = true;
+        magic.overwrite(details.start, details.end, '        return promise;');
         return { code: magic };
     },
     buildEnd() {
         if (!pinnedLanguageClientPatchApplied) {
             throw new Error(`Refusing to build without patching ${LANGUAGE_CLIENT_SOURCE_ID}.`);
-        }
-        if (!pinnedJsonRpcPatchApplied) {
-            throw new Error(`Refusing to build without patching ${JSONRPC_CONNECTION_SOURCE_ID}.`);
         }
     },
 };

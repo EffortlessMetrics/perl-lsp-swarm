@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: AST-unavailable completion now supplies exact name-token replacement edits, including mid-token completion, preserving variable sigils and method receivers when accepting existing fallback suggestions.
+time: 2026-10-13T02:49:00Z
+custom:
+  PR: "17779"
+  Slug: fallback-prefix-edits
+  Breaking: "no"

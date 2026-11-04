@@ -1,0 +1,15 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Document-symbol children no longer order nondeterministically across
+  processes. Child symbols previously fell through a complete
+  (priority, start, end, name) sort-key tie to the symbol table's
+  HashMap bucket order, which permutes between runs; a final `kind`
+  tiebreak now decides those ties, so repeated outline requests return a
+  byte-identical tree.
+time: 2026-10-26T06:51:18Z
+custom:
+  PR: "18354"
+  Slug: deterministic-document-symbol-kind-tiebreak
+  Breaking: "no"

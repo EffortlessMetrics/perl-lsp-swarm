@@ -470,7 +470,7 @@ mod tests {
                 // module docs).
                 vec!["config", "core.fileMode", "false"],
             ] {
-                let status = git_command()
+                let status = xtask::git_environment::isolate(Command::new("git"))
                     .current_dir(root)
                     .args(&args)
                     .status()
@@ -495,7 +495,7 @@ mod tests {
         }
 
         fn add(&self, rel_path: &str) -> Result<()> {
-            let status = git_command()
+            let status = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["add", rel_path])
                 .status()
@@ -507,7 +507,7 @@ mod tests {
         }
 
         fn commit(&self, message: &str) -> Result<()> {
-            let status = git_command()
+            let status = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["commit", "--quiet", "-m", message])
                 .status()
@@ -522,7 +522,7 @@ mod tests {
         /// — for proving item 5 (deletions must be part of the staged
         /// change-set) without also touching the working tree.
         fn remove_cached(&self, rel_path: &str) -> Result<()> {
-            let status = git_command()
+            let status = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["rm", "--cached", "--quiet", rel_path])
                 .status()
@@ -544,7 +544,7 @@ mod tests {
             use std::io::Write;
             use std::process::Stdio;
 
-            let mut child = git_command()
+            let mut child = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["hash-object", "-w", "--stdin"])
                 .stdin(Stdio::piped())
@@ -566,7 +566,7 @@ mod tests {
                 .trim()
                 .to_string();
             let spec = format!("{mode},{blob},{rel_path}");
-            let status = git_command()
+            let status = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["update-index", "--add", "--cacheinfo", &spec])
                 .status()
@@ -588,7 +588,7 @@ mod tests {
             use std::io::Write;
             use std::process::Stdio;
 
-            let mut child = git_command()
+            let mut child = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["hash-object", "-w", "--stdin"])
                 .stdin(Stdio::piped())
@@ -610,7 +610,7 @@ mod tests {
                 .trim()
                 .to_string();
             let record = format!("{mode} blob {blob}\t{rel_path}\n");
-            let mut child = git_command()
+            let mut child = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["mktree"])
                 .stdin(Stdio::piped())
@@ -648,7 +648,7 @@ mod tests {
                 vec!["config", "user.email", "test@example.com"],
                 vec!["config", "user.name", "Test"],
             ] {
-                let status = git_command()
+                let status = xtask::git_environment::isolate(Command::new("git"))
                     .current_dir(root)
                     .args(&args)
                     .status()
@@ -841,7 +841,7 @@ mod tests {
         // With core.fileMode=false the filesystem's permission bit is not
         // what git records; force the STAGED mode via update-index, the
         // same class of divergence the R1 chmod defect hit.
-        let status = git_command()
+        let status = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(repo.root())
             .args(["update-index", "--chmod=+x", "crates/foo/src/lib.rs"])
             .status()

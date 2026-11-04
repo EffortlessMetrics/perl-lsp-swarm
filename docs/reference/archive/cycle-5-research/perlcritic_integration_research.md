@@ -328,10 +328,10 @@ fn handle_did_change_configuration(&mut self, settings: Value) {
 
 ## References
 
-- **Parser**: `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp-critic-parser/src/lib.rs`
-- **Analyzer**: `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp-tooling/src/perl_critic/`
-- **Diagnostics Publisher**: `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp/src/runtime/diagnostics.rs:54-90`
-- **Execute Command**: `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp/src/execute_command/provider.rs:120-221`
+- **Parser**: `crates/perl-lsp-critic-parser/src/lib.rs`
+- **Analyzer**: `crates/perl-lsp-tooling/src/perl_critic/`
+- **Diagnostics Publisher**: `crates/perl-lsp/src/runtime/diagnostics.rs:54-90`
+- **Execute Command**: `crates/perl-lsp/src/execute_command/provider.rs:120-221`
 - **ADR-004**: `docs/adr/ADR_004_EXECUTE_COMMAND_CODE_ACTIONS.md`
 
 ---

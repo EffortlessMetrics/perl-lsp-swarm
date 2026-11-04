@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync, spawnSync } from 'child_process';
 import type * as vscode from 'vscode';
 import {
   PerlDebugAdapterDescriptorFactory,
@@ -25,6 +26,7 @@ import {
 import * as downloader from '../downloader';
 import { hostManagedCompatibilityKeys } from '../downloader';
 import { managedNamespaceDir } from '../managedStorageIdentity';
+import { writeFakeTool } from './fakeToolFixture';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -486,6 +488,54 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
     expect(result).toBeDefined();
     expect(result.command).toBe(dapPath);
+  });
+
+  test('fake-tool fixtures agree with executable validation on this host', () => {
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(binDir, { recursive: true });
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const dapPath = path.join(binDir, dapName);
+    const source = '#!/bin/sh\nprintf fixture-ok\n';
+    writeFakeTool(dapPath, source);
+
+    const originalEnvironment = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      CARGO_HOME: process.env.CARGO_HOME,
+    };
+    // Prevent a host installation from making a rejected fixture look valid.
+    process.env.PATH = tmpDir;
+    process.env.HOME = tmpDir;
+    process.env.CARGO_HOME = tmpDir;
+    const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir));
+    const resolve = () =>
+      factory.createDebugAdapterDescriptor({} as unknown as vscode.DebugSession, undefined) as
+        | vscode.DebugAdapterExecutable
+        | undefined;
+
+    try {
+      expect(fs.statSync(dapPath).isFile()).toBe(true);
+      expect(resolve()?.command).toBe(dapPath);
+      // Windows checks regular-file presence; this is a mocked binary, not a PE image.
+      if (process.platform === 'win32') return;
+
+      expect(() => fs.accessSync(dapPath, fs.constants.X_OK)).not.toThrow();
+      expect(execFileSync(dapPath, [], { encoding: 'utf8', timeout: 1_000 })).toBe('fixture-ok');
+
+      fs.chmodSync(dapPath, 0o644);
+      expect(fs.existsSync(dapPath)).toBe(true);
+      expect(resolve()?.command).not.toBe(dapPath);
+      expect(spawnSync(dapPath, [], { timeout: 1_000 }).error).toMatchObject({ code: 'EACCES' });
+
+      // Rewriting an existing file must restore the same fixture contract.
+      writeFakeTool(dapPath, source);
+      expect(resolve()?.command).toBe(dapPath);
+    } finally {
+      for (const [key, value] of Object.entries(originalEnvironment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   test('prefers the packaged perl-dap over a stale ambient adapter', () => {

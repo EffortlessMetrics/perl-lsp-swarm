@@ -1,0 +1,12 @@
+{
+  "officialRelease": "https://github.com/EffortlessMetrics/perl-lsp/releases/tag/v0.17.0",
+  "officialDownload": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/perl-lsp-rs-0.17.0.vsix",
+  "sha256": "b67d84a149efd99ae26310742bc3773c6a4644258391796489b7a9476d2e47d4",
+  "bytes": 7325907,
+  "name": "perl-lsp-rs",
+  "publisher": "EffortlessMetrics",
+  "version": "0.17.0",
+  "releasedSettingsCount": 25,
+  "manifestPath": "extension/package.json",
+  "manifestSha256": "3186e23ef455e4111df92711b9b926cfbe68a949db9bc84f536ea8b2908c0e6a"
+}

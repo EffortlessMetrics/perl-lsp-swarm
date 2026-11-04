@@ -25,6 +25,8 @@ paths={key:root/key for key in ('target','build','cargo_home','temp')}
 env={'PATH':str(root/'bin')+os.pathsep+os.defpath,'MIN_FREE_GB':'0.001','MAX_USED_PCT':'100',
      'FIXTURE_ROOT':str(root),'FIXTURE_STATUS':str(status),'FIXTURE_MODE':mode}
 original=owner.ClippyTree.finish
+if mode=='nested-deferred':
+ owner.ClippyTree.reap_adopted=lambda self:None
 if mode=='unproven':
  owner.ClippyTree.finish=lambda self,**kw:original(self,timeout=.01,**kw)
 with patch.dict(os.environ,env,clear=True),patch.object(owner,'resource_plan',return_value=(root,root/'slot',paths)):
@@ -34,6 +36,39 @@ print(json.dumps({'result':result}),flush=True)
 FAKE = '''import json,os,signal,sys,time
 from pathlib import Path
 root=Path(os.environ['FIXTURE_ROOT']);status=int(os.environ['FIXTURE_STATUS'])
+if os.environ['FIXTURE_MODE'].startswith('nested'):
+ read_fd,write_fd=os.pipe()
+ host=os.fork()
+ if host==0:
+  os.close(read_fd)
+  descendant=os.fork()
+  if descendant==0:
+   os.close(write_fd);os.setsid()
+   for fd in (0,1,2):os.close(fd)
+   (root/'nested-ready').write_text('ready')
+   time.sleep(5);os._exit(0)
+  os.write(write_fd,str(descendant).encode());os._exit(0)
+ os.close(write_fd)
+ descendant=int(os.read(read_fd,64));os.close(read_fd)
+ os.waitpid(host,0)
+ while not (root/'nested-ready').exists():time.sleep(.001)
+ status_text=Path(f'/proc/{descendant}/status').read_text()
+ adopted_parent=int(next(line.split()[1] for line in status_text.splitlines() if line.startswith('PPid:')))
+ try:os.waitpid(descendant,os.WNOHANG)
+ except ChildProcessError:not_our_child=True
+ else:not_our_child=False
+ os.kill(descendant,0)
+ os.kill(descendant,signal.SIGKILL)
+ deadline=time.monotonic()+.5
+ while Path(f'/proc/{descendant}').exists() and time.monotonic()<deadline:time.sleep(.001)
+ absent=not Path(f'/proc/{descendant}').exists()
+ try:os.kill(descendant,0)
+ except ProcessLookupError:signal_zero_absent=True
+ else:signal_zero_absent=False
+ (root/'nested-result').write_text(json.dumps({'pid':descendant,'owner':os.getppid(),
+  'adopted_parent':adopted_parent,'not_our_child':not_our_child,
+  'proc_absent':absent,'signal_zero_absent':signal_zero_absent}))
+ if not absent or not signal_zero_absent:status=101
 if os.environ['FIXTURE_MODE']=='terminal':
  tty_error=None
  try:
@@ -78,6 +113,7 @@ if mode!='cancel':
  result['early_release']=(root/'helper-live').exists() and not (root/'helper-end').exists() and not (root/'slot/cargo-active').exists()
 result['lease_retained']=(root/'slot/cargo-active').exists()
 result['stderr']=stderr
+if mode.startswith('nested'):result['nested']=json.loads((root/'nested-result').read_text())
 if mode=='terminal':result['terminal']=json.loads((root/'terminal').read_text())
 if sentinel is not None:
  result['caller_group_survived']=sentinel.poll() is None
@@ -122,6 +158,28 @@ print(json.dumps(result))
                 self.assertEqual(row['result'],status)
                 self.assertFalse(row['lease_retained'])
                 self.assertIn('kernel ECHILD (__WALL)',row['stderr'])
+
+    def test_nested_cleanup_is_reaped_before_cargo_can_return(self):
+        row=self.fixture(mode='nested')
+        self.assertEqual(row['result'],0,row['stderr'])
+        self.assertTrue(row['nested']['not_our_child'])
+        self.assertEqual(row['nested']['adopted_parent'],row['nested']['owner'])
+        self.assertTrue(row['nested']['proc_absent'])
+        self.assertTrue(row['nested']['signal_zero_absent'])
+        self.assertEqual(row['helper_end'],'lease-present')
+        self.assertFalse(row['lease_retained'])
+        settlement=next(json.loads(line.split(': ',1)[1]) for line in row['stderr'].splitlines()
+                        if line.startswith('cargo-admitted Cargo settlement: '))
+        self.assertIn({'pid':row['nested']['pid'],'exit_code':-9},settlement['reaped_descendants'])
+        self.assertTrue(settlement['tree_settled'])
+
+    def test_deferred_reaping_does_not_satisfy_nested_cleanup(self):
+        row=self.fixture(mode='nested-deferred')
+        self.assertEqual(row['result'],101,row['stderr'])
+        self.assertFalse(row['nested']['proc_absent'])
+        self.assertFalse(row['nested']['signal_zero_absent'])
+        self.assertFalse(row['lease_retained'])
+        self.assertIn('kernel ECHILD (__WALL)',row['stderr'])
 
     def test_unproven_live_descendant_retains_lease_and_overrides_success(self):
         row=self.fixture(mode='unproven')
