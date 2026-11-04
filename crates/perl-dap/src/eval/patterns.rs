@@ -17,6 +17,11 @@ use std::sync::LazyLock;
 /// - Tie mechanism: can execute arbitrary code via FETCH/STORE
 /// - Network: socket, connect, bind, listen, accept, send, recv, shutdown
 /// - IPC: msg*, sem*, shm*
+///
+/// `each` is denied because it advances the hash iterator. `keys`/`values` also
+/// reset that iterator (perlfunc). That reset is accepted: they return a complete
+/// snapshot rather than walking the iterator, and Watch/repl cannot send
+/// `allowSideEffects`. Do not add `keys` or `values` to this list (#18436 item 2).
 pub const DANGEROUS_OPERATIONS: &[&str] = &[
     // State mutation
     "push",
@@ -29,6 +34,7 @@ pub const DANGEROUS_OPERATIONS: &[&str] = &[
     "srand",
     "bless",
     "reset",
+    "each",
     // Process control
     "system",
     "exec",
@@ -174,5 +180,41 @@ mod tests {
         assert!(re.is_match("s/foo/bar/"));
         assert!(re.is_match("tr/a-z/A-Z/"));
         assert!(re.is_match("y/abc/xyz/"));
+    }
+
+    #[test]
+    fn keys_and_values_are_admitted_each_remains_denied() {
+        use perl_tdd_support::must;
+        let re = must(DANGEROUS_OPS_RE.as_ref());
+        let evaluator = crate::eval::SafeEvaluator::new();
+
+        assert!(!DANGEROUS_OPERATIONS.contains(&"keys"));
+        assert!(!DANGEROUS_OPERATIONS.contains(&"values"));
+        assert!(DANGEROUS_OPERATIONS.contains(&"each"));
+
+        for expr in ["keys %h", "values %$ref", "scalar keys %h"] {
+            assert!(
+                !re.is_match(expr),
+                "read-only hash snapshot {expr:?} must not match the deny-list"
+            );
+            let result = evaluator.validate(expr);
+            assert!(result.is_ok(), "SafeEvaluator must admit {expr:?}: {result:?}");
+        }
+
+        assert!(re.is_match("each %h"));
+        assert!(
+            evaluator.validate("each %h").is_err(),
+            "each advances the iterator and must remain denied"
+        );
+
+        let compound = "keys %h; system('true')";
+        assert!(
+            re.is_match(compound),
+            "compound expressions must still match remaining dangerous ops"
+        );
+        assert!(
+            evaluator.validate(compound).is_err(),
+            "SafeEvaluator must still refuse remaining dangerous ops in {compound:?}"
+        );
     }
 }

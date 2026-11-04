@@ -12,6 +12,7 @@ use super::{
 };
 use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse, PARSE_ERROR};
 use crate::transport::IncomingMessageError;
+use std::time::Duration;
 
 const CANCELLED_SET_CAP: usize = 256;
 
@@ -62,6 +63,11 @@ fn log_ingress_teardown(
         log_response_delivery_failure(Some(method), outcome);
     }
 }
+
+/// Bounded wait for the outbound writer to settle before a socket frontend
+/// closes the peer socket. Matches the `exit` path's settlement budget
+/// (`dispatch::lifecycle::OUTBOUND_SETTLEMENT_TIMEOUT`).
+const PEER_CLOSE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(dead_code)]
 impl LspServer {
@@ -159,11 +165,36 @@ impl LspServer {
                     response_delivery_failed = true;
                     break;
                 }
+                // Per-connection `exit` (#17331): the socket frontend's exit
+                // handler ends this session only, so the process keeps
+                // accepting and serving other connections. Only the exit
+                // handler fires this, and only under `ExitPolicy::
+                // EndConnection`; under `TerminateProcess` the process is
+                // gone before any notify could matter.
+                _ = self.connection_exit_notified() => {
+                    tracing::info!("connection exit received; ending this session, server keeps serving");
+                    break;
+                }
                 request = rx.recv() => request,
             };
             let Some(request) = request else { break };
             let method = request.method.clone();
             tracing::trace!(method = %method, "Received request");
+
+            // After shutdown, a ReadOnly hop can lose the race with lifecycle
+            // `exit`, which closes admission on the mutation worker (#16655).
+            // Admit the required `-32600` on this thread before the next
+            // lifecycle message is dequeued.
+            if Self::should_inline_after_shutdown(
+                &method,
+                self.shutdown_received.load(Ordering::Acquire),
+            ) {
+                if self.admit_handler_response(request).is_err() {
+                    response_delivery_failed = true;
+                    break;
+                }
+                continue;
+            }
 
             match classify(&method) {
                 RequestClass::Control => {
@@ -220,6 +251,32 @@ impl LspServer {
     /// frontends use this to close the peer while scheduler cleanup proceeds.
     pub(crate) async fn response_delivery_failure_notified(&self) {
         self.outbound.response_failure_notified().await;
+    }
+
+    /// Settle the outbound writer before a socket frontend closes the peer
+    /// socket. `serve_async` drains scheduler workers but does not wait for
+    /// the dedicated outbound writer thread, so responses already accepted
+    /// from those workers can still be queued when the serve loop ends.
+    /// Bounded like the `exit` settlement; a timeout leaves the writer
+    /// unsettled and is reported as such, and the peer close proceeds anyway
+    /// so a wedged writer cannot hold the dead session open.
+    pub(crate) fn settle_outbound_for_teardown(&self) {
+        let settlement = self.outbound.close_and_wait(PEER_CLOSE_SETTLEMENT_TIMEOUT);
+        match settlement.as_ref() {
+            Some(outcome) => outcome.report_settlement(),
+            None => tracing::warn!("outbound writer did not settle before peer close"),
+        }
+    }
+
+    /// End this connection's serve loop after a protocol-clean `exit`
+    /// (#17331). Fired only under `ExitPolicy::EndConnection`, after the
+    /// outbound writer has settled.
+    pub(crate) fn notify_connection_exit(&self) {
+        self.connection_exit.notify_one();
+    }
+
+    async fn connection_exit_notified(&self) {
+        self.connection_exit.notified().await;
     }
 
     pub(crate) fn response_delivery_failed(&self) -> bool {
@@ -306,6 +363,21 @@ impl LspServer {
     /// global cancellation registry.
     pub(crate) fn register_progress_request(&self, token: &str, request_id: JsonRpcId) {
         self.progress_token_to_request.lock().insert(token.to_string(), request_id);
+    }
+
+    /// Post-shutdown requests except `shutdown`/`exit` must not hop through
+    /// the scheduler: `exit` settles outbound admission on the mutation
+    /// worker and can outrun that hop (#16655).
+    fn should_inline_after_shutdown(method: &str, shutdown_received: bool) -> bool {
+        shutdown_received && method != "exit" && method != "shutdown"
+    }
+
+    fn admit_handler_response(&self, request: JsonRpcRequest) -> io::Result<()> {
+        if let Some(response) = self.handle_request(request) {
+            log_response(&response);
+            self.outbound.send_response(response)?;
+        }
+        Ok(())
     }
 }
 
@@ -465,6 +537,120 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Err(io::Error::new(io::ErrorKind::BrokenPipe, "controlled response flush failure"))
         }
+    }
+
+    #[test]
+    fn post_shutdown_readonly_is_inlined_and_lifecycle_is_not() {
+        assert!(
+            LspServer::should_inline_after_shutdown("textDocument/hover", true),
+            "post-shutdown hover must not hop through the read pool"
+        );
+        assert!(
+            LspServer::should_inline_after_shutdown("textDocument/didOpen", true),
+            "post-shutdown notifications are also inlined so they cannot mutate after shutdown"
+        );
+        assert!(
+            !LspServer::should_inline_after_shutdown("textDocument/hover", false),
+            "pre-shutdown hover stays on the read pool"
+        );
+        assert!(
+            !LspServer::should_inline_after_shutdown("exit", true),
+            "exit must remain on the lifecycle worker"
+        );
+        assert!(
+            !LspServer::should_inline_after_shutdown("shutdown", true),
+            "a second shutdown must remain on the lifecycle worker"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedBuffer {
+        inner: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl SharedBuffer {
+        fn bytes(&self) -> Vec<u8> {
+            self.inner.lock().clone()
+        }
+    }
+
+    impl Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn post_shutdown_hover_is_admitted_on_the_ingress_thread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let captured = SharedBuffer::default();
+        let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
+        let server = LspServer::with_output(output);
+        server.handle_initialize(None).map_err(|error| format!("initialize failed: {error:?}"))?;
+        let shutdown = server.handle_request(request(2, "shutdown"));
+        if shutdown.as_ref().is_none_or(|response| response.error.is_some()) {
+            return Err(format!("first shutdown must succeed: {shutdown:?}").into());
+        }
+
+        server.admit_handler_response(request(3, "textDocument/hover"))?;
+        server
+            .outbound
+            .close_and_wait(std::time::Duration::from_secs(1))
+            .ok_or("writer did not settle after admitting the post-shutdown response")?;
+
+        let wire = String::from_utf8(captured.bytes())?;
+        if !wire.contains("\"id\":3") && !wire.contains("\"id\": 3") {
+            return Err(format!("post-shutdown hover must reach the writer, got: {wire}").into());
+        }
+        if !wire.contains("Server has been shutdown") {
+            return Err(format!("expected the post-shutdown InvalidRequest, got: {wire}").into());
+        }
+        if !wire.contains("-32600") {
+            return Err(format!("expected JSON-RPC -32600, got: {wire}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn post_shutdown_notification_does_not_invent_a_response()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let captured = SharedBuffer::default();
+        let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
+        let server = LspServer::with_output(output);
+        server.handle_initialize(None).map_err(|error| format!("initialize failed: {error:?}"))?;
+        let shutdown = server.handle_request(request(2, "shutdown"));
+        if shutdown.as_ref().is_none_or(|response| response.error.is_some()) {
+            return Err(format!("first shutdown must succeed: {shutdown:?}").into());
+        }
+        // Initialization may write to the captured output; only bytes after
+        // this baseline can be a response invented for the notification.
+        let baseline_len = captured.bytes().len();
+        server.admit_handler_response(JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didOpen".to_string(),
+            params: None,
+        })?;
+        server
+            .outbound
+            .close_and_wait(std::time::Duration::from_secs(1))
+            .ok_or("writer did not settle after the post-shutdown notification")?;
+        // Server notifications (e.g. index-ready from initialize) may still
+        // flush after the baseline; a response invented for this notification
+        // would carry an `error` or `result` member, which neither has.
+        let wire = String::from_utf8_lossy(&captured.bytes()[baseline_len..]).into_owned();
+        if wire.contains("\"error\"") || wire.contains("\"result\"") {
+            return Err(format!(
+                "a post-shutdown notification must not invent a response, got: {wire}"
+            )
+            .into());
+        }
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

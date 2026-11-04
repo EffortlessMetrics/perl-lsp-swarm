@@ -44,14 +44,17 @@ def smoke_step(name: str) -> tuple[str, str]:
         smoke_job(), re.M | re.S,
     )
     assert match, f"workflow step missing: {name}"
-    metadata, body = match.group(1).split("        run: |\n", 1)
-    lines = body.splitlines()
-    script = []
-    for line in lines:
-        if line and not line.startswith("          "):
-            break
-        script.append(line[10:] if line else "")
-    return metadata, "\n".join(script) + "\n"
+    block = match.group(1)
+    if "        run: |\n" in block:
+        metadata, body = block.split("        run: |\n", 1)
+        lines = body.splitlines()
+        script = []
+        for line in lines:
+            if line and not line.startswith("          "):
+                break
+            script.append(line[10:] if line else "")
+        return metadata, "\n".join(script) + "\n"
+    return block, ""
 
 
 class WorkflowGuardTests(unittest.TestCase):
@@ -219,8 +222,16 @@ class WorkflowGuardTests(unittest.TestCase):
         self.assertRegex(smoke_job(), r'PR_SMOKE_FOOTPRINT_GIB: "85"')
         metadata, _ = smoke_step("Resolve workflow-bound PR Smoke disk guard")
         self.assertIn("PR_SMOKE_WORKFLOW_SHA: ${{ github.workflow_sha }}", metadata)
+        preflight_metadata, _ = smoke_step("Pre-flight disk budget guard")
+        self.assertIn("id: pr-smoke-disk-preflight", preflight_metadata)
         metadata, _ = smoke_step("Classify PR-fast disk exhaustion")
-        self.assertIn("always() && steps.pr-smoke-disk-guard.outcome == 'success'", metadata)
+        self.assertIn("steps.pr-smoke-disk-preflight.outcome == 'success'", metadata)
+        self.assertIn("steps.pr-smoke-gate-runner.outcome != 'skipped'", metadata)
+        receipt_metadata, _ = smoke_step("Upload PR-fast receipt")
+        self.assertIn("hashFiles('target/receipts/receipt.json') != ''", receipt_metadata)
+        missing_metadata, _ = smoke_step("Upload PR-fast missing-receipt diagnostics")
+        self.assertIn("hashFiles('target/receipts/receipt.json') == ''", missing_metadata)
+        self.assertIn("pr-fast-missing-receipt-", missing_metadata)
 
 
 if __name__ == "__main__":
