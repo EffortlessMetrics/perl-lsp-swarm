@@ -72,7 +72,7 @@ Critical insight: **Agent definitions are thin orchestration layers; skills are 
 
 ### 1.2 Memory System
 
-Located: `/home/steven/.claude/projects/-home-steven-code-Rust-perl-lsp-tree-sitter-perl-rs/memory/` (106 files, 552KB)
+Located: `~/.claude/projects/<encoded-checkout-path>/memory/` (106 files, 552KB)
 
 **Categories**
 
@@ -665,7 +665,7 @@ This is not "AI can code if humans help"—it's "AI can build production systems
 - **Commands** (workflow shortcuts): `.claude/commands/` (48 files)
 - **Agents** (role templates): `.claude/agents/` (56 files)
 - **Swarm operations**: `.ops-perl-lsp/`
-- **Memory** (institutional knowledge): `/home/steven/.claude/projects/.../memory/` (106 files)
+- **Memory** (institutional knowledge): `~/.claude/projects/<encoded-checkout-path>/memory/` (106 files)
 
 ### Evidence Sources
 

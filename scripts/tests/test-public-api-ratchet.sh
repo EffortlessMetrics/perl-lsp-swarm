@@ -116,6 +116,21 @@ case "${FAKE_PUBLIC_API_MODE:-}" in
   arc_user_owned)
     printf 'pub fn Surface::shared() -> owner::alloc::rcs::arc::Arc<u8>\n'
     ;;
+  rc_alias)
+    printf 'pub fn Surface::shared() -> alloc::rcs::rc::Rc<u8>\n'
+    ;;
+  rc_changed)
+    printf 'pub fn Surface::shared() -> alloc::rcs::rc::Rc<u16>\n'
+    ;;
+  rc_user_owned)
+    printf 'pub fn Surface::shared() -> owner::alloc::rcs::rc::Rc<u8>\n'
+    ;;
+  arc_weak_alias)
+    printf 'pub fn Surface::shared() -> alloc::rcs::arc::Weak<u8>\n'
+    ;;
+  arc_weak_changed)
+    printf 'pub fn Surface::shared() -> alloc::rcs::arc::Weak<u16>\n'
+    ;;
   nonempty)
     printf 'pub struct GeneratedSurface;\n'
     ;;
@@ -427,6 +442,33 @@ SURFACE
 assert_same_file "Arc fold converges nested/adjacent aliases and preserves unrelated paths" \
   "${ARC_EXPECTED}" "${ARC_ACTUAL}"
 
+# #17121: Rc and Weak siblings from the same stdlib move as Arc (#163331).
+RCS_INPUT="${TMPDIR_BASE}/rcs-input.txt"
+RCS_EXPECTED="${TMPDIR_BASE}/rcs-expected.txt"
+RCS_ACTUAL="${TMPDIR_BASE}/rcs-actual.txt"
+cat > "${RCS_INPUT}" <<'SURFACE'
+pub fn Surface::nested_rc() -> alloc::rcs::rc::Rc<alloc::rcs::rc::Rc<u8>>
+pub fn Surface::arc_weak() -> alloc::rcs::arc::Weak<u8>
+pub fn Surface::rc_weak() -> alloc::rcs::rc::Weak<u8>
+pub fn Surface::owned_rc() -> owner::alloc::rcs::rc::Rc<u8>
+pub fn Surface::longer() -> alloc::rcs::rc::Rcish<u8>
+pub fn Surface::different() -> alloc::rcs::rc::UniqueRc<u8>
+SURFACE
+cat > "${RCS_EXPECTED}" <<'SURFACE'
+pub fn Surface::nested_rc() -> alloc::rc::Rc<alloc::rc::Rc<u8>>
+pub fn Surface::arc_weak() -> alloc::sync::Weak<u8>
+pub fn Surface::rc_weak() -> alloc::rc::Weak<u8>
+pub fn Surface::owned_rc() -> owner::alloc::rcs::rc::Rc<u8>
+pub fn Surface::longer() -> alloc::rcs::rc::Rcish<u8>
+pub fn Surface::different() -> alloc::rcs::rc::UniqueRc<u8>
+SURFACE
+(
+  cd "${FIXTURE_ROOT}"
+  just --justfile "${FIXTURE_ROOT}/justfile" _public-api-filter "${RCS_INPUT}" "${RCS_ACTUAL}"
+)
+assert_same_file "Rc/Weak fold converges nested aliases and preserves unrelated paths" \
+  "${RCS_EXPECTED}" "${RCS_ACTUAL}"
+
 write_ratchet_list perl-uri
 printf 'pub fn Surface::shared() -> alloc::sync::Arc<u8>\n' \
   > "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
@@ -469,5 +511,55 @@ assert_contains "noncanonical Arc baseline is an instrument failure" \
   "not in canonical filtered form" "${TMPDIR_BASE}/arc-noncanonical-output.txt"
 assert_same_file "comparison never repairs a noncanonical baseline" \
   "${ARC_NONCANONICAL}" "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+
+write_ratchet_list perl-uri
+printf 'pub fn Surface::shared() -> alloc::rc::Rc<u8>\n' \
+  > "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+RC_BASELINE="${TMPDIR_BASE}/rc-baseline.txt"
+cp "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt" "${RC_BASELINE}"
+for mode in rc_alias rc_changed rc_user_owned; do
+  output="${TMPDIR_BASE}/${mode}.txt"
+  log="${TMPDIR_BASE}/${mode}.log"
+  if run_recipe "${mode}" public-api-check "${output}" "${log}"; then
+    code=0
+  else
+    code=$?
+  fi
+  if [[ "${mode}" == rc_alias ]]; then
+    [[ "${code}" -eq 0 ]] || fail "Rc re-export spelling still differs"
+    assert_contains "Rc alias comparison reaches the real ratchet" "OK perl-uri" "${output}"
+  else
+    assert_exit_nonzero "${mode} remains a real API difference" "${code}"
+    assert_contains "${mode} is a surface mismatch, not an instrument error" "FAIL Public API changed in perl-uri" "${output}"
+    assert_not_contains "${mode} executes the comparison" "INSTRUMENT-FAIL" "${output}"
+  fi
+  assert_same_file "${mode} comparison never refreshes the baseline" \
+    "${RC_BASELINE}" "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+done
+
+write_ratchet_list perl-uri
+printf 'pub fn Surface::shared() -> alloc::sync::Weak<u8>\n' \
+  > "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+ARC_WEAK_BASELINE="${TMPDIR_BASE}/arc-weak-baseline.txt"
+cp "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt" "${ARC_WEAK_BASELINE}"
+for mode in arc_weak_alias arc_weak_changed; do
+  output="${TMPDIR_BASE}/${mode}.txt"
+  log="${TMPDIR_BASE}/${mode}.log"
+  if run_recipe "${mode}" public-api-check "${output}" "${log}"; then
+    code=0
+  else
+    code=$?
+  fi
+  if [[ "${mode}" == arc_weak_alias ]]; then
+    [[ "${code}" -eq 0 ]] || fail "Arc Weak re-export spelling still differs"
+    assert_contains "Arc Weak alias comparison reaches the real ratchet" "OK perl-uri" "${output}"
+  else
+    assert_exit_nonzero "${mode} remains a real API difference" "${code}"
+    assert_contains "${mode} is a surface mismatch, not an instrument error" "FAIL Public API changed in perl-uri" "${output}"
+    assert_not_contains "${mode} executes the comparison" "INSTRUMENT-FAIL" "${output}"
+  fi
+  assert_same_file "${mode} comparison never refreshes the baseline" \
+    "${ARC_WEAK_BASELINE}" "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+done
 
 echo "=== public-api ratchet regression fixture passed ==="

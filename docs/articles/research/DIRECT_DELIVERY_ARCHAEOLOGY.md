@@ -120,9 +120,9 @@ already moving toward staged delivery.
 
 The canonical Q3 control-plane artifacts preserve the final shape:
 
-- [`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
-- [`.claude/agents4/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/draft-to-pr.md)
-- [`.claude/agents4/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/pr-to-merge.md)
+- [`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
+- [`.claude/agents4/draft-to-pr.md`](../../reference/archive/agents-history/agents4/draft-to-pr.md)
+- [`.claude/agents4/pr-to-merge.md`](../../reference/archive/agents-history/agents4/pr-to-merge.md)
 
 Those flow files name the process after the transition has already happened.
 The earlier history explains why they were needed:
@@ -146,6 +146,6 @@ So the archive tells a simple story:
 - `git log --all --since='2025-08-01' --until='2025-09-30'`
 - `git log --first-parent --since='2025-08-01' --until='2025-09-30'`
 - `gh pr list --state all --limit 2000`
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [PR_LIFECYCLE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md)
-- [ERA_TIMELINE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [PR_LIFECYCLE_ARCHAEOLOGY.md](PR_LIFECYCLE_ARCHAEOLOGY.md)
+- [ERA_TIMELINE.md](ERA_TIMELINE.md)

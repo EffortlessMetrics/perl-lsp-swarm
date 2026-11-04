@@ -197,8 +197,8 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 | `perltidy_cuddled_else` | `boolean` | (unset) | Cuddled-else style compatibility option. |
 | `perltidy_space_after_keyword` | `boolean` | (unset) | Space-after-keyword compatibility option. |
 | `perltidy_add_trailing_commas` | `boolean` | (unset) | Trailing-comma compatibility option. |
-| `perltidy_vertical_alignment` | `boolean` | (unset) | Vertical-alignment compatibility option. |
-| `perltidy_block_comment_indentation` | `integer` | (unset) | Block-comment indentation compatibility option. |
+| `perltidy_vertical_alignment` | `boolean` | (unset) | Vertical-alignment compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
+| `perltidy_block_comment_indentation` | `integer` | (unset) | Block-comment indentation compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
 | `perltidy_extra_args` | `string[]` | `[]` | Extra arguments for the external perltidy adapter. Ignored by the native formatter. |
 | `perltidy_timeout_secs` | `integer` | (unset) | Timeout in seconds for the external perltidy adapter. |
 
@@ -292,30 +292,58 @@ the workspace root. Absolute entries are honored as provided only when they
 still stay inside the workspace boundary. These paths are searched by
 `perl-lsp` and are not appended to Perl's runtime `@INC`.
 
-When `perlPath` is unset, the server will try perlbrew/plenv-managed
-interpreters before falling back to `perl` on `PATH` for the system `@INC`
-probe. Use `useSystemInc` to opt in to that system `@INC` lookup.
+The optional startup `@INC` module probe resolves `perl` in a fixed order: an
+active perlbrew interpreter, then an active plenv interpreter, then `perl` on
+`PATH`. perlbrew and plenv therefore take precedence over `PATH`. Direct
+selection reads the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of
+the server process: `plenv local` or `plenv global` alone does not set
+`PLENV_VERSION` for a server launched outside a plenv-initialised shell, and
+without direct detection the first `perl` on `PATH` is used, resolved from the
+server process working directory. Set `PLENV_VERSION` before starting
+`perllsp`, or reorder `PATH`. Use
+`useSystemInc` to opt in to that system `@INC` lookup. The separate interpreter
+availability check during initialization uses OS-aware discovery; on Windows
+it prefers Strawberry or ActiveState over MSYS even if MSYS is first on `PATH`.
 
-#### `perl.workspace.perlPath`
+#### `perl.workspace.perlPath` — refused, not configurable
 
 | Property | Value |
 |---|---|
 | Type | `string` |
-| Default | auto-detected |
+| Status | **ignored if set** |
 | Key | `perlPath` |
 
-Path to the Perl interpreter used for system `@INC` probing. When set, this
-value overrides auto-detection and `PATH` lookup.
+The language server accepts no interpreter path. Setting this key has no
+effect, produces no warning, and the value is discarded.
 
-#### `perl.workspace.perlArgs`
+That is deliberate. Honouring an interpreter path or argv from workspace or
+editor settings would let a hostile cloned repository choose which program the
+server executes and with which arguments, so the keys are refused on every
+client-settings channel and `.perl-lsp.toml` has no field for them at all.
+
+To make the startup `@INC` module probe use a specific Perl, control resolution order instead:
+set the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of the server
+process to an installed version (`plenv local` or `plenv global` alone does
+not set `PLENV_VERSION` outside a plenv-initialised shell). Without direct
+detection, put the intended `perl` first on `PATH` (`where.exe perl` on
+Windows, `which -a perl` elsewhere); it is resolved from the server process
+working directory. The read-only workspace trust report does not
+resolve or verify the selected interpreter.
+
+The debugger is a separate channel: `launch.json` accepts a per-launch
+`perlPath`, and that one is honored.
+
+#### `perl.workspace.perlArgs` — refused, not configurable
 
 | Property | Value |
 |---|---|
 | Type | `string[]` |
-| Default | `[]` |
+| Status | **ignored if set** |
 | Key | `perlArgs` |
 
-Extra arguments passed to the Perl interpreter when probing startup `@INC`.
+Extra arguments for the Perl interpreter used to probe startup `@INC`. Refused
+for the same reason as `perlPath` above: argv chosen by a workspace must not
+reach a process the server spawns.
 
 ```json
 {
@@ -825,12 +853,29 @@ Flags passed when launching the `perllsp` executable. Source:
 
 ### Diagnostic and info
 
+Diagnostic/info actions in this group exit immediately and do not start the LSP
+server. `--json` is an output modifier for `--doctor` and the composed
+`--info --json` identity form; `--json` alone does not select an exit action
+(source: `crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs`). One-shot
+`--identity` / `--identity-json` constraints are enforced in
+`crates/perl-lsp-rs-core/src/product_identity.rs` before the ordinary parser runs.
+
 | Flag | Description |
 |---|---|
 | `--health` | Print `ok <version>` and exit |
 | `--info` | Print version, parser, profile, feature count, and executable path |
 | `--version` | Print version string and exit |
 | `--features-json` | Print the active feature catalog as JSON and exit |
+| `--doctor [dir]` | Explain Perl path, config, and effective `@INC` roots for a workspace directory (defaults to `.` when omitted). Conflicts with `--check` and `--check-project`. |
+| `--external-tools` | With `--doctor`: registry-driven native-first external tooling report (ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--critic-compatibility` and `--dev-environment`. |
+| `--critic-compatibility` | With `--doctor`: `.perlcriticrc` compatibility report (process-free; ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--external-tools` and `--dev-environment`. |
+| `--dev-environment` | With `--doctor`: development-environment prerequisite report (symlink privilege, shells, toolchain pin, Perl identity; ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--external-tools` and `--critic-compatibility`. |
+| `--json` | Machine-readable JSON output when paired with `--doctor`. With `--info`, forms the composed one-shot identity output (see below). |
+| `--identity` | Print the installed-binary identity packet and exit (`product_identity.rs`). One-shot: must be the only argument. |
+| `--identity-json` | Print the same packet as `perl_lsp.binary_identity.v1` JSON and exit (`product_identity.rs`). One-shot: must be the only argument. |
+| `--info --json` | Composed one-shot identity JSON (`--info` and `--json` only; either order). |
+| `--perltidy-compat-report <profile>` | Report native formatter compatibility for a `.perltidyrc` profile and exit. Mutually exclusive with `--perlcritic-compat-report`. |
+| `--perlcritic-compat-report <profile>` | Report native critic compatibility for a `.perlcriticrc` profile and exit. Mutually exclusive with `--perltidy-compat-report`. |
 
 ### Tool mode (no editor required)
 
@@ -852,6 +897,9 @@ perllsp --stdio --feature-profile prod  # production feature profile
 perllsp --check lib/MyModule.pm         # native listed-file parser check
 perllsp --check-project lib/            # native parsability report (80%)
 perllsp --info                          # print server information
+perllsp --doctor .                      # first-run setup report
+perllsp --doctor --json                 # same report as JSON
+perllsp --identity                      # installed-binary identity packet
 perllsp --completion bash >> ~/.bashrc  # install bash completions
 ```
 
@@ -1156,14 +1204,24 @@ Example `launch.json`:
 
 ### Attach Configuration
 
-Attach to a running Perl process via TCP (requires the target to load
-`Perl::LanguageServer` or a compatible debug bridge).
+TCP **attach** connects **outbound** from the debug adapter to a compatible
+debugger peer that is already **listening** on `host`/`port`. The adapter
+exchanges DAP over TCP using Content-Length–framed JSON (see
+`crates/perl-dap/src/tcp_attach/`). This path does not require
+`Perl::LanguageServer` or any bundled third-party debug bridge in the target
+process ([Native stack policy](NATIVE_STACK_POLICY.md) / PLSP-SPEC-0015).
+
+**Refused attach shapes:** `processId` (PID) attach, and `stopOnEntry: true` in
+attach launch configurations. Stock `perl -d` with `PERLDB_OPTS=RemotePort=…`
+is not documented here as a verified end-to-end attach recipe; a working attach
+journey needs a separately proven compatible transport or bridge, not a
+documentation-only assertion.
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `host` | `string` | `"localhost"` | Hostname or IP of the running debugger. |
-| `port` | `number` | `13603` | TCP port the debugger is listening on. |
-| `timeout` | `number` (ms) | `5000` | Connection timeout in milliseconds. |
+| `host` | `string` | `"localhost"` | Hostname or IP where the compatible debugger peer is listening. |
+| `port` | `number` | `13603` | TCP port the peer is listening on. |
+| `timeout` | `number` (ms) | `5000` | Connection and TCP I/O timeout in milliseconds (connect, read, and write; default `5000` in `tcp_attach/config.rs`). |
 
 Example:
 
