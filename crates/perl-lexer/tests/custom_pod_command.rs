@@ -40,14 +40,19 @@ fn word_after_term_on_continuation_line_is_not_pod() {
         let src = format!("my $x\n={word};\n=cut\nsub two {{ 2 }}\n");
         let toks = idents(&src);
         assert!(toks.iter().any(|t| t == word), "{word} +cut: {toks:?}");
-        assert!(toks.iter().any(|t| t == "two"), "{word} +cut: {toks:?}");
+        // The later `=cut` follows a statement end, so it opens POD and the text
+        // after it is POD, which is how perl treats it.
+        assert!(!toks.iter().any(|t| t == "two"), "{word} +cut: {toks:?}");
     }
 }
 
 #[test]
-fn stray_cut_does_not_open_pod() {
+fn stray_cut_opens_pod_and_swallows_the_rest() {
+    // `perl -c` accepts `my $x = 1;\n=cut\nsub two { 2 }`: a line-initial `=cut`
+    // outside POD opens a block that runs to the next `=cut`, or to EOF. So `two`
+    // is POD text, not a subroutine.
     let toks = idents("my $x = 1;\n=cut\nsub two { 2 }\n");
-    assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+    assert!(!toks.iter().any(|t| t == "two"), "{toks:?}");
 }
 
 #[test]
@@ -62,7 +67,8 @@ fn whitespace_only_line_counts_as_blank() {
 fn semicolon_in_comment_is_not_statement_end() {
     let toks = idents("my $x # note;\n=shift;\n=cut\nsub two { 2 }\n");
     assert!(toks.iter().any(|t| t == "shift"), "{toks:?}");
-    assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+    // The `=cut` follows a statement end, so it opens POD and `two` is POD text.
+    assert!(!toks.iter().any(|t| t == "two"), "{toks:?}");
 }
 
 #[test]
@@ -96,20 +102,26 @@ fn equals_word_inside_heredoc_and_string_is_untouched() {
 
 #[test]
 fn closing_brace_term_then_equals_word_is_not_pod() {
-    for head in [
-        "my %h; $h{a}\n=lc 'X';\n",
-        "my $x = do { 1 }\n=shift;\n",
-        "my $x = { a=>1 }\n=shift;\n",
-        "$h->{a}\n=shift;\n",
-        "@{$x}\n=shift;\n",
-        "my $v = $c ? {a=>1} : {}\n=lc;\n",
+    for (head, word) in [
+        ("my %h; $h{a}\n=lc 'X';\n", "lc"),
+        ("my $x = do { 1 }\n=shift;\n", "shift"),
+        ("my $x = { a=>1 }\n=shift;\n", "shift"),
+        ("$h->{a}\n=shift;\n", "shift"),
+        ("@{$x}\n=shift;\n", "shift"),
+        ("my $v = $c ? {a=>1} : {}\n=lc;\n", "lc"),
     ] {
-        let src = format!("{head}=cut\nsub tail{{1}}\n");
-        let toks = idents(&src);
-        assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
+        // A closing brace ends a term, so the `=word` after it stays code.
         let src = format!("{head}sub tail{{1}}\n");
         let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == word), "{head:?}: {toks:?}");
         assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
+        // A later `=cut` does not make the `=word` a POD opener. The `=cut` itself
+        // follows a statement end, so it opens POD and the text after it is POD,
+        // which is how perl treats it.
+        let src = format!("{head}=cut\nsub tail{{1}}\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == word), "{head:?}: {toks:?}");
+        assert!(!toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
     }
 }
 

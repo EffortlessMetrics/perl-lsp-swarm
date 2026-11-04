@@ -86,6 +86,60 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8041"
     ),
     row!(
+        "initialize_requested",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
+        "initialized",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
+        "shutdown_received",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
+        "exit_policy",
+        ProductComposition,
+        "immutable",
+        "process restart / server construction",
+        "transport exit scope (#17331): TerminateProcess vs EndConnection",
+        false,
+        "#17331"
+    ),
+    row!(
+        "connection_exit",
+        ClientTransport,
+        "Arc<Notify>",
+        "connection shutdown / exit notification",
+        "connection serve-loop wake (#17331)",
+        false,
+        "#17331"
+    ),
+    row!(
+        "pending_startup_log",
+        ClientSession,
+        "Arc<Mutex>",
+        "initialized or connection shutdown",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
         "index_coordinator",
         WorkspaceServices,
         "Option<Arc>",
@@ -451,6 +505,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
+        "module_resolution_negative_cache",
+        WorkspaceServices,
+        "Arc",
+        "`.pm` watcher + manual clear",
+        "effective-@INC fingerprint + module name",
+        true,
+        "#18776"
+    ),
+    row!(
         "use_lib_hir_cache",
         AnalysisServices,
         "Arc<Mutex>",
@@ -530,6 +593,42 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "workspace + session",
         false,
         "#8385"
+    ),
+    row!(
+        "root_undetected_shown",
+        ClientSession,
+        "Arc<AtomicBool>",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
+        "core_module_notice_shown",
+        ClientSession,
+        "Arc<AtomicBool>",
+        "server session",
+        "server session",
+        false,
+        "#16551"
+    ),
+    row!(
+        "module_ambiguity_notices",
+        AnalysisServices,
+        "Arc<owned store>",
+        "connection replacement / server drop",
+        "bounded module-identity ambiguity observation (#16594)",
+        true,
+        "#16594"
+    ),
+    row!(
+        "module_ambiguity_probe_gate",
+        RuntimeServices,
+        "Mutex<Option>",
+        "test gate release / server drop",
+        "test runtime (#16594 falsifiers)",
+        true,
+        "#16594"
     ),
     row!(
         "formatter_runtime_override",
