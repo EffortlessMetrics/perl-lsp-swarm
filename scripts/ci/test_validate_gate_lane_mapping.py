@@ -16,7 +16,11 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from validate_gate_lane_mapping import GATE_TO_LANE_MAP, main  # noqa: E402
+from validate_gate_lane_mapping import (  # noqa: E402
+    GATE_TO_LANE_MAP,
+    SCHEMA_VERSION,
+    main,
+)
 
 
 class ValidateGateLaneMappingTests(unittest.TestCase):
@@ -73,6 +77,25 @@ class ValidateGateLaneMappingTests(unittest.TestCase):
             report_json = json.loads(report.read_text(encoding="utf-8")) if json_out else None
 
         return status, stdout.getvalue(), report_json
+
+    def test_json_out_report_includes_schema_version(self) -> None:
+        status, _, report = self.run_validator(
+            """
+gates:
+  - name: fmt
+""",
+            """
+[lane.pr_smoke]
+""",
+            strict=False,
+            json_out=True,
+        )
+
+        self.assertEqual(0, status)
+        assert report is not None
+        self.assertEqual("gate_lane_mapping.v1", SCHEMA_VERSION)
+        self.assertEqual(SCHEMA_VERSION, report["schema_version"])
+        self.assertTrue(json.dumps(report).startswith('{"schema_version":'))
 
     def test_strict_passes_when_every_gate_maps_to_existing_lane(self) -> None:
         status, output, report = self.run_validator(

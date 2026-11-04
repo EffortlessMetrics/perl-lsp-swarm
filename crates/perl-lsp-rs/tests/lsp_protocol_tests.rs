@@ -6,11 +6,15 @@
 // coding standards (unlike production code, where it is banned).
 #![allow(clippy::expect_used)]
 
+mod support;
+
 use parking_lot::Mutex;
 use perl_lsp::{JsonRpcId, JsonRpcRequest, LspServer};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::sync::Arc;
+use std::time::Duration;
+use support::lsp_harness::LspHarness;
 
 /// Simple writer that captures all output into a shared buffer
 struct CapturingWriter {
@@ -80,6 +84,8 @@ fn parse_messages(data: &[u8]) -> Result<Vec<Value>, Box<dyn std::error::Error>>
 
 #[test]
 fn test_diagnostics_clear_protocol_framing() -> Result<(), Box<dyn std::error::Error>> {
+    // Intentionally uses direct LspServer::with_output and a capturing writer to assert
+    // Content-Length framing on async outbound diagnostics; LspHarness does not expose this IO path.
     // Buffer to capture all output from the server
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let writer = CapturingWriter::new(buffer.clone());
@@ -272,56 +278,50 @@ sub test_function {
 
 #[test]
 fn test_double_initialize_is_rejected_per_lsp_spec() {
-    let server = LspServer::new();
-
-    let first = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".into(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
+    let mut harness = LspHarness::new_without_initialize();
+    let init_params = json!({
+        "capabilities": {},
+        "rootUri": "file:///test"
     });
+    let timeout = Duration::from_secs(5);
 
-    let second = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
-        method: "initialize".into(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    });
+    let first = harness.request_raw_preserving_id_with_timeout(
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": init_params.clone(),
+        }),
+        timeout,
+    );
 
-    let first_response = first.expect("first initialize should return a response");
-    assert!(first_response.error.is_none(), "first initialize should succeed");
+    let second = harness.request_raw_preserving_id_with_timeout(
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "initialize",
+            "params": init_params,
+        }),
+        timeout,
+    );
 
-    let second_response = second.expect("second initialize should return an error response");
-    let error = second_response.error.expect("second initialize should error");
-    assert_eq!(error.code, -32600, "second initialize must be InvalidRequest");
-    assert_eq!(error.message, "initialize may only be sent once");
+    assert!(first.get("error").is_none(), "first initialize should succeed");
+    assert!(first.get("result").is_some(), "first initialize should return capabilities");
+
+    let error = second.get("error").expect("second initialize should return an error response");
+    assert_eq!(error["code"], -32600, "second initialize must be InvalidRequest");
+    assert_eq!(error["message"], "initialize may only be sent once");
 }
 
 #[test]
 fn test_position_encoding_advertised() -> Result<(), Box<dyn std::error::Error>> {
-    // This test verifies that the server advertises UTF-16 position encoding
-    let _server = LspServer::new();
+    let mut harness = LspHarness::new();
+    let init_result = harness.initialize_with_root("file:///test", None)?;
 
-    let _init_request = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "rootUri": "file:///test",
-            "capabilities": {}
-        }
-    });
-
-    // In a real test, we would capture the response and verify:
-    // response["result"]["capabilities"]["positionEncoding"] == "utf-16"
-
-    // For now, this test ensures the code compiles with the correct structure
+    assert_eq!(
+        init_result["capabilities"]["positionEncoding"], "utf-16",
+        "server must advertise UTF-16 position encoding"
+    );
 
     Ok(())
 }

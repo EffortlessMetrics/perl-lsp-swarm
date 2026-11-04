@@ -38,7 +38,10 @@ impl PrepareRefusal {
         let route = if plausible_version(version) {
             format!("{} --version {version}", self.canonical_route)
         } else {
-            format!("{} --version <VERSION> (supply a reviewed release version)", self.canonical_route)
+            format!(
+                "{} --version <VERSION> (supply a reviewed release version)",
+                self.canonical_route
+            )
         };
         format!(
             "REFUSED: {} is retired and fail-closed.\nReason: {}.\nUse {} instead (ruling: #{})",
@@ -93,8 +96,11 @@ mod tests {
     #[test]
     fn refusal_is_stable_and_names_the_canonical_route() -> Result<()> {
         let refusal = refusal();
-        if refusal.canonical_route != CANONICAL_ROUTE || refusal.ruling_issue != 15392
-            || !refusal.retired_command.contains("release prepare") || refusal.reason.is_empty() {
+        if refusal.canonical_route != CANONICAL_ROUTE
+            || refusal.ruling_issue != 15392
+            || !refusal.retired_command.contains("release prepare")
+            || refusal.reason.is_empty()
+        {
             bail!("retirement refusal identity changed: {refusal:?}");
         }
         Ok(())
@@ -103,9 +109,11 @@ mod tests {
     #[test]
     fn render_names_command_reason_route_and_ruling() -> Result<()> {
         let rendered = refusal().render("0.18.0");
-        if !rendered.contains("REFUSED") || !rendered.contains("cargo xtask release prepare")
+        if !rendered.contains("REFUSED")
+            || !rendered.contains("cargo xtask release prepare")
             || !rendered.contains("cargo xtask release-turnkey --version 0.18.0")
-            || !rendered.contains("#15392") {
+            || !rendered.contains("#15392")
+        {
             bail!("incomplete refusal: {rendered}");
         }
         for unsafe_version in ["../../escape", "", "v1.2.3 with spaces", "1.2.3;echo"] {

@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Admit optional --keep-going on the strict Linux Clippy route for all-targets and named-test selectors while preserving budgets, settlement and diagnostic authority.
+time: 2026-11-02T01:50:00Z
+custom:
+  PR: "17653"
+  Slug: clippy-keep-going
+  Breaking: "no"

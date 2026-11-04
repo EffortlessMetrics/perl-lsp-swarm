@@ -16,7 +16,7 @@ CONTRACT_WORKFLOW = ROOT / ".github/workflows/workflow-contracts-advisory.yml"
 EXPECTED = {
     "Upload PR-fast test results to Codecov": {
         "file": ".github/workflows/ci.yml",
-        "if": "always() && env.CODECOV_TOKEN != ''",
+        "if": "always() && hashFiles('target/receipts/receipt.json') != '' && env.CODECOV_TOKEN != ''",
         "files": "target/test-results/pr-fast-junit.xml",
         "token": TOKEN,
         "env_token": TOKEN,
