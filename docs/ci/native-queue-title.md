@@ -32,8 +32,10 @@ enqueue, checks publication, labels, comments or merge.
    from the configured trusted App's current successful H check. An arbitrary JSON
    document, same-named check from another App, current content equality or a live
    queue entry without the retained acknowledgement is insufficient.
-4. In a fresh private bare Git store, fetch fixed subjects from the fixed repository
-   origin, prove B ancestry of G and compare protected B's producer closure with G.
+4. Require every constituent to carry the same App-authenticated reviewed producer
+   generation and exact target closure. In a fresh private bare Git store, fetch
+   fixed subjects from the fixed repository origin, prove B ancestry of G and
+   compare G's producer objects and modes with that admitted target closure.
    Sequential `git merge-tree --write-tree` composition must equal G's exact tree.
    Private intermediate commits retain both the preceding composition and consumed
    H as parents so stacked edits/reverts keep the correct merge base. This makes no
@@ -59,12 +61,12 @@ enable an association or maximum-batch-size fallback if those observations fail.
 
 The Hermes publisher's existing `queue_enqueue` operation writes canonical JSON to
 the already bound H check's `output.text` only after retaining the acknowledged
-`expectedHeadOid=H` mutation. The shared schema is `hermes.queue-intake.v1`:
+`expectedHeadOid=H` mutation. The shared schema is strict `hermes.queue-intake.v2`:
 
 ```json
 {
-  "schema_id": "hermes.queue-intake.v1",
-  "schema_version": 1,
+  "schema_id": "hermes.queue-intake.v2",
+  "schema_version": 2,
   "repository": "owner/repository",
   "pull_number": 42,
   "head_sha": "<H>",
@@ -73,7 +75,15 @@ the already bound H check's `output.text` only after retaining the acknowledged
   "enqueue_request_id": "<acknowledged enqueue id>",
   "base_sha": "<H admission base>",
   "expires_at": "<timezone-aware expiry>",
-  "authority_sha256": "<trusted admission generation digest>"
+  "authority_sha256": "<trusted admission request digest>",
+  "producer_generation_sha256": "<root-admitted reviewed workflow portfolio digest>",
+  "producer_closure": {
+    ".github": {"kind": "tree", "sha": "<reviewed tree OID>", "mode": "040000"},
+    ".ci/policies/native-queue-title.json": {"kind": "blob", "sha": "<reviewed blob OID>", "mode": "100644"},
+    "scripts/ci/native_queue.py": {"kind": "blob", "sha": "<reviewed blob OID>", "mode": "100644"},
+    "scripts/ci/native_queue_title.py": {"kind": "blob", "sha": "<reviewed blob OID>", "mode": "100644"},
+    "scripts/ci/pr_title_validator.js": {"kind": "blob", "sha": "<reviewed blob OID>", "mode": "100644"}
+  }
 }
 ```
 
@@ -89,17 +99,49 @@ title job; the publisher's final `queue_qualify` consumes completed G jobs later
 The intake does not claim G proof. The trusted H App and the five Actions-bound G
 contexts remain distinct publishers. No token impersonates Actions App `15368`.
 
+The two v2 fields carry the conflict-checked union of the existing root-owned
+workflow profiles' producer closures and the digest of their complete reviewed
+portfolio, including the bound App/check identity. The existing authorized
+`queue_admit` request binds the expected generation digest. Hermes freezes the
+generation and closure before publishing H success and revalidates them at
+enqueue and G qualification; a profile change cannot silently rewrite an old H
+admission. The title leaf treats this as authenticated App evidence, not a hash
+that candidate JSON can authorize or a digest reconstructed from the closure alone.
+
+Every native prefix member must agree on both digest and exact closure. The closure
+must include all configured title paths with their expected kinds, including the
+entire `.github` tree; additional admitted producer roots are verified too. Every
+entry has exactly `kind`, `sha` and `mode`. Only tree mode `040000` and blob modes
+`100644`/`100755` are supported; symlinks, submodules, unsafe paths, missing objects
+and mixed generations refuse. The old v1 intake cannot authorize this path.
+
 ## Source custody and title behavior
 
 The G workflow has only contents/actions/checks/pull-requests/issues **read**
 permissions. It checks out immutable protected B into `trusted-title-source` with
 credentials unpersisted. Python and JavaScript execute only from that checkout;
-candidate G is fetched only into a private bare Git store. The closure includes the
-entire `.github` tree, both Python transport/verifier files, the JavaScript evaluator
-and its policy. The independent trusted admission/qualification owner must also
-enforce the reviewed workflow/helper generation: a candidate-edited workflow cannot
-authenticate its own decision merely by announcing this helper passed. This source
-check is not a substitute for that installed protection boundary.
+candidate G is fetched only into a private bare Git store. B supplies the executed
+Python/JavaScript and the current configured publisher App/name/policy. The intake
+supplies the separately authorized target generation at G. A reviewed G may change
+the workflow tree, helpers or future policy while this run continues to execute
+only B's evaluator and current trust configuration. Requiring the target closure to
+equal B would prevent both the first final cutover and later governed CI changes.
+The receipt retains `producer_generation=B` for execution provenance and the
+separate `producer_generation_sha256` for target authorization.
+
+The independent trusted admission/qualification owner still enforces the actual
+G caller's reviewed workflow/helper closure and exact native run/attempt/jobs:
+a candidate-edited workflow cannot authenticate its own decision merely by
+announcing this helper passed. The title leaf's read-only result does not replace
+that installed protection boundary or authorize a new current App binding.
+
+Before the first cutover G, the additive preparation must be installed on protected
+B with this v2 reader and the actual qualified App/name policy. The checked-in
+policy remains disabled until that authorized native installation. The root-owned
+publisher then admits the reviewed final G closure, which can differ from B.
+This resolves the source-generation cycle; it does not supply the first protected
+installation, native workflow registration or effective settings authority, and
+it does not authorize an ordinary-lifecycle CI bootstrap.
 
 The JavaScript preserves the prior production rule body. Its exact archived source
 is `.ci/retired-workflows/pr-title-check.yml`; native Node tests compare pass/fail,

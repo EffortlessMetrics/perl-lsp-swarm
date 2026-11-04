@@ -29,7 +29,7 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
 HEX256 = re.compile(r"[0-9a-f]{64}")
 INTAKE_KEYS = {"schema_id", "schema_version", "repository", "pull_number", "head_sha",
                "entry_id", "admission_request_id", "enqueue_request_id", "base_sha",
-               "expires_at", "authority_sha256"}
+               "expires_at", "authority_sha256", "producer_closure", "producer_generation_sha256"}
 require, Refused = queue.require, queue.Refused
 
 
@@ -72,6 +72,38 @@ def policy(value):
     require(value.get("producer_closure") == expected,
             "reviewed transitive title producer closure is incomplete")
     return value
+
+
+def producer_closure(value, configured):
+    require(isinstance(value, dict) and set(configured["producer_closure"]) <= set(value),
+            "admitted producer closure omits a required title source")
+    for path, entry in value.items():
+        require(isinstance(path, str) and re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", path)
+                and not any(part in {".", "..", ".git"} for part in path.split("/"))
+                and isinstance(entry, dict) and set(entry) == {"kind", "sha", "mode"}
+                and queue.oid(entry["sha"])
+                and isinstance(entry["kind"], str) and isinstance(entry["mode"], str)
+                and ((entry["kind"] == "tree" and entry["mode"] == "040000")
+                     or (entry["kind"] == "blob" and entry["mode"] in {"100644", "100755"}))
+                and (path not in configured["producer_closure"]
+                     or entry["kind"] == configured["producer_closure"][path]),
+                "admitted producer closure has an invalid path, kind, object or mode")
+    return value
+
+
+def admitted_generation(members, configured):
+    require(isinstance(members, list) and members, "admitted producer generation has no members")
+    expected = None
+    for member in members:
+        data = member["admission"]["intake"]
+        digest = data.get("producer_generation_sha256")
+        require(isinstance(digest, str) and HEX256.fullmatch(digest),
+                "admitted producer generation digest is missing")
+        current = (digest, producer_closure(data.get("producer_closure"), configured))
+        require(expected is None or current == expected,
+                "native prefix has mixed admitted producer generations")
+        expected = current
+    return expected
 
 
 def event_subject(event, env, configured):
@@ -213,18 +245,21 @@ def intake(api, subject, member, configured, now):
         data = decode(raw)
         if not isinstance(data, dict) or data.get("entry_id") != member["entry_id"]:
             continue
-        require(set(data) == INTAKE_KEYS and data["schema_id"] == "hermes.queue-intake.v1"
-                and type(data["schema_version"]) is int and data["schema_version"] == 1
+        require(set(data) == INTAKE_KEYS and data["schema_id"] == "hermes.queue-intake.v2"
+                and type(data["schema_version"]) is int and data["schema_version"] == 2
                 and data["repository"] == subject["repository"]
                 and type(data["pull_number"]) is int and data["pull_number"] == member["pull_number"]
                 and data["head_sha"] == member["head_sha"] and queue.oid(data["base_sha"])
                 and all(isinstance(data[key], str) and NAME.fullmatch(data[key])
                         for key in ("admission_request_id", "enqueue_request_id"))
                 and isinstance(data["authority_sha256"], str) and HEX256.fullmatch(data["authority_sha256"])
+                and isinstance(data["producer_generation_sha256"], str)
+                and HEX256.fullmatch(data["producer_generation_sha256"])
                 and positive(check.get("id")) and check.get("head_sha") == member["head_sha"]
                 and check.get("external_id") == "hermes-queue:" + data["admission_request_id"] + ":H"
                 and check.get("status") == "completed" and check.get("conclusion") == "success",
                 "App-authenticated exact H-to-entry intake is invalid")
+        producer_closure(data["producer_closure"], configured)
         require(isinstance(data["expires_at"], str), "H admission expiry is missing")
         expiry = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
         require(expiry.tzinfo is not None and expiry > now, "H admission expired")
@@ -275,20 +310,20 @@ class GitProof(AbstractContextManager):
     def prove(self, subject, members, configured):
         base, group = subject["base_sha"], subject["head_sha"]
         heads = [m["head_sha"] for m in members]
+        generation, closure = admitted_generation(members, configured)
         self.run(["fetch", "--no-tags", "--no-write-fetch-head", self.origin(),
                   *dict.fromkeys([base, *heads, group])])
         self.run(["merge-base", "--is-ancestor", base, group])
-        closure = {}
-        for path, kind in configured["producer_closure"].items():
-            expected = self.run(["rev-parse", "--verify", base + ":" + path])
+        # B supplies the executed evaluator and current App/policy trust. G may
+        # contain a reviewed next generation; its authority comes from every
+        # current H intake, not equality with B or candidate-provided policy.
+        for path, expected in closure.items():
             actual = self.run(["rev-parse", "--verify", group + ":" + path])
-            base_entry = self.run(["ls-tree", base, "--", path])
             group_entry = self.run(["ls-tree", group, "--", path])
-            require(queue.oid(expected) and actual == expected
-                    and base_entry == group_entry and bool(base_entry)
-                    and self.run(["cat-file", "-t", actual]) == kind,
-                    "G substituted the reviewed protected producer closure")
-            closure[path] = {"kind": kind, "sha": expected}
+            expected_entry = f'{expected["mode"]} {expected["kind"]} {expected["sha"]}\t{path}'
+            require(actual == expected["sha"] and group_entry == expected_entry
+                    and self.run(["cat-file", "-t", actual]) == expected["kind"],
+                    "G differs from the App-admitted producer closure")
         current, expected_tree = base, None
         for head in heads:
             expected_tree = self.run(["merge-tree", "--write-tree", "--no-messages", current, head]).splitlines()[0]
@@ -301,7 +336,8 @@ class GitProof(AbstractContextManager):
         require(expected_tree is not None and actual_tree == expected_tree,
                 "actual G differs from complete ordered B/H tree composition")
         return {"tree_sha": actual_tree, "composition": "ordered_source_tree_equivalence",
-                "producer_generation": base, "producer_closure": closure}
+                "producer_generation": base, "producer_generation_sha256": generation,
+                "producer_closure": closure}
 
 
 def snapshot(api, subject, configured, now):
@@ -309,6 +345,7 @@ def snapshot(api, subject, configured, now):
     observed = group_members(api, subject, configured)
     for member in observed["members"]:
         member["admission"] = intake(api, subject, member, configured, now)
+    admitted_generation(observed["members"], configured)
     return {"subject": subject, "run": run, **observed}
 
 
@@ -353,7 +390,8 @@ def main(argv=None):
         event = decode(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
         subject = event_subject(event, os.environ, configured)
         # Actions checks out only immutable protected B; candidate G is never an
-        # executable worktree. The separate bare proof still verifies G's closure.
+        # executable worktree. The separate bare proof verifies G against the
+        # authenticated target closure; it does not execute that next generation.
         custody_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         custody_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                            GIT_CONFIG_SYSTEM=os.devnull, GIT_NO_REPLACE_OBJECTS="1")

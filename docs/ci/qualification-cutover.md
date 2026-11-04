@@ -130,7 +130,7 @@ current merely because another executor cannot reproduce it.
 | --- | --- |
 | `Compile All Targets (bit-rot guard)` | `ci.yml:integration-required` joins unchanged `check-all-targets` execution and the existing `merge-gate` selected integration aggregate in one run/attempt. Native execution remains unobserved. |
 | `Conflict marker check` | `ci.yml:conflict-markers`, retained on actual G. Applicability and execution must be observed on the canary. |
-| `validate-title` | `pr-title-check.yml:validate-title` now has a read-only native G producer: complete ordered prefix, App-authenticated H intake, protected B source, isolated Git composition, current per-member title rules and final readback. Its App policy remains disabled pending real publisher binding/native canary; see [native title proof](native-queue-title.md). |
+| `validate-title` | `pr-title-check.yml:validate-title` now has a read-only native G producer: complete ordered prefix, App-authenticated v2 H intake and admitted target closure, protected B execution, isolated Git composition, current per-member title rules and final readback. Its App policy remains disabled pending real publisher binding/native canary; see [native title proof](native-queue-title.md). |
 | `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result`, with actual-G skipped-route refusal. Preserve route execution and canonical receipt semantics; native producer/attempt acceptance remains unobserved. |
 | `ripr+ New Gap Gate` | `ripr.yml:ripr`, retained actual-G route and separately purposed cache seed. Native exact-subject execution and truthful no-gap/failure accounting remain to be observed. |
 
@@ -211,6 +211,16 @@ operation** and its actual trusted producer. "Install the source" is not that
 operation. Record the precise missing capability or incompatible predicate when
 no supported route is established. Keep affected admissions held; independent
 local implementation, review and verified safe source preservation may continue.
+
+The Perl additive preparation must place the v2 title reader and its actual
+qualified App/name policy on protected B before the first final cutover G. The
+publisher's root-authorized H request freezes the intended producer generation;
+its authenticated intake carries the exact target closure, including object kinds,
+OIDs and modes. B remains the executable helper/current-policy source, while the
+reviewed target `.github` tree and helpers at G may differ. This permits governed
+CI changes without requiring the final cutover to have already landed on B.
+The checked-in policy remains disabled: publishing this reader neither installs
+the real binding nor supplies the permitted protected operation that puts it on B.
 
 The packet contains three coordinated generations:
 
