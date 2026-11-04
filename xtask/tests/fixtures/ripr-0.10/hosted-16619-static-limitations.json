@@ -1,0 +1,375 @@
+{
+  "schema_version": "0.1",
+  "tool": "ripr",
+  "status": "advisory",
+  "base": "origin/main",
+  "base_sha": "60319a3471a50bc7182dab4a16edd9d77508971c",
+  "head": "HEAD",
+  "head_sha": "cb695fb0bc2b7c74a311bbbed95cf7adae3b3222",
+  "evaluated_head_sha": "cb695fb0bc2b7c74a311bbbed95cf7adae3b3222",
+  "pr_head_sha": "7280bb349f6986b04661e3d46bdc062fd0d4e210",
+  "summary": {
+    "comments": 3,
+    "summary_only": 7,
+    "suppressed": 0,
+    "unchanged_tests": false
+  },
+  "comments": [
+    {
+      "seam_id": "1d7f27d4eaeddbc7",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 55,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "perl5lib_paths(config)",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 51
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call perl5lib_paths(config)"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/runtime/language/code_actions.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `perl5lib_paths(config)`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "1d7193d4eae255ef",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 55,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "Vec::new()",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 52
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call Vec::new()"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/cli/check_project.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `Vec::new()`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "1d6aa7d4eadc593d",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 55,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "configured_perl_path(config)",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 54
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call configured_perl_path(config)"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/runtime/language/code_actions.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `configured_perl_path(config)`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    }
+  ],
+  "summary_only": [
+    {
+      "seam_id": "3ca6abc59699afab",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 69,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "config.include_paths.is_empty()",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 73
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "summary_reason": "inline_comment_cap_reached",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call config.include_paths.is_empty()"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/runtime/language/code_actions.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `config.include_paths.is_empty()`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "1a117dc58307b80c",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 69,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "path.trim()",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 80
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "summary_reason": "inline_comment_cap_reached",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call path.trim()"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/documentation_targets_tests.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `path.trim()`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "21671fc586cef900",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 69,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "config.include_paths.iter()",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 80
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "summary_reason": "inline_comment_cap_reached",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call config.include_paths.iter()"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/runtime/language/code_actions.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `config.include_paths.iter()`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "8a3c9dc5c2706a57",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 69,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "perl5lib_paths.is_empty()",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 90
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "summary_reason": "inline_comment_cap_reached",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call perl5lib_paths.is_empty()"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/runtime/language/code_actions.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `perl5lib_paths.is_empty()`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "e999372646ba5983",
+      "kind": "predicate_boundary",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 69,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "perl5lib_paths.is_empty()",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 90
+      },
+      "reason": "Static evidence names missing discriminator `input that hits the boundary: perl5lib_paths.is_empty()` for this seam.",
+      "summary_reason": "inline_comment_cap_reached",
+      "suggested_test": {
+        "assertion_kind": "exact_return_value",
+        "assertion_shape": "assert_eq!(setup_hints_summary(/* boundary input */), /* expected */)",
+        "candidate_values": [
+          "input that hits the boundary: perl5lib_paths.is_empty()"
+        ],
+        "intent": "Add one focused discriminator test.",
+        "near_test": "other_named_identities_flags_only_new_named_kinds",
+        "recommended_file": "crates/perl-lsp-rs/src/cli/doctor.rs",
+        "recommended_name": "setup_hints_summary_boundary_discriminator"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `perl5lib_paths.is_empty()`",
+      "missing_discriminator": "input that hits the boundary: perl5lib_paths.is_empty()",
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "06a613ab411d524f",
+      "kind": "call_presence",
+      "grip_class": "activation_unknown",
+      "gap_state": "static_limitation",
+      "placement": {
+        "line": 126,
+        "mode": "owner_function_changed_line",
+        "path": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "hints.len()",
+        "file": "crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 116
+      },
+      "reason": "Static evidence class is activation_unknown; a focused test can strengthen the named seam.",
+      "summary_reason": "inline_comment_cap_reached",
+      "suggested_test": {
+        "assertion_kind": "call_expectation",
+        "assertion_shape": "// assert that setup_hints_summary called the expected target",
+        "candidate_values": [
+          "input that reaches call hints.len()"
+        ],
+        "intent": "Add a call-observation test.",
+        "near_test": null,
+        "recommended_file": "crates/perl-lsp-rs/src/call_hierarchy_provider/mod.rs",
+        "recommended_name": "setup_hints_summary_call_presence_observer"
+      },
+      "why_not_actionable": "No direct owner call observed for value-insensitive seam `hints.len()`",
+      "missing_discriminator": null,
+      "non_claims": {
+        "authority_boundary": "advisory_static_evidence_only",
+        "language_status": "preview_advisory"
+      }
+    },
+    {
+      "seam_id": "9599251f7e01d912",
+      "kind": "error_variant",
+      "grip_class": "weakly_gripped",
+      "gap_state": "actionable",
+      "placement": {
+        "line": 695,
+        "mode": "same_file_changed_line",
+        "path": "crates/perl-lsp-rs/src/cli/doctor.rs",
+        "side": "RIGHT"
+      },
+      "seam": {
+        "expression": "return Err(format!(\"{dir}: directory not found\"))",
+        "file": "crates/perl-lsp-rs/src/cli/doctor.rs",
+        "line": 257
+      },
+      "reason": "Static evidence class is weakly_gripped; a focused test can strengthen the named seam.",
+      "summary_reason": "inline_comment_cap_reached",
+      "suggested_test": {
+        "assertion_kind": "exact_error_variant",
+        "assertion_shape": "let err = workspace_dir(/* trigger the exact error variant */).expect_err(\"expected the exact error variant\"); assert!(matches!(err, /* exact error variant */ /* exact payload if applicable */));",
+        "candidate_values": [
+          "input that triggers return Err(format!(\"{dir}: directory not found\"))"
+        ],
+        "intent": "Add an exact error-variant test.",
+        "near_test": "workspace_dir_exact_error_variant",
+        "recommended_file": "crates/perl-lsp-rs/src/cli/doctor.rs",
+        "recommended_name": "workspace_dir_exact_error_variant"
+      },
+      "missing_discriminator": null
+    }
+  ],
+  "suppressed": [],
+  "warnings": []
+}

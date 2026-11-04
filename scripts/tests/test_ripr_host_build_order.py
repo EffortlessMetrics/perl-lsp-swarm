@@ -134,9 +134,23 @@ class OrderProof(unittest.TestCase):
             env.pop('BASH_ENV', None)
             env.update(PATH=str(root) + os.pathsep + env['PATH'], RIPR_FRESHNESS_HANDOFF=str(handoff),
                        RIPR_FRESHNESS_TOKEN='current-token', BASE_REF='main', PR_HEAD_SHA='fixed-pr-head',
+                       RIPR_BASE_SHA='origin/main', RIPR_EVALUATED_SHA='HEAD',
                        PR_LABELS='proof-label', MOCK_CALLS=str(root / 'calls.jsonl'), MOCK_FAIL_CALL=str(fail_call))
+            script = bash_run(self.parts['Validate PR evidence contracts'])
+            # The subject guard needs a real git checkout, so it cannot run
+            # under this mock-cargo harness (temp cwd, no repository). Its
+            # behavior is covered by scripts/ci/test_ripr_event_operands.py;
+            # here an active guard command line is asserted as workflow
+            # text and excluded from the executed script (#18043).
+            guard = 'bash scripts/ci/require-ripr-subject.sh'
+            lines = script.splitlines()
+            self.assertTrue(
+                any(line.strip() == guard for line in lines),
+                'Validate block must invoke the subject guard as an active command',
+            )
+            script = '\n'.join(line for line in lines if line.strip() != guard) + '\n'
             result = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c',
-                                     bash_run(self.parts['Validate PR evidence contracts'])],
+                                     script],
                                     cwd=root, env=env, text=True, capture_output=True, timeout=10)
             calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()] if (root / 'calls.jsonl').exists() else []
             return result, calls

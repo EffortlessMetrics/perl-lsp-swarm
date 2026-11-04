@@ -59,120 +59,119 @@ fn native_formatter_reports_utf16_parse_error_range() {
 }
 
 #[test]
-fn native_formatter_preserves_pod_in_document() {
+fn native_formatter_preserves_pod() {
     let formatter = NativeFormatter::new();
     let source = "=pod\n\n=head1 NAME\n\n=cut\n\nmy $x = 1;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    // POD bytes are preserved; only the trailing code line loses its final
-    // newline under Trim (#17708).
-    assert_eq!(result.formatted, "=pod\n\n=head1 NAME\n\n=cut\n\nmy $x = 1;");
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_heredoc_in_document() {
+fn native_formatter_preserves_heredoc() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nraw { text }\nEOF\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_data_section_in_document() {
+fn native_formatter_preserves_data_section() {
     let formatter = NativeFormatter::new();
     let source = "my $x = 1;\n__DATA__\nraw\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_end_section_in_document() {
+fn native_formatter_preserves_end_section() {
     let formatter = NativeFormatter::new();
     let source = "my $x = 1;\n__END__   \nraw\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_regex_in_document() {
+fn native_formatter_preserves_regex() {
     let formatter = NativeFormatter::new();
     let source = "my $matched = $text =~ /needle/i;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_substitution_in_document() {
+fn native_formatter_preserves_substitution() {
     let formatter = NativeFormatter::new();
     let source = "$text =~ s/foo/bar/g;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_transliteration_in_document() {
+fn native_formatter_preserves_transliteration() {
     let formatter = NativeFormatter::new();
     let source = "$text =~ tr/a-z/A-Z/;\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_quote_like_in_document() {
+fn native_formatter_preserves_quote_like() {
     let formatter = NativeFormatter::new();
     let source = "my @words = qw(alpha beta gamma);\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_preserves_format_body_in_document() {
+fn native_formatter_preserves_format_body() {
     let formatter = NativeFormatter::new();
     let source = "format STDOUT =\n@<<<<\n$name\n.\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
 
-    assert!(!result.changed);
-    assert_eq!(result.formatted, source);
+    // #17708: preserved byte-exact (Trim removes only the final newline).
+    assert_eq!(result.formatted, source.trim_end_matches(['\n', '\r']));
     assert!(result.diagnostics.is_empty());
 }
 
@@ -271,22 +270,18 @@ fn range_format_bails_when_range_itself_contains_regex() {
     );
 }
 
-/// Whole-document formatting behavior (#17708): a document with a regex
-/// anywhere is preserved in place rather than refused.
+/// Whole-document formatting with a regex anywhere no longer bails (#17708):
+/// the regex line is preserved byte-exact and the rest formats normally.
 #[test]
 fn document_format_preserves_regex_anywhere_in_document() {
     let formatter = NativeFormatter::new();
-    let source = "my $x = 1;\nmy $ok = $t =~ /needle/;\n";
+    let source = "my$x=1;\nmy $ok = $t =~ /needle/;\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
 
-    // #17708: document formatting preserves the regex line instead of bailing.
-    assert_eq!(result.formatted, source);
-    assert!(
-        result.diagnostics.iter().all(|d| d.code != "native.format.literal_preserve_region"),
-        "format_document should preserve, not bail; got diagnostics: {:?}",
-        result.diagnostics,
-    );
+    assert!(result.changed);
+    assert_eq!(result.formatted, "my $x = 1;\nmy $ok = $t =~ /needle/;\n");
+    assert!(result.diagnostics.is_empty());
 }
 
 /// Heredoc on a different line than the requested range — range-format should

@@ -525,6 +525,42 @@ mod tests {
     }
 
     #[test]
+    fn test_rename_unicode_sub_with_optional_text_edits() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let code =
+            "use utf8;\nsub 語 { return 1; }\n語();\n# 😀 語 語語 語x x語 語\nmy $s = '語 語';\n";
+        let ast = Parser::new(code).parse()?;
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let pos = code.find("語 {").ok_or("missing declaration")?;
+        let baseline = provider.rename(pos, "renamed", &RenameOptions::default());
+        assert!(baseline.is_valid, "{:?}", baseline.error);
+        assert_eq!(baseline.edits.len(), 2);
+        let text_start = code.find('#').ok_or("missing comment")?;
+        assert!(baseline.edits.iter().all(|edit| edit.location.end <= text_start));
+        let options = RenameOptions {
+            rename_in_comments: true,
+            rename_in_strings: true,
+            ..RenameOptions::default()
+        };
+        let result = provider.rename(pos, "renamed", &options);
+        assert!(result.is_valid, "{:?}", result.error);
+        let (semantic_edits, text_edits): (Vec<_>, Vec<_>) =
+            result.edits.into_iter().partition(|edit| edit.location.start < text_start);
+        // This scan repair does not redefine the unscoped semantic edit spans.
+        assert_eq!(semantic_edits, baseline.edits);
+        assert_eq!(text_edits.len(), 4);
+        assert!(text_edits.iter().all(|edit| {
+            code.get(edit.location.start..edit.location.end) == Some("語")
+                && edit.new_text == "renamed"
+        }));
+        assert_eq!(
+            apply_rename_edits(code, &text_edits),
+            "use utf8;\nsub 語 { return 1; }\n語();\n# 😀 renamed 語語 語x x語 renamed\nmy $s = 'renamed renamed';\n"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_validate_new_name() {
         let code = "my $x = 1;";
         let ast = must(Parser::new(code).parse());

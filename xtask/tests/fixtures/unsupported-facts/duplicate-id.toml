@@ -1,0 +1,361 @@
+schema_version = "unsupported_fact_catalog.v1"
+
+[[entries]]
+class_id = "ambient_module_resolution"
+owning_layer = "hir"
+trigger_rule = "Module resolution depends on ambient search state (@INC contents, working directory, PERL5LIB) so the resolved file is not determined by source alone; a dynamic require-$expr alone is not this class."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the import as ambiently resolved with the candidate path set left open; gold never pins a resolved file."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: ambient search state is outside every profile, so the boundary refuses regardless of profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The import edge is statically located; what is unsupported is which file it resolves to, not a runtime value crossing a boundary."
+not_low_confidence = "Candidate files are enumerated from live search state, not scored; there is no confidence ranking to be low."
+not_stale_evidence = "No cached resolution exists to go stale; the search state is read at observation time."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "xs_native_dependency"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "ambiguous_bareword"
+owning_layer = "parser"
+trigger_rule = "The parser encounters a bareword token where the sub-call, string-literal, and filehandle readings are all grammatically live and no disambiguating context resolves the intent."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the bareword as ambiguous with the live readings enumerated; gold never asserts a single resolved intent."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: the ambiguity is syntactic and refuses exact facts in every profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The syntax tree is fully built without consulting any runtime value; nothing crosses a dynamic boundary."
+not_low_confidence = "The readings are enumerated exactly from the grammar; the ambiguity is in the source, not in scorer certainty."
+not_stale_evidence = "No cached fact is involved; the ambiguity is present in current source."
+not_fallback = "No provider fallback has occurred; this classifies the parse, not a query outcome. It is also not the provider ambiguous_identity candidate-resolution outcome."
+nearest_neighbor = "unsupported_parser_construct"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "autoload"
+owning_layer = "hir"
+trigger_rule = "Method or function dispatch may resolve through AUTOLOAD or an equivalent generated-dispatch hook, so the callee is not statically enumerable."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the call as AUTOLOAD-dispatched without a resolved callee; gold never pins a callee."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: dispatch through AUTOLOAD is unresolvable in every profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The call site is statically located; what is unsupported is the callee identity, not a value crossing a boundary."
+not_low_confidence = "The callee set is open-ended by hook semantics, not a scored ranking."
+not_stale_evidence = "No cached callee resolution exists to go stale; the hook runs at dispatch time."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "generated_no_source"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "compile_time_execution_outside_profile"
+owning_layer = "semantic"
+trigger_rule = "Compile-time execution (BEGIN, UNITCHECK, CHECK, INIT, use-import side effects, or constant folding over impure operations) runs outside the executable profile, so its effects are unobserved."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the phase-block effect as outside-profile and qualifies dependent facts; gold never asserts the unobserved effects."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Outside the executable profile: the boundary refuses and stamps this class ID. Profile expansion retires the class; the ID never changes meaning."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The phase block is statically located; what is unsupported is observing its off-profile effects."
+not_low_confidence = "The effects are unobserved by profile exclusion, not uncertainly scored."
+not_stale_evidence = "No cached effect model exists to go stale; the execution is outside the observed profile."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "runtime_builtin_outside_profile"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "dynamic_stash_mutation"
+owning_layer = "hir"
+trigger_rule = "HIR observes a runtime stash or typeglob mutation (glob assignment, stash-entry deletion, or alias installation) that changes symbol-table contents after compile time; a static typeglob alias is not this class."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the stash effect as unmodeled and qualifies dependent facts; gold never asserts post-mutation table contents."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: runtime table mutation is unobservable in every profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The mutation site is statically located; what is unsupported is the resulting table state, not a value crossing a boundary."
+not_low_confidence = "Post-mutation contents are computed at runtime, not scored from evidence."
+not_stale_evidence = "No cached table snapshot is authoritative across the mutation; staleness does not apply."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "symbolic_ref"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "generated_no_source"
+owning_layer = "semantic"
+trigger_rule = "A member (subroutine, method, constant, or import) exists only as generated code with no supported adapter mapping it back to source intent."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "require_confirmation"]
+curated_gold_treatment = "Gold records the member as generated-without-source and expects fallback or confirmation; gold never asserts an exact source claim."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: the missing source adapter is a modeling gap in every profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The generated member is statically present; what is unsupported is its source provenance, not a runtime value."
+not_low_confidence = "There is no source candidate to score; provenance is absent, not uncertain."
+not_stale_evidence = "No cached provenance exists to go stale; no adapter ever produced one."
+not_fallback = "Provider fallback is an allowed consumer response to this class, not the class itself."
+nearest_neighbor = "autoload"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "host_capability_outside_profile"
+owning_layer = "semantic"
+trigger_rule = "A filesystem, network, or environment capability (file open, socket, %ENV, working directory, or equivalent host interaction) is exercised outside the executable profile."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the host interaction as outside-profile and qualifies dependent facts; gold never asserts the host-observed values."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Outside the executable profile: the boundary refuses and stamps this class ID. Profile expansion retires the class; the ID never changes meaning."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The interaction site is statically located; what is unsupported is the off-profile host behavior."
+not_low_confidence = "Host behavior is excluded from observation by the profile, not uncertainly scored."
+not_stale_evidence = "No cached host observation exists to go stale; the capability is outside the observed profile."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "runtime_builtin_outside_profile"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "regex_construct_outside_profile"
+owning_layer = "semantic"
+trigger_rule = "A regex construct ((?{...}), (??{...}), or another profile-excluded extension) requires execution outside the executable profile."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the regex construct as outside-profile and qualifies dependent facts; gold never asserts match semantics for it."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Outside the executable profile: the boundary refuses and stamps this class ID. Profile expansion retires the class; the ID never changes meaning."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The pattern is statically present; what is unsupported is executing the embedded code off-profile."
+not_low_confidence = "Match semantics are excluded from the profile, not uncertainly scored."
+not_stale_evidence = "No cached match model exists to go stale; the construct is outside the observed profile."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "runtime_builtin_outside_profile"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "runtime_builtin_outside_profile"
+owning_layer = "semantic"
+trigger_rule = "A runtime builtin (eval-string, do-file, a fork or exec family call, or another profile-excluded builtin) executes outside the executable profile."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the builtin call as outside-profile and qualifies dependent facts; gold never asserts its effects."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Outside the executable profile: the boundary refuses and stamps this class ID. Profile expansion retires the class; the ID never changes meaning."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The call site is statically located; what is unsupported is the off-profile builtin behavior."
+not_low_confidence = "Builtin effects are excluded from observation by the profile, not uncertainly scored."
+not_stale_evidence = "No cached builtin model exists to go stale; the call is outside the observed profile."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "compile_time_execution_outside_profile"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "source_filter"
+owning_layer = "parser"
+trigger_rule = "A source filter (a Filter::* module, comment-driven rewriting, or equivalent pre-parse source transformation) rewrites the compilation unit before parsing, so the parsed text is not the authored text."
+compile_acceptance_blocks = true
+downstream_blocks = true
+allowed_provider_behaviors = ["block", "require_confirmation"]
+curated_gold_treatment = "Gold records the unit as filter-rewritten and expects blocked acceptance; gold never asserts facts over filtered source."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: filtering precedes parsing in every profile, so acceptance cannot stand."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "No runtime value is involved; the source text itself was rewritten before the parser ran."
+not_low_confidence = "The rewrite is total, not a scored uncertainty; nothing about the filtered text can be confirmed from source."
+not_stale_evidence = "No cached parse exists to go stale; the input to parsing differs from the authored file."
+not_fallback = "Blocking is the required consumer response here; silent fallback over rewritten source would misrepresent it."
+nearest_neighbor = "unsupported_parser_construct"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "symbolic_ref"
+owning_layer = "hir"
+trigger_rule = "HIR observes a symbolic dereference (a scalar, glob, or coderef name computed at runtime) whose referent cannot be resolved statically."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold marks the dereference target unresolved and records the name expression; gold never pins a referent."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: the computed name is unresolvable in every profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "A dynamic boundary may also be emitted for the dereference, but this class names the unsupported identity (which referent), not the boundary disposition."
+not_low_confidence = "Candidate referents are unbounded at compile time; this is not a scored ranking."
+not_stale_evidence = "No cached resolution exists to go stale; the name is computed at runtime."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "dynamic_stash_mutation"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "unknown_boundary_evidence"
+owning_layer = "semantic"
+trigger_rule = "Boundary evidence is unknown or malformed (missing fields, unparsable payload, or unrecognized version), so no substantive class can be assigned; this is not the unknown schema escape hatch."
+compile_acceptance_blocks = true
+downstream_blocks = true
+allowed_provider_behaviors = ["block", "require_confirmation"]
+curated_gold_treatment = "Gold records the evidence as unknown and expects blocked promotion; unknown is never agreement, never support, and never a known limitation."
+oracle_result_class = "unknown"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: malformed evidence refuses in every profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "No boundary disposition can be established at all; the evidence needed to classify one is missing or malformed."
+not_low_confidence = "There is no evidence to score; low confidence presumes evidence that this class lacks."
+not_stale_evidence = "Staleness presumes a well-formed cached fact; malformed evidence fails before freshness applies."
+not_fallback = "Provider fallback presumes a classified cause; unknown evidence cannot select one, so consumers must block or confirm."
+nearest_neighbor = "unsupported_parser_construct"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "unsupported_parser_construct"
+owning_layer = "parser"
+trigger_rule = "The parser encounters a grammatical construct it cannot represent, so the subtree is absent rather than ambiguous."
+compile_acceptance_blocks = true
+downstream_blocks = true
+allowed_provider_behaviors = ["block", "require_confirmation"]
+curated_gold_treatment = "Gold records the construct as unrepresented and expects blocked acceptance; gold never asserts facts over the missing subtree."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: the tree is incomplete in every profile, so acceptance cannot stand."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "Nothing runtime is involved; the parser produced no node for the construct."
+not_low_confidence = "The subtree is absent, not uncertainly parsed; there is nothing to score."
+not_stale_evidence = "No cached parse of the construct exists to go stale; it was never represented."
+not_fallback = "Blocking is the required consumer response here; silent fallback over a missing subtree would misrepresent it."
+nearest_neighbor = "ambiguous_bareword"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+
+[[entries]]
+class_id = "xs_native_dependency"
+owning_layer = "semantic"
+trigger_rule = "A fact depends on an XS or native-extension dependency whose behavior is implemented outside Perl source and has no modeled adapter."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the native dependency boundary and qualifies dependent facts; gold never asserts the native behavior."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: native code is outside every Perl-source profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The dependency edge is statically located; what is unsupported is the native behavior behind it."
+not_low_confidence = "Native behavior is unmodeled, not uncertainly scored; there is no ranking to be low."
+not_stale_evidence = "No cached native model exists to go stale; no adapter ever produced one."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "ambient_module_resolution"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+[[entries]]
+class_id = "ambient_module_resolution"
+owning_layer = "hir"
+trigger_rule = "Module resolution depends on ambient search state (@INC contents, working directory, PERL5LIB) so the resolved file is not determined by source alone; a dynamic require-$expr alone is not this class."
+compile_acceptance_blocks = false
+downstream_blocks = true
+allowed_provider_behaviors = ["fallback", "advisory"]
+curated_gold_treatment = "Gold records the import as ambiently resolved with the candidate path set left open; gold never pins a resolved file."
+oracle_result_class = "dynamic_or_unsupported"
+oracle_promotion_effect = "blocks_promotion"
+profile_boundary_behavior = "Profile-independent: ambient search state is outside every profile, so the boundary refuses regardless of profile."
+owner_issue = "#4770"
+
+[entries.distinctions]
+not_dynamic_boundary = "The import edge is statically located; what is unsupported is which file it resolves to, not a runtime value crossing a boundary."
+not_low_confidence = "Candidate files are enumerated from live search state, not scored; there is no confidence ranking to be low."
+not_stale_evidence = "No cached resolution exists to go stale; the search state is read at observation time."
+not_fallback = "Provider fallback is a consumer response to this class, not the class itself."
+nearest_neighbor = "xs_native_dependency"
+
+[entries.history]
+introduced_in = "unsupported_fact_catalog.v1"
+migrations = []
+

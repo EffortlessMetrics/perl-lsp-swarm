@@ -429,8 +429,9 @@ fn builtin_formatter_default_indent_when_indent_columns_none() {
 // â”€â”€ NativeFormatter â€” literal preserve regions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
-fn native_formatter_preserves_format_declaration() {
-    // "format NAME =" at start of line triggers format body detection.
+fn native_formatter_preserves_format_declaration_start() {
+    // #17708: "format NAME =" bodies are preserved byte-exact instead of
+    // refusing the whole document.
     let formatter = NativeFormatter::new();
     let source = "format REPORT =\n@<<<\n$name\n.\n";
     let config = FormatConfig::default();

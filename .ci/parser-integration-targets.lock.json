@@ -32,6 +32,10 @@
       "invocation_sha256": "89a8d90d0dc752d12e064b1702b4faabf0c0f60bc26f332c9eb86a43cca00faf"
     },
     {
+      "id": "parser.hir.control_flow",
+      "invocation_sha256": "7758308f8ddcb5108f8a46179e6a260317db59e2262f3f7ba96293397b6e85cd"
+    },
+    {
       "id": "parser.hir.postfix_modifiers",
       "invocation_sha256": "0fee291736275420f9ae5585dc370bc6f42cc37990f5b6c27c3edf7d26ff3f9e"
     },
@@ -81,7 +85,7 @@
     },
     {
       "id": "parser.loops.c_style_separator_recovery",
-      "invocation_sha256": "8ec1ec0814cba27119a4f1e036ecc056eeeaed6f234ab25388da16cf00a25b7b"
+      "invocation_sha256": "56ad611f23094b028475ecd16fb3534858af65c1882e0318884f47cee9901f9c"
     },
     {
       "id": "parser.loops.foreach_declaration_list",

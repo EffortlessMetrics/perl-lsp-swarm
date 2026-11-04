@@ -406,7 +406,7 @@
     {
       "id": "parser.loops.c_style_separator_recovery",
       "package": "perl-parser-core",
-      "target": "fix_expected_semicolon_for_loop",
+      "target": "fix_suite_expected",
       "features": [],
       "no_default_features": false,
       "cargo_args": [],
@@ -475,6 +475,21 @@
       ],
       "owner": "#17538",
       "reason": "Execute the first-cohort scalar literal payload proof: exact Number, String, and Undef leaves with fabrication markers through canonical body construction, public-entry parity, and the PIR-A handoff join.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.control_flow",
+      "package": "perl-parser-core",
+      "target": "hir_control_flow_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6054",
+      "reason": "Protect HIR branch, loop, transfer, and statement-modifier lowering plus recovered-versus-parsed condition provenance consumed by semantic analysis.",
       "disposition": "execute",
       "boundedness": "focused"
     }
