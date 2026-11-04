@@ -144,17 +144,21 @@ pub enum LaunchExecutionError {
         "workspace-bound launch authority requires at least one admitted interpreter from startup \
          configuration or the toolchain profile"
     )]
+    /// Startup configuration and the toolchain profile admitted no interpreter.
     NoAdmittedInterpreter,
+    /// The admitted interpreter path does not exist or is not a regular file.
     #[error("admitted interpreter {path:?} does not exist or is not a regular file")]
     AdmittedInterpreterNotFound {
         /// Raw startup path.
         path: PathBuf,
     },
+    /// The admitted interpreter path is not a valid Perl executable name.
     #[error("admitted interpreter {path:?} is not a valid Perl executable name")]
     AdmittedInterpreterInvalid {
         /// Raw startup path.
         path: PathBuf,
     },
+    /// The admitted interpreter path lies inside a trusted workspace root.
     #[error(
         "admitted interpreter {path:?} cannot live inside a trusted workspace root under \
          workspace-bound launch authority"

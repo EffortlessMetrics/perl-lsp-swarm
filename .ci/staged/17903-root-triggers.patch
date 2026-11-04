@@ -142,7 +142,7 @@
 @@ -339,7 +339,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "semver-pr"
- workflow_result = "continue"
+ workflow_result = "propagate"
 -events = ["pull_request"]
 +events = ["workflow_dispatch"]
  required = false

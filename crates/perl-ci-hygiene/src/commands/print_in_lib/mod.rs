@@ -574,14 +574,8 @@ mod tests {
             .first()
             .ok_or_else(|| eyre!("the scan reported nothing; offenders were {offenders:?}"))?;
         ensure!(offenders.len() == 1, "expected one offender, got {offenders:?}");
-        // The offender embeds a platform-native display path, so compare
-        // structurally: a Unix-shaped literal fails on Windows for the wrong
-        // reason. Production output is intentionally untouched.
-        let expected_prefix = format!(
-            "{}:2:",
-            std::path::Path::new("crates").join("probe").join("src").join("lib.rs").display()
-        );
-        ensure!(entry.starts_with(&expected_prefix), "entry was {entry}");
+        // `display_path` emits canonical repository-relative `/` text on every host.
+        ensure!(entry.starts_with("crates/probe/src/lib.rs:2:"), "entry was {entry}");
         Ok(())
     }
 }

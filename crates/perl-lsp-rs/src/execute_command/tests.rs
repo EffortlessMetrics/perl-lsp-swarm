@@ -1695,8 +1695,52 @@ fn external_critic_requested_for_legacy_engine() {
     let provider = ExecuteCommandProvider::new().with_critic_engine(CriticEngine::Legacy);
     assert!(
         provider.external_critic_requested(),
-        "explicit legacy/external critic engine must select external perlcritic"
+        "explicit legacy/external critic engine must be detected so the public command can refuse it"
     );
+}
+
+#[test]
+fn public_critic_refuses_external_policy_without_claiming_native_equivalence()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Unopened-file public command: refuse Legacy/external intent before PATH
+    // lookup or spawn, and without returning native/builtin findings (#18377).
+    let tmp = tempdir()?;
+    let file = tmp.path().join("unopened.pl");
+    fs::write(&file, "use strict; use warnings; my $x = 1;\n")?;
+    let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_critic_engine(CriticEngine::Legacy);
+    let error = provider
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])
+        .err()
+        .ok_or("legacy command must refuse without claiming native equivalence")?;
+    assert!(error.contains("External critic engines are retired"), "{error}");
+    assert!(error.contains("critic.engine = native"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn public_critic_native_engine_still_reports_native_findings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempdir()?;
+    let file = tmp.path().join("unopened.pl");
+    fs::write(&file, "my $c = '1';\neval $c;\nprint $c;\n")?;
+    let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_critic_engine(CriticEngine::Native);
+    let result = provider
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])?;
+    assert_eq!(result["status"], "success");
+    assert_eq!(result["analyzerUsed"], "native");
+    let policies: Vec<&str> = result["violations"]
+        .as_array()
+        .ok_or("violations is not an array")?
+        .iter()
+        .filter_map(|v| v["policy"].as_str())
+        .collect();
+    assert!(
+        policies.iter().any(|policy| policy.starts_with("native.")),
+        "native public command must still report native findings: {policies:?}"
+    );
+    Ok(())
 }
 
 #[test]

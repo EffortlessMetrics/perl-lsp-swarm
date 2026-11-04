@@ -152,20 +152,20 @@ fn test_api_fixture() -> Value {
 
 fn gate_fixture() -> Value {
     json!({
-        "surface_id": "gate:fixture_gate",
+        "surface_id": "gate:fmt",
         "class": "gate",
         "class_authority": {
             "kind": "derived",
             "authority": ".ci/gate-policy.yaml",
             "rule": "gate-policy-gates"
         },
-        "semantic_authority": ".ci/gate-policy.yaml#fixture_gate",
+        "semantic_authority": ".ci/gate-policy.yaml#fmt",
         "consumers": [],
         "compile_profiles": [],
         "registration": {
             "state": "established",
             "authority": ".ci/gate-policy.yaml",
-            "detail": "tier = \"pr-fast\"; required = true"
+            "detail": "tier = \"pr_fast\"; required = true"
         },
         "proof_references": [],
         "publication": { "state": "not_applicable", "authority": ".ci/gate-policy.yaml" },
