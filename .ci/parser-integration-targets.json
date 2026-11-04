@@ -406,7 +406,7 @@
     {
       "id": "parser.loops.c_style_separator_recovery",
       "package": "perl-parser-core",
-      "target": "fix_expected_semicolon_for_loop",
+      "target": "fix_suite_expected",
       "features": [],
       "no_default_features": false,
       "cargo_args": [],

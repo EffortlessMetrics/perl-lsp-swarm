@@ -34,6 +34,8 @@ DEFAULT_DOCS = Path("docs/ci/gate-policy-economics.md")
 DEFAULT_GATE_POLICY = Path(".ci/gate-policy.yaml")
 DEFAULT_LANES = Path("policy/ci-lanes.toml")
 
+SCHEMA_VERSION = "gate_lane_mapping.v1"
+
 # Many-to-one and one-to-many mappings between gate-policy.yaml gate names and
 # policy/ci-lanes.toml lane keys. Right-hand side is a list of lane keys (a
 # single gate may map to multiple lanes, e.g. an aggregate gate that runs in
@@ -561,6 +563,7 @@ def main() -> int:
 
     if args.json_out:
         report = {
+            "schema_version": SCHEMA_VERSION,
             "gate_policy": str(args.gate_policy),
             "lanes": str(args.lanes),
             "gate_count": len(gate_names),

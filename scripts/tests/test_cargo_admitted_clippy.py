@@ -19,7 +19,10 @@ spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/
 safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
 REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--", "-D", "warnings"]
+KEEP_GOING_REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--keep-going", "--", "-D", "warnings"]
+KEEP_GOING_OFFLINE_REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--offline", "--keep-going", "--", "-D", "warnings"]
 NAMED_REQUEST = ["clippy", "-p", "consumer", "--test", "named-proof", "--profile", "agent", "--locked", "--", "-D", "warnings"]
+NAMED_KEEP_GOING_REQUEST = ["clippy", "-p", "consumer", "--test", "named-proof", "--profile", "agent", "--locked", "--keep-going", "--", "-D", "warnings"]
 
 
 class QualificationBindingTests(unittest.TestCase):
@@ -253,6 +256,47 @@ class ClippyAdmissionTests(unittest.TestCase):
                 self.assertEqual((self.slot / "cargo-active").exists(), not settled)
                 self.assertIn('"lease_released": ' + str(settled).lower(), output)
 
+    def test_keep_going_all_targets_and_named_requests_forward_exactly_once(self):
+        for request in (KEEP_GOING_REQUEST, KEEP_GOING_OFFLINE_REQUEST, NAMED_KEEP_GOING_REQUEST):
+            with self.subTest(request=request):
+                observed = []
+                result, output = self.invoke(request, status=101, settled=True,
+                                             call=lambda command, env, lock: observed.append(command) or 101)
+                self.assertEqual(len(observed), 1, output)
+                command = observed[0]
+                self.assertEqual(command[:2], [self.plan["subjects"]["cargo-clippy"]["path"], "clippy"])
+                self.assertEqual(command[-len(request[1:]):], request[1:])
+                self.assertEqual(command.count("--keep-going"), 1)
+                self.assertEqual(result, 101)
+
+    def test_exact_admitted_keep_going_command_is_accepted_before_allocation(self):
+        exact = ["clippy", "-p", "xtask", "--all-targets", "--profile", "agent", "--locked", "--keep-going", "--", "-D", "warnings"]
+        observed = []
+        result, _ = self.invoke(exact, call=lambda command, env, lock: observed.append(command) or 0)
+        self.assertEqual(result, 75)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0].count("--keep-going"), 1)
+        self.assertEqual(observed[0][-len(exact[1:]):], exact[1:])
+
+    def test_keep_going_rejects_duplicate_misplaced_and_unsupported_fields(self):
+        invalid = [KEEP_GOING_REQUEST[:7] + ["--keep-going"] + KEEP_GOING_REQUEST[7:],
+                   REQUEST[:7] + ["--keep-going", "--fix"] + REQUEST[7:],
+                   KEEP_GOING_REQUEST[:1] + ["--keep-going"] + KEEP_GOING_REQUEST[1:],
+                   NAMED_KEEP_GOING_REQUEST[:4] + ["--all-targets"] + NAMED_KEEP_GOING_REQUEST[4:]]
+        for args in invalid:
+            with self.subTest(args=args):
+                result, _ = self.invoke(args)
+                self.assertEqual(result, 75)
+                self.assertFalse(self.slot.exists(), "refuse before allocation")
+
+    def test_keep_going_changes_budget_scope_digest(self):
+        scopes = []
+        for args in (REQUEST, KEEP_GOING_REQUEST, KEEP_GOING_OFFLINE_REQUEST, NAMED_KEEP_GOING_REQUEST):
+            result, output = self.invoke(["--preflight", *args], env=dict(self.env, FIXTURE="yes"))
+            self.assertEqual(result, 0, output)
+            scopes.append(json.loads(output.split("cargo-admitted preflight: ")[1])["scope"])
+        self.assertEqual(len({scope["cargo_argv_sha256"] for scope in scopes}), 4)
+
     def test_named_selector_rejects_malformed_conflicting_and_unsupported_requests(self):
         for selection in (["--test"], ["--test", ""], ["--test", "*"], ["--test", "a?"],
                           ["--test", "../a"], ["--test", "a/b"], ["--test", "a\\b"],
@@ -261,7 +305,7 @@ class ClippyAdmissionTests(unittest.TestCase):
                           ["--test", "a", "--test", "b"], ["--all-targets", "--test", "a"],
                           ["--test", "a", "--all-targets"], ["--test", "a", "--lib"],
                           ["--test", "a", "--bin", "consumer"], ["--test", "a", "--features", "x"],
-                          ["--test", "a", "--no-default-features"], ["--test", "a", "--keep-going"], []):
+                          ["--test", "a", "--no-default-features"], []):
             with self.subTest(selection=selection):
                 args = REQUEST[:3] + selection + REQUEST[4:]
                 result, _ = self.invoke(args)
@@ -362,6 +406,17 @@ class ClippyAdmissionTests(unittest.TestCase):
                 config.write_text(text)
                 with self.assertRaises(safe.Denied):
                     safe.clippy_configuration(worktree, self.paths)
+
+    def test_local_config_is_part_of_clippy_configuration_scope(self):
+        worktree = self.root / "worktree"
+        (worktree / ".cargo").mkdir(parents=True)
+        local = worktree / ".cargo/config.local.toml"
+        local.write_text("[build]\njobs = 1\n", encoding="utf-8")
+        with patch.object(safe.Path, "cwd", return_value=worktree):
+            baseline = safe.clippy_configuration(worktree, self.paths)
+            local.write_text("[build]\njobs = 2\n", encoding="utf-8")
+            changed = safe.clippy_configuration(worktree, self.paths)
+        self.assertNotEqual(baseline, changed)
 
     def test_interruption_retains_owned_lease(self):
         result, output = self.invoke(call=Mock(side_effect=KeyboardInterrupt))

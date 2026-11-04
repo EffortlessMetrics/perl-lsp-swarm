@@ -6,12 +6,14 @@ delta oracle, not RIPR's domain analysis. Real xtask scope is tested by the
 ripr_comparison_subject Rust target.
 The fixture identities and patch digest are literal independent Git oracles.
 """
+import functools
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -30,17 +32,22 @@ B = "8bd75ed2e244b3f29239593d35bbb2de6dfd8f14"
 C = "c824af93c0e3f4f3e0666acc45370a7868457a11"
 DIGEST = "066459f45988da46a0ef0757de85dba5cbdc3061ddf25fb09c5d56befe47040c"
 ADVANCED_DIGEST = "d5f2f0ae5d5836e1696fe473b9f4fb8b4cdde58fc501dd7e6d8a852397ba42d9"
-GIT_ENV_KEYS = subprocess.check_output(
-    ["git", "rev-parse", "--local-env-vars"], text=True).split()
-ENV = {k: v for k, v in os.environ.items()
-       if k not in GIT_ENV_KEYS and k != "GIT_DEFAULT_HASH"}
-ENV.update(
-    GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
-    GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
-    GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
-    GIT_AUTHOR_DATE="2020-01-01T00:00:00+0000",
-    GIT_COMMITTER_DATE="2020-01-01T00:00:00+0000",
-)
+
+
+@functools.lru_cache(maxsize=1)
+def fixture_env():
+    git_env_keys = subprocess.check_output(
+        ["git", "rev-parse", "--local-env-vars"], text=True).split()
+    env = {k: v for k, v in os.environ.items()
+           if k not in git_env_keys and k != "GIT_DEFAULT_HASH"}
+    env.update(
+        GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+        GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+        GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+        GIT_AUTHOR_DATE="2020-01-01T00:00:00+0000",
+        GIT_COMMITTER_DATE="2020-01-01T00:00:00+0000",
+    )
+    return env
 RECORDER = '''#!/usr/bin/env python3
 import hashlib, json, subprocess, sys
 args = sys.argv[1:]
@@ -68,7 +75,7 @@ class RiprEventOperands(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.repo = Path(self.temp.name) / "repo"
         self.repo.mkdir()
-        self.env = dict(ENV)
+        self.env = dict(fixture_env())
         self.git("init", "--initial-branch=main")
         self.assertEqual(self.commit("src/lib.rs", "pub fn value() -> u8 { 1 }\n", "event base"), A)
         self.git("checkout", "-b", "feature")
@@ -88,7 +95,7 @@ class RiprEventOperands(unittest.TestCase):
         cargo.write_text(RECORDER)
         cargo.chmod(0o755)
         self.env.update(
-            PATH=str(self.bin) + os.pathsep + ENV["PATH"],
+            PATH=str(self.bin) + os.pathsep + fixture_env()["PATH"],
             GITHUB_EVENT_NAME="pull_request", RIPR_BASE_SHA=A,
             RIPR_EVENT_HEAD_SHA=H, RIPR_EVALUATED_SHA=E, PR_HEAD_SHA=H,
             BASE_REF="main",  # Retained solely to expose the old implementation.
@@ -293,6 +300,46 @@ class RiprEventOperands(unittest.TestCase):
                 if lane != "ripr-fallback":
                     for name in ("RIPR_BASE_SHA", "RIPR_EVALUATED_SHA", "RIPR_EVENT_HEAD_SHA", "GITHUB_EVENT_NAME"):
                         self.assertRegex(text, r"-e " + name + r"(?:=|\s)")
+
+    def test_module_import_succeeds_without_git_on_path(self):
+        mod_path = Path(__file__).resolve()
+        script = textwrap.dedent(
+            """
+            import importlib.util
+            import sys
+            from pathlib import Path
+
+            mod_path = Path(sys.argv[1])
+            spec = importlib.util.spec_from_file_location("test_ripr_event_operands", mod_path)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            assert module.__name__ != "__main__"
+            """
+        )
+        with tempfile.TemporaryDirectory() as empty_path:
+            env = {k: v for k, v in os.environ.items()
+                   if k in ("HOME", "USER", "LANG", "LC_ALL", "TMPDIR")}
+            env["PATH"] = empty_path
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(mod_path)],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fixture_env_key_set_matches_eager_construction(self):
+        git_env_keys = subprocess.check_output(
+            ["git", "rev-parse", "--local-env-vars"], text=True).split()
+        eager = {k: v for k, v in os.environ.items()
+                 if k not in git_env_keys and k != "GIT_DEFAULT_HASH"}
+        eager.update(
+            GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+            GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+            GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+            GIT_AUTHOR_DATE="2020-01-01T00:00:00+0000",
+            GIT_COMMITTER_DATE="2020-01-01T00:00:00+0000",
+        )
+        self.assertEqual(set(fixture_env().keys()), set(eager.keys()))
 
 
 if __name__ == "__main__":

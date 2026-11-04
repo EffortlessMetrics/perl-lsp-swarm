@@ -1,16 +1,15 @@
 # Optional machine-local Cargo settings; do not commit config.local.toml.
-# Cargo does not automatically read a file named config.local.toml. Do not
-# assume copying this example activates it. See Cargo's configuration discovery:
-# https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure
 #
-# Use scripts/cargo-admitted for builds. Select DEVPLANE, CARGO_HOME and
-# TMPDIR/TEMP/TMP in the task shell before its exact-command --preflight.
-# docs/agents/CARGO_STORAGE.md describes native Windows setup and hook bootstrap.
+# Activation (pinned Cargo 1.95):
+# - `scripts/cargo-safe` and `scripts/cargo-admitted` pass
+#   `--config .cargo/config.local.toml` when this file exists.
+# - For direct `cargo`, pass the same flag explicitly, e.g.
+#   `cargo --config .cargo/config.local.toml check -p foo`, or export the
+#   knobs you need via `CARGO_*` in your task shell.
 #
-# Do not add target-dir, build-dir, compiler wrappers or sccache settings here:
-# admitted target AND intermediate build paths must be private to each worktree,
-# and compiler caches require separate admission. Shared paths from the old
-# cargo-safe example do not establish candidate identity or capacity admission.
+# Precedence: admitted-route `--config` overrides (target/build paths, jobs
+# policy) win over values here; do not put target-dir, build-dir, compiler
+# wrappers, or sccache settings in this file (see docs/agents/CARGO_STORAGE.md).
 
 [build]
 jobs = 2

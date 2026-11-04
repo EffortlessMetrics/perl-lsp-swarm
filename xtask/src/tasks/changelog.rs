@@ -42,10 +42,12 @@
 //! would bury the named findings under an exit-2 instrument failure that names
 //! nothing. "Fragment X is malformed" (above) and "render crashed" (exit 2)
 //! therefore never appear for the same run. The repo-wide half of that guard
-//! is scoped to *renderer-fatal* defects — an unparseable fragment or a
-//! `time:` the renderer's timestamp decode rejects — not to every schema
-//! finding: another PR's policy-conformance defect renders perfectly well and
-//! must not switch the render oracle off for the whole repository. Fragments absent from the tree
+//! is scoped to *renderer-fatal* defects — an unparseable fragment, a `time:`
+//! the renderer's timestamp decode rejects, or a `project` key absent from
+//! `.changie.yaml` (passed as `changie batch --project`, #18410) — not to
+//! every schema finding: another PR's policy-conformance defect renders
+//! perfectly well and must not switch the render oracle off for the whole
+//! repository. Fragments absent from the tree
 //! under check are excluded from the disposition itself before classification
 //! — an absent path cannot crash the renderer, owes no release note, and must
 //! not lend its Fragment disposition to unrelated changes in the same PR.
@@ -743,27 +745,45 @@ fn parsed_fragment_or_findings(
 /// Findings that make the *renderer itself* fail, as opposed to findings that
 /// violate repository policy while rendering perfectly well.
 ///
-/// Only two shapes are known to crash `changie batch`: content that does not
-/// deserialize as a fragment at all, and a `time:` Go's yaml/time decoding
-/// rejects (#12549, #12648, #13484). Everything else [`validate_fragment`]
-/// reports — an unknown component, kind, or project, a short body, a
-/// non-numeric PR — is a conformance defect the renderer tolerates. That is
-/// not an assumption: 47 fragments with an unknown `component` were live on
-/// `main` while releases rendered, and the two incidents that motivated this
-/// module were both `time:`.
+/// Three shapes are known to crash `changie batch`: content that does not
+/// deserialize as a fragment at all, a `time:` Go's yaml/time decoding
+/// rejects (#12549, #12648, #13484), and a `project` key absent from the
+/// Changie config (#18410). `project` is not a content field the renderer
+/// tolerates: [`fragment_projects_on_disk`] reads it and [`render_project`]
+/// passes it as the `--project` argument selecting the batch target, which
+/// changie must resolve against its config. An unresolvable key is a hard
+/// error (`Error: project not found`).
+///
+/// Everything else [`validate_fragment`] reports — an unknown component or
+/// kind, a short body, a non-numeric PR, a missing `project` (#18411) — is a
+/// conformance defect the renderer tolerates. That is not an assumption for
+/// `component`: 47 fragments with an unknown `component` were live on `main`
+/// while releases rendered. It was never evidence about `project`. The two
+/// incidents that first motivated this module were both `time:`.
 ///
 /// The distinction is load-bearing only for the repo-wide guard below, which
 /// suppresses the render for the *whole repository*. Keyed on every schema
 /// finding, it matched those 47 and turned the render off for every PR —
 /// silently retiring the checker's one external oracle, and doing it for
 /// defects that were never going to crash anything (#13484 review round 4).
-fn render_fatal_findings(content: &str) -> Vec<String> {
+fn render_fatal_findings(content: &str, cfg: &ChangieConfig) -> Vec<String> {
     let frag: Fragment = match serde_yaml_ng::from_str(content) {
         Ok(f) => f,
         Err(e) => return vec![format!("does not parse as YAML: {e}")],
     };
     let mut findings = Vec::new();
     validate_time_field(&frag.time, &mut findings);
+    // Missing `project` is a later leaf (#18411) and stays non-fatal here.
+    if !frag.project.is_empty() {
+        let keys = cfg.project_keys();
+        if !keys.iter().any(|k| *k == frag.project) {
+            findings.push(format!(
+                "unknown project `{}` (expected one of: {})",
+                frag.project,
+                keys.join(", ")
+            ));
+        }
+    }
     findings
 }
 
@@ -779,7 +799,11 @@ fn render_fatal_findings(content: &str) -> Vec<String> {
 /// PR's policy-conformance defect is not this run's business and must not
 /// suppress the render. Renderable fragments are silent here (the PR's own
 /// were already reported by [`check_fragment_file`]).
-fn on_disk_malformed_fragments(root: &Path, report: &mut Report) -> Vec<String> {
+fn on_disk_malformed_fragments(
+    root: &Path,
+    cfg: &ChangieConfig,
+    report: &mut Report,
+) -> Vec<String> {
     let unreleased = root.join(UNRELEASED_DIR);
     let Ok(entries) = std::fs::read_dir(&unreleased) else {
         return Vec::new();
@@ -796,7 +820,7 @@ fn on_disk_malformed_fragments(root: &Path, report: &mut Report) -> Vec<String> 
         };
         let findings = std::fs::read_to_string(&path).map_or_else(
             |_| vec!["could not read fragment".to_string()],
-            |content| render_fatal_findings(&content),
+            |content| render_fatal_findings(&content, cfg),
         );
         if findings.is_empty() {
             continue;
@@ -958,7 +982,7 @@ fn check_inner(
             // findings under an exit-2 instrument failure that names nothing.
             let mut unrenderable = malformed.clone();
             if unrenderable.is_empty() {
-                unrenderable = on_disk_malformed_fragments(&root, &mut report);
+                unrenderable = on_disk_malformed_fragments(&root, &cfg, &mut report);
                 if !unrenderable.is_empty() {
                     report.info(format!(
                         "skipping `changie batch --dry-run`: {} pre-existing renderer-fatal \
@@ -2889,6 +2913,42 @@ changelog = "vscode-extension/CHANGELOG.md"
              into a vacuous pass; got:\n{rendered}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn an_unknown_project_is_renderer_fatal_but_an_unknown_component_is_not() {
+        let cfg = test_config();
+
+        // `project` reaches changie as the `--project` argument and must resolve
+        // against the config, so an unknown key is renderer-fatal.
+        let unknown_project = "\
+project: perl-semantic-analyzer
+component: Developer experience
+kind: Fixed
+body: A body long enough to satisfy the configured minimum length.
+time: 2026-09-29T19:45:00Z
+";
+        let findings = render_fatal_findings(unknown_project, &cfg);
+        assert_eq!(findings.len(), 1, "expected one finding, got {findings:?}");
+        assert!(
+            findings[0].contains("unknown project `perl-semantic-analyzer`"),
+            "finding must name the offending key: {findings:?}"
+        );
+
+        // Paired control: `component` is content the renderer tolerates. Without
+        // this half, the assertion above would also pass for a guard keyed on
+        // every schema finding — the #13484 round-4 regression.
+        let unknown_component = "\
+project: product
+component: Not A Declared Component
+kind: Fixed
+body: A body long enough to satisfy the configured minimum length.
+time: 2026-09-29T19:45:00Z
+";
+        assert!(
+            render_fatal_findings(unknown_component, &cfg).is_empty(),
+            "an unknown component must stay non-fatal"
+        );
     }
 
     /// A pre-existing renderer-fatal fragment on disk (not authored by this

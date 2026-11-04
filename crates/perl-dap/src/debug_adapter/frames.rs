@@ -323,6 +323,43 @@ impl DebugAdapter {
             });
         }
 
+        let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+        let frame_name = session_guard.as_ref().and_then(|session| {
+            session
+                .stack_frames
+                .first()
+                .filter(|frame| frame.id == frame_id)
+                .map(|frame| frame.name.clone())
+        });
+        drop(session_guard);
+        if frame_name
+            .as_ref()
+            .is_some_and(|name| Self::observed_package_identity_from_frame_name(name).is_some())
+            && let Some(package_ref) =
+                (VariableReference::Scope { frame_id, kind: ScopeKind::Package }).encode()
+        {
+            scopes.push(Scope {
+                name: "Package".to_string(),
+                presentation_hint: Some("registers".to_string()),
+                variables_reference: i64::from(package_ref),
+                expensive: false,
+                named_variables: None,
+                indexed_variables: None,
+            });
+        }
+        if let Some(globals_ref) =
+            (VariableReference::Scope { frame_id, kind: ScopeKind::Globals }).encode()
+        {
+            scopes.push(Scope {
+                name: "Globals".to_string(),
+                presentation_hint: Some("globals".to_string()),
+                variables_reference: i64::from(globals_ref),
+                expensive: false,
+                named_variables: None,
+                indexed_variables: None,
+            });
+        }
+
         let scopes_body = ScopesResponseBody { scopes };
 
         DapMessage::Response {
@@ -493,11 +530,9 @@ mod pagination_tests {
         };
         let scope_values =
             body.get("scopes").and_then(Value::as_array).ok_or("scopes body was not an array")?;
-        assert_eq!(scope_values.len(), 2);
-        assert!(scope_values.iter().all(|scope| {
-            scope.get("name") != Some(&json!("Package"))
-                && scope.get("name") != Some(&json!("Globals"))
-        }));
+        assert_eq!(scope_values.len(), 4);
+        assert!(scope_values.iter().any(|scope| scope.get("name") == Some(&json!("Package"))));
+        assert!(scope_values.iter().any(|scope| scope.get("name") == Some(&json!("Globals"))));
         let arguments_scope = scope_values
             .iter()
             .find(|scope| scope.get("name") == Some(&json!("Arguments")))
