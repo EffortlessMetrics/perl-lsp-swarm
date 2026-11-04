@@ -8,6 +8,7 @@ import {
   isAndroidEnvironment,
   isTermuxEnvironment,
 } from './downloader';
+import { debugTestEligible } from './documentEligibility';
 import {
   CANONICAL_PERL_LANGUAGE_ID,
   PERL_ALIAS_LANGUAGE_ID,
@@ -348,6 +349,9 @@ export async function offerDebugConfigOnFirstPerlOpen(
     return;
   }
   if (!isPerlLanguageId(document.languageId)) {
+    return;
+  }
+  if (!debugTestEligible(document)) {
     return;
   }
 
