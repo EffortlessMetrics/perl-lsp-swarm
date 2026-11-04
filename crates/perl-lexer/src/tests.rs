@@ -906,6 +906,20 @@ fn vstring_autoquoted_fat_comma_allows_only_tabs_and_spaces_before_the_arrow() {
 }
 
 #[test]
+fn vstring_autoquoted_fat_comma_does_not_autoquote_a_dotted_candidate() {
+    // Perl oracle: `v65.66 => 1` keeps the v-string (key is chr(65).chr(66)),
+    // while single-component `v5 => 1` autoquotes. The fat-comma arm must
+    // therefore only fire for candidates without a dot.
+    let lexer = PerlLexer::new("v65.66 => 1");
+    assert!(
+        !lexer.vstring_is_autoquoted(0, 6),
+        "dotted v-string before => is not autoquoted"
+    );
+    let lexer = PerlLexer::new("v5 => 1");
+    assert!(lexer.vstring_is_autoquoted(0, 2), "single-component candidate still autoquotes");
+}
+
+#[test]
 fn vstring_autoquoted_identifier_continuation_after_the_candidate_is_not_autoquoted() {
     // An identifier continuation after the candidate never reaches this gate
     // (try_vstring bails first), but the gate itself must stay inert for it.

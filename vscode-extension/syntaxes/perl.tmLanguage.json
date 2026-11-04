@@ -302,7 +302,7 @@
             "patterns": [
                 {
                     "name": "constant.numeric.version.perl",
-                    "match": "(?<!sub\\s+)(?<!::)(?<!\\{)(?<!->)\\bv\\d+(?:_\\d+)*(?:\\.\\d+(?:_\\d+)*)*\\b(?!\\.\\d)(?!\\s*=>)"
+                    "match": "(?<!sub\\s+)(?<!::)(?<!\\S\\{)(?<!->)\\b(?:v\\d+(?:_\\d+)*(?:\\.\\d+(?:_\\d+)*)+\\b|v\\d+(?:_\\d+)*\\b(?!\\.\\d)(?!\\s*=>))"
                 },
                 {
                     "name": "constant.numeric.hex.perl",

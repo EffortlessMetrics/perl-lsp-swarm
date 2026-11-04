@@ -163,4 +163,23 @@
 #             ^^^^ source.perl variable.other.scalar.perl
 #                 ^^ source.perl keyword.operator.arrow.perl
 #                   ^^^^ source.perl
+>sub bare_block {v5}
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl
+#                ^^ source.perl constant.numeric.version.perl
+#                  ^^ source.perl
+>my %pair = (v65.66 => 1);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^ source.perl variable.other.hash.perl
+#        ^ source.perl
+#         ^ source.perl keyword.operator.assignment.perl
+#          ^^ source.perl
+#            ^^^^^^ source.perl constant.numeric.version.perl
+#                  ^ source.perl
+#                   ^^ source.perl keyword.operator.fat-comma.perl
+#                     ^ source.perl
+#                      ^ source.perl constant.numeric.integer.perl
+#                       ^^^ source.perl
 >

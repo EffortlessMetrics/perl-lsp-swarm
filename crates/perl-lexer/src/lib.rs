@@ -2086,13 +2086,17 @@ impl<'a> PerlLexer<'a> {
     /// where Perl autoquotes a bareword instead of reading a v-string.
     fn vstring_is_autoquoted(&self, start: usize, end: usize) -> bool {
         let bytes = self.input_bytes;
-        // Fat-comma key: only whitespace may intervene before `=>`.
-        let mut after = end;
-        while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
-            after += 1;
-        }
-        if bytes.get(after) == Some(&b'=') && bytes.get(after + 1) == Some(&b'>') {
-            return true;
+        // Fat-comma key: only whitespace may intervene before `=>`. Perl
+        // autoquotes only single-component candidates there; a dotted
+        // v-string (`v65.66 => 1`) remains a v-string.
+        if !bytes[start..end].contains(&b'.') {
+            let mut after = end;
+            while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
+                after += 1;
+            }
+            if bytes.get(after) == Some(&b'=') && bytes.get(after + 1) == Some(&b'>') {
+                return true;
+            }
         }
         // Previous significant byte(s).
         let mut before = start;

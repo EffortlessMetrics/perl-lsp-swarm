@@ -17,3 +17,5 @@ my $vsep2 = v65_66.67;
 my %h = (v5 => 1);
 my $key = $h{v5};
 my $method = $obj->v5;
+sub bare_block {v5}
+my %pair = (v65.66 => 1);
