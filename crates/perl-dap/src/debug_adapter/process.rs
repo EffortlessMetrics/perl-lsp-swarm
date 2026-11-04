@@ -1254,7 +1254,7 @@ impl DebugAdapter {
 
                 Ok(thread_id)
             }
-            Err(e) => Err(format_perl_spawn_error(perl_interpreter, &e)),
+            Err(e) => Err(format_perl_spawn_error(perl_interpreter, Some(&debuggee_cwd), &e)),
         }
     }
 
@@ -6876,7 +6876,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_includes_custom_interpreter_name() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("/custom/perl", &error);
+        let message = format_perl_spawn_error("/custom/perl", None, &error);
 
         assert!(
             message.contains("/custom/perl"),
@@ -6886,7 +6886,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_for_missing_perl_is_actionable() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("perl", &error);
+        let message = format_perl_spawn_error("perl", None, &error);
 
         assert!(message.contains("Install Perl"), "expected install guidance, got: {message}");
         assert!(
@@ -6902,7 +6902,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_preserves_non_not_found_error_detail() {
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
-        let message = format_perl_spawn_error("/secure/perl", &error);
+        let message = format_perl_spawn_error("/secure/perl", None, &error);
 
         assert!(message.contains("/secure/perl"), "expected interpreter path, got: {message}");
         assert!(
