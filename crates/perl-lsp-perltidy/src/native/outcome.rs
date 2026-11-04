@@ -429,7 +429,7 @@ pub fn classify_format_result(
     target: FormatRequestTarget,
     result: FormatResult,
 ) -> TypedFormatResult {
-    classify_native_result(source, config, context, target, result)
+    classify_native_result(source, config, context, target, result, None)
 }
 
 fn classify_native_result(
