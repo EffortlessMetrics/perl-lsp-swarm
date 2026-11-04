@@ -1628,6 +1628,7 @@ mod tests {
     use crate::product_identity::{IDENTITY_FLAG, IDENTITY_JSON_FLAG};
     use perl_parser_core::{ErrorCategory, ErrorClass};
     use perl_tdd_support::{must, must_err, must_some};
+    use perl_test_must::must_with;
 
     #[test]
     fn launch_parse_errors_are_user_errors_for_every_variant() {
@@ -2405,6 +2406,10 @@ mod tests {
             LaunchAction::RiprFacts { diff_path, .. } => {
                 assert_eq!(diff_path.as_deref(), Some("change.diff"));
             }
+            other => must_with(
+                Result::<(), String>::Err(format!("{other:?}")),
+                "expected RiprFacts action for --ripr-facts --ripr-diff",
+            ),
             other => unreachable!("expected RiprFacts action, got {other:?}"),
         }
         let plan = must(parse_args(["perl-lsp", "--ripr-facts"]));
@@ -2412,6 +2417,10 @@ mod tests {
             LaunchAction::RiprFacts { diff_path, .. } => {
                 assert_eq!(diff_path, None);
             }
+            other => must_with(
+                Result::<(), String>::Err(format!("{other:?}")),
+                "expected RiprFacts action for --ripr-facts",
+            ),
             other => unreachable!("expected RiprFacts action, got {other:?}"),
         }
     }

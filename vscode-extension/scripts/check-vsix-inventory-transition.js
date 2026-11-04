@@ -234,6 +234,7 @@ const VSIX_PAYLOAD_PREFIX = 'extension/';
  * }>}
  */
 async function collectArchiveInventory(vsixPath) {
+  const archiveLabel = Buffer.isBuffer(vsixPath) ? '<supplied snapshot>' : vsixPath;
   const archiveBytes = Buffer.isBuffer(vsixPath) ? vsixPath : fs.readFileSync(vsixPath);
 
   let zip;
@@ -245,7 +246,7 @@ async function collectArchiveInventory(vsixPath) {
     });
   } catch (error) {
     throw new Error(
-      `unable to read VSIX archive ${Buffer.isBuffer(vsixPath) ? '<supplied snapshot>' : vsixPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `unable to read VSIX archive ${archiveLabel}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -308,7 +309,9 @@ async function collectArchiveInventory(vsixPath) {
   }
 
   if (entries.length === 0) {
-    throw new Error(`VSIX archive ${vsixPath} contains no ${VSIX_PAYLOAD_PREFIX} payload entries`);
+    throw new Error(
+      `VSIX archive ${archiveLabel} contains no ${VSIX_PAYLOAD_PREFIX} payload entries`,
+    );
   }
 
   return {

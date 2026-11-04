@@ -1270,12 +1270,13 @@ pub fn scorecard_to_floor_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_some, must_some_with, must_with};
     fn rate_value(metric: &RateMetric) -> f64 {
-        metric.value.expect("measured rate should have a value")
+        must_some_with(metric.value, "measured rate should have a value")
     }
 
     fn latency_value(metric: &LatencyMetric) -> f64 {
-        metric.value.expect("measured latency should have a value")
+        must_some_with(metric.value, "measured latency should have a value")
     }
 
     #[test]
@@ -1305,12 +1306,12 @@ mod tests {
             completion_passed: 3,
             completion_total: 4,
         };
-        assert!((m.hover_rate().unwrap() - 0.8).abs() < 0.001);
-        assert!((m.goto_rate().unwrap() - 1.0).abs() < 0.001);
-        assert!((m.completion_rate().unwrap() - 0.75).abs() < 0.001);
+        assert!((must_some(m.hover_rate()) - 0.8).abs() < 0.001);
+        assert!((must_some(m.goto_rate()) - 1.0).abs() < 0.001);
+        assert!((must_some(m.completion_rate()) - 0.75).abs() < 0.001);
         // workflow_pass_rate = (8+5+3)/(10+5+4) = 16/19
         let expected = 16.0_f64 / 19.0;
-        assert!((m.workflow_pass_rate().unwrap() - expected).abs() < 0.001);
+        assert!((must_some(m.workflow_pass_rate()) - expected).abs() < 0.001);
     }
 
     #[test]
@@ -1344,13 +1345,13 @@ mod tests {
                 dap_happy_path_success_rate: None,
             },
         };
-        let json = serde_json::to_string_pretty(&output).expect("serialization must succeed");
+        let json = must_with(serde_json::to_string_pretty(&output), "serialization must succeed");
         let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("must parse back to JSON");
+            must_with(serde_json::from_str(&json), "must parse back to JSON");
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["subsystem"], "editor_ux");
         assert_eq!(parsed["last_run"]["hover_passed"], 8);
-        assert!((parsed["metrics"]["workflow_pass_rate"].as_f64().unwrap() - 0.91).abs() < 0.001);
+        assert!((must_some(parsed["metrics"]["workflow_pass_rate"].as_f64()) - 0.91).abs() < 0.001);
         assert!(parsed["metrics"]["rename_success_rate"].is_null());
         // Verify new relevance fields serialize correctly
         assert!(
@@ -1358,12 +1359,13 @@ mod tests {
             "completion_top1_relevance should be null (Phase 2)"
         );
         assert!(
-            (parsed["metrics"]["completion_top5_relevance"].as_f64().unwrap() - 0.86).abs() < 0.001,
+            (must_some(parsed["metrics"]["completion_top5_relevance"].as_f64()) - 0.86).abs()
+                < 0.001,
             "completion_top5_relevance should serialize to 0.86"
         );
         // Backward-compat alias should also be present
         assert!(
-            (parsed["metrics"]["completion_top5_usefulness"].as_f64().unwrap() - 0.86).abs()
+            (must_some(parsed["metrics"]["completion_top5_usefulness"].as_f64()) - 0.86).abs()
                 < 0.001,
             "completion_top5_usefulness alias should still serialize"
         );
@@ -1371,7 +1373,7 @@ mod tests {
 
     #[test]
     fn test_load_last_run_from_current_schema() {
-        let temp = tempfile::NamedTempFile::new().expect("temp file should be created");
+        let temp = must_with(tempfile::NamedTempFile::new(), "temp file should be created");
         let receipt = serde_json::json!({
             "schema_version": 1,
             "measured_at": "2026-04-11T00:00:00Z",
@@ -1388,10 +1390,15 @@ mod tests {
                 "workflow_pass_rate": 0.7
             }
         });
-        fs::write(temp.path(), serde_json::to_string_pretty(&receipt).expect("serialize JSON"))
-            .expect("write receipt");
+        must_with(
+            fs::write(
+                temp.path(),
+                must_with(serde_json::to_string_pretty(&receipt), "serialize JSON"),
+            ),
+            "write receipt",
+        );
 
-        let loaded = load_last_run(temp.path()).expect("last_run should be parsed");
+        let loaded = must_some_with(load_last_run(temp.path()), "last_run should be parsed");
         assert_eq!(loaded.hover_passed, 2);
         assert_eq!(loaded.hover_total, 3);
         assert_eq!(loaded.goto_passed, 1);
@@ -1402,7 +1409,7 @@ mod tests {
 
     #[test]
     fn test_load_observed_rates_reads_metrics_schema() {
-        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let temp = must_with(tempfile::NamedTempFile::new(), "temp file");
         let receipt = serde_json::json!({
             "schema_version": 1,
             "subsystem": "editor_ux",
@@ -1413,21 +1420,34 @@ mod tests {
                 "completion_top5_usefulness": 0.86
             }
         });
-        fs::write(temp.path(), serde_json::to_string_pretty(&receipt).expect("serialize receipt"))
-            .expect("write receipt");
+        must_with(
+            fs::write(
+                temp.path(),
+                must_with(serde_json::to_string_pretty(&receipt), "serialize receipt"),
+            ),
+            "write receipt",
+        );
 
-        let observed = load_observed_rates(temp.path()).expect("observed rates");
-        assert!((observed.workflow_pass_rate.expect("workflow rate") - 0.91).abs() < 0.001);
-        assert!((observed.hover_correctness_rate.expect("hover rate") - 0.89).abs() < 0.001);
-        assert!((observed.goto_definition_exact_hit_rate.expect("goto rate") - 0.94).abs() < 0.001);
+        let observed = must_some_with(load_observed_rates(temp.path()), "observed rates");
         assert!(
-            (observed.completion_top5_usefulness.expect("completion rate") - 0.86).abs() < 0.001
+            (must_some_with(observed.workflow_pass_rate, "workflow rate") - 0.91).abs() < 0.001
+        );
+        assert!(
+            (must_some_with(observed.hover_correctness_rate, "hover rate") - 0.89).abs() < 0.001
+        );
+        assert!(
+            (must_some_with(observed.goto_definition_exact_hit_rate, "goto rate") - 0.94).abs()
+                < 0.001
+        );
+        assert!(
+            (must_some_with(observed.completion_top5_usefulness, "completion rate") - 0.86).abs()
+                < 0.001
         );
     }
 
     #[test]
     fn test_load_observed_rates_prefers_last_run_when_present() {
-        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let temp = must_with(tempfile::NamedTempFile::new(), "temp file");
         let receipt = serde_json::json!({
             "last_run": {
                 "hover_passed": 8,
@@ -1444,18 +1464,30 @@ mod tests {
                 "completion_top5_usefulness": 0.0
             }
         });
-        fs::write(temp.path(), serde_json::to_string_pretty(&receipt).expect("serialize receipt"))
-            .expect("write receipt");
+        must_with(
+            fs::write(
+                temp.path(),
+                must_with(serde_json::to_string_pretty(&receipt), "serialize receipt"),
+            ),
+            "write receipt",
+        );
 
-        let observed = load_observed_rates(temp.path()).expect("observed rates");
-        assert!((observed.hover_correctness_rate.expect("hover rate") - 0.8).abs() < 0.001);
-        assert!((observed.goto_definition_exact_hit_rate.expect("goto rate") - 0.75).abs() < 0.001);
+        let observed = must_some_with(load_observed_rates(temp.path()), "observed rates");
         assert!(
-            (observed.completion_top5_usefulness.expect("completion rate") - 0.75).abs() < 0.001
+            (must_some_with(observed.hover_correctness_rate, "hover rate") - 0.8).abs() < 0.001
+        );
+        assert!(
+            (must_some_with(observed.goto_definition_exact_hit_rate, "goto rate") - 0.75).abs()
+                < 0.001
+        );
+        assert!(
+            (must_some_with(observed.completion_top5_usefulness, "completion rate") - 0.75).abs()
+                < 0.001
         );
         // (8 + 6 + 9) / (10 + 8 + 12)
         assert!(
-            (observed.workflow_pass_rate.expect("workflow rate") - (23.0 / 30.0)).abs() < 0.001
+            (must_some_with(observed.workflow_pass_rate, "workflow rate") - (23.0 / 30.0)).abs()
+                < 0.001
         );
     }
 

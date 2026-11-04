@@ -1239,7 +1239,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("1_{}", name))),
                 filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -1276,14 +1276,12 @@ pub fn add_method_completions(
     };
 
     for (method, desc) in methods {
-        let is_static_api_method = static_api_methods
-            .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
-        let is_instance_api_method = instance_api_methods
-            .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
-        if (is_static_api_method || is_instance_api_method)
-            && !method_prefix.is_empty()
-            && !method.starts_with(method_prefix)
-        {
+        // Every catalog candidate is prefix-filtered, not just the static and
+        // instance API lists (#17161): the response promises
+        // `isIncomplete: false`, so a generic like `AUTOLOAD` that does not
+        // start with the typed prefix must not be returned at all — it would
+        // rank against (and above) the method the user is typing toward.
+        if !method_prefix.is_empty() && !method.starts_with(method_prefix) {
             continue;
         }
         if seen.insert(method) {
@@ -1296,7 +1294,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("2_{}", method))),
                 filter_text: Some(Cow::Owned(method.to_string())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -1310,6 +1308,10 @@ pub fn add_method_completions(
             ("isa", "Check if object is of given class"),
             ("can", "Check if object can call method"),
         ] {
+            // Same `isIncomplete: false` contract as the main catalog (#17161).
+            if !method_prefix.is_empty() && !method.starts_with(method_prefix) {
+                continue;
+            }
             if seen.insert(method) {
                 completions.push(CompletionItem {
                     label: Cow::Owned(method.to_string()),
@@ -1322,7 +1324,7 @@ pub fn add_method_completions(
                     additional_edits: vec![],
                     text_edit_range: Some((
                         context.method_text_edit_start(source),
-                        context.position,
+                        context.suffix_end,
                     )),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,

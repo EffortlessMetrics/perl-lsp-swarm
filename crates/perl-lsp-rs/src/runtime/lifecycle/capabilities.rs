@@ -1095,6 +1095,7 @@ mod tests {
     use crate::LspServer;
     use crate::protocol::JsonRpcError;
     use crate::protocol::capabilities::BuildFlags;
+    use perl_tdd_support::must_with;
     use perl_workspace::folder::root_path_to_file_uri;
     use serde_json::{Value, json};
     use std::sync::atomic::Ordering;
@@ -2201,6 +2202,13 @@ mod tests {
             .count();
         assert_eq!(invalid_request_count, 1, "exactly one concurrent attempt must lose ownership");
 
+        // The only legal concurrent shapes are exactly-one-winner and
+        // both-refused; the assert fails hard on any other shape so the
+        // match below never has to panic on an impossible arm.
+        assert!(
+            matches!((&valid, &malformed), (Ok(_), Err(_)) | (Err(_), Err(_))),
+            "unexpected concurrent initialize outcomes: valid={valid:?} malformed={malformed:?}"
+        );
         match (valid, malformed) {
             (Ok(_), Err(error)) => {
                 assert_eq!(error.code, -32600);
@@ -2212,6 +2220,8 @@ mod tests {
                 assert!(server.accepted_text_sync_session().is_none());
                 assert!(!server.initialization_accepted());
             }
+            // Unreachable: the `matches!` assert above fails hard first.
+            (_, _) => {}
             other => unreachable!("unexpected concurrent initialize outcomes: {other:?}"),
         }
     }
@@ -2381,6 +2391,8 @@ mod tests {
         std::thread::scope(|scope| {
             let first = scope.spawn(|| server.handle_initialize(Some(valid.clone())));
             let second = scope.spawn(|| server.handle_initialize(Some(malformed.clone())));
+            let first = must_with(first.join(), "first initialize thread");
+            let second = must_with(second.join(), "second initialize thread");
             let Ok(first) = first.join() else { unreachable!("first initialize thread panicked") };
             let Ok(second) = second.join() else {
                 unreachable!("second initialize thread panicked")

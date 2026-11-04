@@ -18,6 +18,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub const SCHEMA_VERSION: &str = "standalone_diagnostics.v1";
 pub const REGISTRY_NAME: &str = "standalone-diagnostics";
@@ -62,22 +63,10 @@ const SELECTOR_FIELDS: &[&str] = &[
     "path_persistence",
 ];
 
-/// Every field `standalone_install_transition.v1` declares. The schema closes
-/// the object, so admission rejects anything else.
-const PACKET_TOP_LEVEL_KEYS: &[&str] = &[
-    "schema_version",
-    "route_mode",
-    "operation",
-    "transaction_id",
-    "attempt_id",
-    "disposition",
-    "candidate_id",
-    "prior_current_candidate_id",
-    "outcome_dimensions",
-    "bounded_reason",
-];
-
 const ROUTE_MODES: &[&str] = &["first_party_posix", "first_party_powershell"];
+
+const INPUT_SCHEMA_DOCUMENT: &str =
+    include_str!("../../schemas/standalone_install_transition.v1.schema.json");
 
 const OPERATIONS: &[&str] = &["install", "repair", "update", "rollback"];
 const DISPOSITIONS: &[&str] = &[
@@ -437,13 +426,38 @@ fn validate_against_registry_schema(
 ) -> Res<()> {
     let bytes = read_repo_bytes(root, SCHEMA_PATH)?;
     let schema = parse_json(&bytes, SCHEMA_PATH)?;
-    let validator = jsonschema::validator_for(&schema).map_err(|error| {
-        StandaloneDiagnosticsError::new(format!("`{SCHEMA_PATH}` is not a valid schema: {error}"))
-    })?;
-    for error in validator.iter_errors(manifest) {
-        violations.push(format!("registry schema violation: {error}"));
-    }
+    let validator = compile_json_schema(&schema, SCHEMA_PATH)?;
+    push_schema_violations(&validator, manifest, "registry schema violation", violations);
     Ok(())
+}
+
+fn compile_json_schema(schema: &Value, path: &str) -> Res<jsonschema::Validator> {
+    jsonschema::validator_for(schema).map_err(|error| {
+        StandaloneDiagnosticsError::new(format!("`{path}` is not a valid schema: {error}"))
+    })
+}
+
+fn push_schema_violations(
+    validator: &jsonschema::Validator,
+    instance: &Value,
+    label: &str,
+    violations: &mut Vec<String>,
+) {
+    for error in validator.iter_errors(instance) {
+        violations.push(format!("{label}: {error}"));
+    }
+}
+
+fn committed_input_validator() -> Res<&'static jsonschema::Validator> {
+    static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
+    if let Some(validator) = VALIDATOR.get() {
+        return Ok(validator);
+    }
+    let schema: Value = serde_json::from_str(INPUT_SCHEMA_DOCUMENT).map_err(|error| {
+        StandaloneDiagnosticsError::new(format!("`{INPUT_SCHEMA_PATH}` is not valid JSON: {error}"))
+    })?;
+    let validator = compile_json_schema(&schema, INPUT_SCHEMA_PATH)?;
+    Ok(VALIDATOR.get_or_init(|| validator))
 }
 
 /// The committed manifest must already be in canonical pretty form so that a
@@ -483,6 +497,7 @@ fn validate_input_schema_agreement(root: &Path, violations: &mut Vec<String>) ->
     let schema = parse_json(&bytes, INPUT_SCHEMA_PATH)?;
 
     let properties = schema.get("properties");
+    compare_enum(properties, &["route_mode"], ROUTE_MODES, "route_mode", violations);
     compare_enum(properties, &["operation"], OPERATIONS, "operation", violations);
     compare_enum(properties, &["disposition"], DISPOSITIONS, "disposition", violations);
 
@@ -1349,39 +1364,6 @@ fn validate_invariants_are_never_shadowed(manifest: &Value, violations: &mut Vec
 // Packet projection
 // ---------------------------------------------------------------------------
 
-/// Read a transition packet and reduce it to the typed selector fields.
-///
-/// `bounded_reason` is required by the input schema and deliberately dropped
-/// here: it may never influence reason selection or reach a rendered parameter.
-/// Read one typed enum field, distinguishing the three ways it can be wrong.
-///
-/// Matching on [`Map::get`] rather than [`opt_str`] is deliberate: `opt_str`
-/// collapses "absent" and "present but not a string" into `None`, which made a
-/// packet carrying `"operation": 7` report `operation` as *missing* when it is
-/// present and ill-typed. An admission diagnostic that misdescribes the defect
-/// sends the reader looking for the wrong thing.
-fn typed_field(parent: &Map<String, Value>, key: &str, violations: &mut Vec<String>) -> String {
-    match parent.get(key) {
-        Some(Value::String(value))
-            if domain_for(key).is_some_and(|domain| domain.contains(&value.as_str())) =>
-        {
-            value.clone()
-        }
-        Some(Value::String(value)) => {
-            violations.push(format!("`{key}` value `{value}` is outside the typed domain"));
-            String::new()
-        }
-        Some(_) => {
-            violations.push(format!("`{key}` must be a string in the typed domain"));
-            String::new()
-        }
-        None => {
-            violations.push(format!("transition packet is missing `{key}`"));
-            String::new()
-        }
-    }
-}
-
 /// One admitted `standalone_install_transition.v1` packet, reduced to the parts
 /// the projection is allowed to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1402,90 +1384,84 @@ pub fn combination_from_packet(packet: &Value) -> Res<Combination> {
     read_packet(packet).map(|admitted| admitted.combination)
 }
 
+/// Admit a packet against a caller-supplied input-schema document.
+///
+/// Production [`read_packet`] applies the committed
+/// `standalone_install_transition.v1` schema. Tests inject a mutated copy to
+/// prove admission follows the schema rather than a hand-mirrored key set.
+pub fn read_packet_against_schema(schema: &Value, packet: &Value) -> Res<TransitionPacket> {
+    let validator = compile_json_schema(schema, INPUT_SCHEMA_PATH)?;
+    read_packet_with_validator(&validator, packet)
+}
+
 /// Admit a transition packet, or fail.
 ///
-/// Admission is total over the input contract: every declared field must be
-/// present and well-shaped, unknown fields are rejected, and `route_mode` is
-/// bounded to the closed route set. A document that is not a valid
-/// `standalone_install_transition.v1` packet is an admission failure, never a
+/// Admission compiles and applies the committed
+/// `standalone_install_transition.v1` schema the same way the registry
+/// validator compiles and applies the registry schema. Closed
+/// keys, required identity fields, bounded-id and sha256 shapes, and closed
+/// `outcome_dimensions` come from that document. Hand-written checks remain
+/// only for rules the schema cannot express: disposition-conditional identity.
+/// A document that is not a valid packet is an admission failure, never a
 /// bounded diagnostic.
 pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
+    read_packet_with_validator(committed_input_validator()?, packet)
+}
+
+fn read_packet_with_validator(
+    validator: &jsonschema::Validator,
+    packet: &Value,
+) -> Res<TransitionPacket> {
     let mut violations = Vec::new();
     let Some(object) = packet.as_object() else {
         return Err(StandaloneDiagnosticsError::new("transition packet must be an object"));
     };
 
-    let expected: BTreeSet<&str> = PACKET_TOP_LEVEL_KEYS.iter().copied().collect();
-    let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
-    for unknown in actual.difference(&expected) {
-        violations.push(format!("transition packet has unknown field `{unknown}`"));
-    }
-    for missing in expected.difference(&actual) {
-        violations.push(format!("transition packet is missing `{missing}`"));
-    }
-
-    if object.contains_key("schema_version")
-        && opt_str(object, "schema_version") != Some(INPUT_SCHEMA_VERSION)
-    {
-        violations
-            .push(format!("transition packet schema_version must be `{INPUT_SCHEMA_VERSION}`"));
-    }
-    let route_mode = match object.get("route_mode") {
-        Some(Value::String(value)) if ROUTE_MODES.contains(&value.as_str()) => value.clone(),
-        Some(value) => {
-            violations.push(format!(
-                "`route_mode` value `{value}` is outside the typed domain; a rendered parameter may not carry arbitrary text"
-            ));
-            String::new()
-        }
-        None => String::new(),
-    };
-    // An absent key is already reported once by the top-level key check above;
-    // these arms speak only to a key that is present and ill-shaped.
-    match object.get("bounded_reason") {
-        None => {}
-        Some(Value::String(text)) if !text.is_empty() && text.chars().count() <= 512 => {}
-        Some(_) => {
-            violations.push("`bounded_reason` must be a string of 1 to 512 characters".to_string());
-        }
-    }
-    for key in ["transaction_id", "attempt_id"] {
-        match object.get(key) {
-            None => {}
-            Some(Value::String(text)) if is_bounded_id(text) => {}
-            Some(_) => violations.push(format!("`{key}` is not a bounded identifier")),
-        }
-    }
-    for key in ["candidate_id", "prior_current_candidate_id"] {
-        match object.get(key) {
-            Some(Value::Null) => {}
-            Some(Value::String(text)) if is_sha256(text) => {}
-            Some(_) => violations.push(format!("`{key}` must be a sha256 digest or null")),
-            None => {}
+    for error in validator.iter_errors(packet) {
+        let path = error.instance_path().to_string();
+        if path.is_empty() {
+            violations.push(format!("input schema violation: {error}"));
+        } else {
+            violations.push(format!("input schema violation at {path}: {error}"));
         }
     }
 
-    let operation = typed_field(object, "operation", &mut violations);
-    let disposition = typed_field(object, "disposition", &mut violations);
+    let disposition = object.get("disposition").and_then(Value::as_str).unwrap_or("");
+    apply_disposition_identity_rules(object, disposition, &mut violations);
 
-    // Two dispositions cannot be described at all without naming an identity,
-    // and the origin authority
-    // (`xtask/examples/standalone_candidate_selection.rs`) says so directly:
-    // `rollback_committed` must equal the demoted candidate
-    // (`prior_current_candidate_id != Some(prior.selected_candidate_id)` is
-    // rejected), and `candidate_published_unselected` must name a cataloged
-    // candidate through `candidate_id`. A null there is not a missing optional
-    // field; it is a diagnostic asserting a transition it cannot identify.
-    //
-    // The requirement stops there deliberately. `selection_committed` and
-    // `selection_unchanged` bind their identity through the packet's
-    // `next_selection`/`prior_selection` records, which the transition record
-    // does not carry, so demanding a non-null `candidate_id` for them would
-    // invent a rule the authority does not have.
-    let required_identity: &[&str] = match disposition.as_str() {
+    let mut seen = BTreeSet::new();
+    violations.retain(|violation| seen.insert(violation.clone()));
+    finish(violations)?;
+    extract_admitted_packet(object)
+}
+
+/// Two dispositions cannot be described at all without naming an identity,
+/// and the origin authority
+/// (`xtask/examples/standalone_candidate_selection.rs`) says so directly:
+/// `rollback_committed` must equal the demoted candidate
+/// (`prior_current_candidate_id != Some(prior.selected_candidate_id)` is
+/// rejected), and `candidate_published_unselected` must name a cataloged
+/// candidate through `candidate_id`. A null there is not a missing optional
+/// field; it is a diagnostic asserting a transition it cannot identify.
+///
+/// JSON Schema cannot express that conditional non-null rule: the committed
+/// schema allows `null` for both identity fields. This check is the remainder
+/// after schema admission.
+///
+/// The requirement stops there deliberately. `selection_committed` and
+/// `selection_unchanged` bind their identity through the packet's
+/// `next_selection`/`prior_selection` records, which the transition record
+/// does not carry, so demanding a non-null `candidate_id` for them would
+/// invent a rule the authority does not have.
+fn apply_disposition_identity_rules(
+    object: &Map<String, Value>,
+    disposition: &str,
+    violations: &mut Vec<String>,
+) {
+    let required_identity: &[&str] = match disposition {
         "rollback_committed" => &["prior_current_candidate_id"],
         "candidate_published_unselected" => &["candidate_id"],
-        _ => &[],
+        _ => return,
     };
     for key in required_identity {
         if !matches!(object.get(*key), Some(Value::String(text)) if is_sha256(text)) {
@@ -1494,58 +1470,34 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
             ));
         }
     }
+}
 
-    // Same separation `typed_field` makes, for the container itself:
-    // `and_then(Value::as_object)` collapsed "absent" and "present but not an
-    // object", so `"outcome_dimensions": null` was reported as *missing*.
-    let empty = Map::new();
-    let dimensions = match object.get("outcome_dimensions") {
-        Some(Value::Object(dimensions)) => dimensions,
-        Some(_) => {
-            violations.push("`outcome_dimensions` must be an object".to_string());
-            &empty
-        }
-        None => {
-            violations.push("transition packet is missing `outcome_dimensions`".to_string());
-            &empty
-        }
-    };
-    // `outcome_dimensions` is closed by the input schema; an undeclared member
-    // means the emitter and this registry disagree about the contract.
-    let declared: BTreeSet<&str> =
-        ["product_units", "cleanup", "process_startup", "path_persistence"].into_iter().collect();
-    for unknown in dimensions.keys().map(String::as_str).filter(|key| !declared.contains(key)) {
-        violations.push(format!("`outcome_dimensions` has unknown field `{unknown}`"));
-    }
-
-    let product_units = typed_field(dimensions, "product_units", &mut violations);
-    let cleanup = typed_field(dimensions, "cleanup", &mut violations);
-    let process_startup = typed_field(dimensions, "process_startup", &mut violations);
-    let path_persistence = typed_field(dimensions, "path_persistence", &mut violations);
-
-    let mut seen = BTreeSet::new();
-    violations.retain(|violation| seen.insert(violation.clone()));
-    finish(violations)?;
+fn extract_admitted_packet(object: &Map<String, Value>) -> Res<TransitionPacket> {
+    let dimensions =
+        object.get("outcome_dimensions").and_then(Value::as_object).ok_or_else(|| {
+            StandaloneDiagnosticsError::new(
+                "admitted packet is missing object `outcome_dimensions` after schema validation",
+            )
+        })?;
     Ok(TransitionPacket {
         combination: Combination {
-            operation,
-            disposition,
-            product_units,
-            cleanup,
-            process_startup,
-            path_persistence,
+            operation: admitted_str(object, "operation")?,
+            disposition: admitted_str(object, "disposition")?,
+            product_units: admitted_str(dimensions, "product_units")?,
+            cleanup: admitted_str(dimensions, "cleanup")?,
+            process_startup: admitted_str(dimensions, "process_startup")?,
+            path_persistence: admitted_str(dimensions, "path_persistence")?,
         },
-        route_mode,
+        route_mode: admitted_str(object, "route_mode")?,
     })
 }
 
-fn is_bounded_id(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= 128
-        && text.starts_with(|first: char| first.is_ascii_alphanumeric())
-        && text.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '-')
-        })
+fn admitted_str(object: &Map<String, Value>, key: &str) -> Res<String> {
+    object.get(key).and_then(Value::as_str).map(str::to_string).ok_or_else(|| {
+        StandaloneDiagnosticsError::new(format!(
+            "admitted packet is missing string `{key}` after schema validation"
+        ))
+    })
 }
 
 fn is_sha256(text: &str) -> bool {
