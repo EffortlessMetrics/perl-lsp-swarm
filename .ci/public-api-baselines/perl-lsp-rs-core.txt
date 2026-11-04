@@ -3207,6 +3207,7 @@ pub fn perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_
 pub fn perl_lsp_rs_core::providers::completion::get_dbi_method_documentation(receiver_hint: &str, method_name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::completion::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
 pub fn perl_lsp_rs_core::providers::completion::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::completion::render_snippet_plaintext(body: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::providers::completion::snippet_body_defects(body: &str) -> alloc::vec::Vec<alloc::string::String>
@@ -3858,11 +3859,35 @@ pub fn perl_lsp_rs_core::providers::DocumentSymbol::eq(&self, other: &perl_lsp_r
 pub fn perl_lsp_rs_core::providers::DocumentSymbol::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::DocumentSymbol::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::providers::DocumentSymbol::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::DocumentSymbol, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::providers::document_symbols::DocumentSymbolBudgetOutcome
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolBudgetOutcome::eligible_total: usize
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolBudgetOutcome::omitted_total: usize
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolBudgetOutcome::symbols: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolBudgetOutcome::truncated: bool
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolBudgetOutcome::visible_total: usize
+pub fn perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::clone(&self) -> perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome
+pub fn perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::eq(&self, other: &perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome) -> bool
+pub fn perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::document_symbols::DocumentSymbolLiveResult
 pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolLiveResult::fact_traces: alloc::vec::Vec<perl_semantic_facts::ProviderFactTrace>
 pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolLiveResult::symbols: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>
 pub fn perl_lsp_rs_core::providers::DocumentSymbolLiveResult::clone(&self) -> perl_lsp_rs_core::providers::DocumentSymbolLiveResult
 pub fn perl_lsp_rs_core::providers::DocumentSymbolLiveResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::budget_identity: alloc::string::String
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::configured_cap: usize
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::eligible_total: usize
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::omitted_total: usize
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::operation_result_identity: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::truncated: bool
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::visible_total: usize
+pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolProjectionReceipt::visible_tree_fingerprint: alloc::string::String
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::from_budget_outcome(configured_cap: usize, outcome: &perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome, operation_result_identity: core::option::Option<alloc::string::String>) -> perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::clone(&self) -> perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::eq(&self, other: &perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt) -> bool
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::document_symbols::DocumentSymbolShadowCandidate
 pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolShadowCandidate::anchor_id: core::option::Option<perl_semantic_facts::AnchorId>
 pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolShadowCandidate::confidence: perl_semantic_facts::Confidence
@@ -3885,7 +3910,13 @@ pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolShadowResult::l
 pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbolShadowResult::receipt: perl_workspace::semantic_shadow_compare::SemanticShadowCompareReceipt
 pub fn perl_lsp_rs_core::providers::DocumentSymbolShadowResult::clone(&self) -> perl_lsp_rs_core::providers::DocumentSymbolShadowResult
 pub fn perl_lsp_rs_core::providers::DocumentSymbolShadowResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lsp_rs_core::providers::document_symbols::DOCUMENT_SYMBOL_NODE_BUDGET_ID: &str
+pub fn perl_lsp_rs_core::providers::document_symbols::apply_document_symbol_node_budget(symbols: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>, cap: usize) -> perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome
+pub fn perl_lsp_rs_core::providers::document_symbols::count_document_symbol_nodes(symbols: &[perl_lsp_rs_core::providers::DocumentSymbol]) -> usize
 pub fn perl_lsp_rs_core::providers::document_symbols::document_symbol_source_shadow(legacy_symbols: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbolShadowLegacy>, compiler_candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbolShadowCandidate>, symbol: &str) -> perl_lsp_rs_core::providers::DocumentSymbolShadowResult
+pub fn perl_lsp_rs_core::providers::document_symbols::leaf_document_symbol(name: impl core::convert::Into<alloc::string::String>, detail: impl core::convert::Into<alloc::string::String>, kind: u32, range: perl_position_tracking::wire::WireRange) -> perl_lsp_rs_core::providers::DocumentSymbol
+pub fn perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(outline: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>, additional: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>)
+pub fn perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>
 pub fn perl_lsp_rs_core::providers::document_symbols::source_backed_document_symbols_from_ast(ast: &perl_ast::ast::Node, source: &str) -> perl_lsp_rs_core::providers::DocumentSymbolLiveResult
 pub mod perl_lsp_rs_core::providers::file_completion
 pub struct perl_lsp_rs_core::providers::file_completion::FileCompletionContext
@@ -3921,6 +3952,8 @@ pub struct perl_lsp_rs_core::providers::folding::FoldingRange
 pub struct perl_lsp_rs_core::providers::folding::FoldingRange
 pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset: usize
 pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset_on_content_line: bool
+pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::folding::FoldingRange::start_offset: usize
@@ -4229,7 +4262,9 @@ pub const perl_lsp_rs_core::providers::htmx::HTMX_HEADERS: &[perl_lsp_rs_core::p
 pub const perl_lsp_rs_core::providers::htmx::MAX_MARKUP_SCAN_BYTES: usize
 pub fn perl_lsp_rs_core::providers::htmx::complete_attribute_names(source: &str, position: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>>
 pub fn perl_lsp_rs_core::providers::htmx::complete_header_names(context: &perl_lsp_rs_core::providers::FileCompletionContext) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>>
+pub fn perl_lsp_rs_core::providers::htmx::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
 pub fn perl_lsp_rs_core::providers::htmx::htmx_attribute_name_context(source: &str, position: usize) -> core::option::Option<perl_lsp_rs_core::providers::HtmxAttributeNameContext<'_>>
+pub fn perl_lsp_rs_core::providers::htmx::markup_attribute_name_suffix_end(source: &str, name_start: usize) -> usize
 pub mod perl_lsp_rs_core::providers::import_management
 pub struct perl_lsp_rs_core::providers::import_management::ImportManager
 pub fn perl_lsp_rs_core::providers::ImportManager::collect(&self, lines: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
@@ -5251,6 +5286,7 @@ pub fn perl_lsp_rs_core::providers::FoldingRangeKind::clone(&self) -> perl_lsp_r
 pub fn perl_lsp_rs_core::providers::FoldingRangeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange
 pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::start_offset: usize
 pub fn perl_lsp_rs_core::providers::FoldingRange::clone(&self) -> perl_lsp_rs_core::providers::FoldingRange
@@ -5496,7 +5532,6 @@ pub fn perl_lsp_rs_core::providers::rename_shadow::RenameCutoverResult::fmt(&sel
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason
 pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::Blocked
 pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::EmptyPlan
-pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::UnsupportedEditCategory
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::clone(&self) -> perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::eq(&self, other: &perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason) -> bool
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -6440,7 +6475,6 @@ pub fn perl_lsp_rs_core::providers::rename_shadow::RenameCutoverResult::fmt(&sel
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::Blocked
 pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::EmptyPlan
-pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::UnsupportedEditCategory
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::clone(&self) -> perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::eq(&self, other: &perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason) -> bool
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -8678,11 +8712,35 @@ pub fn perl_lsp_rs_core::providers::DocumentSymbol::eq(&self, other: &perl_lsp_r
 pub fn perl_lsp_rs_core::providers::DocumentSymbol::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::DocumentSymbol::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::providers::DocumentSymbol::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::DocumentSymbol, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome
+pub perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::eligible_total: usize
+pub perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::omitted_total: usize
+pub perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::symbols: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>
+pub perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::truncated: bool
+pub perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::visible_total: usize
+pub fn perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::clone(&self) -> perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome
+pub fn perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::eq(&self, other: &perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome) -> bool
+pub fn perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::DocumentSymbolLiveResult
 pub perl_lsp_rs_core::providers::DocumentSymbolLiveResult::fact_traces: alloc::vec::Vec<perl_semantic_facts::ProviderFactTrace>
 pub perl_lsp_rs_core::providers::DocumentSymbolLiveResult::symbols: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>
 pub fn perl_lsp_rs_core::providers::DocumentSymbolLiveResult::clone(&self) -> perl_lsp_rs_core::providers::DocumentSymbolLiveResult
 pub fn perl_lsp_rs_core::providers::DocumentSymbolLiveResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::budget_identity: alloc::string::String
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::configured_cap: usize
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::eligible_total: usize
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::omitted_total: usize
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::operation_result_identity: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::truncated: bool
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::visible_total: usize
+pub perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::visible_tree_fingerprint: alloc::string::String
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::from_budget_outcome(configured_cap: usize, outcome: &perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome, operation_result_identity: core::option::Option<alloc::string::String>) -> perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::clone(&self) -> perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::eq(&self, other: &perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt) -> bool
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::providers::DocumentSymbolProjectionReceipt, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::DocumentSymbolShadowCandidate
 pub perl_lsp_rs_core::providers::DocumentSymbolShadowCandidate::anchor_id: core::option::Option<perl_semantic_facts::AnchorId>
 pub perl_lsp_rs_core::providers::DocumentSymbolShadowCandidate::confidence: perl_semantic_facts::Confidence
@@ -8734,6 +8792,7 @@ pub fn perl_lsp_rs_core::providers::FileFactShardPort::new(shards: &[perl_worksp
 pub fn perl_lsp_rs_core::providers::FileFactShardPort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub struct perl_lsp_rs_core::providers::FoldingRange
 pub perl_lsp_rs_core::providers::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::FoldingRange::start_offset: usize
 pub fn perl_lsp_rs_core::providers::FoldingRange::clone(&self) -> perl_lsp_rs_core::providers::FoldingRange
@@ -9728,6 +9787,7 @@ pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::default() -> perl_
 pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::default() -> perl_lsp_rs_core::providers::WorkspaceSymbolsProvider
 pub const perl_lsp_rs_core::providers::DEAD_CODE_CATEGORY: &str
 pub const perl_lsp_rs_core::providers::DEFAULT_PROMOTION_MODE: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode
+pub const perl_lsp_rs_core::providers::DOCUMENT_SYMBOL_NODE_BUDGET_ID: &str
 pub const perl_lsp_rs_core::providers::FUNDAMENTAL_CONSTRUCT_LABELS: &[&str]
 pub const perl_lsp_rs_core::providers::HTMX_ATTRIBUTES: &[perl_lsp_rs_core::providers::HtmxAttributeSpec]
 pub const perl_lsp_rs_core::providers::HTMX_CATALOG_PROVENANCE: perl_lsp_rs_core::providers::HtmxCatalogProvenance
@@ -9759,6 +9819,7 @@ pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve
 pub fn perl_lsp_rs_core::providers::accepted_generation_basis(index: &perl_workspace::workspace::workspace_index::WorkspaceIndex, uri: &str) -> perl_lsp_rs_core::providers::ResolveGenerationBasis
 pub fn perl_lsp_rs_core::providers::add_xs_api_completions_for_prefix(completions: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>, prefix: &str, prefix_start: usize, position: usize, source: &str, filepath: core::option::Option<&str>)
 pub fn perl_lsp_rs_core::providers::adjust_location_for_sigil(location: perl_position_tracking::span::SourceLocation, kind: perl_symbol::types::SymbolKind) -> perl_position_tracking::span::SourceLocation
+pub fn perl_lsp_rs_core::providers::apply_document_symbol_node_budget(symbols: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>, cap: usize) -> perl_lsp_rs_core::providers::DocumentSymbolBudgetOutcome
 pub fn perl_lsp_rs_core::providers::apply_rename_edits(source: &str, edits: &[perl_lsp_rs_core::providers::TextEdit]) -> alloc::string::String
 pub fn perl_lsp_rs_core::providers::build_parse_error_hint(error: &perl_parser_core::syntax::error::ParseError, base_message: &str) -> core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::can_rename_symbol(name: &str, _kind: perl_symbol::types::SymbolKind) -> bool
@@ -9775,6 +9836,7 @@ pub fn perl_lsp_rs_core::providers::compute_links(uri: &str, text: &str, _roots:
 pub fn perl_lsp_rs_core::providers::compute_links(uri: &str, text: &str, _roots: &[url::Url]) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn perl_lsp_rs_core::providers::compute_on_type_decision(text: &str, line: u32, _col: u32, ch: char, indent_step: usize) -> perl_lsp_rs_core::providers::OnTypeEditDecision
 pub fn perl_lsp_rs_core::providers::compute_on_type_edit(text: &str, line: u32, col: u32, ch: char, indent_step: usize) -> core::option::Option<alloc::vec::Vec<serde_json::value::Value>>
+pub fn perl_lsp_rs_core::providers::count_document_symbol_nodes(symbols: &[perl_lsp_rs_core::providers::DocumentSymbol]) -> usize
 pub fn perl_lsp_rs_core::providers::credential_may_attach(approved: &perl_lsp_rs_core::providers::destination::ApprovedDestination, request_url: &str) -> bool
 pub fn perl_lsp_rs_core::providers::critic_overlap_observations(diagnostics: &[perl_lsp_rs_core::providers::Diagnostic]) -> alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
 pub fn perl_lsp_rs_core::providers::deduplicate_and_sort(completions: alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
@@ -9795,19 +9857,25 @@ pub fn perl_lsp_rs_core::providers::get_shebang_lens(source: &str) -> core::opti
 pub fn perl_lsp_rs_core::providers::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<perl_position_tracking::span::SourceLocation>
 pub fn perl_lsp_rs_core::providers::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
+pub fn perl_lsp_rs_core::providers::htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool
 pub fn perl_lsp_rs_core::providers::htmx_attribute_name_context(source: &str, position: usize) -> core::option::Option<perl_lsp_rs_core::providers::HtmxAttributeNameContext<'_>>
 pub fn perl_lsp_rs_core::providers::identity_for_code(code: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::DeadCodeIdentity>
 pub fn perl_lsp_rs_core::providers::inlay_hint_label_str(hint: &serde_json::value::Value) -> core::option::Option<&str>
 pub fn perl_lsp_rs_core::providers::is_test_file(path: &str) -> bool
 pub fn perl_lsp_rs_core::providers::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
+pub fn perl_lsp_rs_core::providers::leaf_document_symbol(name: impl core::convert::Into<alloc::string::String>, detail: impl core::convert::Into<alloc::string::String>, kind: u32, range: perl_position_tracking::wire::WireRange) -> perl_lsp_rs_core::providers::DocumentSymbol
 pub fn perl_lsp_rs_core::providers::legend() -> perl_lsp_rs_core::providers::TokensLegend
+pub fn perl_lsp_rs_core::providers::markup_attribute_name_suffix_end(source: &str, name_start: usize) -> usize
 pub fn perl_lsp_rs_core::providers::matches_query(name: &str, query: &str) -> bool
 pub fn perl_lsp_rs_core::providers::merge_and_sort_completion_candidates(candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>
+pub fn perl_lsp_rs_core::providers::merge_document_symbol_roots_in_source_order(outline: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>, additional: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>)
 pub fn perl_lsp_rs_core::providers::normalize_provider_decision_receipt(receipt: serde_json::value::Value) -> serde_json::value::Value
 pub fn perl_lsp_rs_core::providers::parameter_hints(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn perl_lsp_rs_core::providers::parameter_hints_with_resolver(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>, method_resolver: core::option::Option<&dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>>) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn perl_lsp_rs_core::providers::parse_error_code(error: &perl_parser_core::syntax::error::ParseError) -> perl_diagnostics::codes::DiagnosticCode
 pub fn perl_lsp_rs_core::providers::parse_error_severity(error: &perl_parser_core::syntax::error::ParseError) -> perl_diagnostics::codes::severity::DiagnosticSeverity
+pub fn perl_lsp_rs_core::providers::pod_heading_document_symbols(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>
 pub fn perl_lsp_rs_core::providers::query_fact_from_envelope(role: perl_lsp_rs_core::providers::ProviderQueryFactRole, generation_scope: perl_lsp_rs_core::providers::ProviderFactGenerationScope, envelope: perl_semantic_facts::envelope::SemanticFactEnvelope) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryFact, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub fn perl_lsp_rs_core::providers::references_pir_promote(mode: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode, target_sigil: &str, target_name: &str, pir_receipt: &perl_parser_core::pir::extractor::LexicalExtractorReceipt, legacy_result: &[(usize, usize)], target_body_idx: usize, uri_mapper: &dyn core::ops::function::Fn(usize, usize) -> lsp_types::Range, opts: perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome
 pub fn perl_lsp_rs_core::providers::render_snippet_plaintext(body: &str) -> alloc::string::String
@@ -12384,5 +12452,11 @@ pub fn perl_lsp_rs_core::transport::read_message_outcome(reader: &mut dyn std::i
 pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn std::io::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> std::io::Result<()>
 pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::Result<()>
 pub mod perl_lsp_rs_core::uri
+pub struct perl_lsp_rs_core::uri::UriStrictParseError
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::clone(&self) -> perl_lsp_rs_core::uri::UriStrictParseError
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::eq(&self, other: &perl_lsp_rs_core::uri::UriStrictParseError) -> bool
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::uri::parse_uri(s: &str) -> lsp_types::uri::Uri
+pub fn perl_lsp_rs_core::uri::parse_uri_or_err(s: &str) -> core::result::Result<lsp_types::uri::Uri, perl_lsp_rs_core::uri::UriStrictParseError>
+pub fn perl_lsp_rs_core::uri::try_parse_uri(s: &str) -> core::option::Option<lsp_types::uri::Uri>
 pub macro perl_lsp_rs_core::check_cancellation!
