@@ -326,6 +326,22 @@ pub(super) fn is_completion_identifier_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
+/// Return the byte offset just past the identifier suffix that follows
+/// `position` (the not-yet-typed remainder of a mid-token invocation).
+/// Returns `position` itself when no suffix follows or the offset is not
+/// a char boundary.
+fn word_suffix_end(source: &str, position: usize) -> usize {
+    let Some(rest) = source.get(position..) else { return position };
+    let mut end = position;
+    for (offset, ch) in rest.char_indices() {
+        if !(ch.is_alphanumeric() || ch == '_') {
+            break;
+        }
+        end = position + offset + ch.len_utf8();
+    }
+    end
+}
+
 impl CompletionProvider {
     /// Create a new completion provider from parsed AST for Perl script analysis
     ///
@@ -432,7 +448,7 @@ impl CompletionProvider {
         let symbol_table = Self::extract_symbol_table(ast, source);
         let class_models = Self::build_class_models(ast);
         let type_engine = Self::build_type_engine(ast, workspace_index.is_some());
-        let import_map = import_map::extract_import_map(ast);
+        let import_map = import_map::extract_import_map_with_source(ast, Some(source));
         let runtime_imports = import_map::extract_runtime_import_authority(ast);
         let used_modules = import_map::collect_used_module_names(ast);
         let pragma_map = perl_pragma::PragmaTracker::build(ast);
@@ -907,6 +923,7 @@ impl CompletionProvider {
         );
         context.cursor_scope_id =
             scope_distance::scope_at_position(&self.symbol_table, source, position);
+        context.suffix_end = word_suffix_end(source, position);
         context
     }
 
@@ -1741,6 +1758,25 @@ impl CompletionProvider {
         // Check if source contains Test::More or Test2::V0
         source.contains("use Test::More") || source.contains("use Test2::V0")
     }
+}
+
+/// Whether HTMX attribute-name completion should own the cursor at `position`.
+///
+/// Requires a proven markup attribute slot and rejects Perl strings, regex
+/// bodies, comments, POD, and heredocs even when the bytes look like HTML.
+#[must_use]
+pub fn htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool {
+    use crate::providers::htmx::htmx_attribute_name_context;
+
+    if htmx_attribute_name_context(source, position).is_none() {
+        return false;
+    }
+
+    !(lexical_context::is_in_string(source, position)
+        || lexical_context::is_in_regex(source, position)
+        || lexical_context::is_in_comment(source, position)
+        || CompletionProvider::is_in_heredoc(source, position)
+        || CompletionProvider::is_in_pod(source, position))
 }
 
 #[cfg(test)]

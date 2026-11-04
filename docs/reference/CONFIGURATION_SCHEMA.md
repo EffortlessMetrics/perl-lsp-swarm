@@ -123,6 +123,14 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           },
           "default": ["lib", ".", "local/lib/perl5"]
         },
+        "discoverySkippedDirs": {
+          "type": "array",
+          "description": "Additional exact directory names skipped during workspace discovery; not globs or paths",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "useSystemInc": {
           "type": "boolean",
           "description": "Include interpreter startup @INC (the result of `perl -e 'print join(\"\\n\", @INC)'`) in module resolution. Independent of PERL5LIB, which is controlled by usePerl5lib.",
@@ -434,6 +442,20 @@ Directories to search for Perl modules, relative to the workspace root.
 - All paths must be relative to workspace root
 - Paths must not contain `..` segments
 - Maximum depth: 10 levels
+
+#### `perl.workspace.discoverySkippedDirs`
+
+| Property | Value |
+|----------|-------|
+| Type | `string[]` |
+| Default | `[]` |
+| Source | `crates/perl-lsp-rs-core/src/config/mod.rs` |
+
+Additional exact directory names to skip during workspace discovery. Names
+match individual directory components, not globs or paths, and add to the
+built-in skip list. Untracked files ignored by Git remain absent from Git's
+listing even when an `includePaths` entry points into a skipped directory.
+The project configuration equivalent is `[perl].discovery_skipped_dirs`.
 
 #### `perl.workspace.useSystemInc`
 

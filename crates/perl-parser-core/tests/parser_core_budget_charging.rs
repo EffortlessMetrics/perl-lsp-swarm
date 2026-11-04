@@ -1045,10 +1045,13 @@ fn token_advance_seam_is_unique() {
 /// #7074, and the terminal fallback shell).
 #[test]
 fn node_construction_seam_is_unique() {
-    // 6 = the charging seam plus five annotated exemptions; the sixth is
-    // #14174's truncated-arrow recovery node (synthetic recovery shell,
-    // #7074's accounting dimension, not admitted parse work).
-    assert_every_raw_use_is_annotated("Node::new(", 6);
+    // 7 = the charging seam plus six annotated exemptions. The latest two
+    // are #14174's truncated-arrow shell and #16769's constant-declaration
+    // shell. Both retain already charged source in Error.partial; their
+    // synthetic wrappers remain #7074 recovery work, not admitted core work.
+    // declaration_recovery_budget_17567 pins the latter's source-node count,
+    // retained structure, exact/refused node limits, and diagnostic budget.
+    assert_every_raw_use_is_annotated("Node::new(", 7);
 }
 
 /// No production parser code may retain a diagnostic directly, except the

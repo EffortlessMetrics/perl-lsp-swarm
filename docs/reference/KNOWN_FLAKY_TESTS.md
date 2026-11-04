@@ -1,5 +1,9 @@
 # Known Flaky Tests
 
+> **Status**: Living inventory, last spot-checked 2026-10-12. Entries are
+> historical observations until re-verified against the current release;
+> do not cite an entry as current product status without re-running it.
+
 This document catalogs tests that exhibit non-deterministic behavior (flakiness) in the perl-lsp and perl-parser test suites. Each entry includes root cause analysis, current mitigations, and guidance for reliable local execution.
 
 ## Quick Reference

@@ -465,3 +465,235 @@ fn ai_max_inflight_schema_bounds_match_the_runtime_contract() -> Result<(), Box<
 
     Ok(())
 }
+
+/// Returns the index of the `}` that closes the `{` at `open`, ignoring
+/// braces that appear inside JSON string literals.
+fn matching_json_brace(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0_i32;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, byte) in text.as_bytes().iter().enumerate().skip(open) {
+        let character = char::from(*byte);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Collects every `perl.workspace.*` key a guide names, in both shapes that
+/// operator guidance actually uses: dotted prose (`perl.workspace.foo`) and
+/// a nested JSON example (`{ "workspace": { "foo": [] } }`).
+///
+/// The retired `excludePatterns` advice only ever appeared in the nested JSON
+/// shape, so a dotted-only scan reports a clean tree while the defect is still
+/// on the page.
+fn workspace_keys_named_by(guide: &str, guide_name: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut keys = Vec::new();
+    let dotted = regex::Regex::new(r"perl\.workspace\.([A-Za-z][A-Za-z0-9]*)")
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    for capture in dotted.captures_iter(guide) {
+        keys.push(capture.get(1).map_or("", |group| group.as_str()).to_owned());
+    }
+
+    let mut cursor = 0_usize;
+    while let Some(offset) = guide[cursor..].find("\"workspace\"") {
+        let after_key = cursor + offset + "\"workspace\"".len();
+        let Some(open) = guide[after_key..].find('{').map(|index| after_key + index) else {
+            // A prose mention with no example body: skip it and keep scanning
+            // rather than abandoning the rest of the document.
+            cursor = after_key;
+            continue;
+        };
+        // An unbalanced brace must fail loudly. Stopping the scan here would
+        // silently under-report the remaining examples, which is the same
+        // vacuous-guard failure this test exists to prevent.
+        let Some(close) = matching_json_brace(guide, open) else {
+            return Err(std::io::Error::other(format!(
+                "{guide_name} contains a `\"workspace\"` example whose braces are unbalanced"
+            ))
+            .into());
+        };
+        let example = &guide[open..=close];
+        let value: Value = serde_json::from_str(example).map_err(|error| {
+            std::io::Error::other(format!(
+                "{guide_name} contains a `\"workspace\"` example that is not valid JSON: {error}"
+            ))
+        })?;
+        if let Value::Object(fields) = value {
+            keys.extend(fields.keys().cloned());
+        }
+        cursor = close;
+    }
+
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+/// #16946: operator guidance may only name `perl.workspace.*` settings that
+/// are actually configurable.
+///
+/// The large-workspace troubleshooting guide told users to narrow a slow
+/// workspace with `perl.workspace.excludePatterns`. No reader ever existed
+/// for that key, so the remedy was impossible to apply, and the directory
+/// names it listed are already skipped unconditionally. The public settings
+/// schema is the authority for which `perl.workspace.*` keys a client can
+/// set, so every such key named in the large-workspace guides has to resolve
+/// there.
+///
+/// This is a documentation seam, not a runtime one: the guides are compiled
+/// into this test through `include_str!`, so the check fails on the merged
+/// tree whenever guidance drifts ahead of the configuration surface.
+#[test]
+fn large_workspace_guidance_names_only_real_workspace_settings() -> Result<(), Box<dyn Error>> {
+    const GUIDES: &[(&str, &str)] = &[
+        (
+            "large-workspaces troubleshooting guide",
+            include_str!("../../../docs/large-workspaces/TROUBLESHOOTING.md"),
+        ),
+        ("large-workspaces readme", include_str!("../../../docs/large-workspaces/README.md")),
+        (
+            "large-workspaces profiling guide",
+            include_str!("../../../docs/large-workspaces/PROFILING_GUIDE.md"),
+        ),
+        (
+            "large-workspaces testing guide",
+            include_str!("../../../docs/large-workspaces/TESTING_GUIDE.md"),
+        ),
+        (
+            "large-workspaces memory patterns",
+            include_str!("../../../docs/large-workspaces/MEMORY_PATTERNS.md"),
+        ),
+        (
+            "large-workspaces memory control closeout",
+            include_str!("../../../docs/large-workspaces/MEMORY_CONTROL_CLOSEOUT.md"),
+        ),
+        (
+            "large-workspaces retained state inventory",
+            include_str!("../../../docs/large-workspaces/RETAINED_STATE_INVENTORY.md"),
+        ),
+        (
+            "large-workspaces churn repro",
+            include_str!("../../../docs/large-workspaces/LSP_CHURN_REPRO.md"),
+        ),
+    ];
+
+    let schema = load_schema()?;
+    let workspace_keys = schema["properties"]["perl"]["properties"]["workspace"]["properties"]
+        .as_object()
+        .ok_or("settings schema has no perl.properties.workspace.properties object")?;
+
+    for (guide_name, guide) in GUIDES {
+        for key in workspace_keys_named_by(guide, guide_name)? {
+            assert!(
+                workspace_keys.contains_key(&key),
+                "{guide_name} names workspace setting `{key}`, which is not configurable in \
+                 schemas/perllsp-settings.schema.json (#16946): guidance must not recommend a \
+                 setting no client can set"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// #16946: the replacement advice must name the setting the server actually
+/// reads, and the configuration reference must document that same key.
+///
+/// The guide now points slow-startup triage at `discoverySkippedDirs`. That
+/// only helps if the key is published in the schema *and* described in the
+/// canonical reference, so this pins all three surfaces together: schema,
+/// reference prose, and the troubleshooting guide.
+#[test]
+fn discovery_skipped_dirs_guidance_is_published_on_every_configuration_surface()
+-> Result<(), Box<dyn Error>> {
+    const SKIPPED_DIRS: &str = "discoverySkippedDirs";
+    const SURFACES: &[(&str, &str)] = &[
+        ("settings schema", include_str!("../../../schemas/perllsp-settings.schema.json")),
+        ("configuration reference", include_str!("../../../docs/reference/CONFIG.md")),
+        (
+            "configuration schema reference",
+            include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md"),
+        ),
+        (
+            "large-workspaces troubleshooting guide",
+            include_str!("../../../docs/large-workspaces/TROUBLESHOOTING.md"),
+        ),
+    ];
+
+    for (surface_name, surface) in SURFACES {
+        assert!(
+            surface.contains(SKIPPED_DIRS),
+            "the documented large-workspace skip control is absent from {surface_name}; the \
+             troubleshooting guide, the schema, and the reference must agree (#16946)"
+        );
+    }
+
+    // The reference must describe directory-name semantics rather than the
+    // pattern language the retired `excludePatterns` example implied.
+    let reference = SURFACES
+        .iter()
+        .find(|(name, _)| *name == "configuration reference")
+        .map_or("", |(_, body)| *body);
+    assert!(
+        reference.contains("not globs"),
+        "the configuration reference must state that discoverySkippedDirs takes exact \
+         directory names, not globs (#16946)"
+    );
+    assert!(
+        reference.contains("#### `perl.workspace.discoverySkippedDirs`"),
+        "the configuration reference must have a discoverySkippedDirs setting section (#16946)"
+    );
+    assert!(
+        !reference.contains("excludePatterns"),
+        "the retired perl.workspace.excludePatterns advice must not return to the \
+         configuration reference (#16946)"
+    );
+
+    let schema_reference = include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md");
+    assert!(
+        schema_reference.contains("#### `perl.workspace.discoverySkippedDirs`"),
+        "the configuration schema reference must have a discoverySkippedDirs setting section (#16946)"
+    );
+    let schema_section = schema_reference
+        .split_once("## JSON Schema")
+        .ok_or("configuration schema reference has no JSON Schema section")?
+        .1;
+    let embedded_json = schema_section
+        .split_once("```json")
+        .ok_or("configuration schema reference has no embedded JSON schema")?
+        .1
+        .split_once("```")
+        .ok_or("configuration schema reference has an unterminated JSON schema")?
+        .0;
+    let embedded: Value = serde_json::from_str(embedded_json)?;
+    let published = load_schema()?;
+    let embedded_key = &embedded["definitions"]["workspace"]["properties"][SKIPPED_DIRS];
+    let published_key =
+        &published["properties"]["perl"]["properties"]["workspace"]["properties"][SKIPPED_DIRS];
+    assert_eq!(embedded_key["type"], published_key["type"]);
+    assert_eq!(embedded_key["items"]["type"], published_key["items"]["type"]);
+    assert_eq!(embedded_key["default"], published_key["default"]);
+
+    Ok(())
+}

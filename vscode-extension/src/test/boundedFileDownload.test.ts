@@ -1,3 +1,4 @@
+import type * as AsyncHooks from 'async_hooks';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as http from 'http';
@@ -180,6 +181,167 @@ describe('cleanupPartialDownloadDest', () => {
     });
     expect(destEntryExists(dest)).toBe(false);
   });
+
+  test('joins a started callback unlink before cleanup settles', async () => {
+    const dest = destPath();
+    fs.writeFileSync(dest, 'partial');
+    let callbackCompleted = false;
+    let callbackError: NodeJS.ErrnoException | null = null;
+    await cleanupPartialDownloadDest(dest, async (filePath) => {
+      fs.unlink(filePath, (error) => {
+        callbackError = error;
+        callbackCompleted = true;
+      });
+    });
+    expect(callbackCompleted).toBe(true);
+    expect(callbackError).toBeNull();
+    expect(destEntryExists(dest)).toBe(false);
+  });
+
+  test('joins a started promise unlink even when the remover does not await it', async () => {
+    const dest = destPath();
+    fs.writeFileSync(dest, 'partial');
+    let unlink: Promise<void> | undefined;
+    await cleanupPartialDownloadDest(dest, async (filePath) => {
+      unlink = fs.promises.unlink(filePath);
+    });
+    await expect(unlink).resolves.toBeUndefined();
+    expect(destEntryExists(dest)).toBe(false);
+  });
+
+  test('joins started removal when the injected remover subsequently rejects', async () => {
+    const dest = destPath();
+    fs.writeFileSync(dest, 'partial');
+    let callbackCompleted = false;
+    await cleanupPartialDownloadDest(dest, async (filePath) => {
+      fs.unlink(filePath, () => {
+        callbackCompleted = true;
+      });
+      throw new Error('injected failure after starting removal');
+    });
+    expect(callbackCompleted).toBe(true);
+    expect(destEntryExists(dest)).toBe(false);
+  });
+
+  test('joins follow-on filesystem removal started by a callback', async () => {
+    const dest = destPath();
+    const firstDest = path.join(path.dirname(dest), 'first.bin');
+    fs.writeFileSync(dest, 'partial');
+    fs.writeFileSync(firstDest, 'partial');
+    let finalCallbackCompleted = false;
+    let finalError: NodeJS.ErrnoException | null = null;
+    await cleanupPartialDownloadDest(dest, async () => {
+      fs.unlink(firstDest, () => {
+        fs.unlink(dest, (error) => {
+          finalError = error;
+          finalCallbackCompleted = true;
+        });
+      });
+    });
+    expect(finalCallbackCompleted).toBe(true);
+    expect(finalError).toBeNull();
+    expect(destEntryExists(dest)).toBe(false);
+    expect(destEntryExists(firstDest)).toBe(false);
+  });
+
+  test('does not retain the completion scope after native fallback fails', async () => {
+    const dest = destPath();
+    fs.mkdirSync(dest);
+    await expect(cleanupPartialDownloadDest(dest, async () => {})).rejects.toThrow(
+      /EISDIR|EPERM|ENOTEMPTY|destination remains/,
+    );
+    const followingDest = path.join(path.dirname(dest), 'following.bin');
+    fs.writeFileSync(followingDest, 'partial');
+    let completed = false;
+    await cleanupPartialDownloadDest(followingDest, async (filePath) => {
+      fs.unlink(filePath, () => {
+        completed = true;
+      });
+    });
+    expect(completed).toBe(true);
+    expect(destEntryExists(followingDest)).toBe(false);
+    expect(destEntryExists(dest)).toBe(true);
+  });
+
+  test('does not wait for future fire-and-forget immediate work', async () => {
+    const dest = destPath();
+    fs.writeFileSync(dest, 'partial');
+    let scheduled: NodeJS.Immediate | undefined;
+    let laterWorkStarted = false;
+    try {
+      await cleanupPartialDownloadDest(dest, async () => {
+        scheduled = setImmediate(() => {
+          laterWorkStarted = true;
+        });
+      });
+      expect(laterWorkStarted).toBe(false);
+      expect(destEntryExists(dest)).toBe(false);
+    } finally {
+      if (scheduled) clearImmediate(scheduled);
+    }
+  });
+
+  test('disables each completion observer on success, remover rejection, and fallback failure', async () => {
+    const asyncHooks = jest.requireActual<typeof AsyncHooks>('async_hooks');
+    const createHook = asyncHooks.createHook;
+    const observers: jest.SpiedFunction<AsyncHooks.AsyncHook['disable']>[] = [];
+    const observer = jest.spyOn(asyncHooks, 'createHook').mockImplementation((callbacks) => {
+      const hook = createHook(callbacks);
+      observers.push(jest.spyOn(hook, 'disable'));
+      return hook;
+    });
+    try {
+      const success = destPath();
+      fs.writeFileSync(success, 'partial');
+      await cleanupPartialDownloadDest(success);
+      fs.writeFileSync(success, 'partial');
+      await cleanupPartialDownloadDest(success, async () => {
+        throw new Error('injected');
+      });
+      const directory = path.join(path.dirname(success), 'directory');
+      fs.mkdirSync(directory);
+      await expect(cleanupPartialDownloadDest(directory)).rejects.toThrow();
+      expect(observers).toHaveLength(3);
+      for (const disable of observers) expect(disable).toHaveBeenCalledTimes(1);
+    } finally {
+      observer.mockRestore();
+      for (const disable of observers) disable.mockRestore();
+    }
+  });
+
+  test('does not join an unrelated concurrent remover or retain its scope', async () => {
+    const slowDest = destPath();
+    const fastDest = path.join(path.dirname(slowDest), 'independent.bin');
+    fs.writeFileSync(slowDest, 'partial');
+    fs.writeFileSync(fastDest, 'partial');
+    let releaseSlow: () => void = () => {};
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    let slowSettled = false;
+    const slow = cleanupPartialDownloadDest(slowDest, async (filePath) => {
+      await slowGate;
+      fs.unlinkSync(filePath);
+    }).then(() => {
+      slowSettled = true;
+    });
+    try {
+      await cleanupPartialDownloadDest(fastDest, async (filePath) => {
+        fs.unlink(filePath, () => {});
+      });
+      expect(destEntryExists(fastDest)).toBe(false);
+      expect(destEntryExists(slowDest)).toBe(true);
+      expect(slowSettled).toBe(false);
+    } finally {
+      releaseSlow();
+      await slow;
+    }
+    expect(destEntryExists(slowDest)).toBe(false);
+    const followingDest = destPath();
+    fs.writeFileSync(followingDest, 'partial');
+    await cleanupPartialDownloadDest(followingDest);
+    expect(destEntryExists(followingDest)).toBe(false);
+  });
 });
 
 describe('downloadBoundedFile', () => {
@@ -196,7 +358,7 @@ describe('downloadBoundedFile', () => {
         downloadBoundedFile({
           requestFactory: (listener) => http.get(url, listener),
           dest,
-          timeoutMs: 1000,
+          timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
           maxBytes: 64,
           operationName: 'Archive download',
         }),
@@ -223,7 +385,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 32,
             operationName: 'Archive download',
           }),
@@ -248,7 +410,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
             }),
@@ -270,7 +432,7 @@ describe('downloadBoundedFile', () => {
           throw new Error('must not start a request after pre-cancellation');
         },
         dest,
-        timeoutMs: 1000,
+        timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
         maxBytes: 64,
         cancellationToken: token,
         operationName: 'Archive download',
@@ -294,7 +456,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
               removePartialFile: async () => {},
@@ -325,7 +487,7 @@ describe('downloadBoundedFile', () => {
         downloadBoundedFile({
           requestFactory: (listener) => http.get(url, listener),
           dest,
-          timeoutMs: 1000,
+          timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
           maxBytes: 12,
           operationName: 'Archive download',
           removePartialFile: async (filePath) => {
@@ -373,7 +535,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 12,
             operationName: 'Archive download',
             removePartialFile: () => {
@@ -408,7 +570,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 12,
             operationName: 'Archive download',
             removePartialFile: async () => {
@@ -442,7 +604,7 @@ describe('downloadBoundedFile', () => {
           downloadBoundedFile({
             requestFactory: (listener) => http.get(url, listener),
             dest,
-            timeoutMs: 1000,
+            timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
             maxBytes: 12,
             operationName: 'Archive download',
             removePartialFile: async () => {
@@ -477,7 +639,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
               removePartialFile: async () => {},
@@ -505,7 +667,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 1024,
               cancellationToken: token,
               operationName: 'Archive download',
@@ -532,7 +694,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 1024,
               operationName: 'Archive download',
             }),
@@ -584,7 +746,7 @@ describe('downloadBoundedFile', () => {
               requestFactory: (listener) => http.get(url, listener),
               createWriteStream: (filePath) => fs.createWriteStream(filePath, { emitClose: false }),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
             }),
@@ -610,7 +772,7 @@ describe('downloadBoundedFile', () => {
             downloadBoundedFile({
               requestFactory: (listener) => http.get(url, listener),
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 64,
               operationName: 'Archive download',
             }),
@@ -648,7 +810,7 @@ describe('downloadBoundedFile', () => {
                 return stream;
               },
               dest,
-              timeoutMs: 1000,
+              timeoutMs: 10_000, // #17335: load-tolerant budget; the suite proves completion, not speed
               maxBytes: 12,
               operationName: 'Archive download',
             }),

@@ -509,11 +509,14 @@ print $undefined_var;
     Ok(())
 }
 
+/// Extracted edits as `(new_source, (start, end, replacement_text))` triples.
+type ExtractedEdits = (String, Vec<(usize, usize, String)>);
+
 fn apply_extract_workspace_edit(
     source: &str,
     action: &serde_json::Value,
     uri: &str,
-) -> Result<(String, Vec<(usize, usize, String)>), Box<dyn std::error::Error>> {
+) -> Result<ExtractedEdits, Box<dyn std::error::Error>> {
     let edits =
         action["edit"]["changes"][uri].as_array().ok_or("Expected WorkspaceEdit changes")?;
     let offset = |point: &serde_json::Value| -> Result<usize, Box<dyn std::error::Error>> {
@@ -602,7 +605,8 @@ fn test_extract_subroutine() -> Result<(), Box<dyn std::error::Error>> {
                     "end": { "line": 8, "character": 5 }
                 },
                 "context": {
-                    "diagnostics": []
+                    "diagnostics": [],
+                    "only": ["refactor.extract.subroutine"]
                 }
             }
         }),
@@ -613,6 +617,7 @@ fn test_extract_subroutine() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find(|a| a["title"] == "Extract to subroutine")
         .ok_or("Expected extract subroutine action")?;
+    assert_eq!(action["kind"], "refactor.extract.subroutine");
     let (edited, changes) = apply_extract_workspace_edit(source, action, uri)?;
     assert_eq!(changes.len(), 2, "extraction must serialize insertion and replacement");
     let sub_start = source.find("sub worker").ok_or("Missing sub")?;

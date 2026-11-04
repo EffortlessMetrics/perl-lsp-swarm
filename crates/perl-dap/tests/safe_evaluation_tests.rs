@@ -39,14 +39,13 @@ fn test_evaluate_safe_mode_blocks_iterator_and_io() -> Result<(), Box<dyn std::e
     let mut adapter = create_test_adapter();
     let unsafe_ops = vec![
         "each %hash",
-        "keys %hash",
-        "values %hash",
         "<$fh>",
         "<STDIN>",
         "<ARGV>",
         "eof",
         "eof $fh",
         "1 + <*.*>", // Glob
+        "keys %hash; system('true')",
     ];
 
     for op in unsafe_ops {
@@ -82,7 +81,17 @@ fn test_evaluate_safe_mode_blocks_iterator_and_io() -> Result<(), Box<dyn std::e
 fn test_evaluate_safe_mode_allows_comparisons_and_lookups() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut adapter = create_test_adapter();
-    let safe_ops = vec!["$a < $b", "$a > $b", "$hash{key}", "$keys", "$values", "$each"];
+    let safe_ops = vec![
+        "$a < $b",
+        "$a > $b",
+        "$hash{key}",
+        "$keys",
+        "$values",
+        "$each",
+        "keys %hash",
+        "values %$ref",
+        "scalar keys %h",
+    ];
 
     for op in safe_ops {
         let args = json!({

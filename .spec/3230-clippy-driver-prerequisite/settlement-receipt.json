@@ -1,0 +1,652 @@
+{
+  "schema_version": 1,
+  "host": "5b4b67c9a262",
+  "verified_at_ns": 1791612011801083198,
+  "basis": "independent root owner: finished leader, absent exact groups, exhaustive no-active-consumer native roster, same PID namespace, unchanged captured inode/UUID; no age/PID guessing",
+  "provider_visibility_note": "Native read context sees provider daemon UID0; restricted sandbox maps it to overflow UID0. No security/UID setting changed.",
+  "native_scan_before": {
+    "active": [
+      {
+        "pid": 1,
+        "comm": "tail",
+        "state": "S",
+        "ppid": 0,
+        "pgrp": 0,
+        "session": 0,
+        "start_ticks": 24,
+        "uid": 1000,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": []
+      },
+      {
+        "pid": 2,
+        "comm": "caas-prefix-tra",
+        "state": "S",
+        "ppid": 1,
+        "pgrp": 0,
+        "session": 0,
+        "start_ticks": 32,
+        "uid": 1000,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": []
+      },
+      {
+        "pid": 201,
+        "comm": "dockerd",
+        "state": "S",
+        "ppid": 1,
+        "pgrp": 201,
+        "session": 201,
+        "start_ticks": 798,
+        "uid": 0,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": [
+          "different-UID provider daemon descriptors/maps unavailable"
+        ]
+      },
+      {
+        "pid": 254,
+        "comm": "containerd",
+        "state": "S",
+        "ppid": 201,
+        "pgrp": 254,
+        "session": 254,
+        "start_ticks": 809,
+        "uid": 0,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": [
+          "different-UID provider daemon descriptors/maps unavailable"
+        ]
+      },
+      {
+        "pid": 5159,
+        "comm": "python3",
+        "state": "R",
+        "ppid": 521,
+        "pgrp": 5159,
+        "session": 5159,
+        "start_ticks": 262442,
+        "uid": 1000,
+        "classification": "verifier ancestor",
+        "resource_associations": [],
+        "limitations": []
+      },
+      {
+        "pid": 521,
+        "comm": "codex",
+        "state": "S",
+        "ppid": 0,
+        "pgrp": 0,
+        "session": 0,
+        "start_ticks": 924,
+        "uid": 1000,
+        "classification": "verifier ancestor",
+        "resource_associations": [],
+        "limitations": []
+      }
+    ],
+    "terminal_zombies": [
+      {
+        "pid": 1727,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 1727,
+        "session": 1727,
+        "start_ticks": 39054,
+        "uid": 1000
+      },
+      {
+        "pid": 2176,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2176,
+        "session": 2176,
+        "start_ticks": 125247,
+        "uid": 1000
+      },
+      {
+        "pid": 2192,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2192,
+        "session": 2192,
+        "start_ticks": 125250,
+        "uid": 1000
+      },
+      {
+        "pid": 2651,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2651,
+        "session": 2651,
+        "start_ticks": 164833,
+        "uid": 1000
+      },
+      {
+        "pid": 2667,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2667,
+        "session": 2667,
+        "start_ticks": 164836,
+        "uid": 1000
+      },
+      {
+        "pid": 2942,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2942,
+        "session": 2942,
+        "start_ticks": 168601,
+        "uid": 1000
+      },
+      {
+        "pid": 2958,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2958,
+        "session": 2958,
+        "start_ticks": 168604,
+        "uid": 1000
+      },
+      {
+        "pid": 3188,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3188,
+        "session": 3188,
+        "start_ticks": 182361,
+        "uid": 1000
+      },
+      {
+        "pid": 3204,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3204,
+        "session": 3204,
+        "start_ticks": 182363,
+        "uid": 1000
+      },
+      {
+        "pid": 3618,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3618,
+        "session": 3618,
+        "start_ticks": 191576,
+        "uid": 1000
+      },
+      {
+        "pid": 3717,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3717,
+        "session": 3717,
+        "start_ticks": 192949,
+        "uid": 1000
+      },
+      {
+        "pid": 4854,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 4854,
+        "session": 4854,
+        "start_ticks": 209058,
+        "uid": 1000
+      },
+      {
+        "pid": 4947,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 4947,
+        "session": 4947,
+        "start_ticks": 220272,
+        "uid": 1000
+      },
+      {
+        "pid": 718,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 718,
+        "session": 718,
+        "start_ticks": 7292,
+        "uid": 1000
+      },
+      {
+        "pid": 853,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 853,
+        "session": 853,
+        "start_ticks": 17181,
+        "uid": 1000
+      },
+      {
+        "pid": 869,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 869,
+        "session": 869,
+        "start_ticks": 17184,
+        "uid": 1000
+      }
+    ],
+    "scope": "exhaustive visible native roster; exact known infrastructure and verifier ancestors only"
+  },
+  "native_scan_at_release": {
+    "active": [
+      {
+        "pid": 1,
+        "comm": "tail",
+        "state": "S",
+        "ppid": 0,
+        "pgrp": 0,
+        "session": 0,
+        "start_ticks": 24,
+        "uid": 1000,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": []
+      },
+      {
+        "pid": 2,
+        "comm": "caas-prefix-tra",
+        "state": "S",
+        "ppid": 1,
+        "pgrp": 0,
+        "session": 0,
+        "start_ticks": 32,
+        "uid": 1000,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": []
+      },
+      {
+        "pid": 201,
+        "comm": "dockerd",
+        "state": "S",
+        "ppid": 1,
+        "pgrp": 201,
+        "session": 201,
+        "start_ticks": 798,
+        "uid": 0,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": [
+          "different-UID provider daemon descriptors/maps unavailable"
+        ]
+      },
+      {
+        "pid": 254,
+        "comm": "containerd",
+        "state": "S",
+        "ppid": 201,
+        "pgrp": 254,
+        "session": 254,
+        "start_ticks": 809,
+        "uid": 0,
+        "classification": "native control-plane",
+        "resource_associations": [],
+        "limitations": [
+          "different-UID provider daemon descriptors/maps unavailable"
+        ]
+      },
+      {
+        "pid": 5159,
+        "comm": "python3",
+        "state": "R",
+        "ppid": 521,
+        "pgrp": 5159,
+        "session": 5159,
+        "start_ticks": 262442,
+        "uid": 1000,
+        "classification": "verifier ancestor",
+        "resource_associations": [],
+        "limitations": []
+      },
+      {
+        "pid": 521,
+        "comm": "codex",
+        "state": "S",
+        "ppid": 0,
+        "pgrp": 0,
+        "session": 0,
+        "start_ticks": 924,
+        "uid": 1000,
+        "classification": "verifier ancestor",
+        "resource_associations": [],
+        "limitations": []
+      }
+    ],
+    "terminal_zombies": [
+      {
+        "pid": 1727,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 1727,
+        "session": 1727,
+        "start_ticks": 39054,
+        "uid": 1000
+      },
+      {
+        "pid": 2176,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2176,
+        "session": 2176,
+        "start_ticks": 125247,
+        "uid": 1000
+      },
+      {
+        "pid": 2192,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2192,
+        "session": 2192,
+        "start_ticks": 125250,
+        "uid": 1000
+      },
+      {
+        "pid": 2651,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2651,
+        "session": 2651,
+        "start_ticks": 164833,
+        "uid": 1000
+      },
+      {
+        "pid": 2667,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2667,
+        "session": 2667,
+        "start_ticks": 164836,
+        "uid": 1000
+      },
+      {
+        "pid": 2942,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2942,
+        "session": 2942,
+        "start_ticks": 168601,
+        "uid": 1000
+      },
+      {
+        "pid": 2958,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 2958,
+        "session": 2958,
+        "start_ticks": 168604,
+        "uid": 1000
+      },
+      {
+        "pid": 3188,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3188,
+        "session": 3188,
+        "start_ticks": 182361,
+        "uid": 1000
+      },
+      {
+        "pid": 3204,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3204,
+        "session": 3204,
+        "start_ticks": 182363,
+        "uid": 1000
+      },
+      {
+        "pid": 3618,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3618,
+        "session": 3618,
+        "start_ticks": 191576,
+        "uid": 1000
+      },
+      {
+        "pid": 3717,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 3717,
+        "session": 3717,
+        "start_ticks": 192949,
+        "uid": 1000
+      },
+      {
+        "pid": 4854,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 4854,
+        "session": 4854,
+        "start_ticks": 209058,
+        "uid": 1000
+      },
+      {
+        "pid": 4947,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 4947,
+        "session": 4947,
+        "start_ticks": 220272,
+        "uid": 1000
+      },
+      {
+        "pid": 718,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 718,
+        "session": 718,
+        "start_ticks": 7292,
+        "uid": 1000
+      },
+      {
+        "pid": 853,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 853,
+        "session": 853,
+        "start_ticks": 17181,
+        "uid": 1000
+      },
+      {
+        "pid": 869,
+        "comm": "git",
+        "state": "Z",
+        "ppid": 1,
+        "pgrp": 869,
+        "session": 869,
+        "start_ticks": 17184,
+        "uid": 1000
+      }
+    ],
+    "scope": "exhaustive visible native roster; exact known infrastructure and verifier ancestors only"
+  },
+  "fixture_states": [
+    {
+      "receipt": "/workspace/clippy-qualification/lint-failure-receipt.json",
+      "process_group_absent": true,
+      "lease_absent": true
+    },
+    {
+      "receipt": "/workspace/clippy-qualification/clean-receipt.json",
+      "process_group_absent": true,
+      "lease_absent": true
+    },
+    {
+      "receipt": "/workspace/clippy-qualification/clippy-native-lnlsrkm_/lint-failure-receipt.json",
+      "process_group_absent": true,
+      "lease_absent": true
+    },
+    {
+      "receipt": "/workspace/clippy-qualification/clippy-native-lnlsrkm_/clean-receipt.json",
+      "process_group_absent": true,
+      "lease_absent": true
+    }
+  ],
+  "consumer_original_receipt": "/workspace/clippy-consumer-proof/ownership.json",
+  "consumer_lease": {
+    "path": "/workspace/clippy-consumer-proof/devplane/5b4b67c9a262-linux-b65dcb543d0ae605/cargo-active",
+    "identity": [
+      27,
+      1080777
+    ],
+    "marker": "/workspace/clippy-consumer-proof/devplane/5b4b67c9a262-linux-b65dcb543d0ae605/cargo-active/owner-faf2a535561b4eb9b0a433949498a757",
+    "matching_owner_verified": true,
+    "release_postcondition_absent": true
+  },
+  "shared_resources": {
+    "cargo_home": "/workspace/.cloud-tools/cargo",
+    "rustup_home": "/workspace/.cloud-tools/rustup",
+    "disposition": "shared retained; not exclusively owned; no cleanup/reclamation"
+  },
+  "scope_limit": "these known finished native Linux attempts only; no general executor tree-settlement or adversarial sandbox proof",
+  "disposition": "consumer lease released; all artifacts/worktrees/shared caches retained",
+  "artifacts": [
+    {
+      "root": "/workspace/clippy-consumer-proof/devplane/5b4b67c9a262-linux-b65dcb543d0ae605/worktrees/970711a92a60cd22770d4aa4544930d1478a2da2f024d5df1dc707a27f0bd348/target",
+      "identity": [
+        27,
+        1080781
+      ],
+      "file_count": 1,
+      "logical_bytes": 177,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "f91031f5f1b46ebbe8d576721c2ab4c43ddb5c1bd3fe4958ac28a632bb7fe3b0"
+    },
+    {
+      "root": "/workspace/clippy-consumer-proof/devplane/5b4b67c9a262-linux-b65dcb543d0ae605/worktrees/970711a92a60cd22770d4aa4544930d1478a2da2f024d5df1dc707a27f0bd348/build",
+      "identity": [
+        27,
+        1080782
+      ],
+      "file_count": 704,
+      "logical_bytes": 84017161,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "ed992fd8101563bfeaf9f8f2451e2baff146a81515422d0e5713a0acff32def8"
+    },
+    {
+      "root": "/workspace/clippy-consumer-proof/temp",
+      "identity": [
+        27,
+        1080769
+      ],
+      "file_count": 0,
+      "logical_bytes": 0,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "root": "/workspace/clippy-qualification/devplane/5b4b67c9a262-linux-ea6e385398fa99cf/worktrees/8fd057eefd41b83ee950b7db541eb432b281a365669c0e27f85aea5d7d899144/target",
+      "identity": [
+        27,
+        1064654
+      ],
+      "file_count": 1,
+      "logical_bytes": 177,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "634316558c7bb0d618913ed514695e963bc74564d8f18160256b2e4a9e0eb54d"
+    },
+    {
+      "root": "/workspace/clippy-qualification/devplane/5b4b67c9a262-linux-ea6e385398fa99cf/worktrees/8fd057eefd41b83ee950b7db541eb432b281a365669c0e27f85aea5d7d899144/build",
+      "identity": [
+        27,
+        1064655
+      ],
+      "file_count": 27,
+      "logical_bytes": 9549,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "775453404abeb11a9935e994c60cf5c5374bbd12486757a44d8a47a90b0c3138"
+    },
+    {
+      "root": "/workspace/clippy-qualification/temp",
+      "identity": [
+        27,
+        1064610
+      ],
+      "file_count": 0,
+      "logical_bytes": 0,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "root": "/workspace/clippy-qualification/clippy-native-lnlsrkm_/devplane/5b4b67c9a262-linux-cff32ddc6a9118b2/worktrees/5d79a23853b4c0fd5950f3b735c92d575e0b05411837ee62be3bb204705816e9/target",
+      "identity": [
+        27,
+        1064764
+      ],
+      "file_count": 1,
+      "logical_bytes": 177,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "09dece4eb0a02663034eeafbd4648ef562e55b7e404437d1381f42d1c1b0dc16"
+    },
+    {
+      "root": "/workspace/clippy-qualification/clippy-native-lnlsrkm_/devplane/5b4b67c9a262-linux-cff32ddc6a9118b2/worktrees/5d79a23853b4c0fd5950f3b735c92d575e0b05411837ee62be3bb204705816e9/build",
+      "identity": [
+        27,
+        1064765
+      ],
+      "file_count": 15,
+      "logical_bytes": 5187,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "404340d10e1d4be0e595a71d69b2383c611da15af271ed283137bddd926faa17"
+    },
+    {
+      "root": "/workspace/clippy-qualification/clippy-native-lnlsrkm_/temp",
+      "identity": [
+        27,
+        1064693
+      ],
+      "file_count": 0,
+      "logical_bytes": 0,
+      "disposition": "retained exclusively for this attempt; no output/cache deletion",
+      "file_manifest_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  ],
+  "full_receipt_path": "/workspace/clippy-settlement/settlement-final.json",
+  "full_receipt_sha256": "61532fdb1d6a994e41a588645026d20ec4f66a23aec0cb1a12506bfee2fc1b54",
+  "verifier_path": "/workspace/clippy-settlement/verify_finished_attempts.py",
+  "verifier_sha256": "8f7ad53a239f9aebf377608a874c5261620db84860e9d8b79f9720d2f2a51b46",
+  "total_retained_artifact_files": 749,
+  "total_retained_logical_bytes": 84032428
+}

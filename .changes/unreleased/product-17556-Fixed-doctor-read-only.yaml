@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Keep just doctor from silently repairing Git configuration; report core.bare corruption or inspection failure with a nonzero status and leave repair to an explicit operator action.
+time: 2026-10-11T01:32:00Z
+custom:
+  PR: "17556"
+  Slug: doctor-read-only
+  Breaking: "no"

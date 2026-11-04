@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Variables declared with my at package top level now resolve as lexicals in body HIR instead of being misreported as package globals, so reads after a package statement bind to the declaration in that package."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18194"
+  Slug: package-root-scope
+  Breaking: "no"
