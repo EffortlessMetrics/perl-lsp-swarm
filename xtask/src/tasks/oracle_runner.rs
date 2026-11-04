@@ -82,7 +82,18 @@ pub struct FactDisagreement {
     pub side: String,
 }
 
+/// Schema id for this runner's compare-slice receipt.
+///
+/// Distinct from `oracle_receipt.v1`. This producer does not collect the
+/// evidence that schema requires (`source_snapshot`, extractor/oracle identity,
+/// typed `comparisons` rows, and the rest), and must not invent it (#14992).
+const COMPARE_RECEIPT_SCHEMA_VERSION: &str = "oracle_compare_receipt.v1";
+
 /// A receipt emitted after running one comparison class against one fixture.
+///
+/// This is not an `oracle_receipt.v1` document. The published v1 schema is
+/// owned by `schemas/oracle_receipt.v1.schema.json`; this type stamps
+/// [`COMPARE_RECEIPT_SCHEMA_VERSION`] instead of claiming that contract.
 #[derive(Debug, Serialize)]
 pub struct OracleCompareReceipt {
     pub schema_version: &'static str,
@@ -119,7 +130,7 @@ impl OracleCompareReceipt {
         let disagreements = rust_only.chain(perl_only).collect::<Vec<_>>();
 
         Self {
-            schema_version: "oracle_receipt.v1",
+            schema_version: COMPARE_RECEIPT_SCHEMA_VERSION,
             fixture_id,
             comparison_class,
             perl_version,
@@ -711,6 +722,61 @@ mod tests {
             "claim".into(),
         );
         assert!(!receipt.editor_runtime_dependency);
+    }
+
+    #[test]
+    fn receipt_stamps_compare_schema_and_does_not_claim_oracle_receipt_v1() -> TestResult {
+        let rust_facts: BTreeSet<_> = [
+            NormalizedFact { family: "package".into(), name: "Foo".into() },
+            NormalizedFact { family: "sub".into(), name: "Foo::bar".into() },
+            NormalizedFact { family: "sub".into(), name: "Foo::rust_only".into() },
+        ]
+        .into();
+        let perl_facts: BTreeSet<_> = [
+            NormalizedFact { family: "package".into(), name: "Foo".into() },
+            NormalizedFact { family: "sub".into(), name: "Foo::bar".into() },
+            NormalizedFact { family: "sub".into(), name: "Foo::perl_only".into() },
+        ]
+        .into();
+
+        let receipt = OracleCompareReceipt::new(
+            "test_fixture".into(),
+            "PackageSubTable".into(),
+            "v5.38.0".into(),
+            rust_facts,
+            perl_facts,
+            "test claim boundary".into(),
+        );
+
+        let payload = serde_json::to_value(&receipt).context("serialize oracle compare receipt")?;
+        let stamped = payload.get("schema_version").and_then(serde_json::Value::as_str);
+        assert_eq!(
+            stamped,
+            Some(COMPARE_RECEIPT_SCHEMA_VERSION),
+            "producer must stamp the compare-slice id, got {stamped:?}"
+        );
+        assert_ne!(stamped, Some("oracle_receipt.v1"), "producer must not claim oracle_receipt.v1");
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/oracle_receipt.v1.schema.json"))
+                .context("parse published oracle_receipt.v1 schema")?;
+        let violations = xtask::schema_apply::validate_payload_against_schema(
+            &schema,
+            "schemas/oracle_receipt.v1.schema.json",
+            &payload,
+            "OracleCompareReceipt",
+        )?;
+        assert!(
+            !violations.is_empty(),
+            "a compare-slice receipt must not satisfy oracle_receipt.v1"
+        );
+        assert!(
+            violations.iter().any(|violation| {
+                violation.contains("schema_version") || violation.contains("oracle_receipt.v1")
+            }),
+            "expected schema_version const mismatch against oracle_receipt.v1, got: {violations:?}"
+        );
+        Ok(())
     }
 
     // ── PackageSubTableExtractor Rust side (no Perl required) ─────────────────

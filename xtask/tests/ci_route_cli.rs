@@ -2269,10 +2269,11 @@ fn ci_route_cli_skips_non_lcov_policy_packs_from_codecov_coverage_receipt() -> R
     );
     assert_eq!(
         route.pointer("/skipped_by_policy/patch-coverage-ci-route").and_then(Value::as_str),
-        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+        Some("LCOV measurement disabled for this pack; covered by focused CI gates")
     );
+    assert_eq!(route.get("routing_classification").and_then(Value::as_str), Some("routing_bug"));
     let summary = fs::read_to_string(summary)?;
-    assert!(summary.contains("`patch-coverage-ci-route`: non-LCOV CI policy/routing surface"));
+    assert!(summary.contains("`patch-coverage-ci-route`: LCOV measurement disabled for this pack"));
     assert!(summary.contains("## Coverage Proof Packs"));
     assert!(summary.contains("- none"));
     Ok(())
@@ -2334,13 +2335,13 @@ fn ci_route_cli_keeps_inline_quality_focused_but_out_of_codecov_lcov() -> Result
         route
             .pointer("/skipped_by_policy/patch-coverage-xtask-inline-quality")
             .and_then(Value::as_str),
-        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+        Some("LCOV measurement disabled for this pack; covered by focused CI gates")
     );
+    assert_eq!(route.get("routing_classification").and_then(Value::as_str), Some("routing_bug"));
     let summary = fs::read_to_string(summary)?;
-    assert!(
-        summary
-            .contains("`patch-coverage-xtask-inline-quality`: non-LCOV CI policy/routing surface")
-    );
+    assert!(summary.contains(
+        "`patch-coverage-xtask-inline-quality`: LCOV measurement disabled for this pack"
+    ));
     assert!(summary.contains("## Coverage Proof Packs"));
     assert!(summary.contains("- none"));
     Ok(())

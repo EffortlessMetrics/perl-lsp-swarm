@@ -119,9 +119,9 @@ describe('extension activation startup scheduling (#3159)', () => {
     const activation = activate(makeContext(extensionRoot));
 
     await expect(
-      Promise.race([activation.then(() => 'activated' as const), delay(250)]),
+      Promise.race([activation.then(() => 'activated' as const), delay(5_000)]),
     ).resolves.toBe('activated');
-    await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 500);
+    await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 5_000);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
 

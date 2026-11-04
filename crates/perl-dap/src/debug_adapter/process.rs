@@ -1519,16 +1519,18 @@ impl DebugAdapter {
             prog_cwd,
         );
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let output = match oracle
-            .into_command()
-            .arg("-c")
-            .arg("--")
-            .arg(program)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-        {
+        let timeout = oracle.timeout;
+        let mut syntax_cmd = oracle.into_command();
+        syntax_cmd.arg("-c").arg("--").arg(program).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let output = match crate::bounded_subprocess::output_with_timeout(syntax_cmd, timeout) {
             Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(format!(
+                    "Syntax check timed out after {} seconds for '{}' — the interpreter did not finish compiling the script.",
+                    timeout.as_secs(),
+                    program
+                ));
+            }
             Err(e) => {
                 // `perl` not found or could not be spawned — skip the check
                 // and let the real launch produce the "perl not on PATH" error.
@@ -2846,18 +2848,28 @@ impl DebugAdapter {
                 }
             };
             let normalized_host = host.trim();
-            let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
-            if raw_port > 65535 {
-                return DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: false,
-                    command: "attach".to_string(),
-                    body: None,
-                    message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
-                };
-            }
-            let port = raw_port as u16;
+            let port = match args.get("port") {
+                None | Some(Value::Null) => 13603,
+                Some(value) => match value
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+                    .filter(|port| *port != 0)
+                {
+                    Some(port) => port,
+                    None => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "attach".to_string(),
+                            body: None,
+                            message: Some(
+                                "Invalid port: expected an integer in range 1-65535".to_string(),
+                            ),
+                        };
+                    }
+                },
+            };
             let timeout = args
                 .get("timeout")
                 .or_else(|| args.get("timeoutMs"))
@@ -6658,6 +6670,48 @@ mod tests {
             info.to_lowercase().contains("perl"),
             "detect_perl_info output should mention 'perl'; got: {info:?}"
         );
+    }
+
+    /// Pre-launch `perl -c` must not hang indefinitely when the interpreter
+    /// blocks during compile (#2316).
+    #[test]
+    #[cfg(unix)]
+    fn check_syntax_times_out_on_hanging_interpreter() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let script = temp.path().join("ok.pl");
+        std::fs::write(&script, "use strict;\n1;\n").map_err(|error| error.to_string())?;
+
+        let fake_perl = temp.path().join("fake-perl-hang");
+        std::fs::write(
+            &fake_perl,
+            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then sleep 120; fi\nexit 0\n",
+        )
+        .map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&fake_perl, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+
+        let start = Instant::now();
+        let result = DebugAdapter::check_syntax(
+            fake_perl.to_str().ok_or("non-utf8 fake perl path")?,
+            script.to_str().ok_or("non-utf8 script path")?,
+            &HashMap::new(),
+            Some(temp.path().to_path_buf()),
+        );
+
+        assert!(result.is_err(), "hanging syntax check must fail, got {result:?}");
+        let message = result.unwrap_err();
+        assert!(
+            message.to_lowercase().contains("timed out"),
+            "expected timeout message, got: {message}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "syntax check should respect the 5s oracle timeout, took {:?}",
+            start.elapsed()
+        );
+        Ok(())
     }
 
     /// Verify that a failed launch returns a response whose message mentions Perl.
