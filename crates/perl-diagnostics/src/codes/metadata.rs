@@ -79,6 +79,7 @@ impl DiagnosticCode {
             "PL303" => "https://docs.perl-lsp.org/errors/PL303",
             "PL304" => "https://docs.perl-lsp.org/errors/PL304",
             "PL305" => "https://docs.perl-lsp.org/errors/PL305",
+            "PL306" => "https://docs.perl-lsp.org/errors/PL306",
             "PL400" => "https://docs.perl-lsp.org/errors/PL400",
             "PL401" => "https://docs.perl-lsp.org/errors/PL401",
             "PL402" => "https://docs.perl-lsp.org/errors/PL402",
@@ -90,6 +91,8 @@ impl DiagnosticCode {
             "PL408" => "https://docs.perl-lsp.org/errors/PL408",
             "PL409" => "https://docs.perl-lsp.org/errors/PL409",
             "PL410" => "https://docs.perl-lsp.org/errors/PL410",
+            "PL411" => "https://docs.perl-lsp.org/errors/PL411",
+            "PL412" => "https://docs.perl-lsp.org/errors/PL412",
             "PL500" => "https://docs.perl-lsp.org/errors/PL500",
             "PL501" => "https://docs.perl-lsp.org/errors/PL501",
             "PL502" => "https://docs.perl-lsp.org/errors/PL502",
@@ -176,6 +179,9 @@ impl DiagnosticCode {
             | Self::DuplicateHashKey
             | Self::GotoUndefinedLabel
             | Self::LoopControlUndefinedLabel
+            | Self::IrrelevantWantarrayBranch
+            | Self::UnresolvedMethodCall
+            | Self::StrayPodCut
             | Self::DeprecatedDefined
             | Self::DeprecatedArrayBase
             | Self::PhaseScopedStrictPragma
@@ -333,6 +339,10 @@ impl DiagnosticCode {
                 "This `next`, `last`, or `redo` references a label that is not defined in the current file. \
                 Add a matching `LABEL:` on an enclosing loop, or remove the label to target the innermost loop.",
             ),
+            Self::IrrelevantWantarrayBranch => Some(
+                "This `wantarray()` test selects between branches that perform no work, so the caller-context \
+                check cannot change behavior. Remove the conditional or return different values per context.",
+            ),
             Self::PrintfFormatMismatch => Some(
                 "The number of format specifiers does not match the number of arguments. \
                 Each %s/%d/%f/etc. consumes one argument (except %% which consumes none).",
@@ -484,6 +494,16 @@ impl DiagnosticCode {
                 "Under `use strict`, package-qualified calls to undefined subroutines \
                 in an in-file package are flagged. Define the sub, correct the call, \
                 or load the package via `use`/`require` if it is external.",
+            ),
+            Self::UnresolvedMethodCall => Some(
+                "No known method of this name exists on the inferred receiver class. \
+                Correct the name, define the method, or ignore the warning if the \
+                call is dispatched dynamically (AUTOLOAD, generated accessors, runtime mixins).",
+            ),
+            Self::StrayPodCut => Some(
+                "A line-initial `=cut` with no preceding POD opener starts a POD block. \
+                Perl then treats the rest of the file (until the next `=cut`) as documentation, \
+                so trailing code silently disappears. Remove the stray `=cut` or open POD with `=pod`.",
             ),
             Self::RegexBacktrackingRisk => Some(
                 "A repeated group already contains a backtracking quantifier, so input \

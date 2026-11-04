@@ -90,7 +90,7 @@ fn push_to_remote(repo_dir: &Path) -> Result<()> {
 
 /// Run a git command with optional working directory. Panics on failure.
 fn git_cmd(args: &[&str], cwd: Option<&Path>) -> Result<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = xtask::git_environment::isolate(Command::new("git"));
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
     // Clear worktree-inherited git env vars so isolated repos are fully self-contained.
     cmd.env_remove("GIT_DIR")

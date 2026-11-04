@@ -447,11 +447,17 @@ export async function syncPerlCriticConfiguration(
 }
 
 export function buildDisabledFeaturesFromConfig(config: ConfigurationReader): string[] {
-  const base = config.get<string[]>('disabledFeatures', []).slice();
-  if (!config.get<boolean>('enableSemanticTokens', true) && !base.includes('lsp.semantic_tokens')) {
+  const configured = config.get<unknown>('disabledFeatures', []);
+  const base = Array.isArray(configured)
+    ? configured.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (
+    config.get<unknown>('enableSemanticTokens', true) === false &&
+    !base.includes('lsp.semantic_tokens')
+  ) {
     base.push('lsp.semantic_tokens');
   }
-  if (!config.get<boolean>('enableFormatting', true) && !base.includes('lsp.formatting')) {
+  if (config.get<unknown>('enableFormatting', true) === false && !base.includes('lsp.formatting')) {
     base.push('lsp.formatting');
   }
   return base;

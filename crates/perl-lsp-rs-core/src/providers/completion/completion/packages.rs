@@ -199,11 +199,13 @@ fn add_known_core_module_completions(
                 member_name,
                 summary,
             ))),
-            insert_text: Some(Cow::Owned((*member_name).to_string())),
+            // The range starts before the package qualifier, matching the
+            // other package producers' fully qualified insertion contract.
+            insert_text: Some(Cow::Owned(format!("{package_name}::{member_name}"))),
             sort_text: Some(Cow::Owned(format!("2_{member_name}"))),
             filter_text: Some(Cow::Owned((*member_name).to_string())),
             additional_edits: vec![],
-            text_edit_range: Some((context.prefix_start, context.position)),
+            text_edit_range: Some((context.prefix_start, context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -312,7 +314,7 @@ fn add_local_package_completions(
             sort_text: Some(Cow::Owned(format!("0_{}", symbol.name))),
             filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits: vec![],
-            text_edit_range: Some((context.prefix_start, context.position)),
+            text_edit_range: Some((context.prefix_start, context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -412,7 +414,7 @@ pub fn add_package_completions(
                             sort_text: Some(Cow::Owned(format!("2n_{bare_name}"))),
                             filter_text: Some(Cow::Owned(symbol.name.clone())),
                             additional_edits: vec![],
-                            text_edit_range: Some((context.prefix_start, context.position)),
+                            text_edit_range: Some((context.prefix_start, context.suffix_end)),
                             commit_characters: None,
                             insert_text_format: InsertTextFormat::PlainText,
                             label_details: None,
@@ -452,7 +454,7 @@ pub fn add_package_completions(
                     // The insertion is fully qualified, so it remains valid
                     // without an import. Import edits are withdrawn (#11158).
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
