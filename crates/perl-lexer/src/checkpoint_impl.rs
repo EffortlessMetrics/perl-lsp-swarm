@@ -38,6 +38,11 @@ impl Checkpointable for PerlLexer<'_> {
             qw_recovery_enabled,
             eof_emitted,
             pod_cut_cache: _,
+            // Operation-local record, like `pod_cut_cache`: the checkpoint's
+            // replay state describes *where to resume*, not which POD blocks a
+            // particular lexing pass happened to skip. A consumer that needs
+            // the full record drives its own lexer to EOF.
+            stray_cut_opens: _,
             scan_limit,
             logical_source,
             generation,

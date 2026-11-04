@@ -1,9 +1,25 @@
 //! Undefined method-call diagnostic (PL306).
 //!
-//! Warn when a static `->method` call targets a receiver class whose in-file
-//! method table is known and does not contain that name. Dynamic dispatch is
-//! acknowledged in the message; AUTOLOAD, UNIVERSAL methods, unseen parents,
-//! and untyped receivers stay silent.
+//! Warn when a static `->method` call targets a receiver class whose known
+//! method table does not contain that name. The table has two tiers, tried in
+//! order:
+//!
+//! 1. **In-file tier** — the file's own package/class tables (including
+//!    declared parents and roles). Fires on a definite miss, stays silent
+//!    when an ancestor is not in this file (its MRO is not computable here).
+//! 2. **Workspace tier** — reached when the in-file tier cannot answer: the
+//!    workspace index (`known_package` + `method_candidates`, the same MRO
+//!    table hover/definition and completion use) is consulted, and the lint
+//!    fires only when the index *knows* the receiver class and still lacks
+//!    the method. An absent or unindexed receiver stays silent, because an
+//!    empty candidate list there means "no data", not "missing".
+//!
+//! Receivers are inferred in-file (constructor assignments, `$self`, static
+//! packages) first, then through the completion-grade receiver facts when a
+//! type environment is available — accepted only at High confidence, Fresh
+//! evidence, Exact fallback, and no dynamic boundary, exactly like
+//! completion. Dynamic dispatch is acknowledged in the message; AUTOLOAD,
+//! UNIVERSAL methods, unions, and medium-confidence receivers stay silent.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,7 +29,13 @@ use perl_parser_core::ast::{Node, NodeKind};
 use perl_semantic_analyzer::class_model::{
     AccessorType, ClassModel, ClassModelBuilder, Framework, merge_reopened_class_models,
 };
+use perl_semantic_analyzer::receiver_facts::{
+    ReceiverFactContext, ReceiverFactFreshness, ReceiverFallbackState,
+    receiver_fact_for_method_call,
+};
 use perl_semantic_analyzer::symbol::is_universal_method;
+use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
+use perl_semantic_facts::{Confidence, DefinitionCandidate};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 
@@ -30,22 +52,33 @@ struct WalkState<'a> {
     locals: HashMap<String, String>,
     classes: &'a HashMap<String, ClassInfo>,
     source: &'a str,
+    type_environment: Option<&'a TypeInferenceEngine>,
+    known_package: &'a dyn Fn(&str) -> Option<bool>,
+    method_candidates: &'a dyn Fn(&str, &str) -> Vec<DefinitionCandidate>,
 }
 
-/// Warn when a method call is absent from the inferred in-file class table.
-pub fn check_undefined_methods(root: &Node, source: &str, diagnostics: &mut Vec<Diagnostic>) {
+/// Warn when a method call is absent from the receiver class's known method
+/// table (in-file tables first, then the workspace index).
+pub fn check_undefined_methods(
+    root: &Node,
+    source: &str,
+    type_environment: Option<&TypeInferenceEngine>,
+    known_package: &dyn Fn(&str) -> Option<bool>,
+    method_candidates: &dyn Fn(&str, &str) -> Vec<DefinitionCandidate>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     let raw_models = ClassModelBuilder::new().build(root);
     let models = merge_reopened_class_models(&raw_models);
     let defined = collect_package_methods(root);
     let classes = class_info_by_name(&models, &raw_models, defined);
-    if classes.is_empty() {
-        return;
-    }
     let mut state = WalkState {
         package: "main".to_string(),
         locals: HashMap::new(),
         classes: &classes,
         source,
+        type_environment,
+        known_package,
+        method_candidates,
     };
     visit(root, &mut state, diagnostics);
 }
@@ -308,12 +341,32 @@ fn maybe_warn_undefined_method(
     if !is_static_method_name(method) {
         return;
     }
-    let Some(receiver) = infer_receiver_package(object, state) else {
+    let Some(receiver) =
+        infer_receiver_package(object, state).or_else(|| receiver_fact_package(call, state))
+    else {
         return;
     };
     match method_is_known(state.classes, &receiver, method, &mut HashSet::new()) {
+        Some(true) => return,
+        // Definite in-file miss: every table this file could answer from
+        // lacks the method.
         Some(false) => {}
-        Some(true) | None => return,
+        // The in-file tier cannot answer (receiver class not in this file,
+        // or an ancestor is unseen). Consult the workspace tier, firing only
+        // when the index knows the class *and* still lacks the method — an
+        // empty candidate list for an unknown package means "no data", not
+        // "missing" (#18771's empty-is-not-absent gate).
+        None => {
+            if (state.known_package)(&receiver) != Some(true) {
+                return;
+            }
+            if !(state.method_candidates)(&receiver, "AUTOLOAD").is_empty() {
+                return;
+            }
+            if !(state.method_candidates)(&receiver, method).is_empty() {
+                return;
+            }
+        }
     }
 
     let range = method_name_range(call, object, method, state.source);
@@ -363,6 +416,30 @@ fn infer_receiver_package(object: &Node, state: &WalkState<'_>) -> Option<String
         }
         _ => None,
     }
+}
+
+/// Completion-grade receiver inference through the type environment.
+///
+/// Accepted only at the same trust level completion requires (`workspace.rs`
+/// `exact_receiver_fact_evidence`): High confidence, Fresh evidence, Exact
+/// fallback, no dynamic boundary. Medium-confidence receivers (array index,
+/// dynamic hash key) and union receivers stay silent — diagnostics must not
+/// be braver than completion.
+fn receiver_fact_package(call: &Node, state: &WalkState<'_>) -> Option<String> {
+    let type_environment = state.type_environment?;
+    let fact = receiver_fact_for_method_call(
+        call,
+        ReceiverFactContext::new(Some(type_environment.environment())).with_source(state.source),
+    );
+
+    let exact = fact.confidence == Confidence::High
+        && fact.freshness == ReceiverFactFreshness::Fresh
+        && fact.fallback_state == ReceiverFallbackState::Exact
+        && fact.dynamic_boundary.is_none()
+        && fact.source_range.is_some()
+        && !fact.is_union_receiver();
+
+    if exact { fact.package.clone() } else { None }
 }
 
 fn method_is_known(

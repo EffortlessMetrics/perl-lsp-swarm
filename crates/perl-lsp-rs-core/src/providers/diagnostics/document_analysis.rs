@@ -9,13 +9,15 @@
 //! caller that owns a document generation (currently
 //! `perl_lsp_rs::state::document::ParsedSnapshot`) can build the analysis at
 //! most once per generation and hand out the shared facts to as many
-//! diagnostic evaluations as it needs.
+//! diagnostic evaluations as it needs. The deferred type-inference pass
+//! (`type_environment`, #18771) follows the same generation-owned pattern.
 //!
 //! This type deliberately contains only source/AST-derived facts: no
 //! configuration, no workspace/semantic-query results, no external tool
 //! output, and no LSP-facing types. It has no knowledge of push vs. pull, or
 //! of the caller's transport.
 
+use std::fmt;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
@@ -23,6 +25,7 @@ use perl_parser_core::Node;
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::scope_analyzer::{ScopeAnalyzer, ScopeIssue};
 use perl_semantic_analyzer::symbol::{SymbolExtractor, SymbolTable};
+use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 
 /// Reusable, generation-scoped, source/AST-derived diagnostic facts for one
 /// document.
@@ -64,6 +67,34 @@ pub struct DocumentDiagnosticAnalysis {
     pragma_map: OnceLock<Vec<(Range<usize>, PragmaState)>>,
     scope_issues: OnceLock<Vec<ScopeIssue>>,
     symbol_table: OnceLock<SymbolTable>,
+    type_environment: TypeEnvironmentPass,
+}
+
+/// Deferred [`TypeInferenceEngine`] pass wrapper.
+///
+/// `TypeInferenceEngine` deliberately does not implement `Debug` (its
+/// constraint/alias tables are not meaningful to print), so this wrapper
+/// carries the pass's cell through the `#[derive(Debug)]` on
+/// [`DocumentDiagnosticAnalysis`] by reporting only whether the pass ran.
+#[derive(Default)]
+struct TypeEnvironmentPass(OnceLock<TypeInferenceEngine>);
+
+impl fmt::Debug for TypeEnvironmentPass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("TypeEnvironmentPass").field(&self.0.get().is_some()).finish()
+    }
+}
+
+impl TypeEnvironmentPass {
+    fn get_or_init(&self, ast: &Node) -> &TypeInferenceEngine {
+        // `infer` needs `&mut`, but the result is only read: build the engine
+        // in a local first, exactly like `ParsedSnapshot::type_environment`.
+        self.0.get_or_init(|| {
+            let mut engine = TypeInferenceEngine::new();
+            let _ = engine.infer(ast);
+            engine
+        })
+    }
 }
 
 impl DocumentDiagnosticAnalysis {
@@ -93,6 +124,7 @@ impl DocumentDiagnosticAnalysis {
             pragma_map: OnceLock::new(),
             scope_issues: OnceLock::new(),
             symbol_table: OnceLock::new(),
+            type_environment: TypeEnvironmentPass::default(),
         }
     }
 
@@ -181,6 +213,18 @@ impl DocumentDiagnosticAnalysis {
     pub fn symbol_table(&self) -> &SymbolTable {
         self.symbol_table
             .get_or_init(|| SymbolExtractor::new_with_source(&self.source).extract(&self.ast))
+    }
+
+    /// The type-inference environment for this analysis's AST.
+    ///
+    /// Runs `TypeInferenceEngine::new` + `infer` on first call (the same
+    /// recipe as `ParsedSnapshot::type_environment`) and returns the cached
+    /// engine thereafter. Only the undefined-method lint (PL306, issue
+    /// #18771) reads it, so consumers of the other three passes never pay
+    /// for this one.
+    #[must_use]
+    pub fn type_environment(&self) -> &TypeInferenceEngine {
+        self.type_environment.get_or_init(&self.ast)
     }
 
     /// Proof-only: whether this analysis's pragma timeline has been
@@ -375,6 +419,10 @@ mod tests {
             analysis.symbol_table.get().is_none(),
             "construction must not run symbol extraction"
         );
+        assert!(
+            analysis.type_environment.0.get().is_none(),
+            "construction must not run type inference"
+        );
     }
 
     /// #7286: reading the two facts native critic composition consumes must
@@ -398,6 +446,11 @@ mod tests {
             analysis.symbol_table.get().is_none(),
             "a consumer that reads only the pragma map and scope issues must not pay for \
              symbol extraction"
+        );
+        assert!(
+            analysis.type_environment.0.get().is_none(),
+            "a consumer that reads only the pragma map and scope issues must not pay for \
+             type inference either"
         );
     }
 
@@ -607,6 +660,10 @@ mod tests {
             analysis.symbol_table.get().is_none(),
             "no symbol-extraction pass may run for this evaluation"
         );
+        assert!(
+            analysis.type_environment.0.get().is_none(),
+            "no type-inference pass may run for this evaluation"
+        );
     }
 
     /// #7286 hard contract at the fact level: each pass runs at most once,
@@ -623,6 +680,7 @@ mod tests {
         assert!(std::ptr::eq(analysis.pragma_map(), analysis.pragma_map()));
         assert!(std::ptr::eq(analysis.scope_issues(), analysis.scope_issues()));
         assert!(std::ptr::eq(analysis.symbol_table(), analysis.symbol_table()));
+        assert!(std::ptr::eq(analysis.type_environment(), analysis.type_environment()));
 
         assert!(
             !analysis.pragma_map().is_empty(),
@@ -634,5 +692,55 @@ mod tests {
             "fixture must produce at least one scope issue, or the scope identity check is \
              vacuous"
         );
+    }
+
+    /// The type pass must infer the same facts `ParsedSnapshot`'s recipe
+    /// would, so the PL306 lint's receiver inference matches completion's
+    /// (#18771): `my $inv = Inventory->new()` gives `$inv` the `Inventory`
+    /// object type.
+    #[test]
+    fn type_environment_infers_constructor_receiver_packages() {
+        use perl_semantic_analyzer::receiver_facts::{
+            ReceiverFactContext, ReceiverFactFreshness, ReceiverFallbackState,
+            receiver_fact_for_method_call,
+        };
+        use perl_semantic_facts::Confidence;
+
+        fn find_method_call<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
+            if let perl_parser_core::ast::NodeKind::MethodCall { method, .. } = &node.kind
+                && method == name
+            {
+                return Some(node);
+            }
+            node.children().iter().find_map(|child| find_method_call(child, name))
+        }
+
+        // The receiver must be declared at file top level: the engine's
+        // global environment keeps top-level declarations only (sub-local
+        // declarations live in a discarded child env), and this pins exactly
+        // what the deferred pass can and cannot answer.
+        let source = "package Inventory;\nsub new { bless {}, shift }\nsub find_sku { }\nmy $inv = Inventory->new();\n$inv->find_skku();\n";
+        let ast = parse(source);
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+
+        let call = perl_test_must::must_some_with(
+            find_method_call(&ast, "find_skku"),
+            "fixture must contain the find_skku call, or the inference check is vacuous",
+        );
+        let fact = receiver_fact_for_method_call(
+            call,
+            ReceiverFactContext::new(Some(analysis.type_environment().environment()))
+                .with_source(source),
+        );
+
+        assert_eq!(
+            fact.package.as_deref(),
+            Some("Inventory"),
+            "the deferred type pass must classify $inv as Inventory: {fact:?}"
+        );
+        assert_eq!(fact.confidence, Confidence::High);
+        assert_eq!(fact.freshness, ReceiverFactFreshness::Fresh);
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Exact);
+        assert!(fact.dynamic_boundary.is_none());
     }
 }

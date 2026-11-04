@@ -785,8 +785,20 @@ impl DiagnosticsProvider {
             // Irrelevant wantarray() branches (PL411, issue #2993)
             check_irrelevant_wantarray_branches(ast, &mut diagnostics);
 
-            // Undefined method calls on a known in-file class (PL306, issue #18771)
-            check_undefined_methods(ast, source, &mut diagnostics);
+            // Undefined method calls (PL306, issue #18771). The in-file class
+            // tables answer first; the workspace tier joins the same
+            // `method_candidates` MRO table hover/definition and completion
+            // use, gated by `known_package` so an unindexed package's empty
+            // result stays silent. Receiver inference shares completion's
+            // exact-fact gate through the deferred type pass.
+            check_undefined_methods(
+                ast,
+                source,
+                Some(analysis.type_environment()),
+                &|package| semantic_queries.known_package(package),
+                &|package, method| semantic_queries.method_candidates(package, method),
+                &mut diagnostics,
+            );
 
             // Duplicate hash key detection (PL408)
             check_duplicate_hash_keys(ast, &mut diagnostics);

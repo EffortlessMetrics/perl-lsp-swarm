@@ -205,7 +205,7 @@ pub use checkpoint::{
 };
 pub use config::LexerConfig;
 pub use error::{LexerError, Result};
-pub use lexer::PerlLexer;
+pub use lexer::{PerlLexer, StrayCutOpen};
 pub use limits::MAX_REGEX_PARSE_STEPS;
 pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
@@ -735,6 +735,18 @@ impl<'a> PerlLexer<'a> {
         tokens
     }
 
+    /// The stray `=cut` directives this lexer has passed so far, in source
+    /// order (#18771).
+    ///
+    /// A stray `=cut` is a line-initial `=cut` that opened a POD block because
+    /// no POD was already open. The block itself is skipped silently — no
+    /// `Pod` token marks it — so this record is the only way to learn which
+    /// text the lexer treated as documentation instead of code. Complete once
+    /// the lexer has been driven to EOF.
+    pub fn stray_cut_opens(&self) -> &[StrayCutOpen] {
+        &self.stray_cut_opens
+    }
+
     /// Reset the lexer to the beginning of the input.
     ///
     /// Clears all internal state (mode, delimiter stack, heredoc queue, etc.)
@@ -899,6 +911,12 @@ impl<'a> PerlLexer<'a> {
                         && self.pod_has_later_cut();
                     if known || generic_pod || cut_opens_pod {
                         let bytes = self.input_bytes;
+                        // Record the amputation decision before the scan moves the
+                        // cursor (#18771): a stray `=cut` (one that opened POD with
+                        // no POD already open) silently removes the following text
+                        // from every downstream model, so the offset is the only
+                        // durable witness a diagnostic can point at.
+                        let stray_cut_offset = cut_opens_pod.then_some(self.position);
                         // Scan forward for \n=cut (end of POD block). A `=cut` that OPENED
                         // the block does not close it: the block runs to the NEXT `=cut`.
                         let search_start = if cut_opens_pod {
@@ -936,6 +954,10 @@ impl<'a> PerlLexer<'a> {
                         if !found_cut {
                             // POD extends to end of file
                             self.position = bytes.len();
+                        }
+                        if let Some(cut_offset) = stray_cut_offset {
+                            self.stray_cut_opens
+                                .push(StrayCutOpen { cut_offset, runs_to_eof: !found_cut });
                         }
                         continue;
                     }
