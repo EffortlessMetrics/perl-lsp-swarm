@@ -81,6 +81,10 @@ bash scripts/install-githooks.sh
 Either way, `bash scripts/agent-preflight.sh` refuses to proceed (exit 7)
 while the installed pre-push hook is missing or stale.
 
+Installed hooks live in each tree's own `.githooks/` dir (via a repo-local
+relative `core.hooksPath`, issue #17414 rule C), never in the shared common
+hooks dir — provisioning one tree cannot rewrite another's hooks.
+
 `/.worktrees/` is ignored in `.gitignore`, so a linked checkout created there never
 appears as untracked content in the coordination checkout. A worktree root that is not
 ignored breaks the clean-checkout requirement above and makes accidental staging

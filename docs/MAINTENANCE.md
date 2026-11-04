@@ -1,10 +1,10 @@
 # Perl LSP Maintenance Plan
 
-> **Status**: Active process guidance plus explicitly historical planning snapshots
+> **Status**: Historical maintenance-plan snapshot; not current process guidance
 > **Last Updated**: 2026-07-17
-> **Applies To**: the current public-beta line (workspace `v0.17.0`; see [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) for the live version)
+> **Historical scope**: the public-beta line described when this snapshot was last updated; see [project/CURRENT_STATUS.md](project/CURRENT_STATUS.md) for current release status.
 >
-> The maintenance schedule and runbooks below are process guidance. The versioned support, SLA, deprecation, and roadmap material is historical planning context and is not a current commitment. The historical support-policy and roadmap sections below do not define current release, support, or service-level commitments.
+> The schedules, runbooks, monitoring targets, support channels, on-call rotation, roles, approval tables, and emergency procedures below are retained examples from an earlier planning snapshot. They do not define current process, channels, staffing, review, approval, release, support, or service-level commitments. For current help channels, see [SUPPORT.md](../SUPPORT.md); for current contribution and review practice, see [CONTRIBUTING.md](../CONTRIBUTING.md). Historical support-policy and roadmap sections remain planning context only.
 
 ---
 
@@ -12,7 +12,7 @@
 
 1. [Maintenance Schedule](#maintenance-schedule)
 2. [Historical Support Policy](#historical-support-policy-snapshot)
-3. [Monitoring and Metrics](#monitoring-and-metrics-process-guidance-targets-below-may-be-historical)
+3. [Monitoring and Metrics](#monitoring-and-metrics-historical-planning-snapshot)
 4. [Team Responsibilities](#team-responsibilities)
 5. [Historical Long-term Roadmap](#historical-long-term-roadmap)
 6. [Runbooks](#runbooks)
@@ -249,7 +249,7 @@ cargo machete
 
 ---
 
-## Monitoring and Metrics (process guidance; targets below may be historical)
+## Monitoring and Metrics (historical planning snapshot)
 
 ### Key Performance Indicators (KPIs)
 

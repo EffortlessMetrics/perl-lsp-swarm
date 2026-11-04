@@ -102,7 +102,26 @@ CWD="$(pwd -P)"
 
 if [[ -n "$MAIN_REPO" && "$CWD" = "$MAIN_REPO" ]]; then
     err "cwd is the main repo root ($MAIN_REPO). Agents must run from their worktree."
-    echo "    Fix: cd \$(git worktree list | grep \$(git branch --show-current) | awk '{print \$1}')"
+    RECOVERY_WT=""
+    while IFS= read -r wt_line || [[ -n "$wt_line" ]]; do
+        if [[ "$wt_line" == worktree\ * ]]; then
+            wt_candidate="${wt_line#worktree }"
+            wt_resolved=""
+            if wt_resolved="$(cd "$wt_candidate" 2>/dev/null && pwd -P)"; then
+                if [[ "$wt_resolved" != "$MAIN_REPO" ]]; then
+                    RECOVERY_WT="$wt_resolved"
+                    break
+                fi
+            fi
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null || true)
+    if [[ -n "$RECOVERY_WT" ]]; then
+        echo "    Fix: run git worktree list --porcelain, pick an isolated worktree other than the main checkout, then:"
+        echo "    cd \"$RECOVERY_WT\""
+    else
+        echo "    Fix: Spawn agent with isolation: worktree in the agent definition"
+        echo "    The main checkout is: $GIT_COMMON_DIR"
+    fi
     CWD_OK=false
 else
     ok "cwd is not the main repo root"
@@ -157,8 +176,11 @@ fi
 # paths that keep it green by default.
 
 REPO_ROOT_AGENT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-INSTALLED_HOOK="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
-INSTALLED_COMMIT_HOOK="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-commit"
+# --git-path honors the installer's repo-local core.hooksPath, so this checks
+# this tree's own hooks dir (#17414 rule C). The output is relative to the
+# cwd, which is where this script runs, so no --path-format is needed.
+INSTALLED_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-push"
+INSTALLED_COMMIT_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-commit"
 CHECKED_IN_HOOK="$REPO_ROOT_AGENT/hooks/pre-push"
 HOOK_INSTALLER_FIX="bash scripts/install-githooks.sh"
 if [[ ! -f "$CHECKED_IN_HOOK" ]]; then

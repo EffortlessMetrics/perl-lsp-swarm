@@ -495,6 +495,29 @@ gates:
     planning:
       role: always_on
 
+  # Issue #16260: this ratchet was the one unwired checker that was green,
+  # and the issue blocked wiring it because it decided production scope with
+  # first_cfg_test_line_number, the classifier behind #13838. #16251 moved
+  # the production/test decision to test_scope module-graph reachability at
+  # the shared walk seam, so the checker is sound to require now. Baseline is
+  # the measured current-main census (9, b4e4001fa).
+  - name: regex_static_ratchet
+    tier: pr_fast
+    description: "Ratchet regex constructors outside lazy_static in production source (#16260)"
+    required: true
+    command: just ci-regex-static-ratchet
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - hygiene
+      - ratchet
+    planning:
+      role: always_on
+
   - name: release_history_check
     tier: pr_fast
     description: "Check release-history drift"
@@ -1092,6 +1115,27 @@ gates:
       role: rust_package_scoped
       packages:
         - xtask
+  # Compilation has its own receipt; --no-run never proves runtime assertions.
+  # PR Smoke prepares these exact targets before its runtime watchdog (#17459).
+  - name: unit_routed_full_build
+    tier: pr_fast
+    description: "Compile the routed integration-test targets without executing assertions"
+    required: true
+    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args} --no-run
+    # The retained main artifact spent 45s on perllsp plus 21m45s compiling
+    # test targets. Reuse the existing 25m gate bound, not a larger job budget.
+    timeout_seconds: 1500
+    retry_count: 0
+    budgets:
+      max_duration_ms: 1320000
+    quarantine: false
+    tags:
+      - compile
+      - integration
+      - routed
+    planning:
+      role: rust_scoped
+
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
@@ -1332,7 +1376,9 @@ gates:
     tier: merge_gate
     description: "Bounded parser integration proof with a non-shrinking target manifest (#6107)"
     required: true
-    command: python3 scripts/ci/run_parser_integration.py
+    command: >-
+      python3 scripts/ci/test_run_parser_integration.py
+      && python3 scripts/ci/run_parser_integration.py
     timeout_seconds: 900
     retry_count: 0
     budgets:
@@ -1433,11 +1479,12 @@ gates:
     tier: merge_gate
     description: "LSP core library tests (heaviest single crate in the LSP surface)"
     required: true
-    # `--lib` excludes tests/. 82 integration targets in these crates are
+    # `--lib` excludes tests/. 114 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-rs-core             82
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-rs-core            114
     command: >-
       cargo test --locked --lib
       -p perl-lsp-rs-core
@@ -1456,15 +1503,16 @@ gates:
     tier: merge_gate
     description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
-    # `--lib` excludes tests/. 356 integration targets in these crates are
+    # `--lib` excludes tests/. 492 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-perltidy            10
-    #   perl-lsp-rs                 253  (19 covered by explicit --test elsewhere)
-    #   perl-lsp-ux-tests            82
-    #   perl-subprocess-runtime       3
-    #   perllsp                       8  (1 covered by explicit --test elsewhere)
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-perltidy            17
+    #   perl-lsp-rs                 337
+    #   perl-lsp-ux-tests           101
+    #   perl-subprocess-runtime       4
+    #   perllsp                      33
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs
