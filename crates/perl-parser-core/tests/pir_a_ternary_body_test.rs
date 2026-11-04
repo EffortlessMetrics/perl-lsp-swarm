@@ -19,7 +19,8 @@ use std::error::Error;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_parser_core::pir::{
-    PirContext, PirEdgeKind, PirGraph, PirId, PirNode, PirOperation, lower_hir_bodies,
+    PirContext, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirNode, PirOperation,
+    lower_hir_bodies,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -243,16 +244,24 @@ fn pir_a_ternary_as_bare_assign_rhs_keeps_consumer_reachable() -> TestResult {
     Ok(())
 }
 
-/// A constant/opaque condition (`1 ? $a : $b`) emits no condition node, so the
-/// ternary Branch's condition link stays `None` (fail-closed) — the Branch node
-/// is still emitted with its arm edges.
+/// An admitted constant condition (`1 ? $a : $b`) links to its exact leaf
+/// (#17538); only opaque conditions leave the link `None` (fail-closed). The
+/// Branch node is still emitted with its arm edges either way.
 #[test]
-fn pir_a_ternary_constant_condition_link_is_none() -> TestResult {
+fn pir_a_ternary_constant_condition_links_to_literal() -> TestResult {
     let graph = parse_and_lower("my $x = 1 ? $a : $b;");
     let node = single_branch(&graph)?;
+    let cond_id =
+        branch_condition(node)?.ok_or("constant `1` is an exact leaf, so link must be Some")?;
+    let cond_node = graph.node(cond_id).ok_or("condition link must resolve to a real node")?;
     assert!(
-        branch_condition(node)?.is_none(),
-        "a constant condition emits no node, so the condition link must be None (fail-closed)"
+        matches!(
+            &cond_node.operation,
+            PirOperation::Literal { kind: PirLiteralKind::Number, value: Some(payload), .. }
+                if payload == "1"
+        ),
+        "condition link must point at the `1` leaf, got {:?}",
+        cond_node.operation
     );
     // The arms still lower and are reached by Branch edges.
     for ident in ["a", "b"] {
@@ -261,6 +270,19 @@ fn pir_a_ternary_constant_condition_link_is_none() -> TestResult {
             "arm operand `${ident}` must still lower to a reachable read"
         );
     }
+    Ok(())
+}
+
+/// A non-admitted constant condition (`0x1F` stays outside the #17538 cohort)
+/// emits no node, so the ternary condition link stays None (fail-closed).
+#[test]
+fn pir_a_ternary_opaque_condition_link_is_none() -> TestResult {
+    let graph = parse_and_lower("my $x = 0x1F ? $a : $b;");
+    let node = single_branch(&graph)?;
+    assert!(
+        branch_condition(node)?.is_none(),
+        "an opaque condition must leave the link None (fail-closed)"
+    );
     Ok(())
 }
 

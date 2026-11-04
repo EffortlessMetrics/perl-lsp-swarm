@@ -31,6 +31,7 @@ REQUIRED_PATHS = {
     "policy/skill-provider-parity.toml",
     "xtask/src/main.rs",
     "xtask/src/tasks/agent_flow.rs",
+    "xtask/src/tasks/agent_flow/**",
     "xtask/src/tasks/mod.rs",
     "xtask/tests/agent_merge_review_backstop.rs",
     "xtask/tests/agent_shift_left_entry_contract.rs",

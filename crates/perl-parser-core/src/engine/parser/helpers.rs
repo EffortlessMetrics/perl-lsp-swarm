@@ -72,10 +72,11 @@ impl<'a> Parser<'a> {
         // Identifier that starts with a sigil char (e.g. `$name`, `@items`)
         if next == TokenKind::Identifier
             && let Ok(t) = self.tokens.peek_second()
-                && let Some(ch) = t.text.chars().next()
-                    && matches!(ch, '$' | '@' | '%' | '*' | '&') {
-                        return true;
-                    }
+            && let Some(ch) = t.text.chars().next()
+            && matches!(ch, '$' | '@' | '%' | '*' | '&')
+        {
+            return true;
+        }
 
         false
     }
@@ -87,13 +88,18 @@ impl<'a> Parser<'a> {
     /// `func { ... } foreach => $items` without a comma after the block. We
     /// still stop at real statement boundaries and at postfix modifiers / low-
     /// precedence word operators unless that token is being autoquoted before
-    /// `=>` (`has { 1 } or => 2`, #16639).
+    /// `=>` (`has { 1 } or => 2`, #16639). Comparison words are infix here:
+    /// `has { 1 } cmp => 2` is a Perl syntax error (`} cmp`); the valid form
+    /// uses an explicit comma (`has { 1 }, cmp => 2`, #16691). Comma and fat
+    /// arrow belong to the dedicated separator loop, not this implicit path.
     fn should_continue_bare_call_after_block(&mut self) -> bool {
         match self.peek_kind() {
             Some(kind) if kind.is_recovery_boundary() => false,
             None => false,
             // `?` begins a ternary on the block-call result, not an argument to it.
             Some(TokenKind::Question) => false,
+            Some(TokenKind::Comma | TokenKind::FatArrow) => false,
+            Some(_) if self.peek_is_comparison_word() => false,
             Some(kind)
                 if kind.is_low_precedence_word_operator() || Self::is_stmt_modifier_kind(kind) =>
             {
@@ -101,6 +107,57 @@ impl<'a> Parser<'a> {
             }
             _ => true,
         }
+    }
+
+    /// After an explicit `,` / `=>`, comparison words before `=>` are ordinary
+    /// list elements (`has { 1 }, cmp => 2`). The implicit after-block path
+    /// still refuses them.
+    fn should_continue_bare_call_after_separator(&mut self) -> bool {
+        if self.peek_is_comparison_word() {
+            return self.is_keyword_before_fat_arrow();
+        }
+        self.should_continue_bare_call_after_block()
+    }
+
+    /// Word-operator tokens Perl autoquotes before `=>` (`and`/`or`/`not`/`xor`/`cmp`).
+    /// These must not be treated as infix/no-arg terminators in that position.
+    fn peek_is_autoquoted_word_operator(&mut self) -> bool {
+        self.peek_kind().is_some_and(|kind| kind.is_word_operator())
+            && self.is_keyword_before_fat_arrow()
+    }
+
+    /// Turn a word-operator token immediately left of `=>` into an identifier
+    /// so every expression-start path, including `parse_shift`, can autoquote it.
+    fn consume_autoquoted_word_operator_identifier(&mut self) -> ParseResult<Option<Node>> {
+        if !self.peek_is_autoquoted_word_operator() {
+            return Ok(None);
+        }
+        let token = self.consume_token()?;
+        Ok(Some(self.charge_node(
+            NodeKind::Identifier { name: token.text.to_string() },
+            SourceLocation { start: token.start(), end: token.end() },
+        )?))
+    }
+
+    fn peek_is_comparison_word(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::StringCompare)
+            || self.peek_is_identifier_string_comparison()
+    }
+
+    /// Identifier spellings that Perl treats as infix string comparisons.
+    /// `cmp` is normally `TokenKind::StringCompare`; keep the Identifier
+    /// spelling so a reclassified token still terminates like `eq`.
+    fn is_identifier_string_comparison(text: &str) -> bool {
+        matches!(text, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "cmp")
+    }
+
+    fn peek_is_identifier_string_comparison(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::Identifier)
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| Self::is_identifier_string_comparison(token.text.as_ref()))
     }
 
     /// Enter production recursion depth through the live operation context.
@@ -159,10 +216,7 @@ impl<'a> Parser<'a> {
     /// that aliases `&mut Parser`. Depth is unwound on success, parse error,
     /// recovery, cancellation, exhaustion (never entered), and early return.
     #[inline]
-    fn with_depth<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> ParseResult<T>,
-    ) -> ParseResult<T> {
+    fn with_depth<T>(&mut self, f: impl FnOnce(&mut Self) -> ParseResult<T>) -> ParseResult<T> {
         self.enter_production_depth()?;
         let result = f(self);
         self.exit_production_depth();
@@ -203,6 +257,13 @@ impl<'a> Parser<'a> {
         perl_lexer::builtins::builtin_signatures_phf::is_builtin(name)
             && !Self::is_nullary_builtin(name)
             && !Self::is_keyword_handled_builtin(name)
+    }
+
+    /// Expression builtins whose first argument is commonly a string/quote.
+    /// Used to admit nested list-operator calls such as `_croak sprintf qq{...}`
+    /// without treating `foo print "hi"` as a single call.
+    fn is_string_taking_expression_builtin(name: &str) -> bool {
+        matches!(name, "sprintf" | "join")
     }
 
     /// Strip `CORE::` prefix from a name and return the bare builtin name if it
@@ -387,11 +448,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Barewords Perl autoquotes before `=>`: identifiers, reserved-word
-    /// tokens, and low-precedence word operators (`and`/`or`/`not`/`xor`).
+    /// tokens, and word-operator tokens (`and`/`or`/`not`/`xor`/`cmp`).
     fn is_autoquoted_bareword_kind(kind: TokenKind) -> bool {
-        kind == TokenKind::Identifier
-            || Self::is_keyword_token(kind)
-            || kind.is_low_precedence_word_operator()
+        kind == TokenKind::Identifier || Self::is_keyword_token(kind) || kind.is_word_operator()
     }
 
     /// Check if a token kind is a binary operator that couldn't start an expression argument.
@@ -403,6 +462,7 @@ impl<'a> Parser<'a> {
                 kind,
                 TokenKind::Dot
                     | TokenKind::Range
+                    | TokenKind::Ellipsis
                     | TokenKind::LeftShift
                     | TokenKind::RightShift
                     | TokenKind::BitwiseAnd
@@ -594,11 +654,12 @@ impl<'a> Parser<'a> {
         }
         // The lexer sometimes emits variables as Identifier("$x") tokens
         if self.peek_kind() == Some(TokenKind::Identifier)
-            && let Ok(tok) = self.peek_token() {
-                return tok.text.starts_with('$')
-                    || tok.text.starts_with('@')
-                    || tok.text.starts_with('%');
-            }
+            && let Ok(tok) = self.peek_token()
+        {
+            return tok.text.starts_with('$')
+                || tok.text.starts_with('@')
+                || tok.text.starts_with('%');
+        }
         false
     }
 
@@ -670,8 +731,14 @@ impl<'a> Parser<'a> {
         if saw_fat_arrow && elements.len().is_multiple_of(2) {
             // Convert to HashLiteral
             let mut pairs = Vec::with_capacity(elements.len() / 2);
-            for chunk in elements.chunks(2) {
-                pairs.push((chunk[0].clone(), chunk[1].clone()));
+            let mut elements = elements.into_iter();
+            while let Some(key) = elements.next() {
+                // The even-length branch guarantees a value for every key.
+                // Move the owned nodes: cloning here recopies nested ASTs at
+                // every enclosing fat-arrow list.
+                if let Some(value) = elements.next() {
+                    pairs.push((key, value));
+                }
             }
             self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
@@ -748,10 +815,9 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                if !was_comma
-                    && let Some(last) = expressions.last_mut() {
-                        self.auto_quote_bareword_before_fat_comma(last)?;
-                    }
+                if !was_comma && let Some(last) = expressions.last_mut() {
+                    self.auto_quote_bareword_before_fat_comma(last)?;
+                }
                 self.consume_token()?; // consume =>
             }
 
@@ -1380,10 +1446,7 @@ impl<'a> Parser<'a> {
         self.flatten_qw_list_argument(node)
     }
 
-    fn flatten_qw_list_argument(
-        &mut self,
-        node: Node,
-    ) -> ParseResult<(Vec<Node>, SourceLocation)> {
+    fn flatten_qw_list_argument(&mut self, node: Node) -> ParseResult<(Vec<Node>, SourceLocation)> {
         match node.into_parts() {
             (NodeKind::ArrayLiteral { elements }, location) => Ok((elements, location)),
             (kind, location) => Ok((vec![self.charge_node(kind, location)?], location)),
@@ -1396,6 +1459,10 @@ impl<'a> Parser<'a> {
     /// reading is the sole valid Perl parse, #16373) and must NOT be a string
     /// comparison operator (`eq`, `ne`, `lt`, `gt`, etc.) or a keyword token.
     fn looks_like_bare_call(&mut self, name: &str) -> bool {
+        // A sort comparator names a sub; it is never a call site.
+        if self.in_sort_comparator {
+            return false;
+        }
         if self.peek_kind().is_some_and(|kind| {
             matches!(kind, TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
         }) {
@@ -1425,6 +1492,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::QuoteDouble
                         | TokenKind::QuoteCommand
                         | TokenKind::Number
+                        | TokenKind::Backslash
                 )
             }) {
                 return false;
@@ -1461,7 +1529,8 @@ impl<'a> Parser<'a> {
         // 'rw')` (#16639). This check must precede the statement-end / binary-
         // operator refusal: `and`/`or` are logical operators, and `if` is a
         // statement-end token, but `has and => 1` / `has if => 1` are still
-        // autoquoted list-operator arguments. The Identifier match below used
+        // autoquoted list-operator arguments, including comparison-word tokens
+        // (`has cmp =>`, `has eq =>`, #16691). The Identifier match below used
         // to return early for builtins without consulting `=>`, and keyword
         // tokens fell through to `_ => false`.
         if Self::is_autoquoted_bareword_kind(next_kind) && self.is_keyword_before_fat_arrow() {
@@ -1487,6 +1556,20 @@ impl<'a> Parser<'a> {
                 true
             }
             TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => true,
+
+            // `func \&name`, `func \@arr`, `func \\$x` — a reference-taking
+            // unary expression is a valid bare-call argument (upstream
+            // t/comp/proto.t: `testing \&no_proto, undef;`). Without this
+            // arm the call loses its argument uptake and the reference is
+            // left as same-line residue. An operand must follow: a bare
+            // `func \;` is not a call with a reference argument.
+            TokenKind::Backslash => self.tokens.peek_second().ok().is_some_and(|second| {
+                Self::is_sigil_argument_start(second.kind(), second.text.as_ref())
+                    || matches!(
+                        second.kind(),
+                        TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::LeftBracket
+                    )
+            }),
 
             // Imported Test::More-style helpers can take typeglob expressions
             // as list arguments. Keep this scoped to known helper names so
@@ -1533,9 +1616,16 @@ impl<'a> Parser<'a> {
                 if next_text.contains("::") {
                     // Qualified name — check that the following token is `->`, `(`,
                     // or another explicit argument in a list-operator style call.
+                    // A comma, fat arrow, or closing paren also proves the
+                    // qualified name sits in argument position: upstream
+                    // t/comp/parser.t has `is CORE::print::foo, 43, ...`,
+                    // where the qualified bareword is the first list item.
                     if let Ok(third) = self.tokens.peek_second() {
                         return third.kind() == TokenKind::Arrow
+                            || third.kind() == TokenKind::Comma
                             || third.kind() == TokenKind::LeftParen
+                            || third.kind() == TokenKind::FatArrow
+                            || third.kind() == TokenKind::RightParen
                             || Self::is_sigil_argument_start(third.kind(), third.text.as_ref());
                     }
                     return false;
@@ -1565,16 +1655,39 @@ impl<'a> Parser<'a> {
                 //     croak ref(shift) . " is not a valid class"
                 //     confess ref($self) . "::new() is abstract"
                 //
+                // Pattern C (quote arg): `func sprintf qq{"%s"}, $arg`,
+                //   `func join ',', @list` — the builtin is a list operator whose
+                //   first argument is a string or quote-like. Without this, the
+                //   outer identifier is left as a bare term and the ternary colon
+                //   is reported as missing (`Test/Needs.pm`, #2721).
+                //
                 // Without the `LeftParen` check, the early-return here prevented
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
                 if Self::is_builtin_function(&next_text)
+                    && !self.is_declared_nullary_sub(name)
                     && let Ok(third) = self.tokens.peek_second()
                 {
                     let third_text: &str = &third.text;
                     if third.kind() == TokenKind::LeftParen {
                         // builtin(args) — the builtin is called with parens,
                         // producing a value that is the outer function's argument.
+                        return true;
+                    }
+                    // Quote/string first args prove a nested *expression* builtin
+                    // (`sprintf qq{...}`, `join ',', @list`). Statement-like
+                    // builtins (`print "hi"`) more often start the next
+                    // statement, so treating them as nested calls swallowed
+                    // genuine missing-semicolon diagnostics.
+                    if Self::is_string_taking_expression_builtin(&next_text)
+                        && matches!(
+                            third.kind(),
+                            TokenKind::String
+                                | TokenKind::QuoteSingle
+                                | TokenKind::QuoteDouble
+                                | TokenKind::QuoteCommand
+                        )
+                    {
                         return true;
                     }
                     return Self::is_sigil_argument_start(third.kind(), third_text);

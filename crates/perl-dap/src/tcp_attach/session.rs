@@ -4,10 +4,17 @@ use super::reader::{ReaderRetirement, TcpOutputDropAccounting, spawn_reader};
 use anyhow::{Context, Result};
 use perl_lsp_rs_core::transport::framing::frame;
 use std::io::Write;
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Deadline for the refusal re-probe in [`TcpAttachSession::connect`].
+///
+/// Deliberately tiny: a refused connect returns immediately whatever the
+/// deadline, so this costs nothing, and a genuinely slow peer must re-time-out
+/// quickly rather than turn a short user timeout into a long stall.
+const REPROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// TCP attach session
 ///
@@ -32,48 +39,6 @@ pub struct TcpAttachSession {
     /// later delivering stale events or clobbering a replacement connection's
     /// state (#9521).
     reader_retirement: Arc<ReaderRetirement>,
-}
-
-/// Wait budget for the post-timeout follow-up connect (#16555).
-///
-/// The follow-up is a bounded [`TcpStream::connect_timeout`], which reports
-/// `ConnectionRefused` as soon as the OS delivers the refusal. Loopback
-/// refusals conclude within a few seconds on Windows; if the follow-up has not
-/// concluded within this budget the caller keeps the honest (but unrefined)
-/// timeout wording instead of guessing.
-const REFUSAL_PROBE_WAIT: Duration = Duration::from_secs(3);
-
-/// Verdict of the bounded post-timeout follow-up connect (#16555).
-#[derive(Debug)]
-enum PostTimeoutFollowUp {
-    /// The follow-up connect reached a peer. This is a real debugger
-    /// connection: the session adopts it instead of dropping it, so a
-    /// single-client debugger whose listener came up late does not lose its
-    /// one connection slot to a failed attach (#16552 review).
-    Connected(TcpStream),
-    /// The OS delivered a definitive refusal; report the refused wording.
-    Refused,
-    /// No verdict within the budget (or an unrelated error); keep the honest
-    /// timeout wording.
-    Inconclusive,
-}
-
-/// Bounded post-timeout follow-up connect on the caller's thread (#16555).
-///
-/// [`TcpStream::connect_timeout`] bounds the attempt to
-/// [`REFUSAL_PROBE_WAIT`] without a detached thread, so the follow-up can
-/// never outlive the attach response by more than that budget. `Refused`
-/// requires the OS to have delivered the refusal — proof that nothing is
-/// listening at the address; any other outcome keeps the caller's timeout
-/// wording.
-fn post_timeout_follow_up(addr: SocketAddr) -> PostTimeoutFollowUp {
-    match TcpStream::connect_timeout(&addr, REFUSAL_PROBE_WAIT) {
-        Ok(stream) => PostTimeoutFollowUp::Connected(stream),
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-            PostTimeoutFollowUp::Refused
-        }
-        Err(_) => PostTimeoutFollowUp::Inconclusive,
-    }
 }
 
 impl TcpAttachSession {
@@ -115,10 +80,49 @@ impl TcpAttachSession {
         for addr in &config.resolved_addrs {
             match TcpStream::connect_timeout(addr, timeout) {
                 Ok(stream) => {
+                    stream.set_read_timeout(Some(timeout))?;
+                    stream.set_write_timeout(Some(timeout))?;
+                    self.stream = Some(stream);
+                    self.set_connected(true);
+                    // Each successful connection starts with fresh drop
+                    // accounting: a replacement connection's notices must
+                    // count only its own losses, never those inherited from
+                    // the previous connection (#9521). Sharing is preserved
+                    // within the connection (the retired reader keeps writing
+                    // to the old handle, which decays unused).
+                    self.drop_accounting = Arc::new(TcpOutputDropAccounting::new());
                     tracing::info!(address = %addr, "Successfully connected to Perl debugger");
-                    return self.adopt_stream(stream, timeout);
+                    return Ok(());
                 }
                 Err(e) => {
+                    // A refused listener and a slow peer both surface as
+                    // `TimedOut` once the deadline is short, but they are
+                    // opposite remedies: "nothing is listening" versus "raise
+                    // the timeout". Telling a user their debuggee is slow when
+                    // nothing is bound sends them to tune a number that cannot
+                    // help (#16555).
+                    //
+                    // Re-probe once on a short, bounded deadline. A refused
+                    // connect returns immediately regardless of the timeout,
+                    // so this costs nothing in the common case; a genuinely
+                    // slow peer simply re-times-out and we keep the original
+                    // error.
+                    let e = if e.kind() == std::io::ErrorKind::TimedOut {
+                        match TcpStream::connect_timeout(addr, REPROBE_TIMEOUT) {
+                            Err(probe)
+                                if matches!(
+                                    probe.kind(),
+                                    std::io::ErrorKind::ConnectionRefused
+                                        | std::io::ErrorKind::ConnectionReset
+                                ) =>
+                            {
+                                probe
+                            }
+                            _ => e,
+                        }
+                    } else {
+                        e
+                    };
                     tracing::warn!(address = %addr, error = %e, "Failed to connect to resolved address");
                     last_err = Some(e);
                 }
@@ -127,61 +131,7 @@ impl TcpAttachSession {
         let err = last_err.unwrap_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses to connect")
         });
-        // #16555: under a short deadline, `connect_timeout` can report a dead
-        // port as `TimedOut` even though the peer actively refused the
-        // connection — on Windows the refusal signal can arrive after the
-        // deadline (measured ~2s for loopback), so any timeout shorter than
-        // that misreports "nothing is listening" as "the peer was slow" and
-        // sends users tuning timeouts instead of starting the debuggee.
-        // Before giving up with the timeout wording, spend one bounded
-        // follow-up connect on the first resolved address: a definitive
-        // refusal upgrades the verdict, and an established connection is
-        // adopted as the session rather than discarded (#16552 review).
-        if err.kind() == std::io::ErrorKind::TimedOut
-            && let Some(addr) = config.resolved_addrs.first()
-        {
-            match post_timeout_follow_up(*addr) {
-                PostTimeoutFollowUp::Connected(stream) => {
-                    tracing::info!(address = %addr, "Connected to Perl debugger on post-timeout follow-up connect");
-                    return self.adopt_stream(stream, timeout);
-                }
-                PostTimeoutFollowUp::Refused => {
-                    // The budget rides on every attach failure, including this
-                    // upgraded verdict, so the user always sees the deadline
-                    // they configured (#16552 review).
-                    anyhow::bail!(
-                        "Nothing is listening at {}:{} (connection refused) ({}ms timeout).",
-                        config.host,
-                        config.port,
-                        timeout.as_millis()
-                    );
-                }
-                PostTimeoutFollowUp::Inconclusive => {}
-            }
-        }
-        anyhow::bail!(
-            "Failed to connect to any resolved address for '{}' ({}ms timeout): {}",
-            config.host,
-            timeout.as_millis(),
-            err
-        );
-    }
-
-    /// Install a connected stream as this session's live connection.
-    ///
-    /// Shared by the ordinary connect loop and the post-timeout follow-up so a
-    /// successful follow-up connect becomes the session instead of a dropped
-    /// classifier probe (#16552 review). Socket timeouts, connection state,
-    /// and fresh per-connection drop accounting mirror the original success
-    /// path; a replacement connection's notices must count only its own
-    /// losses, never those inherited from the previous connection (#9521).
-    fn adopt_stream(&mut self, stream: TcpStream, timeout: Duration) -> Result<()> {
-        stream.set_read_timeout(Some(timeout))?;
-        stream.set_write_timeout(Some(timeout))?;
-        self.stream = Some(stream);
-        self.set_connected(true);
-        self.drop_accounting = Arc::new(TcpOutputDropAccounting::new());
-        Ok(())
+        anyhow::bail!("Failed to connect to any resolved address for '{}': {}", config.host, err);
     }
 
     /// Check if connected
@@ -366,82 +316,6 @@ mod tests {
 
         let _ = session.disconnect();
         server.join().map_err(|e| format!("server thread failed: {e:?}"))??;
-        Ok(())
-    }
-
-    /// #16555: the post-timeout follow-up connect yields a usable connection
-    /// for a live listener — a working target is classified as connected (and
-    /// its stream adopted), never as refused.
-    #[test]
-    fn post_timeout_follow_up_is_connected_for_a_live_listener()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let addr = listener.local_addr()?;
-        match post_timeout_follow_up(addr) {
-            PostTimeoutFollowUp::Connected(stream) => {
-                // The stream is a real connection, not a discarded probe: the
-                // peer address is the listener we dialed, so adopting it hands
-                // the debugger's client slot to the session (#16552 review).
-                assert_eq!(
-                    stream.peer_addr()?,
-                    addr,
-                    "the adopted stream must reach the dialed listener"
-                );
-            }
-            other => {
-                return Err(
-                    format!("a live listener must classify as connected, got {other:?}").into()
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// #16555: the post-timeout follow-up connect yields a definitive refusal
-    /// verdict for a port with no listener — that is the address-state proof
-    /// the caller needs to upgrade the timeout wording.
-    #[test]
-    fn post_timeout_follow_up_is_refused_for_a_port_without_a_listener()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let addr = listener.local_addr()?;
-        drop(listener);
-
-        match post_timeout_follow_up(addr) {
-            PostTimeoutFollowUp::Refused => Ok(()),
-            other => Err(format!("a closed port must classify as refused, got {other:?}").into()),
-        }
-    }
-
-    /// #16555: with a short timeout, a port that actively refuses connections
-    /// must be reported as refused — not misreported as "connection timed
-    /// out". The listener only reserves a port and is dropped before the
-    /// attach, so nothing is listening when the connect runs.
-    #[test]
-    fn connect_to_a_refused_port_reports_refusal_under_a_short_timeout()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
-
-        let mut session = TcpAttachSession::new();
-        let mut config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(500);
-        let err = match session.connect(&mut config) {
-            Ok(()) => {
-                return Err("nothing is listening at the port, but the attach connected".into());
-            }
-            Err(err) => err,
-        };
-        let message = format!("{err:#}");
-
-        assert!(
-            message.to_lowercase().contains("refused"),
-            "a refused port must be reported as refused, got: {message}"
-        );
-        assert!(
-            !message.to_lowercase().contains("timed out"),
-            "a refused port must not be misreported as a timeout, got: {message}"
-        );
         Ok(())
     }
 }

@@ -10,7 +10,7 @@ use perl_lsp_rs_core::runtime::launcher::{
     catalog_advertised_feature_ids, help_text, logging_filter, parse_args, should_enable_logging,
     to_json_for_profile,
 };
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_err_with};
 use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
 
@@ -567,10 +567,15 @@ fn invalid_value_keeps_the_parser_diagnostic() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A missing value keeps the parser's explanation rather than being flattened
-/// into an "unknown option" claim about a flag that exists.
+/// A missing value keeps an explanation that names the flag, rather than being
+/// flattened into an "unknown option" claim about a flag that exists.
+///
+/// `--diagnostic-debounce-ms` is now prevalidated, so this flag's missing-value
+/// path is a typed `MissingValue` rather than a forwarded `ParserDiagnostic`.
+/// The assertions are deliberately about the rendered text, not the variant, so
+/// this test survives that routing change instead of silently changing subject.
 #[test]
-fn missing_value_keeps_the_parser_diagnostic() -> anyhow::Result<()> {
+fn missing_value_keeps_a_diagnostic_that_names_the_flag() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms"]);
 
     let Err(err) = result else {
@@ -633,6 +638,66 @@ fn parse_port_invalid_value_returns_invalid_port_error() {
     ));
 }
 
+// ---------------------------------------------------------------------------
+// Module: parse_args --diagnostic-debounce-ms (#16806)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_diagnostic_debounce_invalid_value_returns_typed_error() {
+    let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms", "abc"]);
+    assert!(
+        matches!(
+            result,
+            Err(LaunchParseError::InvalidDiagnosticDebounceMs { ref raw_value, .. })
+                if raw_value == "abc"
+        ),
+        "expected a typed debounce rejection, got {result:?}"
+    );
+}
+
+#[test]
+fn parse_diagnostic_debounce_overflow_returns_typed_error() {
+    let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms=18446744073709551616"]);
+    assert!(
+        matches!(
+            result,
+            Err(LaunchParseError::InvalidDiagnosticDebounceMs { ref raw_value, .. })
+                if raw_value == "18446744073709551616"
+        ),
+        "expected a typed debounce rejection, got {result:?}"
+    );
+}
+
+#[test]
+fn parse_diagnostic_debounce_missing_value_returns_missing_value_error() {
+    for argv in [
+        ["perl-lsp", "--diagnostic-debounce-ms"].as_slice(),
+        ["perl-lsp", "--diagnostic-debounce-ms="].as_slice(),
+    ] {
+        let result = parse_args(argv.iter().copied());
+        assert!(
+            matches!(
+                result,
+                Err(LaunchParseError::MissingValue { ref option })
+                    if option == "--diagnostic-debounce-ms"
+            ),
+            "expected MissingValue for {argv:?}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_diagnostic_debounce_zero_and_upper_bound_reach_tuning() {
+    for (argv, expected) in [
+        (["perl-lsp", "--diagnostic-debounce-ms", "0"].as_slice(), 0u64),
+        (["perl-lsp", "--diagnostic-debounce-ms=0"].as_slice(), 0),
+        (["perl-lsp", "--diagnostic-debounce-ms", "18446744073709551615"].as_slice(), u64::MAX),
+    ] {
+        let plan = must(parse_args(argv.iter().copied()));
+        assert_eq!(plan.config.runtime_tuning.diagnostic_debounce_ms, expected, "argv={argv:?}");
+    }
+}
+
 #[test]
 fn parse_feature_profile_missing_value_returns_missing_value_error() {
     let result = parse_args(["perl-lsp", "--feature-profile"]);
@@ -677,13 +742,97 @@ fn error_display_invalid_feature_profile() {
 
 #[test]
 fn error_display_invalid_port() {
-    let err = LaunchParseError::InvalidPort {
-        raw_port: "abc".to_string(),
-        reason: "not a number".to_string(),
-    };
-    let msg = format!("{err}");
-    assert!(msg.contains("abc"));
-    assert!(msg.contains("not a number"));
+    /// Wording leaked from `ParseIntError` before #16526; must never return (#16564).
+    const PARSE_INT_LEAK_MARKERS: &[&str] = &["invalid digit", "ParseIntError"];
+
+    struct Case {
+        argv: &'static [&'static str],
+        /// Substring that must appear in the rendered rejection (raw token echo).
+        raw_echo: &'static str,
+        /// Reason arm from `port::render_port_rejection` / `port_rejection_reason`.
+        reason_contains_range: bool,
+        whitespace_padded: bool,
+    }
+
+    let cases = [
+        Case {
+            argv: &["perl-lsp", "--port", "abc"],
+            raw_echo: "abc",
+            reason_contains_range: true,
+            whitespace_padded: false,
+        },
+        Case {
+            argv: &["perl-lsp", "--port=abc"],
+            raw_echo: "abc",
+            reason_contains_range: true,
+            whitespace_padded: false,
+        },
+        Case {
+            argv: &["perl-lsp", "--port", "70000"],
+            raw_echo: "70000",
+            reason_contains_range: true,
+            whitespace_padded: false,
+        },
+        Case {
+            argv: &["perl-lsp", "--port=70000"],
+            raw_echo: "70000",
+            reason_contains_range: true,
+            whitespace_padded: false,
+        },
+        Case {
+            argv: &["perl-lsp", "--port", " 80"],
+            raw_echo: "\" 80\"",
+            reason_contains_range: false,
+            whitespace_padded: true,
+        },
+        Case {
+            argv: &["perl-lsp", "--port= 80"],
+            raw_echo: "\" 80\"",
+            reason_contains_range: false,
+            whitespace_padded: true,
+        },
+    ];
+
+    for case in cases {
+        let result = parse_args(case.argv.iter().copied());
+        let err = must_err_with(result, format!("argv {:?} must be rejected", case.argv));
+        let msg = err.to_string();
+        assert!(
+            msg.contains(case.raw_echo),
+            "argv={argv:?} should echo the raw token; got {msg}",
+            argv = case.argv
+        );
+        assert!(
+            msg.starts_with("Invalid port value:"),
+            "argv={argv:?} should use render_port_rejection prefix; got {msg}",
+            argv = case.argv
+        );
+        if case.reason_contains_range {
+            assert!(
+                msg.contains("0-65535"),
+                "argv={argv:?} should name the accepted range; got {msg}",
+                argv = case.argv
+            );
+        }
+        if case.whitespace_padded {
+            assert!(
+                msg.contains("Remove the leading or trailing whitespace."),
+                "argv={argv:?} should name padding, not guess a number; got {msg}",
+                argv = case.argv
+            );
+        }
+        for leak in PARSE_INT_LEAK_MARKERS {
+            assert!(
+                !msg.contains(leak),
+                "argv={argv:?} must not leak internal parse errors; got {msg}",
+                argv = case.argv
+            );
+        }
+    }
+
+    // `--port 0` is inside the accepted range; it must not be misclassified as invalid.
+    let plan = must(parse_args(["perl-lsp", "--port", "0"]));
+    assert_eq!(plan.config.transport, TransportMode::Socket { port: 0 });
 }
 
 #[test]

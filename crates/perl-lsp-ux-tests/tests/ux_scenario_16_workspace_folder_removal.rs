@@ -61,9 +61,10 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() -> Result<(), String
     )
     .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
+    let ready = harness.wait_for_index_ready(Duration::from_secs(20));
     assert!(
-        harness.wait_for_index_ready(Duration::from_secs(20)),
-        "Expected initial workspace index to become ready before querying multi-root symbols"
+        ready.is_ok(),
+        "Expected initial workspace index to become ready before querying multi-root symbols: {ready:?}"
     );
 
     let before_deadline = Instant::now() + Duration::from_secs(10);

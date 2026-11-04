@@ -2,14 +2,13 @@
 
 use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
-    Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
-    DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE,
-    LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read, RestartArguments, ResumeMode, Source,
-    StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
-    Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    Arc, BufRead, BufReader, Child, DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState,
+    DisconnectArguments, Duration, EngineBreakpointHitOutcome, Instant,
+    LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE, LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read,
+    RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig, TcpAttachSession,
+    TerminateArguments, TerminationState, Value, Write, ansi_escape_re, catalog_has_feature,
+    context_re, debug_session_terminate_wait_ms, die_suffix_re, error_re, exception_re, json,
+    lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -50,70 +49,6 @@ enum AttachSubject {
     ProcessId,
     Invalid(String),
     Ambiguous(String),
-}
-
-/// Why a launch failed — the launch-failure wrapper keys its guidance on this
-/// classification (#16552).
-///
-/// Before #16552 every failed launch was wrapped with an unconditional
-/// `perlPath` suggestion and an ambient "Found Perl at …" report, which
-/// misattributed program-path typos and syntax errors to the interpreter and
-/// sometimes contradicted the cause message itself. The classification is
-/// carried by the error value instead of being re-derived from message text so
-/// a reworded cause can never silently change the wrapper's guidance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum LaunchFailureKind {
-    /// The configured interpreter could not be used: it was not found or
-    /// could not be spawned, its name was invalid, or it cannot host the core
-    /// debugger module. Ambient-Perl discovery info and `perlPath` advice are
-    /// relevant to this class.
-    Interpreter,
-    /// The launch configuration, the debuggee, or an internal boundary was
-    /// rejected (missing program, syntax error, workspace boundary, session
-    /// lifecycle). Interpreter advice would misattribute the cause and stays
-    /// out of the message.
-    Other,
-}
-
-/// A launch failure: the user-facing cause message plus the classification the
-/// response wrapper uses to decide whether interpreter guidance applies
-/// (#16552).
-#[derive(Debug, Clone)]
-pub(super) struct LaunchFailure {
-    kind: LaunchFailureKind,
-    message: String,
-}
-
-impl LaunchFailure {
-    /// An interpreter-class failure: `perlPath` guidance applies.
-    fn interpreter(message: impl Into<String>) -> Self {
-        Self { kind: LaunchFailureKind::Interpreter, message: message.into() }
-    }
-
-    /// Any failure the interpreter advice would misattribute.
-    fn other(message: impl Into<String>) -> Self {
-        Self { kind: LaunchFailureKind::Other, message: message.into() }
-    }
-
-    fn kind(&self) -> LaunchFailureKind {
-        self.kind
-    }
-}
-
-impl std::fmt::Display for LaunchFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-/// Join two sentences with exactly one separator so an embedded cause that
-/// already ends in punctuation never produces `". ."` (#16552).
-fn join_sentences(first: &str, second: &str) -> String {
-    if first.ends_with('.') || first.ends_with('!') || first.ends_with('?') {
-        format!("{first} {second}")
-    } else {
-        format!("{first}. {second}")
-    }
 }
 
 /// Read one debugger record, accepting either a newline or a prompt-only
@@ -623,6 +558,43 @@ impl DebugAdapter {
         }
 
         if let Some(args) = arguments {
+            // Reject malformed argv before retaining configuration or touching
+            // interpreter, authority, or process state (#17733). Every accepted
+            // string remains one argument; silently dropping entries changes
+            // the program the client asked us to debug.
+            let perl_args = match Self::parse_launch_script_args(&args) {
+                Ok(args) => args,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+
+            // Reject malformed typed options before retaining configuration
+            // or touching process state (#18027), for the same reason as argv
+            // above: silently coercing them changes what the client asked for
+            // while the launch response still reports success.
+            let (stop_on_entry, debuggee_timeout_secs, env_overrides) =
+                match Self::parse_launch_typed_options(&args) {
+                    Ok(options) => options,
+                    Err(message) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(message),
+                        };
+                    }
+                };
+
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -774,36 +746,9 @@ impl DebugAdapter {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
-            let perl_args = args
-                .get("args")
-                .and_then(|a| a.as_array())
-                .map(|arr| {
-                    arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
-
-            // Wall-clock timeout for the perl -d debuggee process (#4640).
-            // 0 (the default) disables the watchdog so legitimate long-running
-            // debug sessions (e.g. a server paused at a breakpoint for minutes)
-            // are not interrupted.  A positive value kills the debuggee after
-            // the specified number of seconds of wall-clock time.
-            let debuggee_timeout_secs =
-                args.get("debuggeeTimeoutSeconds").and_then(|v| v.as_u64()).unwrap_or(0);
-
-            let env_overrides = args
-                .get("env")
-                .and_then(Value::as_object)
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .filter_map(|(key, value)| {
-                            value.as_str().map(|value| (key.clone(), value.to_string()))
-                        })
-                        .collect::<HashMap<String, String>>()
-                })
-                .unwrap_or_default();
+            // `stop_on_entry`, `debuggee_timeout_secs` (the #4640 watchdog;
+            // 0 disables it), and `env_overrides` were admitted without
+            // coercion by `parse_launch_typed_options` above (#18027).
 
             // Launch Perl debugger
             let launch_result = self.launch_debugger(
@@ -845,45 +790,21 @@ impl DebugAdapter {
                         message: None,
                     }
                 }
-                Err(failure) => {
-                    // #16552: interpreter discovery info and `perlPath` advice
-                    // are only added when the interpreter is actually the
-                    // failing component; for every other cause the wrapper
-                    // stays out of the way so the embedded diagnosis (missing
-                    // program, compiler output, workspace boundary) is the
-                    // whole message.
-                    let message = if failure.kind() == LaunchFailureKind::Interpreter {
-                        // `detect_perl_info`'s not-found hint already ends with
-                        // a period; adding another before the `perlPath`
-                        // advice produced "path.. To use" in the launch
-                        // response (#16552 review).
-                        let perl_info = detect_perl_info();
-                        let perl_info = if perl_info.ends_with('.') {
-                            perl_info
-                        } else {
-                            format!("{perl_info}.")
-                        };
-                        format!(
-                            "Cannot start Perl debugger: {}",
-                            join_sentences(
-                                &failure.to_string(),
-                                &format!(
-                                    "{perl_info} To use a specific Perl interpreter, add \
-                                     `perlPath` to your launch.json \
-                                     (e.g. {{\"perlPath\": \"/path/to/perl\"}})."
-                                )
-                            )
-                        )
-                    } else {
-                        format!("Cannot start Perl debugger: {}", failure)
-                    };
+                Err(e) => {
+                    let perl_info = detect_perl_info();
                     DapMessage::Response {
                         seq,
                         request_seq,
                         success: false,
                         command: "launch".to_string(),
                         body: None,
-                        message: Some(message),
+                        message: Some(format!(
+                            "Cannot start Perl debugger: {}. \
+                             {perl_info}. \
+                             To use a specific Perl interpreter, add `perlPath` to your launch.json \
+                             (e.g. {{\"perlPath\": \"/path/to/perl\"}}).",
+                            e
+                        )),
                     }
                 }
             }
@@ -901,6 +822,72 @@ impl DebugAdapter {
                 ),
             }
         }
+    }
+
+    /// Admit the optional script argv without coercion or payload-bearing errors.
+    fn parse_launch_script_args(args: &Value) -> Result<Vec<String>, String> {
+        let values = match args.get("args") {
+            None | Some(Value::Null) => return Ok(Vec::new()),
+            Some(Value::Array(values)) => values,
+            Some(_) => return Err("Invalid launch args: expected an array of strings".to_string()),
+        };
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("Invalid launch args[{index}]: expected a string"))
+            })
+            .collect()
+    }
+
+    /// Read `stopOnEntry` without coercion (#18027): absent or null means
+    /// false; any other non-boolean is a typed refusal, never a silent false.
+    fn typed_stop_on_entry(args: &Value) -> Result<bool, String> {
+        match args.get("stopOnEntry") {
+            None | Some(Value::Null) => Ok(false),
+            Some(value) => {
+                value.as_bool().ok_or_else(|| "Invalid stopOnEntry: expected a boolean".to_string())
+            }
+        }
+    }
+
+    /// Admit the typed launch options without coercion (#18027), following
+    /// the `parse_launch_script_args` precedent: a present-but-wrong-typed
+    /// value fails the request instead of silently changing behavior.
+    /// Error text names options and, for `env`, the offending key only;
+    /// values are never echoed.
+    fn parse_launch_typed_options(
+        args: &Value,
+    ) -> Result<(bool, u64, std::collections::HashMap<String, String>), String> {
+        let stop_on_entry = Self::typed_stop_on_entry(args)?;
+        let debuggee_timeout_secs = match args.get("debuggeeTimeoutSeconds") {
+            None | Some(Value::Null) => 0,
+            Some(value) => value.as_u64().ok_or_else(|| {
+                "Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string()
+            })?,
+        };
+        let env_overrides = match args.get("env") {
+            None | Some(Value::Null) => std::collections::HashMap::new(),
+            Some(Value::Object(entries)) => {
+                let mut map = std::collections::HashMap::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let value = value.as_str().ok_or_else(|| {
+                        format!("Invalid env value for '{key}': expected a string")
+                    })?;
+                    map.insert(key.clone(), value.to_string());
+                }
+                map
+            }
+            Some(_) => {
+                return Err(
+                    "Invalid env: expected an object mapping names to string values".to_string()
+                );
+            }
+        };
+        Ok((stop_on_entry, debuggee_timeout_secs, env_overrides))
     }
 
     /// Resolve the Perl interpreter for a debug launch from its `launch.json`
@@ -989,7 +976,7 @@ impl DebugAdapter {
         env_overrides: HashMap<String, String>,
         cwd_override: Option<PathBuf>,
         debuggee_timeout_secs: u64,
-    ) -> Result<i32, LaunchFailure> {
+    ) -> Result<i32, String> {
         // Security: Validate program path before any process spawning
         // This prevents command injection via flag arguments (e.g., "-e malicious_code")
         // and ensures we're launching a real Perl script file.
@@ -998,11 +985,11 @@ impl DebugAdapter {
 
         // Reject empty or whitespace-only paths
         if program.is_empty() {
-            return Err(LaunchFailure::other(
+            return Err(
                 "No Perl script was specified. Set the 'program' field in your launch.json \
                  to the path of the script you want to debug."
                     .to_string(),
-            ));
+            );
         }
 
         // Detect shell-style quotes around the program path (#1985).
@@ -1013,11 +1000,11 @@ impl DebugAdapter {
             (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
                 || (program.starts_with('"') && program.ends_with('"') && program.len() > 1);
         if has_surrounding_quotes && !Path::new(program).is_file() {
-            return Err(LaunchFailure::other(format!(
+            return Err(format!(
                 "The 'program' path '{program}' has surrounding quotes. \
                  Remove the quotes in your launch.json — the path should be just \
                  the script path, e.g. \"program\": \"script.pl\"."
-            )));
+            ));
         }
 
         // Validate that the program is a regular file (not a directory, device, etc.)
@@ -1029,19 +1016,19 @@ impl DebugAdapter {
         match std::fs::metadata(path) {
             Ok(metadata) => {
                 if !metadata.is_file() {
-                    return Err(LaunchFailure::other(format!(
+                    return Err(format!(
                         "'{}' is not a file. Update the 'program' field in your launch.json \
                          to point to a Perl script (.pl or .t).",
                         program
-                    )));
+                    ));
                 }
             }
             Err(e) => {
-                return Err(LaunchFailure::other(format!(
+                return Err(format!(
                     "Cannot find '{}': {}. \
                      Check that the 'program' path in your launch.json is correct.",
                     program, e
-                )));
+                ));
             }
         }
 
@@ -1051,20 +1038,20 @@ impl DebugAdapter {
             lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
         if let Some(root) = workspace_root.as_ref() {
             security::validate_path(path, root).map_err(|e| {
-                LaunchFailure::other(format!(
+                format!(
                     "The script '{}' is outside your workspace folder. \
                      Only scripts within the open workspace can be debugged. \
                      Details: {}",
                     program, e
-                ))
+                )
             })?;
         }
 
         if !is_valid_perl_interpreter(perl_interpreter) {
-            return Err(LaunchFailure::interpreter(format!(
+            return Err(format!(
                 "Invalid Perl interpreter '{}'. Set launch.json `perl` to a Perl executable path (for example, `perl` or `/usr/bin/perl`).",
                 perl_interpreter
-            )));
+            ));
         }
 
         // Effective debuggee working directory, shared by the capability
@@ -1084,15 +1071,13 @@ impl DebugAdapter {
         // but never hosts a session. Probe it — from the same effective
         // debuggee directory — before spawning so such a launch fails with a
         // typed, actionable error instead of a mid-session pipe failure.
-        Self::check_debugger_capability(perl_interpreter, &env_overrides, &prog_cwd)
-            .map_err(LaunchFailure::interpreter)?;
+        Self::check_debugger_capability(perl_interpreter, &env_overrides, &prog_cwd)?;
 
         // Pre-launch syntax check: run `perl -c <script>` before spawning the
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(perl_interpreter, program, &env_overrides, Some(prog_cwd.clone()))
-            .map_err(LaunchFailure::other)?;
+        Self::check_syntax(perl_interpreter, program, &env_overrides, Some(prog_cwd.clone()))?;
 
         // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
         // session env is controlled entirely by launch.json `env` (#8688).
@@ -1129,9 +1114,7 @@ impl DebugAdapter {
         // workspace security boundary. Pin an absolute spelling so a relative
         // launch cwd cannot later be reinterpreted against the adapter's cwd.
         let debuggee_cwd = std::path::absolute(cmd.get_current_dir().unwrap_or(Path::new(".")))
-            .map_err(|error| {
-                LaunchFailure::other(format!("Cannot resolve debugger working directory: {error}"))
-            })?;
+            .map_err(|error| format!("Cannot resolve debugger working directory: {error}"))?;
         cmd.current_dir(&debuggee_cwd);
         let launch_source_path = {
             let path = Path::new(program);
@@ -1139,28 +1122,26 @@ impl DebugAdapter {
         };
         let launch_source_digest = std::fs::read(&launch_source_path)
             .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
-            .map_err(|error| {
-                LaunchFailure::other(format!("Cannot snapshot launched source identity: {error}"))
-            })?;
+            .map_err(|error| format!("Cannot snapshot launched source identity: {error}"))?;
 
         // Allocate the execution-context id BEFORE spawning: a launch that
         // cannot mint a fresh id must fail without side effects.
         let Some(thread_id) = self.allocate_thread_id() else {
-            return Err(LaunchFailure::other(
+            return Err(
                 "Debugger could not be started: the execution-context id space is exhausted. \
                  Restart the debug adapter to reset execution contexts."
                     .to_string(),
-            ));
+            );
         };
 
         // A previously rejected replacement remains the sole owner of an
         // unconfirmed child. Do not spawn another child until terminal
         // cleanup has retried that owner successfully.
         if lock_or_recover(&self.rejected_child, "debug_adapter.rejected_child").is_some() {
-            return Err(LaunchFailure::other(
+            return Err(
                 "Cannot replace the active debugger session while a rejected process cleanup remains unconfirmed"
                     .to_string(),
-            ));
+            );
         }
 
         // #15538: make the session child a process-group leader on Unix so
@@ -1173,9 +1154,7 @@ impl DebugAdapter {
                 // launch must leave the currently active reader valid for its existing session.
                 if !self.prepare_replacement_session() {
                     let cleanup = Self::terminate_child_process(&mut child);
-                    return Err(LaunchFailure::other(
-                        self.reject_spawned_replacement_child(child, cleanup),
-                    ));
+                    return Err(self.reject_spawned_replacement_child(child, cleanup));
                 }
                 if let Ok(mut identity) = self.launch_source_identity.lock() {
                     *identity = Some((launch_source_path.clone(), launch_source_digest.clone()));
@@ -1199,11 +1178,11 @@ impl DebugAdapter {
                 if let Ok(mut guard) = self.session.lock() {
                     *guard = Some(session);
                 } else {
-                    return Err(LaunchFailure::other(
+                    return Err(
                         "Debugger could not be started: an internal state error occurred. \
                          Try stopping the debug session and relaunching."
                             .to_string(),
-                    ));
+                    );
                 }
                 self.operation_broker.open_session();
                 self.admit_terminal_lifecycle();
@@ -1247,15 +1226,13 @@ impl DebugAdapter {
                     })
                     .unwrap_or_default();
                 if installed_source_breakpoints.ambiguous {
-                    return Err(LaunchFailure::other(
-                        if installed_source_breakpoints.cleanup_succeeded {
-                            "Debugger session was invalidated because a source breakpoint acknowledgement was ambiguous"
+                    return Err(if installed_source_breakpoints.cleanup_succeeded {
+                        "Debugger session was invalidated because a source breakpoint acknowledgement was ambiguous"
                             .to_string()
-                        } else {
-                            "Debugger session was invalidated but cleanup was not confirmed after an ambiguous source breakpoint acknowledgement"
+                    } else {
+                        "Debugger session was invalidated but cleanup was not confirmed after an ambiguous source breakpoint acknowledgement"
                             .to_string()
-                        },
-                    ));
+                    });
                 }
                 for id in installed_source_breakpoints.installed {
                     self.send_event(
@@ -1277,11 +1254,7 @@ impl DebugAdapter {
 
                 Ok(thread_id)
             }
-            Err(e) => Err(LaunchFailure::interpreter(format_perl_spawn_error(
-                perl_interpreter,
-                Some(&debuggee_cwd),
-                &e,
-            ))),
+            Err(e) => Err(format_perl_spawn_error(perl_interpreter, &e)),
         }
     }
 
@@ -1546,16 +1519,18 @@ impl DebugAdapter {
             prog_cwd,
         );
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let output = match oracle
-            .into_command()
-            .arg("-c")
-            .arg("--")
-            .arg(program)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-        {
+        let timeout = oracle.timeout;
+        let mut syntax_cmd = oracle.into_command();
+        syntax_cmd.arg("-c").arg("--").arg(program).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let output = match crate::bounded_subprocess::output_with_timeout(syntax_cmd, timeout) {
             Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(format!(
+                    "Syntax check timed out after {} seconds for '{}' — the interpreter did not finish compiling the script.",
+                    timeout.as_secs(),
+                    program
+                ));
+            }
             Err(e) => {
                 // `perl` not found or could not be spawned — skip the check
                 // and let the real launch produce the "perl not on PATH" error.
@@ -2858,26 +2833,63 @@ impl DebugAdapter {
             }
 
             // Extract host and port for TCP attachment.
-            let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
+            let host = match args.get("host") {
+                None | Some(Value::Null) => "localhost",
+                Some(Value::String(host)) => host.as_str(),
+                Some(_) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some("Invalid host: expected a string".to_string()),
+                    };
+                }
+            };
             let normalized_host = host.trim();
-            let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
-            if raw_port > 65535 {
-                return DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: false,
-                    command: "attach".to_string(),
-                    body: None,
-                    message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
-                };
-            }
-            let port = raw_port as u16;
+            let port = match args.get("port") {
+                None | Some(Value::Null) => 13603,
+                Some(value) => match value
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+                    .filter(|port| *port != 0)
+                {
+                    Some(port) => port,
+                    None => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "attach".to_string(),
+                            body: None,
+                            message: Some(
+                                "Invalid port: expected an integer in range 1-65535".to_string(),
+                            ),
+                        };
+                    }
+                },
+            };
             let timeout = args
                 .get("timeout")
                 .or_else(|| args.get("timeoutMs"))
                 .and_then(|t| t.as_u64())
                 .map(Self::u64_to_u32_saturating);
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+            // #18027: a present-but-non-boolean stopOnEntry is a typed
+            // refusal here too, never a silent false.
+            let stop_on_entry = match Self::typed_stop_on_entry(&args) {
+                Ok(value) => value,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
 
             // TCP attachment mode (IMPLEMENTED)
             let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
@@ -2997,18 +3009,17 @@ impl DebugAdapter {
                     success: false,
                     command: "attach".to_string(),
                     body: None,
-                    // #16555: the connect error itself carries the exact
-                    // timeout budget and the refused-vs-timed-out verdict
-                    // ("Nothing is listening … (connection refused) …"), so
-                    // the wrapper only adds the remediation instead of
-                    // restating a hard-coded timeout default that drifted
-                    // from the real one.
                     message: Some(format!(
-                        "Cannot attach to Perl debugger at {}:{}: {}. \
+                        "Cannot attach to Perl debugger at {}:{} ({}ms timeout): {}. \
                              Make sure the Perl process was started with \
                              'PERLDB_OPTS=\"RemotePort={}:{}\"' \
                              and is still running before attaching.",
-                        config.host, config.port, e, config.host, config.port,
+                        config.host,
+                        config.port,
+                        config.timeout_ms.unwrap_or(30000),
+                        e,
+                        config.host,
+                        config.port,
                     )),
                 },
             }
@@ -3303,10 +3314,18 @@ impl DebugAdapter {
             let pid = process.id();
             match signal::kill(Pid::from_raw(Self::u32_to_i32_saturating(pid)), Signal::SIGTERM) {
                 Ok(()) => {
+                    // The SIGTERM grace period keeps the production budget:
+                    // it precedes kill(), so a test child that ignores
+                    // SIGTERM would otherwise consume the elevated
+                    // confirmation budget here and push the whole cleanup
+                    // past the cleanup-driving tests' 2s response deadlines
+                    // (CodeRabbit follow-up on #17173). Only the final
+                    // kill-confirmation wait below is elevated in test
+                    // builds.
                     if let outcome @ ChildExitOutcome::Exited =
                         Self::wait_for_child_exit_with_outcome(
                             process,
-                            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                            Duration::from_millis(super::DEBUG_SESSION_TERMINATE_WAIT_MS),
                         )
                     {
                         // #15538: the direct child exited gracefully, but the
@@ -3331,7 +3350,7 @@ impl DebugAdapter {
         }
         Self::wait_for_child_exit_with_outcome(
             process,
-            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+            Duration::from_millis(debug_session_terminate_wait_ms()),
         )
     }
 
@@ -3925,6 +3944,7 @@ fn deliver_reserved_terminated_event(
 
 #[cfg(test)]
 mod tests {
+    use super::super::patterns::DEBUGGER_QUERY_WAIT_MS;
     use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
     use super::{
@@ -3963,11 +3983,126 @@ mod tests {
         .expect("test authority resolution")
     }
 
+    /// #18027: wrong-typed launch options refuse with a typed message;
+    /// absent and well-typed options keep their exact current meaning.
+    #[test]
+    fn launch_typed_options_refuse_wrong_types_without_coercion() {
+        let parse = |args: Value| DebugAdapter::parse_launch_typed_options(&args);
+
+        assert_eq!(
+            parse(json!({ "stopOnEntry": "true" })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "stopOnEntry": 1 })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": "30" })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": -5 })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "env": ["A=1"] })).map_err(|e| e),
+            Err("Invalid env: expected an object mapping names to string values".to_string())
+        );
+        let env_err = parse(json!({ "env": { "SECRET_TOKEN": 42 } })).unwrap_err();
+        assert!(env_err.contains("SECRET_TOKEN"), "error names the key: {env_err}");
+        assert!(!env_err.contains("42"), "error must not echo the value: {env_err}");
+
+        let (stop, timeout, env) = parse(json!({})).expect("absent options admit defaults");
+        assert!(!stop && timeout == 0 && env.is_empty());
+        let (stop, timeout, env) = parse(json!({
+            "stopOnEntry": true,
+            "debuggeeTimeoutSeconds": 30,
+            "env": { "A": "1" }
+        }))
+        .expect("well-typed options admit");
+        assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
+    }
+
+    /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
+    /// any session is created or connected.
+    #[test]
+    fn attach_refuses_string_stop_on_entry_before_connecting() {
+        let adapter = DebugAdapter::new();
+        let message = adapter.handle_attach(
+            1,
+            7,
+            Some(json!({ "host": "127.0.0.1", "port": 13603, "stopOnEntry": "true" })),
+        );
+        match message {
+            DapMessage::Response { success, message, .. } => {
+                assert!(!success, "malformed attach stopOnEntry must fail");
+                assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
+            }
+            other => panic!("expected failed attach response, got {other:?}"),
+        }
+        assert!(
+            lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
+            "no TCP session may be created for a refused attach"
+        );
+    }
+
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {
         match response {
             super::DapMessage::Response { success, message, .. } if !success => message,
             _ => None,
         }
+    }
+
+    #[test]
+    fn malformed_launch_args_preserve_configuration_and_authority() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+        let accepted = json!({"program": "retained.pl", "args": ["retained"]});
+        *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args") =
+            Some(accepted.clone());
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(root.path().to_path_buf());
+        let (_, receipt) = adapter.begin_authority_session().ok_or("authority session")?;
+
+        for (invalid, field) in [
+            (json!("private-payload"), "args"),
+            (json!(["valid", 17]), "args[1]"),
+            (json!([null, "valid"]), "args[0]"),
+        ] {
+            let response = adapter.handle_launch(
+                2,
+                9,
+                Some(json!({
+                    "program": root.path().join("missing.pl"),
+                    "perlPath": root.path().join("missing").join("perl"),
+                    "workspaceRoot": root.path().join("missing-root"),
+                    "args": invalid
+                })),
+            );
+            let message = launch_failure_message(response).ok_or("malformed argv was accepted")?;
+            assert!(message.contains(field), "early field-specific refusal: {message}");
+            assert!(!message.contains("private-payload"), "payload leaked: {message}");
+            assert_eq!(
+                *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args"),
+                Some(accepted.clone()),
+                "rejected argv must not replace retained configuration"
+            );
+            assert_eq!(
+                *lock_or_recover(&adapter.workspace_root, "test.workspace_root"),
+                Some(root.path().to_path_buf()),
+                "rejected argv must not mutate workspace state"
+            );
+            assert_eq!(
+                adapter.last_authority_receipt().map(|current| current.session_generation),
+                Some(receipt.session_generation),
+                "rejected argv must not consume a session generation"
+            );
+            assert!(lock_or_recover(&adapter.session, "test.session").is_none());
+        }
+        Ok(())
     }
 
     #[test]
@@ -5616,6 +5751,19 @@ mod tests {
         }
     }
 
+    // These protocol fixtures need an owned session, but do not exercise process
+    // termination. Establish natural no-op exit before testing event ordering so
+    // unrelated child shutdown latency cannot consume the cleanup deadline.
+    fn seed_quiescent_protocol_session(adapter: &DebugAdapter) -> Result<(), String> {
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut session = adapter.session.lock().map_err(|_| "session lock poisoned")?;
+        let session = session.as_mut().ok_or("seeded session missing")?;
+        if !DebugAdapter::wait_for_child_exit(&mut session.process, Duration::from_secs(5)) {
+            return Err("protocol fixture no-op child did not exit during setup".to_string());
+        }
+        Ok(())
+    }
+
     #[test]
     fn disconnect_terminal_after_async_completion_and_invalidation() -> Result<(), String> {
         for (invalidate, fail_cleanup) in [(false, false), (true, false), (true, true)] {
@@ -5623,7 +5771,7 @@ mod tests {
             let mut adapter = DebugAdapter::new();
             adapter.set_event_sender(sender);
             if fail_cleanup {
-                adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+                seed_quiescent_protocol_session(&adapter)?;
             }
             let event_sender = adapter.event_sender.as_ref().ok_or("missing event sender")?;
             let generation = adapter.current_session_generation();
@@ -5704,7 +5852,7 @@ mod tests {
             .map_err(|error| error.to_string())?;
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(outbound.clone());
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let generation = adapter.current_session_generation();
         let state = adapter.termination_state.clone();
         let sequence = adapter.seq.clone();
@@ -5820,7 +5968,7 @@ mod tests {
         let (sender, receiver) = sync_channel(4);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let reported_delivery = super::emit_terminated_event_guarded(
             adapter.event_sender.as_ref().ok_or("missing event sender")?,
             &adapter.seq,
@@ -6524,6 +6672,48 @@ mod tests {
         );
     }
 
+    /// Pre-launch `perl -c` must not hang indefinitely when the interpreter
+    /// blocks during compile (#2316).
+    #[test]
+    #[cfg(unix)]
+    fn check_syntax_times_out_on_hanging_interpreter() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let script = temp.path().join("ok.pl");
+        std::fs::write(&script, "use strict;\n1;\n").map_err(|error| error.to_string())?;
+
+        let fake_perl = temp.path().join("fake-perl-hang");
+        std::fs::write(
+            &fake_perl,
+            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then sleep 120; fi\nexit 0\n",
+        )
+        .map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&fake_perl, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+
+        let start = Instant::now();
+        let result = DebugAdapter::check_syntax(
+            fake_perl.to_str().ok_or("non-utf8 fake perl path")?,
+            script.to_str().ok_or("non-utf8 script path")?,
+            &HashMap::new(),
+            Some(temp.path().to_path_buf()),
+        );
+
+        assert!(result.is_err(), "hanging syntax check must fail, got {result:?}");
+        let message = result.unwrap_err();
+        assert!(
+            message.to_lowercase().contains("timed out"),
+            "expected timeout message, got: {message}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "syntax check should respect the 5s oracle timeout, took {:?}",
+            start.elapsed()
+        );
+        Ok(())
+    }
+
     /// Build an adapter that passes launch-authority validation so a test
     /// launch reaches the real program/interpreter paths under test (#16552).
     fn launch_test_adapter() -> Result<DebugAdapter, String> {
@@ -6548,26 +6738,50 @@ mod tests {
         Ok(adapter)
     }
 
-    /// #16552: a failed launch of a *valid program* under the default
-    /// interpreter can only be an interpreter-class failure, so the response
-    /// wrapper must keep the `perlPath` advice and the Perl discovery info —
-    /// joined with single spaces, never `". ."`. The launch may legitimately
-    /// succeed on a healthy interpreter; the assertions bind only the failure
-    /// branch. The per-class companions below pin the branches that fail
-    /// deterministically.
+    /// Verify that a failed launch returns a response whose message mentions Perl.
+    ///
+    /// We construct a temporary file so that the file-exists check passes, then
+    /// rely on the fact that on PATH-less environments `perl -d` will fail and
+    /// the enhanced error path fires, or that the Perl syntax check / spawn of
+    /// `perl -d` on a trivially-empty script eventually surfaces an error whose
+    /// message includes Perl-related text.
+    ///
+    /// The assertion is intentionally broad: the message must contain the word
+    /// "perl" (case-insensitive).  This covers both the success branch
+    /// ("Found Perl at …") and the not-found branch ("Perl was not found …").
     #[test]
     fn handle_launch_error_includes_perl_info() -> Result<(), String> {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
         // Create a temporary file so that the file-exists validation in
-        // launch_debugger() passes, letting us reach the interpreter path.
+        // launch_debugger() passes, letting us reach the Perl-spawn error path.
         let mut tmp =
             NamedTempFile::new().map_err(|e| format!("could not create temp file: {e}"))?;
         writeln!(tmp, "# placeholder").map_err(|e| format!("could not write to temp file: {e}"))?;
         let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
 
-        let mut adapter = launch_test_adapter()?;
+        let mut adapter = DebugAdapter::new();
+
+        // Install an explicitly unbounded startup authority (#8656): this
+        // test targets the Perl-spawn error path, not boundary validation.
+        // Without an authority the launch is refused before any Perl check.
+        let authority = crate::security::launch_authority::LaunchAuthority::resolve(
+            &crate::security::launch_authority::LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(
+                    crate::security::launch_authority::UnboundedAcknowledgement::new(
+                        crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
+                        "test: reach the Perl spawn error path",
+                    ),
+                ),
+            },
+        )
+        .map_err(|e| format!("authority resolution failed: {e}"))?;
+        adapter.set_launch_authority(authority);
+
+        // Initialize first (required by state machine validation)
+        let _ = adapter.handle_initialize(1, 1, None);
 
         let response = adapter.handle_launch(
             2,
@@ -6580,168 +6794,15 @@ mod tests {
         match response {
             super::DapMessage::Response { success, message, .. } => {
                 // The launch may succeed (Perl on PATH ran the empty script) or fail.
-                // When it fails, the failure is interpreter-class.
+                // When it fails, the message must mention Perl.
                 if !success {
                     let msg = message.unwrap_or_default();
                     assert!(
                         msg.to_lowercase().contains("perl"),
                         "launch error message should mention 'perl'; got: {msg:?}"
                     );
-                    assert!(
-                        msg.contains("perlPath"),
-                        "a failed launch of a valid program is interpreter-class and must \
-                         keep the perlPath advice; got: {msg:?}"
-                    );
-                    assert!(
-                        !msg.contains(".."),
-                        "launch error sentences must be joined without double punctuation; \
-                         got: {msg:?}"
-                    );
                 }
                 // success == true means Perl is on PATH and launched fine — valid outcome.
-                Ok(())
-            }
-            other => Err(format!("expected Response from handle_launch; got {other:?}")),
-        }
-    }
-
-    /// #16552 case 1: a nonexistent program path must not be wrapped with
-    /// interpreter guidance — the embedded cause is the whole message, and the
-    /// join must not produce `correct..`-style double punctuation.
-    #[test]
-    fn launch_failure_for_a_missing_program_omits_interpreter_advice() -> Result<(), String> {
-        let missing = std::env::temp_dir().join("no-such-program-16552.pl");
-        let missing = missing.to_string_lossy().into_owned();
-
-        let mut adapter = launch_test_adapter()?;
-        let response = adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": missing })));
-
-        match response {
-            super::DapMessage::Response { success, message, .. } => {
-                assert!(!success, "a nonexistent program must fail the launch");
-                let msg = message.unwrap_or_default();
-                assert!(
-                    msg.contains("Cannot find"),
-                    "expected the missing-program cause in the message, got: {msg:?}"
-                );
-                assert!(
-                    !msg.contains("perlPath"),
-                    "interpreter advice must not ride on a missing-program failure: {msg:?}"
-                );
-                assert!(
-                    !msg.contains("Found Perl at"),
-                    "ambient interpreter info must not ride on a missing-program failure: {msg:?}"
-                );
-                assert!(
-                    !msg.contains("To use a specific Perl interpreter"),
-                    "the wrapper must stay silent for a program-path failure: {msg:?}"
-                );
-                assert!(
-                    !msg.contains(".."),
-                    "launch error sentences must be joined without double punctuation: {msg:?}"
-                );
-                Ok(())
-            }
-            other => Err(format!("expected Response from handle_launch; got {other:?}")),
-        }
-    }
-
-    /// #16552 case 2: a compile-error program keeps its embedded compiler
-    /// output verbatim but must not pick up interpreter advice from the
-    /// wrapper.
-    #[test]
-    fn launch_failure_for_a_syntax_error_omits_interpreter_advice() -> Result<(), String> {
-        use std::io::Write;
-        use tempfile::NamedTempFile;
-
-        let mut tmp = NamedTempFile::with_suffix(".pl")
-            .map_err(|e| format!("could not create temp file: {e}"))?;
-        writeln!(tmp, "print 1;").map_err(|e| format!("could not write to temp file: {e}"))?;
-        writeln!(tmp, "}}").map_err(|e| format!("could not write to temp file: {e}"))?;
-        let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
-
-        // Runtime precondition, stated explicitly: this case pins the
-        // wrapper's pass-through of the embedded compiler diagnosis, which
-        // only a working interpreter can produce. Without Perl on PATH the
-        // launch fails interpreter-first and the "Syntax error in" diagnosis
-        // never exists, so the case would fail with a misleading
-        // interpreter-shaped message rather than a real regression (#16552
-        // review).
-        if !detect_perl_info().contains("Found Perl at") {
-            return Ok(());
-        }
-
-        let mut adapter = launch_test_adapter()?;
-        let response =
-            adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": tmp_path })));
-
-        match response {
-            super::DapMessage::Response { success, message, .. } => {
-                assert!(!success, "a syntax-error program must fail the launch");
-                let msg = message.unwrap_or_default();
-                assert!(
-                    msg.contains("Syntax error in"),
-                    "expected the embedded compiler diagnosis, got: {msg:?}"
-                );
-                assert!(
-                    !msg.contains("perlPath"),
-                    "interpreter advice must not ride on a syntax-error failure: {msg:?}"
-                );
-                assert!(
-                    !msg.contains("Found Perl at"),
-                    "ambient interpreter info must not ride on a syntax-error failure: {msg:?}"
-                );
-                Ok(())
-            }
-            other => Err(format!("expected Response from handle_launch; got {other:?}")),
-        }
-    }
-
-    /// #16552 case 3: an explicit `perlPath` that does not exist must be
-    /// reported as "not found at '<path>'" — never as the false "is not
-    /// available on PATH" claim — while still counting as an interpreter-class
-    /// failure, so the wrapper keeps its advice and joins sentences cleanly.
-    #[test]
-    fn launch_failure_for_a_broken_explicit_interpreter_names_the_path() -> Result<(), String> {
-        use std::io::Write;
-        use tempfile::NamedTempFile;
-
-        let mut tmp = NamedTempFile::with_suffix(".pl")
-            .map_err(|e| format!("could not create temp file: {e}"))?;
-        writeln!(tmp, "print 1;").map_err(|e| format!("could not write to temp file: {e}"))?;
-        let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
-
-        let broken = std::env::temp_dir().join("no-such-interpreter-16552").join("perl.exe");
-        let broken = broken.to_string_lossy().into_owned();
-
-        let mut adapter = launch_test_adapter()?;
-        let response = adapter.handle_launch(
-            2,
-            2,
-            Some(serde_json::json!({ "program": tmp_path, "perlPath": broken })),
-        );
-
-        match response {
-            super::DapMessage::Response { success, message, .. } => {
-                assert!(!success, "a broken explicit interpreter must fail the launch");
-                let msg = message.unwrap_or_default();
-                assert!(
-                    msg.contains(&format!("not found at '{broken}'")),
-                    "an explicit interpreter path must be reported as not found at its path; \
-                     got: {msg:?}"
-                );
-                assert!(
-                    !msg.contains("is not available on PATH"),
-                    "an explicit path must not be misreported as a PATH lookup: {msg:?}"
-                );
-                assert!(
-                    msg.contains("perlPath"),
-                    "an interpreter-class failure keeps the perlPath advice: {msg:?}"
-                );
-                assert!(
-                    !msg.contains(".."),
-                    "launch error sentences must be joined without double punctuation: {msg:?}"
-                );
                 Ok(())
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
@@ -6783,7 +6844,7 @@ mod tests {
         );
         let error = match result {
             Ok(thread_id) => return Err(format!("unexpectedly launched thread {thread_id}")),
-            Err(error) => error.to_string(),
+            Err(error) => error,
         };
 
         assert!(
@@ -6815,7 +6876,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_includes_custom_interpreter_name() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("/custom/perl", None, &error);
+        let message = format_perl_spawn_error("/custom/perl", &error);
 
         assert!(
             message.contains("/custom/perl"),
@@ -6825,7 +6886,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_for_missing_perl_is_actionable() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("perl", None, &error);
+        let message = format_perl_spawn_error("perl", &error);
 
         assert!(message.contains("Install Perl"), "expected install guidance, got: {message}");
         assert!(
@@ -6841,7 +6902,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_preserves_non_not_found_error_detail() {
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
-        let message = format_perl_spawn_error("/secure/perl", None, &error);
+        let message = format_perl_spawn_error("/secure/perl", &error);
 
         assert!(message.contains("/secure/perl"), "expected interpreter path, got: {message}");
         assert!(
@@ -6855,51 +6916,6 @@ mod tests {
         assert!(
             !message.contains("Install Perl"),
             "non-NotFound errors should not use missing-perl guidance, got: {message}"
-        );
-    }
-
-    /// #16552 review: a `NotFound` spawn with a nonexistent working directory
-    /// names the missing `cwd`, not the interpreter — process creation fails
-    /// with `NotFound` for a missing cwd even when the executable exists.
-    #[test]
-    fn format_perl_spawn_error_blames_a_missing_cwd_not_the_interpreter() {
-        let missing_dir = std::path::Path::new("./no-such-cwd-16552-review");
-        assert!(!missing_dir.exists(), "precondition: the probe directory must not exist");
-        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("/usr/bin/perl", Some(missing_dir), &error);
-
-        assert!(
-            message.contains("working directory not found"),
-            "a missing cwd must be named as the failure, got: {message}"
-        );
-        assert!(
-            message.contains("no-such-cwd-16552-review"),
-            "the message must name the missing directory, got: {message}"
-        );
-        assert!(
-            !message.contains("perlPath"),
-            "a missing cwd must not send users to fix perlPath, got: {message}"
-        );
-    }
-
-    /// #16552 review: with a working directory that exists, a `NotFound`
-    /// spawn keeps the interpreter attribution — the cwd is not the failing
-    /// component there.
-    #[test]
-    fn format_perl_spawn_error_keeps_interpreter_attribution_for_an_existing_cwd() {
-        // The OS temp directory exists on every test runner; an existing cwd
-        // must not trigger the missing-directory wording.
-        let dir = std::env::temp_dir();
-        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("/definitely/not/a/perl", Some(&dir), &error);
-
-        assert!(
-            message.contains("not found at '/definitely/not/a/perl'"),
-            "an existing cwd keeps the interpreter attribution, got: {message}"
-        );
-        assert!(
-            !message.contains("working directory not found"),
-            "the cwd wording must not ride on an existing directory, got: {message}"
         );
     }
 
@@ -7251,36 +7267,54 @@ mod tests {
         Ok(())
     }
 
-    /// Call-presence observer for the fast-path seam in
-    /// `terminate_child_process_with_outcome`: a live child must be observed
-    /// by the zero-wait call as not-exited (fast path rejected) and then
-    /// reaped through the kill path, surfacing `Exited` (#15740,
-    /// ripr gaps 41a2480a/41b34a0a).
+    /// An `Exited` outcome for an initially live child must agree with an
+    /// independent OS exit observation, not just the helper's return value
+    /// (#15740, #17557). This does not prescribe the internal signal sequence.
     #[test]
-    fn terminate_child_process_with_outcome_call_presence_observer() -> Result<(), String> {
+    fn terminate_child_process_with_outcome_reports_real_exit() -> Result<(), String> {
         use std::process::{Command, Stdio};
 
         // Spawn a long-running child that outlives the zero-wait probe.
         #[cfg(windows)]
-        let mut child = Command::new("ping")
+        let child = Command::new("ping")
             .args(["-n", "30", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
         #[cfg(not(windows))]
-        let mut child = Command::new("sleep")
+        let child = Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
 
-        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        // Keep early errors and unwinding from abandoning the exact owned child.
+        // Cleanup must not rely on the production helper being tested.
+        struct TestChild(std::process::Child);
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut owned = TestChild(child);
+        if let Some(status) = owned.0.try_wait().map_err(|e| format!("initial child poll: {e}"))? {
+            return Err(format!("fixture must still be running before termination, got {status}"));
+        }
+
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut owned.0);
         if !matches!(outcome, super::ChildExitOutcome::Exited) {
             return Err(format!(
-                "live child must be reaped through the kill path as Exited, got {outcome:?}"
+                "termination must report Exited for the live child, got {outcome:?}"
             ));
         }
-        Ok(())
+        // Observe before the guard cleans up: otherwise false success could
+        // pass merely because the test itself terminated the child.
+        match owned.0.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("reported Exited while its owned child is still running".to_string()),
+            Err(e) => Err(format!("error polling child after termination: {e}")),
+        }
     }
 
     /// Exact error-variant test for the `PollError` arm of the outcome
@@ -7430,30 +7464,49 @@ mod tests {
                 .to_string());
         }
 
-        // Verify the process was actually killed by the watchdog.
-        std::thread::sleep(Duration::from_millis(200));
-        let process_exited = adapter
-            .session
-            .lock()
-            .map_err(|_| "session lock poisoned".to_string())?
-            .as_mut()
-            .and_then(|s| s.process.try_wait().ok().flatten())
-            .is_some();
-        if !process_exited {
-            return Err(
-                "debuggee process is still alive after watchdog should have killed it".to_string()
-            );
+        // Verify the process was actually killed by the watchdog. #17173:
+        // poll instead of a fixed 200ms sleep — TerminateProcess initiation
+        // and the terminated event are not the same moment as the OS-level
+        // exit becoming visible, and under suite load a single early check
+        // raced the kill it was meant to verify.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let process_exited = adapter
+                .session
+                .lock()
+                .map_err(|_| "session lock poisoned".to_string())?
+                .as_mut()
+                .and_then(|s| s.process.try_wait().ok().flatten())
+                .is_some();
+            if process_exited {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("debuggee process is still alive after watchdog should have killed it"
+                    .to_string());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         Ok(())
     }
 
-    fn spawn_reader_fixture_child(mode: &str) -> Result<super::Child, String> {
-        std::process::Command::new("perl")
+    fn spawn_reader_fixture_child(mode: &str) -> Result<(super::Child, String), String> {
+        static NEXT_READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let ready = format!(
+            "READER_READY_{}",
+            NEXT_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let child = std::process::Command::new("perl")
                 .arg("-e")
                 .arg(r##"
-                    my $mode = shift; my $round = 0; my $active;
+                    my $mode = shift; my $ready = shift; my $round = 0; my $active;
                     select STDERR; $|=1; select STDOUT; $|=1;
+                    if ($mode eq 'startup_delayed') {
+                        select undef, undef, undef, 0.9;
+                        $mode = 'valid';
+                    }
+                    print STDERR "$ready\n";
                     while (<STDIN>) {
                         if (/DAP_BEGIN_(\d+)/) {
                             ++$round; $active = $round == 1 ? $mode : 'valid';
@@ -7482,11 +7535,13 @@ mod tests {
                     }
                 "##)
                 .arg(mode)
+                .arg(&ready)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| format!("failed to spawn reader fixture: {error}"))
+                .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        Ok((child, ready))
     }
 
     fn reader_stack_fixture(mode: &str) -> Result<Arc<DebugAdapter>, String> {
@@ -7505,16 +7560,21 @@ mod tests {
             end_column: None,
         }]);
         adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+        let ready;
         {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
             let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
             session.stopped_generation = 1;
-            let child = spawn_reader_fixture_child(mode)?;
+            let (child, child_ready) = spawn_reader_fixture_child(mode)?;
+            ready = child_ready;
             let mut previous = std::mem::replace(&mut session.process, child);
             let _ = previous.kill();
             previous.wait().map_err(|error| format!("failed to reap seed process: {error}"))?;
         }
         adapter.start_output_reader(PathBuf::from("."));
+        // Spawn success does not establish interpreter startup. Start each
+        // unchanged query deadline only after this child's reader is ready.
+        wait_for_reader_barrier(&adapter, &ready)?;
         // Drop owns bounded child cleanup on both success and every error path.
         Ok(adapter)
     }
@@ -7571,8 +7631,61 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts the accepted authority for a `late` fixture payload whose end
+    /// marker landed inside the framed-query window (coverage clamp, #18348):
+    /// the parsed `main` frame replaces the pre-seeded sentinel as the
+    /// response and the cached session frames, and the sentinel arguments are
+    /// dropped with the replaced frame.
+    fn assert_in_window_late_payload_accepted(
+        adapter: &DebugAdapter,
+        response: DapMessage,
+    ) -> Result<(), String> {
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("in-window late stackTrace failed: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or_else(|| format!("missing stack frame: {body}"))?;
+        if frame.get("name").and_then(Value::as_str) != Some("main")
+            || frame.get("line").and_then(Value::as_i64) != Some(9)
+        {
+            return Err(format!("in-window late payload not accepted: {body}"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.reader_late_window");
+        let session = guard.as_ref().ok_or("reader lost the session")?;
+        let cached = session.stack_frames.first().ok_or("reader lost cached frames")?;
+        if cached.name != "main" || cached.line != 9 {
+            return Err("in-window late payload did not reach cached authority".to_string());
+        }
+        if session.stack_frame_arguments.contains_key(&cached.id) {
+            return Err("in-window late payload kept the sentinel arguments".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framed_reader_startup_precedes_query_deadline() -> Result<(), String> {
+        // Startup exceeds the unchanged 600ms query budget. Readiness must
+        // absorb it before the query; query latency still remains bounded.
+        let adapter = reader_stack_fixture("startup_delayed")?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        assert_reader_stack(&adapter, response, "main::run", 7, &["$value", "[1, 2]", "\"a,b\""])
+    }
+
     #[test]
     fn framed_reader_preserves_stack_and_recovers_after_partial_output() -> Result<(), String> {
+        // The `late` fixture withholds its end marker for 0.9s. Against the
+        // plain framed-query window (`DEBUGGER_QUERY_WAIT_MS * 8`) that is
+        // genuinely late: the query times out and the pre-seeded sentinel
+        // frame stays authoritative. Coverage instrumentation clamps the
+        // window to >=15s (#18348), which pulls the marker inside the window,
+        // so the completed poison payload is then legitimately accepted as
+        // stack authority. Derive the expectation from the effective window
+        // rather than raw instrumentation env checks (#18348).
+        let late_marker_in_window = Duration::from_millis(900)
+            <= DebugAdapter::framed_query_window_for_test(DEBUGGER_QUERY_WAIT_MS * 8);
         for mode in ["empty", "internal", "partial", "late", "late_begin", "valid"] {
             let adapter = reader_stack_fixture(mode)?;
             let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
@@ -7585,6 +7698,8 @@ mod tests {
                     7,
                     &["$value", "[1, 2]", "\"a,b\""],
                 )?;
+            } else if mode == "late" && late_marker_in_window {
+                assert_in_window_late_payload_accepted(&adapter, response)?;
             } else {
                 assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
             }
@@ -7665,14 +7780,14 @@ mod tests {
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
         adapter.begin_session_generation();
-        let mut old_child = {
+        let (mut old_child, ready) = {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_replacement");
             let session = guard.as_mut().ok_or("missing old session")?;
-            let child = spawn_reader_fixture_child("valid")?;
+            let (child, ready) = spawn_reader_fixture_child("valid")?;
             session.stack_frames.first_mut().ok_or("missing old frame")?.name =
                 "replacement".to_string();
             session.stack_frame_arguments.insert(1, vec!["replacement_arg".to_string()]);
-            std::mem::replace(&mut session.process, child)
+            (std::mem::replace(&mut session.process, child), ready)
         };
         adapter.operation_broker.open_session();
         adapter.start_output_reader(PathBuf::from("."));
@@ -7681,6 +7796,9 @@ mod tests {
         // must leave the replacement's authorities intact.
         drop(old_child.stdin.take());
         let result = (|| {
+            // The unique marker prevents the previous child's startup from
+            // satisfying replacement readiness under concurrent host load.
+            wait_for_reader_barrier(&adapter, &ready)?;
             if !DebugAdapter::wait_for_child_exit(&mut old_child, Duration::from_secs(5)) {
                 return Err("old reader fixture failed to finish delayed output".to_string());
             }

@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Package-member and use/require module completion replace the remaining identifier segment after a mid-token cursor, including Unicode suffixes, while preserving a following `::` segment and whitespace-separated arguments. Core-module member fallback keeps its package qualifier when applying the edit. Builtin and keyword suffix support landed in #18265."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18114"
+  Slug: builtin-keyword-package-midtoken-suffix
+  Breaking: "no"

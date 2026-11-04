@@ -43,6 +43,12 @@ def workspace_package_version(crate: str) -> str:
     raise SystemExit(f"workspace package not found: {crate}")
 
 
+def workspace_target_directory() -> Path:
+    """Use Cargo's effective path, including environment and config overrides."""
+    metadata = json.loads(run(["cargo", "metadata", "--format-version=1", "--no-deps"], capture=True))
+    return Path(metadata["target_directory"])
+
+
 def workspace_patch_args(crate: str, *, include_dev_deps: bool) -> list[str]:
     metadata = json.loads(run(["cargo", "metadata", "--format-version=1", "--no-deps"], capture=True))
     workspace_members = set(metadata["workspace_members"])
@@ -144,48 +150,50 @@ def main() -> int:
 
     run(package_args(allow_dirty=args.allow_dirty, patch_args=package_patch_args, no_verify=True))
 
-    crate_archive = ROOT / "target" / "package" / f"{CRATE}-{version}.crate"
+    crate_archive = workspace_target_directory() / "package" / f"{CRATE}-{version}.crate"
     if not crate_archive.exists():
         print(f"ERROR: expected packaged crate not found: {crate_archive}", file=sys.stderr)
         return 1
 
     smoke_root = Path(tempfile.mkdtemp(prefix=f"{CRATE}-package-smoke-"))
-    print(f"package smoke root: {smoke_root}")
-    safe_extract(crate_archive, smoke_root)
+    try:
+        print(f"package smoke root: {smoke_root}")
+        safe_extract(crate_archive, smoke_root)
 
-    extracted = smoke_root / f"{CRATE}-{version}"
-    if not (extracted / REQUIRED_PACKAGE_FILE).exists():
-        print(
-            f"ERROR: unpacked {CRATE} package is missing {REQUIRED_PACKAGE_FILE}",
-            file=sys.stderr,
+        extracted = smoke_root / f"{CRATE}-{version}"
+        if not (extracted / REQUIRED_PACKAGE_FILE).exists():
+            print(
+                f"ERROR: unpacked {CRATE} package is missing {REQUIRED_PACKAGE_FILE}",
+                file=sys.stderr,
+            )
+            return 1
+
+        strip_dev_dependencies(extracted / "Cargo.toml")
+        run(
+            [
+                "cargo",
+                "generate-lockfile",
+                "--manifest-path",
+                str(extracted / "Cargo.toml"),
+                *check_patch_args,
+            ],
         )
-        return 1
+        run(
+            [
+                "cargo",
+                "check",
+                "--manifest-path",
+                str(extracted / "Cargo.toml"),
+                "--lib",
+                "--locked",
+                *check_patch_args,
+            ],
+        )
 
-    strip_dev_dependencies(extracted / "Cargo.toml")
-    run(
-        [
-            "cargo",
-            "generate-lockfile",
-            "--manifest-path",
-            str(extracted / "Cargo.toml"),
-            *check_patch_args,
-        ],
-    )
-    run(
-        [
-            "cargo",
-            "check",
-            "--manifest-path",
-            str(extracted / "Cargo.toml"),
-            "--lib",
-            "--locked",
-            *check_patch_args,
-        ],
-    )
-
-    print(f"OK: {CRATE}-{version}.crate is self-contained")
-    shutil.rmtree(smoke_root, ignore_errors=True)
-    return 0
+        print(f"OK: {CRATE}-{version}.crate is self-contained")
+        return 0
+    finally:
+        shutil.rmtree(smoke_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

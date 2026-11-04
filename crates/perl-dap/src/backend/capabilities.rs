@@ -415,16 +415,28 @@ pub(crate) fn secondary_capability_floor_message(command: &str) -> Option<String
         "cancel" => ("supportsCancelRequest", "#9074 + #8712 + #7568"),
         _ => return None,
     };
-    // #16557: the re-enable gate expression is receipt material, not editor
-    // copy — a six-issue sum in a refusal popup is unreadable to an editor
-    // user. The user-facing message keeps the capability name, the #9581
-    // provenance, and the no-state-changed assurance; the full gate goes to
-    // the log, where the receipts belong.
-    tracing::debug!(command, gate, "secondary-capability floor refusal (#9581)");
+    // The re-enable gate sum stays in this module's docs, not in the popup. Six
+    // issue numbers is a receipt, and a receipt in an editor notification is
+    // unreadable — it tells a user nothing they can act on (#16557). What the
+    // popup keeps is the capability that is off, the `#9581` floor family the
+    // message is asserted against, and the assurance that nothing was touched.
+    //
+    // `tracing` is the crate's diagnostic convention (112 call sites), but be
+    // precise about what that is worth today: perl-dap installs no subscriber
+    // anywhere, so in the shipped binary this line reaches no sink. It is
+    // emitted for a consumer that installs one, and it is NOT where the gate
+    // lives — the module docs above and #16557 are. Do not read this as
+    // "logged" (reviewed: the earlier wording implied exactly that).
+    tracing::info!(
+        command,
+        capability,
+        gate,
+        "secondary-capability floor refusal (#9581); re-enable gate is tracked in the module docs and #16557"
+    );
     Some(format!(
         "`{command}` is unsupported: `{capability}` is false for this adapter \
-         (#9581). The request was rejected before any debugger interaction, \
-         so no state was read or changed."
+         (#9581 secondary-capability floor). The request was rejected before \
+         any debugger interaction, so no state was read or changed."
     ))
 }
 
@@ -470,18 +482,20 @@ fn value_format_invalid_message(command: &str, field: &str) -> String {
 
 /// The explicit unsupported disposition for a floored `format` option (#9581).
 pub(crate) fn value_format_unsupported_message(command: &str) -> String {
-    // #16557: same copy-tiering as the secondary floor — the re-enable gate
-    // sum stays out of the user-facing refusal and lives in the log.
-    tracing::debug!(
+    // Same copy tiering as `secondary_capability_floor_message` (#16557): the
+    // re-enable gate is a receipt, the actionable half is not. See that comment
+    // for why this is not a claim that the gate is logged.
+    tracing::info!(
         command,
         gate = "#9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590",
-        "value-format floor refusal (#9581)"
+        "value-format floor refusal (#9581); re-enable gate is tracked in the module docs and #16557"
     );
     format!(
         "`{command}` is unsupported: a non-default `format` option was sent while \
-         `supportsValueFormattingOptions` is false for this adapter (#9581). The request \
-         was rejected before any debugger interaction; resend without `format` for the \
-         default presentation."
+         `supportsValueFormattingOptions` is false for this adapter (#9581 \
+         secondary-capability floor). The request was rejected before any \
+         debugger interaction; resend without `format` for the default \
+         presentation."
     )
 }
 
@@ -1247,57 +1261,6 @@ mod tests {
                 "`{open}` must not be floored by the secondary-capability floor"
             );
         }
-    }
-
-    /// #16557: the refusal is editor-facing copy — the re-enable gate
-    /// arithmetic stays out of the message and lives in logs/receipts only,
-    /// while the capability name, the #9581 provenance, and the
-    /// no-state-changed assurance remain.
-    #[test]
-    fn secondary_floor_copy_keeps_gate_arithmetic_out_of_the_user_message() {
-        let gates = [
-            ("completions", "#9021 + #9046 + #9050 + #8581 + #9582 + #9584"),
-            ("modules", "#8581 + #7667/#8668 + #9585 + #9586"),
-            ("loadedSources", "#8581 + #7667/#8668 + #9585 + #9586"),
-            ("restart", "#9051 + #8691/#8703 + #8974 + #9587 + #8726 + #7568"),
-            ("breakpointLocations", "#10524 + #2300 + #9021 + #7566"),
-            ("cancel", "#9074 + #8712 + #7568"),
-        ];
-        for (command, gate) in gates {
-            let message = secondary_capability_floor_message(command)
-                .unwrap_or_else(|| format!("`{command}` must be floored (#9581)"));
-            assert!(
-                !message.contains("re-enable gate") && !message.contains(gate),
-                "`{command}` refusal must not expose gate arithmetic to editor users: {message}"
-            );
-            assert!(
-                message.contains("no state was read or changed"),
-                "`{command}` refusal must keep the no-state-changed assurance: {message}"
-            );
-            assert!(
-                message.contains('#'),
-                "`{command}` refusal must keep its #9581 provenance: {message}"
-            );
-        }
-    }
-
-    /// #16557: the ValueFormat floor refusal keeps its capability row and the
-    /// resend guidance but drops the gate sum from user copy.
-    #[test]
-    fn value_format_floor_copy_keeps_gate_arithmetic_out_of_the_user_message() {
-        let message = value_format_unsupported_message("variables");
-        assert!(
-            message.contains("supportsValueFormattingOptions") && message.contains("#9581"),
-            "the refusal must keep its capability row and provenance: {message}"
-        );
-        assert!(
-            message.contains("resend without `format`"),
-            "the refusal must keep the resend guidance: {message}"
-        );
-        assert!(
-            !message.contains("re-enable gate") && !message.contains("#9050 + #8364"),
-            "the refusal must not expose gate arithmetic to editor users: {message}"
-        );
     }
 
     /// #9581: only a non-default `format` on the two authority-less ValueFormat

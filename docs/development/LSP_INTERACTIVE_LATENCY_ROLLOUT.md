@@ -127,7 +127,7 @@ This rail does **NOT** prove:
 
 ```bash
 # Phase 2 (timing probes)
-powershell -NoProfile -Command '$env:PERL_LSP_TIMING="1"; cargo run -p perl-lsp-rs --release -- --stdio 2>timing.log'
+powershell -NoProfile -Command '$env:PERL_LSP_TIMING="1"; cargo run -p perllsp --release -- --stdio 2>timing.log'
 # Inspect timing.log for didOpen / didChange / parse / diagnostics / queue-wait phases.
 
 # Phase 3 (e2e mode)

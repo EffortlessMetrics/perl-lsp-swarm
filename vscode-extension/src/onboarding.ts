@@ -8,8 +8,6 @@
  */
 
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 
@@ -40,17 +38,6 @@ export interface HealthCheckResult {
 // Startup failure classifier
 // ---------------------------------------------------------------------------
 
-/**
- * User-facing message surfaced when Perl interpreter is not found.
- * Shown instead of the generic "Restart the server" message so the user
- * immediately knows the root cause and what to do.
- */
-export const PERL_MISSING_MESSAGE =
-  'Perl interpreter not found on PATH. ' +
-  'Install Perl 5.10+ (Windows: Strawberry Perl at https://strawberryperl.com/, macOS: `brew install perl`, Linux: use your distro package manager) ' +
-  'and reload the window. ' +
-  'For module resolution, you can also configure include paths in `.perl-lsp.toml` under `[perl] include_paths`.';
-
 /** User-facing boundary when the diagnostic instrument cannot establish a cause. */
 export const STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE =
   'Perl Language Server failed to start, and the setup health check could not determine the cause. ' +
@@ -60,19 +47,13 @@ export const STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE =
  * Given the results of a health check, return a specific user-facing error
  * string when the evidence establishes a root cause.
  *
- * Priority: explicit Perl error > explicit binary error > unavailable evidence
- * > unknown crash with complete healthy checks.
+ * Priority: explicit binary error > unavailable binary evidence > unknown crash.
+ * Perl is optional for the core language server and cannot explain its startup failure.
  */
 export function classifyStartupFailure(results: HealthCheckResult[]): string {
-  const perlResult = results.find((r) => r.label === 'Perl interpreter');
   const binaryResult = results.find((r) => r.label === 'LSP binary');
 
-  // Report Perl missing only when the Perl check actually established an error.
-  if (perlResult?.ok === false && perlResult.status === HealthCheckStatus.Error) {
-    return PERL_MISSING_MESSAGE;
-  }
-
-  // LSP binary not found — use the explicit binary result rather than inference.
+  // Use the explicit binary error for missing, nonfile, and inspection failures.
   if (
     binaryResult &&
     binaryResult.ok === false &&
@@ -81,18 +62,18 @@ export function classifyStartupFailure(results: HealthCheckResult[]): string {
     const detail = binaryResult.detail.trimEnd();
     const detailWithPeriod = detail.endsWith('.') ? detail : `${detail}.`;
     return (
-      'Perl Language Server binary (perllsp) not found. ' +
+      'Perl Language Server binary (perllsp) is unavailable. ' +
       detailWithPeriod +
       ' Check the Output panel for download details or reinstall the extension.'
     );
   }
 
-  // Missing required result rows mean the instrument did not establish a cause.
-  if (!perlResult || !binaryResult) {
+  // Missing binary evidence means the instrument did not establish a cause.
+  if (!binaryResult) {
     return STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE;
   }
 
-  // All required checks completed without an explicit root cause — unknown crash.
+  // No explicit binary root cause was established — unknown crash.
   return (
     'Perl Language Server failed to start. ' +
     'Check the Output panel for details. ' +
@@ -109,19 +90,6 @@ type ExecCheckFn = (cmd: string, args: string[]) => Promise<{ stdout: string; st
 interface ExecInvocation {
   command: string;
   args: string[];
-}
-
-function resolveUserPath(rawPath: string): string {
-  const trimmedPath = rawPath.trim();
-  if (trimmedPath === '~') {
-    return os.homedir();
-  }
-
-  if (trimmedPath.startsWith('~/') || trimmedPath.startsWith('~\\')) {
-    return path.join(os.homedir(), trimmedPath.slice(2));
-  }
-
-  return trimmedPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,73 +194,42 @@ export class OnboardingManager {
     }
   }
 
-  /** Check perlcritic availability/profile when perl-lsp.perlcritic.enabled is true. */
+  /** Observe historical Critic settings without executing a compatibility tool. */
   async checkPerlcriticSetup(): Promise<HealthCheckResult> {
-    const label = 'perlcritic';
-    const perlcriticConfig = vscode.workspace
-      .getConfiguration('perl-lsp')
-      .get<{ enabled?: unknown; profile?: unknown }>('perlcritic', {});
-    const enabled = Boolean(perlcriticConfig?.enabled);
-    const profile =
-      typeof perlcriticConfig?.profile === 'string'
-        ? resolveUserPath(perlcriticConfig.profile)
-        : '';
-
-    if (!enabled) {
-      return {
-        label,
-        ok: true,
-        status: HealthCheckStatus.Ok,
-        detail: 'Perl::Critic is disabled',
-      };
+    const observations: string[] = [];
+    const scopes: { label: string; uri?: vscode.Uri }[] = [
+      { label: 'workspace/default settings' },
+      ...(vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+        label: `folder ${folder.name}`,
+        uri: folder.uri,
+      })),
+    ];
+    for (const scope of scopes) {
+      const config = vscode.workspace.getConfiguration('perl-lsp', scope.uri);
+      const old = config.get<{ enabled?: unknown; profile?: unknown }>('perlcritic', {});
+      const engine = config.get<unknown>('critic.engine');
+      const externalEngine =
+        typeof engine === 'string' &&
+        ['legacy', 'external', 'perlcritic'].includes(engine.trim().toLowerCase());
+      const oldProfile = typeof old?.profile === 'string' && old.profile.trim().length > 0;
+      if (old?.enabled === true || oldProfile || externalEngine) {
+        observations.push(scope.label);
+      }
     }
 
-    const resolvedProfile = this.resolvePerlcriticProfilePath(profile);
-    if (resolvedProfile && !fs.existsSync(resolvedProfile)) {
-      return {
-        label,
-        ok: false,
-        status: HealthCheckStatus.Warning,
-        detail: `Configured perlcritic profile was not found: ${resolvedProfile}`,
-      };
-    }
-
-    try {
-      await this._execCheck('perlcritic', ['--version']);
-      return {
-        label,
-        ok: true,
-        status: HealthCheckStatus.Ok,
-        detail: 'perlcritic found',
-      };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        label,
-        ok: false,
-        status: HealthCheckStatus.Warning,
-        detail:
-          `Perl::Critic is enabled but perlcritic was not found on PATH. (${msg}) ` +
-          'Install via: cpanm Perl::Critic',
-      };
-    }
-  }
-
-  private resolvePerlcriticProfilePath(profile: string): string | undefined {
-    if (!profile) {
-      return undefined;
-    }
-
-    if (path.isAbsolute(profile)) {
-      return profile;
-    }
-
-    const primaryWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    // When no workspace folder is open we cannot resolve a relative path to a
-    // meaningful absolute location (CWD of the extension host is not the user's
-    // project directory).  Return `undefined` so the caller skips the existence
-    // check rather than silently probing the wrong location.
-    return primaryWorkspace ? path.resolve(primaryWorkspace, profile) : undefined;
+    const needsReview = observations.length > 0;
+    return {
+      label: 'perlcritic',
+      ok: !needsReview,
+      status: needsReview ? HealthCheckStatus.Warning : HealthCheckStatus.Ok,
+      detail:
+        'Native Critic does not require an external binary. ' +
+        (needsReview
+          ? `Historical external Critic settings need review/migration (${observations.join('; ')}). ` +
+            'This health check does not execute Perl::Critic or validate external profiles; ' +
+            'it does not change settings or command behavior.'
+          : 'No external Critic setup is needed for native analysis.'),
+    };
   }
 
   /**
@@ -310,12 +247,30 @@ export class OnboardingManager {
         detail: 'perl-lsp binary not found. Check Output for download details.',
       };
     }
-    if (!fs.existsSync(serverPath)) {
+    try {
+      const stat = fs.statSync(serverPath, { throwIfNoEntry: false });
+      if (!stat) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        };
+      }
+      if (!stat.isFile()) {
+        return {
+          label,
+          ok: false,
+          status: HealthCheckStatus.Error,
+          detail: `perl-lsp binary path is not a regular file: ${serverPath}`,
+        };
+      }
+    } catch {
       return {
         label,
         ok: false,
         status: HealthCheckStatus.Error,
-        detail: `perl-lsp binary path does not exist on disk: ${serverPath}`,
+        detail: `Unable to inspect perl-lsp binary path: ${serverPath}`,
       };
     }
     return {

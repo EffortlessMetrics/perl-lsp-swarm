@@ -28,6 +28,10 @@ pub(crate) use declared::{
     ConfigConsumer, ConfigOwner, ConfigScope, ConfigSensitivity, ConfigSource, ConfigValidation,
     ConfigValueKind, EvidencePolicy, FieldAuthority, InvalidValueFallback, InvalidationClass,
 };
+pub use declared::{
+    ConfigurationAuthorityReport, DerivedWorkspaceLifecycleState, DerivedWorkspaceRowStatus,
+    DerivedWorkspaceViolation, check_configuration_authority, derived_workspace_corpus_paths,
+};
 
 use std::sync::LazyLock;
 
@@ -142,7 +146,7 @@ mod tests {
         assert!(violations.is_empty(), "checked layer must validate, not repair: {violations:?}");
 
         for declared in declared::CONFIGURATION_AUTHORITY {
-            let consumed = authority_by_id(declared.id).expect("declared row resolves");
+            let consumed = must_some_with(authority_by_id(declared.id), "declared row resolves");
             assert!(
                 std::ptr::eq(consumed, declared),
                 "consumed row for {:?} is not the declared row",
@@ -156,9 +160,10 @@ mod tests {
     #[test]
     fn lookup_returns_the_declared_row_itself() {
         for declared in declared::CONFIGURATION_AUTHORITY {
-            let via_checked = authority_by_id(declared.id).expect("checked lookup resolves");
+            let via_checked =
+                must_some_with(authority_by_id(declared.id), "checked lookup resolves");
             let via_declared =
-                declared::authority_by_id(declared.id).expect("declared lookup resolves");
+                must_some_with(declared::authority_by_id(declared.id), "declared lookup resolves");
             assert!(std::ptr::eq(via_checked, declared));
             assert!(std::ptr::eq(via_checked, via_declared));
         }

@@ -10,10 +10,11 @@ use std::{
     process::{Command, Output},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use tempfile::TempDir;
+use toml::Value as TomlValue;
 
 #[path = "support/workflow_bash.rs"]
 mod workflow_bash;
@@ -23,6 +24,8 @@ use workflow_bash::bash_executable;
 const IMMUTABLE_SUBJECT: &str =
     "github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha";
 const FIXED_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+/// Matches `perl_lsp_ux_tests::regression_receipt` emission (#15988, #15314).
+const UX_REGRESSION_RECEIPT_SCHEMA_VERSION: u64 = 2;
 const WORKFLOWS: [(&str, &str); 2] =
     [("ux-regression-gate.yml", "ux-regression-gate"), ("ci.yml", "ux-tests")];
 
@@ -125,7 +128,39 @@ fn emit_receipt(root: &Path) -> Result<JsonValue> {
         ])
         .output()?;
     assert_exit(&output, 0, "ux-regression-receipt")?;
+    let expected = format!("Wrote UX regression receipt: {}\n", receipt.display());
+    if output.stdout != expected.as_bytes() {
+        bail!(
+            "ux-regression-receipt: expected receipt-path stdout, got {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
     Ok(serde_json::from_str(&fs::read_to_string(receipt)?)?)
+}
+
+#[test]
+fn ux_receipt_without_output_path_prints_json() -> Result<()> {
+    let temp = TempDir::new()?;
+    let log = temp.path().join("ux.log");
+    let exit = temp.path().join("ux.exit");
+    fs::write(&log, "running 1 test\ntest result: ok. 1 passed; 0 failed\n")?;
+    fs::write(&exit, "0\n")?;
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args([
+            "ux-regression-receipt",
+            "--input",
+            log.to_str().ok_or_else(|| anyhow!("log path"))?,
+            "--exit-status-file",
+            exit.to_str().ok_or_else(|| anyhow!("exit path"))?,
+            "--sha",
+            FIXED_SHA,
+        ])
+        .output()?;
+    assert_exit(&output, 0, "ux-regression-receipt without output path")?;
+    let value: JsonValue = serde_json::from_slice(&output.stdout)?;
+    ensure!(value["sha"] == FIXED_SHA);
+    ensure!(value["result"] == "pass");
+    Ok(())
 }
 
 fn execute_verifier(run: &str, root: &Path) -> Result<Output> {
@@ -353,6 +388,191 @@ fn unavailable_harness_has_no_executed_test_receipt() -> Result<()> {
             .ok_or_else(|| anyhow!("{name} needs an availability condition"))?;
         assert!(condition.contains("harness_available == 'true'"), "{name}: {condition}");
     }
+    let fail = named_step(job_steps, "Fail UX regression gate when harness is unavailable")?;
+    let condition = fail.get("if").and_then(Value::as_str).unwrap_or_default();
+    assert!(condition.contains("harness_available != 'true'"));
+    assert_eq!(fail.get("run").and_then(Value::as_str).map(str::trim), Some("exit 1"));
+    Ok(())
+}
+
+#[test]
+fn critical_path_receipt_uses_existing_ux_crate_build() -> Result<()> {
+    for (file, job, emitter) in [
+        ("ux-regression-gate.yml", "ux-regression-gate", "Emit structured UX regression receipt"),
+        ("ci.yml", "ux-tests", "Emit UX regression receipt"),
+    ] {
+        let wf = workflow(file)?;
+        let run = run_step(steps(&wf, job)?, emitter)?;
+        assert!(
+            run.contains("cargo run -p perl-lsp-ux-tests --bin ux-regression-receipt --locked --"),
+            "{file}: gate receipt must use the already-built UX crate"
+        );
+        assert!(
+            run.contains("--exit-status-file target/receipts/ux-regression.exit"),
+            "{file}: gate receipt must specify the exit status file"
+        );
+        assert!(
+            run.contains("--sha \"$TESTED_SHA\""),
+            "{file}: gate receipt must specify the tested SHA"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_or_malformed_receipt_sha_is_rejected_by_both_verifiers() -> Result<()> {
+    for (file, job) in WORKFLOWS {
+        let wf = workflow(file)?;
+        let verifier = run_step(steps(&wf, job)?, "Verify receipt subject identity")?;
+        let temp = tempfile::tempdir()?;
+        let receipt = receipt_path(temp.path(), "json");
+        fs::create_dir_all(receipt.parent().ok_or_else(|| anyhow!("receipt parent"))?)?;
+        fs::write(receipt_path(temp.path(), "instrumentation.exit"), "0\n")?;
+        for subject in ["foreign-candidate", "not-a-sha"] {
+            fs::write(
+                &receipt,
+                serde_json::json!({
+                    "schema_version": UX_REGRESSION_RECEIPT_SCHEMA_VERSION,
+                    "sha": subject,
+                    "result": "pass",
+                })
+                .to_string(),
+            )?;
+            let output = execute_verifier(verifier, temp.path())?;
+            assert!(!output.status.success(), "{file} accepted subject {subject}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("does not match"),
+                "{file} must identify the foreign or malformed subject"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn gate_verifier_and_summary_validate_ux_regression_schema_version() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let job_steps = steps(&wf, "ux-regression-gate")?;
+    let verifier = run_step(job_steps, "Verify receipt subject identity")?;
+    let summary = run_step(job_steps, "Summarize UX evidence")?;
+    let needle = "unsupported UX regression schema";
+    assert!(verifier.contains(needle), "verifier must reject unsupported schema_version (#15314)");
+    assert!(summary.contains(needle), "summary must reject unsupported schema_version (#15314)");
+    assert!(
+        verifier.contains(&format!(
+            "UX_REGRESSION_RECEIPT_SCHEMA_VERSION = {UX_REGRESSION_RECEIPT_SCHEMA_VERSION}"
+        )),
+        "verifier must pin the supported schema_version literal"
+    );
+    assert!(
+        summary.contains(&format!(
+            "UX_REGRESSION_RECEIPT_SCHEMA_VERSION = {UX_REGRESSION_RECEIPT_SCHEMA_VERSION}"
+        )),
+        "summary must pin the supported schema_version literal"
+    );
+    Ok(())
+}
+
+#[test]
+fn unsupported_schema_version_is_rejected_by_gate_verifier() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let verifier = run_step(steps(&wf, "ux-regression-gate")?, "Verify receipt subject identity")?;
+    let temp = tempfile::tempdir()?;
+    fs::create_dir_all(receipt_path(temp.path(), "json").parent().unwrap())?;
+    fs::write(receipt_path(temp.path(), "instrumentation.exit"), "0\n")?;
+    fs::write(
+        receipt_path(temp.path(), "json"),
+        serde_json::json!({
+            "schema_version": UX_REGRESSION_RECEIPT_SCHEMA_VERSION + 1,
+            "sha": FIXED_SHA,
+            "result": "pass",
+        })
+        .to_string(),
+    )?;
+    let output = execute_verifier(verifier, temp.path())?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unsupported UX regression schema"),
+        "verifier must identify schema drift"
+    );
+    Ok(())
+}
+
+#[test]
+fn summary_step_fails_on_invalid_receipt_json_instead_of_silent_skip() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let run = run_step(steps(&wf, "ux-regression-gate")?, "Summarize UX evidence")?;
+    assert!(
+        !run.contains("receipt = None"),
+        "summary must not swallow receipt parse failures (#15314)"
+    );
+    let source = heredoc_python(run, "ux-regression-gate.yml", "Summarize UX evidence")?;
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    fs::create_dir_all(root.join("target/receipts"))?;
+    fs::write(
+        root.join("target/receipts/ux-regression.log"),
+        "test result: ok. 1 passed; 0 failed\n",
+    )?;
+    fs::write(root.join("target/receipts/ux-regression.json"), "{not json")?;
+    let script = root.join("step.py");
+    fs::write(&script, source)?;
+    let summary = root.join("GITHUB_STEP_SUMMARY");
+    fs::write(&summary, "")?;
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg(&script)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("TESTED_SHA", FIXED_SHA)
+        .env("HARNESS_AVAILABLE", "true")
+        .env("UX_TEST_OUTCOME", "success")
+        .current_dir(root)
+        .output()?;
+    assert!(!output.status.success(), "invalid receipt JSON must fail the summary step");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not valid JSON"),
+        "summary must surface JSON parse failure"
+    );
+    Ok(())
+}
+
+#[test]
+fn summary_step_rejects_unsupported_schema_version() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let run = run_step(steps(&wf, "ux-regression-gate")?, "Summarize UX evidence")?;
+    let source = heredoc_python(run, "ux-regression-gate.yml", "Summarize UX evidence")?;
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    fs::create_dir_all(root.join("target/receipts"))?;
+    fs::write(
+        root.join("target/receipts/ux-regression.log"),
+        "test result: ok. 1 passed; 0 failed\n",
+    )?;
+    fs::write(
+        root.join("target/receipts/ux-regression.json"),
+        serde_json::json!({
+            "schema_version": UX_REGRESSION_RECEIPT_SCHEMA_VERSION + 1,
+            "sha": FIXED_SHA,
+            "result": "pass",
+        })
+        .to_string(),
+    )?;
+    let script = root.join("step.py");
+    fs::write(&script, source)?;
+    let summary = root.join("GITHUB_STEP_SUMMARY");
+    fs::write(&summary, "")?;
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg(&script)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("TESTED_SHA", FIXED_SHA)
+        .env("HARNESS_AVAILABLE", "true")
+        .env("UX_TEST_OUTCOME", "success")
+        .current_dir(root)
+        .output()?;
+    assert!(!output.status.success(), "unsupported schema_version must fail the summary step");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unsupported UX regression schema"),
+        "summary must identify schema drift"
+    );
     Ok(())
 }
 
@@ -440,6 +660,103 @@ fn heredoc_python<'a>(run: &'a str, file: &str, step: &str) -> Result<&'a str> {
 /// makes the falsification real.
 fn executable_python(source: &str) -> String {
     source.lines().filter(|line| !line.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n")
+}
+
+/// The `ux-tests` job carries a control-surface comment (#17213): it must not
+/// hardcode flake counts or claim merge-gate enforcement that
+/// `.ci/policies/required-checks.toml` does not provide.
+#[test]
+fn ci_ux_tests_flakiness_note_matches_ledger_and_policy() -> Result<()> {
+    let ci_path = project_root().join(".github/workflows/ci.yml");
+    let ci = fs::read_to_string(&ci_path)?;
+    let job_start =
+        ci.find("\n  ux-tests:").ok_or_else(|| anyhow!("ci.yml must declare ux-tests job"))?;
+    let steps_start = ci[job_start..]
+        .find("\n    steps:")
+        .ok_or_else(|| anyhow!("ux-tests job must declare steps"))?;
+    let comment_block = &ci[job_start..job_start + steps_start];
+
+    assert!(
+        !comment_block.contains("merge-gate blocks"),
+        "ux-tests flakiness note must not claim merge-gate enforcement"
+    );
+    assert!(
+        !comment_block.contains("regression prevention gate"),
+        "ux-tests comment must not overstate branch-protection role"
+    );
+    assert!(
+        comment_block.contains(".ci/policies/required-checks.toml"),
+        "ux-tests comment must point readers at required-checks policy"
+    );
+    assert!(
+        comment_block.contains("summary"),
+        "ux-tests comment must direct readers to ux-flakes.json summary counts"
+    );
+    assert!(
+        !comment_block.contains("11 active"),
+        "ux-tests comment must not hardcode stale active flake counts"
+    );
+    for line in comment_block.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#')
+            && trimmed
+                .trim_start_matches('#')
+                .trim()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+            && trimmed.contains(" active")
+        {
+            bail!(
+                "ux-tests comment must not hardcode active flake counts; use ux-flakes.json summary: {trimmed}"
+            );
+        }
+    }
+
+    let policy_path = project_root().join(".ci/policies/required-checks.toml");
+    let policy: TomlValue = toml::from_str(&fs::read_to_string(&policy_path)?)?;
+    let checks = policy
+        .get("checks")
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("required-checks.toml must declare checks"))?;
+    let ux_policy = checks
+        .iter()
+        .find(|check| check.get("name").and_then(TomlValue::as_str) == Some("UX Regression Tests"))
+        .ok_or_else(|| anyhow!("required-checks.toml must inventory UX Regression Tests"))?;
+    let required = ux_policy
+        .get("required")
+        .and_then(TomlValue::as_bool)
+        .ok_or_else(|| anyhow!("UX Regression Tests must declare required"))?;
+    let policy_role = ux_policy
+        .get("policy_role")
+        .and_then(TomlValue::as_str)
+        .ok_or_else(|| anyhow!("UX Regression Tests must declare policy_role"))?;
+    let claims_advisory_only = comment_block.contains("not branch-protection")
+        || comment_block.contains("advisory UX regression evidence");
+
+    if !required && policy_role == "advisory" {
+        assert!(
+            claims_advisory_only,
+            "ux-tests comment must state advisory posture when required-checks marks the job advisory"
+        );
+    } else {
+        assert!(
+            !claims_advisory_only,
+            "ux-tests comment must not claim advisory-only posture when required-checks marks the job required"
+        );
+    }
+
+    let ledger_path = project_root().join(".ci/ux-flakes.json");
+    let ledger: JsonValue = serde_json::from_str(&fs::read_to_string(&ledger_path)?)?;
+    ledger
+        .pointer("/summary/active")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.active"))?;
+    ledger
+        .pointer("/summary/total")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.total"))?;
+    Ok(())
 }
 
 #[test]

@@ -26,7 +26,7 @@ bootstrap_fail() {
     echo "Identity-bound bootstrap requires the ref+digest pair published at" >&2
     echo "release closeout. That packet has not been published yet." >&2
     echo "The manual archive install works today:" >&2
-    echo "see docs/how-to/INSTALLATION.md (installer-script-macos-and-linux)." >&2
+    echo "see docs/how-to/INSTALLATION.md (macos-and-linux-manual-archive)." >&2
     exit 1
 }
 
@@ -55,6 +55,14 @@ if [ "${1:-}" != "" ] && [[ "${1:-}" != -* ]]; then
             export INSTALL_DIR="$1"
         fi
         shift
+    fi
+
+    # Canonical env-wins will silently occupy an already-filled slot, so a
+    # leftover leading positional after the two wrapper slots would be ignored
+    # rather than rejected (#16310 / #16767). Fail here, before exec or fetch.
+    if [ "${1:-}" != "" ] && [[ "${1:-}" != -* ]]; then
+        echo "Error: unexpected argument: $1 (expected at most positional VERSION and INSTALL_DIR)" >&2
+        exit 1
     fi
 
     ARGS=("$@")
