@@ -132,7 +132,7 @@ count is `MERGE_BLOCKED`; missing review binding or unavailable protection is `N
 Refresh only materially affected proof/review. A new substantive finding blocks
 eligibility even when the SHA is unchanged.
 
-Consume the qualified #17900 transport with expected head compare-and-swap and observe
+Consume the qualified #17900 transport with `expectedHeadOid` compare-and-swap and observe
 actual queue custody. It does not freeze the base. Preserve actual G/base/constituents
 and selected workflow/run/attempt separately. Native queue qualification can directly
 lead to protected landing, so do not add a compulsory post-green approval pause, run a

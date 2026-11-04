@@ -103,8 +103,12 @@ The existing validator's `--no-development-events` profile checks the whole cata
 the sole explicit push purpose is `--post-landing-source .github/workflows/docs-deploy.yml`.
 Its receipt binds the profile and source and keeps native zero-run status `NOT_PROVEN`.
 
-Before activation, reconcile old trigger-specific tests with this generation and run
-the affected native contracts. The staged fixture is a preimage rehearsal, not a test
+The staged patch reconciles the affected trigger-specific contracts with this
+generation. It preserves proof commands, permission boundaries, cache-writer
+authority, receipt identity and failure propagation while rejecting restored ordinary
+event roots. The actual G source validator invokes `--no-development-events` with
+only the named Pages publication exception. Run the affected native contracts on the
+installed tree before activation. The staged fixture is a preimage rehearsal, not a test
 to keep applying after its patch has been installed. Reconcile or retire that fixture
 in the installation transaction. PR-payload-dependent standalone bodies preserved as
 explicit source are not newly qualified manual or G producers. Every uniquely required
@@ -129,6 +133,57 @@ current merely because another executor cannot reproduce it.
 | `validate-title` | `pr-title-check.yml:validate-title` remains a preserved producer, but has no qualified actual-G complete-member acquirer. #18255 remains a blocker; manual/association data is not an equivalence. |
 | `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result`, with actual-G skipped-route refusal. Preserve route execution and canonical receipt semantics; native producer/attempt acceptance remains unobserved. |
 | `ripr+ New Gap Gate` | `ripr.yml:ripr`, retained actual-G route and separately purposed cache seed. Native exact-subject execution and truthful no-gap/failure accounting remain to be observed. |
+
+### Same-run integration dependencies
+
+`integration-required` requires successful `check-all-targets` and `merge-gate` results
+in its own native workflow run and attempt. The compiler producer retains its exact
+integration checkout, compile commands, 35-minute budget and existing contract steps;
+its display name becomes `Compile All Targets execution`. The protected name belongs
+to the finalizer above.
+
+`merge-gate` retains the six existing dependencies: `draft-pr-check`,
+`preflight-latest-check`, `conflict-markers`, `check-all-targets`, `ux-tests`, and
+`merge-gate-shards`. Its existing fail-closed evaluator requires every selected
+dependency. The eight shard families remain `meta`, `foundation`, `parser_stack`,
+`analysis`, `lsp`, `support`, `corpus`, and `policy`; their exact gate lists stay in
+`ci.yml` and `.ci/gate-policy.yaml`. G cannot take the PR-only scoped-noop route.
+There is no latest-green lookup across workflows or dependence on green main to
+excuse failed selected proof.
+
+The other protected aggregates retain their own native dependencies:
+
+| Aggregate | Direct native needs |
+| --- | --- |
+| `rust-small-result` | `route-rust-small`, `rust-small-cx53`, `rust-small-cx43`, `rust-small-github`, `rust-small-fallback` |
+| `ripr` | `route-ripr`, `ripr-selfhosted`, `ripr-github`, `ripr-fallback` |
+
+Those aggregates preserve their route selection, fallback and receipt checks. The
+historical main-red probe remains a diagnostic/refusal owner; missing main evidence
+is not a request to restore routine main Actions. It cannot replace current G proof.
+
+### Existing API and semver advisory boundaries
+
+The current policy already classifies both `Public API Surface (facade PR)` and
+`Semver Compatibility (facade PR)` as `required = false`, `policy_role = "advisory"`,
+`enforcement = "neither"` under #2266. Neither job is a dependency of the existing
+`merge-gate`, a selected shard gate, or one of the five protected contexts. #17208
+requires a detected semver break to fail its job while preserving that advisory
+merge posture. A fail-closed check command and a required integration obligation
+are separate facts.
+
+| Preserved property | Authoring owner and retained deep producer |
+| --- | --- |
+| Published API baseline ratchet | Run `just public-api-check` in-session when applicable. `ci-nightly.yml:public-api-check` retains schedule and explicit `run_public_api` admission. |
+| Semver compatibility against a canonical release | Run `SEMVER_BASELINE=<canonical-release-tag> bash scripts/ci/semver_pr_check.sh` in-session with the existing tool/version and baseline setup. `ci-nightly.yml:semver-check` retains its separate deep admission. |
+
+The old `ci.yml:public-api-pr` and `ci.yml:semver-pr` bodies remain source for
+inspection. Their PR/push predicates do not become actual-G producers or working
+manual equivalents when ordinary roots are removed. Their skips supply no G proof.
+This cutover preserves the existing advisory exception; promoting either property
+requires a truthful selected-G producer and inclusion in the protected aggregate.
+The former routine main-push API replay under #16815 is retired with the other
+ordinary main validation roots.
 
 - #18255 supplies truthful metadata proof or an explicitly qualified admission
   equivalence. Association, a queue-ref regex, a live queue prefix, or maximum

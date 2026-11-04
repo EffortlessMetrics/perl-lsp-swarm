@@ -22,7 +22,9 @@ fn assert_review_backstop(skill: &str, provider: &str) {
         "## Integration predecessor",
         "INTEGRATION_READY",
         "PR_IN_FLIGHT",
-        "## Protected merge",
+        "## Protected native landing",
+        "expectedHeadOid",
+        "conditional landing permission for exact H before",
         "REVIEW_CURRENT\nAND\nINTEGRATION_READY",
     ] {
         assert!(
@@ -36,7 +38,8 @@ fn assert_review_backstop(skill: &str, provider: &str) {
     let integration = skill
         .find("## Integration predecessor")
         .expect("integration predecessor marker checked above");
-    let merge = skill.find("## Protected merge").expect("protected merge marker checked above");
+    let merge =
+        skill.find("## Protected native landing").expect("protected landing marker checked above");
 
     assert!(
         review < integration && integration < merge,

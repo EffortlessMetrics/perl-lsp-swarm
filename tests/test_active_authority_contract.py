@@ -115,9 +115,9 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "PR_IN_FLIGHT",
         "NOT_PROVEN",
         THREAD_PRECONDITION,
-        "--match-head-commit",
-        "pending qualification does not authorize auto-merge",
-        "read the durable PR/commit state",
+        "expectedHeadOid",
+        "conditional landing permission for exact H before",
+        "read back the actual PR/commit M",
     ),
     "orchestrate-work": ("NOT_PROVEN", "deliver-pr", "review-pr", "verify-live-ci"),
     "prepare-issue": ("PLAN_READY", "NOT_PROVEN", "prepare-proof"),
@@ -139,9 +139,9 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "PR_IN_FLIGHT",
         "MERGE_BLOCKED",
         "NOT_PROVEN",
-        "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
-        "re-evaluates the current tree and is the honest action",
-        "no admissible exact-subject producer means `NOT_PROVEN`",
+        "G and invalidates old G execution evidence",
+        "Never substitute a pre-queue workflow dispatch or an empty push",
+        "retain `NOT_PROVEN` and report that specific missing",
         THREAD_PRECONDITION,
         "is `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`",
     ),
@@ -649,17 +649,19 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                 self.assertIn(marker, codex, f"{codex_path} is missing semantic invariant {marker!r}")
                 self.assertIn(marker, claude, f"{claude_path} is missing semantic invariant {marker!r}")
 
-    def test_fresh_trigger_is_predicate_bounded(self) -> None:
+    def test_native_subject_reformation_preserves_review_and_refuses_missing_proof(self) -> None:
         for provider in (".agents", ".claude"):
             text = active_text(f"{provider}/skills/verify-live-ci/SKILL.md")
-            self.assertIn("no admissible exact-subject producer means `NOT_PROVEN`", text)
-            self.assertIn("re-evaluates the current tree and is the honest action", text)
-            self.assertIn("Authorize one verified-clean empty commit", text)
-            self.assertIn("empty-commit head bump", text)
-            self.assertIn("the currentness contract's narrow fresh-trigger exception applies", text)
-            self.assertIn("not a retry-to-green mechanism", text)
-            self.assertIn("manufacturing a current status on an unchanged subject", text)
-            self.assertIn("unrelated or behind-only main movement, conflict-free", text)
+            self.assertIn("Preserve unchanged semantic review and local proof", text)
+            self.assertIn("A changed H requires current", text)
+            self.assertIn("eligibility and new exact-head admission", text)
+            self.assertIn("G and invalidates old G execution evidence", text)
+            self.assertIn("Do not rebase or create an empty commit for behind-only movement", text)
+            self.assertIn("retain `NOT_PROVEN` and report that specific missing", text)
+            self.assertIn("Neither an associated PR nor a live queue prefix proves complete membership", text)
+            self.assertIn("Never substitute a pre-queue workflow dispatch or an empty push", text)
+            self.assertIn("A new material finding withdraws eligibility", text)
+            self.assertNotIn("Authorize one verified-clean empty commit", text)
             self.assertNotIn("always push an empty commit when main advances", text)
             self.assertNotIn("poll unchanged pending checks", text)
 

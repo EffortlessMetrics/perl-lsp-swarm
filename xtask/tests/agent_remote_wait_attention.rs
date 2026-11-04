@@ -1,8 +1,9 @@
-//! Contract for releasing root attention when a claim reaches a remote-owned wait.
+//! Contract for bounded waits and resumable interruption without idle polling.
 //!
 //! #13393 owns continuation/yield semantics. This test prevents provider-specific
 //! scheduling mechanics from turning an exact wake event into a same-session polling
-//! loop that keeps a large engineering root alive while other claims remain actionable.
+//! loop. The useful owner remains through ordinary qualification; a real interruption
+//! releases unnecessary execution contexts and preserves durable continuation.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,10 @@ type DynError = Box<dyn std::error::Error>;
 // to satisfy a test. This is a finite prose contract, not a semantic-language
 // validator: a new formulation still needs review and a discriminating control.
 const ATTENTION_RELEASE: &[(&str, &str)] = &[
+    (
+        "a real interruption gets an exact resumable handoff.",
+        "a real interruption discards the owner and its continuation.",
+    ),
     ("A remote wait releases root attention.", "A remote wait retains root attention."),
     (
         "When all remaining work has real external blockers, return those blockers and their wake events instead of maintaining an idle watcher.",
@@ -25,6 +30,10 @@ const ATTENTION_RELEASE: &[(&str, &str)] = &[
     ),
 ];
 const NO_SCHEDULED_POLLING: &[(&str, &str)] = &[
+    (
+        "Use supported events or bounded checks without a polling child or scheduled monitor.",
+        "Use a polling child or scheduled monitor for ordinary queue waits.",
+    ),
     (
         "Do not create a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the same remote condition.",
         "Create a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the same remote condition.",

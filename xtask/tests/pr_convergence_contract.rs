@@ -300,8 +300,8 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
             "stale_review_dimensions",
             "do not create an empty repair commit or manufacture another final-challenge cycle",
             "run `simplify-candidate` before final challenge",
-            "bounded fresh merge-tree re-evaluation selected by `verify-live-ci`",
-            "sole action owner for that exception",
+            "Queue reformation supplies new G evidence",
+            "it does not authorize an empty commit or ordinary CI trigger",
         ],
         "finish-pr",
     )?;
@@ -317,14 +317,12 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
     Ok(())
 }
 
-const STATUS_ACTIONS: [&str; 7] = [
-    "A current-subject run is queued or active.",
-    "The current run is `action_required` or needs trusted approval/identity.",
-    "No current-subject run exists and exact-subject dispatch is admissible.",
-    "A completed transient or instrument failure can be rerun against the same relevant subject.",
-    "Material base movement changed a merge-tree subject and the old attempt cannot answer it.",
-    "No admissible exact-subject route can evaluate the required changed merge tree",
-    "No action can be proven admissible or persisted.",
+const STATUS_ACTIONS: [&str; 5] = [
+    "Read exact H, current substantive review",
+    "If native custody already exists for that H",
+    "Observe actual G/base/complete constituents",
+    "A concrete transient failure may justify",
+    "Read protected native landing and M",
 ];
 
 fn unique_position(body: &str, marker: &str) -> Result<usize, String> {
@@ -385,54 +383,34 @@ fn validate_status_production(triage: &str, verify: &str) -> Result<(), String> 
     if !positions.windows(2).all(|window| window[0] < window[1]) {
         return Err("status-production action precedence changed".into());
     }
-    let action_1_context = unique_position(
-        &order,
-        "The run counts only when its workflow and reporting identity can publish the missing required context",
-    )?;
-    if !(positions[0] < action_1_context && action_1_context < positions[1]) {
-        return Err("Action 1 lost its required-context binding".into());
-    }
-    let action_4_context = unique_position(
-        &order,
-        "Rerun only a run whose workflow and reporting identity can publish the missing required context",
-    )?;
-    if !(positions[3] < action_4_context && action_4_context < positions[4]) {
-        return Err("Action 4 lost its required-context binding".into());
-    }
     require_all(
         &order,
         &[
-            "single status-production action owner",
-            "established candidate writer alone performs it",
-            "can publish the missing required context or a trusted receipt live policy admits",
-            "An exact advisory-only run is not a substitute.",
-            "a queued or active advisory-only run does not satisfy this action",
-            "Rerun only a run whose workflow and reporting identity can publish the missing required context",
-            "a transient failure of an advisory-only run falls through to action 3 or 5",
-            "Request one bounded rerun, then re-read a new attempt",
-            "the currentness contract's narrow fresh-trigger exception applies",
-            "Authorize one verified-clean empty commit",
-            "this skill does not mutate the branch directly",
-            "not a retry-to-green mechanism",
-            "Return terminal `NOT_PROVEN`",
-            "If the fresh-trigger mechanic is unavailable or its new-subject relationship cannot be proven",
+            "conditional landing authorization",
+            "complete effective protection union",
+            "observe it rather than enqueue again",
+            "invoke the qualified exact-H enqueue owner once and read back custody",
+            "Lost acknowledgment is observation/recovery, never a blind second mutation",
+            "every selected named/App-bound result in its exact workflow run and attempt",
+            "Neither an associated PR nor a live queue prefix proves complete membership",
+            "only while the subject, attempt and eligibility remain valid",
+            "Never substitute a pre-queue workflow dispatch or an empty push",
+            "A command invocation or API 2xx is not an observed transition",
+            "only for exact persisted native custody/run state with an accountable owner and wake event",
+            "A supported H publisher is admission evidence; it cannot replace actual G proof",
+            "do not issue a second direct merge",
         ],
-        "status-production order",
+        "native queue admission and qualification",
     )?;
-
-    let persistence = collapsed(section(&verify, "### Remote-action persistence law")?);
+    let currentness = collapsed(section(&verify, "## Currentness and native group reformation")?);
     require_all(
-        &persistence,
+        &currentness,
         &[
-            "A command invocation, API 2xx, or requested transition is not itself evidence",
-            "Return `PR_IN_FLIGHT` after approval, dispatch, rerun, or writer handoff only when a fresh GitHub read confirms",
-            "expected PR/head or merge subject",
-            "expected context/workflow/run identity",
-            "expected new state or attempt",
-            "exact terminal wake event",
-            "Do not take a second status-production action from the same snapshot",
+            "Preserve unchanged semantic review and local proof",
+            "G and invalidates old G execution evidence",
+            "retain `NOT_PROVEN`",
         ],
-        "remote-action persistence",
+        "subject currentness",
     )?;
 
     for forbidden in [
@@ -628,8 +606,8 @@ fn provider_review_repair_convergence_is_bounded() -> Result<(), DynError> {
             validate_review_wave(&format!("{address}\nCLASS_REPAIR_REQUIRED\n"), &finish).is_err()
         );
         let thaw = finish.replacen(
-            "bounded fresh merge-tree re-evaluation selected by",
-            "ordinary behind-only update selected by",
+            "Queue reformation\nsupplies new G evidence",
+            "Behind-only movement authorizes an ordinary CI trigger",
             1,
         );
         assert_ne!(thaw, finish);
@@ -679,95 +657,43 @@ fn provider_status_production_is_single_sourced_and_persistent() -> Result<(), D
         assert_ne!(terminal_triage, triage);
         assert!(validate_status_production(&terminal_triage, &verify).is_err());
 
-        let bypass_approval = verify.replacen(
-            "The current run is `action_required` or needs trusted approval/identity.",
-            "Approval is considered after dispatch and rerun.",
-            1,
-        );
-        assert_ne!(bypass_approval, verify);
-        assert!(validate_status_production(&triage, &bypass_approval).is_err());
-
-        let advisory_dispatch =
-            verify.replacen("trusted receipt live policy admits", "advisory workflow is enough", 1);
-        assert_ne!(advisory_dispatch, verify);
-        assert!(validate_status_production(&triage, &advisory_dispatch).is_err());
-
-        let advisory_wait = verify.replacen(
-            "a queued or active advisory-only run does not satisfy this action",
-            "any queued or active run for the head satisfies this action",
-            1,
-        );
-        assert_ne!(advisory_wait, verify);
-        assert!(validate_status_production(&triage, &advisory_wait).is_err());
-
-        let advisory_rerun = verify.replacen(
-            "a transient failure of an advisory-only run falls through",
-            "a transient failure of an advisory-only run is rerun here",
-            1,
-        );
-        assert_ne!(advisory_rerun, verify);
-        assert!(validate_status_production(&triage, &advisory_rerun).is_err());
-
-        let direct_mutation = verify.replacen(
-            "the established candidate writer alone performs it",
-            "this integration observer performs it directly",
-            1,
-        );
-        assert_ne!(direct_mutation, verify);
-        assert!(validate_status_production(&triage, &direct_mutation).is_err());
-
-        let no_readback = verify.replacen(
-            "only when a fresh GitHub read confirms",
-            "immediately after the command succeeds",
-            1,
-        );
-        assert_ne!(no_readback, verify);
-        assert!(validate_status_production(&triage, &no_readback).is_err());
-
-        let repeated = verify.replacen(
-            "Do not take a second status-production action",
-            "Take another status-production action",
-            1,
-        );
-        assert_ne!(repeated, verify);
-        assert!(validate_status_production(&triage, &repeated).is_err());
-
+        for (required, regression) in [
+            ("Read exact H, current substantive review", "Enqueue before reviewing H"),
+            ("observe it rather than enqueue again", "enqueue it again"),
+            ("read back custody", "accept command success as custody"),
+            ("never a blind second mutation", "retry the mutation blindly"),
+            ("Observe actual G/base/complete constituents", "Observe the first associated PR"),
+            ("named/App-bound", "unbound"),
+            ("exact workflow run and attempt", "latest green workflow"),
+            ("attempt and eligibility remain valid", "attempt and eligibility no longer matter"),
+            ("API 2xx is not an observed transition", "API 2xx proves the transition"),
+            ("cannot replace actual G proof", "replaces actual G proof"),
+            ("do not issue a second direct merge", "issue another direct merge"),
+            ("invalidates old G execution evidence", "reuses old G execution evidence"),
+            (
+                "Never substitute a pre-queue workflow dispatch or an empty push",
+                "Push an empty commit to recover CI",
+            ),
+        ] {
+            let broken = verify.replacen(required, regression, 1);
+            assert_ne!(broken, verify, "mutation must apply: {required}");
+            assert!(
+                validate_status_production(&triage, &broken).is_err(),
+                "accepted: {regression}"
+            );
+        }
         let duplicate_action = verify.replacen(
-            "### Remote-action persistence law",
-            "1. **A current-subject run is queued or active.** Conflicting duplicate action.\n\n### Remote-action persistence law",
-            1,
-        );
+            "## Currentness and native group reformation",
+            "Read exact H, current substantive review again.\n\n## Currentness and native group reformation", 1);
         assert_ne!(duplicate_action, verify);
         assert!(validate_status_production(&triage, &duplicate_action).is_err());
-
-        let unbound_action_1 =
-            verify.replacen("The run counts only", "Runs count whenever any workflow exists,", 1);
-        assert_ne!(unbound_action_1, verify);
-        assert!(validate_status_production(&triage, &unbound_action_1).is_err());
-
-        let unbound_action_4 =
-            verify.replacen("Rerun only a run whose", "Rerun every completed run regardless of", 1);
-        assert_ne!(unbound_action_4, verify);
-        assert!(validate_status_production(&triage, &unbound_action_4).is_err());
-
+        let reversed = verify
+            .replace(STATUS_ACTIONS[0], "TEMP_ACTION_MARKER")
+            .replace(STATUS_ACTIONS[1], STATUS_ACTIONS[0])
+            .replace("TEMP_ACTION_MARKER", STATUS_ACTIONS[1]);
+        assert!(validate_status_production(&triage, &reversed).is_err());
         let minted = format!("{verify}\nFRESH_INTEGRATION_SUBJECT_REQUIRED\n");
         assert!(validate_status_production(&triage, &minted).is_err());
-
-        let stripped_trigger = verify.replacen(
-            "the currentness contract's narrow fresh-trigger exception applies",
-            "Return terminal `NOT_PROVEN` instead of a writer-owned fresh trigger",
-            1,
-        );
-        assert_ne!(stripped_trigger, verify);
-        assert!(validate_status_production(&triage, &stripped_trigger).is_err());
-
-        let retry_to_green = verify.replacen(
-            "retry-to-green mechanism and this skill does not mutate the branch directly.",
-            "retry-to-green path; push empty commits until the failed check is green.",
-            1,
-        );
-        assert_ne!(retry_to_green, verify);
-        assert!(validate_status_production(&triage, &retry_to_green).is_err());
     }
     Ok(())
 }

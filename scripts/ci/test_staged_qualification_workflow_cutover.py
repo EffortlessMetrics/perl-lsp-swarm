@@ -90,8 +90,16 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 else:
                     self.assertEqual(original.jobs.keys(), changed.jobs.keys(), path)
                 if path not in (*GENERATORS, '.github/workflows/ci.yml', '.github/workflows/em-ci-routed-rust.yml'):
-                    self.assertEqual((ROOT / path).read_text().split('jobs:\n', 1)[1],
-                                     (root / path).read_text().split('jobs:\n', 1)[1], path)
+                    original_body = (ROOT / path).read_text().split('jobs:\n', 1)[1]
+                    projected_body = (root / path).read_text().split('jobs:\n', 1)[1]
+                    if path == '.github/workflows/gate-enforcement-contract.yml':
+                        # The real integration-source validator must enforce the
+                        # same whole-catalog profile exercised by these fixtures.
+                        for flag in ('--no-development-events',
+                                     '--post-landing-source .github/workflows/docs-deploy.yml'):
+                            self.assertEqual(projected_body.count(flag), 1)
+                            projected_body = projected_body.replace(f'            {flag} \\\n', '')
+                    self.assertEqual(original_body, projected_body, path)
 
     def test_rollback_restores_every_changed_byte(self):
         with staged_tree() as root:
@@ -159,6 +167,22 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 expected['applicability'] = 'always-or-scoped-noop'
                 expected['reason'] = right['reason']
                 self.assertIn('Every selected shard and UX obligation', right['reason'])
+            if left['name'] in {'Public API Surface (facade PR)',
+                                'Semver Compatibility (facade PR)'}:
+                # #2266/#17208 already exempt these advisory jobs from protected
+                # admission. Retirement must neither promote them silently nor
+                # count a stranded PR-only body as successful G qualification.
+                self.assertEqual(left['required'], False)
+                self.assertEqual(left['policy_role'], 'advisory')
+                self.assertEqual(left['enforcement'], 'neither')
+                expected['reason'] = right['reason']
+                self.assertIn('#2266', right['reason'])
+                self.assertIn('in-session', right['reason'])
+                self.assertIn('ci-nightly.yml:', right['reason'])
+                self.assertIn('not G proof', right['reason'])
+                if left['name'] == 'Semver Compatibility (facade PR)':
+                    self.assertIn('#17208', right['reason'])
+                    self.assertIn('Detected breaks still fail', right['reason'])
             self.assertEqual(expected, right)
         for name, producer in PROTECTED.items():
             entry = next(check for check in after['checks'] if check['name'] == name)

@@ -1,8 +1,9 @@
-//! Currentness and fresh-trigger decision contract for `verify-live-ci` (#13350).
+//! Currentness and native-group reformation contract for `verify-live-ci`.
 //!
-//! The executable fixtures are the eight issue negative controls. Skill prose
-//! must encode the same result class and route; Claude and Codex may differ in
-//! mechanics but not in classification.
+//! Preserve the #13350 classifier fixtures as historical refusal controls.
+//! Current queue-only policy forbids branch-mutating fresh triggers, even when
+//! a provider could produce one. Claude and Codex must express the same H/G
+//! identity, lost-ack recovery, and missing-proof boundaries.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -304,38 +305,29 @@ fn classify(obs: Observation) -> (Action, ResultClass) {
 }
 
 const SKILL_MARKERS: &[&str] = &[
-    "existing evidence still current for the required subject",
-    "use it; no retrigger or mutation",
-    "required check pending for the current subject",
-    "observe once; return PR_IN_FLIGHT; do not poll or mutate",
-    "required check failed for the current subject",
-    "a fresh trigger is not a retry-to-green",
-    "unrelated or behind-only main movement, conflict-free",
-    "no candidate mutation, rebase, or trigger",
-    "prefer that non-mutating mechanism",
-    "ordinary rerun would replay the stale snapshot",
-    "one bounded fresh trigger (`ci: re-request fresh merge-tree checks`)",
-    "at most one per observed material base movement",
-    "effective repository policy admits the writer-owned fresh trigger",
-    "mechanic unavailable, repository policy forbids the fresh trigger, or trigger/new-subject relationship unproven",
-    "NOT_PROVEN; do not invent equivalence or a clean/current result",
-    "this skill does not mutate the branch directly",
-    "the currentness contract's narrow fresh-trigger exception applies",
-    "Authorize one verified-clean empty commit",
-    "empty-commit head bump",
-    "re-evaluates the current tree and is the honest action",
-    "no admissible exact-subject producer means `NOT_PROVEN`",
-    "manufacturing a current status on an unchanged subject",
+    "Preserve unchanged semantic review and local proof",
+    "A changed H requires current eligibility and new exact-head admission",
+    "G and invalidates old G execution evidence",
+    "Do not rebase or create an empty commit for behind-only movement",
+    "retain `NOT_PROVEN` and report that specific missing capability",
+    "If native custody already exists for that H, observe it rather than enqueue again",
+    "Lost acknowledgment is observation/recovery, never a blind second mutation",
+    "Neither an associated PR nor a live queue prefix proves complete membership",
+    "Never substitute a pre-queue workflow dispatch or an empty push",
+    "only for exact persisted native custody/run state with an accountable owner and wake event",
+    "A supported H publisher is admission evidence; it cannot replace actual G proof",
+    "do not issue a second direct merge",
 ];
 
 const FORBIDDEN_SKILL_MARKERS: &[&str] = &[
     "always push an empty commit when main advances",
     "poll unchanged pending checks",
     "retry failed current-subject checks with an empty commit until green",
+    "Authorize one verified-clean empty commit",
 ];
 
 fn validate_skill(body: &str) -> Result<(), String> {
-    let decision = collapsed(section(body, "## Currentness and fresh-trigger decision")?);
+    let decision = collapsed(section(body, "## Currentness and native group reformation")?);
     let live = collapsed(section(body, "## Live evidence classification")?);
     let order = collapsed(section(body, "## Required-status production order")?);
     let combined = format!("{decision} {live} {order}");
@@ -394,19 +386,24 @@ fn repository_policy_forbids_fresh_trigger_when_provider_could_bind() -> Result<
 }
 
 #[test]
-fn classifier_fresh_trigger_predicates_match_skill_decision_section() -> Result<(), DynError> {
+fn queue_policy_refuses_branch_triggers_and_requires_new_group_proof() -> Result<(), DynError> {
+    for fixture in FIXTURES {
+        let queue_policy =
+            Observation { repository_policy_allows_fresh_trigger: false, ..*fixture };
+        assert_ne!(classify(queue_policy).0, Action::FreshTrigger, "{}", fixture.name);
+    }
     let root = root()?;
     for (provider, path) in [
         ("Codex", ".agents/skills/verify-live-ci/SKILL.md"),
         ("Claude", ".claude/skills/verify-live-ci/SKILL.md"),
     ] {
         let body = read(&root, path)?;
-        let decision = collapsed(section(&body, "## Currentness and fresh-trigger decision")?);
+        let decision = collapsed(section(&body, "## Currentness and native group reformation")?);
         for needle in [
-            "policy requires a fresh result",
-            "provider can bind the sanctioned writer-owned fresh trigger",
-            "effective repository policy admits the writer-owned fresh trigger",
-            "repository policy forbids the fresh trigger",
+            "Preserve unchanged semantic review and local proof",
+            "A changed H requires current eligibility and new exact-head admission",
+            "G and invalidates old G execution evidence",
+            "retain `NOT_PROVEN`",
         ] {
             assert!(decision.contains(needle), "{provider} decision section missing {needle:?}");
         }
@@ -437,7 +434,7 @@ fn providers_encode_the_same_currentness_contract() -> Result<(), DynError> {
     ] {
         let body = read(&root, path)?;
         validate_skill(&body).map_err(|error| format!("{provider}: {error}"))?;
-        decisions.push(neutralize(section(&body, "## Currentness and fresh-trigger decision")?));
+        decisions.push(neutralize(section(&body, "## Currentness and native group reformation")?));
     }
     assert_eq!(
         decisions[0], decisions[1],
@@ -447,18 +444,18 @@ fn providers_encode_the_same_currentness_contract() -> Result<(), DynError> {
 }
 
 #[test]
-fn ratchet_rejects_unconditional_empty_commit_and_lost_exception() -> Result<(), DynError> {
+fn ratchet_rejects_empty_commit_and_lost_subject_invalidation() -> Result<(), DynError> {
     let root = root()?;
     let source = read(&root, ".claude/skills/verify-live-ci/SKILL.md")?;
     validate_skill(&source).map_err(std::io::Error::other)?;
 
     let lost = source.replacen(
-        "the currentness contract's narrow fresh-trigger exception applies",
-        "Return terminal `NOT_PROVEN` without a writer-owned fresh trigger",
+        "G and invalidates old G execution evidence",
+        "G but old execution evidence may be reused without checking its subject",
         1,
     );
     assert_ne!(lost, source);
-    assert!(validate_skill(&lost).is_err(), "dropping the bounded exception must fail");
+    assert!(validate_skill(&lost).is_err(), "dropping changed-G proof invalidation must fail");
 
     let unrelated_push = format!("{source}\nalways push an empty commit when main advances\n");
     assert!(validate_skill(&unrelated_push).is_err(), "unrelated-main empty commits must fail");
@@ -481,14 +478,14 @@ fn ratchet_rejects_provider_decision_divergence() -> Result<(), DynError> {
     validate_skill(&codex).map_err(std::io::Error::other)?;
 
     codex = codex.replacen(
-        "observe once; return PR_IN_FLIGHT; do not poll or mutate",
-        "poll until the pending check completes, then mutate",
+        "G and invalidates old G execution evidence",
+        "G but reuse old execution evidence without rebinding",
         1,
     );
     assert!(validate_skill(&codex).is_err());
     assert_ne!(
-        neutralize(section(&claude, "## Currentness and fresh-trigger decision")?),
-        neutralize(section(&codex, "## Currentness and fresh-trigger decision")?)
+        neutralize(section(&claude, "## Currentness and native group reformation")?),
+        neutralize(section(&codex, "## Currentness and native group reformation")?)
     );
     Ok(())
 }

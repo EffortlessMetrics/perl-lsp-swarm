@@ -158,7 +158,7 @@ Preserve unchanged semantic review and local proof. A changed H requires current
 eligibility and new exact-head admission. Actual queue/base reformation creates a new
 G and invalidates old G execution evidence; consume the native operation's new subject.
 Do not rebase or create an empty commit for behind-only movement or to manufacture CI.
-If no qualified producer can prove the required subject, report that specific missing
+If no qualified producer can prove the required subject, retain `NOT_PROVEN` and report that specific missing
 capability while continuing independent authoring work.
 
 ## Terminal inspection and ownership

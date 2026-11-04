@@ -133,24 +133,41 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -326,7 +326,7 @@
+@@ -326,12 +326,12 @@
  workflow = ".github/workflows/ci.yml"
  job = "public-api-pr"
  workflow_result = "propagate"
 -events = ["pull_request", "push"]
+-required = false
+-policy_role = "advisory"
+-applicability = "conditional"
+-enforcement = "neither"
+-reason = "#2266 auto-runs the cargo-public-api baseline ratchet when a PR touches a published facade surface or .ci/public-api-baselines/; out-of-scope diffs settle as green scoped-noops so a later ruleset promotion resolves cleanly instead of pending forever. #16815 also runs the same fail-closed `just public-api-check` on every push to main/master against that landed SHA, including commits outside facade/API scope; skipped or instrument-failed runs are not a passing ratchet."
 +events = ["workflow_dispatch"]
- required = false
- policy_role = "advisory"
- applicability = "conditional"
-@@ -339,7 +339,7 @@
++required = false
++policy_role = "advisory"
++applicability = "conditional"
++enforcement = "neither"
++reason = "#2266 remains merge-advisory: required=false, policy_role=advisory, enforcement=neither. Applicable authoring proof is just public-api-check in-session; ci-nightly.yml:public-api-check retains schedule/explicit deep admission. The retained PR/push body is not G proof or a qualified manual equivalent. #17903 retires ordinary PR and #16815 main-push replay without promoting or deleting the existing advisory exception."
+ 
+ [[checks]]
+ name = "Semver Compatibility (facade PR)"
+@@ -339,9 +339,9 @@
  workflow = ".github/workflows/ci.yml"
  job = "semver-pr"
  workflow_result = "propagate"
 -events = ["pull_request"]
+-required = false
+-policy_role = "advisory"
+-applicability = "conditional"
+-enforcement = "neither"
+-reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for API-ratcheted crates; stays merge-advisory (required=false) until baseline confidence supports hard-gating, but a detected break must fail the job conclusion (#17208)."
 +events = ["workflow_dispatch"]
- required = false
- policy_role = "advisory"
- applicability = "conditional"
++required = false
++policy_role = "advisory"
++applicability = "conditional"
++enforcement = "neither"
++reason = "#2266/#17208 retain merge-advisory semver against the canonical release baseline. Detected breaks still fail the check command; required=false and enforcement=neither remain unchanged. Run applicable authoring proof through scripts/ci/semver_pr_check.sh in-session; ci-nightly.yml:semver-check retains deep admission. The retained PR-only body is not G proof or a qualified manual equivalent."
 --- /dev/null
 +++ b/.ci/retired-workflows/main-history-event.yml
 @@ -0,0 +1,187 @@
@@ -1563,6 +1580,17 @@
    workflow_dispatch: {}
  
  concurrency:
+--- a/.github/workflows/gate-enforcement-contract.yml
++++ b/.github/workflows/gate-enforcement-contract.yml
+@@ -39,6 +39,8 @@
+           test_status=$?
+           python3 scripts/ci/validate_gate_enforcement_contract.py \
+             --root . \
++            --no-development-events \
++            --post-landing-source .github/workflows/docs-deploy.yml \
+             --receipt target/receipts/gate-enforcement-contract.json
+           contract_status=$?
+           python3 scripts/ci/required_checks_doc_contract.py \
 --- a/.github/workflows/generated-status-contract.yml
 +++ b/.github/workflows/generated-status-contract.yml
 @@ -1,15 +1,6 @@
@@ -3184,6 +3212,1451 @@
    workflow_dispatch:
  
  permissions:
+--- a/docs/ci/pr-plan.md
++++ b/docs/ci/pr-plan.md
+@@ -1,4 +1,11 @@
+ # PR Plan
++
++> **Queue-only cutover (#17903):** ordinary PR Plan and head-name-sentinel
++> subscriptions are retired. Authoring economics and classifier checks run
++> in-session. The retained PR-payload workflow bodies are source for diagnosis,
++> not qualified manual or merge-group producers. The trigger model below records
++> the earlier integration; it does not authorize an empty push or closing and
++> reopening a PR to manufacture CI. Current route: [qualification cutover](qualification-cutover.md).
+ 
+ Advisory CI economics forecast. Runs once per PR via
+ [`.github/workflows/pr-plan.yml`](../../.github/workflows/pr-plan.yml) and writes
+--- a/docs/ci/ripr.md
++++ b/docs/ci/ripr.md
+@@ -28,9 +28,10 @@
+ availability failure is not treated as a clean result or as a receipt-integrity
+ pass. Non-production-only static findings remain visible in the receipts but do
+ not create a merge-blocking repair packet. Repo-wide RIPR+ total zero remains a burn-down target
+-until the final enforcement slice. The workflow still runs for
+-every PR when it is ready for review so docs-only, policy-only, workflow-only,
+-and code PRs all carry current proof receipts.
++until the final enforcement slice. Authoring proof runs in-session. The
++native integration workflow qualifies the actual merge group, including
++docs-only, policy-only, workflow-only and code changes. Draft/Ready
++publication starts no Actions.
+ 
+ ## PR integration comparison identity
+ 
+@@ -130,16 +131,12 @@
+ 
+ ## When it runs
+ 
+-- Every PR targeting `master` or `main`.
+-- No path filter is applied: docs-only, policy-only, workflow-only, and code
+-  PRs all run the RIPR proof workflow so every merge has current proof receipts.
+-- Draft PRs are skipped while draft, then the explicit `ready_for_review`
+-  trigger runs the workflow before the PR can merge.
+-- Manual via `workflow_dispatch`.
+-- Labels can still route deeper or more expensive evidence lanes elsewhere, but
+-  this proof workflow is no longer label-gated.
+-
+----
++Authoring checks and repairs run in-session. Draft/Ready publication starts no Actions.
++The required integration workflow runs for the actual `merge_group` subject on
++`checks_requested`; an explicit diagnostic is a separately authorized action.
++No path filter is applied: docs-only, policy-only and workflow-only candidates
++still require applicable integration receipts. A skipped producer is not proof.
++
+ 
+ ## Behavior
+ 
+--- a/scripts/ci/test_candidate_proof_presence.py
++++ b/scripts/ci/test_candidate_proof_presence.py
+@@ -373,14 +373,18 @@
+                         presence.DECLARED_BUT_MISSING,
+                     )
+ 
+-    def test_every_proof_path_is_watched_on_pull_request_and_push(self) -> None:
+-        for _identifier, path in self.proofs:
+-            with self.subTest(path=path):
+-                self.assertGreaterEqual(
+-                    self.workflow.count(f"- '{path}'"),
+-                    2,
+-                    f"{path} must be watched on pull_request and push",
+-                )
++    def test_every_proof_remains_declared_without_development_event_filters(self) -> None:
++        on = self.workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
++        self.assertIn("workflow_dispatch:", on)
++        self.assertNotRegex(on, r"(?m)^  (pull_request|pull_request_target|push):")
++        # Unfiltered explicit execution still classifies every proof. A missing
++        # declared input must fail; trigger removal cannot buy a classifier skip.
++        for identifier, path in self.proofs:
++            with self.subTest(proof=identifier):
++                self.assertIn(f"--proof {identifier}={path}", self.workflow)
++                with TemporaryDirectory() as name:
++                    self.assertEqual(presence.classify(Path(name), self.workflow, path),
++                                     presence.DECLARED_BUT_MISSING)
+ 
+ 
+ if __name__ == "__main__":
+--- a/scripts/ci/test_detect_required_check_registration.py
++++ b/scripts/ci/test_detect_required_check_registration.py
+@@ -65,7 +65,6 @@
+     "validate-title",
+ )
+ CONDITIONAL_REQUIRED_JOBS = {
+-    ("Compile All Targets (bit-rot guard)", "check-all-targets"),
+     ("Conflict marker check", "conflict-markers"),
+ }
+ 
+--- a/scripts/ci/test_droid_security_boundary.py
++++ b/scripts/ci/test_droid_security_boundary.py
+@@ -162,13 +162,14 @@
+             with self.subTest(token=token):
+                 self.assertIn(token.lower(), lowered)
+ 
+-    def test_contract_workflow_is_path_scoped_and_read_only(self) -> None:
++    def test_contract_workflow_requires_explicit_admission_and_is_read_only(self) -> None:
+         for path in (
+             ".github/workflows/droid-security-scan.yml",
+             ".github/workflows/droid-security-boundary.yml",
+             "scripts/ci/test_droid_security_boundary.py",
+         ):
+-            self.assertIn(path, self.contract)
++            self.assertTrue((ROOT / path).is_file(), path)
++        self.assertEqual(_top_level_mapping(self.contract, "on"), ["workflow_dispatch"])
+         self.assertTrue(_permission_blocks(self.contract))
+         self.assertNotIn("write", _permission_values(self.contract))
+         self.assertNotIn("id-token", self.contract)
+@@ -242,10 +243,10 @@
+             timeout=15,
+         )
+ 
+-    def test_mentions_remain_explicit_human_requests_without_cancellation(self) -> None:
++    def test_mention_body_is_preserved_without_ordinary_comment_subscriptions(self) -> None:
+         self.assertEqual(
+             _top_level_mapping(self.mention, "on"),
+-            ["issue_comment", "pull_request_review_comment", "pull_request_review"],
++            ["workflow_dispatch"],
+         )
+         self.assertEqual(self.mention.count(".user.type == 'User'"), 3)
+         self.assertEqual(
+@@ -375,7 +376,10 @@
+             ".github/workflows/droid-review.yml",
+             ".ci/policies/action-pin-provenance.toml",
+         ):
+-            self.assertEqual(contract.count(f"- '{path}'"), 2)
++            self.assertTrue((ROOT / path).is_file(), path)
++        self.assertEqual(_top_level_mapping(contract, "on"), ["workflow_dispatch"])
++        # All permission, subject, identity and paused-review controls remain
++        # exercised in-session; a comment cannot start even a skipped wrapper.
+ 
+     def test_subject_resolution_accepts_all_three_pr_event_shapes(self) -> None:
+         repo = "EffortlessMetrics/perl-lsp-swarm"
+--- a/scripts/ci/test_main_red_refusal.py
++++ b/scripts/ci/test_main_red_refusal.py
+@@ -399,7 +399,8 @@
+         on_start = self.workflow.index("\non:\n")
+         permissions_start = self.workflow.index("\npermissions:\n")
+         triggers = self.workflow[on_start:permissions_start]
+-        self.assertIn("  push:\n    branches: [main, master]", triggers)
++        self.assertIn("  merge_group:\n    types: [checks_requested]", triggers)
++        self.assertNotRegex(triggers, r"(?m)^  (push|pull_request|pull_request_target):")
+         binding = next(
+             line for line in probe.splitlines() if line.strip().startswith("CANDIDATE_SHA:")
+         )
+--- a/scripts/ci/test_perf_nightly_alert.py
++++ b/scripts/ci/test_perf_nightly_alert.py
+@@ -83,16 +83,8 @@
+             raise ValueError(message)
+ 
+     triggers = workflow.get("on", workflow.get(True, {}))
+-    require(set(triggers.get("pull_request", {})) == {"paths"},
+-            "consumer must retain default PR activities and branches")
+-    push = triggers.get("push", {})
+-    require(set(push) == {"branches", "paths"} and push["branches"] == ["main"],
+-            "consumer must retain main push coverage")
+-    for event in ("pull_request", "push"):
+-        paths = set(triggers.get(event, {}).get("paths", []))
+-        require(not any(path.startswith("!") for path in paths), f"{event} path exclusions can suppress direct inputs")
+-        require({".github/workflows/**", "scripts/ci/test_perf_nightly_alert.py",
+-                 "scripts/bash_binary.py"} <= paths, f"incomplete {event} input coverage")
++    require(set(triggers) == {"workflow_dispatch"},
++            "advisory regression execution requires explicit admission; no development Actions")
+     job = workflow["jobs"]["workflow-contracts"]
+     require("if" not in job and not job.get("continue-on-error"), "consumer job can be skipped or suppressed")
+     require(not workflow.get("defaults") and not job.get("defaults"), "consumer defaults can retarget execution")
+@@ -279,36 +271,21 @@
+     def test_actual_advisory_ci_route_executes_regression(self) -> None:
+         validate_ci_route(yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8")))
+ 
+-    def test_ci_route_rejects_missing_input_triggers(self) -> None:
++    def test_ci_route_rejects_restored_ordinary_events(self) -> None:
+         workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+-        validate_ci_route(workflow)  # mutants must start from a passing real route
++        validate_ci_route(workflow)
+         key = "on" if "on" in workflow else True
+-        for event in ("pull_request", "push"):
+-            for path in (".github/workflows/**", "scripts/ci/test_perf_nightly_alert.py", "scripts/bash_binary.py"):
+-                with self.subTest(event=event, path=path):
+-                    mutant = copy.deepcopy(workflow)
+-                    mutant[key][event]["paths"].remove(path)
+-                    with self.assertRaises(ValueError):
+-                        validate_ci_route(mutant)
+-            for exclusion in ("!scripts/ci/test_perf_nightly_alert.py", "!scripts/bash_binary.py", "!scripts/**"):
+-                with self.subTest(event=event, exclusion=exclusion):
+-                    mutant = copy.deepcopy(workflow)
+-                    mutant[key][event]["paths"].append(exclusion)
+-                    with self.assertRaises(ValueError):
+-                        validate_ci_route(mutant)
+-        for event, field, value in (
+-            ("push", "branches", ["develop"]),
+-            ("push", "branches", ["main", "!main"]),
+-            ("push", "branches-ignore", ["main"]),
+-            ("pull_request", "types", ["closed"]),
+-            ("pull_request", "branches", ["develop"]),
+-            ("pull_request", "paths-ignore", ["scripts/**"]),
+-        ):
+-            with self.subTest(event=event, field=field, value=value):
++        for event in ("pull_request", "pull_request_target", "pull_request_review",
++                      "pull_request_review_comment", "issue_comment", "push"):
++            with self.subTest(event=event):
+                 mutant = copy.deepcopy(workflow)
+-                mutant[key][event][field] = value
+-                with self.assertRaises(ValueError):
++                mutant[key][event] = {"paths": ["scripts/**"]}
++                with self.assertRaisesRegex(ValueError, "explicit admission"):
+                     validate_ci_route(mutant)
++        mutant = copy.deepcopy(workflow)
++        mutant[key] = {}
++        with self.assertRaisesRegex(ValueError, "explicit admission"):
++            validate_ci_route(mutant)
+ 
+     def test_ci_route_rejects_printed_skipped_or_suppressed_commands(self) -> None:
+         workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+--- a/scripts/ci/test_run_gate_shard.py
++++ b/scripts/ci/test_run_gate_shard.py
+@@ -352,8 +352,8 @@
+     on_block = workflow_text[on_start : on_end if on_end > 0 else on_start + 800]
+     if "merge_group:" not in on_block:
+         errors.append("workflow on: is missing merge_group")
+-    if not re.search(r"push:\s*\n\s*branches:\s*\[\s*main,\s*master\s*\]", on_block):
+-        errors.append("workflow on: is missing push to main/master")
++    if re.search(r"(?m)^  (push|pull_request|pull_request_target|pull_request_review|pull_request_review_comment|issue_comment):", on_block):
++        errors.append("workflow must not start development or routine main Actions")
+     try:
+         job = workflow_job_block(workflow_text, COMBINED_TREE_JOB)
+     except ValueError:
+@@ -881,7 +881,7 @@
+         runner_invocation = runner_step[invocation_start:invocation_end]
+         self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_invocation)
+ 
+-    def test_source_commit_api_check_is_wired_for_merge_group_and_push(self) -> None:
++    def test_source_commit_api_check_is_wired_for_actual_merge_group(self) -> None:
+         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+         self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
+ 
+@@ -891,7 +891,9 @@
+         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+         self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
+         mutants = {
+-            "drop-merge-group-trigger": workflow.replace("  merge_group: {}\n", "", 1),
++            "drop-merge-group-trigger": workflow.replace("  merge_group:\n    types: [checks_requested]\n", "", 1),
++            "restore-main-trigger": workflow.replace("on:\n", "on:\n  push:\n    branches: [main]\n", 1),
++            "restore-pr-trigger": workflow.replace("on:\n", "on:\n  pull_request: {}\n", 1),
+             "drop-merge-group-if": workflow.replace(
+                 "github.event_name == 'merge_group' ||\n", "", 1
+             ),
+--- a/scripts/ci/test_rustfmt_required_workflow.py
++++ b/scripts/ci/test_rustfmt_required_workflow.py
+@@ -138,7 +138,7 @@
+             # Any top-level key ends the previous section, so `concurrency`,
+             # `permissions`, and `env` children cannot be mistaken for jobs.
+             section = parsed.key if parsed.key == "jobs" else ""
+-        elif section in {"jobs", "other-job"} and parsed and parsed.indent == 2:
++        elif section in {"jobs", "other-job", "formatter"} and parsed and parsed.indent == 2:
+             section = "formatter" if parsed.key == JOB_ID else "other-job"
+         elif section == "formatter" and parsed:
+             value = yaml_structure._strip_scalar(parsed.value)
+@@ -192,12 +192,17 @@
+ 
+ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> None:
+     triggers = workflow.get("on", {})
+-    for event in ("pull_request", "merge_group", "push"):
+-        if event not in triggers:
+-            raise AssertionError(f"workflow must report on {event}")
+-    pull_request = triggers.get("pull_request", {})
+-    if "paths" in pull_request or "paths-ignore" in pull_request:
+-        raise AssertionError("formatter context must remain terminal for docs-only PRs")
++    forbidden = {"pull_request", "pull_request_target", "pull_request_review",
++                 "pull_request_review_comment", "issue_comment", "push"}
++    if forbidden.intersection(triggers):
++        raise AssertionError("formatter must not start development or routine main Actions")
++    if "merge_group" not in triggers:
++        raise AssertionError("workflow must report on merge_group")
++    group = triggers["merge_group"]
++    if "paths" in group or "paths-ignore" in group:
++        raise AssertionError("formatter context must remain terminal for docs-only groups")
++    if group != {"types": ["checks_requested"]}:
++        raise AssertionError("formatter requires explicit merge_group checks_requested")
+ 
+     job = workflow.get("jobs", {}).get(JOB_ID)
+     if not isinstance(job, dict):
+@@ -371,8 +376,8 @@
+             validate_contract(self.workflow, broken)
+ 
+ 
+-def replace_pull_request_trigger(workflow_text: str, replacement: str) -> str:
+-    """Swap the entire `on.pull_request` block for `replacement`.
++def replace_merge_group_trigger(workflow_text: str, replacement: str) -> str:
++    """Swap the entire `on.merge_group` block for `replacement`.
+ 
+     The real block carries comment lines and a `types:` key, so replacing only
+     its first line would leave them dangling and produce invalid YAML rather
+@@ -389,12 +394,12 @@
+         (
+             index
+             for index, line in enumerate(lines)
+-            if line.rstrip("\n") == "  pull_request:"
++            if line.rstrip("\n") == "  merge_group:"
+         ),
+         None,
+     )
+     if start is None:
+-        raise AssertionError("`on.pull_request` block is not present in workflow source")
++        raise AssertionError("`on.merge_group` block is not present in workflow source")
+     end = next(
+         (
+             index
+@@ -407,7 +412,7 @@
+     )
+     if end is None:
+         raise AssertionError(
+-            "`on.pull_request` block has no following sibling key to bound it"
++            "`on.merge_group` block has no following sibling key to bound it"
+         )
+     return "".join(lines[:start] + [replacement] + lines[end:])
+ 
+@@ -494,7 +499,7 @@
+         for leaked in ("group", "cancel-in-progress", "contents", "CARGO_TERM_COLOR"):
+             self.assertNotIn(leaked, triggers)
+         self.assertEqual(
+-            set(triggers), {"pull_request", "merge_group", "push", "workflow_dispatch"}
++            set(triggers), {"merge_group", "workflow_dispatch"}
+         )
+ 
+     # The next four tests are a deliberate 2x2: {paths, paths-ignore} x
+@@ -507,8 +512,8 @@
+         # Regression: trigger bodies parsed as empty dicts, so validate_contract's
+         # docs-only guard was unreachable on real source no matter what it said.
+         broken = self.workflow_text.replace(
+-            "  pull_request:\n    branches:",
+-            "  pull_request:\n    paths:\n      - '**.rs'\n    branches:",
++            "  merge_group:\n    types:",
++            "  merge_group:\n    paths:\n      - '**.rs'\n    types:",
+             1,
+         )
+         self.assertNotEqual(broken, self.workflow_text)
+@@ -517,8 +522,8 @@
+ 
+     def test_paths_ignore_filter_fails_closed(self) -> None:
+         broken = self.workflow_text.replace(
+-            "  pull_request:\n    branches:",
+-            "  pull_request:\n    paths-ignore:\n      - '**.md'\n    branches:",
++            "  merge_group:\n    types:",
++            "  merge_group:\n    paths-ignore:\n      - '**.md'\n    types:",
+             1,
+         )
+         self.assertNotEqual(broken, self.workflow_text)
+@@ -526,23 +531,23 @@
+             self.validate_source(broken, self.policy_text)
+ 
+     def test_flow_style_docs_only_filter_fails_closed(self) -> None:
+-        # A line-based reader saw `pull_request: { ... }` as an empty body and
++        # A line-based reader saw `merge_group: { ... }` as an empty body and
+         # let the docs-only guard pass on a workflow GitHub would skip for
+         # Markdown-only PRs. ci.yml already uses flow style (`merge_group: {}`),
+         # so this spelling is real, not hypothetical.
+-        broken = replace_pull_request_trigger(
++        broken = replace_merge_group_trigger(
+             self.workflow_text,
+-            "  pull_request: { branches: [ main, master ], paths-ignore: ['**.md'] }\n",
++            "  merge_group: { types: [checks_requested], paths-ignore: ['**.md'] }\n",
+         )
+         self.assertNotEqual(broken, self.workflow_text)
+-        self.assertIn("paths-ignore", load_triggers(broken)["pull_request"])
++        self.assertIn("paths-ignore", load_triggers(broken)["merge_group"])
+         with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+             self.validate_source(broken, self.policy_text)
+ 
+     def test_flow_style_paths_filter_fails_closed(self) -> None:
+-        broken = replace_pull_request_trigger(
++        broken = replace_merge_group_trigger(
+             self.workflow_text,
+-            "  pull_request: { branches: [ main, master ], paths: ['**.rs'] }\n",
++            "  merge_group: { types: [checks_requested], paths: ['**.rs'] }\n",
+         )
+         self.assertNotEqual(broken, self.workflow_text)
+         with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+@@ -553,19 +558,20 @@
+         # whose event configuration is not even valid reported an unconfigured
+         # event and satisfied both the required-trigger and docs-only checks.
+         for spelling in ("true", "[branches]", "'yes'", "42"):
+-            broken = replace_pull_request_trigger(
+-                self.workflow_text, f"  pull_request: {spelling}\n"
++            broken = replace_merge_group_trigger(
++                self.workflow_text, f"  merge_group: {spelling}\n"
+             )
+             self.assertNotEqual(broken, self.workflow_text)
+             with self.assertRaisesRegex(AssertionError, "expected a mapping"):
+                 self.validate_source(broken, self.policy_text)
+ 
+     def test_empty_trigger_body_is_accepted(self) -> None:
+-        # Positive control for the check above: a bare `pull_request:` is legal
++        # Positive control for the check above: a bare `merge_group:` is legal
+         # GitHub Actions, so rejecting non-mappings must not reject null bodies.
+-        relaxed = replace_pull_request_trigger(self.workflow_text, "  pull_request:\n")
+-        self.assertEqual(load_triggers(relaxed)["pull_request"], {})
+-        self.validate_source(relaxed, self.policy_text)
++        relaxed = replace_merge_group_trigger(self.workflow_text, "  merge_group:\n")
++        self.assertEqual(load_triggers(relaxed)["merge_group"], {})
++        with self.assertRaisesRegex(AssertionError, "explicit merge_group"):
++            self.validate_source(relaxed, self.policy_text)
+ 
+     def test_unparseable_workflow_source_fails_closed(self) -> None:
+         # A corrupted or truncated ci.yml must red the gate with a named error,
+@@ -574,29 +580,28 @@
+             load_triggers(self.workflow_text + "\n  : : :\n\t- bad\n")
+ 
+     def test_trigger_replacement_stops_at_the_next_sibling_key(self) -> None:
+-        # Regression: the boundary was found by hardcoding `merge_group:`, so
+-        # reordering `on:` moved it silently past `push:` and the mutation
+-        # expressed more than it said — the failure mode this suite exists to
+-        # catch, in the suite's own helper.
+-        reordered = self.workflow_text.replace("  merge_group: {}\n", "", 1).replace(
+-            "  workflow_dispatch:\n", "  merge_group: {}\n  workflow_dispatch:\n", 1
+-        )
+-        self.assertNotEqual(reordered, self.workflow_text)
+-        swapped = replace_pull_request_trigger(
+-            reordered, "  pull_request: { branches: [ main, master ] }\n"
+-        )
+-        self.assertIn("push", load_triggers(swapped))
+-        self.assertIn("merge_group", load_triggers(swapped))
++        source = "on:\n  merge_group:\n    types: [checks_requested]\n  workflow_dispatch: {}\n  repository_dispatch: {}\n"
++        swapped = replace_merge_group_trigger(source, "  merge_group: {types: [checks_requested]}\n")
++        self.assertEqual(set(load_triggers(swapped)), {"merge_group", "workflow_dispatch", "repository_dispatch"})
++        self.assertEqual(load_triggers(swapped)["workflow_dispatch"], {})
+ 
+     def test_trigger_replacement_helper_fails_closed(self) -> None:
+         # The helper carries the same fail-closed duty as the rest: a named
+         # error, never a raw ValueError and never a silent wrong region.
+         with self.assertRaisesRegex(AssertionError, "not present in workflow source"):
+-            replace_pull_request_trigger("on:\n  push: {}\n", "  pull_request: {}\n")
++            replace_merge_group_trigger("on:\n  push: {}\n", "  merge_group:\n    types: [checks_requested]\n")
+         with self.assertRaisesRegex(AssertionError, "no following sibling key"):
+-            replace_pull_request_trigger(
+-                "on:\n  pull_request:\n    branches: [ main ]\n", "x\n"
++            replace_merge_group_trigger(
++                "on:\n  merge_group:\n    types: [ main ]\n", "x\n"
+             )
++
++    def test_restored_ordinary_events_fail_with_a_valid_group_producer(self) -> None:
++        for event in ("pull_request", "pull_request_target", "pull_request_review",
++                      "pull_request_review_comment", "issue_comment", "push"):
++            with self.subTest(event=event):
++                broken = self.workflow_text.replace("on:\n", f"on:\n  {event}: {{}}\n", 1)
++                with self.assertRaisesRegex(AssertionError, "must not start development"):
++                    self.validate_source(broken, self.policy_text)
+ 
+     def test_quoted_on_key_is_read_the_same_as_the_bare_key(self) -> None:
+         # YAML 1.1 resolves a bare `on` to boolean True; the quoted spelling
+@@ -608,10 +613,10 @@
+ 
+     def test_dropping_a_required_trigger_from_source_fails_closed(self) -> None:
+         broken = self.workflow_text.replace(
+-            "  push:\n    branches: [ main, master ]\n", "", 1
++            "  merge_group:\n    types: [checks_requested]\n", "", 1
+         )
+         self.assertNotEqual(broken, self.workflow_text)
+-        with self.assertRaisesRegex(AssertionError, "must report on push"):
++        with self.assertRaisesRegex(AssertionError, "must report on merge_group"):
+             self.validate_source(broken, self.policy_text)
+ 
+     def test_dropping_the_governed_job_from_workflow_source_fails_closed(self) -> None:
+@@ -620,7 +625,7 @@
+         self.assertLess(len(broken), len(self.workflow_text))
+         # The mutation stays surgical: the rest of the workflow is still there.
+         self.assertIn("\njobs:\n", broken)
+-        self.assertIn("pull_request:", broken)
++        self.assertIn("merge_group:", broken)
+         with self.assertRaisesRegex(AssertionError, "formatter context name drifted"):
+             self.validate_source(broken, self.policy_text)
+ 
+--- a/scripts/ci/test_validate_gate_enforcement_contract.py
++++ b/scripts/ci/test_validate_gate_enforcement_contract.py
+@@ -259,14 +259,14 @@
+         end = lines.index("  main-selfcheck:")
+         self.job_block = lines[start:end]
+ 
+-    def test_verbatim_10536_row_maps_clean_against_live_catalog(self) -> None:
++    def test_retired_pr_producer_cannot_satisfy_the_deferred_10536_row(self) -> None:
+         findings, mapped = contract.validate_context(
+             TRUSTED_BASE_DRAFT_ROW,
+             self.workflows,
+             self.producers,
+         )
+-        self.assertEqual([], findings)
+-        self.assertTrue(mapped)
++        self.assertEqual({"workflow_event_missing"}, {finding.code for finding in findings})
++        self.assertTrue(mapped)  # source identity survives; event qualification does not
+ 
+     def test_emitting_job_is_unconditionally_reachable(self) -> None:
+         self.assertIsNone(
+@@ -286,9 +286,10 @@
+             producers,
+         )
+ 
+-    def test_declared_event_reachability_holds_for_pull_request_target(self) -> None:
+-        self.assertIn("pull_request_target", self.ratchet.events)
+-        self.assertNotIn("pull_request_target", self.ratchet.path_filtered_events)
++    def test_retained_ratchet_requires_explicit_diagnostic_admission(self) -> None:
++        self.assertEqual(frozenset({"workflow_dispatch"}), self.ratchet.events)
++        self.assertFalse(self.ratchet.path_filtered_events)
++        # This source is not relabeled as a truthful G/H producer.
+ 
+     def test_all_filtering_resolves_in_job_not_at_job_level(self) -> None:
+         children = _job_direct_children(self.job_block)
+@@ -326,7 +327,8 @@
+         # push / workflow_dispatch validation of the trusted base.
+         sibling = self.ratchet.jobs["main-selfcheck"]
+         self.assertEqual(MAIN_SELFCHECK_CONDITION, sibling.condition)
+-        self.assertIn("push", self.ratchet.events)
++        self.assertIn("workflow_dispatch", self.ratchet.events)
++        self.assertNotIn("push", self.ratchet.events)
+ 
+     def test_reintroduced_job_level_event_gate_reddens_the_draft_row(self) -> None:
+         with tempfile.TemporaryDirectory() as tmp:
+--- a/scripts/tests/test-agent-flow-control-plane-trigger.sh
++++ b/scripts/tests/test-agent-flow-control-plane-trigger.sh
+@@ -1,9 +1,9 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ 
+-# This is a fixture for the declarative GitHub path filter. It does not claim
+-# to simulate GitHub event delivery. It proves that both pull-request and push
+-# filters keep the control-plane allowlist explicit and exclude product paths.
++# The control-plane contracts run in-session; this retained explicit diagnostic
++# must never turn Draft/Ready or main publication into an Actions run. Execute
++# the real publication contract and preserve its failure propagation.
+ 
+ workflow='.github/workflows/agent-flow-control-plane.yml'
+ test -f "$workflow"
+@@ -12,99 +12,14 @@
+ from __future__ import annotations
+ 
+ import sys
++import re
+ from pathlib import Path
+ 
+ 
+ WORKFLOW = Path(sys.argv[1])
+-REQUIRED_PATHS = {
+-    "AGENTS.md",
+-    "CLAUDE.md",
+-    ".github/PULL_REQUEST_TEMPLATE.md",
+-    "docs/agents/**",
+-    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+-    "docs/specs/README.md",
+-    "docs/INDEX.md",
+-    ".agents/skills/**",
+-    ".claude/skills/**",
+-    ".claude/settings.json",
+-    ".codex/**",
+-    "policy/skill-provider-parity.toml",
+-    "xtask/src/main.rs",
+-    "xtask/src/tasks/agent_flow.rs",
+-    "xtask/src/tasks/agent_flow/**",
+-    "xtask/src/tasks/mod.rs",
+-    "xtask/tests/agent_merge_review_backstop.rs",
+-    "xtask/tests/agent_shift_left_entry_contract.rs",
+-    "xtask/tests/agent_remote_wait_attention.rs",
+-    "xtask/tests/agent_shift_left_mutation_admission_contract.rs",
+-    "xtask/tests/pr_convergence_contract.rs",
+-    "xtask/tests/shift_left_publication_contract.rs",
+-    "xtask/tests/verify_live_ci_currentness_contract.rs",
+-    "scripts/tests/test-agent-flow-control-plane-trigger.sh",
+-    ".github/workflows/agent-flow-control-plane.yml",
+-}
+-# Keep in sync with REQUIRED_WORKFLOW_PATHS in
+-# xtask/tests/shift_left_publication_contract.rs (plus the trigger-only spec
+-# path). The two layers are deliberate — this Python fixture bootstraps the
+-# workflow wiring, the Rust test owns the focused contract — but a path added to
+-# one and not the other leaves one ratchet green while the other turns red.
+-TARGETS = (
+-    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+-    ".github/PULL_REQUEST_TEMPLATE.md",
+-    ".agents/skills/**",
+-    ".claude/skills/**",
+-    "xtask/tests/shift_left_publication_contract.rs",
+-)
+ REQUIRED_COMMAND = (
+     "cargo test -p xtask --test shift_left_publication_contract --locked"
+ )
+-EVENTS = ("pull_request", "push")
+-
+-
+-def indent(line: str) -> int:
+-    return len(line) - len(line.lstrip(" "))
+-
+-
+-def event_bounds(lines: list[str], event: str) -> tuple[int, int]:
+-    marker = f"  {event}:"
+-    try:
+-        start = lines.index(marker)
+-    except ValueError as error:
+-        raise AssertionError(f"missing on.{event} event block") from error
+-
+-    end = len(lines)
+-    for index in range(start + 1, len(lines)):
+-        line = lines[index]
+-        stripped = line.strip()
+-        if not stripped or stripped.startswith("#"):
+-            continue
+-        if indent(line) <= 2 and stripped.endswith(":"):
+-            end = index
+-            break
+-    return start, end
+-
+-
+-def event_paths(text: str, event: str) -> set[str]:
+-    lines = text.splitlines()
+-    start, end = event_bounds(lines, event)
+-    block = lines[start:end]
+-    try:
+-        paths_index = block.index("    paths:")
+-    except ValueError as error:
+-        raise AssertionError(f"missing on.{event}.paths") from error
+-
+-    paths: set[str] = set()
+-    for line in block[paths_index + 1 :]:
+-        stripped = line.strip()
+-        if not stripped:
+-            continue
+-        if indent(line) <= 4:
+-            break
+-        prefix = "- '"
+-        if stripped.startswith(prefix) and stripped.endswith("'"):
+-            paths.add(stripped[len(prefix) : -1])
+-    return paths
+-
+ 
+ def publication_runs(text: str) -> list[str]:
+     """`run:` bodies of steps named for the publication contract.
+@@ -147,42 +62,26 @@
+     assert text.count(REQUIRED_COMMAND) == 1, (
+         "agent-flow workflow must execute the shift-left publication contract exactly once"
+     )
+-    for event in EVENTS:
+-        paths = event_paths(text, event)
+-        missing = REQUIRED_PATHS - paths
+-        assert not missing, f"on.{event}.paths missing {sorted(missing)!r}"
+-        assert "**" not in paths, f"on.{event}.paths must not contain a repository-wide glob"
+-        assert "crates/**" not in paths, f"on.{event}.paths must not contain product crates"
+-        assert not any(
+-            path.startswith("crates/perl-parser") for path in paths
+-        ), f"on.{event}.paths must not include parser product paths"
++    on = re.search(r"(?m)^on:\n((?:[ \t].*\n|\n)*)", text)
++    assert on, "explicit event mapping missing"
++    events = set(re.findall(r"(?m)^  ([A-Za-z_]+):", on.group(1)))
++    assert events == {"workflow_dispatch"}, f"ordinary control-plane Actions restored: {events}"
+ 
+-
+-def remove_scoped_path(text: str, event: str, path: str) -> str:
+-    lines = text.splitlines()
+-    start, end = event_bounds(lines, event)
+-    needle = f"      - '{path}'"
+-    for index in range(start, end):
+-        if lines[index] == needle:
+-            del lines[index]
+-            return "\n".join(lines) + "\n"
+-    raise AssertionError(f"mutation fixture could not remove {path!r} from {event}")
+ 
+ 
+ source = WORKFLOW.read_text(encoding="utf-8")
+ validate(source)
+ 
+-for event in EVENTS:
+-    for target in TARGETS:
+-        mutated = remove_scoped_path(source, event, target)
+-        try:
+-            validate(mutated)
+-        except AssertionError:
+-            pass
+-        else:
+-            raise AssertionError(
+-                f"removing {target!r} only from on.{event}.paths must fail the contract"
+-            )
++for event in ("pull_request", "pull_request_target", "pull_request_review",
++              "pull_request_review_comment", "issue_comment", "push"):
++    mutated = source.replace("on:\n", f"on:\n  {event}: {{}}\n", 1)
++    assert mutated != source
++    try:
++        validate(mutated)
++    except AssertionError:
++        pass
++    else:
++        raise AssertionError(f"restoring ordinary {event} must fail the contract")
+ 
+ without_publication_check = source.replace(REQUIRED_COMMAND, "true", 1)
+ assert without_publication_check != source, "workflow-command mutation fixture must apply"
+--- a/scripts/tests/test-pr-plan-head-name-guard.sh
++++ b/scripts/tests/test-pr-plan-head-name-guard.sh
+@@ -3,11 +3,11 @@
+ 
+ # Self-test for the PR Plan Trigger Guard workflow (#6238).
+ #
+-# The guard runs on pull_request to surface GitHub's documented SHA-like
+-# head-branch suppression of pull_request_target events. This script proves,
++# The historical guard source detects GitHub's documented SHA-like
++# head-branch suppression. Ordinary event roots are retired. This proves,
+ # against the checked-in workflow text only:
+ #
+-# 1. the structural contract: unsuppressed pull_request trigger, per-PR
++# 1. the structural contract: no ordinary event trigger, retained per-PR
+ #    concurrency, least privilege, env-indirect payload access, no checkout /
+ #    actions / secrets / write scopes;
+ # 2. the classifier boundary matrix, using the exact regex extracted from the
+@@ -53,20 +53,19 @@
+         if not line.startswith("  "):
+             break
+         stripped = line.strip()
+-        if stripped.endswith(":") and not stripped.startswith("#"):
+-            events.add(stripped[:-1])
++        match = re.match(r"^  ([A-Za-z_]+):", line)
++        if match:
++            events.add(match.group(1))
+     return events
+ 
+ 
+ events = trigger_events(text)
+-if events != {"pull_request"}:
+-    die(f"guard must trigger solely via unsuppressed pull_request, got {sorted(events)}")
++if events != {"workflow_dispatch"}:
++    die(f"ordinary publication must start no guard Action, got {sorted(events)}")
+ for needle in (
+     "name: PR Plan Trigger Guard",
+     "on:",
+-    "  pull_request:",
+-    "    branches: [master, main]",
+-    "    types: [opened, synchronize, reopened, ready_for_review]",
++    "  workflow_dispatch: {}",
+ ):
+     if needle not in text:
+         die(f"missing expected line: {needle!r}")
+@@ -159,6 +158,8 @@
+ 
+ echo "extracted reject pattern: ${reject_re}"
+ 
++# The retained PR-payload body is historical source, not a qualified
++# manual or G producer. This fixture supplies explicit strings locally.
+ # --- classifier boundary matrix ---------------------------------------------
+ # Semantics: matching names are the SHA-like class (guard fires, exit 1);
+ # non-matching names are allowed through silently.
+--- a/tests/test_active_authority_contract.py
++++ b/tests/test_active_authority_contract.py
+@@ -682,15 +682,13 @@
+ 
+ 
+ class WorkflowContractTests(unittest.TestCase):
+-    def test_workflow_tracks_current_entrypoints_under_both_events(self) -> None:
+-        workflow = read(WORKFLOW)
+-        for event in ("pull_request", "push"):
+-            self.assertEqual(
+-                set(workflow_event_paths(workflow, event)),
+-                set(TRIGGER_PATHS),
+-                f"active-authority workflow `on.{event}.paths` does not match the "
+-                "surfaces this contract reads",
+-            )
++    def test_authority_contract_has_no_ordinary_event_root(self) -> None:
++        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
++        workflow = read_workflow_catalog(ROOT)[WORKFLOW]
++        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
++        self.assertFalse(workflow.path_filtered_events)
++        # The following executable-command test retains the complete content
++        # contract. Draft/Ready publication itself starts no check workflow.
+ 
+     def test_workflow_runs_only_its_own_surface(self) -> None:
+         import importlib.util
+--- a/tests/test_agent_authority_status.py
++++ b/tests/test_agent_authority_status.py
+@@ -387,59 +387,37 @@
+             self.assertIn("active doctrine", contract)
+             self.assertIn("north star", contract)
+ 
+-    def test_workflow_triggers_on_every_registered_path(self) -> None:
+-        """Both event filters must equal the registry, not a hand-kept subset.
+-
+-        Previously the filters named only the registry and front-door files.
+-        Deleting or renaming `DEVELOPMENT_METHOD.md`, `CONTRIBUTING.md`, or any
+-        other registered authority therefore skipped this workflow entirely,
+-        leaving the registry's `path exists` assertion false on `main` with no
+-        check having run.
+-        """
+-        actual = {event: workflow_event_paths(event) for event in ("pull_request", "push")}
+-        self.assertEqual(workflow_coverage_errors(actual, required_workflow_paths()), [])
+-
+-    def test_dropping_a_registered_path_from_one_filter_is_caught(self) -> None:
+-        """The control the exact-set assertion could not provide.
+-
+-        Removal is checked one event at a time: a one-sided filter is the
+-        realistic mistake, and it is invisible to any check that looks at the
+-        union of both events.
+-        """
+-        required = required_workflow_paths()
+-        for path in (
+-            "docs/agents/DEVELOPMENT_METHOD.md",  # a registered current authority
+-            "CONTRIBUTING.md",  # reclassified current by #6868
+-            "scripts/ci/check-pr-review-convergence-core",  # still transitional
+-            "tests/test_legacy_authority_banners.py",  # already executed; was not a trigger
+-        ):
+-            for event in ("pull_request", "push"):
+-                with self.subTest(path=path, event=event):
+-                    actual = {
+-                        name: workflow_event_paths(name)
+-                        for name in ("pull_request", "push")
+-                    }
+-                    actual[event] = actual[event] - {path}
+-                    errors = workflow_coverage_errors(actual, required)
+-                    self.assertTrue(
+-                        any(
+-                            f"on.{event}.paths omits" in error and path in error
+-                            for error in errors
+-                        ),
+-                        errors,
+-                    )
+-
+-    def test_registering_a_document_without_covering_it_is_caught(self) -> None:
+-        """Adding a row must widen the trigger, not the blind spot."""
+-        required = required_workflow_paths() | {"docs/agents/NEW_AUTHORITY.md"}
+-        actual = {
+-            event: workflow_event_paths(event) for event in ("pull_request", "push")
+-        }
+-
+-        errors = workflow_coverage_errors(actual, required)
+-        self.assertTrue(
+-            any("NEW_AUTHORITY.md" in error for error in errors), errors
+-        )
++    def test_registry_contract_remains_explicit_and_complete(self) -> None:
++        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
++        workflow = read_workflow_catalog(ROOT)[".github/workflows/agent-authority-status.yml"]
++        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
++        self.assertFalse(workflow.path_filtered_events)
++        source = WORKFLOW.read_text(encoding="utf-8")
++        self.assertIn("python3 -m unittest", source)
++        self.assertIn("tests/test_agent_authority_status.py", source)
++        self.assertIn("tests/test_legacy_authority_banners.py", source)
++        self.assertEqual(validate_registry(load_registry()), [])
++
++    def test_registered_path_removal_is_still_a_proof_failure(self) -> None:
++        # Exercise the actual complete-registry validator, not retired event
++        # path filters. A renamed/deleted registered document cannot pass.
++        from unittest.mock import patch
++        original_exists = Path.exists
++        for path in ("docs/agents/DEVELOPMENT_METHOD.md", "CONTRIBUTING.md",
++                     "scripts/ci/check-pr-review-convergence-core"):
++            with self.subTest(path=path):
++                def exists(candidate):
++                    return False if candidate == ROOT / path else original_exists(candidate)
++                with patch.object(Path, "exists", exists):
++                    errors = validate_registry(load_registry())
++                self.assertIn(f"{path}: registry path does not exist", errors)
++
++    def test_registering_a_missing_document_is_a_proof_failure(self) -> None:
++        document = copy.deepcopy(load_registry())
++        document["documents"].append({"path": "docs/agents/NEW_AUTHORITY.md",
++            "status": "current", "successor": "", "notes": "negative control"})
++        self.assertIn("docs/agents/NEW_AUTHORITY.md: registry path does not exist",
++                      validate_registry(document))
+ 
+     def test_successor_must_resolve_to_a_path_or_a_bounded_reference(self) -> None:
+         self.assertEqual(successor_errors(load_registry()["documents"]), [])
+--- a/tests/test_docs_agents_contract_workflows.py
++++ b/tests/test_docs_agents_contract_workflows.py
+@@ -654,23 +654,28 @@
+ ) -> list[str]:
+     errors: list[str] = []
+     try:
+-        pull_request = parse_event_filters(ci_workflow_text, "pull_request")
++        merge_group = parse_event_filters(ci_workflow_text, "merge_group")
+     except AssertionError as error:
+         return [str(error)]
+-    if not pull_request.present:
++    if not merge_group.present:
+         errors.append(
+-            "host workflow `.github/workflows/ci.yml` must declare on.pull_request"
+-        )
+-    elif not pull_request.unfiltered:
++            "host workflow `.github/workflows/ci.yml` must declare on.merge_group"
++        )
++    elif not merge_group.unfiltered:
+         found: list[str] = []
+-        if pull_request.has_paths_key:
+-            found.append(f"paths={sorted(pull_request.paths)!r}")
+-        if pull_request.has_paths_ignore_key:
+-            found.append(f"paths-ignore={sorted(pull_request.paths_ignore)!r}")
++        if merge_group.has_paths_key:
++            found.append(f"paths={sorted(merge_group.paths)!r}")
++        if merge_group.has_paths_ignore_key:
++            found.append(f"paths-ignore={sorted(merge_group.paths_ignore)!r}")
+         errors.append(
+-            "host workflow `.github/workflows/ci.yml` on.pull_request must have "
++            "host workflow `.github/workflows/ci.yml` on.merge_group must have "
+             f"no path filter; found {', '.join(found)}"
+         )
++
++    for event in ("pull_request", "pull_request_target", "pull_request_review",
++                  "pull_request_review_comment", "issue_comment", "push"):
++        if parse_event_filters(ci_workflow_text, event).present:
++            errors.append(f"host workflow must not start ordinary event {event}")
+ 
+     shard_gates = policy_shard_gates(ci_workflow_text)
+     if gate_name not in shard_gates:
+@@ -1451,11 +1456,11 @@
+ 
+ 
+ class HostGateTests(unittest.TestCase):
+-    def test_missing_pull_request_event_on_host_is_caught(self) -> None:
++    def test_missing_merge_group_event_on_host_is_caught(self) -> None:
+         ci = """\
+ on:
+   push:
+-    branches: [main]
++    types: [checks_requested]
+ jobs:
+   merge-gate-shards:
+     strategy:
+@@ -1470,13 +1475,13 @@
+     command: python3 tests/test_docs_agents_contract_workflows.py
+ """
+         errors = host_gate_errors(ci, policy)
+-        self.assertTrue(any("must declare on.pull_request" in error for error in errors), errors)
++        self.assertTrue(any("must declare on.merge_group" in error for error in errors), errors)
+ 
+     def test_paths_ignore_on_host_is_caught(self) -> None:
+         ci = """\
+ on:
+-  pull_request:
+-    branches: [main]
++  merge_group:
++    types: [checks_requested]
+     paths-ignore:
+       - '.github/workflows/**'
+ jobs:
+@@ -1498,7 +1503,7 @@
+     def test_inline_mapping_path_filter_on_host_is_caught(self) -> None:
+         ci = """\
+ on:
+-  pull_request: {paths: ['.github/workflows/ci.yml']}
++  merge_group: {paths: ['.github/workflows/ci.yml']}
+ jobs:
+   merge-gate-shards:
+     strategy:
+@@ -1518,8 +1523,8 @@
+     def test_path_filter_on_host_is_caught(self) -> None:
+         ci = """\
+ on:
+-  pull_request:
+-    branches: [main]
++  merge_group:
++    types: [checks_requested]
+     paths:
+       - '.github/workflows/ci.yml'
+ jobs:
+@@ -1541,8 +1546,8 @@
+     def test_advisory_gate_is_caught(self) -> None:
+         ci = """\
+ on:
+-  pull_request:
+-    branches: [main]
++  merge_group:
++    types: [checks_requested]
+ jobs:
+   merge-gate-shards:
+     strategy:
+@@ -1562,8 +1567,8 @@
+     def test_missing_shard_membership_is_caught(self) -> None:
+         ci = """\
+ on:
+-  pull_request:
+-    branches: [main]
++  merge_group:
++    types: [checks_requested]
+ jobs:
+   merge-gate-shards:
+     strategy:
+@@ -1583,8 +1588,8 @@
+     def test_wrong_command_is_caught(self) -> None:
+         ci = """\
+ on:
+-  pull_request:
+-    branches: [main]
++  merge_group:
++    types: [checks_requested]
+ jobs:
+   merge-gate-shards:
+     strategy:
+@@ -1604,8 +1609,8 @@
+     def test_well_formed_host_passes(self) -> None:
+         ci = """\
+ on:
+-  pull_request:
+-    branches: [main]
++  merge_group:
++    types: [checks_requested]
+ jobs:
+   merge-gate-shards:
+     strategy:
+--- a/tests/test_issue_mutation_readback_contract.py
++++ b/tests/test_issue_mutation_readback_contract.py
+@@ -107,12 +107,11 @@
+ 
+     def test_workflow_executes_and_tracks_the_complete_contract(self) -> None:
+         workflow = read(WORKFLOW_PATH)
+-        for event in ("pull_request", "push"):
+-            self.assertEqual(
+-                set(TRIGGER_PATHS),
+-                set(workflow_event_paths(workflow, event)),
+-                f"workflow {event} paths do not match the complete readback contract",
+-            )
++        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
++        projection = read_workflow_catalog(ROOT)[WORKFLOW_PATH]
++        self.assertEqual(projection.events, frozenset({"workflow_dispatch"}))
++        self.assertFalse(projection.path_filtered_events)
++
+         self.assertIn(
+             f"run: python3 -m unittest {TEST_PATH}",
+             workflow,
+--- a/tests/test_reload_lifecycle_authority.py
++++ b/tests/test_reload_lifecycle_authority.py
+@@ -473,41 +473,18 @@
+             "the workflow must execute this suite in a run command, not merely name it",
+         )
+ 
+-    def test_every_read_surface_fires_both_events(self) -> None:
+-        """Every input the suite READS must trigger the gate, under both events.
+-
+-        Naming only the files the suite mentions is not enough. The marker scan
+-        reads all of `docs/`, and the type check reads all of `crates/`, so a
+-        filter listing six files lets a competing authority in a seventh doc
+-        merge without this gate ever running.
+-        """
+-        read_surfaces = (
+-            SPEC,
+-            SPEC_CATALOG,
+-            DOC_INDEX,
+-            DAP_RELOAD_ADR,
+-            SELF_TEST,
+-            WORKFLOW,
+-            PARSER_SOURCE,
+-            "docs/reference/SOME_OTHER_DOC.md",
+-            "crates/perl-workspace/src/workspace/runtime_generation/core.rs",
+-        )
+-        for event in ("pull_request", "push"):
+-            patterns = workflow_event_paths(self.workflow, event)
+-            self.assertTrue(patterns, f"the {event} filter is empty")
+-            for surface in read_surfaces:
+-                with self.subTest(event=event, surface=surface):
+-                    self.assertTrue(
+-                        any(path_matches(pattern, surface) for pattern in patterns),
+-                        f"{surface} can change without running this gate on {event}",
+-                    )
+-
+-    def test_both_events_guard_the_same_surfaces(self) -> None:
+-        self.assertEqual(
+-            set(workflow_event_paths(self.workflow, "pull_request")),
+-            set(workflow_event_paths(self.workflow, "push")),
+-            "a one-sided filter disables candidate- or merge-time enforcement",
+-        )
++    def test_content_contract_is_explicit_and_unfiltered(self) -> None:
++        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
++        workflow = read_workflow_catalog(ROOT)[WORKFLOW]
++        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
++        self.assertFalse(workflow.path_filtered_events)
++        # The real content suite above scans every referenced document and Rust
++        # type; explicit admission cannot substitute a path-filtered subset.
++        self.assertIn(f"python3 -m unittest {SELF_TEST}", self.workflow)
++
++    def test_no_ordinary_subscription_can_reappear(self) -> None:
++        on = self.workflow.split("\non:\n", 1)[1].split("\njobs:", 1)[0]
++        self.assertNotRegex(on, r"(?m)^  (pull_request|pull_request_target|pull_request_review|pull_request_review_comment|issue_comment|push):")
+ 
+ 
+ class DetectorSelfTest(unittest.TestCase):
+--- a/tests/test_worked_lane_corpus.py
++++ b/tests/test_worked_lane_corpus.py
+@@ -40,10 +40,15 @@
+ from __future__ import annotations
+ 
+ import re
++import sys
+ import unittest
+ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[1]
++# The production recipe executes this file directly, not with ``-m unittest``.
++# Resolve the shared source catalog from that same repository root in both modes.
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
+ EXAMPLES = ROOT / "docs" / "agents" / "examples"
+ LEDGER = EXAMPLES / "README.md"
+ AGENTS_README = ROOT / "docs" / "agents" / "README.md"
+@@ -1230,16 +1235,14 @@
+             f"convention rather than a check",
+         )
+ 
+-    def test_workflow_triggers_on_every_constrained_path(self) -> None:
+-        for event in ("pull_request", "push"):
+-            missing = sorted(self.REQUIRED_PATHS - workflow_paths(event))
+-            self.assertEqual(
+-                missing,
+-                [],
+-                f"on.{event}.paths is missing {missing}; a change that adds, "
+-                f"renames, or deletes a worked lane has to run this check, or "
+-                f"the ledger goes stale on main with no gate having run",
+-            )
++    def test_complete_corpus_contract_requires_explicit_admission(self) -> None:
++        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
++        workflow = read_workflow_catalog(ROOT)[WORKFLOW_PATH]
++        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
++        self.assertFalse(workflow.path_filtered_events)
++        # The corpus validators above still scan every registered lane. With no
++        # event path filter, an input cannot opt out of an explicit proof run.
++        self.assertIn("python3 tests/test_worked_lane_corpus.py", _read(WORKFLOW))
+ 
+ 
+ if __name__ == "__main__":  # pragma: no cover
+--- a/tests/test_writer_authority_transfer_contract.py
++++ b/tests/test_writer_authority_transfer_contract.py
+@@ -216,9 +216,10 @@
+ 
+     def test_workflow_wiring(self) -> None:
+         workflow = read(WORKFLOW)
+-        for event in ("pull_request", "push"):
+-            with self.subTest(event=event):
+-                self.assertIn(SELF_TEST, workflow_event_paths(workflow, event))
++        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
++        projection = read_workflow_catalog(ROOT)[WORKFLOW]
++        self.assertEqual(projection.events, frozenset({"workflow_dispatch"}))
++        self.assertFalse(projection.path_filtered_events)
+ 
+         expected = normalize(
+             "python3 -m unittest "
+--- a/xtask/tests/agent_capability_gate_workflow_policy.rs
++++ b/xtask/tests/agent_capability_gate_workflow_policy.rs
+@@ -76,13 +76,15 @@
+         );
+     }
+ 
++    let events = mapping_value(&workflow, "on")?
++        .as_mapping()
++        .ok_or_else(|| anyhow!("events mapping missing"))?;
++    ensure!(
++        events.len() == 1 && events.contains_key("merge_group"),
++        "capability proof must run only for actual G; authoring checks run in-session"
++    );
+     for required in [
+-        "pull_request:",
+-        "'.claude/agents/**'",
+-        "merge_group:",
+-        "push:",
+-        "      - main",
+-        "      - master",
++        "merge_group:\n    types: [checks_requested]",
+         "contents: read",
+         "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+         "github.event.pull_request.head.repo.full_name != github.repository",
+--- a/xtask/tests/ci_nightly_cache_contract.rs
++++ b/xtask/tests/ci_nightly_cache_contract.rs
+@@ -197,39 +197,8 @@
+         .ok_or_else(|| anyhow!("ci-nightly.yml must declare mapping-valued triggers"))?;
+     let names: BTreeSet<_> = triggers.keys().filter_map(Value::as_str).collect();
+     ensure!(
+-        names == BTreeSet::from(["pull_request", "schedule", "workflow_dispatch"]),
++        names == BTreeSet::from(["schedule", "workflow_dispatch"]),
+         "unapproved nightly trigger set {names:?}; pull_request_target, merge_group, and extra events can make a canonical-looking ref a candidate writer"
+-    );
+-    let pull_request = triggers
+-        .get(Value::String("pull_request".into()))
+-        .and_then(Value::as_mapping)
+-        .ok_or_else(|| anyhow!("pull_request must be a mapping"))?;
+-    let branches: Vec<_> = pull_request
+-        .get(Value::String("branches".into()))
+-        .and_then(Value::as_sequence)
+-        .ok_or_else(|| anyhow!("pull_request must declare branches"))?
+-        .iter()
+-        .filter_map(Value::as_str)
+-        .collect();
+-    ensure!(
+-        branches == ["main", "master"],
+-        "pull_request branches must remain the canonical pair: {branches:?}"
+-    );
+-    let types: BTreeSet<_> = pull_request
+-        .get(Value::String("types".into()))
+-        .and_then(Value::as_sequence)
+-        .ok_or_else(|| anyhow!("pull_request must declare activity types"))?
+-        .iter()
+-        .filter_map(Value::as_str)
+-        .collect();
+-    ensure!(
+-        types.contains("labeled"),
+-        "pull_request must retain labeled so label-gated jobs stay PR-reachable without becoming cache writers"
+-    );
+-    ensure!(
+-        types
+-            == BTreeSet::from(["opened", "synchronize", "reopened", "ready_for_review", "labeled"]),
+-        "pull_request activity types changed: {types:?}"
+     );
+     Ok(())
+ }
+@@ -457,8 +426,8 @@
+ fn workflow_policy_lane_executes_the_nightly_cache_contract() -> Result<()> {
+     let policy = read_repo_file(POLICY)?;
+     ensure!(
+-        policy.matches(CONTRACT_TEST).count() >= 2,
+-        "Workflow Policy path filters must cover {CONTRACT_TEST} on pull_request and push"
++        policy.contains(&format!("--proof ci_nightly_cache_contract={CONTRACT_TEST}")),
++        "explicit Workflow Policy execution must classify the actual {CONTRACT_TEST} input"
+     );
+     ensure!(
+         policy.contains(&format!("run: {CONTRACT_COMMAND}")),
+@@ -546,15 +515,15 @@
+     )?;
+     reject_mutation(
+         &source,
+-        "on:\n  pull_request:\n",
+-        "on:\n  pull_request_target:\n  pull_request:\n",
++        "\non:\n",
++        "\non:\n  pull_request_target: {}\n",
+         "unapproved nightly trigger set",
+     )?;
+     reject_mutation(
+         &source,
+-        "    types: [opened, synchronize, reopened, ready_for_review, labeled]\n",
+-        "    types: [opened, synchronize, reopened, ready_for_review]\n",
+-        "must retain labeled",
++        "\non:\n",
++        "\non:\n  pull_request:\n    types: [labeled]\n",
++        "unapproved nightly trigger set",
+     )?;
+     reject_mutation(
+         &source,
+--- a/xtask/tests/corpus_ratchet_checkpoint_policy.rs
++++ b/xtask/tests/corpus_ratchet_checkpoint_policy.rs
+@@ -600,25 +600,27 @@
+     ensure_full_chain_is_fail_closed(&workflow)?;
+     ensure_bounded_top_50_is_safe_and_reachable(&workflow)?;
+ 
+-    // The whole workflow keeps its narrow pull_request path triggers: only
+-    // distribution-list edits may spawn PR runs; no new PR surface may appear.
+-    let trigger_paths =
+-        ["'.ci/cpan-top-1000-distributions.txt'", "'.ci/cpan-top-50-distributions.txt'"];
+-    let raw = workflow_raw()?;
+-    let after_pull_request = raw
+-        .split("pull_request:")
+-        .nth(1)
+-        .ok_or_else(|| anyhow!("workflow must keep a pull_request trigger section"))?;
+-    let schedule_anchor = after_pull_request
+-        .find("schedule:")
+-        .ok_or_else(|| anyhow!("workflow must keep its schedule trigger"))?;
+-    let pull_section = &after_pull_request[..schedule_anchor];
+-    for expected in trigger_paths {
+-        assert!(
+-            pull_section.contains(expected),
+-            "pull_request path filter drifted: missing {expected}"
+-        );
+-    }
++    // Checkpoint work retains its schedule and explicit admission. Distribution
++    // edits are proved in-session and cannot start a development Action.
++    let events = workflow
++        .get("on")
++        .and_then(Value::as_mapping)
++        .ok_or_else(|| anyhow!("workflow event mapping missing"))?;
++    ensure!(
++        events.contains_key("schedule") && events.contains_key("workflow_dispatch"),
++        "checkpoint schedule and explicit proof admission must survive"
++    );
++    for event in [
++        "pull_request",
++        "pull_request_target",
++        "pull_request_review",
++        "pull_request_review_comment",
++        "issue_comment",
++        "push",
++    ] {
++        ensure!(!events.contains_key(event), "ordinary event {event} must remain retired");
++    }
++
+     Ok(())
+ }
+ 
+--- a/xtask/tests/corpus_windows_reparse_cache_contract.rs
++++ b/xtask/tests/corpus_windows_reparse_cache_contract.rs
+@@ -85,54 +85,14 @@
+         .get("on")
+         .and_then(Value::as_mapping)
+         .ok_or_else(|| anyhow!("the workflow must declare a mapping of events"))?;
+-    let trigger = events
+-        .get("pull_request")
+-        .and_then(Value::as_mapping)
+-        .ok_or_else(|| anyhow!("the workflow must have a structured pull_request trigger"))?;
+-    let branches: BTreeSet<_> = trigger
+-        .get("branches")
+-        .and_then(Value::as_sequence)
+-        .ok_or_else(|| anyhow!("pull_request must declare branches"))?
+-        .iter()
+-        .filter_map(Value::as_str)
+-        .collect();
+-    ensure!(
+-        branches == BTreeSet::from(["main", "master"]),
+-        "pull_request must target only main and master"
+-    );
+-    ensure!(
+-        events.len() == 2
+-            && events.contains_key("pull_request")
+-            && events.contains_key("workflow_dispatch"),
+-        "workflow must expose only pull_request and workflow_dispatch"
++    ensure!(
++        events.len() == 1 && events.contains_key("workflow_dispatch"),
++        "Windows proof requires explicit admission; ordinary publication must start no Actions"
+     );
+     ensure!(
+         events.get("workflow_dispatch") == Some(&Value::Null),
+         "workflow_dispatch must not declare inputs or payload"
+     );
+-    ensure!(
+-        trigger.len() == 2 && trigger.get("types").is_none(),
+-        "pull_request must not add extra activity types"
+-    );
+-    let paths: BTreeSet<_> = trigger
+-        .get("paths")
+-        .and_then(Value::as_sequence)
+-        .ok_or_else(|| anyhow!("pull_request must declare paths"))?
+-        .iter()
+-        .filter_map(Value::as_str)
+-        .collect();
+-    ensure!(
+-        paths
+-            == BTreeSet::from([
+-                "Cargo.lock",
+-                "Cargo.toml",
+-                ".github/workflows/corpus-windows-reparse-proof.yml",
+-                "crates/perl-corpus/**",
+-                "xtask/src/publication_drift/**",
+-            ]),
+-        "pull_request paths must preserve the Windows proof trigger scope"
+-    );
+-    ensure!(events.get("pull_request_target").is_none(), "pull_request_target is not allowed");
+ 
+     let permissions = workflow
+         .get("permissions")
+@@ -685,9 +645,12 @@
+             TOPOLOGY_SHELL_SOURCE_ANCHOR,
+             "        shell: bash\n        if: ${{ false }}\n        run: |\n          set -euo pipefail\n\n          selected_tests=(",
+         ),
+-        ("branches: [main, master]", "branches: [feature/cache]"),
+-        ("pull_request:", "pull_request_target:"),
+-        ("    branches: [main, master]\n", "    branches: [main, master]\n    types: [opened]\n"),
++        (
++            "  workflow_dispatch:\n",
++            "  workflow_dispatch:\n  pull_request:\n    branches: [main, master]\n",
++        ),
++        ("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target: {}\n"),
++        ("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_review: {}\n"),
+         ("  workflow_dispatch:\n", "  workflow_dispatch:\n  push:\n"),
+         ("  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 0 * * *'\n"),
+         (
+--- a/xtask/tests/draft_pr_feedback_contract.rs
++++ b/xtask/tests/draft_pr_feedback_contract.rs
+@@ -118,23 +118,20 @@
+ /// re-wrapping the flow sequence cannot fail the proof; only adding or
+ /// removing a trigger — a semantic change to what re-runs the draft guard —
+ /// must confront this contract.
+-fn assert_draft_event_triggers(workflow: &Value) -> Result<(), Box<dyn std::error::Error>> {
+-    let pull_request = mapping_value(triggers_of(workflow)?, "pull_request", "`on`")?;
+-    let mut types: Vec<String> = mapping_value(pull_request, "types", "`on.pull_request`")?
+-        .as_sequence()
+-        .ok_or("`on.pull_request.types` must be a YAML sequence")?
+-        .iter()
+-        .map(|value| scalar_str(value, "`on.pull_request.types` entry").map(str::to_owned))
+-        .collect::<Result<Vec<_>, _>>()?;
+-    types.sort();
+-
+-    let expected = ["converted_to_draft", "opened", "ready_for_review", "reopened", "synchronize"];
+-    assert!(
+-        types == expected,
+-        "`on.pull_request.types` must keep exactly the draft-guard trigger set \
+-         {expected:?}: `ready_for_review` and `converted_to_draft` change the \
+-         draft-pr-check guard behavior and must keep triggering CI. Found {types:?}"
+-    );
++fn assert_queue_event_perimeter(workflow: &Value) -> Result<(), Box<dyn std::error::Error>> {
++    let events = triggers_of(workflow)?.as_mapping().ok_or("events must be a mapping")?;
++    for event in [
++        "pull_request",
++        "pull_request_target",
++        "pull_request_review",
++        "pull_request_review_comment",
++        "issue_comment",
++        "push",
++    ] {
++        assert!(!events.contains_key(event), "{event} must not start development Actions");
++    }
++    let group = mapping_value(triggers_of(workflow)?, "merge_group", "on")?;
++    assert_eq!(group.get("types"), Some(&serde_yaml_ng::from_str::<Value>("[checks_requested]")?));
+     Ok(())
+ }
+ 
+@@ -254,13 +251,14 @@
+ }
+ 
+ #[test]
+-fn drafts_keep_exact_head_cheap_feedback() -> Result<(), Box<dyn std::error::Error>> {
++fn draft_publication_is_silent_and_selected_proof_bodies_survive()
++-> Result<(), Box<dyn std::error::Error>> {
+     let root = project_root()?;
+     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+     let workflow: Value = serde_yaml_ng::from_str(&ci)
+         .map_err(|error| format!("ci.yml is not structurally valid YAML: {error}"))?;
+ 
+-    assert_draft_event_triggers(&workflow)?;
++    assert_queue_event_perimeter(&workflow)?;
+     assert_draft_guard_defers_full_ci(&workflow)?;
+     assert_conflict_markers_run_on_every_route(&workflow)?;
+     assert_rust_formatting_stays_independent(&workflow)?;
+--- a/xtask/tests/issue_4657_ci_workflow_contract.rs
++++ b/xtask/tests/issue_4657_ci_workflow_contract.rs
+@@ -354,8 +354,7 @@
+     // Guard the extractor itself: a silently-empty block would make the
+     // assertion below pass for the wrong reason.
+     assert!(
+-        job.contains("name: Compile All Targets (bit-rot guard)")
+-            && job.contains("actions/checkout@"),
++        job.contains("name: Compile All Targets execution") && job.contains("actions/checkout@"),
+         "check-all-targets block was not extracted correctly; got:\n{job}"
+     );
+ 
+@@ -481,7 +480,7 @@
+     let job = job_block(&ci, "check-all-targets")
+         .ok_or("ci.yml no longer defines a `check-all-targets` job")?;
+     assert!(
+-        job.contains("name: Compile All Targets (bit-rot guard)")
++        job.contains("name: Compile All Targets execution")
+             && job.contains("\n    timeout-minutes: 35\n"),
+         "job `check-all-targets.timeout-minutes` drifted from 35 (raised \
+          from 25 after job 105961871648 cancelled in a contract step with \
+@@ -563,7 +562,7 @@
+          bit-rot property",
+     )?;
+     assert!(
+-        job.contains("name: Compile All Targets (bit-rot guard)")
++        job.contains("name: Compile All Targets execution")
+             && job.contains("\n        run: just check-all-targets\n"),
+         "the standalone bit-rot owner must keep executing `just \
+          check-all-targets`: dropping the shard copy is only valid while this \
 --- a/xtask/tests/lane_history_ci_dispatch_contract.rs
 +++ b/xtask/tests/lane_history_ci_dispatch_contract.rs
 @@ -1,509 +1,48 @@
@@ -3765,6 +5238,67 @@
  fn workflow_document() -> Result<Value> {
      Ok(serde_yaml_ng::from_str(&workflow_source()?)?)
  }
+--- a/xtask/tests/non_rust_policy_exact_subject.rs
++++ b/xtask/tests/non_rust_policy_exact_subject.rs
+@@ -173,10 +173,10 @@
+     fs::remove_file(fixture.path().join("xtask/src/tasks/file_policy.rs"))?;
+     let (missing, stage) = guard_output(fixture.path())?;
+     ensure!(!missing.status.success() && stage.trim() == "failure_stage=evaluator-availability");
+-    write_available_evaluator(
+-        fixture.path(),
+-        &source.replace("  merge_group: {}", "  workflow_call: {}"),
+-    )?;
++    let malformed_source =
++        source.replace("  merge_group:\n    types: [checks_requested]", "  workflow_call: {}");
++    ensure!(malformed_source != source, "missing-G mutation must change the actual source");
++    write_available_evaluator(fixture.path(), &malformed_source)?;
+     let (malformed, stage) = guard_output(fixture.path())?;
+     ensure!(!malformed.status.success(), "present malformed trusted contract must refuse");
+     ensure!(stage.lines().last() == Some("failure_stage=trusted-workflow-contract"));
+--- a/xtask/tests/perl_version_matrix_cache_contract.rs
++++ b/xtask/tests/perl_version_matrix_cache_contract.rs
+@@ -20,8 +20,8 @@
+         .and_then(Value::as_mapping)
+         .ok_or("perl-version-matrix.yml must declare mapping-valued triggers")?;
+     assert!(
+-        triggers.contains_key(Value::String("pull_request".into())),
+-        "the matrix cache contract must run on ordinary pull requests"
++        !triggers.contains_key(Value::String("pull_request".into())),
++        "ordinary PR publication must not start matrix Actions"
+     );
+     assert!(
+         !triggers.contains_key(Value::String("pull_request_target".into())),
+@@ -35,7 +35,7 @@
+         triggers.contains_key(Value::String("workflow_dispatch".into())),
+         "the matrix cache contract must retain its manual producer"
+     );
+-    let canonical: Vec<Value> = ["pull_request", "schedule", "workflow_dispatch"]
++    let canonical: Vec<Value> = ["schedule", "workflow_dispatch"]
+         .iter()
+         .map(|name| Value::String((*name).into()))
+         .collect();
+@@ -45,19 +45,8 @@
+         "new trigger events (workflow_run runs on the default-branch ref, workflow_call inherits \
+          the caller's ref) can silently turn candidate code into a cache producer: {unexpected:?}"
+     );
+-    let pull_request = triggers
+-        .get(Value::String("pull_request".into()))
+-        .and_then(Value::as_mapping)
+-        .ok_or("pull_request trigger must declare branch filters")?;
+-    let branches = pull_request
+-        .get(Value::String("branches".into()))
+-        .and_then(Value::as_sequence)
+-        .ok_or("pull_request trigger must declare branches")?;
+-    assert_eq!(
+-        branches,
+-        &vec![Value::String("main".into()), Value::String("master".into())],
+-        "cache producers must be limited to the canonical branches"
+-    );
++    // Explicit/default-branch cache writer authority is checked below;
++    // removing PR roots does not widen that writer predicate.
+     let job = workflow
+         .get("jobs")
+         .and_then(|jobs| jobs.get("perl-version-matrix"))
 --- a/xtask/tests/post_merge_status_regen_tests.rs
 +++ b/xtask/tests/post_merge_status_regen_tests.rs
 @@ -9,36 +9,11 @@
@@ -4077,3 +5611,383 @@
      Ok(())
  }
  
+--- a/xtask/tests/public_api_pr_gating_workflow.rs
++++ b/xtask/tests/public_api_pr_gating_workflow.rs
+@@ -238,16 +238,20 @@
+ ];
+ 
+ fn workflow_policy_covers_public_api_inputs(workflow: &str) -> bool {
+-    let Some(pull_request) = event_section(workflow, "pull_request") else {
+-        return false;
+-    };
+-    let Some(push) = event_section(workflow, "push") else {
+-        return false;
+-    };
+-    PUBLIC_API_POLICY_INPUTS.iter().all(|path| {
+-        let watched = format!("      - '{path}'");
+-        pull_request.matches(&watched).count() == 1 && push.matches(&watched).count() == 1
+-    }) && workflow.matches("name: Install just for executable recipe proofs").count() == 1
++    let explicit = event_section(workflow, "workflow_dispatch").is_some();
++    let ordinary = [
++        "pull_request",
++        "pull_request_target",
++        "pull_request_review",
++        "pull_request_review_comment",
++        "issue_comment",
++        "push",
++    ]
++    .iter()
++    .any(|event| event_section(workflow, event).is_some());
++    explicit
++        && !ordinary
++        && workflow.matches("name: Install just for executable recipe proofs").count() == 1
+         && workflow.matches("uses: taiki-e/install-action@").count() == 1
+         && workflow.matches("name: Public API trigger label contract").count() == 1
+         && workflow
+@@ -794,8 +798,8 @@
+ }
+ 
+ #[test]
+-fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn std::error::Error>>
+-{
++fn retained_compatibility_sources_preserve_both_canonical_proof_commands()
++-> Result<(), Box<dyn std::error::Error>> {
+     let root = project_root()?;
+     let workflow = read(&root, ".github/workflows/ci.yml")?;
+ 
+@@ -946,21 +950,10 @@
+             row.contains("applicability = \"conditional\""),
+             "{context} follows the prerequisite-selected applicability convention"
+         );
+-        if job == "public-api-pr" {
+-            assert!(
+-                row.contains("events = [\"pull_request\", \"push\"]"),
+-                "{context} must be reachable on pull_request and push (#16815)"
+-            );
+-            assert!(
+-                row.contains("#16815"),
+-                "{context} policy reason must name the main-push ratchet claim"
+-            );
+-        } else {
+-            assert!(
+-                row.contains("events = [\"pull_request\"]") && !row.contains("\"push\""),
+-                "{context} stays pull_request-only"
+-            );
+-        }
++        assert!(
++            row.contains("events = [\"workflow_dispatch\"]"),
++            "{context} retains source for explicit inspection, not a PR/push/G qualification claim"
++        );
+     }
+ 
+     Ok(())
+@@ -1126,7 +1119,8 @@
+ }
+ 
+ #[test]
+-fn public_api_pr_live_workflow_covers_the_event_matrix() -> Result<(), Box<dyn std::error::Error>> {
++fn retained_public_api_body_preserves_its_legacy_event_matrix()
++-> Result<(), Box<dyn std::error::Error>> {
+     let workflow = read(&project_root()?, ".github/workflows/ci.yml")?;
+     let public_api = job_section(&workflow, "public-api-pr")
+         .ok_or("ci.yml must define the public-api-pr rail")?;
+@@ -1235,15 +1229,15 @@
+ {
+     let root = project_root()?;
+     let nightly = read(&root, ".github/workflows/ci-nightly.yml")?;
+-    let activities = pull_request_activity_types(&nightly)
+-        .ok_or("ci-nightly.yml must declare pull_request activity types")?;
+-    let expected_activities = ["opened", "synchronize", "reopened", "ready_for_review", "labeled"];
+-    if activities != expected_activities {
+-        return Err(format!(
+-            "public API label authorization must use the bounded activity set; got {activities:?}"
+-        )
+-        .into());
+-    }
++    assert!(
++        event_section(&nightly, "pull_request").is_none(),
++        "labels and Ready transitions must not start nightly Actions"
++    );
++    assert!(event_section(&nightly, "schedule").is_some(), "nightly deep proof must survive");
++    assert!(
++        event_section(&nightly, "workflow_dispatch").is_some(),
++        "explicit deep proof must survive"
++    );
+     if !nightly.contains(
+         "group: ci-nightly-${{ github.event.pull_request.number || github.ref }}",
+     ) || !nightly.contains(
+@@ -1270,7 +1264,9 @@
+     if job_has_effective_read_only_permissions(&workflow_write, "public-api-check") {
+         return Err("a workflow-level write permission must fail the authority oracle".into());
+     }
+-    let without_labeled = nightly.replace(", labeled", "");
++    // The retired event parser retains its exact-label negative controls.
++    let parser_fixture = "\non:\n  pull_request:\n    types: [opened, labeled]\n  schedule:\n";
++    let without_labeled = parser_fixture.replace(", labeled", "");
+     let without_labeled_activities = pull_request_activity_types(&without_labeled)
+         .ok_or("labeled-removal fixture must retain a pull_request activity list")?;
+     if without_labeled_activities.contains(&"labeled") {
+@@ -1448,25 +1444,18 @@
+             "workflow policy must cover and execute every public API authority input".into()
+         );
+     }
++    // There are no path subscriptions to omit. Explicit execution reads the
++    // full input set and must retain every executable proof below.
+     for input in PUBLIC_API_POLICY_INPUTS {
+-        let without_input = policy.replace(&format!("      - '{input}'\n"), "");
+-        if workflow_policy_covers_public_api_inputs(&without_input) {
+-            return Err(
+-                format!("removing {input} coverage must fail the recurrence contract").into()
+-            );
+-        }
+-    }
+-    let watched = "      - 'justfile'\n";
+-    let push_section =
+-        event_section(&policy, "push").ok_or("Workflow Policy must retain a push mapping")?;
+-    let push_without_watched = push_section.replacen(watched, "", 1);
+-    let unbalanced = policy.replacen(push_section, &push_without_watched, 1).replacen(
+-        watched,
+-        &format!("{watched}{watched}"),
+-        1,
+-    );
+-    if workflow_policy_covers_public_api_inputs(&unbalanced) {
+-        return Err("duplicate pull_request coverage must not replace missing push coverage".into());
++        assert!(root.join(input).is_file(), "public API proof input missing: {input}");
++    }
++    for event in ["pull_request", "pull_request_target", "push", "issue_comment"] {
++        let restored = policy.replacen("on:\n", &format!("on:\n  {event}: {{}}\n"), 1);
++        assert_ne!(restored, policy);
++        assert!(
++            !workflow_policy_covers_public_api_inputs(&restored),
++            "restored {event} must fail the zero-development contract"
++        );
+     }
+     for executable_proof in [
+         "      - name: Install just for executable recipe proofs\n",
+--- a/xtask/tests/quality_ci_wiring_policy.rs
++++ b/xtask/tests/quality_ci_wiring_policy.rs
+@@ -464,8 +464,8 @@
+     );
+ 
+     assert!(
+-        workflow.contains("types: [opened, synchronize, reopened, ready_for_review, labeled]"),
+-        "ci-nightly may still host other label-gated jobs"
++        !workflow.contains("\n  pull_request:") && !workflow.contains("\n  push:"),
++        "nightly siblings must not restore ordinary development or main Actions"
+     );
+     assert!(
+         coverage_job.contains("name: Codecov / Patch 95"),
+@@ -984,10 +984,12 @@
+             && !coverage_job.contains("github.event_name == 'push'")
+             && !coverage_job.contains("ci:coverage")
+             && !coverage_job.contains("github.event_name == 'merge_group'")
+-            // The shared workflow keeps a top-level `pull_request:` trigger for
+-            // its label-gated sibling jobs; only the coverage job is restricted.
+-            && workflow.contains("\n  pull_request:"),
+-        "patch coverage must be advisory: only the coverage job is schedule/workflow_dispatch-only"
++            // Sibling development-event roots are retired too. Keep the
++            // actual deep schedule/manual purpose and all coverage proof.
++            && !workflow.contains("\n  pull_request:")
++            && !workflow.contains("\n  pull_request_target:")
++            && !workflow.contains("\n  push:"),
++        "patch coverage stays advisory schedule/manual proof with no development Actions"
+     );
+     let route_step =
+         must_some(coverage_job.find("- name: Emit changed-file coverage route summary"));
+--- a/xtask/tests/ripr_new_gap_gate_workflow.rs
++++ b/xtask/tests/ripr_new_gap_gate_workflow.rs
+@@ -1403,13 +1403,24 @@
+ }
+ 
+ #[test]
+-fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
++fn ripr_workflow_runs_on_actual_merge_group_without_path_filter()
+ -> Result<(), Box<dyn std::error::Error>> {
+     let root = project_root()?;
+     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+     let xtask_main = fs::read_to_string(root.join("xtask/src/main.rs"))?;
+ 
+-    assert!(workflow.contains("pull_request:"), "ripr.yml must run from pull_request events");
++    let parsed: Value = serde_yaml_ng::from_str(&workflow)?;
++    let events = parsed.get("on").and_then(Value::as_mapping).ok_or("events missing")?;
++    for event in [
++        "pull_request",
++        "pull_request_target",
++        "pull_request_review",
++        "pull_request_review_comment",
++        "issue_comment",
++        "push",
++    ] {
++        assert!(!events.contains_key(event), "ordinary event {event} must remain retired");
++    }
+     assert!(
+         workflow.contains("cancel-in-progress: false"),
+         "RIPR evidence runs must queue newer heads instead of cancelling active analysis"
+@@ -1419,8 +1430,8 @@
+         "RIPR must not turn normal PR synchronization into a cancelled no-verdict"
+     );
+     assert!(
+-        workflow.contains("types: [opened, synchronize, reopened, ready_for_review]"),
+-        "ripr.yml must rerun when a draft PR becomes ready for review because the job skips draft PRs"
++        workflow.contains("merge_group:\n    types: [checks_requested]"),
++        "RIPR qualification must use the actual native merge-group request"
+     );
+     assert!(
+         !workflow.contains("\n    paths:"),
+@@ -1973,7 +1984,7 @@
+ }
+ 
+ #[test]
+-fn ripr_docs_describe_unfiltered_ready_for_review_receipt_routing()
++fn ripr_docs_describe_in_session_and_actual_group_receipt_routing()
+ -> Result<(), Box<dyn std::error::Error>> {
+     let root = project_root()?;
+     let docs = fs::read_to_string(root.join("docs/ci/ripr.md"))?;
+@@ -1991,8 +2002,9 @@
+         "RIPR docs must describe the promoted new-gap blocking posture without final total-zero enforcement"
+     );
+     assert!(
+-        when_it_runs.contains("Every PR targeting `master` or `main`"),
+-        "RIPR docs must describe the workflow as an every-PR proof run"
++        when_it_runs.contains("actual `merge_group` subject")
++            && when_it_runs.contains("in-session"),
++        "RIPR docs must distinguish in-session authoring proof and actual G qualification"
+     );
+     assert!(
+         when_it_runs.contains("No path filter is applied")
+@@ -2002,8 +2014,8 @@
+         "RIPR docs must make docs/policy/workflow-only PR coverage explicit"
+     );
+     assert!(
+-        when_it_runs.contains("ready_for_review"),
+-        "RIPR docs must say draft PRs run the workflow when they become ready"
++        when_it_runs.contains("Draft/Ready publication starts no Actions"),
++        "RIPR docs must not direct ordinary publication to start qualification"
+     );
+     assert!(
+         behavior.contains("target/ripr/pr/")
+--- a/xtask/tests/shift_left_publication_contract.rs
++++ b/xtask/tests/shift_left_publication_contract.rs
+@@ -17,13 +17,14 @@
+     ("Codex", ".agents/skills/review-pr/SKILL.md"),
+     ("Claude", ".claude/skills/review-pr/SKILL.md"),
+ ];
+-const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
+-    TEMPLATE_PATH,
+-    ".agents/skills/**",
+-    ".claude/skills/**",
+-    "xtask/tests/shift_left_publication_contract.rs",
++const ORDINARY_EVENTS: &[&str] = &[
++    "pull_request",
++    "pull_request_target",
++    "pull_request_review",
++    "pull_request_review_comment",
++    "issue_comment",
++    "push",
+ ];
+-const WORKFLOW_EVENTS: &[&str] = &["pull_request", "push"];
+ const REVIEW_INDEX_HEADINGS: &[&str] = &[
+     "## Claim",
+     "## Controlling issue",
+@@ -82,26 +83,6 @@
+         .ok_or_else(|| format!("missing YAML key {key:?}"))
+ }
+ 
+-fn workflow_paths(workflow: &serde_yaml_ng::Value, event: &str) -> Result<Vec<String>, String> {
+-    let event_value = mapping_value(mapping_value(workflow, "on")?, event)?;
+-    mapping_value(event_value, "paths")?
+-        .as_sequence()
+-        .ok_or_else(|| format!("workflow on.{event}.paths must be a YAML sequence"))?
+-        .iter()
+-        .map(|path| {
+-            path.as_str()
+-                .map(str::to_owned)
+-                .ok_or_else(|| format!("workflow on.{event}.paths entries must be strings"))
+-        })
+-        .collect()
+-}
+-
+-/// Whether `step`'s `key` is a string equal to `expected`, ignoring surrounding
+-/// whitespace. A missing key, a non-string value, and a different value are all
+-/// simply "not equal": the caller ANDs these together, and keeping each fail
+-/// path inside one named predicate makes that conjunction legible — the shape
+-/// this replaced inlined two fallible lookups and a comparison per operand,
+-/// where dropping one operand would silently weaken the ratchet.
+ fn step_field_equals(step: &serde_yaml_ng::Value, key: &str, expected: &str) -> bool {
+     mapping_value(step, key)
+         .ok()
+@@ -110,13 +91,12 @@
+ }
+ 
+ fn validate_workflow(workflow: &serde_yaml_ng::Value) -> Result<(), String> {
+-    for &event in WORKFLOW_EVENTS {
+-        let paths = workflow_paths(workflow, event)?;
+-        for &required in REQUIRED_WORKFLOW_PATHS {
+-            if !paths.iter().any(|path| path == required) {
+-                return Err(format!("{WORKFLOW_PATH}: on.{event}.paths must watch {required:?}"));
+-            }
+-        }
++    let events =
++        mapping_value(workflow, "on")?.as_mapping().ok_or("workflow events must be a mapping")?;
++    if events.len() != 1 || !events.contains_key("workflow_dispatch") {
++        return Err(
++            "control-plane proof requires explicit admission; ordinary Actions are retired".into(),
++        );
+     }
+ 
+     let jobs = mapping_value(workflow, "jobs")?;
+@@ -149,23 +129,6 @@
+         return Err(format!(
+             "{WORKFLOW_PATH}: publication-contract command must occur exactly once, found {command_count}"
+         ));
+-    }
+-    Ok(())
+-}
+-
+-fn remove_workflow_path(
+-    workflow: &mut serde_yaml_ng::Value,
+-    event: &str,
+-    path: &str,
+-) -> Result<(), String> {
+-    let event_value = mapping_value_mut(mapping_value_mut(workflow, "on")?, event)?;
+-    let paths = mapping_value_mut(event_value, "paths")?
+-        .as_sequence_mut()
+-        .ok_or_else(|| format!("workflow on.{event}.paths must be a YAML sequence"))?;
+-    let original_len = paths.len();
+-    paths.retain(|entry| entry.as_str() != Some(path));
+-    if paths.len() == original_len {
+-        return Err(format!("workflow fixture path {path:?} was not present"));
+     }
+     Ok(())
+ }
+@@ -461,20 +424,16 @@
+     let workflow = workflow(&root)?;
+     validate_workflow(&workflow).map_err(contract_error)?;
+ 
+-    // Drive the mutation from REQUIRED_WORKFLOW_PATHS rather than from a
+-    // hand-listed subset, so every required path — including this ratchet's own
+-    // file, whose removal would stop the workflow re-running on changes to the
+-    // very test enforcing it — is covered, and so a path added later cannot
+-    // enter the requirement without also entering the proof.
+-    for &event in WORKFLOW_EVENTS {
+-        for &required in REQUIRED_WORKFLOW_PATHS {
+-            let mut missing_path = workflow.clone();
+-            remove_workflow_path(&mut missing_path, event, required).map_err(contract_error)?;
+-            assert!(
+-                validate_workflow(&missing_path).is_err(),
+-                "removing the {required:?} trigger path from on.{event} must fail the contract"
+-            );
+-        }
++    // Actual production source is green before each restored-event mutant.
++    // No path/activity or job-level filter can discharge the zero-run boundary.
++    for &event in ORDINARY_EVENTS {
++        let mut restored = workflow.clone();
++        mapping_value_mut(&mut restored, "on")
++            .map_err(contract_error)?
++            .as_mapping_mut()
++            .ok_or("events mapping")?
++            .insert(serde_yaml_ng::Value::String(event.into()), serde_yaml_ng::Value::Null);
++        assert!(validate_workflow(&restored).is_err(), "restoring {event} must fail");
+     }
+ 
+     let mut missing_command = workflow.clone();
