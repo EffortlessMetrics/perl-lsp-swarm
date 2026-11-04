@@ -178,7 +178,7 @@ def bounded_read(stream: Any) -> bytes | None:
     return payload
 
 
-def http_transport(token: str | None) -> Transport:
+def http_transport(token: str | None, *, timeout: float = 30) -> Transport:
     """Build a read-only HTTPS transport. The token is used, never retained."""
     opener = urllib.request.build_opener(NoRedirect)
 
@@ -189,7 +189,7 @@ def http_transport(token: str | None) -> Transport:
             headers=headers(token),
         )
         try:
-            with opener.open(request, timeout=30) as response:
+            with opener.open(request, timeout=timeout) as response:
                 payload = bounded_read(response)
                 if payload is None:
                     return ApiResult(None, b"", transport_failed=True)

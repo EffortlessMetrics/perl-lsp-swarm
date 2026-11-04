@@ -253,10 +253,10 @@ legible as structured state.
 
 ## Evidence Pointers
 
-- [MERGE_DISCIPLINE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MERGE_DISCIPLINE_ARCHAEOLOGY.md)
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md)
-- [CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-- [SWARM_SURFACE_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
+- [MERGE_DISCIPLINE_ARCHAEOLOGY.md](MERGE_DISCIPLINE_ARCHAEOLOGY.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](PR_REVIEW_LOOP_ARCHAEOLOGY.md)
+- [CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
+- [SWARM_SURFACE_EVOLUTION.md](SWARM_SURFACE_EVOLUTION.md)
 - full PR ledger snapshot from `gh pr list --state all --limit 2000 --json number,title,createdAt,labels,url`
 - representative PRs: `#153`, `#158`, `#159`, `#160`, `#170`, `#174`, `#205`, `#209`

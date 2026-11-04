@@ -121,8 +121,19 @@ jobs:
           fi
 
           # always-or-scoped-noop applicability (.ci/policies/required-checks.toml):
-          # when none of the scanned control paths differ between the trusted
-          # base and the PR head, report a green no-op run so non-workflow
+          # Resolve applicability from PR-authored changes, not changes landed
+          # on the trusted base since this branch diverged (#17555). An older
+          # docs-only head may still contain debt already repaired on main.
+          # Require one merge base; missing or ambiguous ancestry is not proof
+          # that the candidate has no control changes.
+          MERGE_BASE="$(git merge-base --all "$BASE_SHA" "$HEAD_SHA")"
+          if [[ ! "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Expected exactly one merge base for applicability"
+            exit 1
+          fi
+
+          # When none of the scanned control paths differ from that ancestor
+          # to the PR head, report a green no-op run so non-workflow
           # dependency PRs (Cargo.lock / npm manifests) resolve immediately
           # instead of never reporting a required context (#10536). No
           # candidate bytes are materialized or evaluated on this path.
@@ -133,12 +144,18 @@ jobs:
             scripts/ci/workflow_security_ratchet.py
             scripts/ci/test_workflow_security_ratchet.py
           )
-          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "${control_scope[@]}"; then
+          if git diff --quiet "$MERGE_BASE" "$HEAD_SHA" -- "${control_scope[@]}"; then
             printf 'workflow security scoped-noop: no control paths changed\n' \
               >> "$GITHUB_STEP_SUMMARY"
             printf 'SCOPED_NOOP=true\n' >> "$GITHUB_ENV"
             printf '::notice::workflow security scoped-noop: no control paths changed; scan skipped\n'
             exit 0
+          else
+            diff_status=$?
+            if [ "$diff_status" -ne 1 ]; then
+              echo "::error::Control-path applicability diff failed (${diff_status})"
+              exit "$diff_status"
+            fi
           fi
 
           # Materialize ONLY the paths this control reads. Everything else in

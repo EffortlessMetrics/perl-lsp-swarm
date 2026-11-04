@@ -1,0 +1,9 @@
+project: product
+component: Debugging
+kind: Fixed
+body: "The DAP external-peer launch path now refuses wrong-typed stopOnEntry, debuggeeTimeoutSeconds, and env values instead of silently coercing them, matching the main launch handler."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18050"
+  Slug: dap-peer-bridge-typed-options
+  Breaking: "no"

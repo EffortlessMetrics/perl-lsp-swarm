@@ -13,11 +13,11 @@
 //! fact under test and assert the bodies differ, so a regression that drops the
 //! fact fails loudly instead of silently collapsing the two programs again.
 
-use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     HIR_BODY_MODEL_VERSION, HirExpr, HirExprId, HirRegex, HirRegexMatch, HirRegexTarget,
     HirSubstitution, HirTransliteration, RegexTargetKind, ReplacementEvaluation, lower_ast,
 };
+use perl_parser_core::{Parser, RegexSurfaceForm};
 use perl_tdd_support::must_some_with;
 
 /// Lower one source string and return every expression in its bodies.
@@ -95,6 +95,13 @@ fn as_bound(target: &HirRegexTarget) -> Option<(HirExprId, RegexTargetKind, &'st
 fn regex_of(source: &str) -> HirRegex {
     let expr = sole_regex_expr(source);
     must_some_with(as_regex(&expr).cloned(), format!("{source:?} must lower to HirExpr::Regex"))
+}
+
+#[test]
+fn regex_value_and_default_topic_matches_keep_distinct_forms_in_body_hir() {
+    assert_eq!(regex_of("qr/foo/;").form, RegexSurfaceForm::Qr);
+    assert_eq!(regex_of("m/foo/;").form, RegexSurfaceForm::MatchOperator);
+    assert_eq!(regex_of("/foo/;").form, RegexSurfaceForm::BarePattern);
 }
 
 fn match_of(source: &str) -> HirRegexMatch {

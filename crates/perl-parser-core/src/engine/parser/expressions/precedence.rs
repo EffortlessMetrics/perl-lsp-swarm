@@ -679,9 +679,17 @@ impl<'a> Parser<'a> {
     /// nesting level re-enters this rung through its own recursive-descent
     /// descent (`parse_or` on the right, the caller's ladder on the left).
     fn parse_range_with(&mut self, mut expr: Node) -> ParseResult<Node> {
-        if self.peek_kind() == Some(TokenKind::Range) {
+        // `...` between operands is the three-dot range operator; the
+        // standalone yada-yada term is handled at primary position, so
+        // admitting `Ellipsis` here only affects infix position (#13906).
+        if matches!(self.peek_kind(), Some(TokenKind::Range | TokenKind::Ellipsis)) {
             let op_token = self.advance_token()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+            // A second `...` where the endpoint belongs is not a yada-yada
+            // operand: Perl rejects it, so record the endpoint as missing
+            // instead of publishing a clean range (#13906).
+            let right = if self.peek_kind() == Some(TokenKind::Ellipsis) {
+                self.record_missing_infix_rhs(op_token.start())
+            } else if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_or()?
@@ -831,6 +839,7 @@ impl<'a> Parser<'a> {
                             replacement,
                             modifiers,
                             has_embedded_code,
+                            ..
                         } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);
