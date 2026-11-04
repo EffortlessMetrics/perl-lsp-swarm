@@ -48,7 +48,16 @@ pub(super) fn handle_variable_declaration<'a>(
     // to read (yields undef) and must not trigger UninitializedVariable diagnostics.
     // `local` similarly saves and restores the global, defaulting to `undef` when no
     // initializer is given — it is safe to read.
-    let is_initialized = declarator == "state" || declarator == "local" || initializer.is_some();
+    // Bare aggregate declarations (`my @out;`, `my %h;`) are defined-but-empty in Perl
+    // (#18765): reading or pushing onto them never raises the runtime
+    // "Use of uninitialized value" warning that bare `my $x;` does, so the
+    // textbook accumulator pattern (`my @out; … push @out, …`) must be seeded
+    // as initialized.  Scalars without an initializer keep today's honest behavior.
+    let is_initialized = declarator == "state"
+        || declarator == "local"
+        || initializer.is_some()
+        || sigil == "@"
+        || sigil == "%";
 
     // `local` of a builtin special variable (e.g. `local $/`, `local $,`) temporarily
     // modifies the global; it does not create a new lexical binding.  Declaring it in
