@@ -64,6 +64,17 @@ impl CallHierarchyProvider {
             }
         }
 
+        // Bareword class receiver (#17369): `Widget->new()` parses the object as a
+        // plain `Identifier`, not a `Variable`, so the variable arms above never
+        // fire. A capitalized (or `::`-qualified) bareword in object position is a
+        // class name — the same shape `looks_like_package_name` already encodes —
+        // and `Pkg->method` is the most common Perl static-call form.
+        if let NodeKind::Identifier { name } = &object.kind
+            && Self::looks_like_package_name(name)
+        {
+            return Some(name.clone());
+        }
+
         None
     }
 

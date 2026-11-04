@@ -240,6 +240,12 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
     let before = &source[..position];
     let flag_chars: &[char] = &['g', 'i', 'm', 's', 'x', 'e', 'r', 'a', 'd', 'u', 'p', 'l', 'c'];
     let without_flags = before.trim_end_matches(|c: char| flag_chars.contains(&c));
+    // `$inv->` / `$inv->re` (after stripping flag letters from `re`) ends
+    // with `>`, the closer for `m<...>` / `qr<...>`. That must not claim the
+    // flag region over a method call (#18760).
+    if method_arrow_suffix(without_flags) {
+        return false;
+    }
     let close_pos = without_flags.len();
     if close_pos >= 2
         && without_flags.ends_with('/')
@@ -250,6 +256,34 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
 
     let body = without_flags.trim();
     is_multi_delim_regex_at_close(body)
+}
+
+/// Text after the last statement separator on the current line, for suffix heuristics.
+fn stmt_local_suffix(text: &str) -> &str {
+    let after_semi = text.rsplit(';').next().unwrap_or(text).trim();
+    after_semi.rsplit('\n').next().unwrap_or(after_semi).trim()
+}
+
+fn method_arrow_suffix(text: &str) -> bool {
+    if text.ends_with("->") {
+        if text.len() <= 2 {
+            return false;
+        }
+        let suffix = stmt_local_suffix(text);
+        // `m<foo->` ends with `-` + `>`; that is not a method arrow.
+        if suffix.ends_with("->") && is_multi_delim_regex_at_close(suffix.trim()) {
+            return false;
+        }
+        return true;
+    }
+    let ident_bytes = text
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    ident_bytes > 0
+        && text.get(..text.len() - ident_bytes).is_some_and(|prefix| prefix.ends_with("->"))
 }
 
 fn is_multi_delim_regex_at_close(text: &str) -> bool {
@@ -1562,6 +1596,7 @@ fn pod_directive(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some;
 
     fn assert_quote_like_start(
         source: &[u8],
@@ -2177,19 +2212,19 @@ my $after = "op"#;
     fn is_in_pod_ignores_cut_inside_unclosed_heredoc() {
         let source = "<<'EOF'\n=cut\nEOF\nmy $code = 1;";
         assert!(!is_in_pod(source, source.len()));
-        assert!(!is_in_heredoc(source, source.find("my $code").unwrap()));
+        assert!(!is_in_heredoc(source, must_some(source.find("my $code"))));
     }
 
     #[test]
     fn is_in_regex_resumes_after_line_comment() {
         let source = "my $http; # prior comment\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n";
-        let regex_body = source.find("HTTP::Tiny").unwrap();
+        let regex_body = must_some(source.find("HTTP::Tiny"));
         assert!(
             is_in_regex(source, regex_body),
             "a regex opened after a line comment must still be detected as a regex position"
         );
 
-        let before_pattern = source.find("my $pattern").unwrap();
+        let before_pattern = must_some(source.find("my $pattern"));
         assert!(!is_in_regex(source, before_pattern));
     }
 
@@ -2197,11 +2232,11 @@ my $after = "op"#;
     fn substitution_replacement_section_is_string_like() {
         let source = "my $x = s;foo;replacement;;
 ";
-        let replacement = source.find("replacement").unwrap();
+        let replacement = must_some(source.find("replacement"));
         assert!(is_in_string(source, replacement));
         assert!(!is_in_regex(source, replacement));
 
-        let pattern = source.find("foo").unwrap();
+        let pattern = must_some(source.find("foo"));
         assert!(is_in_regex(source, pattern));
         assert!(!is_in_string(source, pattern));
     }
@@ -2212,7 +2247,7 @@ my $after = "op"#;
         // with `s///`, so the replacement side pins the same classification.
         for operator in ["tr", "y"] {
             let source = format!("my $x = {operator};abc;replacement;;\n");
-            let replacement = source.find("replacement").unwrap();
+            let replacement = must_some(source.find("replacement"));
             assert!(is_in_string(&source, replacement), "{operator} replacement is string-like");
             assert!(!is_in_regex(&source, replacement), "{operator} replacement is not regex");
         }
@@ -2222,14 +2257,74 @@ my $after = "op"#;
     fn is_in_regex_ignores_regex_like_text_in_non_code_regions_after_comment() {
         let heredoc = "# docs\nmy $text = <<'END';\nqr{ unmatched\nEND\nmy $code = 1;\n";
         assert!(
-            !is_in_regex(heredoc, heredoc.find("my $code").unwrap()),
+            !is_in_regex(heredoc, must_some(heredoc.find("my $code"))),
             "regex-like text inside a heredoc body must not leave literal state active"
         );
 
         let pod = "# docs\n=pod\nqr{ unmatched\n=cut\nmy $code = 1;\n";
         assert!(
-            !is_in_regex(pod, pod.find("my $code").unwrap()),
+            !is_in_regex(pod, must_some(pod.find("my $code"))),
             "regex-like text inside a POD body must not leave literal state active"
         );
+    }
+
+    #[test]
+    fn angle_delimited_regex_at_close_is_regex_flags() {
+        for source in ["$x =~ m<foo>", "qr<foo>", "$x =~ qr<foo>"] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "cursor after a closed angle-delimited regex must still be flags: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn hyphen_before_angle_close_is_still_regex_flags() {
+        for source in ["m<foo->", "qr<foo->", "m<foo->i", "qr<foo->im"] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "pattern ending with `-` before `>` must not be treated as method arrow: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn method_arrow_after_closed_angle_regex_is_not_regex_flags() {
+        // `$inv->` ends with `>`, the closer for `m<...>` / `qr<...>`. The
+        // flag heuristic must not treat leftover source after a closed
+        // angle-delimited regex as the flag region (#18760).
+        for source in [
+            "$x =~ m<foo>;\nprint $inv->",
+            "if ($name =~ m<sku>) {\n    print $inv->",
+            "qr<pattern>;\nprint $inv->",
+            "$x =~ m<foo>;\nprint $inv->re",
+            "$x =~ m<foo>;\nprint $inv->new",
+            "$x =~ m<foo>;\nprint $inv->isa",
+        ] {
+            assert!(
+                !is_in_regex_flags(source, source.len()),
+                "method call after a closed angle regex is not flags: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn brace_and_bang_regex_flags_still_detected_at_close() {
+        assert!(is_in_regex_flags("m{foo}", "m{foo}".len()));
+        assert!(is_in_regex_flags("m{foo}i", "m{foo}i".len()));
+        assert!(is_in_regex_flags("qr!foo!", "qr!foo!".len()));
+        assert!(is_in_regex_flags("qr!foo!m", "qr!foo!m".len()));
+    }
+
+    #[test]
+    fn earlier_method_arrow_does_not_suppress_later_regex_flags() {
+        // Retention control for the method-arrow narrowing: an earlier
+        // `$inv->` must not hide flags on a later closed regex.
+        for source in ["$inv->new;\n$x =~ m{bar}", "$inv->new;\n$x =~ m<foo>"] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "flags after a later closed regex must still be detected: {source}"
+            );
+        }
     }
 }
