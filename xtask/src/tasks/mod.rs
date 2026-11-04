@@ -201,11 +201,8 @@ pub mod shadow_parity;
 pub mod srp_microcrates;
 pub mod staged;
 pub mod standalone_diagnostics;
-<<<<<<< HEAD
 pub mod standalone_transaction;
-=======
 pub mod standalone_vectors;
->>>>>>> origin/main
 pub mod supported_editor_inline_smoke;
 pub mod swarm_agent_roster;
 pub mod swarm_summary;

@@ -2499,10 +2499,6 @@ enum Commands {
     /// Check active install docs and release notes for stale install command drift.
     InstallSurfaceCheck,
 
-<<<<<<< HEAD
-    /// Verify the standalone install transaction model invariants (#10243 child 1, #11099).
-    StandaloneTransactionCheck,
-=======
     /// Standalone install semantic conformance vectors (#11550): the
     /// versioned deterministic corpus, independent expected-outcome oracle,
     /// fixture-port protocol data, and mutation bank used to prove POSIX and
@@ -2513,7 +2509,9 @@ enum Commands {
         #[command(subcommand)]
         command: StandaloneVectorsCommand,
     },
->>>>>>> origin/main
+
+    /// Verify the standalone install transaction model invariants (#10243 child 1, #11099).
+    StandaloneTransactionCheck,
 
     /// Validate PR intent/title/body against changed paths and closeout evidence.
     IntentDiffGate {
@@ -7345,9 +7343,6 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::DocClaims => doc_claims::run(),
         Commands::InstallSurfaceCheck => install_surface_check::run(),
-<<<<<<< HEAD
-        Commands::StandaloneTransactionCheck => tasks::standalone_transaction::run_check(),
-=======
         Commands::StandaloneVectors { command } => match command {
             StandaloneVectorsCommand::Check { update_golden } => {
                 standalone_vectors::run_check(update_golden)
@@ -7357,7 +7352,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
             StandaloneVectorsCommand::MutationCheck => standalone_vectors::run_mutation_check(),
         },
->>>>>>> origin/main
+        Commands::StandaloneTransactionCheck => tasks::standalone_transaction::run_check(),
         Commands::IntentDiffGate { pr, fixture, receipt } => {
             intent_diff_gate::run(intent_diff_gate::IntentDiffGateConfig { pr, fixture, receipt })
         }
