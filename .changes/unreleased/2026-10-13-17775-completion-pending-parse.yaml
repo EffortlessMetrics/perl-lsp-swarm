@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Completion no longer answers from a stale parse paired with newer text while an edit is still being parsed. It returns its bounded current-text fallback marked incomplete instead, so instance methods no longer intermittently disappear behind a confident generic-only list after import edits."
+time: 2026-10-13T00:00:00Z
+custom:
+  PR: "17834"
+  Slug: completion-pending-parse
+  Breaking: "no"

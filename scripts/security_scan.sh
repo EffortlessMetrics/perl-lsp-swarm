@@ -156,8 +156,17 @@ run_cargo_audit() { # stdout -> run_dir/cargo-audit.json
 }
 
 run_cargo_deny() { # stdout (JSON lines) -> run_dir/cargo-deny.json
+    local deny_rc guard_rc
     cargo deny --locked --format json check advisories licenses bans sources \
         >"$RUN_DIR/cargo-deny.json" 2>"$RUN_DIR/cargo-deny.stderr.log"
+    deny_rc=$?
+    bash "$REPO_ROOT/scripts/ci/assert-no-cargo-deny-unmatched-skip.sh" \
+        "$RUN_DIR/cargo-deny.stderr.log"
+    guard_rc=$?
+    if [ "$deny_rc" -ne 0 ]; then
+        return "$deny_rc"
+    fi
+    return "$guard_rc"
 }
 
 run_trivy() { # writes run_dir/trivy.json via --output

@@ -1,0 +1,4 @@
+{
+  "staged_path": "lib/Calc.pm",
+  "expected_owner": {"kind": "sub", "qualified_name": "Calc::add"}
+}

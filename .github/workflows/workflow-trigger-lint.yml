@@ -26,6 +26,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: setup-perl whole-tree pin regression (#18049)
+        run: python3 -m unittest scripts/ci/test_action_pin_setup_perl_sites_18049.py
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
         with:

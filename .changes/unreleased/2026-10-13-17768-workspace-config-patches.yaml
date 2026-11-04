@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Preserve earlier workspace settings across valid partial client configuration updates, keeping module resolution and navigation consistent while applying new options."
+time: 2026-10-13T02:30:00Z
+custom:
+  PR: "17768"
+  Slug: workspace-config-patch-retention
+  Breaking: "no"

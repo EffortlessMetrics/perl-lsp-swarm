@@ -1,0 +1,9 @@
+project: product
+component: Parser
+kind: Added
+body: Preserve first-cohort scalar literal payloads (plain decimal numbers, noninterpolating strings, undef) as typed HIR body leaves with exact payloads and fabrication markers, resolved through PIR-A literal operations. Out-of-cohort literal forms retain their documented opaque behavior.
+time: 2026-10-12T12:30:00Z
+custom:
+  PR: "17641"
+  Slug: scalar-literal-payloads
+  Breaking: "no"

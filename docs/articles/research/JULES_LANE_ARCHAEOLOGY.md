@@ -18,14 +18,14 @@ The important pattern is not the titles. It is that the repo started giving recu
 
 The tracked persona journals are:
 
-- [`.jules/bolt.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/bolt.md)
-- [`.jules/sentinel.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/sentinel.md)
-- [`.jules/palette.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/palette.md)
+- [`.jules/bolt.md`](../../../.jules/bolt.md)
+- [`.jules/sentinel.md`](../../../.jules/sentinel.md)
+- [`.jules/palette.md`](../../../.jules/palette.md)
 
 The tracked findings directories are:
 
-- [`.jules/findings/security/sentinel.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/findings/security/sentinel.md)
-- [`.jules/findings/ux/palette.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/findings/ux/palette.md)
+- [`.jules/findings/security/sentinel.md`](../../../.jules/findings/security/sentinel.md)
+- [`.jules/findings/ux/palette.md`](../../../.jules/findings/ux/palette.md)
 
 Taken together, they show a move from generic agent activity to named concern surfaces with reusable lessons.
 
@@ -147,8 +147,8 @@ In later swarm language, this becomes the devex/improver lane.
 
 The strongest evidence is not the persona branding. It is the fact that the repo also preserved findings directories:
 
-- [`.jules/findings/security/sentinel.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/findings/security/sentinel.md)
-- [`.jules/findings/ux/palette.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/findings/ux/palette.md)
+- [`.jules/findings/security/sentinel.md`](../../../.jules/findings/security/sentinel.md)
+- [`.jules/findings/ux/palette.md`](../../../.jules/findings/ux/palette.md)
 
 Those files show the journals were not merely reflective. They were being turned into reusable conclusions.
 
@@ -231,11 +231,11 @@ They are not random persona names. They are the first durable signs that the rep
 
 ## Evidence Pointers
 
-- [`.jules/bolt.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/bolt.md)
-- [`.jules/sentinel.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/sentinel.md)
-- [`.jules/palette.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/palette.md)
-- [`.jules/findings/security/sentinel.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/findings/security/sentinel.md)
-- [`.jules/findings/ux/palette.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/findings/ux/palette.md)
+- [`.jules/bolt.md`](../../../.jules/bolt.md)
+- [`.jules/sentinel.md`](../../../.jules/sentinel.md)
+- [`.jules/palette.md`](../../../.jules/palette.md)
+- [`.jules/findings/security/sentinel.md`](../../../.jules/findings/security/sentinel.md)
+- [`.jules/findings/ux/palette.md`](../../../.jules/findings/ux/palette.md)
 - `b1474bdf8` `fix(security): complete command injection hardening in executeCommand (#332)`
 - `3ba17d563` `perf(semantic): optimize is_builtin_global to reduce allocations (#465)`
 - `8115acba4` `feat(vscode): improve context menu visibility and add inline variable command (#335)`

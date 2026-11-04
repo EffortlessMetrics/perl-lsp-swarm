@@ -31,6 +31,31 @@ pub(super) struct TextReferenceQuery<'a> {
     pub needle: &'a str,
     pub sigil: Option<char>,
     pub include_declaration: bool,
+    pub package: Option<&'a str>,
+}
+
+/// A precise name anchor projected from the current, source-matching AST.
+#[derive(Debug, Clone)]
+pub(super) struct CallableDeclaration {
+    pub start: usize,
+    pub end: usize,
+    pub qualified_name: String,
+}
+
+pub(super) fn callable_declarations(ast: &perl_parser::ast::Node) -> Vec<CallableDeclaration> {
+    let mut declarations: Vec<_> = perl_symbol::surface::extract_symbol_decls(ast, Some("main"))
+        .into_iter()
+        .filter(|decl| decl.kind == perl_symbol::types::SymbolKind::Subroutine)
+        .filter_map(|decl| {
+            let (start, end) = decl.anchor_span?;
+            // The projector prefixes its package even for explicitly qualified names.
+            let qualified_name =
+                if decl.name.contains("::") { decl.name } else { decl.qualified_name };
+            Some(CallableDeclaration { start, end, qualified_name })
+        })
+        .collect();
+    declarations.sort_by_key(|decl| decl.start);
+    declarations
 }
 
 /// Kind of a word occurrence in a single source line.
@@ -42,13 +67,39 @@ pub(super) enum ReferenceWordKind {
     Other,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct LocationId<'a> {
-    uri: &'a str,
+/// Range identity under the canonical URI key (`perl_uri::uri_key`, which
+/// lowercases Windows drive letters — the same identity
+/// `LspServer::normalize_uri_key` gives documents and call-hierarchy tier
+/// dedup uses, #17368).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CanonicalLocationId {
+    uri: String,
     start_line: u64,
     start_character: u64,
     end_line: u64,
     end_character: u64,
+}
+
+/// Start identity of an occurrence: one canonical URI plus one start
+/// position. Producers describe one occurrence at two granularities — the
+/// workspace index's call-expression span and the text scan's name-token
+/// span share a start and differ only in end (#17242) — and no two genuine
+/// occurrences share a start position.
+#[derive(Clone, PartialEq, Eq)]
+struct OccurrenceStartId {
+    uri: String,
+    start_line: u64,
+    start_character: u64,
+}
+
+fn canonical_location_id(location: &Value) -> Option<CanonicalLocationId> {
+    Some(CanonicalLocationId {
+        uri: perl_uri::uri_key(location.get("uri")?.as_str()?),
+        start_line: location.pointer("/range/start/line")?.as_u64()?,
+        start_character: location.pointer("/range/start/character")?.as_u64()?,
+        end_line: location.pointer("/range/end/line")?.as_u64()?,
+        end_character: location.pointer("/range/end/character")?.as_u64()?,
+    })
 }
 
 /// Strip a leading sigil from the needle so word-boundary search can run on the
@@ -160,6 +211,7 @@ pub(super) fn should_skip_text_reference_match(
 }
 
 /// Scan documents for word-boundary occurrences of the query, filtered by kind.
+#[cfg(test)]
 pub(super) fn search_document_texts_for_references<'a, I>(
     documents: I,
     query: TextReferenceQuery<'_>,
@@ -167,6 +219,21 @@ pub(super) fn search_document_texts_for_references<'a, I>(
 ) -> Vec<Value>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    search_document_texts_with_declarations(
+        documents.into_iter().map(|(uri, text)| (uri, text, &[][..])),
+        query,
+        cap,
+    )
+}
+
+pub(super) fn search_document_texts_with_declarations<'a, I>(
+    documents: I,
+    query: TextReferenceQuery<'_>,
+    cap: usize,
+) -> Vec<Value>
+where
+    I: IntoIterator<Item = (&'a str, &'a str, &'a [CallableDeclaration])>,
 {
     let (needle, sigil) = normalized_text_query(query.needle, query.sigil);
     if needle.is_empty() || cap == 0 {
@@ -176,14 +243,23 @@ where
     let needle_bytes = needle.as_bytes();
     let mut out = Vec::new();
 
-    'docs: for (doc_uri, doc_text) in documents {
-        for (line_num, line) in doc_text.lines().enumerate() {
+    'docs: for (doc_uri, doc_text, declarations) in documents {
+        let mut line_offset = 0;
+        for (line_num, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+            let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+            let line = line.strip_suffix('\r').unwrap_or(line);
             let line_bytes = line.as_bytes();
             let mut start = 0usize;
             while let Some(idx) = line.get(start..).and_then(|tail| tail.find(needle)) {
                 let byte_pos = start + idx;
                 let match_end = byte_pos + needle_bytes.len();
                 if is_reference_ident_boundary(line_bytes, byte_pos, needle_bytes.len())
+                    && keep_callable_declaration(
+                        declarations,
+                        line_offset + byte_pos,
+                        line_offset + match_end,
+                        query,
+                    )
                     && keep_text_reference_match(
                         line,
                         byte_pos,
@@ -203,19 +279,159 @@ where
                 }
                 start = match_end;
             }
+            line_offset += raw_line.len();
         }
     }
 
     finalize_reference_locations(out, cap)
 }
 
-/// Collapse identical `(uri, range)` locations, independent of JSON key order.
+// Only proven declaration anchors participate. Unknown/parser-error regions keep
+// the existing fallback behavior; index readiness is not parser evidence.
+fn keep_callable_declaration(
+    declarations: &[CallableDeclaration],
+    start: usize,
+    end: usize,
+    query: TextReferenceQuery<'_>,
+) -> bool {
+    let (_, sigil) = normalized_text_query(query.needle, query.sigil);
+    if matches!(sigil, Some('$' | '@' | '%')) {
+        return true;
+    }
+    let i = declarations.partition_point(|decl| decl.start <= start);
+    let Some(decl) = i.checked_sub(1).and_then(|i| declarations.get(i)) else {
+        return true;
+    };
+    if end > decl.end {
+        return true;
+    }
+    if !query.include_declaration {
+        return false;
+    }
+    let Some(package) = query.package else {
+        return true;
+    };
+    let (name, _) = normalized_text_query(query.needle, query.sigil);
+    let qualified =
+        if name.contains("::") { name.to_owned() } else { format!("{package}::{name}") };
+    decl.qualified_name == qualified
+}
+
+/// Collapse occurrence-identity duplicates, then identical ranges, on one
+/// canonical URI identity.
+///
+/// Two duplicate shapes survive raw `(uri, range)` equality (#17242):
+///
+/// 1. Producers spell one file's URI differently — the workspace index via
+///    `fs_path_to_uri` keeps the on-disk drive case, the open-document tier
+///    keys documents through `perl_uri::uri_key`, which lowercases Windows
+///    drive letters — so the same entry answers twice under `F:` and `f:`.
+/// 2. One occurrence, two granularities — the index's call-expression span
+///    (`cross_target(1)`) and the text scan's name-token span
+///    (`cross_target`) share a start and differ only in end.
+///
+/// The sort/dedup below keys on the canonical URI for both, then keeps the
+/// narrowest range per (canonical URI, start) — the name token, never a
+/// distinct occurrence.
 pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
-    locations.sort_by(|left, right| location_id(left).cmp(&location_id(right)));
-    locations.dedup_by(|left, right| match (location_id(left), location_id(right)) {
+    // Emit one canonical URI spelling per document (#18112): producers spell
+    // the drive letter differently, and dedup keys on the canonical form but
+    // previously emitted the original strings. The relied-on `uri_key`
+    // behavior is drive-letter canonicalization; the non-file URIs producers
+    // actually emit (untitled:, git:) pass through byte-identical, as pinned
+    // by `finalize_preserves_untitled_and_non_file_uris`.
+    for location in locations.iter_mut() {
+        if let Some(Value::String(uri)) =
+            location.as_object_mut().and_then(|obj| obj.get_mut("uri"))
+        {
+            *uri = perl_uri::uri_key(uri);
+        }
+    }
+    // Compute occurrence identity once per element (#17540 item 5). The
+    // previous sort/dedup/same-start pass reparsed JSON on every comparison.
+    let mut keyed: Vec<(Option<CanonicalLocationId>, Value)> =
+        locations.drain(..).map(|location| (canonical_location_id(&location), location)).collect();
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    keyed.dedup_by(|left, right| match (&left.0, &right.0) {
         (Some(left_id), Some(right_id)) => left_id == right_id,
         _ => false,
     });
+    let mut pairs: Vec<(Option<CanonicalLocationId>, Value)> = Vec::with_capacity(keyed.len());
+    let mut seen_start: Option<OccurrenceStartId> = None;
+    for (id, location) in keyed {
+        let start_id = id.as_ref().map(|id| OccurrenceStartId {
+            uri: id.uri.clone(),
+            start_line: id.start_line,
+            start_character: id.start_character,
+        });
+        if start_id.is_some() && start_id == seen_start {
+            continue;
+        }
+        seen_start = start_id;
+        pairs.push((id, location));
+    }
+    // Anchored containment (#18112): the index's full call-expression span
+    // for `$self->foo` (7:11-21) starts before the text scan's name token
+    // (7:18-21), so same-start collapse cannot see the pair. Drop a range
+    // only when another range inside it is anchored to it as its own name
+    // token: same canonical URI, same line span, strictly inside, and
+    // sharing the start (plain `foo(...)` wrappers) or the end (bare
+    // `$x->foo` wrappers). Bare containment is not enough: in an
+    // index-only answer (non-open file, deadline path) nested calls are
+    // wrappers all the way down, and a declaration span legitimately
+    // contains its body's calls, so an unanchored contained range is a
+    // distinct occurrence, never a duplicate. The line-span restriction
+    // additionally preserves multi-line ranges that merely enclose a
+    // token (a whole-sub declaration span is a distinct entry, per
+    // `dedupe_collapses_identical_ranges_across_json_key_order`).
+    let (ids, collapsed): (Vec<Option<CanonicalLocationId>>, Vec<Value>) =
+        pairs.into_iter().unzip();
+    // A containment match must share the canonical URI and the line span,
+    // so compare only within those groups: a symbol with thousands of
+    // references stays near-linear instead of costing a quadratic scan
+    // over unrelated files and lines.
+    let mut groups: std::collections::HashMap<(&str, u64, u64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (index, id) in ids.iter().enumerate() {
+        if let Some(id) = id {
+            groups.entry((id.uri.as_str(), id.start_line, id.end_line)).or_default().push(index);
+        }
+    }
+    let mut dropped = vec![false; collapsed.len()];
+    for members in groups.values() {
+        for &index in members {
+            let Some(outer) = &ids[index] else {
+                continue;
+            };
+            let contains_own_name_token = members.iter().any(|&other_index| {
+                other_index != index
+                    && ids[other_index].as_ref().is_some_and(|inner| {
+                        (outer.start_line, outer.start_character)
+                            <= (inner.start_line, inner.start_character)
+                            && (outer.end_line, outer.end_character)
+                                >= (inner.end_line, inner.end_character)
+                            && ((outer.start_line, outer.start_character)
+                                < (inner.start_line, inner.start_character)
+                                || (outer.end_line, outer.end_character)
+                                    > (inner.end_line, inner.end_character))
+                            && ((inner.start_line, inner.start_character)
+                                == (outer.start_line, outer.start_character)
+                                || (inner.end_line, inner.end_character)
+                                    == (outer.end_line, outer.end_character))
+                    })
+            });
+            if contains_own_name_token {
+                dropped[index] = true;
+            }
+        }
+    }
+    let mut kept: Vec<Value> = Vec::with_capacity(collapsed.len());
+    for (index, location) in collapsed.into_iter().enumerate() {
+        if !dropped[index] {
+            kept.push(location);
+        }
+    }
+    *locations = kept;
 }
 
 /// Deduplicate, then enforce the result cap so duplicates cannot consume it.
@@ -223,6 +439,296 @@ pub(super) fn finalize_reference_locations(mut locations: Vec<Value>, cap: usize
     dedupe_reference_locations(&mut locations);
     locations.truncate(cap);
     locations
+}
+
+/// Narrow each location to the queried identifier using open-document source,
+/// then run the existing occurrence-identity finalizer.
+///
+/// Whole-call spans such as `Greeter::greet($obj)` (8-28) and the name token
+/// `greet` (17-22) do not share a start or an end, so anchored containment
+/// (#18112) cannot collapse them. Source-validated identifier narrowing makes
+/// them identical, then exact dedup keeps one (#9825). A range with no matching
+/// open document, or with no identifier match, is left unchanged so closed-file
+/// index geometry stays #8611's producer contract.
+pub(super) fn finalize_named_reference_locations(
+    mut locations: Vec<Value>,
+    cap: usize,
+    docs: &[(String, String)],
+    needle: &str,
+    sigil: Option<char>,
+) -> Vec<Value> {
+    let docs: Vec<(&str, &str)> =
+        docs.iter().map(|(uri, text)| (uri.as_str(), text.as_str())).collect();
+    narrow_reference_locations_to_name_token(&mut locations, &docs, needle, sigil);
+    finalize_reference_locations(locations, cap)
+}
+
+/// Rewrite each location to the queried identifier token when the owning
+/// document is open and exactly that token can be recovered from the range.
+fn narrow_reference_locations_to_name_token(
+    locations: &mut [Value],
+    docs: &[(&str, &str)],
+    needle: &str,
+    sigil: Option<char>,
+) {
+    let (name, query_sigil) = normalized_text_query(needle, sigil);
+    if name.is_empty() {
+        return;
+    }
+    for location in locations.iter_mut() {
+        narrow_one_location_to_name_token(location, docs, name, query_sigil);
+    }
+}
+
+fn narrow_one_location_to_name_token(
+    location: &mut Value,
+    docs: &[(&str, &str)],
+    name: &str,
+    query_sigil: Option<char>,
+) {
+    let Some(uri) = location.get("uri").and_then(Value::as_str) else {
+        return;
+    };
+    let uri_key = perl_uri::uri_key(uri);
+    let Some((_, doc_text)) =
+        docs.iter().find(|(doc_uri, _)| perl_uri::uri_key(doc_uri) == uri_key)
+    else {
+        return;
+    };
+    let Some(start_line) = location.pointer("/range/start/line").and_then(Value::as_u64) else {
+        return;
+    };
+    let Some(start_character) = location.pointer("/range/start/character").and_then(Value::as_u64)
+    else {
+        return;
+    };
+    let Some(end_line) = location.pointer("/range/end/line").and_then(Value::as_u64) else {
+        return;
+    };
+    let Some(end_character) = location.pointer("/range/end/character").and_then(Value::as_u64)
+    else {
+        return;
+    };
+    let Some(line) = line_at(doc_text, start_line) else {
+        return;
+    };
+    let Some(range_start_byte) = utf16_col_to_byte(line, start_character) else {
+        return;
+    };
+    let range_end_byte = if end_line == start_line {
+        let Some(end_byte) = utf16_col_to_byte(line, end_character) else {
+            return;
+        };
+        end_byte
+    } else {
+        line.len()
+    };
+    if range_end_byte < range_start_byte {
+        return;
+    }
+    let text = line;
+
+    let matches = ident_bounded_name_matches(line, name);
+    if matches.is_empty() {
+        return;
+    }
+    let contained: Vec<(usize, usize)> = matches
+        .iter()
+        .copied()
+        .filter(|(start, end)| *start >= range_start_byte && *end <= range_end_byte)
+        .collect();
+    // A one-character `sub` range does not contain the name token. Only in that
+    // declaration case, search the rest of the declaration line: the gap from
+    // the range start to the match must be `sub` followed by whitespace only.
+    let search = if contained.is_empty() {
+        matches
+            .into_iter()
+            .filter(|(start, _)| {
+                *start >= range_start_byte
+                    && text
+                        .get(range_start_byte..*start)
+                        .and_then(|gap| gap.strip_prefix("sub"))
+                        .is_some_and(|rest| {
+                            !rest.is_empty() && rest.chars().all(char::is_whitespace)
+                        })
+            })
+            .collect()
+    } else {
+        contained
+    };
+    let preferred = preferred_name_matches(line, &search, query_sigil);
+    let Some((match_start, match_end)) = choose_narrowing_name_match(line, &preferred, query_sigil)
+    else {
+        return;
+    };
+    let (emit_start, emit_end) = emitted_match_byte_range(line, match_start, match_end);
+    let Some(start_utf16) = u64::try_from(byte_to_utf16_col(line, emit_start)).ok() else {
+        return;
+    };
+    let Some(end_utf16) = u64::try_from(byte_to_utf16_col(line, emit_end)).ok() else {
+        return;
+    };
+    if start_line == end_line && start_character == start_utf16 && end_character == end_utf16 {
+        return;
+    }
+    let Some(range) = location.pointer_mut("/range") else {
+        return;
+    };
+    *range = json!({
+        "start": { "line": start_line, "character": start_utf16 },
+        "end": { "line": start_line, "character": end_utf16 },
+    });
+}
+
+fn line_at(doc_text: &str, target_line: u64) -> Option<&str> {
+    let Ok(target) = usize::try_from(target_line) else {
+        return None;
+    };
+    for (index, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+        if index != target {
+            continue;
+        }
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        return Some(line.strip_suffix('\r').unwrap_or(line));
+    }
+    None
+}
+
+fn utf16_col_to_byte(line: &str, col: u64) -> Option<usize> {
+    let mut remaining = col;
+    for (byte_idx, ch) in line.char_indices() {
+        if remaining == 0 {
+            return Some(byte_idx);
+        }
+        let width = u64::try_from(ch.len_utf16()).ok()?;
+        if remaining < width {
+            return None;
+        }
+        remaining -= width;
+    }
+    (remaining == 0).then_some(line.len())
+}
+
+fn ident_bounded_name_matches(line: &str, name: &str) -> Vec<(usize, usize)> {
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let bytes = line.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(haystack) = line.get(search_from..) {
+        let Some(found) = haystack.find(name).map(|found| search_from + found) else {
+            break;
+        };
+        let end_at = found + name.len();
+        if is_reference_ident_boundary(bytes, found, name.len()) {
+            matches.push((found, end_at));
+        }
+        search_from = found.saturating_add(1);
+        if search_from >= line.len() {
+            break;
+        }
+    }
+    matches
+}
+
+fn preferred_name_matches(
+    line: &str,
+    matches: &[(usize, usize)],
+    query_sigil: Option<char>,
+) -> Vec<(usize, usize)> {
+    let classified: Vec<(usize, usize)> = matches
+        .iter()
+        .copied()
+        .filter(|(start, end)| {
+            keep_text_reference_match(line, *start, *end, query_sigil, true)
+                && variable_query_sigil_matches(line, *start, query_sigil)
+        })
+        .collect();
+    if matches!(query_sigil, Some('$' | '@' | '%')) {
+        return classified;
+    }
+    let subroutine: Vec<(usize, usize)> = classified
+        .iter()
+        .copied()
+        .filter(|(start, end)| {
+            classify_reference_word(line, *start, *end) == ReferenceWordKind::Subroutine
+        })
+        .collect();
+    if subroutine.is_empty() { classified } else { subroutine }
+}
+
+/// When a sigiled query runs inside an interpolated string, require the
+/// matched variable's actual sigil to match the query (#9825).
+fn variable_query_sigil_matches(line: &str, match_start: usize, query_sigil: Option<char>) -> bool {
+    let Some(query @ ('$' | '@' | '%')) = query_sigil else {
+        return true;
+    };
+    variable_sigil_at(line, match_start) == Some(query)
+}
+
+fn variable_sigil_at(line: &str, match_start: usize) -> Option<char> {
+    if let Some(sigil @ ('$' | '@' | '%')) = char_before(line, match_start) {
+        return Some(sigil);
+    }
+    let inner_start = skip_ws_left(line, match_start);
+    if char_before(line, inner_start) != Some('{') {
+        return None;
+    }
+    let brace_at = inner_start.saturating_sub('{'.len_utf8());
+    let before_brace = skip_ws_left(line, brace_at);
+    char_before(line, before_brace).filter(|ch| matches!(ch, '$' | '@' | '%'))
+}
+
+/// Pick one identifier when an indexed call-expression span contains several
+/// name hits (for example `bar(foo())->foo()`).
+fn choose_narrowing_name_match(
+    line: &str,
+    matches: &[(usize, usize)],
+    query_sigil: Option<char>,
+) -> Option<(usize, usize)> {
+    if matches.is_empty() {
+        return None;
+    }
+    if matches.len() == 1 {
+        return Some(matches[0]);
+    }
+    if query_sigil.is_none() {
+        let after_arrow: Vec<(usize, usize)> = matches
+            .iter()
+            .copied()
+            .filter(|(start, _)| is_method_arrow_invocation(line, *start))
+            .collect();
+        if !after_arrow.is_empty() {
+            return after_arrow.into_iter().max_by_key(|(start, _)| *start);
+        }
+        return matches.iter().copied().min_by_key(|(start, _)| *start);
+    }
+    Some(matches[0])
+}
+
+fn is_method_arrow_invocation(line: &str, match_start: usize) -> bool {
+    let left = skip_ws_left(line, match_start);
+    if char_before(line, left) != Some('>') {
+        return false;
+    }
+    let gt_at = left.saturating_sub('>'.len_utf8());
+    char_before(line, skip_ws_left(line, gt_at)) == Some('-')
+}
+
+/// Collect canonical URI keys referenced by finalized locations.
+pub(super) fn uri_keys_from_reference_locations(locations: &[Value]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for location in locations {
+        let Some(uri) = location.get("uri").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = perl_uri::uri_key(uri);
+        if !keys.iter().any(|existing| existing == &key) {
+            keys.push(key);
+        }
+    }
+    keys
 }
 
 fn location_value(uri: &str, line: usize, start_utf16: usize, end_utf16: usize) -> Value {
@@ -235,14 +741,89 @@ fn location_value(uri: &str, line: usize, start_utf16: usize, end_utf16: usize) 
     })
 }
 
-fn location_id(location: &Value) -> Option<LocationId<'_>> {
-    Some(LocationId {
-        uri: location.get("uri")?.as_str()?,
-        start_line: location.pointer("/range/start/line")?.as_u64()?,
-        start_character: location.pointer("/range/start/character")?.as_u64()?,
-        end_line: location.pointer("/range/end/line")?.as_u64()?,
-        end_character: location.pointer("/range/end/character")?.as_u64()?,
-    })
+/// Shrink an index declaration entry to its name token.
+///
+/// The workspace index stores a declaration as its whole defining span
+/// (`sub cross_target { ... }`, `package Animal;`), while the open-document
+/// text tier emits the declaration's name token. Both describe one site, but
+/// their ranges differ, so tier-level dedup cannot see them as one (#17242).
+/// When the declaring document is open, locate the queried name on the
+/// declaration's first line — identifier-bounded, at or after the span start
+/// — and narrow the entry to that token span. Both tiers then share one
+/// location identity and the existing exact dedup collapses them. A span
+/// that already is token-sized, a document that is not open, or a name that
+/// cannot be located keeps the index span untouched.
+///
+/// `sigil` extends the narrowed span over a leading `$`/`@`/`%` so a
+/// variable declaration entry matches the text tier's sigil-inclusive
+/// emitted range (`emitted_match_byte_range`) instead of sitting one column
+/// off it.
+pub(super) fn shrink_declaration_span_to_name_span(
+    def: &mut crate::workspace_index::Location,
+    docs: &[(&str, &str)],
+    needle: &str,
+    sigil: Option<char>,
+) {
+    let sigiled_needle = match sigil {
+        Some(sigil @ ('$' | '@' | '%')) => format!("{sigil}{needle}"),
+        _ => needle.to_owned(),
+    };
+    if sigiled_needle.is_empty() {
+        return;
+    }
+    let needle = sigiled_needle.as_str();
+    // Match the declaring document on the canonical URI key: the index spells
+    // URIs with the on-disk drive case while the documents map keys them
+    // through `perl_uri::uri_key` (lowercased drive letter) (#17242).
+    let def_key = perl_uri::uri_key(&def.uri);
+    let Some((_, doc_text)) = docs.iter().find(|(uri, _)| perl_uri::uri_key(uri) == def_key) else {
+        return;
+    };
+    // Index `column` is an LSP UTF-16 unit (`LineIndex::range`, copied 1:1
+    // onto the wire). Derive the line-relative *byte* start from `start.byte`
+    // and this line's start offset so a preceding non-ASCII character cannot
+    // land the slice inside a UTF-8 continuation (#17540 item 1).
+    let target_line = def.range.start.line as usize;
+    let mut line_start_byte = 0usize;
+    let mut decl_line_text: Option<&str> = None;
+    for (index, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if index == target_line {
+            decl_line_text = Some(line);
+            break;
+        }
+        line_start_byte += raw_line.len();
+    }
+    let Some(decl_line_text) = decl_line_text else {
+        return;
+    };
+    let Some(mut search_from) = def.range.start.byte.checked_sub(line_start_byte) else {
+        return;
+    };
+    let line_bytes = decl_line_text.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    while let Some(haystack) = decl_line_text.get(search_from..) {
+        if haystack.len() < needle_bytes.len() {
+            return;
+        }
+        let Some(found) = haystack.find(needle).map(|found| search_from + found) else {
+            return;
+        };
+        let end_at = found + needle_bytes.len();
+        let left_ok = found == 0 || line_bytes.get(found - 1).is_some_and(|byte| !is_ident(*byte));
+        let right_ok = line_bytes.get(end_at).is_none_or(|byte| !is_ident(*byte));
+        if left_ok && right_ok {
+            def.range.start.byte = line_start_byte + found;
+            def.range.start.column = byte_to_utf16_col(decl_line_text, found) as u32;
+            def.range.end.line = def.range.start.line;
+            def.range.end.byte = def.range.start.byte + needle_bytes.len();
+            def.range.end.column = byte_to_utf16_col(decl_line_text, end_at) as u32;
+            return;
+        }
+        search_from = found + 1;
+    }
 }
 
 fn valid_span(line: &str, match_start: usize, match_end: usize) -> bool {
@@ -481,9 +1062,112 @@ mod tests {
     fn scan(docs: &[(&str, &str)], needle: &str, sigil: Option<char>, cap: usize) -> Vec<Value> {
         search_document_texts_for_references(
             docs.iter().copied(),
-            TextReferenceQuery { needle, sigil, include_declaration: true },
+            TextReferenceQuery { needle, sigil, include_declaration: true, package: None },
             cap,
         )
+    }
+
+    #[test]
+    fn anchored_declarations_filter_before_cap_without_dropping_body_calls()
+    -> Result<(), Box<dyn Error>> {
+        let source = "package Other;\r\nsub mark { mark(); }\r\npackage Wanted;\r\nsub mark {}\r\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        assert_eq!(declarations.len(), 2);
+        let query = TextReferenceQuery {
+            needle: "mark",
+            sigil: None,
+            package: Some("Wanted"),
+            include_declaration: false,
+        };
+        let out = search_document_texts_with_declarations(
+            [("file:///test.pl", source, declarations.as_slice())],
+            query,
+            1,
+        );
+        assert_eq!(out, vec![location_value("file:///test.pl", 1, 11, 15)]);
+        let out = search_document_texts_with_declarations(
+            [("file:///test.pl", source, declarations.as_slice())],
+            TextReferenceQuery { include_declaration: true, ..query },
+            10,
+        );
+        assert_eq!(
+            out,
+            vec![
+                location_value("file:///test.pl", 1, 11, 15),
+                location_value("file:///test.pl", 3, 4, 8)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicitly_qualified_declaration_uses_its_own_package() -> Result<(), Box<dyn Error>> {
+        let source = "package Other;\nsub Wanted::mark {}\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        for (package, include_declaration, count) in
+            [("Other", true, 0), ("Wanted", true, 1), ("Wanted", false, 0)]
+        {
+            let out = search_document_texts_with_declarations(
+                [("file:///test.pl", source, declarations.as_slice())],
+                TextReferenceQuery {
+                    needle: "mark",
+                    sigil: None,
+                    package: Some(package),
+                    include_declaration,
+                },
+                10,
+            );
+            let expected = if count == 1 {
+                vec![location_value("file:///test.pl", 1, 12, 16)]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(out, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_text_declarations_obey_inclusion_before_cap() -> Result<(), Box<dyn Error>> {
+        let source = "sub Wanted::mark {}\r\nsub Other::Wanted::mark {}\r\nWanted::mark();\r\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        // The parser/projector retain the entire explicit name, not only mark.
+        assert_eq!(declarations.len(), 2);
+        assert_eq!((declarations[0].start, declarations[0].end), (4, 16));
+        assert_eq!(declarations[0].qualified_name, "Wanted::mark");
+        assert_eq!(declarations[1].qualified_name, "Other::Wanted::mark");
+        for include_declaration in [false, true] {
+            for cap in [1, 10] {
+                let out = search_document_texts_with_declarations(
+                    [("file:///test.pl", source, declarations.as_slice())],
+                    TextReferenceQuery {
+                        needle: "Wanted::mark",
+                        sigil: None,
+                        package: Some("Wanted"),
+                        include_declaration,
+                    },
+                    cap,
+                );
+                let mut expected = if include_declaration {
+                    vec![location_value("file:///test.pl", 0, 4, 16)]
+                } else {
+                    Vec::new()
+                };
+                expected.push(location_value("file:///test.pl", 2, 0, 12));
+                expected.truncate(cap);
+                assert_eq!(out, expected, "includeDeclaration={include_declaration}, cap={cap}");
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -757,6 +1441,659 @@ mod tests {
         let out = finalize_reference_locations(locations.split_off(0), 10);
         if out.len() != 2 {
             return Err(format!("expected 2 unique ranges, got {}", out.len()).into());
+        }
+        Ok(())
+    }
+
+    /// #17242 shape 2: one occurrence described at two granularities — the
+    /// index's call-expression span and the text scan's name token share a
+    /// start — answers once, keeping the name token.
+    #[test]
+    fn same_start_call_span_and_name_token_collapse_to_the_name_token() -> Result<(), Box<dyn Error>>
+    {
+        let locations = vec![
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 8},
+                    "end": {"line": 4, "character": 23},
+                },
+            }),
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 8},
+                    "end": {"line": 4, "character": 20},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 1 {
+            return Err(format!("one occurrence must answer once, got {out:?}").into());
+        }
+        let end = out[0]["range"]["end"]["character"].as_u64().ok_or("missing end")?;
+        if end != 20 {
+            return Err(format!("the narrowest (name-token) range must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #17242 shape 1b: the index spells the drive letter as stored on disk,
+    /// the open-document tier keys it lowercased; the same range under both
+    /// spellings is one entry.
+    #[test]
+    fn canonical_uri_key_collapses_drive_case_duplicates() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/dir/a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 4},
+                    "end": {"line": 4, "character": 16},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/dir/a.pl",
+                "range": {
+                    "start": {"line": 4, "character": 4},
+                    "end": {"line": 4, "character": 16},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 1 {
+            return Err(format!("drive-case spellings are one location, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112: the index stores the full `$self->foo` call-expression span
+    /// under the bare method name while the text scan emits the name token;
+    /// the pair has different starts but one contains the other, so both
+    /// survive exact and same-start dedup. The contained pair must answer
+    /// once, as the name token.
+    #[test]
+    fn contained_call_span_and_name_token_collapse_to_the_name_token() -> Result<(), Box<dyn Error>>
+    {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/a.pl",
+                "range": {
+                    "start": {"line": 7, "character": 11},
+                    "end": {"line": 7, "character": 21},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/a.pl",
+                "range": {
+                    "start": {"line": 7, "character": 18},
+                    "end": {"line": 7, "character": 21},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 1 {
+            return Err(format!("contained pair must answer once, got {out:?}").into());
+        }
+        let start = out[0]["range"]["start"]["character"].as_u64().ok_or("missing start")?;
+        let end = out[0]["range"]["end"]["character"].as_u64().ok_or("missing end")?;
+        if (start, end) != (18, 21) {
+            return Err(format!("the name token must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: an index-only answer (non-open file, deadline path)
+    /// holds call-expression wrappers only. `foo(foo())` then finalizes
+    /// from the two wrappers alone, and bare containment must not eat the
+    /// outer genuine call: neither wrapper is the other's name token.
+    #[test]
+    fn index_only_nested_call_spans_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // foo(foo()) : outer call 0-10, inner call 4-9, no name tokens
+        let locations = vec![mk(0, 10), mk(4, 9)];
+        let out = finalize_reference_locations(locations, 10);
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 10), (4, 9)] {
+            return Err(format!("both index-only nested calls must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: with includeDeclaration, a one-line
+    /// `sub foo { return foo(); }` puts the whole-sub declaration span
+    /// (0-21) around the recursive call span (9-20) on one line. The
+    /// declaration is a distinct entry, not the call's wrapper, so both
+    /// must survive.
+    #[test]
+    fn declaration_span_and_contained_call_both_survive_containment_dedup()
+    -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        let locations = vec![mk(0, 21), mk(9, 20)];
+        let out = finalize_reference_locations(locations, 10);
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 21), (9, 20)] {
+            return Err(format!("declaration and contained call must both survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: a common symbol can finalize thousands of mostly
+    /// unrelated locations (one contained pair per file across many
+    /// files). Every genuine location must survive, each wrapper must
+    /// still collapse to its name token, and the grouped pass must not
+    /// turn the count quadratic in practice.
+    #[test]
+    fn finalize_many_unrelated_locations_all_survive() -> Result<(), Box<dyn Error>> {
+        let mut locations: Vec<Value> = Vec::new();
+        for file in 0..200u64 {
+            for line in 0..25u64 {
+                locations.push(json!({
+                    "uri": format!("file:///mod{file}.pl"),
+                    "range": {
+                        "start": {"line": line, "character": 4},
+                        "end": {"line": line, "character": 7},
+                    },
+                }));
+            }
+            // One contained wrapper pair on line 0 of each file: the
+            // wrapper (2-7) end-anchors to the line-0 name token (4-7).
+            locations.push(json!({
+                "uri": format!("file:///mod{file}.pl"),
+                "range": {
+                    "start": {"line": 0, "character": 2},
+                    "end": {"line": 0, "character": 7},
+                },
+            }));
+        }
+        let out = finalize_reference_locations(locations, 10_000);
+        // 200 files * 25 tokens; each wrapper (2-7) is dropped in favor
+        // of its end-anchored name token already in the set, so the
+        // count stays 5000 rather than growing to 5200.
+        if out.len() != 5000 {
+            return Err(format!("all genuine locations must survive, got {}", out.len()).into());
+        }
+        Ok(())
+    }
+
+    /// #18112: every finalized location in one file must carry the canonical
+    /// URI spelling (lowercase drive letter, path case preserved), even when
+    /// the producers disagreed on drive case.
+    #[test]
+    fn finalize_emits_canonical_uri_for_all_locations_in_a_file() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/Dir/a.pl",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/Dir/a.pl",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 3},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("distinct ranges must both survive, got {out:?}").into());
+        }
+        for loc in &out {
+            let uri = loc["uri"].as_str().ok_or("missing uri")?;
+            if uri != "file:///f:/Dir/a.pl" {
+                return Err(format!("uri must be canonical lowercase-drive: {out:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// #18112 preservation: `uri_key` passes non-file URIs through unchanged,
+    /// so canonical emission must not rewrite them.
+    #[test]
+    fn finalize_preserves_untitled_and_non_file_uris() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "untitled:Untitled-1",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+            json!({
+                "uri": "git:/Dir/a.pl?ref=HEAD",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("distinct URIs must both survive, got {out:?}").into());
+        }
+        let mut uris: Vec<&str> = out.iter().filter_map(|loc| loc["uri"].as_str()).collect();
+        uris.sort_unstable();
+        if uris != vec!["git:/Dir/a.pl?ref=HEAD", "untitled:Untitled-1"] {
+            return Err(format!("non-file URIs must pass through byte-identical: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: `$x->foo->foo()` nests two genuine occurrences. The
+    /// full-expression and inner-call spans contain name tokens, but the
+    /// two name tokens are distinct occurrences and must both survive.
+    #[test]
+    fn chained_method_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // $x->foo->foo() : full 0-14, inner call 0-7, tokens 4-7 and 9-12
+        let locations = vec![mk(0, 14), mk(0, 7), mk(4, 7), mk(9, 12)];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("two chained occurrences must survive, got {out:?}").into());
+        }
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(4, 7), (9, 12)] {
+            return Err(format!("the two name tokens must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #9825: source-backed identifier narrowing turns a whole-call span
+    /// into the name token so exact dedup can collapse overlapping producers.
+    #[test]
+    fn named_finalize_narrows_call_expression_to_the_identifier() -> Result<(), Box<dyn Error>> {
+        let docs = vec![(
+            "file:///a.pl".to_owned(),
+            "my $one = work();\nmy $a = Greeter::greet($obj);\nsub greet { greet(greet()); }\n"
+                .to_owned(),
+        )];
+        let mk = |line: u64, start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": line, "character": start},
+                    "end": {"line": line, "character": end},
+                },
+            })
+        };
+        // `work()` 10-16 must become `work` 10-14.
+        let out = finalize_named_reference_locations(vec![mk(0, 10, 16)], 10, &docs, "work", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (10, 14) {
+            return Err(format!("work() must narrow to `work`, got {out:?}").into());
+        }
+
+        // Whole call 8-28 plus identifier 17-22 collapse to one `greet`.
+        let out = finalize_named_reference_locations(
+            vec![mk(1, 8, 28), mk(1, 17, 22)],
+            10,
+            &docs,
+            "greet",
+            None,
+        );
+        if out.len() != 1 {
+            return Err(
+                format!("one Greeter::greet($obj) site must answer once, got {out:?}").into()
+            );
+        }
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (17, 22) {
+            return Err(format!("qualified call must narrow to `greet`, got {out:?}").into());
+        }
+
+        // One-character `sub` range on `sub greet` rewrites to the name.
+        let out = finalize_named_reference_locations(vec![mk(2, 0, 1)], 10, &docs, "greet", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (4, 9) {
+            return Err(format!("`sub` keyword range must become `greet`, got {out:?}").into());
+        }
+
+        // Nested greet(greet()) keeps two identifier occurrences.
+        let out = finalize_named_reference_locations(
+            vec![mk(2, 12, 25), mk(2, 18, 24)],
+            10,
+            &docs,
+            "greet",
+            None,
+        );
+        if out.len() != 2 {
+            return Err(format!("nested calls must stay two occurrences, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sub_keyword_fallback_does_not_rewrite_unrelated_ranges() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = foo(); foo();\n".to_owned())];
+        // Range over `();` between calls: no name token inside and not a `sub` span.
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 13},
+                "end": {"line": 0, "character": 16},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (13, 16) {
+            return Err(
+                format!("range without an in-span name must stay unchanged, got {out:?}").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_method_call_span_narrows_to_the_method_name() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = bar(foo())->foo();\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 7},
+                "end": {"line": 0, "character": 23},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        // `bar(foo())->foo()` method token is 20-23, argument `foo` is 11-14.
+        if span != (20, 23) {
+            return Err(format!("method `foo` must win over argument `foo`, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sigiled_string_interpolation_picks_matching_sigil() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $s = \"@foo $foo\";\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 9},
+                "end": {"line": 0, "character": 19},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", Some('$'));
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (14, 18) {
+            return Err(
+                format!("`$foo` query must narrow to scalar, not `@foo`, got {out:?}").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn method_call_narrows_to_the_method_token_not_the_receiver() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = $greet->greet();\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 7},
+                "end": {"line": 0, "character": 23},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "greet", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        // `$greet->greet()`: receiver is 8-13, method is 16-21.
+        if span != (16, 21) {
+            return Err(format!("method call must narrow to the method token, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn named_finalize_leaves_closed_file_ranges_unchanged() -> Result<(), Box<dyn Error>> {
+        let locations = vec![json!({
+            "uri": "file:///closed.pl",
+            "range": {
+                "start": {"line": 0, "character": 10},
+                "end": {"line": 0, "character": 16},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &[], "work", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (10, 16) {
+            return Err(format!(
+                "closed-file call span must stay wide without source, got {out:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_call_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // foo(foo()) : outer 0-10, inner 4-9, tokens 0-3 and 4-7
+        let locations = vec![mk(0, 10), mk(4, 9), mk(0, 3), mk(4, 7)];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("two nested occurrences must survive, got {out:?}").into());
+        }
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 3), (4, 7)] {
+            return Err(format!("the two name tokens must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shrink_declaration_span_narrows_to_the_queried_name_token() -> Result<(), Box<dyn Error>> {
+        let doc_text = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nsub cross_target {\n    my ($x) = @_;\n    return $x + 1;\n}\n\n1;\n";
+        let mut def = crate::workspace_index::Location {
+            uri: "file:///F:/dir/xlib.pl".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 43, line: 4, column: 0 },
+                end: perl_workspace::position::Position { byte: 100, line: 7, column: 1 },
+            },
+        };
+        shrink_declaration_span_to_name_span(
+            &mut def,
+            &[("file:///f:/dir/xlib.pl", doc_text)],
+            "cross_target",
+            None,
+        );
+        if def.range.start.line != 4
+            || def.range.start.column != 4
+            || def.range.end.line != 4
+            || def.range.end.column != 16
+        {
+            return Err(format!("declaration must narrow to its name token: {def:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #17540 item 1: a same-line declaration after non-ASCII must slice by
+    /// line-relative bytes, not by the index's UTF-16 column. `é` is one
+    /// UTF-16 unit and two UTF-8 bytes, so `sub`'s column (13) is not its
+    /// byte (14). Using the column as a byte index also writes the byte
+    /// offset of `foo` (18) back as an LSP column (should be 17).
+    #[test]
+    fn shrink_declaration_span_after_non_ascii_uses_bytes_not_utf16_columns()
+    -> Result<(), Box<dyn Error>> {
+        let doc_text = "my $x = \"é\"; sub foo {}\n";
+        let mut def = crate::workspace_index::Location {
+            uri: "file:///F:/dir/xlib.pl".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 14, line: 0, column: 13 },
+                end: perl_workspace::position::Position { byte: 24, line: 0, column: 23 },
+            },
+        };
+        shrink_declaration_span_to_name_span(
+            &mut def,
+            &[("file:///f:/dir/xlib.pl", doc_text)],
+            "foo",
+            None,
+        );
+        if def.range.start.line != 0
+            || def.range.start.byte != 18
+            || def.range.start.column != 17
+            || def.range.end.line != 0
+            || def.range.end.byte != 21
+            || def.range.end.column != 20
+        {
+            return Err(format!(
+                "name token after é must be bytes 18..21 and UTF-16 columns 17..20: {def:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// A variable declaration entry narrows to the sigil-inclusive token so it
+    /// matches the text tier's emitted range exactly (`$plugins`, not
+    /// `plugins`) — one column off would defeat the exact dedup (#17242).
+    #[test]
+    fn shrink_includes_the_leading_sigil_for_variable_declarations() -> Result<(), Box<dyn Error>> {
+        let doc_text = "#!/usr/bin/perl
+use strict;
+
+sub setup {
+    my $plugins = $self->plugins;
+    return $plugins;
+}
+";
+        let mut def = crate::workspace_index::Location {
+            uri: "file:///F:/dir/M.pm".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 45, line: 4, column: 0 },
+                end: perl_workspace::position::Position { byte: 78, line: 4, column: 33 },
+            },
+        };
+        shrink_declaration_span_to_name_span(
+            &mut def,
+            &[("file:///f:/dir/M.pm", doc_text)],
+            "plugins",
+            Some('$'),
+        );
+        if def.range.start.line != 4
+            || def.range.start.column != 7
+            || def.range.end.line != 4
+            || def.range.end.column != 15
+        {
+            return Err(format!("variable declaration must narrow to `$plugins`: {def:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shrink_keeps_the_span_without_an_open_document_or_a_standalone_name()
+    -> Result<(), Box<dyn Error>> {
+        let doc_text = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nsub cross_targeted {\n    return 1;\n}\n";
+        let untouched = crate::workspace_index::Location {
+            uri: "file:///F:/dir/xlib.pl".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 43, line: 4, column: 0 },
+                end: perl_workspace::position::Position { byte: 80, line: 6, column: 1 },
+            },
+        };
+        // The declaring document is not open: the index span stays.
+        let mut absent = untouched.clone();
+        shrink_declaration_span_to_name_span(&mut absent, &[], "cross_target", None);
+        if absent != untouched {
+            return Err("an unopened declaration document must keep the index span".into());
+        }
+        // The needle only occurs inside a longer identifier on the line: no
+        // token boundary, no shrink.
+        let mut partial = untouched.clone();
+        shrink_declaration_span_to_name_span(
+            &mut partial,
+            &[("file:///f:/dir/xlib.pl", doc_text)],
+            "cross",
+            None,
+        );
+        if partial != untouched {
+            return Err("a partial-identifier needle must not shrink the span".into());
         }
         Ok(())
     }
