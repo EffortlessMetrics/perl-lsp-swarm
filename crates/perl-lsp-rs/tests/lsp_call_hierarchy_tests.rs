@@ -18,15 +18,19 @@
 
 mod support;
 use serde_json::json;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+// Virtual-document cases own an empty root so indexing cannot scan the host checkout.
+// Keep their synthetic document URIs to preserve open-document resolution coverage.
 /// Tests feature spec: call_hierarchy_provider.rs#prepare
 /// Test basic prepareCallHierarchy at a function definition
 #[test]
 fn test_prepare_call_hierarchy_basic_function() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -70,8 +74,9 @@ sub main {
 /// Test prepareCallHierarchy with method calls
 #[test]
 fn test_prepare_call_hierarchy_method() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -118,8 +123,9 @@ $obj->process();
 /// Test incoming calls (callers of a function)
 #[test]
 fn test_incoming_calls_basic() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -186,8 +192,9 @@ sub say_hi {
 /// Test incoming calls with multiple call sites in same function
 #[test]
 fn test_incoming_calls_multiple_sites() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -247,8 +254,9 @@ sub process {
 /// Test outgoing calls (functions called by this function)
 #[test]
 fn test_outgoing_calls_basic() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -316,8 +324,9 @@ sub main_function {
 /// Test outgoing calls with method calls
 #[test]
 fn test_outgoing_calls_methods() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -389,8 +398,9 @@ sub process_data {
 /// Test detection of recursive function calls
 #[test]
 fn test_recursive_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -474,8 +484,9 @@ sub main {
 /// Test cross-package function calls
 #[test]
 fn test_cross_package_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -544,8 +555,9 @@ App::process();
 /// Test call hierarchy with no calls found
 #[test]
 fn test_no_calls_found() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -597,8 +609,9 @@ sub unused_function {
 /// Test call hierarchy at invalid position (no symbol)
 #[test]
 fn test_prepare_at_invalid_position() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -633,8 +646,9 @@ sub hello {
 /// Test call hierarchy with Unicode function names
 #[test]
 fn test_unicode_function_names() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -680,8 +694,9 @@ sub main {
 /// Test deeply nested function calls
 #[test]
 fn test_nested_function_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -771,8 +786,9 @@ sub main {
 /// Test call hierarchy with anonymous subroutines (edge case)
 #[test]
 fn test_anonymous_subroutines() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -810,8 +826,9 @@ sub main {
 /// Test call hierarchy with complex call expressions
 #[test]
 fn test_complex_call_expressions() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -854,8 +871,9 @@ sub main {
 /// Test call hierarchy with builtin function calls (should not appear in hierarchy)
 #[test]
 fn test_builtin_function_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -901,8 +919,9 @@ sub custom_print {
 /// Test call hierarchy with method calls on specific variables
 #[test]
 fn test_method_calls_on_objects() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let _init = harness.initialize(None)?;
+    let _init = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let doc_uri = "file:///test.pl";
     harness.open(
@@ -980,8 +999,9 @@ sub run_query {
 /// Test that call hierarchy capability is advertised in server capabilities
 #[test]
 fn test_call_hierarchy_capability_advertised() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init_response = harness.initialize(None)?;
+    let init_response = harness.initialize_with_root(&workspace.root_uri, None)?;
 
     let capabilities = &init_response["capabilities"];
 
@@ -999,8 +1019,9 @@ fn test_call_hierarchy_capability_advertised() -> TestResult {
 /// incoming calls from app.pl must appear even though the item URI is Utils.pm.
 #[test]
 fn test_cross_file_incoming_calls() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     // File that defines the target subroutine
     harness.open(
@@ -1070,8 +1091,9 @@ process();
 /// should report the URI of Utils.pm, not app.pl.
 #[test]
 fn test_cross_file_outgoing_calls_uri() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     // File that defines the callee
     harness.open(
@@ -1165,8 +1187,9 @@ process();
 /// multiple same-named subs in different packages.
 #[test]
 fn test_cross_file_outgoing_calls_disambiguate_package_qualified_target() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     harness.open(
         "file:///lib/Alpha.pm",
@@ -1238,8 +1261,9 @@ sub orchestrate {
 /// outgoing call resolution should point fetch() at Repo.pm.
 #[test]
 fn test_cross_file_outgoing_calls_infer_receiver_package() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     harness.open(
         "file:///lib/Repo.pm",
@@ -1301,8 +1325,9 @@ sub process {
 /// Tests fix for issue #2878: workspace-backed incoming calls should refresh after edits.
 #[test]
 fn test_cross_file_incoming_calls_refresh_after_change() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
 
     harness.open(
         "file:///lib/Utils.pm",
@@ -1366,6 +1391,381 @@ sub process {
         after_calls.iter().all(|call| call["from"]["name"] != "process"),
         "process() should disappear from incoming callers after edit, got: {:?}",
         after_calls
+    );
+
+    Ok(())
+}
+
+/// Tests fix for #17370: a reference-creation `\&sub` inside a `\`-expression is
+/// not a call site. The parser shapes the `&sub` operand as `AmperCall` in both
+/// contexts, so call-hierarchy traversal previously claimed `my $cref = \&foo;`
+/// as a call edge while the genuine dynamic invocation stayed unreported — the
+/// semantic result was a phantom call at the reference line.
+///
+/// The zero-argument parenthesized form stays a call site: `\&foo()` invokes
+/// `foo` and references its result, and the parser gives `&foo()` empty `args`
+/// just like bare `&foo`, so the exclusion must key on the operand's parens,
+/// not on argument emptiness (PR #17379 review BUG_0001).
+#[test]
+fn test_incoming_calls_do_not_report_code_reference_creation() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let doc_uri = "file:///test.pl";
+    harness.open(
+        doc_uri,
+        r#"sub indirected {
+    print "indirected body\n";
+}
+
+sub call_both {
+    indirected();
+    &indirected();
+    my $cref = \&indirected;
+    my $result_ref = \&indirected();
+    $cref->();
+    return 1;
+}
+"#,
+    )?;
+
+    // Prepare on `indirected` (line 0, char 4).
+    let prepare_response = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 }
+        }),
+    )?;
+
+    let items = prepare_response.as_array().ok_or("prepareCallHierarchy returned non-array")?;
+    assert!(!items.is_empty(), "prepareCallHierarchy returned empty array");
+    assert_eq!(items[0]["name"], "indirected", "expected to prepare on indirected");
+
+    // incomingCalls on `indirected`: the direct call (line 5), the
+    // symbol-table call `&indirected()` (line 6), and the result-reference
+    // call `\&indirected()` (line 8) are call sites; the reference creation
+    // `\&indirected` (line 7) is not.
+    let incoming_response =
+        harness.request("callHierarchy/incomingCalls", json!({ "item": &items[0] }))?;
+    let calls = incoming_response.as_array().ok_or("incomingCalls returned non-array")?;
+
+    let call_both = calls
+        .iter()
+        .find(|call| call["from"]["name"] == "call_both")
+        .ok_or("expected call_both as incoming caller of indirected")?;
+
+    let ranges = call_both["fromRanges"].as_array().ok_or("fromRanges missing")?;
+    assert_eq!(
+        ranges.len(),
+        3,
+        "reference creation \\&indirected must not be reported as a call site, and the \
+         zero-argument parenthesized \\&indirected() must be; got: {:?}",
+        ranges
+    );
+    for range in ranges {
+        let line = range["start"]["line"].as_u64().ok_or("range start line missing")?;
+        assert_ne!(line, 7, "reference-creation line 7 must not appear in fromRanges");
+        assert!(
+            line == 5 || line == 6 || line == 8,
+            "unexpected call-site line {} in fromRanges: {:?}",
+            line,
+            ranges
+        );
+    }
+
+    // The same exclusion applies to outgoing calls (#17370 cites both
+    // traversal arms): `call_both` must not gain a fromRange at line 7.
+    let prepare_call_both = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 4, "character": 4 }
+        }),
+    )?;
+    let cb_items = prepare_call_both.as_array().ok_or("prepareCallHierarchy returned non-array")?;
+    assert!(!cb_items.is_empty(), "prepareCallHierarchy returned empty array for call_both");
+    assert_eq!(cb_items[0]["name"], "call_both", "expected to prepare on call_both");
+
+    let outgoing_response =
+        harness.request("callHierarchy/outgoingCalls", json!({ "item": &cb_items[0] }))?;
+    let outgoing = outgoing_response.as_array().ok_or("outgoingCalls returned non-array")?;
+
+    let indirected_out = outgoing
+        .iter()
+        .find(|call| call["to"]["name"] == "indirected")
+        .ok_or("expected indirected as outgoing call of call_both")?;
+    let out_ranges =
+        indirected_out["fromRanges"].as_array().ok_or("outgoing fromRanges missing")?;
+    assert_eq!(
+        out_ranges.len(),
+        3,
+        "outgoing indirected edge must carry the three real call sites (bare ref line 7 \
+         excluded, result-ref call line 8 included); got: {:?}",
+        out_ranges
+    );
+    for range in out_ranges {
+        let line = range["start"]["line"].as_u64().ok_or("range start line missing")?;
+        assert_ne!(line, 7, "outgoing edge must not claim the \\&indirected reference line");
+    }
+
+    Ok(())
+}
+
+/// Tests fix for #17369: a bareword class receiver (`Widget->method`) must get
+/// package inference. The parser shapes the bareword object as a plain
+/// `Identifier`, so previously `Pkg->new()` and `Pkg->method()` carried no
+/// `data.packageName`/`data.qualifiedName` and distinct classes' calls
+/// collapsed into one callee keyed by bare method name.
+#[test]
+fn test_outgoing_calls_distinguish_bareword_class_receivers() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let doc_uri = "file:///test.pl";
+    harness.open(
+        doc_uri,
+        r#"sub multi_receiver {
+    my $w = Widget->new();
+    my $g = Gadget->new();
+    $w->activate();
+    $g->activate();
+    Widget->activate();
+    return 1;
+}
+"#,
+    )?;
+
+    // Prepare on `multi_receiver` (line 0, char 4).
+    let prepare_response = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 }
+        }),
+    )?;
+
+    let items = prepare_response.as_array().ok_or("prepareCallHierarchy returned non-array")?;
+    assert!(!items.is_empty(), "prepareCallHierarchy returned empty array");
+    assert_eq!(items[0]["name"], "multi_receiver", "expected to prepare on multi_receiver");
+
+    let outgoing_response =
+        harness.request("callHierarchy/outgoingCalls", json!({ "item": &items[0] }))?;
+    let calls = outgoing_response.as_array().ok_or("outgoingCalls returned non-array")?;
+
+    // Expected per the provider's own design (distinct callees per receiver
+    // package, `data.packageName`/`data.qualifiedName` populated): Widget::new,
+    // Gadget::new, Widget::activate (two call sites), Gadget::activate. Neither
+    // class is defined in this buffer, so the open-document fallback cannot
+    // rescue a bare name — attribution must come from receiver inference.
+    let expected =
+        [("Widget::new", 1), ("Gadget::new", 1), ("Widget::activate", 2), ("Gadget::activate", 1)];
+
+    let mut qualified_keys: Vec<(String, usize)> = Vec::new();
+    for call in calls {
+        let qualified = call["to"]["data"]["qualifiedName"].as_str().ok_or(
+            "outgoing callee missing data.qualifiedName — bareword receiver got no package inference",
+        )?;
+        let range_count = call["fromRanges"].as_array().ok_or("fromRanges missing")?.len();
+        qualified_keys.push((qualified.to_string(), range_count));
+    }
+
+    assert_eq!(
+        qualified_keys.len(),
+        expected.len(),
+        "distinct bareword class receivers must not collapse into one callee; got: {:?}",
+        qualified_keys
+    );
+    for (qualified_name, range_count) in expected {
+        let found = qualified_keys
+            .iter()
+            .find(|(qualified, _)| qualified == qualified_name)
+            .ok_or_else(|| format!("missing outgoing callee {}", qualified_name))?;
+        assert_eq!(
+            found.1, range_count,
+            "callee {} expected {} fromRanges, got {}",
+            qualified_name, range_count, found.1
+        );
+    }
+
+    Ok(())
+}
+
+/// Tests fix for #17368: incomingCalls must dedup a caller that both tiers
+/// report when the item carries `data.*` and the caller file is open. The
+/// workspace-index tier spells the caller URI via `fs_path_to_uri` (on-disk
+/// drive case) while the open-document tier spells it with the documents-map
+/// key (`perl_uri::uri_key`, Windows drive letter lowercased); exact-string
+/// dedup split the same caller into two entries. On non-Windows hosts the two
+/// spellings agree, so this test asserts the single-caller contract without
+/// discriminating there; on Windows it fails against the pre-fix server.
+#[test]
+fn test_incoming_calls_dedup_caller_reported_by_both_tiers() -> TestResult {
+    let chain_pm = r#"package Chain;
+
+sub level3 {
+    return "leaf";
+}
+
+sub level2 {
+    my $r = level3();
+    return $r;
+}
+
+sub level1 {
+    level2();
+    return 1;
+}
+
+1;
+"#;
+
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("lib/Chain.pm", chain_pm)])?;
+
+    // Open the caller file with its on-disk URI (Windows drive letter in
+    // on-disk case, e.g. `file:///C:/...`); the documents map keys it through
+    // `uri_key` while the index tier keeps the `fs_path_to_uri` spelling.
+    let chain_uri = workspace.uri("lib/Chain.pm");
+    harness.open(&chain_uri, chain_pm)?;
+    harness.barrier();
+
+    // Prepare on `level1` (line 11, char 4).
+    let prepare_response = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": chain_uri },
+            "position": { "line": 11, "character": 4 }
+        }),
+    )?;
+
+    let items = prepare_response.as_array().ok_or("prepareCallHierarchy returned non-array")?;
+    assert!(!items.is_empty(), "prepareCallHierarchy returned empty array");
+    assert_eq!(items[0]["name"], "level1", "expected to prepare on level1");
+
+    // Standard client drill-down: outgoingCalls returns a `to` item carrying
+    // `data.*`; passing that item back to incomingCalls is what gates the
+    // index tier on and exposed the two-tier URI mismatch.
+    let outgoing_response =
+        harness.request("callHierarchy/outgoingCalls", json!({ "item": &items[0] }))?;
+    let outgoing = outgoing_response.as_array().ok_or("outgoingCalls returned non-array")?;
+    let level2_call = outgoing
+        .iter()
+        .find(|call| call["to"]["name"] == "level2")
+        .ok_or("expected level2 as outgoing call of level1")?;
+    let level2_item = level2_call["to"].clone();
+
+    let incoming_response =
+        harness.request("callHierarchy/incomingCalls", json!({ "item": level2_item }))?;
+    let calls = incoming_response.as_array().ok_or("incomingCalls returned non-array")?;
+
+    let level1_callers: Vec<&serde_json::Value> =
+        calls.iter().filter(|call| call["from"]["name"] == "level1").collect();
+    assert_eq!(
+        level1_callers.len(),
+        1,
+        "the same caller reported by both tiers must appear once, got: {:?}",
+        calls
+    );
+
+    let caller = level1_callers[0];
+    let ranges = caller["fromRanges"].as_array().ok_or("fromRanges missing")?;
+    assert_eq!(
+        ranges.len(),
+        1,
+        "the single level2() call site must appear once; got: {:?}",
+        ranges
+    );
+    assert_eq!(
+        ranges[0]["start"]["line"], 12,
+        "level2() call site is on line 12; got: {:?}",
+        ranges
+    );
+
+    Ok(())
+}
+
+/// Tests fix for #17442: the workspace-index tier of incomingCalls must apply
+/// the same code-reference classification as the open-document tier (#17370).
+/// A `\&foo` reference creation indexed in the workspace must not appear as
+/// an incoming call range, while `\&foo()` (a real call whose result is
+/// referenced) and a plain `foo()` call must keep appearing.
+#[test]
+fn test_incoming_calls_workspace_index_do_not_report_code_reference_creation() -> TestResult {
+    let p_pm = r#"package P;
+
+sub foo {
+    return 1;
+}
+
+1;
+"#;
+    // The caller file is indexed by the workspace but never opened, so the
+    // open-document tier cannot mask the workspace-index tier here.
+    let caller_pm = r#"package Caller;
+
+sub caller {
+    my $cb = \&P::foo;
+    my $result_ref = \&P::foo();
+    P::foo();
+    return $cb;
+}
+
+1;
+"#;
+
+    let (mut harness, workspace) =
+        LspHarness::with_workspace(&[("lib/P.pm", p_pm), ("lib/Caller.pm", caller_pm)])?;
+    let p_uri = workspace.uri("lib/P.pm");
+    harness.open(&p_uri, p_pm)?;
+    harness.barrier();
+
+    // Prepare on `foo` (line 2, char 4). The prepared item is enriched with
+    // workspace data, which gates the workspace-index tier on.
+    let prepare_response = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": p_uri },
+            "position": { "line": 2, "character": 4 }
+        }),
+    )?;
+    let items = prepare_response.as_array().ok_or("prepareCallHierarchy returned non-array")?;
+    assert!(!items.is_empty(), "prepareCallHierarchy returned empty array");
+    assert_eq!(items[0]["name"], "foo", "expected to prepare on foo");
+
+    // Pass the enriched drill-down shape a client returns (as produced by
+    // outgoingCalls): the `data.*` fields are what gate the index tier on.
+    let mut item = items[0].clone();
+    item["data"] = json!({ "packageName": "P", "qualifiedName": "P::foo" });
+    let incoming_response =
+        harness.request("callHierarchy/incomingCalls", json!({ "item": item }))?;
+    let calls = incoming_response.as_array().ok_or("incomingCalls returned non-array")?;
+
+    let caller = calls
+        .iter()
+        .find(|call| call["from"]["name"] == "caller")
+        .ok_or("expected caller as incoming caller of foo")?;
+    let ranges = caller["fromRanges"].as_array().ok_or("fromRanges missing")?;
+    for range in ranges {
+        let line = range["start"]["line"].as_u64().ok_or("range start line missing")?;
+        assert_ne!(
+            line, 3,
+            "reference-creation line 3 must not appear in fromRanges: {:?}",
+            ranges
+        );
+        assert!(
+            line == 4 || line == 5,
+            "unexpected call-site line {} in fromRanges: {:?}",
+            line,
+            ranges
+        );
+    }
+    assert_eq!(
+        ranges.len(),
+        2,
+        "only the real call sites on lines 4 and 5 must be reported; got: {:?}",
+        ranges
     );
 
     Ok(())

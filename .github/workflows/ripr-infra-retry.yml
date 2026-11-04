@@ -15,6 +15,9 @@
 # workflow_run event for the retried completion arrives with run_attempt >= 2.
 # Deliveries are serialized per source run (concurrency group + live re-read
 # before arming) so duplicate events cannot double-arm the single retry.
+# Pull-request recovery additionally requires the event's source SHA to remain
+# the tip of its source repository/branch. Push/manual/history recovery keeps
+# the existing policy; evaluated merge freshness and PR admission are separate.
 #
 # Security posture: this workflow runs in the default-branch context with an
 # actions:write token, so it must never check out or execute candidate code.
@@ -60,6 +63,9 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
 
@@ -175,7 +181,6 @@ jobs:
             exit 0
           fi
 
-          echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for the same evaluated tree."
           # Re-read the live run immediately before arming (review round 2):
           # a duplicate delivery that queued behind the concurrency group must
           # observe the bumped attempt / in-flight status and skip, so the
@@ -190,6 +195,42 @@ jobs:
             summary "decision: \`skip (bound already armed or consumed — race with another delivery)\`"
             exit 0
           fi
+
+          # Only PR-origin automatic recovery needs source-branch freshness.
+          # Read the exact ref in the event's SOURCE repository, including a
+          # fork; do not guess a PR association or substitute the base repo.
+          # HEAD_SHA is the event's branch SHA, never gate_head's merge SHA.
+          if [ -z "${SOURCE_EVENT:-}" ]; then
+            echo "::notice::source event identity missing — freshness NOT_PROVEN; no automatic retry."
+            summary "decision: \`skip (source event identity missing)\`"
+            exit 0
+          fi
+          if [ "${SOURCE_EVENT}" = "pull_request" ]; then
+            if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ||
+                  ! "${SOURCE_REPOSITORY:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ||
+                  -z "${SOURCE_BRANCH:-}" ]]; then
+              echo "::notice::PR source identity missing or malformed — freshness NOT_PROVEN; no automatic retry."
+              summary "decision: \`skip (PR source identity missing or malformed)\`"
+              exit 0
+            fi
+            source_ref=$(jq -jn --arg branch "${SOURCE_BRANCH}" '"heads/" + $branch | @uri')
+            if ! live_source_head=$(gh api "repos/${SOURCE_REPOSITORY}/git/ref/${source_ref}" \
+              --jq '.object.sha' 2>/dev/null) ||
+              [[ ! "${live_source_head}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::notice::PR source ref unavailable — freshness NOT_PROVEN; no automatic retry."
+              summary "decision: \`skip (PR source ref unavailable)\`"
+              exit 0
+            fi
+            if [ "${live_source_head}" != "${HEAD_SHA}" ]; then
+              echo "::notice::PR source head ${HEAD_SHA} is superseded by ${live_source_head}; no automatic retry."
+              summary "decision: \`skip (superseded PR source head)\`" \
+                      "current source head: \`${live_source_head}\`"
+              exit 0
+            fi
+          fi
+          # Freshness is observed immediately before POST, not an atomic lease:
+          # the rerun API has no expected-source-head precondition.
+          echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for the same evaluated tree."
           gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/rerun-failed-jobs"
 
           summary \

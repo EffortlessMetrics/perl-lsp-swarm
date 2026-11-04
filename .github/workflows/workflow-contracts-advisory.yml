@@ -26,6 +26,8 @@ on:
     paths:
       - ".github/workflows/**"
       - "scripts/ci/test_codecov_test_results_workflows.py"
+      - "scripts/ci/test_perf_nightly_alert.py"
+      - "scripts/bash_binary.py"
       - "xtask/src/tasks/workflows.rs"
       - "xtask/src/tasks/workflow_policy_lint.rs"
       - "policy/workflow-contracts.toml"
@@ -37,6 +39,8 @@ on:
     paths:
       - ".github/workflows/**"
       - "scripts/ci/test_codecov_test_results_workflows.py"
+      - "scripts/ci/test_perf_nightly_alert.py"
+      - "scripts/bash_binary.py"
       - "xtask/src/tasks/workflows.rs"
       - "policy/workflow-contracts.toml"
       - "xtask/src/main.rs"
@@ -72,6 +76,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup nightly alert regression dependencies
+        run: |
+          command -v bash
+          command -v jq
+          python3 -m venv "$RUNNER_TEMP/nightly-alert-venv"
+          "$RUNNER_TEMP/nightly-alert-venv/bin/python" -m pip install --disable-pip-version-check --quiet 'PyYAML==6.0.3'
+
+      - name: Run nightly alert regression
+        run: '"$RUNNER_TEMP/nightly-alert-venv/bin/python" -B scripts/ci/test_perf_nightly_alert.py -v'
 
       - name: Codecov test-results contract
         run: python3 -m unittest scripts.ci.test_codecov_test_results_workflows

@@ -1,6 +1,6 @@
 ---
 name: publish-pr
-description: Publish one locally complete coherent candidate through a concise GitHub review index, ready by default, with draft reserved for a named remote-only proof or collaboration need.
+description: Publish one locally complete coherent candidate through a concise GitHub review index, with frequent draft publication and explicit late qualification after substantive review.
 user-invocable: false
 ---
 
@@ -10,9 +10,16 @@ Verify candidate, branch, base, worktree, controlling issue, an equivalent activ
 
 Publish ready only when applicable focused/affected proof and negative protection are current; hardening, simplification, and local candidate review are complete; the worktree is clean; the published file set matches the intended worktree change set — compare `gh pr diff --name-only <n>` or the created PR's file list against the intended changed paths, because a squash or partial stage must not silently drop an intended file; the branch head passes `cargo fmt -p <pkg> -- --check` and its merge-base result is classified — the head check is binding, the base check diagnostic, naming inherited base-redness at publish time so a drift-repair candidate whose base is red by construction still publishes; the issue/claim/contract are current; and Changie/changelog, support, migration, and release dispositions are complete or not applicable.
 
-Otherwise return to `build-candidate`. Draft only for a named remote-only proof, real collaboration, early visible ownership, or protected integration experiment. Record that reason and its completion condition in the PR body.
+Otherwise return to `build-candidate`. Use focused draft publication for ongoing collaboration and independent review, as well as named remote-only proof, early visible ownership, or protected integration experiments. Record that reason and its completion condition in the PR body.
 
 For an existing draft, inspect the named condition. Once complete, recheck the entire ready threshold and explicitly mark the PR ready through Claude's native GitHub surface or `gh pr ready <n>`. Do not leave a completed draft in a repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair rather than marking ready.
+
+Before changing readiness, inspect the actual workflow triggers. Readiness is not an
+explicit qualification request, but independent producers may still start expensive
+work on that event during partial adoption. Follow the shared development method's
+late-qualification boundary only after substantive review is current; consume the real
+#17900 request operation when available, and report its absence rather than inventing
+one. Preserve all mandatory proof and live protection requirements; publish draft evidence honestly.
 
 ## PR review index
 

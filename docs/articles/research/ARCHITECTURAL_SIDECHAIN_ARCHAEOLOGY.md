@@ -28,9 +28,9 @@ The repo's own meta-analysis captures the arc well: the fast parser sprint prove
 parsing was viable, but the later period focused on guardrails, crate boundaries, and
 mechanical quality enforcement. See:
 
-- [docs/project/CODEBASE_HISTORY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CODEBASE_HISTORY.md)
-- [docs/project/META_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/META_ANALYSIS.md)
-- [docs/project/PARSER_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/PARSER_EVOLUTION.md)
+- [docs/project/CODEBASE_HISTORY.md](../../project/CODEBASE_HISTORY.md)
+- [docs/project/META_ANALYSIS.md](../../project/META_ANALYSIS.md)
+- [docs/project/PARSER_EVOLUTION.md](../../project/PARSER_EVOLUTION.md)
 
 That is why this phase belongs in the story. It is the architectural buffer between the parser
 breakthrough and the swarm-scale execution model.
@@ -41,12 +41,12 @@ breakthrough and the swarm-scale execution model.
 
 The sidechain is visible in the docs and ADRs that were added or hardened during this window:
 
-- [ADR-0008: Microcrate Architecture](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0008-microcrate-architecture.md)
-- [ADR-0010: Incremental Parsing Architecture](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0010-incremental-parsing-architecture.md)
-- [ADR-0023: include! Macro Architecture](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0023-include-macro-architecture.md)
-- [ADR-0031: Async Runtime Migration with Concurrent Dispatch](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0031-async-runtime-concurrent-dispatch.md)
-- [docs/reference/MODERN_ARCHITECTURE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/MODERN_ARCHITECTURE.md)
-- [docs/reference/ARCHITECTURE_OVERVIEW.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/ARCHITECTURE_OVERVIEW.md)
+- [ADR-0008: Microcrate Architecture](../../adr/0008-microcrate-architecture.md)
+- [ADR-0010: Incremental Parsing Architecture](../../adr/0010-incremental-parsing-architecture.md)
+- [ADR-0023: include! Macro Architecture](../../adr/0023-include-macro-architecture.md)
+- [ADR-0031: Async Runtime Migration with Concurrent Dispatch](../../adr/0031-async-runtime-concurrent-dispatch.md)
+- [docs/reference/MODERN_ARCHITECTURE.md](../../reference/MODERN_ARCHITECTURE.md)
+- [docs/reference/ARCHITECTURE_OVERVIEW.md](../../reference/ARCHITECTURE_OVERVIEW.md)
 
 The pattern is consistent:
 
@@ -83,9 +83,9 @@ behavior practical. That required a slower, more architectural middle period.
 
 Relevant history docs:
 
-- [docs/project/PARSER_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/PARSER_EVOLUTION.md)
-- [docs/reference/MUTATION_TESTING_METHODOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/MUTATION_TESTING_METHODOLOGY.md)
-- [docs/project/QUALITY_INFRASTRUCTURE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/QUALITY_INFRASTRUCTURE.md)
+- [docs/project/PARSER_EVOLUTION.md](../../project/PARSER_EVOLUTION.md)
+- [docs/reference/MUTATION_TESTING_METHODOLOGY.md](../../reference/MUTATION_TESTING_METHODOLOGY.md)
+- [docs/project/QUALITY_INFRASTRUCTURE.md](../../project/QUALITY_INFRASTRUCTURE.md)
 
 The slowdown was therefore not lost momentum. It was the price of making later parallelism
 trustworthy.
@@ -133,9 +133,9 @@ trust layer.
 
 See also:
 
-- [docs/project/AGENTIC_SWARM_ERA.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_SWARM_ERA.md)
-- [docs/project/AGENTIC_DEVELOPMENT.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEVELOPMENT.md)
-- [docs/project/CURRENT_STATUS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
+- [docs/project/AGENTIC_SWARM_ERA.md](../../project/AGENTIC_SWARM_ERA.md)
+- [docs/project/AGENTIC_DEVELOPMENT.md](../../project/AGENTIC_DEVELOPMENT.md)
+- [docs/project/CURRENT_STATUS.md](../../project/CURRENT_STATUS.md)
 
 The hidden lesson is that later swarm speed is mostly a verification story, not a generation
 story.
@@ -148,8 +148,8 @@ The January 2026 Jules burst belongs inside this architectural phase, not beside
 
 The tracked docs show Jules as a high-volume but highly selective bridge phase:
 
-- [docs/project/JULES_BOT_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md)
-- [docs/project/AGENTIC_SWARM_ERA.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_SWARM_ERA.md)
+- [docs/project/JULES_BOT_ANALYSIS.md](../../project/JULES_BOT_ANALYSIS.md)
+- [docs/project/AGENTIC_SWARM_ERA.md](../../project/AGENTIC_SWARM_ERA.md)
 
 What happened in January is not just "Jules arrived." What happened is:
 
@@ -203,15 +203,15 @@ parallelism had something solid to run on.
 
 ## Evidence Pointers
 
-- [docs/project/CODEBASE_HISTORY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CODEBASE_HISTORY.md)
-- [docs/project/META_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/META_ANALYSIS.md)
-- [docs/project/PARSER_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/PARSER_EVOLUTION.md)
-- [docs/project/JULES_BOT_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md)
-- [docs/project/AGENTIC_SWARM_ERA.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_SWARM_ERA.md)
-- [docs/reference/MODERN_ARCHITECTURE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/MODERN_ARCHITECTURE.md)
-- [docs/reference/ARCHITECTURE_OVERVIEW.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/ARCHITECTURE_OVERVIEW.md)
-- [docs/reference/MUTATION_TESTING_METHODOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/MUTATION_TESTING_METHODOLOGY.md)
-- [docs/adr/0008-microcrate-architecture.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0008-microcrate-architecture.md)
-- [docs/adr/0010-incremental-parsing-architecture.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0010-incremental-parsing-architecture.md)
-- [docs/adr/0023-include-macro-architecture.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0023-include-macro-architecture.md)
-- [docs/adr/0031-async-runtime-concurrent-dispatch.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/adr/0031-async-runtime-concurrent-dispatch.md)
+- [docs/project/CODEBASE_HISTORY.md](../../project/CODEBASE_HISTORY.md)
+- [docs/project/META_ANALYSIS.md](../../project/META_ANALYSIS.md)
+- [docs/project/PARSER_EVOLUTION.md](../../project/PARSER_EVOLUTION.md)
+- [docs/project/JULES_BOT_ANALYSIS.md](../../project/JULES_BOT_ANALYSIS.md)
+- [docs/project/AGENTIC_SWARM_ERA.md](../../project/AGENTIC_SWARM_ERA.md)
+- [docs/reference/MODERN_ARCHITECTURE.md](../../reference/MODERN_ARCHITECTURE.md)
+- [docs/reference/ARCHITECTURE_OVERVIEW.md](../../reference/ARCHITECTURE_OVERVIEW.md)
+- [docs/reference/MUTATION_TESTING_METHODOLOGY.md](../../reference/MUTATION_TESTING_METHODOLOGY.md)
+- [docs/adr/0008-microcrate-architecture.md](../../adr/0008-microcrate-architecture.md)
+- [docs/adr/0010-incremental-parsing-architecture.md](../../adr/0010-incremental-parsing-architecture.md)
+- [docs/adr/0023-include-macro-architecture.md](../../adr/0023-include-macro-architecture.md)
+- [docs/adr/0031-async-runtime-concurrent-dispatch.md](../../adr/0031-async-runtime-concurrent-dispatch.md)

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Preserve known signature help and active argument selection in unfinished calls after Unicode text, including DBI method signatures."
+time: 2026-10-13T02:56:08Z
+custom:
+  PR: "17787"
+  Slug: signature-help-unicode-byte-cursor
+  Breaking: "no"

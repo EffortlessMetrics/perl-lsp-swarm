@@ -1,5 +1,9 @@
 # 2026-06 Convergence-to-Release Plan
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../../agents/AUTHORITY_STATUS.md); current product status: [Current product status](../CURRENT_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../../agents/AUTHORITY_STATUS.md).
+
 > This is a human-owned narrative plan, not a generated status doc.
 > Live metrics belong in [docs/project/status/index.md](../status/index.md).
 > Issue/PR numbers here are stable references, not status claims — check the

@@ -14,6 +14,7 @@ keywords = ["perl", "parser", "ast", "error-recovery", "lsp"]
 categories = ["parsing", "development-tools", "text-editors"]
 include = [
   "src/**",
+  "tests/unit/token_stream_checkpoint_contract.rs",
   "Cargo.toml",
   "LICENSE*",
   "README.md"

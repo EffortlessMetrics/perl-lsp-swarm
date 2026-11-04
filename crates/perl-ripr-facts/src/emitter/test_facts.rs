@@ -11,6 +11,7 @@ use perl_symbol::surface::{SymbolRefKind, extract_symbol_refs};
 use serde_json::{Value, json};
 
 use super::discovery::collect_t_files;
+use super::matcher_grading::{MatcherGrade, grade_matchers};
 use super::oracles::oracle_for;
 
 /// Recognized test frameworks, most-specific first. Maps a module name (as it
@@ -142,16 +143,22 @@ pub(crate) fn emit_tests_and_oracles(
         // `expression` while `content` is still borrowed — then `content` can
         // move into `LineIndex` (no clone) for the range conversions.
         let (framework, use_span) = framework_from_ast(&ast);
+        let graded = grade_matchers(&ast);
         let oracle_hits: Vec<(String, &'static str, &'static str, usize, usize, String)> =
             extract_symbol_refs(&ast)
                 .into_iter()
                 .filter(|reference| reference.kind == SymbolRefKind::SubroutineCall)
                 .filter_map(|reference| {
-                    oracle_for(&reference.name).map(|(kind, strength)| {
-                        let (start_byte, end_byte) = reference.full_span;
-                        let expression = call_expression(&content, start_byte, end_byte);
-                        (reference.name, kind, strength, start_byte, end_byte, expression)
-                    })
+                    let (start_byte, end_byte) = reference.full_span;
+                    // An exception block nested in a graded `like(dies {...}, ...)`
+                    // is the same observation as the `like`, not a second oracle.
+                    if graded.iter().any(|call| call.nested_start == Some(start_byte)) {
+                        return None;
+                    }
+                    let (kind, strength) = graded_oracle(&reference.name, start_byte, &graded)
+                        .or_else(|| oracle_for(&reference.name))?;
+                    let expression = call_expression(&content, start_byte, end_byte);
+                    Some((reference.name, kind, strength, start_byte, end_byte, expression))
                 })
                 .collect();
 
@@ -231,6 +238,23 @@ pub(crate) fn emit_tests_and_oracles(
     }
 
     (tests, oracles, provenance, limitations)
+}
+
+/// The matcher-graded `(kind, strength)` for a `throws_ok` or
+/// `like(dies {...}, ...)` call starting at `start`, if it was graded.
+/// A `like` over an exception block observes an exception, so it reports
+/// `exception_observer` rather than the value-`like` kind.
+fn graded_oracle(
+    name: &str,
+    start: usize,
+    graded: &[super::matcher_grading::GradedCall],
+) -> Option<(&'static str, &'static str)> {
+    let call = graded.iter().find(|call| call.name == name && call.start == start)?;
+    let strength = match call.grade {
+        MatcherGrade::Pinned => "strong_exact",
+        MatcherGrade::Broad => "weak_broad",
+    };
+    Some(("exception_observer", strength))
 }
 
 /// The whole-file range `(0,0)..(end)` as a schema range value.
