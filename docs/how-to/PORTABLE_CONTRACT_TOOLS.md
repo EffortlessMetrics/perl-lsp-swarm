@@ -66,6 +66,53 @@ aqua exec -- <tool> <arguments>
 
 The existing Nix and checksum-install workflows remain in place during the foundation phase. A later PR may consolidate those paths after Linux, macOS, Windows, and forked-PR behavior have receipts.
 
+## GitHub CLI for native review
+
+The Aqua inventory above does not install `gh`; the Nix development shell
+includes it. Native review and feedback collection require **gh 2.63.0 or
+newer**: [`--slurp` arrived in 2.48](https://github.com/cli/cli/releases/tag/v2.48.0)
+and [`baseRefOid` in 2.63](https://github.com/cli/cli/releases/tag/v2.63.0).
+An older system package can therefore run ordinary PR commands while refusing
+the complete review collector. Keep both capabilities and the collected fields.
+
+Outside Nix, this Bash recipe activates the official
+[gh 2.101.0 release](https://github.com/cli/cli/releases/tag/v2.101.0) for the
+current **Linux amd64** session. The SHA-256 is the Linux amd64 archive row in
+the release's [official checksums](https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_checksums.txt).
+Verification must succeed before extraction and execution. The command chain
+stops on failure without changing the current shell's options.
+
+```bash
+gh_review_dir="$(mktemp -d)" &&
+curl --fail --location \
+  https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_amd64.tar.gz \
+  --output "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz" &&
+printf '%s  %s\n' \
+  '9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8' \
+  "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz" | sha256sum --check --strict - &&
+tar -xzf "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz" \
+  -C "$gh_review_dir" gh_2.101.0_linux_amd64/bin/gh &&
+export PATH="$gh_review_dir/gh_2.101.0_linux_amd64/bin:$PATH" &&
+command -v gh &&
+gh --version
+```
+
+Run the collectors in this same shell so their child processes inherit the
+activated `PATH`, including `python3 scripts/reviews/feedback <PR> <OWNER/REPO>`
+and `python3 scripts/ci/check-pr-semantic-review-currentness.py <PR> <OWNER/REPO>`.
+Keep `gh_review_dir` while those processes need it; opening a fresh shell requires
+activation again. The system executable and authentication configuration are
+unchanged. Other operating systems or architectures need their matching official
+release asset and checksum; this recipe does not qualify them.
+
+This is an official release archive/checksum installation, with no Aqua
+attestation-verification claim. A successful version check establishes local CLI
+compatibility only. API access, full paginated feedback acquisition, semantic
+review currentness, and merge policy still require their normal live evidence.
+A transport or access refusal remains `NOT_PROVEN`; do not drop fields,
+substitute fixture output, or change credentials or permissions to make setup
+appear complete.
+
 ## Changed-file hygiene
 
 The local and CI entry point for the scoped Taplo/typos contract is:

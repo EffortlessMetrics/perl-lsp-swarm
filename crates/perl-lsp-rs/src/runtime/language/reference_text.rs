@@ -347,18 +347,20 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
             *uri = perl_uri::uri_key(uri);
         }
     }
-    locations.sort_by_key(canonical_location_id);
-    locations.dedup_by(|left, right| {
-        match (canonical_location_id(left), canonical_location_id(right)) {
-            (Some(left_id), Some(right_id)) => left_id == right_id,
-            _ => false,
-        }
+    // Compute occurrence identity once per element (#17540 item 5). The
+    // previous sort/dedup/same-start pass reparsed JSON on every comparison.
+    let mut keyed: Vec<(Option<CanonicalLocationId>, Value)> =
+        locations.drain(..).map(|location| (canonical_location_id(&location), location)).collect();
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    keyed.dedup_by(|left, right| match (&left.0, &right.0) {
+        (Some(left_id), Some(right_id)) => left_id == right_id,
+        _ => false,
     });
-    let mut collapsed: Vec<Value> = Vec::with_capacity(locations.len());
+    let mut pairs: Vec<(Option<CanonicalLocationId>, Value)> = Vec::with_capacity(keyed.len());
     let mut seen_start: Option<OccurrenceStartId> = None;
-    for location in locations.drain(..) {
-        let start_id = canonical_location_id(&location).map(|id| OccurrenceStartId {
-            uri: id.uri,
+    for (id, location) in keyed {
+        let start_id = id.as_ref().map(|id| OccurrenceStartId {
+            uri: id.uri.clone(),
             start_line: id.start_line,
             start_character: id.start_character,
         });
@@ -366,7 +368,7 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
             continue;
         }
         seen_start = start_id;
-        collapsed.push(location);
+        pairs.push((id, location));
     }
     // Anchored containment (#18112): the index's full call-expression span
     // for `$self->foo` (7:11-21) starts before the text scan's name token
@@ -382,8 +384,8 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
     // additionally preserves multi-line ranges that merely enclose a
     // token (a whole-sub declaration span is a distinct entry, per
     // `dedupe_collapses_identical_ranges_across_json_key_order`).
-    let ids: Vec<Option<CanonicalLocationId>> =
-        collapsed.iter().map(canonical_location_id).collect();
+    let (ids, collapsed): (Vec<Option<CanonicalLocationId>>, Vec<Value>) =
+        pairs.into_iter().unzip();
     // A containment match must share the canonical URI and the line span,
     // so compare only within those groups: a symbol with thousands of
     // references stays near-linear instead of costing a quadratic scan
@@ -439,6 +441,296 @@ pub(super) fn finalize_reference_locations(mut locations: Vec<Value>, cap: usize
     locations
 }
 
+/// Narrow each location to the queried identifier using open-document source,
+/// then run the existing occurrence-identity finalizer.
+///
+/// Whole-call spans such as `Greeter::greet($obj)` (8-28) and the name token
+/// `greet` (17-22) do not share a start or an end, so anchored containment
+/// (#18112) cannot collapse them. Source-validated identifier narrowing makes
+/// them identical, then exact dedup keeps one (#9825). A range with no matching
+/// open document, or with no identifier match, is left unchanged so closed-file
+/// index geometry stays #8611's producer contract.
+pub(super) fn finalize_named_reference_locations(
+    mut locations: Vec<Value>,
+    cap: usize,
+    docs: &[(String, String)],
+    needle: &str,
+    sigil: Option<char>,
+) -> Vec<Value> {
+    let docs: Vec<(&str, &str)> =
+        docs.iter().map(|(uri, text)| (uri.as_str(), text.as_str())).collect();
+    narrow_reference_locations_to_name_token(&mut locations, &docs, needle, sigil);
+    finalize_reference_locations(locations, cap)
+}
+
+/// Rewrite each location to the queried identifier token when the owning
+/// document is open and exactly that token can be recovered from the range.
+fn narrow_reference_locations_to_name_token(
+    locations: &mut [Value],
+    docs: &[(&str, &str)],
+    needle: &str,
+    sigil: Option<char>,
+) {
+    let (name, query_sigil) = normalized_text_query(needle, sigil);
+    if name.is_empty() {
+        return;
+    }
+    for location in locations.iter_mut() {
+        narrow_one_location_to_name_token(location, docs, name, query_sigil);
+    }
+}
+
+fn narrow_one_location_to_name_token(
+    location: &mut Value,
+    docs: &[(&str, &str)],
+    name: &str,
+    query_sigil: Option<char>,
+) {
+    let Some(uri) = location.get("uri").and_then(Value::as_str) else {
+        return;
+    };
+    let uri_key = perl_uri::uri_key(uri);
+    let Some((_, doc_text)) =
+        docs.iter().find(|(doc_uri, _)| perl_uri::uri_key(doc_uri) == uri_key)
+    else {
+        return;
+    };
+    let Some(start_line) = location.pointer("/range/start/line").and_then(Value::as_u64) else {
+        return;
+    };
+    let Some(start_character) = location.pointer("/range/start/character").and_then(Value::as_u64)
+    else {
+        return;
+    };
+    let Some(end_line) = location.pointer("/range/end/line").and_then(Value::as_u64) else {
+        return;
+    };
+    let Some(end_character) = location.pointer("/range/end/character").and_then(Value::as_u64)
+    else {
+        return;
+    };
+    let Some(line) = line_at(doc_text, start_line) else {
+        return;
+    };
+    let Some(range_start_byte) = utf16_col_to_byte(line, start_character) else {
+        return;
+    };
+    let range_end_byte = if end_line == start_line {
+        let Some(end_byte) = utf16_col_to_byte(line, end_character) else {
+            return;
+        };
+        end_byte
+    } else {
+        line.len()
+    };
+    if range_end_byte < range_start_byte {
+        return;
+    }
+    let text = line;
+
+    let matches = ident_bounded_name_matches(line, name);
+    if matches.is_empty() {
+        return;
+    }
+    let contained: Vec<(usize, usize)> = matches
+        .iter()
+        .copied()
+        .filter(|(start, end)| *start >= range_start_byte && *end <= range_end_byte)
+        .collect();
+    // A one-character `sub` range does not contain the name token. Only in that
+    // declaration case, search the rest of the declaration line: the gap from
+    // the range start to the match must be `sub` followed by whitespace only.
+    let search = if contained.is_empty() {
+        matches
+            .into_iter()
+            .filter(|(start, _)| {
+                *start >= range_start_byte
+                    && text
+                        .get(range_start_byte..*start)
+                        .and_then(|gap| gap.strip_prefix("sub"))
+                        .is_some_and(|rest| {
+                            !rest.is_empty() && rest.chars().all(char::is_whitespace)
+                        })
+            })
+            .collect()
+    } else {
+        contained
+    };
+    let preferred = preferred_name_matches(line, &search, query_sigil);
+    let Some((match_start, match_end)) = choose_narrowing_name_match(line, &preferred, query_sigil)
+    else {
+        return;
+    };
+    let (emit_start, emit_end) = emitted_match_byte_range(line, match_start, match_end);
+    let Some(start_utf16) = u64::try_from(byte_to_utf16_col(line, emit_start)).ok() else {
+        return;
+    };
+    let Some(end_utf16) = u64::try_from(byte_to_utf16_col(line, emit_end)).ok() else {
+        return;
+    };
+    if start_line == end_line && start_character == start_utf16 && end_character == end_utf16 {
+        return;
+    }
+    let Some(range) = location.pointer_mut("/range") else {
+        return;
+    };
+    *range = json!({
+        "start": { "line": start_line, "character": start_utf16 },
+        "end": { "line": start_line, "character": end_utf16 },
+    });
+}
+
+fn line_at(doc_text: &str, target_line: u64) -> Option<&str> {
+    let Ok(target) = usize::try_from(target_line) else {
+        return None;
+    };
+    for (index, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+        if index != target {
+            continue;
+        }
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        return Some(line.strip_suffix('\r').unwrap_or(line));
+    }
+    None
+}
+
+fn utf16_col_to_byte(line: &str, col: u64) -> Option<usize> {
+    let mut remaining = col;
+    for (byte_idx, ch) in line.char_indices() {
+        if remaining == 0 {
+            return Some(byte_idx);
+        }
+        let width = u64::try_from(ch.len_utf16()).ok()?;
+        if remaining < width {
+            return None;
+        }
+        remaining -= width;
+    }
+    (remaining == 0).then_some(line.len())
+}
+
+fn ident_bounded_name_matches(line: &str, name: &str) -> Vec<(usize, usize)> {
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let bytes = line.as_bytes();
+    let mut matches = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(haystack) = line.get(search_from..) {
+        let Some(found) = haystack.find(name).map(|found| search_from + found) else {
+            break;
+        };
+        let end_at = found + name.len();
+        if is_reference_ident_boundary(bytes, found, name.len()) {
+            matches.push((found, end_at));
+        }
+        search_from = found.saturating_add(1);
+        if search_from >= line.len() {
+            break;
+        }
+    }
+    matches
+}
+
+fn preferred_name_matches(
+    line: &str,
+    matches: &[(usize, usize)],
+    query_sigil: Option<char>,
+) -> Vec<(usize, usize)> {
+    let classified: Vec<(usize, usize)> = matches
+        .iter()
+        .copied()
+        .filter(|(start, end)| {
+            keep_text_reference_match(line, *start, *end, query_sigil, true)
+                && variable_query_sigil_matches(line, *start, query_sigil)
+        })
+        .collect();
+    if matches!(query_sigil, Some('$' | '@' | '%')) {
+        return classified;
+    }
+    let subroutine: Vec<(usize, usize)> = classified
+        .iter()
+        .copied()
+        .filter(|(start, end)| {
+            classify_reference_word(line, *start, *end) == ReferenceWordKind::Subroutine
+        })
+        .collect();
+    if subroutine.is_empty() { classified } else { subroutine }
+}
+
+/// When a sigiled query runs inside an interpolated string, require the
+/// matched variable's actual sigil to match the query (#9825).
+fn variable_query_sigil_matches(line: &str, match_start: usize, query_sigil: Option<char>) -> bool {
+    let Some(query @ ('$' | '@' | '%')) = query_sigil else {
+        return true;
+    };
+    variable_sigil_at(line, match_start) == Some(query)
+}
+
+fn variable_sigil_at(line: &str, match_start: usize) -> Option<char> {
+    if let Some(sigil @ ('$' | '@' | '%')) = char_before(line, match_start) {
+        return Some(sigil);
+    }
+    let inner_start = skip_ws_left(line, match_start);
+    if char_before(line, inner_start) != Some('{') {
+        return None;
+    }
+    let brace_at = inner_start.saturating_sub('{'.len_utf8());
+    let before_brace = skip_ws_left(line, brace_at);
+    char_before(line, before_brace).filter(|ch| matches!(ch, '$' | '@' | '%'))
+}
+
+/// Pick one identifier when an indexed call-expression span contains several
+/// name hits (for example `bar(foo())->foo()`).
+fn choose_narrowing_name_match(
+    line: &str,
+    matches: &[(usize, usize)],
+    query_sigil: Option<char>,
+) -> Option<(usize, usize)> {
+    if matches.is_empty() {
+        return None;
+    }
+    if matches.len() == 1 {
+        return Some(matches[0]);
+    }
+    if query_sigil.is_none() {
+        let after_arrow: Vec<(usize, usize)> = matches
+            .iter()
+            .copied()
+            .filter(|(start, _)| is_method_arrow_invocation(line, *start))
+            .collect();
+        if !after_arrow.is_empty() {
+            return after_arrow.into_iter().max_by_key(|(start, _)| *start);
+        }
+        return matches.iter().copied().min_by_key(|(start, _)| *start);
+    }
+    Some(matches[0])
+}
+
+fn is_method_arrow_invocation(line: &str, match_start: usize) -> bool {
+    let left = skip_ws_left(line, match_start);
+    if char_before(line, left) != Some('>') {
+        return false;
+    }
+    let gt_at = left.saturating_sub('>'.len_utf8());
+    char_before(line, skip_ws_left(line, gt_at)) == Some('-')
+}
+
+/// Collect canonical URI keys referenced by finalized locations.
+pub(super) fn uri_keys_from_reference_locations(locations: &[Value]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for location in locations {
+        let Some(uri) = location.get("uri").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = perl_uri::uri_key(uri);
+        if !keys.iter().any(|existing| existing == &key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
 fn location_value(uri: &str, line: usize, start_utf16: usize, end_utf16: usize) -> Value {
     json!({
         "uri": uri,
@@ -487,37 +779,47 @@ pub(super) fn shrink_declaration_span_to_name_span(
     let Some((_, doc_text)) = docs.iter().find(|(uri, _)| perl_uri::uri_key(uri) == def_key) else {
         return;
     };
-    let Some(decl_line_text) = doc_text
-        .lines()
-        .enumerate()
-        .find(|(index, _)| *index == def.range.start.line as usize)
-        .map(|(_, line)| line)
-    else {
+    // Index `column` is an LSP UTF-16 unit (`LineIndex::range`, copied 1:1
+    // onto the wire). Derive the line-relative *byte* start from `start.byte`
+    // and this line's start offset so a preceding non-ASCII character cannot
+    // land the slice inside a UTF-8 continuation (#17540 item 1).
+    let target_line = def.range.start.line as usize;
+    let mut line_start_byte = 0usize;
+    let mut decl_line_text: Option<&str> = None;
+    for (index, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if index == target_line {
+            decl_line_text = Some(line);
+            break;
+        }
+        line_start_byte += raw_line.len();
+    }
+    let Some(decl_line_text) = decl_line_text else {
+        return;
+    };
+    let Some(mut search_from) = def.range.start.byte.checked_sub(line_start_byte) else {
         return;
     };
     let line_bytes = decl_line_text.as_bytes();
     let needle_bytes = needle.as_bytes();
-    let start_col = def.range.start.column as usize;
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    if start_col > line_bytes.len() {
-        return;
-    }
-    let mut search_from = start_col;
-    while search_from + needle_bytes.len() <= line_bytes.len() {
-        let Some(found) =
-            decl_line_text[search_from..].find(needle).map(|found| search_from + found)
-        else {
+    while let Some(haystack) = decl_line_text.get(search_from..) {
+        if haystack.len() < needle_bytes.len() {
+            return;
+        }
+        let Some(found) = haystack.find(needle).map(|found| search_from + found) else {
             return;
         };
         let end_at = found + needle_bytes.len();
-        let left_ok = found == 0 || !is_ident(line_bytes[found - 1]);
-        let right_ok = end_at >= line_bytes.len() || !is_ident(line_bytes[end_at]);
+        let left_ok = found == 0 || line_bytes.get(found - 1).is_some_and(|byte| !is_ident(*byte));
+        let right_ok = line_bytes.get(end_at).is_none_or(|byte| !is_ident(*byte));
         if left_ok && right_ok {
-            def.range.start.byte += found - start_col;
-            def.range.start.column = found as u32;
+            def.range.start.byte = line_start_byte + found;
+            def.range.start.column = byte_to_utf16_col(decl_line_text, found) as u32;
             def.range.end.line = def.range.start.line;
             def.range.end.byte = def.range.start.byte + needle_bytes.len();
-            def.range.end.column = end_at as u32;
+            def.range.end.column = byte_to_utf16_col(decl_line_text, end_at) as u32;
             return;
         }
         search_from = found + 1;
@@ -1446,12 +1748,193 @@ mod tests {
         Ok(())
     }
 
-    /// #18112 guard: `foo(foo())` nests two genuine occurrences. This
-    /// guards the same-start collapse (each wrapper shares its start with
-    /// its name token); the containment pass itself is discriminated by
-    /// `contained_call_span_and_name_token_collapse_to_the_name_token`,
-    /// `index_only_nested_call_spans_both_survive_containment_dedup`, and
-    /// `declaration_span_and_contained_call_both_survive_containment_dedup`.
+    /// #9825: source-backed identifier narrowing turns a whole-call span
+    /// into the name token so exact dedup can collapse overlapping producers.
+    #[test]
+    fn named_finalize_narrows_call_expression_to_the_identifier() -> Result<(), Box<dyn Error>> {
+        let docs = vec![(
+            "file:///a.pl".to_owned(),
+            "my $one = work();\nmy $a = Greeter::greet($obj);\nsub greet { greet(greet()); }\n"
+                .to_owned(),
+        )];
+        let mk = |line: u64, start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": line, "character": start},
+                    "end": {"line": line, "character": end},
+                },
+            })
+        };
+        // `work()` 10-16 must become `work` 10-14.
+        let out = finalize_named_reference_locations(vec![mk(0, 10, 16)], 10, &docs, "work", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (10, 14) {
+            return Err(format!("work() must narrow to `work`, got {out:?}").into());
+        }
+
+        // Whole call 8-28 plus identifier 17-22 collapse to one `greet`.
+        let out = finalize_named_reference_locations(
+            vec![mk(1, 8, 28), mk(1, 17, 22)],
+            10,
+            &docs,
+            "greet",
+            None,
+        );
+        if out.len() != 1 {
+            return Err(
+                format!("one Greeter::greet($obj) site must answer once, got {out:?}").into()
+            );
+        }
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (17, 22) {
+            return Err(format!("qualified call must narrow to `greet`, got {out:?}").into());
+        }
+
+        // One-character `sub` range on `sub greet` rewrites to the name.
+        let out = finalize_named_reference_locations(vec![mk(2, 0, 1)], 10, &docs, "greet", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (4, 9) {
+            return Err(format!("`sub` keyword range must become `greet`, got {out:?}").into());
+        }
+
+        // Nested greet(greet()) keeps two identifier occurrences.
+        let out = finalize_named_reference_locations(
+            vec![mk(2, 12, 25), mk(2, 18, 24)],
+            10,
+            &docs,
+            "greet",
+            None,
+        );
+        if out.len() != 2 {
+            return Err(format!("nested calls must stay two occurrences, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sub_keyword_fallback_does_not_rewrite_unrelated_ranges() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = foo(); foo();\n".to_owned())];
+        // Range over `();` between calls: no name token inside and not a `sub` span.
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 13},
+                "end": {"line": 0, "character": 16},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (13, 16) {
+            return Err(
+                format!("range without an in-span name must stay unchanged, got {out:?}").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_method_call_span_narrows_to_the_method_name() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = bar(foo())->foo();\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 7},
+                "end": {"line": 0, "character": 23},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        // `bar(foo())->foo()` method token is 20-23, argument `foo` is 11-14.
+        if span != (20, 23) {
+            return Err(format!("method `foo` must win over argument `foo`, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sigiled_string_interpolation_picks_matching_sigil() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $s = \"@foo $foo\";\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 9},
+                "end": {"line": 0, "character": 19},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", Some('$'));
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (14, 18) {
+            return Err(
+                format!("`$foo` query must narrow to scalar, not `@foo`, got {out:?}").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn method_call_narrows_to_the_method_token_not_the_receiver() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = $greet->greet();\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 7},
+                "end": {"line": 0, "character": 23},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "greet", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        // `$greet->greet()`: receiver is 8-13, method is 16-21.
+        if span != (16, 21) {
+            return Err(format!("method call must narrow to the method token, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn named_finalize_leaves_closed_file_ranges_unchanged() -> Result<(), Box<dyn Error>> {
+        let locations = vec![json!({
+            "uri": "file:///closed.pl",
+            "range": {
+                "start": {"line": 0, "character": 10},
+                "end": {"line": 0, "character": 16},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &[], "work", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (10, 16) {
+            return Err(format!(
+                "closed-file call span must stay wide without source, got {out:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn nested_call_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
         let mk = |start: u64, end: u64| {
@@ -1506,6 +1989,43 @@ mod tests {
             || def.range.end.column != 16
         {
             return Err(format!("declaration must narrow to its name token: {def:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #17540 item 1: a same-line declaration after non-ASCII must slice by
+    /// line-relative bytes, not by the index's UTF-16 column. `é` is one
+    /// UTF-16 unit and two UTF-8 bytes, so `sub`'s column (13) is not its
+    /// byte (14). Using the column as a byte index also writes the byte
+    /// offset of `foo` (18) back as an LSP column (should be 17).
+    #[test]
+    fn shrink_declaration_span_after_non_ascii_uses_bytes_not_utf16_columns()
+    -> Result<(), Box<dyn Error>> {
+        let doc_text = "my $x = \"é\"; sub foo {}\n";
+        let mut def = crate::workspace_index::Location {
+            uri: "file:///F:/dir/xlib.pl".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 14, line: 0, column: 13 },
+                end: perl_workspace::position::Position { byte: 24, line: 0, column: 23 },
+            },
+        };
+        shrink_declaration_span_to_name_span(
+            &mut def,
+            &[("file:///f:/dir/xlib.pl", doc_text)],
+            "foo",
+            None,
+        );
+        if def.range.start.line != 0
+            || def.range.start.byte != 18
+            || def.range.start.column != 17
+            || def.range.end.line != 0
+            || def.range.end.byte != 21
+            || def.range.end.column != 20
+        {
+            return Err(format!(
+                "name token after é must be bytes 18..21 and UTF-16 columns 17..20: {def:?}"
+            )
+            .into());
         }
         Ok(())
     }

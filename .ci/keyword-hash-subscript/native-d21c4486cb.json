@@ -1,0 +1,3776 @@
+{
+  "mismatch_count": 6,
+  "rows": [
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "next",
+          "span": [
+            71,
+            75
+          ]
+        },
+        "span": [
+          68,
+          76
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "next",
+            "span": [
+              71,
+              75
+            ]
+          },
+          "span": [
+            68,
+            76
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "next-scalar-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "521023a30af50342d53c9c424af84a0748d20ab6001b3f52dc520b23daa3d7cc"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "next",
+              "span": [
+                71,
+                75
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                77,
+                79
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "span": [
+          68,
+          80
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "next",
+                "span": [
+                  71,
+                  75
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  77,
+                  79
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "span": [
+            68,
+            80
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "next-scalar-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "4cdee78e179810a46c18f797721b226f9883addadb580199a378698a57c4baff"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "next",
+          "span": [
+            73,
+            77
+          ]
+        },
+        "span": [
+          68,
+          78
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "next",
+            "span": [
+              73,
+              77
+            ]
+          },
+          "span": [
+            68,
+            78
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "next-arrow-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "0ef87ab237a7820fc46409a18382c598258bfa7e5e6ea43de24c9f88f0e022c6"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "next",
+              "span": [
+                73,
+                77
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                79,
+                81
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            81
+          ]
+        },
+        "span": [
+          68,
+          82
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "next",
+                "span": [
+                  73,
+                  77
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  79,
+                  81
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              81
+            ]
+          },
+          "span": [
+            68,
+            82
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "next-arrow-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "f1b8593e16c42015180a76249bd86ef447acde58aafb9396cd4a3a6048f19742"
+    },
+    {
+      "ast": {
+        "keys": {
+          "kind": "Identifier",
+          "name": "next",
+          "span": [
+            71,
+            75
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          76
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "kind": "Identifier",
+            "name": "next",
+            "span": [
+              71,
+              75
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            76
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "next-slice-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "363333bd44335e738afbb21fc43860a67b2df3f79495bc0bae6f24c620a2bf14"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "next",
+              "span": [
+                71,
+                75
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                77,
+                79
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          80
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "next",
+                "span": [
+                  71,
+                  75
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  77,
+                  79
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "next-slice-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "9a6ad05d00ea161c8cd743784eb331764e8d68d19cafd72bc4b0e06e175f9768"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "last",
+          "span": [
+            71,
+            75
+          ]
+        },
+        "span": [
+          68,
+          76
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "last",
+            "span": [
+              71,
+              75
+            ]
+          },
+          "span": [
+            68,
+            76
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "last-scalar-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "4cc3524251edb1c5e9ccc9d0e15fb2922b29ced876df2fbfc563639a995f09ca"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "last",
+              "span": [
+                71,
+                75
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                77,
+                79
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "span": [
+          68,
+          80
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "last",
+                "span": [
+                  71,
+                  75
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  77,
+                  79
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "span": [
+            68,
+            80
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "last-scalar-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "ed185ea46d9427cd0dc9f861e34de4ab7869505f9d47f3845def0b14854af9ab"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "last",
+          "span": [
+            73,
+            77
+          ]
+        },
+        "span": [
+          68,
+          78
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "last",
+            "span": [
+              73,
+              77
+            ]
+          },
+          "span": [
+            68,
+            78
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "last-arrow-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "1ba53d37d7c458d19ee249bbc20c099f4926fa8ad6e137a9ff5996950bee859a"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "last",
+              "span": [
+                73,
+                77
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                79,
+                81
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            81
+          ]
+        },
+        "span": [
+          68,
+          82
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "last",
+                "span": [
+                  73,
+                  77
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  79,
+                  81
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              81
+            ]
+          },
+          "span": [
+            68,
+            82
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "last-arrow-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "99f99b497fd3df4950a3532a8a20d616f0e7f3bf84240a6e09f4858522085b82"
+    },
+    {
+      "ast": {
+        "keys": {
+          "kind": "Identifier",
+          "name": "last",
+          "span": [
+            71,
+            75
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          76
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "kind": "Identifier",
+            "name": "last",
+            "span": [
+              71,
+              75
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            76
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "last-slice-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "e43f57364e30167d36a7dc16fb46f8a9449bf39b47c1769c7f54c2fe78641c39"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "last",
+              "span": [
+                71,
+                75
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                77,
+                79
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          80
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "last",
+                "span": [
+                  71,
+                  75
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  77,
+                  79
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "last-slice-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "93cfadc1f0e9507100c7bb1452db04e08b16e935f6b36a5bc31d482d6f0ed56f"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "redo",
+          "span": [
+            71,
+            75
+          ]
+        },
+        "span": [
+          68,
+          76
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "redo",
+            "span": [
+              71,
+              75
+            ]
+          },
+          "span": [
+            68,
+            76
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "redo-scalar-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "f023922b0b9bb8fb958d564a08fd5ebf739a8eabfc73b0733868daacd447dbb7"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "redo",
+              "span": [
+                71,
+                75
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                77,
+                79
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "span": [
+          68,
+          80
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "redo",
+                "span": [
+                  71,
+                  75
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  77,
+                  79
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "span": [
+            68,
+            80
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "redo-scalar-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "704f5483f8b3fc07d8865ab42f69a6ae342ea79defafc4bda0e829dce4a49ba3"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "redo",
+          "span": [
+            73,
+            77
+          ]
+        },
+        "span": [
+          68,
+          78
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "redo",
+            "span": [
+              73,
+              77
+            ]
+          },
+          "span": [
+            68,
+            78
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "redo-arrow-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "b8d76661a11269ec0736abb6d5440d21be850a039656dd81c71ab3e4a5bb8cee"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "redo",
+              "span": [
+                73,
+                77
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                79,
+                81
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            81
+          ]
+        },
+        "span": [
+          68,
+          82
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "redo",
+                "span": [
+                  73,
+                  77
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  79,
+                  81
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              81
+            ]
+          },
+          "span": [
+            68,
+            82
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "redo-arrow-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "7ede08fb0c7f9f7e504f3a19a54ea5f4d594da9efd6de0e8befb505c0e1bd208"
+    },
+    {
+      "ast": {
+        "keys": {
+          "kind": "Identifier",
+          "name": "redo",
+          "span": [
+            71,
+            75
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          76
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "kind": "Identifier",
+            "name": "redo",
+            "span": [
+              71,
+              75
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            76
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "redo-slice-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "13c78231525c8e159f17726fa26bb1ba3ef1f2d2c9716e981e913d91d50858c2"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": null,
+              "op": "redo",
+              "span": [
+                71,
+                75
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                77,
+                79
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          80
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": null,
+                "op": "redo",
+                "span": [
+                  71,
+                  75
+                ]
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  77,
+                  79
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "redo-slice-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "6c6a260b6227357fcbc8a256d6ce4fdeeccc3293b73a737665ea0865d8db7599"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "return",
+          "span": [
+            71,
+            77
+          ]
+        },
+        "span": [
+          68,
+          78
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "return",
+            "span": [
+              71,
+              77
+            ]
+          },
+          "span": [
+            68,
+            78
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "return-scalar-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "2a082197a48567aa009e04f3267f54f2fd814ffffcea983fc4653dc91c353ffe"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "Return",
+              "span": [
+                71,
+                77
+              ],
+              "value": null
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                79,
+                81
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            81
+          ]
+        },
+        "span": [
+          68,
+          82
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "Return",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": null
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  79,
+                  81
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ]
+          },
+          "span": [
+            68,
+            82
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "return-scalar-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "e87e7ab3d00416f2a432d16de58c02a25ea4ad332d3e7f87cfd0a8705b57e9d6"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "return",
+          "span": [
+            73,
+            79
+          ]
+        },
+        "span": [
+          68,
+          80
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "return",
+            "span": [
+              73,
+              79
+            ]
+          },
+          "span": [
+            68,
+            80
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "return-arrow-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "e0c23eaec2613f40019360203e5ae9f871f1a74839ffffe8387ad08c6336dc88"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "Return",
+              "span": [
+                73,
+                79
+              ],
+              "value": null
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                81,
+                83
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            83
+          ]
+        },
+        "span": [
+          68,
+          84
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "Return",
+                "span": [
+                  73,
+                  79
+                ],
+                "value": null
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  81,
+                  83
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              83
+            ]
+          },
+          "span": [
+            68,
+            84
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "return-arrow-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "2134d06a488b99b1649ab7728b49b84d705e3c801705e3ee8d01c474f3bc2962"
+    },
+    {
+      "ast": {
+        "keys": {
+          "kind": "Identifier",
+          "name": "return",
+          "span": [
+            71,
+            77
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          78
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "kind": "Identifier",
+            "name": "return",
+            "span": [
+              71,
+              77
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            78
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "return-slice-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "63b4999233b258e8ae253554366fabecec57c9728cd018f3880ab2454b7467b2"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "kind": "Return",
+              "span": [
+                71,
+                77
+              ],
+              "value": null
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                79,
+                81
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            81
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          82
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "elements": [
+              {
+                "kind": "Return",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": null
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  79,
+                  81
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            82
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "return-slice-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "116d3c887ca87b2e6f4059b07a48271d208b1331950f76cf9c55b3e553d1db34"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "ordinary",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "span": [
+          68,
+          80
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "ordinary",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "span": [
+            68,
+            80
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "scalar-ordinary-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "3ca36511cb4728d5c5e27879f7635ae980781ceca445c4998e0b9d9821987389"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "Identifier",
+              "name": "ordinary",
+              "span": [
+                71,
+                79
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                81,
+                83
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            83
+          ]
+        },
+        "span": [
+          68,
+          84
+        ]
+      },
+      "conforms": false,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": null,
+        "disposition": "rejected",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "scalar-ordinary-comma",
+      "mismatch_owner": 14065,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "d2bbe2291eb9e296c80aad1957e6da4f394ef6f03f54bb9a3f136fb164160f32"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "interpolated": false,
+          "kind": "String",
+          "span": [
+            71,
+            77
+          ],
+          "value": "'next'"
+        },
+        "span": [
+          68,
+          78
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "interpolated": false,
+            "kind": "String",
+            "span": [
+              71,
+              77
+            ],
+            "value": "'next'"
+          },
+          "span": [
+            68,
+            78
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "scalar-quoted-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "3547bf86d42443837ae0b083f1e9427640eeef26a501db5f244f0377d3036f97"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "interpolated": false,
+              "kind": "String",
+              "span": [
+                71,
+                77
+              ],
+              "value": "'next'"
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                79,
+                81
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            81
+          ]
+        },
+        "span": [
+          68,
+          82
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "elements": [
+              {
+                "interpolated": false,
+                "kind": "String",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": "'next'"
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  79,
+                  81
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ]
+          },
+          "span": [
+            68,
+            82
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "scalar-quoted-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "755e520d700d39956dfddc7a6a947d47a7304766ddcb9876843eaf4d3a9c5acc"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "Return",
+              "span": [
+                71,
+                80
+              ],
+              "value": {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  78,
+                  80
+                ]
+              }
+            },
+            {
+              "kind": "Number",
+              "span": [
+                82,
+                83
+              ],
+              "value": "7"
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            83
+          ]
+        },
+        "span": [
+          68,
+          84
+        ]
+      },
+      "conforms": false,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "kind": "Return",
+            "span": [
+              71,
+              83
+            ],
+            "value": {
+              "elements": [
+                {
+                  "kind": "Variable",
+                  "name": "x",
+                  "sigil": "$",
+                  "span": [
+                    78,
+                    80
+                  ]
+                },
+                {
+                  "kind": "Number",
+                  "span": [
+                    82,
+                    83
+                  ],
+                  "value": "7"
+                }
+              ],
+              "kind": "ArrayLiteral",
+              "span": [
+                78,
+                83
+              ]
+            }
+          },
+          "span": [
+            68,
+            84
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "scalar-return-list-operands",
+      "mismatch_owner": 14065,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "830b70e89c6c0ec8c5f977a58f5be764f94abbb31b8f9ebf3feaa2d98766eae2"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": "OUTER",
+              "op": "next",
+              "span": [
+                71,
+                81
+              ]
+            },
+            {
+              "kind": "Number",
+              "span": [
+                83,
+                84
+              ],
+              "value": "7"
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            84
+          ]
+        },
+        "span": [
+          68,
+          85
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": "OUTER",
+                "op": "next",
+                "span": [
+                  71,
+                  81
+                ]
+              },
+              {
+                "kind": "Number",
+                "span": [
+                  83,
+                  84
+                ],
+                "value": "7"
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              84
+            ]
+          },
+          "span": [
+            68,
+            85
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "scalar-next-label-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "304d3c68776a8e82186ca41c18f5abf1bdbd33a7bae70af4ec5fe280f29cbabf"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "kind": "Identifier",
+          "name": "ordinary",
+          "span": [
+            73,
+            81
+          ]
+        },
+        "span": [
+          68,
+          82
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "kind": "Identifier",
+            "name": "ordinary",
+            "span": [
+              73,
+              81
+            ]
+          },
+          "span": [
+            68,
+            82
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "arrow-ordinary-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "7bdb55295afa50ad46d269c24c4ed12740a3babf922ca7846915de3cad7d53f4"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "Identifier",
+              "name": "ordinary",
+              "span": [
+                73,
+                81
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                83,
+                85
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            85
+          ]
+        },
+        "span": [
+          68,
+          86
+        ]
+      },
+      "conforms": false,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": null,
+        "disposition": "rejected",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "arrow-ordinary-comma",
+      "mismatch_owner": 14065,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "99d1575068e5cf7ad6000b860667d583039f5772392e393bbcaa3c76583e7a2f"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "interpolated": false,
+          "kind": "String",
+          "span": [
+            73,
+            79
+          ],
+          "value": "'next'"
+        },
+        "span": [
+          68,
+          80
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "interpolated": false,
+            "kind": "String",
+            "span": [
+              73,
+              79
+            ],
+            "value": "'next'"
+          },
+          "span": [
+            68,
+            80
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "arrow-quoted-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "e31bcb7e913942aa30d9c1c94162e79f0fd0037bf5a9b8fa212a18f27f0046cd"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "interpolated": false,
+              "kind": "String",
+              "span": [
+                73,
+                79
+              ],
+              "value": "'next'"
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                81,
+                83
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            83
+          ]
+        },
+        "span": [
+          68,
+          84
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "elements": [
+              {
+                "interpolated": false,
+                "kind": "String",
+                "span": [
+                  73,
+                  79
+                ],
+                "value": "'next'"
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  81,
+                  83
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              83
+            ]
+          },
+          "span": [
+            68,
+            84
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "arrow-quoted-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "a9d9d8c3df16fba17e1fd7eaea349f71134bfe27107a69e6efce09e151d2c66d"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "Return",
+              "span": [
+                73,
+                82
+              ],
+              "value": {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  80,
+                  82
+                ]
+              }
+            },
+            {
+              "kind": "Number",
+              "span": [
+                84,
+                85
+              ],
+              "value": "7"
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            85
+          ]
+        },
+        "span": [
+          68,
+          86
+        ]
+      },
+      "conforms": false,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "kind": "Return",
+            "span": [
+              73,
+              85
+            ],
+            "value": {
+              "elements": [
+                {
+                  "kind": "Variable",
+                  "name": "x",
+                  "sigil": "$",
+                  "span": [
+                    80,
+                    82
+                  ]
+                },
+                {
+                  "kind": "Number",
+                  "span": [
+                    84,
+                    85
+                  ],
+                  "value": "7"
+                }
+              ],
+              "kind": "ArrayLiteral",
+              "span": [
+                80,
+                85
+              ]
+            }
+          },
+          "span": [
+            68,
+            86
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "arrow-return-list-operands",
+      "mismatch_owner": 14065,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "0c17db7360b56d7474bcdee947e9998f2c4935f64733effb54dd2b8b8c6be3e7"
+    },
+    {
+      "ast": {
+        "kind": "Binary",
+        "left": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "$",
+          "span": [
+            68,
+            70
+          ]
+        },
+        "op": "->{}",
+        "right": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": "OUTER",
+              "op": "next",
+              "span": [
+                73,
+                83
+              ]
+            },
+            {
+              "kind": "Number",
+              "span": [
+                85,
+                86
+              ],
+              "value": "7"
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            73,
+            86
+          ]
+        },
+        "span": [
+          68,
+          87
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Binary",
+          "left": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "$",
+            "span": [
+              68,
+              70
+            ]
+          },
+          "op": "->{}",
+          "right": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": "OUTER",
+                "op": "next",
+                "span": [
+                  73,
+                  83
+                ]
+              },
+              {
+                "kind": "Number",
+                "span": [
+                  85,
+                  86
+                ],
+                "value": "7"
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              73,
+              86
+            ]
+          },
+          "span": [
+            68,
+            87
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "arrow-next-label-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "d61e06e955a5872f490a87ec732de116fdf037fc6d80657f2c9e2d81c0a07e14"
+    },
+    {
+      "ast": {
+        "keys": {
+          "kind": "Identifier",
+          "name": "ordinary",
+          "span": [
+            71,
+            79
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          80
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "kind": "Identifier",
+            "name": "ordinary",
+            "span": [
+              71,
+              79
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            80
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "slice-ordinary-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "89ed847fe2154990ca01e34772e550c16e814ce6607cac57627b0cf307156c4b"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "kind": "Identifier",
+              "name": "ordinary",
+              "span": [
+                71,
+                79
+              ]
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                81,
+                83
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            83
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          84
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": false,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": null,
+        "disposition": "rejected",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "slice-ordinary-comma",
+      "mismatch_owner": 14065,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "80c102e6b00e60b4c5875df95c45836c220dd39ec017aa3acc3b53d596c352e8"
+    },
+    {
+      "ast": {
+        "keys": {
+          "interpolated": false,
+          "kind": "String",
+          "span": [
+            71,
+            77
+          ],
+          "value": "'next'"
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          78
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "interpolated": false,
+            "kind": "String",
+            "span": [
+              71,
+              77
+            ],
+            "value": "'next'"
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            78
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "slice-quoted-terminal",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "c96adf7edd8f253a8a1f4511f1a3fd53b9d80975e0b29e453985ca1527429d26"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "interpolated": false,
+              "kind": "String",
+              "span": [
+                71,
+                77
+              ],
+              "value": "'next'"
+            },
+            {
+              "kind": "Variable",
+              "name": "x",
+              "sigil": "$",
+              "span": [
+                79,
+                81
+              ]
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            81
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          82
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "elements": [
+              {
+                "interpolated": false,
+                "kind": "String",
+                "span": [
+                  71,
+                  77
+                ],
+                "value": "'next'"
+              },
+              {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  79,
+                  81
+                ]
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              81
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            82
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "slice-quoted-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "561dca9715bd84ddf86c255070e97df239ada844d6eb192068c717a95d9c91ae"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "kind": "Return",
+              "span": [
+                71,
+                80
+              ],
+              "value": {
+                "kind": "Variable",
+                "name": "x",
+                "sigil": "$",
+                "span": [
+                  78,
+                  80
+                ]
+              }
+            },
+            {
+              "kind": "Number",
+              "span": [
+                82,
+                83
+              ],
+              "value": "7"
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            83
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          84
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": false,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "kind": "Return",
+            "span": [
+              71,
+              83
+            ],
+            "value": {
+              "elements": [
+                {
+                  "kind": "Variable",
+                  "name": "x",
+                  "sigil": "$",
+                  "span": [
+                    78,
+                    80
+                  ]
+                },
+                {
+                  "kind": "Number",
+                  "span": [
+                    82,
+                    83
+                  ],
+                  "value": "7"
+                }
+              ],
+              "kind": "ArrayLiteral",
+              "span": [
+                78,
+                83
+              ]
+            }
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            84
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "slice-return-list-operands",
+      "mismatch_owner": 14065,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "71792fbcd4d84c672d7bcfce51d824bcea34b9a06865306f71c61a780142795c"
+    },
+    {
+      "ast": {
+        "keys": {
+          "elements": [
+            {
+              "kind": "LoopControl",
+              "label": "OUTER",
+              "op": "next",
+              "span": [
+                71,
+                81
+              ]
+            },
+            {
+              "kind": "Number",
+              "span": [
+                83,
+                84
+              ],
+              "value": "7"
+            }
+          ],
+          "kind": "ArrayLiteral",
+          "span": [
+            71,
+            84
+          ]
+        },
+        "kind": "HashSlice",
+        "span": [
+          68,
+          85
+        ],
+        "target": {
+          "kind": "Variable",
+          "name": "h",
+          "sigil": "@",
+          "span": [
+            68,
+            70
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "keys": {
+            "elements": [
+              {
+                "kind": "LoopControl",
+                "label": "OUTER",
+                "op": "next",
+                "span": [
+                  71,
+                  81
+                ]
+              },
+              {
+                "kind": "Number",
+                "span": [
+                  83,
+                  84
+                ],
+                "value": "7"
+              }
+            ],
+            "kind": "ArrayLiteral",
+            "span": [
+              71,
+              84
+            ]
+          },
+          "kind": "HashSlice",
+          "span": [
+            68,
+            85
+          ],
+          "target": {
+            "kind": "Variable",
+            "name": "h",
+            "sigil": "@",
+            "span": [
+              68,
+              70
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "slice-next-label-comma",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "bb1f99fef13b921958d9a1c8495935e622497bcc182c2531f87555aa67a8dacb"
+    },
+    {
+      "ast": {
+        "kind": "LoopControl",
+        "label": "OUTER",
+        "op": "next",
+        "span": [
+          68,
+          78
+        ]
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "LoopControl",
+          "label": "OUTER",
+          "op": "next",
+          "span": [
+            68,
+            78
+          ]
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "ordinary-next-label",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "30b9d16ada231257d32566d40f8f354883d2bb44c4aa3f7b891b49d48d61f061"
+    },
+    {
+      "ast": {
+        "kind": "Return",
+        "span": [
+          68,
+          77
+        ],
+        "value": {
+          "kind": "Variable",
+          "name": "x",
+          "sigil": "$",
+          "span": [
+            75,
+            77
+          ]
+        }
+      },
+      "conforms": true,
+      "diagnostics": "[]",
+      "disposition": "clean",
+      "expected": {
+        "ast": {
+          "kind": "Return",
+          "span": [
+            68,
+            77
+          ],
+          "value": {
+            "kind": "Variable",
+            "name": "x",
+            "sigil": "$",
+            "span": [
+              75,
+              77
+            ]
+          }
+        },
+        "disposition": "clean",
+        "forbidden_alternates": [
+          "static-key-in-comma-control",
+          "control-in-terminal-key",
+          "recovery-on-clean-row",
+          "wrong-child-order",
+          "wrong-form-or-range"
+        ]
+      },
+      "id": "ordinary-return-operand",
+      "mismatch_owner": null,
+      "profile": "perl-5.40.1-strict-warnings",
+      "source_sha256": "8a7300162896d903ed72d8dc4479f0b863a2ccfea81783b5c14a5faa06e877de"
+    }
+  ],
+  "schema": "keyword-hash-subscript-native/v1",
+  "status": "CONFORMANCE_MISMATCH"
+}

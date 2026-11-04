@@ -401,6 +401,14 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<SourceLocation> {
+        self.resolve_inherited_method_location_ordered(receiver_class, method_name)
+    }
+
+    fn resolve_inherited_method_location_ordered(
+        &self,
+        receiver_class: &str,
+        method_name: &str,
+    ) -> Option<SourceLocation> {
         let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
             merged.iter().map(|model| (model.name.as_str(), model)).collect();
@@ -411,10 +419,14 @@ impl SemanticAnalyzer {
             MethodResolutionOrder::C3 => self.c3_ancestor_order(receiver_class, &models_by_name),
         };
 
-        for ancestor in ancestor_order {
-            if let Some(model) = models_by_name.get(ancestor.as_str()).copied()
-                && let Some(location) = self.method_location_in_model(model, method_name)
-            {
+        // Mirror Perl dispatch and `resolve_inherited_method_hover_ordered`: search
+        // the full ancestor order for an exact method before any AUTOLOAD fallback.
+        for ancestor in &ancestor_order {
+            let exact = match models_by_name.get(ancestor.as_str()).copied() {
+                Some(model) => self.exact_method_location_in_model(model, method_name),
+                None => self.plain_package_exact_method_location(ancestor, method_name),
+            };
+            if let Some(location) = exact {
                 return Some(location);
             }
         }
@@ -431,6 +443,16 @@ impl SemanticAnalyzer {
                     })
                 })
                 .map(|symbol| symbol.location);
+        }
+
+        for ancestor in &ancestor_order {
+            let autoload = match models_by_name.get(ancestor.as_str()).copied() {
+                Some(model) => self.autoload_method_location_in_model(model),
+                None => self.plain_package_autoload_method_location(ancestor),
+            };
+            if let Some(location) = autoload {
+                return Some(location);
+            }
         }
 
         None
@@ -532,7 +554,7 @@ impl SemanticAnalyzer {
         // Lexical `my sub`/`state sub` declarations are recorded in the model
         // for provenance, but they do not enter the package method table and
         // therefore cannot satisfy a package method dispatch.  Keep the exact
-        // hover path aligned with `method_location_in_model` and the modifier
+        // hover path aligned with `exact_method_location_in_model` and the modifier
         // resolver by requiring a package-level declarator.
         if !model
             .methods
@@ -624,7 +646,7 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn method_location_in_model(
+    fn exact_method_location_in_model(
         &self,
         model: &ClassModel,
         method_name: &str,
@@ -634,14 +656,56 @@ impl SemanticAnalyzer {
             .iter()
             .rev()
             .find(|method| method.name == method_name && method.declarator.is_none())
-            .or_else(|| {
-                model
-                    .methods
-                    .iter()
-                    .rev()
-                    .find(|method| method.name == "AUTOLOAD" && method.declarator.is_none())
-            })
             .map(|method| method.location)
+    }
+
+    fn autoload_method_location_in_model(&self, model: &ClassModel) -> Option<SourceLocation> {
+        model
+            .methods
+            .iter()
+            .rev()
+            .find(|method| method.name == "AUTOLOAD" && method.declarator.is_none())
+            .map(|method| method.location)
+    }
+
+    fn plain_package_exact_method_location(
+        &self,
+        package_name: &str,
+        method_name: &str,
+    ) -> Option<SourceLocation> {
+        let qualified = format!("{}::{}", package_name, method_name);
+        let matches = |symbol: &Symbol| {
+            is_package_method_symbol(symbol) && symbol.qualified_name == qualified
+        };
+        self.symbol_table
+            .symbols
+            .get(method_name)
+            .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            .or_else(|| {
+                self.symbol_table
+                    .symbols
+                    .get(&qualified)
+                    .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            })
+            .map(|symbol| symbol.location)
+    }
+
+    fn plain_package_autoload_method_location(&self, package_name: &str) -> Option<SourceLocation> {
+        let qualified_autoload = format!("{}::AUTOLOAD", package_name);
+        let matches = |symbol: &Symbol| {
+            is_package_method_symbol(symbol) && symbol.qualified_name == qualified_autoload
+        };
+        self.symbol_table
+            .symbols
+            .get("AUTOLOAD")
+            .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            .or_else(|| {
+                self.symbol_table
+                    .symbols
+                    .get(&qualified_autoload)
+                    .and_then(|symbols| symbols.iter().find(|symbol| matches(symbol)))
+            })
+            .map(|symbol| symbol.location)
     }
 
     /// Exact-method half of plain-package resolution, for a package that has no
@@ -1419,6 +1483,45 @@ sub AUTOLOAD { 2 }
             !hover.details.iter().any(|d| d == AUTOLOAD_DYNAMIC_DISPATCH_DETAIL),
             "exact inherited resolution must not carry the dynamic-dispatch detail, got: {:?}",
             hover.details
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_ancestor_exact_method_location_beats_intermediate_autoload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An intermediate ancestor's AUTOLOAD must not pre-empt a later ancestor's
+        // exact method when resolving inherited method locations (#1763).
+        let code = r#"
+package Base;
+sub target { 1 }
+
+package Middle;
+our @ISA = ('Base');
+sub AUTOLOAD { 2 }
+
+package Child;
+our @ISA = ('Middle');
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let resolved = analyzer
+            .resolve_inherited_method_location("Child", "target")
+            .ok_or("expected inherited exact-method location")?;
+
+        let resolved_snippet = code
+            .get(resolved.start..resolved.end.min(code.len()))
+            .ok_or("resolved location out of bounds")?;
+        assert!(
+            resolved_snippet.contains("target"),
+            "expected Base::target, got snippet: {resolved_snippet:?}"
+        );
+        assert!(
+            !resolved_snippet.contains("AUTOLOAD"),
+            "must not stop at an intermediate AUTOLOAD, got: {resolved_snippet:?}"
         );
         Ok(())
     }
@@ -2571,8 +2674,11 @@ sub add_widgets {
         Ok(())
     }
 
-    /// A `=cutover`-style line is not a POD terminator: a block ending
-    /// with it must not become the following sub's documentation.
+    /// A `=cutover`-style line is not a POD terminator: the block is
+    /// unterminated, so it runs to EOF and the following `sub` stays POD
+    /// text rather than becoming a code symbol with those docs attached.
+    /// This matches the lexer's perl-verified `=cut` word boundary
+    /// (`cutlery_does_not_terminate_a_pod_block` in perl-lexer).
     #[test]
     fn test_pod_block_requires_exact_cut_terminator() -> Result<(), Box<dyn std::error::Error>> {
         let code = "=head2 y\n\nWhy docs.\n\n=cutover\n\nsub y { 1 }\n";
@@ -2580,12 +2686,9 @@ sub add_widgets {
         let ast = parser.parse()?;
         let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
         let subs = analyzer.symbol_table().find_symbol("y", 0, SymbolKind::Subroutine);
-        assert!(!subs.is_empty(), "Should find sub y");
-        let hover = analyzer.hover_at(subs[0].location).ok_or("hover not found")?;
         assert!(
-            hover.documentation.as_deref().is_none_or(|d| !d.contains("Why docs")),
-            "=cutover must not terminate a POD block, got: {:?}",
-            hover.documentation
+            subs.is_empty(),
+            "=cutover must not terminate a POD block, so sub y remains POD text, got: {subs:?}"
         );
         Ok(())
     }
@@ -2639,6 +2742,203 @@ my %config = (key => "value");
             "Hash hover should show variable name, got: {}",
             hover.signature
         );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Foreach iterator indexing (issue #17297)
+    // -----------------------------------------------------------------------
+
+    /// `for my $item (LIST)` binds `$item` in the loop-body scope like any
+    /// other lexical: both the declaration site and use sites must resolve to
+    /// the loop-variable symbol, not fall through to the enclosing sub.
+    #[test]
+    fn test_foreach_my_iterator_is_indexed() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"sub fold {
+    my ($items, $initial) = @_;
+    my $acc = $initial;
+    for my $item (@$items) {
+        $acc = $acc . $item;
+    }
+    return $acc;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        // Declaration site: the smallest symbol at the iterator token is the
+        // loop variable itself. (`"$item ("` targets the iterator, not the
+        // `$items` parameter.)
+        let decl_pos = code.find("$item (").ok_or("iterator declaration not found")? + 2;
+        let decl = analyzer.find_definition(decl_pos).ok_or("iterator decl unresolved")?;
+        assert!(
+            decl.kind.is_variable(),
+            "iterator declaration must resolve to a variable, got kind {:?}",
+            decl.kind
+        );
+        assert_eq!(decl.name, "item", "iterator must bind `$item`");
+
+        // Use site inside the loop body: the reference resolves to the same
+        // loop-scoped symbol.
+        let use_pos = code.rfind("$item;").ok_or("iterator use not found")? + 2;
+        let used = analyzer.find_definition(use_pos).ok_or("iterator use unresolved")?;
+        assert_eq!(
+            used.location, decl.location,
+            "use of `$item` in the loop body must resolve to the loop-variable declaration"
+        );
+
+        // Control: an ordinary `my` in the same sub keeps resolving.
+        let acc_pos = code.find("$acc").ok_or("$acc not found")? + 2;
+        let acc = analyzer.find_definition(acc_pos).ok_or("$acc unresolved")?;
+        assert!(acc.kind.is_variable(), "ordinary `my` must stay a variable");
+        Ok(())
+    }
+
+    /// Bare `for $x (LIST)` keeps its implicit-declaration binding: the loop
+    /// variable is still a variable symbol in the loop scope.
+    #[test]
+    fn test_foreach_bare_iterator_stays_indexed() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"sub total {
+    my $sum = 0;
+    for $n (1, 2, 3) {
+        $sum = $sum + $n;
+    }
+    return $sum;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let decl_pos = code.find("$n").ok_or("bare iterator not found")? + 2;
+        let decl = analyzer.find_definition(decl_pos).ok_or("bare iterator unresolved")?;
+        assert!(
+            decl.kind.is_variable(),
+            "bare iterator must resolve to a variable, got kind {:?}",
+            decl.kind
+        );
+        assert_eq!(decl.name, "n");
+
+        let use_pos = code.rfind("$n;").ok_or("bare iterator use not found")? + 2;
+        let used = analyzer.find_definition(use_pos).ok_or("bare iterator use unresolved")?;
+        assert_eq!(
+            used.location, decl.location,
+            "the bare iterator use must resolve to the iterator declaration"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // POD block selection for hover docs (issue #17298)
+    // -----------------------------------------------------------------------
+
+    /// Hover documentation for a sub is the POD block immediately preceding
+    /// it — not every block from the first `=head1` onward, and not the
+    /// source of intermediate subs (#17298). Block directives are rendered
+    /// or dropped rather than passed through raw.
+    #[test]
+    fn test_sub_docs_attach_only_the_preceding_pod_block() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let code = r#"=head1 NAME
+
+Widget::Fixture - a small fixture package for hover testing.
+
+=head1 DESCRIPTION
+
+This module exists to exercise POD selection.
+
+=cut
+
+=head2 new
+
+Constructor. Takes a name.
+
+=cut
+
+sub new {
+    my ($class, %opts) = @_;
+    return bless {}, $class;
+}
+
+=head2 add_widgets
+
+Adds a number of widgets to the garden.
+
+=cut
+
+sub add_widgets {
+    return 1;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let sub_symbols =
+            analyzer.symbol_table().find_symbol("add_widgets", 0, SymbolKind::Subroutine);
+        assert!(!sub_symbols.is_empty(), "sub add_widgets not found");
+        let hover = analyzer.hover_at(sub_symbols[0].location).ok_or("hover not found")?;
+        let doc = hover.documentation.as_deref().ok_or("documentation not attached")?;
+
+        // The immediately-preceding block's text is attached.
+        assert!(
+            doc.contains("Adds a number of widgets"),
+            "the preceding =head2 block must be attached, got: {doc}"
+        );
+        // Nothing from earlier blocks or intermediate subs.
+        assert!(
+            !doc.contains("a small fixture package"),
+            "the NAME section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("exercise POD selection"),
+            "the DESCRIPTION section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("Constructor"),
+            "the `new` section leaked into the sub's docs, got: {doc}"
+        );
+        assert!(
+            !doc.contains("bless"),
+            "the `sub new` source leaked into the sub's docs, got: {doc}"
+        );
+        // No raw block directives.
+        assert!(!doc.contains("=head"), "raw =head directive leaked, got: {doc}");
+        assert!(!doc.contains("=cut"), "raw =cut directive leaked, got: {doc}");
+        Ok(())
+    }
+
+    /// A POD block with code between it and the sub does not attach: only
+    /// the block *immediately* preceding the declaration is documentation.
+    #[test]
+    fn test_pod_block_with_code_after_does_not_attach() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"=head1 STALE
+
+Old documentation for something else.
+
+=cut
+
+my $setup = 1;
+
+sub later_sub {
+    return 2;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let sub_symbols =
+            analyzer.symbol_table().find_symbol("later_sub", 0, SymbolKind::Subroutine);
+        assert!(!sub_symbols.is_empty(), "sub later_sub not found");
+        let hover = analyzer.hover_at(sub_symbols[0].location).ok_or("hover not found")?;
+        if let Some(doc) = hover.documentation.as_deref() {
+            assert!(
+                !doc.contains("Old documentation"),
+                "stale POD block with code after it must not attach, got: {doc}"
+            );
+        }
         Ok(())
     }
 
