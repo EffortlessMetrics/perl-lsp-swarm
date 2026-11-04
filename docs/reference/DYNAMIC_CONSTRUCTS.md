@@ -30,14 +30,15 @@ refactoring plan. Completion may omit runtime-generated symbols. `AUTOLOAD`
 hover paths explicitly describe dynamic dispatch. These answers explain the evidence
 available to the provider; they do not certify the runtime-generated symbol.
 
-Coverage is partial. In particular, a hover or definition request inside
-arbitrary string-eval content may still return no result. The live workspace
-fact shard currently extracts named-sub evidence from literal eval strings;
-that does not provide a covering boundary occurrence for every string eval or
-eval heredoc. The semantic hover cutover does not currently query an entity-less,
-position-scoped boundary before falling back on an absent symbol. A compiler
-HIR or project-model boundary alone therefore does not guarantee a user-visible
-hint at that position.
+Coverage is partial by design. A hover or definition request inside arbitrary
+string-eval content now consults a position-scoped dynamic boundary when one
+is published on the workspace fact shard (string-literal spans for `eval "..."`,
+keyword-only anchors for other `eval EXPR` / `do EXPR` forms so operand
+variables keep undeclared-symbol diagnostics). That does not parse or execute
+the runtime code. Literal
+`eval 'sub NAME { ... }'` evidence remains a separate, name-bearing boundary
+path. Eval-heredoc-specific bridging remains tracked in
+[#1762](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1762).
 
 The heredoc anti-pattern diagnostic `PL805` can report a heredoc in an eval
 string. That diagnostic is separate from general semantic boundary publication
@@ -83,5 +84,9 @@ These are distinct evidence layers, not interchangeable completion claims:
   and [heredoc diagnostics](../../crates/perl-lsp-rs-core/src/providers/diagnostics/heredoc_antipatterns.rs)
   determine which explanations reach editor requests.
 
-The remaining provider and per-construct acceptance work is tracked by
-[#1761](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1761).
+Acceptance tests for eval, `do EXPR`, and typeglob degradation live in
+[`issue_1761_dynamic_construct_acceptance.rs`](../../crates/perl-workspace/tests/issue_1761_dynamic_construct_acceptance.rs).
+Further `do` source-form and module-resolution authority remains in
+[#8861](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8861) →
+[#8863](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8863) →
+[#8864](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8864).

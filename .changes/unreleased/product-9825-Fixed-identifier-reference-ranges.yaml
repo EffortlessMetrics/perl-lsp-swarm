@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Find References now returns one identifier-only range per call or declaration instead of overlapping call-expression spans.
+time: 2026-11-02T09:30:00Z
+custom:
+  PR: "0"
+  Slug: identifier-reference-ranges
+  Breaking: "no"

@@ -178,7 +178,10 @@ pub fn resolve_change_set_with_mode(
             // Any other resolution failure is folded into `None` rather
             // than surfaced, since `base_sha` is informational for the
             // staged-tree arm (the load-bearing identity is `oid`).
-            let base_sha = resolve_sha(&base, root).ok();
+            // This is a current-repository operation, like the staged helpers
+            // above: retain the caller-selected Git directory and index.
+            let base_sha =
+                read_resolved_sha(&base, cmd("git", &["rev-parse", &base]).dir(root)).ok();
             Ok(ChangeSet {
                 identity: ArtifactIdentity::StagedTree { oid },
                 base_sha,
@@ -254,21 +257,28 @@ fn resolve_base_ref(base: &str, root: &Path) -> Result<String> {
 }
 
 fn git_ref_exists(candidate: &str, root: &Path) -> Result<bool> {
-    let verify = cmd("git", &["rev-parse", "--verify", "--quiet", candidate])
-        .dir(root)
-        .stdout_null()
-        .stderr_null()
-        .unchecked()
-        .run()
-        .context("Failed to run git rev-parse")?;
+    let verify = xtask::git_environment::isolate_duct(
+        cmd("git", &["rev-parse", "--verify", "--quiet", candidate]).dir(root),
+    )
+    .stdout_null()
+    .stderr_null()
+    .unchecked()
+    .run()
+    .context("Failed to run git rev-parse")?;
     Ok(verify.status.success())
 }
 
 /// Resolve any ref/OID (branch, remote-tracking branch, tag, `HEAD~N`, or
 /// an already-resolved OID) to its full SHA.
 fn resolve_sha(reference: &str, root: &Path) -> Result<String> {
-    let output = cmd("git", &["rev-parse", reference])
-        .dir(root)
+    read_resolved_sha(
+        reference,
+        xtask::git_environment::isolate_duct(cmd("git", &["rev-parse", reference]).dir(root)),
+    )
+}
+
+fn read_resolved_sha(reference: &str, command: duct::Expression) -> Result<String> {
+    let output = command
         .stdout_capture()
         .stderr_capture()
         .unchecked()
@@ -305,13 +315,14 @@ fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec
     }
 
     let three_dot = format!("{base}...{head}");
-    let output = cmd("git", &["diff", "--no-renames", "--name-only", "-z", &three_dot])
-        .dir(root)
-        .stdout_capture()
-        .stderr_capture()
-        .unchecked()
-        .run()
-        .context("Failed to run git diff")?;
+    let output = xtask::git_environment::isolate_duct(
+        cmd("git", &["diff", "--no-renames", "--name-only", "-z", &three_dot]).dir(root),
+    )
+    .stdout_capture()
+    .stderr_capture()
+    .unchecked()
+    .run()
+    .context("Failed to run git diff")?;
 
     if output.status.success() {
         return parse_nul_delimited_paths(&output.stdout);
@@ -325,12 +336,13 @@ fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec
 /// the three-dot-failure fallback for [`DiffMode::MergeBaseThreeDot`].
 fn direct_diff_paths(base: &str, head: &str, root: &Path) -> Result<Vec<String>> {
     let two_dot = format!("{base}..{head}");
-    let output = cmd("git", &["diff", "--no-renames", "--name-only", "-z", &two_dot])
-        .dir(root)
-        .stdout_capture()
-        .stderr_capture()
-        .run()
-        .context("Failed to run git diff (two-dot)")?;
+    let output = xtask::git_environment::isolate_duct(
+        cmd("git", &["diff", "--no-renames", "--name-only", "-z", &two_dot]).dir(root),
+    )
+    .stdout_capture()
+    .stderr_capture()
+    .run()
+    .context("Failed to run git diff (two-dot)")?;
     parse_nul_delimited_paths(&output.stdout)
 }
 
@@ -424,7 +436,7 @@ mod tests {
     use std::process::Command;
 
     fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
-        let status = Command::new("git")
+        let status = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(dir)
             .args(args)
             .status()

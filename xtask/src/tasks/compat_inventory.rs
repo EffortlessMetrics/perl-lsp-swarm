@@ -36,7 +36,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use syn::visit::Visit;
-use syn::{Item, Type, Visibility as SynVisibility};
+use syn::{ForeignItem, Item, Type, Visibility as SynVisibility};
 
 /// Hand-authored disposition ledger. Humans own this file.
 pub const LEDGER_PATH: &str = "policy/tree-sitter-compat-inventory.toml";
@@ -810,6 +810,46 @@ fn syn_item_declaration(item: &Item) -> Option<(String, SymbolKind, Visibility)>
     syn_visibility(visibility).map(|visibility| (name.to_string(), kind, visibility))
 }
 
+fn syn_foreign_item_declaration(
+    item: &ForeignItem,
+    source_path: &Path,
+) -> Result<Option<(String, SymbolKind, Visibility)>> {
+    match item {
+        ForeignItem::Fn(item) => {
+            let Some(visibility) = syn_visibility(&item.vis) else {
+                return Ok(None);
+            };
+            Ok(Some((item.sig.ident.to_string(), SymbolKind::Function, visibility)))
+        }
+        ForeignItem::Static(item) => {
+            let Some(visibility) = syn_visibility(&item.vis) else {
+                return Ok(None);
+            };
+            Ok(Some((item.ident.to_string(), SymbolKind::Static, visibility)))
+        }
+        ForeignItem::Type(item) => {
+            bail!(
+                "cannot inventory foreign type `{}` in {}: foreign type aliases are not classifiable",
+                item.ident,
+                source_path.display()
+            );
+        }
+        ForeignItem::Macro(item) => {
+            let name = ItemMacroDetector::macro_path_segments(&item.mac.path);
+            bail!(
+                "cannot inventory macro-generated items in {}: foreign item macro `{name}` requires expansion",
+                source_path.display()
+            );
+        }
+        _ => {
+            bail!(
+                "cannot inventory unclassified foreign item in {}: replace it with a classifiable `pub fn` or `pub static` declaration",
+                source_path.display()
+            );
+        }
+    }
+}
+
 fn inherent_impl_name(item: &syn::ItemImpl) -> Option<String> {
     if item.trait_.is_some() {
         return None;
@@ -907,6 +947,31 @@ fn discover_syn_item_list(
                 visibility,
                 reexported_at_root: visibility == Visibility::Public && reexported,
             });
+        }
+
+        if let Item::ForeignMod(foreign_mod) = item {
+            for foreign_item in &foreign_mod.items {
+                if let Some((name, kind, declared)) =
+                    syn_foreign_item_declaration(foreign_item, source_path)?
+                {
+                    let reexported = root_reexports
+                        .iter()
+                        .any(|(path, exported)| path == module && exported == &name);
+                    let visibility =
+                        if declared == Visibility::Public && (module_public || reexported) {
+                            Visibility::Public
+                        } else {
+                            Visibility::Internal
+                        };
+                    exports.push(Export {
+                        module: module.to_string(),
+                        name,
+                        kind,
+                        visibility,
+                        reexported_at_root: visibility == Visibility::Public && reexported,
+                    });
+                }
+            }
         }
 
         if let Item::Impl(item_impl) = item
@@ -3581,6 +3646,40 @@ impl<T> Wrapper<T> {
             "the sibling decoy must not be picked up as the inline child: {exports:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn syn_walk_discovers_public_foreign_functions_and_statics() -> TestResult {
+        let exports = syn_exports(
+            "extern \"C\" {\n    pub fn foreign_fn();\n    pub static FOREIGN_STATE: i32;\n    fn private_fn();\n    static PRIVATE_STATE: i32;\n}\n",
+        )?;
+        assert!(
+            exports.iter().any(|e| e.name == "foreign_fn"
+                && e.kind == SymbolKind::Function
+                && e.visibility == Visibility::Public),
+            "exports: {exports:?}"
+        );
+        assert!(
+            exports.iter().any(|e| e.name == "FOREIGN_STATE"
+                && e.kind == SymbolKind::Static
+                && e.visibility == Visibility::Public),
+            "exports: {exports:?}"
+        );
+        assert!(
+            !exports.iter().any(|e| e.name == "private_fn" || e.name == "PRIVATE_STATE"),
+            "private foreign items must be ignored: {exports:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn syn_walk_refuses_unclassifiable_foreign_items_fail_closed() {
+        let error = syn_exports_err(
+            "extern \"C\" {\n    pub type ForeignAlias;\n}\n",
+            "foreign type alias must fail closed",
+        );
+        assert!(error.contains("foreign type"), "unexpected error: {error}");
+        assert!(error.contains("ForeignAlias"), "unexpected error: {error}");
     }
 
     #[test]

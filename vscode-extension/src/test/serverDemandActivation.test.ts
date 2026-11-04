@@ -4,6 +4,19 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { writeFakeTool } from './fakeToolFixture';
 
+let mockAiActivation = false;
+let mockInlineRegistered = false;
+let mockClientOptions:
+  | {
+      middleware?: {
+        handleRegisterCapability?: (
+          params: { registrations: Array<{ id: string; method: string }> },
+          next: (...args: unknown[]) => Promise<void>,
+        ) => Promise<void>;
+      };
+    }
+  | undefined;
+
 const mockLanguageClientStart = jest.fn(async () => undefined);
 const mockLanguageClientStop = jest.fn(async () => undefined);
 const mockLanguageClientDispose = jest.fn(async () => undefined);
@@ -29,7 +42,9 @@ jest.mock('child_process', () => ({
 
 jest.mock('vscode-languageclient/node', () => ({
   State: { Stopped: 1, Running: 2, Starting: 3 },
-  LanguageClient: jest.fn().mockImplementation(() => {
+  CancellationToken: { None: { isCancellationRequested: false } },
+  LanguageClient: jest.fn().mockImplementation((_id, _name, _server, options) => {
+    mockClientOptions = options;
     let state = 1;
     const serverProcess = {
       // Use the live Jest process so the production liveness probe cannot
@@ -64,7 +79,14 @@ jest.mock('vscode-languageclient/node', () => ({
       get serverProcess() {
         return serverProcess;
       },
-      initializeResult: { capabilities: {} },
+      initializeResult: {
+        capabilities: mockAiActivation
+          ? { experimental: { perlAiCompletionActivation: true } }
+          : {},
+      },
+      getFeature: () => ({
+        getState: () => ({ kind: 'document', registrations: mockInlineRegistered }),
+      }),
       onDidChangeState: mockLanguageClientOnDidChangeState,
       onNotification: mockLanguageClientOnNotification,
       sendNotification: mockLanguageClientSendNotification,
@@ -141,7 +163,10 @@ function mockConfig(serverPath: string): void {
  * the demand path awaits several calls, and adding one more await would turn a
  * correct implementation into an intermittent CI failure.
  */
-async function waitUntil(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+// Budget must stay below jest.config's 15s testTimeout: hosted runners add
+// multi-second activation latency, and the poll condition is binary so extra
+// patience never weakens the assertion.
+async function waitUntil(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const startedAt = Date.now();
   while (!condition()) {
     if (Date.now() - startedAt > timeoutMs) {
@@ -152,7 +177,7 @@ async function waitUntil(condition: () => boolean, timeoutMs = 1_000): Promise<v
 }
 
 /** Wait until the language client has been started `count` times. */
-function waitForStarts(count: number, timeoutMs = 1_000): Promise<void> {
+function waitForStarts(count: number, timeoutMs = 5_000): Promise<void> {
   return waitUntil(() => mockLanguageClientStart.mock.calls.length >= count, timeoutMs);
 }
 
@@ -206,6 +231,9 @@ describe('deferred language-server startup (#8180)', () => {
   beforeEach(() => {
     process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '0';
     suppressMockProcessExit = false;
+    mockAiActivation = false;
+    mockInlineRegistered = false;
+    mockClientOptions = undefined;
     mockServerProcesses.length = 0;
     (vscode.workspace as { isTrusted: boolean }).isTrusted = true;
     setOpenDocuments([]);
@@ -227,6 +255,51 @@ describe('deferred language-server startup (#8180)', () => {
     jest.clearAllMocks();
     suppressMockProcessExit = false;
     mockServerProcesses.length = 0;
+  });
+
+  test('AI prompt catches registration during deferred startup finalization', async () => {
+    mockAiActivation = true;
+    // Use an existing executable for path validation; the mocked client never
+    // spawns it. No executable permission or empty-file fixture is required.
+    mockConfig(process.execPath);
+    let finalizationHeld = false;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockLanguageClientSendNotification.mockImplementationOnce(async (...args: unknown[]) => {
+      expect(args[0]).toBe('workspace/didChangeConfiguration');
+      finalizationHeld = true;
+      await barrier;
+    });
+    setOpenDocuments([fakeDocument('perl')]);
+    await activate(makeContext(path.resolve(__dirname, '../..')));
+    try {
+      await waitUntil(() => finalizationHeld);
+      await mockClientOptions!.middleware!.handleRegisterCapability!(
+        { registrations: [{ id: 'late-inline', method: 'textDocument/inlineCompletion' }] },
+        async () => {
+          mockInlineRegistered = true;
+        },
+      );
+      expect(vscode.window.showInformationMessage).not.toHaveBeenCalledWith(
+        expect.stringContaining('AI-powered inline completions'),
+        'Enable',
+        'Learn More',
+        'Dismiss',
+      );
+    } finally {
+      release();
+    }
+    await waitUntil(() =>
+      jest
+        .mocked(vscode.window.showInformationMessage)
+        .mock.calls.some(([message]) => message.includes('AI-powered inline completions')),
+    );
+    const prompts = jest
+      .mocked(vscode.window.showInformationMessage)
+      .mock.calls.filter(([message]) => message.includes('AI-powered inline completions'));
+    expect(prompts).toHaveLength(1);
   });
 
   test('activation without a Perl document does not start the language server', async () => {
