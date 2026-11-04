@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "The parser no longer panics on malformed heredoc input that produced an inverted statement span; the fuzz-found crash input is committed as a regression artifact so the failure cannot silently return."
+time: 2026-10-13T00:00:00Z
+custom:
+  PR: "17766"
+  Slug: heredoc-slice-panic
+  Breaking: "no"

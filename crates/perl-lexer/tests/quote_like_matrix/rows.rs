@@ -1565,16 +1565,167 @@ fn context_rows() -> Vec<MatrixRow> {
             spec(ExpectedKind::Keyword, "sub"),
             spec(ExpectedKind::Identifier, "foo"),
             spec(ExpectedKind::LeftParen, "("),
-            spec(ExpectedKind::Error, "q) { }"),
+            spec(ExpectedKind::Identifier, "q"),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
             spec(ExpectedKind::Eof, ""),
         ]),
         NextOrdinary::NoneAtEof,
         TerminalStateClass::ExpectOperator,
-        Disposition::Rejected,
+        Disposition::Clean,
         OracleExpectation::Skip,
-        Some("prototype `q` currently starts an unclosed quote-like Error"),
+        Some("prototype payload is preserved as an identifier for parser validation (#13919)"),
         &[Axis::SubroutineName],
     ));
+    // Every quote-like spelling as bare prototype text stays an identifier:
+    // the prototype-state exclusion in the lexer must not let any family
+    // acquire quote state from the closing paren (#13919).
+    for (id, family, word) in [
+        ("qq.prototype_word", OperatorFamily::Qq, "qq"),
+        ("qw.prototype_word", OperatorFamily::Qw, "qw"),
+        ("qx.prototype_word", OperatorFamily::Qx, "qx"),
+        ("qr.prototype_word", OperatorFamily::Qr, "qr"),
+        ("m.prototype_word", OperatorFamily::M, "m"),
+        ("s.prototype_word", OperatorFamily::S, "s"),
+        ("tr.prototype_word", OperatorFamily::Tr, "tr"),
+        ("y.prototype_word", OperatorFamily::Y, "y"),
+    ] {
+        rows.push(prototype_word_row(id, family, word));
+    }
+    // Signature defaults are expressions: quote-like operators inside them
+    // keep their quote tokens even though the lexer window is the same
+    // parenthesised region (#13919 review control).
+    rows.push(row(
+        "q.signature_default_quote",
+        OperatorFamily::Q,
+        Spelling::Attached,
+        DelimiterFamily::PairedBrace,
+        SourceContext::Signature,
+        "sub f($x = q{hello}) { }",
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "f"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, "$x"),
+            spec(ExpectedKind::Operator, "="),
+            spec(ExpectedKind::QuoteSingle, "q{hello}"),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("signature default expressions keep quote operators (#13919)"),
+        &[Axis::SubroutineName],
+    ));
+    rows.push(row(
+        "m.signature_default_match",
+        OperatorFamily::M,
+        Spelling::Attached,
+        DelimiterFamily::UnpairedSlash,
+        SourceContext::Signature,
+        "sub f($x = m/ab/) { }",
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "f"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, "$x"),
+            spec(ExpectedKind::Operator, "="),
+            spec(ExpectedKind::RegexMatch, "m/ab/"),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("signature default expressions keep quote operators (#13919)"),
+        &[Axis::SubroutineName],
+    ));
+    for (id, family, delim, kind, word, quoted) in [
+        (
+            "qq.signature_default_quote",
+            OperatorFamily::Qq,
+            DelimiterFamily::PairedBrace,
+            ExpectedKind::QuoteDouble,
+            "qq",
+            "qq{hello}",
+        ),
+        (
+            "qw.signature_default_quote",
+            OperatorFamily::Qw,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::QuoteWords,
+            "qw",
+            "qw/a b/",
+        ),
+        (
+            "qx.signature_default_quote",
+            OperatorFamily::Qx,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::QuoteCommand,
+            "qx",
+            "qx/ls/",
+        ),
+        (
+            "qr.signature_default_quote",
+            OperatorFamily::Qr,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::QuoteRegex,
+            "qr",
+            "qr/ab/",
+        ),
+        (
+            "s.signature_default_substitution",
+            OperatorFamily::S,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::Substitution,
+            "s",
+            "s/a/b/",
+        ),
+        (
+            "tr.signature_default_transliteration",
+            OperatorFamily::Tr,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::Transliteration,
+            "tr",
+            "tr/a/b/",
+        ),
+        (
+            "y.signature_default_transliteration",
+            OperatorFamily::Y,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::Transliteration,
+            "y",
+            "y/a/b/",
+        ),
+        // Delimiters drawn from the prototype payload alphabet are still
+        // operators once the window has shown signature evidence.
+        (
+            "q-dollar.signature_default_quote",
+            OperatorFamily::Q,
+            DelimiterFamily::UnpairedOther,
+            ExpectedKind::QuoteSingle,
+            "q",
+            "q$hello$",
+        ),
+        (
+            "q-at.signature_default_quote",
+            OperatorFamily::Q,
+            DelimiterFamily::UnpairedOther,
+            ExpectedKind::QuoteSingle,
+            "q",
+            "q@hello@",
+        ),
+    ] {
+        rows.push(signature_default_row(id, family, delim, kind, word, quoted));
+    }
     rows.push(row(
         "q.signature_scalar_not_quote",
         OperatorFamily::Q,
@@ -1636,6 +1787,73 @@ fn hash_key(
         OracleExpectation::CompileAccept,
         None,
         &[Axis::HashKey],
+    )
+}
+
+fn prototype_word_row(id: &'static str, operator: OperatorFamily, word: &'static str) -> MatrixRow {
+    let source: &'static str = Box::leak(format!("sub named({word}) {{ 1 }}").into_boxed_str());
+    row(
+        id,
+        operator,
+        Spelling::Attached,
+        DelimiterFamily::PairedParen,
+        SourceContext::Prototype,
+        source,
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "named"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, word),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::Number, "1"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("prototype payload is preserved as an identifier for parser validation (#13919)"),
+        &[Axis::SubroutineName],
+    )
+}
+
+fn signature_default_row(
+    id: &'static str,
+    operator: OperatorFamily,
+    delimiter: DelimiterFamily,
+    kind: ExpectedKind,
+    word: &'static str,
+    quoted: &'static str,
+) -> MatrixRow {
+    let source: &'static str = Box::leak(format!("sub f($x = {quoted}) {{ }}").into_boxed_str());
+    let _ = word;
+    row(
+        id,
+        operator,
+        Spelling::Attached,
+        delimiter,
+        SourceContext::Signature,
+        source,
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "f"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, "$x"),
+            spec(ExpectedKind::Operator, "="),
+            spec(kind, quoted),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("signature default expressions keep quote operators (#13919)"),
+        &[Axis::SubroutineName],
     )
 }
 

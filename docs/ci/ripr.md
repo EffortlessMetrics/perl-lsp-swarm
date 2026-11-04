@@ -32,6 +32,39 @@ until the final enforcement slice. The workflow still runs for
 every PR when it is ready for review so docs-only, policy-only, workflow-only,
 and code PRs all carry current proof receipts.
 
+## PR integration comparison identity
+
+With explicit `--pr-head H`, the existing producer interprets `--base A` as
+immutable event provenance and `--head E` as the evaluated integration commit.
+E must be the clean current checkout, have exactly two parents, and have H as its
+second parent. Its first parent P must descend from A. Diff-scoped evidence and
+guidance analyze **P...E**, the effect of integrating the candidate on that base.
+This excludes unrelated A-to-P mainline changes while retaining merge-resolution
+changes present in E, including changes absent from raw H. A candidate change
+neutralized in E is absent from this integration delta; this does not prove H
+separately. Missing or contradictory history refuses qualification.
+
+PR and guidance receipts retain their outer A/H/E provenance and a
+`comparison_subject` with version `ripr-pr-comparison.v1`, event A, raw H,
+comparison P, evaluated E and E's tree. The existing committed-diff receipt names
+P/E. The analyzer receives P as explicit metadata alongside that exact diff,
+and contradictory raw metadata refuses. PR evidence also binds the raw analysis digest; clean and degraded guidance
+can reuse it only after current subject, committed-diff and raw-byte validation.
+Legacy PR receipts cannot satisfy the new contract.
+
+RIPR-consuming quality gates receive independent `--ripr-pr-head H`, recompute
+that identity from Git and require both receipts to agree. Recovery commands
+retain H. PR mode requires the existing repository-wide receipt on E; the
+optional baseline override remains available for ordinary non-PR gates. Coverage-only
+mode continues to ignore RIPR receipts. A refused new gate generation invalidates
+its previous output instead of leaving an old success artifact.
+
+Without explicit PR-head input, existing commit-range semantics remain unchanged,
+including two-parent merge commits. This focused comparison repair does not change
+thresholds, required contexts, analyzer placement, permissions, reporting authority
+or the broader trusted-evaluator rollout under #15294. Installing this source does
+not qualify an older workflow attempt or activate #17903's staged cutover.
+
 ## What ripr does
 
 For each changed Rust function, ripr asks the mutation-testing-shaped question
@@ -55,6 +88,11 @@ When reporting `ripr` findings, use ripr's own classifications:
 | `propagation_unknown` | could not classify propagation |
 | `static_unknown` | analysis bottomed out |
 
+Ledger suppressions may also list `weakly_gripped` in `classification`. That is a
+ripr 0.9.x `grip_class` label, not a separate bucket in `ripr.toml`
+`[severity.findings]`; `cargo xtask ripr-pr` / `ripr-plus` canonicalize it to
+`reachable_unrevealed` when matching suppressions to findings.
+
 Do **not** translate these into `killed` / `survived`. They mean something different.
 
 ---
@@ -66,14 +104,16 @@ consume are produced separately by the `perl-ripr-facts` crate as a
 `ripr-perl-facts-v1` packet:
 
 - `perllsp --ripr-facts [--ripr-schema <ver> --ripr-root <path> --ripr-base
-  <ref> --ripr-head <ref> --ripr-fact-classes <list> --ripr-out <path>]` —
-  batch export flag; records base/head opaquely and exits without starting
-  the LSP server. This path never derives a diff, so when `changes` is
-  requested `changes[]` is always empty with a `no-diff-supplied` limitation.
+  <ref> --ripr-head <ref> --ripr-fact-classes <list> --ripr-out <path>
+  --ripr-diff <file>]` — batch export flag; records base/head opaquely and
+  exits without starting the LSP server. Base/head never derive a diff, but
+  `--ripr-diff` accepts caller-supplied diff text for diff-owned `changes[]`
+  (#17152); without it `changes[]` is empty with a `no-diff-supplied`
+  limitation.
 - `perl-ripr-facts ripr-facts --schema <ver> --root <path> [--base <ref>]
   [--head <ref>] [--fact-classes <list>] [--diff <cwd-relative-diff>] --out
-  <out>` — standalone binary; the only CLI path that accepts caller-supplied
-  diff text for diff-owned `changes[]`.
+  <out>` — standalone binary; accepts caller-supplied diff text for
+  diff-owned `changes[]`, like `perllsp --ripr-diff`.
 - `build_ripr_facts_packet(&RiprFactsRequest)` — structured batch API; reads
   workspace files but performs no output writes and spawns no processes.
   Library and managed-producer callers can also supply diff text directly via
@@ -122,11 +162,16 @@ never infer success from emptiness.
   classifier's `--api-evidence` mode applies the same positive-marker boundary;
   unreadable or marker-free evidence still fails closed. Every classified lane
   failure leaves a `ripr-gate-classification` artifact carrying its class and
-  reason. When the artifact is absent, the gate's classification step did not
-  produce a file — which points at a gate-side failure, though it is not by
-  itself proof of any single cause: paths that exit before classification and
-  upload-step skip conditions also leave no artifact (the upload step ignores
-  missing files). The authoritative signal is the classification content when
+  reason. When the gate retrieved a lane log before classifying a configured
+  hosted timeout (`configured-timeout-no-proof`, #16980), it also uploads a
+  `ripr-lane-log-tail` artifact with the last four mebibytes of that log so
+  timeout events stay diagnosable when the hosted UI truncates to an early
+  build prefix (#17450); that tail artifact is best-effort and its absence does
+  not replace the classification verdict. When `ripr-gate-classification` is
+  absent, the gate's classification step did not produce a file — which points
+  at a gate-side failure, though it is not by itself proof of any single cause:
+  paths that exit before classification and upload-step skip conditions also
+  leave no classification artifact (the upload step ignores missing files). The authoritative signal is the classification content when
   the artifact exists; consumers such as ripr-infra-retry treat absence as
   no-arm and surface NOT_PROVEN rather than guessing a class.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
@@ -212,14 +257,20 @@ than one PR.
 ## Suppressions
 
 Suppressions live in [`policy/ripr-suppressions.toml`](../../policy/ripr-suppressions.toml).
-Each suppression requires:
+Each suppression entry should carry:
 
 - `id` — stable identifier
 - `kind` — e.g. `generated_or_non_production_surface`
 - `paths` and/or `classification` — what to suppress
 - `owner` — accountable person/team
 - `reason` — why this is suppressed
-- `created`, `review_after`, `expires` — dates
+- `created`, `review_after`, `expires` — lifecycle dates committed with the entry
+
+Lifecycle dates are **advisory**. No quality gate reads them, and a suppression
+does not stop applying when `expires` passes; retiring one remains the owner's
+call. `cargo xtask ripr-suppression-audit` writes
+`target/ripr/suppressions/lifecycle-audit.json` (and `.md`) for owner review
+only; that artifact is not an input to any gate verdict.
 
 The suppression file is read by `ripr.toml`'s `[suppressions] path` setting.
 The `cargo xtask ripr-pr` and `cargo xtask ripr-plus` wrappers also apply the

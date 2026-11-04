@@ -1,3 +1,7 @@
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../../../../docs/agents/AUTHORITY_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../../../../docs/agents/AUTHORITY_STATUS.md).
+
 ┊ 💻 $         cd /home/hermes/repos/hermes && python3 conveyor/gates.py agent work-e551d1f1 maintainer-vision-agent 2>&1  0.6s
   ┊ 💬 All three artifacts are now complete. Let me advance the work item to the next gate:
   ┊ 💻 $         cd /home/hermes/repos/hermes && python3 conveyor/gates.py advance work-e551d1f1 2>&1  0.4s [exit 1]

@@ -174,7 +174,7 @@ model changed shape.
 - PR `#160`
 - PR `#209`
 - PR `#533`
-- [`REVIEW_LABEL_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
-- [`PR_REVIEW_RECEIPT_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_RECEIPT_ARCHAEOLOGY.md)
-- [`Q3_SWARM_PR_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [`RECEIPTS_LIE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md)
+- [`REVIEW_LABEL_ARCHAEOLOGY.md`](REVIEW_LABEL_ARCHAEOLOGY.md)
+- [`PR_REVIEW_RECEIPT_ARCHAEOLOGY.md`](PR_REVIEW_RECEIPT_ARCHAEOLOGY.md)
+- [`Q3_SWARM_PR_ARCHAEOLOGY.md`](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [`RECEIPTS_LIE_ARCHAEOLOGY.md`](RECEIPTS_LIE_ARCHAEOLOGY.md)

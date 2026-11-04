@@ -9,14 +9,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ACTION = "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f"
+ACTION = "codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4"
 TOKEN = "${{ secrets.CODECOV_TOKEN }}"
 CONTRACT_WORKFLOW = ROOT / ".github/workflows/workflow-contracts-advisory.yml"
 
 EXPECTED = {
     "Upload PR-fast test results to Codecov": {
         "file": ".github/workflows/ci.yml",
-        "if": "always() && env.CODECOV_TOKEN != ''",
+        "if": "always() && hashFiles('target/receipts/receipt.json') != '' && env.CODECOV_TOKEN != ''",
         "files": "target/test-results/pr-fast-junit.xml",
         "token": TOKEN,
         "env_token": TOKEN,

@@ -189,9 +189,13 @@ settings.
 | `perl-lsp.formatOnSave` | boolean | `false` | Format document on save. |
 | `perl-lsp.enableTestIntegration` | boolean | `true` | Enable `Test::More` and `Test2` integration. |
 | `perl-lsp.critic.enabled` | boolean | `true` | Enable native critic diagnostics; this built-in engine needs no external tool. |
+| `perl-lsp.critic.engine` | string | `"native"` | Critic engine. Only `native` (built-in, default) takes effect from VS Code settings; the server logs and ignores `legacy`/`external`/`perlcritic` on this channel. To select the external `perlcritic` engine, use the `[critic]` settings in `.perl-lsp.toml` instead. |
+| `perl-lsp.critic.severity` | number | `3` | Critic minimum severity, from `1` to `5`. |
+| `perl-lsp.critic.profile` | string | `"recommended"` | Native critic rule profile: `recommended` or `strict`. |
 | `perl-lsp.perlcritic.enabled` | boolean | `false` (deprecated) | Legacy external `perlcritic` compatibility alias. Use `perl-lsp.critic.enabled`; this alias only takes effect when `[critic].engine = "legacy"` is set in `.perl-lsp.toml`. |
-| `perl-lsp.perlcritic.severity` | number | `3` | Critic minimum severity, from `1` to `5`. |
-| `perl-lsp.perlcritic.profile` | string | `""` | Path to `.perlcriticrc` compatibility profile file. |
+| `perl-lsp.perlcritic.severity` | number | `3` (deprecated) | Deprecated: use `perl-lsp.critic.severity`. This alias still works, but `perl-lsp.critic.*` wins if both are set. |
+| `perl-lsp.perlcritic.profile` | string | `""` (deprecated) | Deprecated: use `perl-lsp.critic.profile` for the native profile, or the legacy `[critic]` settings in `.perl-lsp.toml` for an external `.perlcriticrc`. |
+| `perl-lsp.perlcritic.theme` | string | `""` (deprecated, no effect) | Deprecated placeholder with no effect; will be removed. Use `perl-lsp.critic.profile` instead. |
 | `perl-lsp.featureProfile` | string | `"auto"` | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile. |
 | `perl-lsp.disabledFeatures` | array | `[]` | Disable selected server features at client startup. |
 | `perl-lsp.autoUpdate` | boolean | `false` | Automatically download and install a new `perllsp` binary when available. |

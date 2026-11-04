@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: Reset the automatic crash recovery budget when Restart Now is accepted after changing server settings, matching the Restart Server command.
+time: 2026-10-15T00:00:00Z
+custom:
+  PR: "17966"
+  Slug: settings-restart-crash-budget
+  Breaking: "no"

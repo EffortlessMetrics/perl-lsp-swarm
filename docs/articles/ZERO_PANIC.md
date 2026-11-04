@@ -218,9 +218,11 @@ allow-git = []
 MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0, CC0-1.0, Zlib.
 No GPL, no AGPL, no SSPL.
 
-**Advisory monitoring** -- known vulnerabilities are checked against the
-RustSec advisory database. The single advisory ignore is documented with
-risk assessment:
+**Advisory monitoring (historical example)** -- this article's earlier
+configuration example showed a RustSec advisory ignore with a risk assessment.
+It is not the current repository configuration: as of 2026-10-12,
+[`deny.toml`](../../deny.toml) has an empty `[advisories].ignore` list. Keep the
+example as historical context; current policy is defined by `deny.toml`, not by this article.
 
 ```toml
 [advisories]

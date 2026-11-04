@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Workspace diagnostic pulls now clear stale diagnostics for closed files even when the client echoes a malformed previous result ID for them. Previously an entry with a missing or non-string value was dropped entirely, so the closed file never received its clearing report and its old warnings stayed in the editor until restart."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18102"
+  Slug: malformed-previous-result-ids
+  Breaking: "no"
