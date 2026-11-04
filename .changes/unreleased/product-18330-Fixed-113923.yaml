@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Preserve heredoc messages and following statements after scalar output handles in print, printf, and say calls."
+time: 2026-10-22T11:39:23Z
+custom:
+  PR: "18330"
+  Slug: scalar-output-handle-heredocs
+  Breaking: "no"

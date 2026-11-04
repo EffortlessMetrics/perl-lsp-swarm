@@ -57,6 +57,11 @@ pub use decision::{
     ReasonKind, WriterPreflightDecision, WriterPreflightOutcome, WriterPreflightReason, decide,
     digest_subject,
 };
+/// Bin-side parity tests in `tasks::writer_admission` (#14295).
+#[doc(hidden)]
+pub fn sha_matches_bin_parity(full: &str, expected: &str) -> bool {
+    decision::sha_matches(full, expected)
+}
 pub use observation::{
     AmbientCargoOverride, AmbientCargoSource, CapacityObservation, CheckoutRelation,
     ExecutorCargoPresence, HeadState, IndexState, Observation, ObservationState,

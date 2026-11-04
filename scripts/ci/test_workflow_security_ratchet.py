@@ -173,6 +173,13 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertNotIn("checkout_persists_credentials_on_write_surface", self.rules())
 
+    def test_nonempty_permissions_flow_map_remains_rejected(self) -> None:
+        self.write(
+            ".github/workflows/flow-permissions.yml",
+            "name: flow\non: [workflow_dispatch]\npermissions: {contents: write}\njobs: {}\n",
+        )
+        self.assertIn("unsupported_security_yaml_indirection", self.rules())
+
     def test_gh_aw_generated_lock_safe_outputs_checkout_is_accepted(self) -> None:
         # gh-aw emits persist-credentials: true on exactly one checkout, the
         # safe_outputs create_pull_request step, always shaped with the

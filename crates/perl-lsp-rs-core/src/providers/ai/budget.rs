@@ -303,6 +303,7 @@ impl AiResponseBudget {
     ///
     /// Callers check *before* accumulating, so `observed` is the size the
     /// response would reach, not a size already allocated.
+    #[cfg(any(feature = "ai-provider", test))]
     pub(crate) const fn check(
         &self,
         kind: BudgetKind,

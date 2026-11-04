@@ -44,6 +44,49 @@ def fake_probe(table: dict[str, FakeUsage]):
     return probe
 
 
+class FootprintFloorTests(unittest.TestCase):
+    """The floor must exceed the declared footprint (#17231)."""
+
+    def test_default_floor_exceeds_measured_footprint(self) -> None:
+        self.assertGreater(
+            guard.effective_min_free_bytes(None),
+            guard.MEASURED_FOOTPRINT_BYTES,
+        )
+
+    def test_floor_is_footprint_plus_reserve(self) -> None:
+        self.assertEqual(
+            guard.effective_min_free_bytes(None),
+            guard.MEASURED_FOOTPRINT_BYTES + guard.RESERVE_BYTES,
+        )
+
+    def test_override_at_or_below_footprint_is_config_error(self) -> None:
+        with self.assertRaises(ValueError):
+            guard.effective_min_free_bytes(guard.MEASURED_FOOTPRINT_BYTES)
+        with self.assertRaises(ValueError):
+            guard.effective_min_free_bytes(32 * guard.GIB)
+
+    def test_override_above_footprint_is_honoured(self) -> None:
+        self.assertEqual(
+            guard.effective_min_free_bytes(120 * guard.GIB), 120 * guard.GIB
+        )
+
+    def test_runner_with_footprint_but_no_reserve_is_rejected(self) -> None:
+        # 86 GiB free (fresh hosted runner) vs 85 GiB footprint + reserve:
+        # the old 32 GiB floor accepted this and the lane died ENOSPC.
+        table = {".": FakeUsage(145 * guard.GIB, 59 * guard.GIB, 86 * guard.GIB)}
+        breaches = guard.evaluate_preflight(
+            {".": "."}, guard.effective_min_free_bytes(None), probe=fake_probe(table)
+        )
+        self.assertEqual(len(breaches), 1)
+
+    def test_runner_covering_footprint_plus_reserve_is_accepted(self) -> None:
+        table = {".": FakeUsage(200 * guard.GIB, 80 * guard.GIB, 120 * guard.GIB)}
+        breaches = guard.evaluate_preflight(
+            {".": "."}, guard.effective_min_free_bytes(None), probe=fake_probe(table)
+        )
+        self.assertEqual(breaches, [])
+
+
 class ParseMinFreeBytesTests(unittest.TestCase):
     def test_plain_bytes(self) -> None:
         self.assertEqual(guard.parse_min_free_bytes("4096"), 4096)
@@ -453,6 +496,36 @@ class ClassifyFlowTests(unittest.TestCase):
             self.assertIn("no exhaustion signatures", output)
             self.assertIn("no resource-exhaustion signatures", pressure_log.read_text(encoding="utf-8").lower())
 
+    def test_preparation_log_without_receipt_is_not_full_tier_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / guard.PREPARATION_GATE_LOG).write_text(
+                "all checks passed", encoding="utf-8"
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "target")
+            self.assertIn("NOT_PROVEN", output)
+            self.assertNotIn("no resource-exhaustion signatures found", output.lower())
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: NOT_PROVEN", verdict)
+
+    def test_pressure_log_alone_is_not_gate_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / guard.PRESSURE_LOG_NAME).write_text(
+                "== PR-fast disk-exhaustion classification ==\n", encoding="utf-8"
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "target")
+            self.assertIn("NOT_PROVEN", output)
+            self.assertNotIn("no resource-exhaustion signatures found", output.lower())
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: NOT_PROVEN", verdict)
+
     def test_missing_pressure_log_parent_is_created(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -504,6 +577,8 @@ class RestoredGateLogCleanupTests(unittest.TestCase):
                     workspace_path=str(workspace),
                     target_dir="",
                     min_free_bytes=1,
+                    footprint_bytes=0,
+                    reserve_bytes=0,
                 )
             )
         self.assertEqual(status, 0)

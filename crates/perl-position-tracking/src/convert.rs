@@ -5,8 +5,11 @@
 //! code units.
 
 fn line_content_end(line: &str) -> usize {
-    let without_lf = line.strip_suffix('\n').unwrap_or(line);
-    without_lf.strip_suffix('\r').unwrap_or(without_lf).len()
+    // Bare CR is content under the LF source-line contract (ADR-0048).
+    match line.strip_suffix('\n') {
+        Some(without_lf) => without_lf.strip_suffix('\r').unwrap_or(without_lf).len(),
+        None => line.len(),
+    }
 }
 
 fn text_end_utf16_line_col(text: &str) -> (u32, u32) {
@@ -99,6 +102,37 @@ pub fn utf16_line_col_to_offset(text: &str, line: u32, col: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{offset_to_utf16_line_col, utf16_line_col_to_offset};
+
+    #[test]
+    fn terminal_bare_cr_is_addressable_utf16_content() {
+        // ADR-0048: only LF terminates a source line. Expected columns are
+        // explicit so two converters making the same mistake cannot agree.
+        for (text, line, column, byte) in [
+            ("\r", 0, 1, 1),
+            ("a\r", 0, 2, 2),
+            ("a💖\r", 0, 4, 6),
+            ("a\r\r", 0, 3, 3),
+            ("x\r\na💖\r", 1, 4, 9),
+        ] {
+            assert_eq!(offset_to_utf16_line_col(text, byte), (line, column), "{text:?}");
+            assert_eq!(utf16_line_col_to_offset(text, line, column), byte, "{text:?}");
+            assert_eq!(offset_to_utf16_line_col(text, byte + 10), (line, column), "{text:?}");
+            assert_eq!(utf16_line_col_to_offset(text, line, column + 10), byte, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn crlf_excludes_only_the_cr_paired_with_lf() {
+        // Repeated CR distinguishes stripping one CRLF from trimming all CRs.
+        for (text, content_end, column) in [("a💖\r\n", 5, 3), ("a💖\r\r\n", 6, 4)] {
+            assert_eq!(offset_to_utf16_line_col(text, content_end), (0, column));
+            assert_eq!(offset_to_utf16_line_col(text, content_end + 1), (0, column));
+            assert_eq!(utf16_line_col_to_offset(text, 0, column), content_end);
+            assert_eq!(utf16_line_col_to_offset(text, 0, column + 10), content_end);
+            assert_eq!(offset_to_utf16_line_col(text, text.len()), (1, 0));
+            assert_eq!(utf16_line_col_to_offset(text, 1, 0), text.len());
+        }
+    }
 
     #[test]
     fn offset_to_utf16_clamps_mid_codepoint_offsets_to_previous_boundary() {

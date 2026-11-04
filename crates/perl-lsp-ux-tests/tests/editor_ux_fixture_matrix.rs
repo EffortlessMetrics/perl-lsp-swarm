@@ -344,12 +344,281 @@ fn semantic_inline_completion_receipt_inventory_is_current() -> Result<()> {
         receipt_backed_count >= 5,
         "semantic inline inventory should keep at least five receipt-backed workflows, got {receipt_backed_count}"
     );
+    // #16560 calibration: at base, seven semantic-inline scenarios declared
+    // `run_receipt: false` while calling the recorder wrapper. With the flags
+    // derived from source, 11 of these 15 workflows are receipt-backed and 4
+    // remain genuinely receipt-free (dbi_receiver, lexical_return,
+    // loop_binding, guard_condition), so the pre-existing floor of 2 still
+    // holds and is kept unchanged.
     assert!(
         direct_stdio_count >= 2,
         "semantic inline inventory should keep direct stdio proof workflows visible, got {direct_stdio_count}"
     );
 
     Ok(())
+}
+
+/// Receipt instrumentation is a property of the scenario source, not a free-form
+/// annotation: a workflow emits a `UxScenarioRunReceipt` if and only if its
+/// scenario calls one of the recorder wrappers. #16560 measured 18 of 82 rows
+/// disagreeing with that fact, so the matrix flag is now derived and enforced
+/// here instead of being hand-maintained.
+///
+/// The wrappers are the only receipt-producing entry points: `run_ux_scenario`
+/// and `run_ux_scenario_with_evidence_class` both funnel into
+/// `run_ux_scenario_with_receipt_dir`, which writes on every outcome (pass,
+/// fail, skip, panic — see `recorder.rs`). Matching the call form (the
+/// trailing `(`) keeps a `use ...::run_ux_scenario` import from counting.
+///
+/// Limitation: this reads source, not runtime artifacts, so a wrapper call
+/// placed behind a `#[cfg(feature = ...)]` gate would still count. No such
+/// case exists today: `ux_scenario_06_large_file` is the only feature-gated
+/// scenario and it calls no recorder wrapper.
+#[test]
+fn run_receipt_flag_matches_scenario_instrumentation() -> Result<()> {
+    let matrix = load_fixture_matrix()?;
+    let workflows =
+        matrix.get("workflows").and_then(Value::as_array).context("workflows missing")?;
+
+    let mut mismatches = Vec::new();
+    let mut instrumented = 0_usize;
+
+    for workflow in workflows {
+        let scenario_file = workflow
+            .get("scenario_file")
+            .and_then(Value::as_str)
+            .context("workflow missing scenario_file")?;
+        let declared = workflow
+            .get("instrumentation")
+            .and_then(|value| value.get("run_receipt"))
+            .and_then(Value::as_bool)
+            .with_context(|| {
+                format!("workflow `{scenario_file}` missing instrumentation.run_receipt")
+            })?;
+
+        let source = fs::read_to_string(workspace_root().join(UX_TESTS_DIR).join(scenario_file))
+            .with_context(|| format!("reading scenario {scenario_file}"))?;
+        let observed = source_writes_run_receipt(&source);
+
+        if observed {
+            instrumented += 1;
+        }
+        if observed != declared {
+            mismatches.push(format!(
+                "{scenario_file}: run_receipt={declared} but {}",
+                if observed {
+                    "the scenario calls a recorder wrapper"
+                } else {
+                    "the scenario never calls a recorder wrapper"
+                }
+            ));
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "run_receipt flags drifted from scenario instrumentation ({} row(s)):\n  {}",
+        mismatches.len(),
+        mismatches.join("\n  ")
+    );
+    assert!(
+        instrumented > 0,
+        "no workflow was detected as receipt-instrumented; the source heuristic has stopped working"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn source_writes_run_receipt_guard_unit_cases() {
+    assert!(
+        !source_writes_run_receipt("/* run_ux_scenario(\"x\"); */"),
+        "wrapper inside block comment must not count"
+    );
+    assert!(
+        !source_writes_run_receipt("let s = \"run_ux_scenario(\\\"x\\\");\";"),
+        "wrapper inside string must not count"
+    );
+    assert!(
+        source_writes_run_receipt("let u = \"http://example.com\"; run_ux_scenario(\"x\");"),
+        "real wrapper after string containing // must count"
+    );
+    assert!(source_writes_run_receipt("run_ux_scenario(\"x\");"), "plain wrapper call must count");
+    assert!(
+        !source_writes_run_receipt("let s = r#\"run_ux_scenario(\\\"x\\\");\"#;"),
+        "wrapper inside raw string must not count"
+    );
+    assert!(
+        !source_writes_run_receipt("//! run_ux_scenario(\"x\");"),
+        "wrapper in line doc comment must not count"
+    );
+    assert!(
+        source_writes_run_receipt("fn f<'a>(x: &'a str) { run_ux_scenario(\"x\"); }"),
+        "lifetimes must not swallow following source"
+    );
+    assert!(
+        !source_writes_run_receipt("/* /* run_ux_scenario(\"x\"); */ run_ux_scenario(\"y\"); */"),
+        "nested block comment must hide the wrapper"
+    );
+    assert!(
+        source_writes_run_receipt("// /*\nrun_ux_scenario(\"x\");"),
+        "line comment must take precedence over block-comment opener"
+    );
+    assert!(
+        !source_writes_run_receipt("/* run_ux_scenario(\"x\");"),
+        "unterminated block comment must hide the wrapper"
+    );
+    assert!(
+        source_writes_run_receipt("let c = '\\''; run_ux_scenario(\"x\");"),
+        "escaped quote in char literal must not desynchronize the scanner"
+    );
+    assert!(
+        source_writes_run_receipt("let _ = ' '; run_ux_scenario(\"x\");"),
+        "space char literal must be recognized"
+    );
+    assert!(
+        source_writes_run_receipt("/* it \"quoted */ run_ux_scenario(\"x\");"),
+        "quotes inside block comments must not open string state"
+    );
+    assert!(
+        !source_writes_run_receipt("let s = cr#\"run_ux_scenario(\\\"x\\\");\"#;"),
+        "wrapper inside raw C string must not count"
+    );
+    assert!(
+        !source_writes_run_receipt("let s = c\"run_ux_scenario(\\\"x\\\");\";"),
+        "wrapper inside C string must not count"
+    );
+}
+
+/// Stack entry for one open string literal: [`PLAIN_STRING_LITERAL`] marks a
+/// plain `"…"` string; any other value is the hash count of a raw-string
+/// terminator.
+const PLAIN_STRING_LITERAL: usize = usize::MAX;
+
+fn char_literal_close(chars: &[char], open: usize) -> Option<usize> {
+    match chars.get(open + 1)? {
+        '\\' => {
+            let limit = (open + 15).min(chars.len());
+            // Skip the escaped character so `'\\''` closes at the real quote.
+            ((open + 3)..limit).find(|&probe| chars[probe] == '\'')
+        }
+        '\'' | '\n' => None,
+        _ => (chars.get(open + 2) == Some(&'\'')).then_some(open + 2),
+    }
+}
+
+fn raw_string_quote_after_hashes(chars: &[char], mut cursor: usize) -> Option<(usize, usize)> {
+    let hashes = cursor;
+    while chars.get(cursor) == Some(&'#') {
+        cursor += 1;
+    }
+    let seen = cursor - hashes;
+    if chars.get(cursor) == Some(&'"') { Some((seen, cursor + 1)) } else { None }
+}
+
+/// Remove comments and string/char literal bodies so substring matches reflect
+/// executable Rust, not documentation or embedded examples.
+fn stripped_rust_source_for_receipt_heuristic(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut index = 0usize;
+    let mut block_depth = 0usize;
+    let mut literal_hashes: Vec<usize> = Vec::new();
+    while index < chars.len() {
+        if !literal_hashes.is_empty() {
+            let open_hash = *literal_hashes.last().unwrap_or(&PLAIN_STRING_LITERAL);
+            if open_hash == PLAIN_STRING_LITERAL {
+                match chars[index] {
+                    '\\' => {
+                        index += 2;
+                    }
+                    '"' => {
+                        literal_hashes.pop();
+                        index += 1;
+                    }
+                    _ => index += 1,
+                }
+                continue;
+            }
+            if chars[index] == '"' {
+                let mut cursor = index + 1;
+                let mut seen = 0usize;
+                while seen < open_hash && chars.get(cursor) == Some(&'#') {
+                    cursor += 1;
+                    seen += 1;
+                }
+                if seen == open_hash {
+                    literal_hashes.pop();
+                    index = cursor;
+                    continue;
+                }
+            }
+            index += 1;
+            continue;
+        }
+        if block_depth == 0 && chars[index] == '/' && chars.get(index + 1) == Some(&'/') {
+            index += 2;
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+        } else if chars[index] == '/' && chars.get(index + 1) == Some(&'*') {
+            block_depth += 1;
+            index += 2;
+        } else if block_depth > 0 && chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
+            block_depth -= 1;
+            index += 2;
+        } else if block_depth > 0 {
+            index += 1;
+        } else if chars[index] == '\''
+            || (chars[index] == 'b' && chars.get(index + 1) == Some(&'\''))
+        {
+            let open = if chars[index] == '\'' { index } else { index + 1 };
+            match char_literal_close(&chars, open) {
+                Some(close) => index = close + 1,
+                None => {
+                    out.push(chars[index]);
+                    index += 1;
+                }
+            }
+        } else if (chars[index] == 'r'
+            || ((chars[index] == 'b' || chars[index] == 'c') && chars.get(index + 1) == Some(&'r')))
+            && (index == 0
+                || !(chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_'))
+        {
+            let prefix_end = if chars[index] == 'r' { index + 1 } else { index + 2 };
+            match raw_string_quote_after_hashes(&chars, prefix_end) {
+                Some((_hashes, after_quote)) => {
+                    literal_hashes.push(_hashes);
+                    index = after_quote;
+                }
+                None => {
+                    out.push(chars[index]);
+                    index += 1;
+                }
+            }
+        } else if chars[index] == '"'
+            || ((chars[index] == 'b' || chars[index] == 'c') && chars.get(index + 1) == Some(&'"'))
+        {
+            if chars[index] == 'b' || chars[index] == 'c' {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            literal_hashes.push(PLAIN_STRING_LITERAL);
+        } else {
+            out.push(chars[index]);
+            index += 1;
+        }
+    }
+    out
+}
+
+/// Whether a scenario file calls either recorder wrapper. Comments and string
+/// literals are stripped first so documented examples cannot register as real
+/// instrumentation.
+fn source_writes_run_receipt(source: &str) -> bool {
+    let code = stripped_rust_source_for_receipt_heuristic(source);
+    code.contains("run_ux_scenario(") || code.contains("run_ux_scenario_with_evidence_class(")
 }
 
 fn collect_string_set(value: &Value, context_label: &str) -> Result<BTreeSet<String>> {

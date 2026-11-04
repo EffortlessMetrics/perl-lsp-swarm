@@ -58,6 +58,7 @@ pub mod dist_authoring;
 pub mod effects;
 pub mod environment;
 pub mod error;
+pub mod eumm_mb;
 pub mod export;
 pub mod fact_classes;
 pub mod file;
@@ -65,6 +66,7 @@ pub mod id;
 pub mod import;
 mod import_walk;
 pub mod meta_yml;
+pub mod meta_yml_spec;
 pub mod model;
 pub mod package;
 pub mod pod;
@@ -88,9 +90,11 @@ pub use boundary::{DynamicBoundary, DynamicBoundaryKind};
 pub use builder::{ProjectModelRequest, build_project_model};
 pub use carmel::{
     CarmelArtifactRoot, CarmelDetection, CarmelLockAttribution, MySetupFacts, detect_carmel,
-    parse_mysetup_environment,
 };
-pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
+pub use dist::{
+    DistMetadataAgreement, DistMetadataComparison, DistMetadataFacts, DistMetadataSource, Prereq,
+    compare_dist_metadata,
+};
 pub use dist_authoring::{
     AuthoringPrereq, DistAuthoringBuildTool, DistAuthoringConflict, DistAuthoringFacts,
     DistAuthoringSource, DistDeclaration, DistDeclarationKind, DistFactAgreement,
@@ -127,13 +131,26 @@ pub use environment::{
     WorkspaceTrust,
 };
 pub use error::{ModelLimitation, WorkspaceCoreError};
+pub use eumm_mb::{
+    ADAPTER_VERSION as EUMM_MB_ADAPTER_VERSION, BLIB_ARCH, BLIB_LIB, BUILD_PL,
+    DetectedEummMbBuildSystem, EummMbDetection, EummMbRootCandidate, EummMbRootDisposition,
+    EummMbRootFreshness, MAKEFILE_PL, REASON_GENERATED_ROOT_STALE,
+    REASON_GENERATED_ROOT_WITHOUT_BUILD_SYSTEM, REASON_NOT_A_DIRECTORY,
+    REASON_ROOT_ESCAPES_WORKSPACE, REASON_ROOT_MISSING, SOURCE_LIB, TEST_LIB,
+    WATCHER_INPUTS as EUMM_MB_WATCHER_INPUTS, detect_eumm_mb,
+};
 pub use export::{ExportFact, ExportKind};
 pub use fact_classes::FactClasses;
 pub use file::{FileRecord, FileRole, ParseStatus};
 pub use id::{Digest, FileId, PackageId, SymbolId, fnv1a};
 pub use import::{ImportFact, ImportKind};
 pub use meta_yml::{
-    MetaYmlFinding, MetaYmlFindingKind, MetaYmlOutcome, MetaYmlParseState, parse_meta_yml,
+    MetaSpecVersion, MetaYmlFinding, MetaYmlFindingKind, MetaYmlOutcome, MetaYmlParseState,
+    parse_meta_yml,
+};
+pub use meta_yml_spec::{
+    MetaYmlLicenseShape, MetaYmlSpecFinding, MetaYmlSpecFindingKind, MetaYmlSpecValidation,
+    validate_meta_yml_spec,
 };
 pub use model::ProjectModel;
 pub use package::PackageRecord;
@@ -153,8 +170,8 @@ pub use test_command::{
     GeneratedArtifact, GeneratedStateEvidence, GeneratedStateFreshness, GeneratedStateObservation,
     GeneratedStateRequirement, PublicGeneratedStateRequirement, PublicTestCommandCandidate,
     PublicTestCommandPlan, TEST_COMMAND_PLAN_SCHEMA_VERSION, TestCommandAdmission,
-    TestCommandCandidate, TestCommandPlan, TestCommandPlanError, TestIncludeMode, TestRunnerKind,
-    plan_test_commands,
+    TestCommandCandidate, TestCommandPlan, TestCommandPlanError, TestCommandPlanValidationError,
+    TestIncludeMode, TestRunnerKind, plan_test_commands,
 };
 pub use test_item::{
     SOURCE_IDENTITY_REF_SCHEMA_VERSION, SourceIdentityRef, TEST_ITEM_SCHEMA_VERSION,

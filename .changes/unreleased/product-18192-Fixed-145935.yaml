@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Deduplicate Moose/Moo `has` attributes in document and workspace symbols: the synthesized same-name accessor at the same span no longer appears alongside the attribute, while explicit readers, explicit subs, and multi-attribute declarations are kept."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18192"
+  Slug: duplicate-has-symbols
+  Breaking: "no"

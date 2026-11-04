@@ -1,0 +1,9 @@
+project: product
+component: Parser
+kind: Fixed
+body: "The three-dot operator between operands now parses as a range (Binary with the source spelling preserved) instead of leaking an Ellipsis term plus residue, while a standalone three-dot term remains the yada-yada operator."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18260"
+  Slug: three-dot-range-operator
+  Breaking: "no"
