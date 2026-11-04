@@ -62,12 +62,15 @@ class API:
         self.ref = {"object": {"sha": G}}
         self.checks = {}
         for number, head in [(1, H1), (2, H2)]:
-            data = {"schema_id": "hermes.queue-intake.v1", "schema_version": 1, "repository": REPO,
+            data = {"schema_id": "hermes.queue-intake.v2", "schema_version": 2, "repository": REPO,
                 "pull_number": number, "head_sha": head, "entry_id": "entry-" + str(number),
                 "admission_request_id": "admit-" + str(number), "enqueue_request_id": "enqueue-" + str(number),
                 # H was admitted on an earlier base. It is not the G event B.
                 "base_sha": "f" * 40, "expires_at": (NOW + timedelta(hours=1)).isoformat(),
-                "authority_sha256": "1" * 64}
+                "authority_sha256": "1" * 64, "producer_generation_sha256": "5" * 64,
+                "producer_closure": {path: {"kind": kind, "sha": "4" * 40,
+                    "mode": "040000" if kind == "tree" else "100644"}
+                    for path, kind in configured()["producer_closure"].items()}}
             self.checks[head] = {"total_count": 1, "check_runs": [{"id": 100 + number,
                 "name": configured()["publisher_check_name"], "app": {"id": configured()["publisher_app_id"]},
                 "head_sha": head, "external_id": "hermes-queue:admit-" + str(number) + ":H",
@@ -117,8 +120,10 @@ class Proof:
 
     def prove(self, subject, members, policy):
         assert [member["head_sha"] for member in members] == [H1, H2]
+        generation, closure = title.admitted_generation(members, policy)
         return {"tree_sha": "9" * 40, "composition": "ordered_source_tree_equivalence",
-                "producer_generation": subject["base_sha"], "producer_closure": policy["producer_closure"]}
+                "producer_generation": subject["base_sha"], "producer_generation_sha256": generation,
+                "producer_closure": closure}
 
 
 class NativeTitleSubjectTests(unittest.TestCase):
@@ -131,6 +136,8 @@ class NativeTitleSubjectTests(unittest.TestCase):
         self.assertEqual([m["pull_number"] for m in receipt["members"]], [1, 2])
         self.assertEqual(receipt["subject"]["base_sha"], B)
         self.assertEqual(receipt["members"][0]["admission"]["intake"]["base_sha"], "f" * 40)
+        self.assertEqual(receipt["producer_generation"], B)
+        self.assertEqual(receipt["producer_generation_sha256"], "5" * 64)
         self.assertEqual(len(title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW)), 64)
         self.assertTrue(all(method in {"GET", "GRAPHQL_READ"} for method, _ in api.calls))
 
@@ -211,6 +218,59 @@ class NativeTitleSubjectTests(unittest.TestCase):
         api = API(); api.checks[H2]["check_runs"] *= 2; api.checks[H2]["total_count"] = 2
         with self.assertRaisesRegex(title.Refused, "unique current"):
             self.observe(api)
+
+    def test_legacy_or_absent_target_generation_never_authorizes_changed_source(self):
+        controls = [lambda d: d.update(schema_id="hermes.queue-intake.v1", schema_version=1),
+                    lambda d: d.pop("producer_closure"), lambda d: d.pop("producer_generation_sha256"),
+                    lambda d: d.update(producer_generation_sha256="A" * 64)]
+        for i, mutate in enumerate(controls):
+            api = API(); check = api.checks[H2]["check_runs"][0]
+            data = title.decode(check["output"]["text"]); mutate(data)
+            check["output"]["text"] = title.canonical(data)
+            with self.subTest(control=i), self.assertRaises(title.Refused):
+                self.observe(api)
+
+    def test_all_members_require_the_same_digest_and_exact_target_closure(self):
+        controls = [lambda d: d.update(producer_generation_sha256="6" * 64),
+                    lambda d: d["producer_closure"][".github"].update(sha="6" * 40)]
+        for i, mutate in enumerate(controls):
+            api = API(); check = api.checks[H2]["check_runs"][0]
+            data = title.decode(check["output"]["text"]); mutate(data)
+            check["output"]["text"] = title.canonical(data)
+            with self.subTest(control=i), self.assertRaisesRegex(title.Refused, "mixed admitted"):
+                self.observe(api)
+
+    def test_target_closure_requires_complete_safe_exact_object_entries(self):
+        path = "scripts/ci/native_queue_title.py"
+        controls = [lambda c: c.pop(".github"), lambda c: c.pop(path),
+            lambda c: c[".github"].update(kind="blob", mode="100644"),
+            lambda c: c[path].update(kind="tree", mode="040000"),
+            lambda c: c[path].update(sha="A" * 40), lambda c: c[path].update(mode="120000"),
+            lambda c: c[path].update(mode="160000", kind="commit"),
+            lambda c: c[path].update(mode=[]), lambda c: c[path].update(unreviewed=True),
+            lambda c: c.update({"../outside": deepcopy(c[path])}),
+            lambda c: c.update({".git/config": deepcopy(c[path])}),
+            lambda c: c.update({"/absolute": deepcopy(c[path])})]
+        for i, mutate in enumerate(controls):
+            api = API(); check = api.checks[H2]["check_runs"][0]
+            data = title.decode(check["output"]["text"]); mutate(data["producer_closure"])
+            check["output"]["text"] = title.canonical(data)
+            with self.subTest(control=i), self.assertRaisesRegex(title.Refused, "producer closure"):
+                self.observe(api)
+
+    def test_refreshed_target_generation_or_closure_invalidates_prior_observation(self):
+        controls = [lambda d: d.update(producer_generation_sha256="6" * 64),
+                    lambda d: d["producer_closure"][".github"].update(sha="6" * 40)]
+        for i, mutate in enumerate(controls):
+            api = API(); receipt = self.observe(api)
+            # Both current H checks agree again, but this is not the generation
+            # already proved. Agreement alone cannot refresh the old receipt.
+            for row in api.checks.values():
+                check = row["check_runs"][0]
+                data = title.decode(check["output"]["text"]); mutate(data)
+                check["output"]["text"] = title.canonical(data)
+            with self.subTest(control=i), self.assertRaisesRegex(title.Refused, "changed before success"):
+                title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW)
 
     def test_changed_title_author_skip_label_intake_or_authority_invalidates_observed_receipt(self):
         def label(api):
@@ -304,9 +364,60 @@ class NativeTitleCompositionTests(unittest.TestCase):
             self.git("merge", "--squash", head); self.git("commit", "-qm", "native squash fixture")
         return self.git("rev-parse", "HEAD")
 
-    def prove(self, heads, group):
+    def closure(self, commit):
+        result = {}
+        for path in self.configured["producer_closure"]:
+            metadata, actual_path = self.git("ls-tree", commit, "--", path).split("\t")
+            mode, kind, sha = metadata.split()
+            self.assertEqual(actual_path, path)
+            result[path] = {"kind": kind, "sha": sha, "mode": mode}
+        return result
+
+    def admitted_members(self, heads, closure=None):
+        target = self.closure(self.base) if closure is None else closure
+        return [{"head_sha": head, "admission": {"intake": {
+            "producer_generation_sha256": "5" * 64, "producer_closure": deepcopy(target)}}} for head in heads]
+
+    def prove(self, heads, group, closure=None):
         with self.Proof(REPO) as proof:
-            return proof.prove({"base_sha": self.base, "head_sha": group}, [{"head_sha": h} for h in heads], self.configured)
+            return proof.prove({"base_sha": self.base, "head_sha": group},
+                               self.admitted_members(heads, closure), self.configured)
+
+    def test_reviewed_new_producer_generation_can_differ_from_protected_B(self):
+        head = self.head("reviewed-generation", {
+            ".github/workflows/proof.yml": "reviewed new workflow\n",
+            "scripts/ci/native_queue_title.py": "reviewed next evaluator; not executed for this G\n",
+            ".ci/policies/native-queue-title.json": "reviewed next policy; current trust still comes from B\n"})
+        group = self.group([head])
+        target = self.closure(group)
+        self.assertNotEqual(target, self.closure(self.base))
+        result = self.prove([head], group, target)
+        self.assertEqual(result["producer_generation"], self.base)
+        self.assertEqual(result["producer_closure"], target)
+        self.assertEqual(result["producer_generation_sha256"], "5" * 64)
+        original = self.Proof
+        class FrozenBaseGeneration(original):
+            def prove(self, subject, members, policy):
+                result = super().prove(subject, members, policy)
+                for path in policy["producer_closure"]:
+                    title.require(self.run(["ls-tree", subject["base_sha"], "--", path]) ==
+                                  self.run(["ls-tree", subject["head_sha"], "--", path]),
+                                  "old B equality wrongly forbids the admitted target")
+                return result
+        with FrozenBaseGeneration(REPO) as mutant, self.assertRaisesRegex(title.Refused, "old B equality"):
+            mutant.prove({"base_sha": self.base, "head_sha": group},
+                         self.admitted_members([head], target), self.configured)
+
+    def test_additional_admitted_producer_roots_are_verified_too(self):
+        head = self.head("additional-owner", {"product.txt": "changed selected producer\n"})
+        group = self.group([head])
+        target = self.closure(self.base)
+        target["product.txt"] = {"kind": "blob", "mode": "100644",
+                                 "sha": self.git("rev-parse", self.base + ":product.txt")}
+        with self.assertRaisesRegex(title.Refused, "producer closure"):
+            self.prove([head], group, target)
+        target["product.txt"]["sha"] = self.git("rev-parse", group + ":product.txt")
+        self.prove([head], group, target)
 
     def test_squash_G_passes_without_H_ancestry_or_assumed_two_parents(self):
         head = self.head("first", {"product.txt": "changed\n"}); group = self.group([head])
@@ -359,7 +470,7 @@ class NativeTitleCompositionTests(unittest.TestCase):
                         return super().run(args, **kwargs)
                 with LostConsumedParent(REPO) as mutant, self.assertRaises(title.Refused):
                     mutant.prove({"base_sha": self.base, "head_sha": group},
-                                 [{"head_sha": first}, {"head_sha": second}], self.configured)
+                                 self.admitted_members([first, second]), self.configured)
 
     def test_environment_and_worker_git_config_cannot_import_hooks_or_replace_objects(self):
         head = self.head("first", {"product.txt": "changed\n"}); group = self.group([head])
@@ -369,7 +480,7 @@ class NativeTitleCompositionTests(unittest.TestCase):
             self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
             self.assertNotIn("GIT_DIR", env); self.assertNotIn("GIT_CONFIG_COUNT", env)
             self.git("config", "core.hooksPath", str(self.root / "untrusted-hooks"))
-            proof.prove({"base_sha": self.base, "head_sha": group}, [{"head_sha": head}], self.configured)
+            proof.prove({"base_sha": self.base, "head_sha": group}, self.admitted_members([head]), self.configured)
 
     def test_unchanged_helper_blob_does_not_hide_producer_mode_change(self):
         self.git("checkout", "-qB", "mode-change", self.base)
@@ -381,6 +492,7 @@ class NativeTitleCompositionTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", self.base + ":" + path), self.git("rev-parse", group + ":" + path))
         with self.assertRaisesRegex(title.Refused, "producer closure"):
             self.prove([head], group)
+        self.prove([head], group, self.closure(group))
 
 
 if __name__ == "__main__":
