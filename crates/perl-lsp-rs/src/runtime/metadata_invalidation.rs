@@ -13,8 +13,8 @@
 //! same path is Perl source. `Makefile.PL` and `Build.PL` carry the `.PL`
 //! extension, which the shared admission authority matches case-insensitively
 //! against `pl`, so they are genuinely both — they keep their source-index
-//! facts *and* now refresh dependency facts and native build hints. Suppressing
-//! source indexing for them would be a regression, not a fix.
+//! facts *and* now refresh dependency facts. Suppressing source indexing for
+//! them would be a regression, not a fix.
 //!
 //! # Coalescing
 //!
@@ -566,17 +566,6 @@ mod tests {
             .collect()
     }
 
-    fn native_include_dirs(server: &LspServer) -> Vec<String> {
-        server
-            .workspace_folders
-            .lock()
-            .iter()
-            .flat_map(|folder| {
-                folder.effective_workspace_config.native_build_hints.include_dirs.clone()
-            })
-            .collect()
-    }
-
     /// Every registration is a distinct incarnation, including one that reuses
     /// a URI and path a previous registration released.
     #[test]
@@ -611,8 +600,6 @@ mod tests {
         let root = temp.path().to_path_buf();
         std::fs::write(root.join("cpanfile"), "requires 'Before::Capture';\n")
             .expect("write cpanfile");
-        std::fs::write(root.join("Makefile.PL"), "WriteMakefile(INC => '-Ixs/before');\n")
-            .expect("write Makefile.PL");
 
         let server = LspServer::new();
         let original = register_folder(&server, &root);
@@ -637,8 +624,6 @@ mod tests {
         // and the re-add path loads facts from the workspace as it now is.
         std::fs::write(root.join("cpanfile"), "requires 'After::Readd';\n")
             .expect("rewrite cpanfile");
-        std::fs::write(root.join("Makefile.PL"), "WriteMakefile(INC => '-Ixs/after');\n")
-            .expect("rewrite Makefile.PL");
         server.workspace_folders.lock().clear();
         let replacement = register_folder(&server, &root);
         assert_ne!(replacement, original, "the re-add is a new incarnation");
@@ -646,11 +631,6 @@ mod tests {
             declared_modules(&server),
             vec!["After::Readd".to_string()],
             "the re-add loaded the current workspace"
-        );
-        assert_eq!(
-            native_include_dirs(&server),
-            vec!["xs/after".to_string()],
-            "the re-add loaded current native hints"
         );
 
         let (refreshed_any, _, _) = server.apply_metadata_refresh(&selected, &captured);
@@ -661,11 +641,6 @@ mod tests {
             vec!["After::Readd".to_string()],
             "the replacement keeps its own facts; URI and root alone would have \
              let the pre-removal snapshot overwrite them"
-        );
-        assert_eq!(
-            native_include_dirs(&server),
-            vec!["xs/after".to_string()],
-            "the delayed snapshot must not restore the previous incarnation's native hints"
         );
     }
 

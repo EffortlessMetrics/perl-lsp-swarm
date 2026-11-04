@@ -7,8 +7,8 @@
 //! close/reopen state reset. They do not hold an old parse in flight across a
 //! close/reopen boundary; deterministic parse-worker barrier tests own that ABA
 //! race. They also do not claim incremental parser reuse; #1374 remains the
-//! performance and reuse owner. `cargo xtask e2e-validate` runs this public
-//! process target; it is not part of the bounded `lsp_smoke` child set.
+//! performance and reuse owner. The required `lsp_smoke` gate includes this
+//! file from `semantic_definition.rs`.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 #[path = "support/real_process.rs"]

@@ -305,7 +305,7 @@ fn check_authority_path(
 /// one tracked symlink and it points inside the tree, so nothing escapes
 /// today; a tracked symlink out of the tree would be the gap, and it is the
 /// symlink that would need policing, not this predicate.
-pub(crate) fn is_repository_relative(path: &str) -> bool {
+pub(super) fn is_repository_relative(path: &str) -> bool {
     !path.is_empty()
         && std::path::Path::new(path)
             .components()

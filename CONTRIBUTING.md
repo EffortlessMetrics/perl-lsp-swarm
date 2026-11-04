@@ -202,6 +202,9 @@ refuses the request. Do not lower limits merely to pass.
 | Agent Clippy | Follow the separately qualified [staged native Clippy route](docs/agents/CARGO_STORAGE.md#staged-native-clippy): Linux, installed repository pin 1.95.0, exact supported command |
 | Legacy compatibility callers | `just cached <cargo args>`, `just agent-check`, `just agent-test`, `just agent-clippy`, `just agent-nextest`, `just agent-pr-fast` — retain existing behavior; not host admission or the route for new agent work |
 | Build disk grew / stale target trees | `just target-gc` (advisory report), then request an exact owner-verified cleanup proposal; `--apply` is retired |
+| Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
+| Multi-worktree shared build cache | `just cached <cargo args>` — see [Multi-Worktree Build Caching](docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md) |
+| Build disk grew / stale target trees | `just target-gc` (dry-run report), then `just target-gc --apply` |
 | Parser or generated status changed | `just status-update` then `just status-check` |
 | Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
 | Release/version surfaces changed | `just version-check` then `just release-check` |

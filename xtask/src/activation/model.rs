@@ -166,8 +166,8 @@ pub struct Publication {
     pub authority: String,
 }
 
-/// Inventory promotion state stays `not_evaluated`: classification is not an
-/// activation verdict. `cargo xtask activation check` (#9205) owns evaluation.
+/// Fixed pre-#9205 promotion state. #9205 owns activation-verdict evaluation;
+/// the initial inventory never claims one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromotionState {

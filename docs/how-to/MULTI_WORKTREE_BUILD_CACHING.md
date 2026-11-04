@@ -149,3 +149,103 @@ actual behavior and executable hashes, and account for queue time and all storag
 volumes. Do not equate a fast false cache hit with useful reuse. The build-timing
 receipt's no-flag default cleans first; never invoke it against active or retained
 state merely to obtain a timing number.
+## Tradeoffs — read before adopting
+
+### Shared-target staleness
+
+One shared `target/` means toolchain, edition, Rust version, or crate-version
+moves invalidate artifacts for **every** worktree at once. A workspace-wide
+version bump (e.g. the 0.18.0-rc.1 churn) effectively cold-builds the next
+command in each worktree's first use after the bump — but only once total,
+not once per worktree.
+
+After a toolchain switch (`rustup update`, MSRV bump) or when builds behave
+strangely across a version move, clean the shared root once:
+
+```bash
+cargo clean --target-dir "$DEVPLANE/target"
+```
+
+Between full cleans, reap trees nothing has touched recently — whole stale
+`target/` directories, not files inside active ones — with `scripts/target-gc.sh`:
+
+```bash
+just target-gc              # dry-run: reports which targets are stale (default 30d)
+just target-gc --apply      # delete the stale candidates
+bash scripts/target-gc.sh --self-test   # built-in discrimination test
+```
+
+The tool never touches lockfiles or the cargo registry, refuses to run while
+the devplane build flock is held, and keeps any tree in which even one file was
+modified inside the window — so a fresh build's output is immune by
+construction. A tree that stays continuously hot accumulates internal orphaned
+hash-versioned artifacts that this whole-tree rule will not reclaim; pruning
+those would need per-file mtime semantics and remains future work.
+
+### Lock serialization
+
+Concurrent builds against one shared `CARGO_TARGET_DIR` serialize. Cargo's
+own package cache lock is per-`CARGO_HOME`; the target dir itself is not safe
+for truly parallel full builds. This is why `cargo-safe` wraps heavy commands
+in an `flock`: parallel lanes **queue** instead of corrupting each other.
+
+Rules of thumb:
+
+- Parallel lanes (several worktrees building at once): always go through
+  `just cached` / `agent-*` / `scripts/cargo-safe`. Never run two plain
+  `cargo build`s against the same `CARGO_TARGET_DIR`.
+- A single interactive lane: exported variables without the wrapper are
+  tolerable for light commands, but the wrapper costs nothing and keeps the
+  disk gate.
+- Do not point rust-analyzer at the shared target dir while also building in
+  terminals — rust-analyzer holds its own long-lived build lock and will
+  stall your CLI builds (or vice versa). Give the IDE its own target dir.
+
+### `sccache` vs shared `target/`
+
+These solve different halves of the problem and compose well:
+
+| | Shared `CARGO_TARGET_DIR` | `sccache` |
+|---|---|---|
+| What is shared | Final artifacts, dep graph, fingerprints | Compiled crate objects only |
+| Cross-worktree hit | Immediate (same dir) | Via `SCCACHE_BASEDIRS` covering the worktree parent |
+| Disk cost | One tree total | One cache (bounded, default 15G here) + per-worktree metadata |
+| Locking needs | Real serialization (flock required) | Safe for concurrent use |
+| Failure mode | Stale-after-bump confusion | Cache miss → normal compile |
+
+`cargo-safe` enables both when `sccache` is present: per-invocation safety
+from the cache, full reuse from the shared target. If you can only pick one,
+pick **sccache with `SCCACHE_BASEDIRS`** — it is concurrency-safe and degrades
+to a normal compile on a miss, where a mismanaged shared target dir can
+poison every worktree at once.
+
+## Measuring whether it helps
+
+Do not take the strategy on faith — measure it on your box class. One
+measurement trap first: `scripts/build-timing-receipt.sh` (i.e. `cargo xtask
+build-timing-receipt`) **with no flags runs `cargo clean` before timing** —
+with a shared target exported, that deletes the warm artifacts you meant to
+measure. A warm-vs-cold comparison that preserves the cache:
+
+```bash
+# 1. Cold baseline in a scratch worktree (receipt cleans, then times):
+scripts/build-timing-receipt.sh --clean --output artifacts/timing-cold.json
+
+# 2. Warm the devplane once from any worktree:
+just cached check --workspace --all-targets --locked
+
+# 3. Warm measurement in a *second* worktree at the same revision — no clean:
+scripts/build-timing-receipt.sh --incremental --output artifacts/timing-warm.json
+#    or, simplest honest wall-clock: time just cached check --workspace --locked
+
+# 4. Receipt-level delta:
+cargo xtask compare-build-timing artifacts/timing-cold.json artifacts/timing-warm.json
+```
+
+The cache-strategy measurement programme lives in **#9178**; adoption
+evidence for this guide should land there as receipts, not anecdotes.
+
+Expected shape on a build-bound box: first worktree pays the full cold build
+(~10m class); every subsequent sibling worktree's first build of the same
+revision should be dominated by linking and workspace-member rebuilds, not by
+recompiling the shared dependency graph.

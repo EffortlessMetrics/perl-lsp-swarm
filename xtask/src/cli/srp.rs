@@ -14,7 +14,7 @@ pub struct UnwiredScanArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// Exit 1 if any topology-flagged crates are found (Cargo dep scan, not product activation)
+    /// Exit 1 if any unwired crates are found (CI gate mode)
     #[arg(long)]
     pub check: bool,
 
@@ -34,10 +34,11 @@ pub enum SrpCommand {
     ///   - perl-diagnostics must NOT depend on any perl-lsp-* crate.
     LayerCheck,
 
-    /// Scan Cargo topology: crates with tests that are not a direct dep of perl-lsp-rs.
+    /// Scan for built-but-not-wired crates: those with tests but zero import by perl-lsp
     ///
-    /// This is not product activation. Class-contract checking is
-    /// `cargo xtask activation check`. `--check` fails on topology flags only.
+    /// Finds crates that have `#[test]` annotations but are not listed as direct
+    /// dependencies of `perl-lsp`. Also surfaces TODO/FIXME wiring comments.
+    /// Use `--check` to make CI fail when unwired crates are found.
     UnwiredScan(UnwiredScanArgs),
 
     /// Check that test-bearing Rust files are reachable from their module tree.

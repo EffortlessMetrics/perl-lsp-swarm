@@ -85,34 +85,27 @@ This document defines the Service Level Objectives (SLOs) for the Perl LSP serve
 |-----------|------------------|-------------------|
 | Workspace folder scan | 30s | Return partial index |
 | Single file indexing | 5s | Skip file, log warning |
-| Reference search | 2s | Return `RequestFailed` (-32803) if the deadline stops the search |
+| Reference search | 2s | Return partial results |
 | Regex scan | 1s | Abort scan, use index only |
 | Filesystem operation | 500ms | Skip path, continue |
 
 ### Timeout Response Pattern
 
-Some operations can use a phased response as a deadline approaches:
+When a deadline is approaching, operations follow a phased approach:
 
 ```
 Phase 1 (0-50% of deadline): Full operation
 Phase 2 (50-80% of deadline): Skip expensive fallbacks
-Phase 3 (80-100% of deadline): Return partial results when the operation permits them
-Phase 4 (>100% of deadline): Stop work and use the operation's terminal response
+Phase 3 (80-100% of deadline): Return partial results
+Phase 4 (>100% of deadline): Immediate return with available results
 ```
-
-For `textDocument/references`, a deadline-stopped search ends with a
-`RequestFailed` (-32803) error instead of a successful `Location[]`. LSP has
-no `isIncomplete` field on a references response. This applies whether or not
-the client supplies a `partialResultToken`; complete searches keep the normal
-`Location[] | null` response, and client cancellation remains `RequestCancelled`
-(-32800). Other operations have their own deadline behavior.
 
 ### Partial Result Indication
 
-When results are incomplete due to deadline or cap, each operation uses its own behavior:
+When results are incomplete due to deadline or cap:
 
 1. **Completion**: `isIncomplete: true` in response
-2. **References**: A deadline-stopped search returns `RequestFailed`; the configured result cap remains a separate limit.
+2. **References**: Sorted by confidence, truncated with priority
 3. **Workspace symbols**: Best matches returned first
 4. **Diagnostics**: Higher severity items prioritized
 

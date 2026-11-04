@@ -41,13 +41,11 @@ perllsp --doctor
 The repository maintains the installer logic at
 [`scripts/install.sh`](../../scripts/install.sh). The root
 [`install.sh`](../../install.sh) is only a bootstrap and argument-compatibility
-wrapper. Both the wrapper and [`scripts/install.sh`](../../scripts/install.sh)
-accept the two most common settings as fixed-slot positionals —
-`bash install.sh <version> <install-dir>` is equivalent to
-`VERSION=<version> INSTALL_DIR=<install-dir> bash install.sh`. Explicit
-environment variables win the matching slot and do not shift a later
-positional. A third positional fails closed. Remaining flags
-(`--print-target`, `--with-claude`, `--help`) are unchanged.
+wrapper: as a convenience it also accepts the two most common settings as
+positionals — `bash install.sh <version> <install-dir>` is equivalent to
+`VERSION=<version> INSTALL_DIR=<install-dir> bash install.sh` (explicit
+environment variables win when both are given). The canonical script itself
+takes flags only and rejects any other positional.
 
 From a clone, the wrapper executes the sibling `scripts/install.sh` directly:
 

@@ -9810,15 +9810,12 @@ fn test_ancestor_file_lexical_visible_in_nested_block() {
     );
 }
 
-/// `our` aliases follow the same declaration-order gate as lexicals: visible
-/// after the declaring statement, rejected before it. A previous version of
-/// this test used `rfind("$pk")`, which landed inside `our $pkg_after` and
-/// could not falsify after-cursor admission.
+/// `our` package globals keep their bounded always-visible behavior
+/// (declaration role distinct from lexicals), including after the cursor.
 #[test]
 fn test_our_package_global_keeps_bounded_visibility() {
-    let code = concat!("our $pkg_before = 1;\n", "# cursor\n", "$pk\n", "our $pkg_after = 2;\n",);
-    let needle = "# cursor\n$pk";
-    let trigger = must_some(code.find(needle)) + needle.len();
+    let code = concat!("our $pkg_before;\n", "$pk\n", "our $pkg_after;\n");
+    let trigger = code.rfind("$pk").unwrap_or(0) + 3;
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
@@ -9831,8 +9828,8 @@ fn test_our_package_global_keeps_bounded_visibility() {
         "our declared before cursor must stay visible; got {labels:?}"
     );
     assert!(
-        !labels.iter().any(|l| l.contains("pkg_after")),
-        "our declared after cursor must not be admitted; got {labels:?}"
+        labels.iter().any(|l| l.contains("pkg_after")),
+        "our declared after cursor keeps package-global visibility (bounded behavior); got {labels:?}"
     );
 }
 

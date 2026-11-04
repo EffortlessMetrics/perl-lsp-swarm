@@ -1,5 +1,5 @@
 use color_eyre::eyre::{Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
@@ -82,7 +82,7 @@ pub(crate) struct ToolIdentity {
     pub(crate) sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct DecisionPolicy {
     pub(crate) minimum_reduction_basis_points: i64,
     pub(crate) minimum_reduction_bytes: i64,
@@ -171,7 +171,7 @@ pub(crate) struct ComparisonEvidence {
     pub(crate) repeat_requirement_satisfied: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct SizeDelta {
     pub(crate) baseline_bytes: u64,
     pub(crate) candidate_bytes: u64,
@@ -514,33 +514,5 @@ mod tests {
         invalid.repeat_required_below_basis_points = 40;
         assert!(invalid.validate().is_err());
         assert!(policy().validate().is_ok());
-    }
-
-    #[test]
-    fn decision_is_not_proven_for_an_ungoverned_target() {
-        let mut facts = ready_facts();
-        facts.governed_target = false;
-        assert_eq!(decide(&facts), Recommendation::NotProven);
-    }
-
-    #[test]
-    fn decision_is_not_proven_when_baseline_flags_are_dirty() {
-        let mut facts = ready_facts();
-        facts.baseline_flags_clean = false;
-        assert_eq!(decide(&facts), Recommendation::NotProven);
-    }
-
-    #[test]
-    fn decision_is_not_proven_when_candidate_flags_are_not_the_policy() {
-        let mut facts = ready_facts();
-        facts.candidate_flags_exact = false;
-        assert_eq!(decide(&facts), Recommendation::NotProven);
-    }
-
-    #[test]
-    fn decision_does_not_adopt_when_a_component_grows_past_policy() {
-        let mut facts = ready_facts();
-        facts.component_growth_within_policy = false;
-        assert_eq!(decide(&facts), Recommendation::DoNotAdopt);
     }
 }

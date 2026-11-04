@@ -167,11 +167,10 @@ function validateTestExplorerReceipt({
 }
 
 function hasCandidateIdentity(env) {
-  // The first-hour child always carries its source SHA. Only candidate-only
-  // fields opt into candidate-bound failure classification.
   return [
     env.PERL_LSP_CANDIDATE_ID,
     env.PERL_LSP_ARTIFACT_SET_ID,
+    env.PERL_LSP_CURRENT_SOURCE_SHA,
     env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
   ].some((value) => typeof value === 'string' && value.trim().length > 0);
 }
@@ -595,8 +594,8 @@ function writeJsonAtomic(destination, value) {
  *   vscode_version: string,
  *   observed_vscode_version: string | null,
  *   source_label: string,
- *   server: { source_sha: string | null, path: string | null, sha256: string | null, observation_before?: {path:string,sha256:string,size:number}, observation_after?: {path:string,sha256:string,size:number} },
- *   vsix: { path: string | null, sha256: string | null, observation_before?: {path:string,sha256:string,size:number}, observation_after?: {path:string,sha256:string,size:number} },
+ *   server: { source_sha: string | null, path: string | null, sha256: string | null },
+ *   vsix: { path: string | null, sha256: string | null },
  *   stages: {
  *     package_creation: SmokeStage,
  *     package_inventory: SmokeStage,
@@ -985,9 +984,6 @@ function buildAccessibilityExpectation() {
  *   expectedRevision: string,
  *   expectedVsixSha256: string | null,
  *   expectedServerSourceSha: string,
- *   expectedServerObservation?: {path:string,sha256:string,size:number},
- *   expectedVsixObservation?: {path:string,sha256:string,size:number},
- *   expectedExtensionsRoot?: string,
  *   expectedVscodeVersion: string,
  *   expectedSourceLabel: string,
  *   accessibilityExpectation?: ReturnType<typeof buildAccessibilityExpectation> | null,
@@ -3086,8 +3082,6 @@ function main() {
 
   const runStageBody = () => {
     try {
-      const inputServerObservation = observeSmokeArtifact(path.resolve(serverPath));
-      receipt.server.observation_before = inputServerObservation;
       restoreStagedServer = stageServerForPackage(serverPath, root, dapPath);
       /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
@@ -3181,15 +3175,6 @@ function main() {
       persistReceipt(destination, receipt);
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
-        const vsixObservation = observeSmokeArtifact(path.resolve(vsixPath));
-        // Existing runner inputs retain this invocation-owned profile for parent byte observation.
-        fs.mkdirSync(receiptsRoot(), { recursive: true });
-        const identityProfile = fs.mkdtempSync(path.join(receiptsRoot(), 'installed-identity-'));
-        const identityUserData = path.join(identityProfile, 'user-data');
-        const identityExtensions = path.join(identityProfile, 'extensions');
-        fs.mkdirSync(identityUserData, { recursive: true });
-        fs.mkdirSync(identityExtensions, { recursive: true });
-        receipt.vsix.observation_before = vsixObservation;
         /** @type {NodeJS.ProcessEnv} */
         const smokeEnv = {
           ...process.env,
@@ -3203,10 +3188,7 @@ function main() {
           PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
           PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
           PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
-          PERL_LSP_VSIX_SHA256: vsixObservation.sha256,
-          PERL_LSP_SERVER_ARTIFACT_SHA256: inputServerObservation.sha256,
-          PERL_LSP_SMOKE_USER_DATA_DIR: identityUserData,
-          PERL_LSP_SMOKE_EXTENSIONS_DIR: identityExtensions,
+          PERL_LSP_VSIX_SHA256: receipt.vsix.sha256 ?? '',
         };
         if (constructedManifest !== undefined) {
           smokeEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
@@ -3243,10 +3225,6 @@ function main() {
 
         const smokeRun = runPublishedSmoke(smokeEnv);
         const smokeResult = smokeRun.result;
-        receipt.server.observation_after = observeSmokeArtifact(inputServerObservation.path);
-        receipt.vsix.observation_after = observeSmokeArtifact(vsixObservation.path);
-        requireSmokeObservation(inputServerObservation, receipt.server.observation_after);
-        requireSmokeObservation(vsixObservation, receipt.vsix.observation_after);
         if (smokeRun.phase === 'compile') {
           receipt.stages.behavioral_smoke = {
             status: 'failed',
@@ -3286,9 +3264,6 @@ function main() {
                   expectedRevision: revision,
                   expectedVsixSha256: receipt.vsix.sha256,
                   expectedServerSourceSha: serverSourceRevision,
-                  expectedServerObservation: inputServerObservation,
-                  expectedVsixObservation: vsixObservation,
-                  expectedExtensionsRoot: identityExtensions,
                   // Mirror the child's own default so an unset matrix version is not
                   // reported as an identity mismatch.
                   expectedVscodeVersion:
@@ -3431,7 +3406,6 @@ module.exports = {
   concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
-  hasCandidateIdentity,
   initialReceipt,
   interpretBehavioralSmokeExit,
   interpretTestExplorerExit,
@@ -3453,8 +3427,6 @@ module.exports = {
   shouldRunCrashRecoveryJourney,
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
-  observeSmokeArtifact,
-  validateInstalledByteIdentity,
   validateCrashRecoveryChildReceipts,
   stageServerForPackage,
   writeJsonAtomic,
