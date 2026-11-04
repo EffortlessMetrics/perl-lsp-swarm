@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-WRAPPER="${REPO_ROOT}/scripts/check-rust-toolchain.sh"
+WRAPPER="${TOOLCHAIN_WRAPPER_UNDER_TEST:-${REPO_ROOT}/scripts/check-rust-toolchain.sh}"
 
 PASS=0
 FAIL=0
@@ -140,7 +140,11 @@ code=0
   cd "$REPO_ROOT"
   PATH="${FAKE_BIN}:$PATH" FAKE_RUSTUP_EXIT=37 bash "$WRAPPER" check
 ) > "${FAIL_DIR}/out.txt" 2> "${FAIL_DIR}/err.txt" || code=$?
-assert_exit_nonzero "propagates rustup/cargo failure from delegated command" "$code"
+if [[ "$code" -eq 37 ]]; then
+  pass "preserves delegated exit 37"
+else
+  fail "preserves delegated exit 37 (got ${code})"
+fi
 
 USAGE_DIR="${TMPDIR_BASE}/usage"
 mkdir -p "$USAGE_DIR"
@@ -164,6 +168,7 @@ GUARD_BIN="${TMPDIR_BASE}/guard-bin"
 mkdir -p "$GUARD_BIN" "${TMPDIR_BASE}/guard-home"
 cat > "${GUARD_BIN}/cargo" <<STUB
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${TMPDIR_BASE}/cargo-probes.txt"
 if [ "\${1:-}" = "--version" ]; then
   printf 'cargo 1.75.0 (apt stub 2023-11-01)\n'
   exit 0
@@ -189,6 +194,49 @@ if grep -Fq "cargo-toolchain-guard: REFUSED" "${GUARD_DIR}/err.txt"; then
   pass "stale fallback refusal prints the guard message"
 else
   fail "stale fallback refusal prints the guard message"
+fi
+
+# Usage belongs to the wrapper and must not depend on installed Rust tools.
+for cargo_state in missing stale; do
+  if [[ "$cargo_state" == missing ]]; then
+    usage_path="${SYS_BIN}:/usr/bin:/bin"
+  else
+    usage_path="${GUARD_BIN}:${SYS_BIN}:/usr/bin:/bin"
+  fi
+  : > "${TMPDIR_BASE}/cargo-probes.txt"
+  code=0
+  PATH="$usage_path" HOME="${TMPDIR_BASE}/guard-home" CARGO_HOME="" \
+    bash "$WRAPPER" unknown > "${USAGE_DIR}/out.txt" 2> "${USAGE_DIR}/err.txt" || code=$?
+  if [[ "$code" -eq 2 ]] && grep -Fq "Usage:" "${USAGE_DIR}/err.txt" && \
+      [[ ! -s "${USAGE_DIR}/out.txt" && ! -s "${TMPDIR_BASE}/cargo-probes.txt" ]] && \
+      ! grep -Fq "cargo-toolchain-guard:" "${USAGE_DIR}/err.txt"; then
+    pass "usage error precedes $cargo_state Cargo probe (stderr, exit 2)"
+  else
+    fail "usage error precedes $cargo_state Cargo probe (got ${code})"
+  fi
+done
+
+# A healthy delegate must not hide excess arguments or execute work for them.
+for mode in check doctor; do
+  rm -f "$FAKE_LOG"
+  code=0
+  PATH="${FAKE_BIN}:$PATH" bash "$WRAPPER" "$mode" extra \
+    > "${USAGE_DIR}/out.txt" 2> "${USAGE_DIR}/err.txt" || code=$?
+  if [[ "$code" -eq 2 ]] && grep -Fq "Usage:" "${USAGE_DIR}/err.txt" && \
+      [[ ! -e "$FAKE_LOG" && ! -s "${USAGE_DIR}/out.txt" ]]; then
+    pass "rejects excess arguments for $mode without delegation"
+  else
+    fail "rejects excess arguments for $mode without delegation (got ${code})"
+  fi
+done
+
+code=0
+PATH="${SYS_BIN}:/usr/bin:/bin" HOME="${TMPDIR_BASE}/guard-home" CARGO_HOME="" \
+  bash "$WRAPPER" doctor > "${GUARD_DIR}/out.txt" 2> "${GUARD_DIR}/err.txt" || code=$?
+if [[ "$code" -eq 78 ]] && grep -Fq "cargo-toolchain-guard: REFUSED" "${GUARD_DIR}/err.txt"; then
+  pass "valid doctor mode still refuses missing Cargo (exit 78)"
+else
+  fail "valid doctor mode still refuses missing Cargo (got ${code})"
 fi
 
 TOTAL=$((PASS + FAIL))

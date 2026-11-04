@@ -120,13 +120,17 @@ export class WhatsNewManager {
    * or an empty string when the version is not found.
    */
   extractChangelogSection(version: string): string {
-    try {
-      const changelogPath = path.join(this.context.extensionPath, 'CHANGELOG.md');
-      const full = fs.readFileSync(changelogPath, 'utf8');
-      return extractVersionSection(full, version);
-    } catch {
-      return '';
+    // vsce normalizes the packaged changelog to lowercase. Keep the
+    // source-checkout spelling as a fallback for development hosts.
+    for (const name of ['changelog.md', 'CHANGELOG.md']) {
+      try {
+        const full = fs.readFileSync(path.join(this.context.extensionPath, name), 'utf8');
+        return extractVersionSection(full, version);
+      } catch {
+        // Try the development filename, then preserve the missing-file fallback.
+      }
     }
+    return '';
   }
 
   /**

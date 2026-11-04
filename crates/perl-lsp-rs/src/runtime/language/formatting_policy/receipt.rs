@@ -437,7 +437,14 @@ mod tests {
     fn unsupported_native_syntax_warns_once_per_surface() -> TestResult {
         let (server, output) = server_with_output();
         let uri = "file:///unsupported-native-formatting.pl";
-        server.test_apply_did_open(uri, "sub f {\nprint $fh $x;\n}\n", 1)?;
+        // `print 1;;;` stays outside the native formatter's supported
+        // envelope (see `unsupported_unchanged_source_is_refused` in
+        // perl-lsp-perltidy), so both surfaces refuse with
+        // `unsupported_syntax`. The previous fixture (`print $fh $x;`
+        // inside a sub) became supported and canonical after the
+        // block/print formatter slices, which made this test's premise
+        // stale on main.
+        server.test_apply_did_open(uri, "print 1;;;\nsub f {\nprint $fh $x;\n}\n", 1)?;
 
         let first_document =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
@@ -592,6 +599,117 @@ mod tests {
         verify(
             show_message_count(&messages) == 2,
             format!("configuration change did not re-enable warning: {messages:?}"),
+        )?;
+        Ok(())
+    }
+
+    fn first_new_text(response: &Option<Value>) -> String {
+        response
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .and_then(|edits| edits.first())
+            .and_then(|edit| edit.get("newText"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    // #17340: the client-facing perltidy knobs must observably change
+    // native formatting output through the real LSP handler. The engine
+    // learned to reindent and wrap in the block/print slices; these tests
+    // pin the settings channel (ServerConfig -> PerlTidyConfig ->
+    // FormatConfig) so a silent drop cannot regress unnoticed.
+    #[test]
+    fn formatting_indent_columns_setting_changes_output() -> TestResult {
+        let (server, _output) = server_with_output();
+        let uri = "file:///indent-columns-channel.pl";
+        server.test_apply_did_open(uri, "sub f {\nmy $x = 1;\nif (1) {\nprint 1;\n}\n}\n", 1)?;
+
+        server.config.lock().perltidy_indent_columns = Some(2);
+        let two =
+            server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+        server.config.lock().perltidy_indent_columns = Some(8);
+        let eight =
+            server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+
+        verify(
+            first_new_text(&two).contains("\n  my $x = 1;"),
+            format!("indentColumns=2 did not produce two-space indent: {two:?}"),
+        )?;
+        verify(
+            first_new_text(&eight).contains("\n        my $x = 1;"),
+            format!("indentColumns=8 did not produce eight-space indent: {eight:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn formatting_indent_columns_admitted_from_client_settings() -> TestResult {
+        // Admission layer: the JSON a client actually sends through
+        // didChangeConfiguration must land in ServerConfig and then in
+        // formatting output, not just direct config mutation.
+        let (server, _output) = server_with_output();
+        let uri = "file:///indent-columns-admission.pl";
+        server.test_apply_did_open(uri, "sub f {\nmy $x = 1;\n}\n", 1)?;
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": { "perl": { "formatting": { "indentColumns": 2 } } }
+        })));
+
+        let response =
+            server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+
+        verify(
+            server.config.lock().perltidy_indent_columns == Some(2),
+            "client indentColumns did not enter ServerConfig",
+        )?;
+        verify(
+            first_new_text(&response).contains("\n  my $x = 1;"),
+            format!("admitted indentColumns=2 did not change output: {response:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn formatting_tabs_setting_changes_output() -> TestResult {
+        let (server, _output) = server_with_output();
+        let uri = "file:///tabs-channel.pl";
+        server.test_apply_did_open(uri, "sub f {\nmy $x = 1;\n}\n", 1)?;
+        server.config.lock().perltidy_tabs = Some(true);
+
+        let tabbed =
+            server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+
+        verify(
+            first_new_text(&tabbed).contains("\n\tmy $x = 1;"),
+            format!("tabs=true did not produce tab indent: {tabbed:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn formatting_maximum_line_length_setting_changes_output() -> TestResult {
+        let (server, _output) = server_with_output();
+        let uri = "file:///maximum-line-length-channel.pl";
+        server.test_apply_did_open(
+            uri,
+            "my $result = some_function_name(argument_one, argument_two, argument_three, argument_four);\n",
+            1,
+        )?;
+
+        server.config.lock().perltidy_maximum_line_length = Some(40);
+        let narrow =
+            server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+        server.config.lock().perltidy_maximum_line_length = Some(120);
+        let wide =
+            server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
+
+        verify(
+            first_new_text(&narrow).contains("\n    argument_one,"),
+            format!("maximumLineLength=40 did not wrap the call: {narrow:?}"),
+        )?;
+        verify(
+            wide == Some(json!([])),
+            format!("maximumLineLength=120 should not edit: {wide:?}"),
         )?;
         Ok(())
     }

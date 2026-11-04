@@ -52,8 +52,8 @@ fn rule_mut<'a>(manifest: &'a mut Value, rule_id: &str) -> Option<&'a mut Value>
 #[test]
 fn committed_manifest_and_live_critic_proof_pass() -> TestResult {
     let manifest = proof::check(&repo_root()).map_err(|error| error.to_string())?;
-    assert_eq!(manifest.rules.len(), 8);
-    assert_eq!(manifest.cases.len(), 40);
+    assert_eq!(manifest.rules.len(), 16);
+    assert_eq!(manifest.cases.len(), 89);
     assert!(
         manifest
             .cases
@@ -505,8 +505,8 @@ fn extra_catalog_rule_outside_pilot_fails_check() -> TestResult {
     let mut extra =
         must_some_with(rule_mut(&mut manifest, "native.testing.require_use_strict"), "strict")
             .clone();
-    extra["rule_id"] = json!("native.io.pipe_open");
-    extra["canonical_id"] = json!("critic.io.pipe_open");
+    extra["rule_id"] = json!("native.common.undef_comparison");
+    extra["canonical_id"] = json!("critic.common.undef_comparison");
     must_some_with(manifest["rules"].as_array_mut(), "rules").push(extra);
     let error = match validate_manifest_value(&repo_root(), &manifest) {
         Ok(_) => "manifest unexpectedly validated".to_string(),
@@ -539,7 +539,7 @@ fn advisory_lane_covers_execute_live_owners() -> TestResult {
             "ci-lanes critic_rule_proof paths missing execute live owner `{path}`:\n{lanes}"
         );
     }
-    assert_eq!(PILOT_RULES.len(), 8, "closed PILOT_RULES must stay the eight-rule cohort");
+    assert_eq!(PILOT_RULES.len(), 16, "closed PILOT_RULES must stay the sixteen-rule cohort");
     Ok(())
 }
 
@@ -576,6 +576,25 @@ fn omitted_fix_title_does_not_match_live_fix() -> TestResult {
     )
     .to_string();
     assert!(error.contains("missing expected finding"), "unexpected error: {error}");
+    Ok(())
+}
+
+#[test]
+fn issue_6979_data_payload_mask_range_is_load_bearing() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    must_some_with(case_mut(&mut manifest, "CRP-POD-POS-002"), "pod payload")["expected_findings"]
+        [0]["start_byte"] = json!(0);
+    let typed =
+        validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
+    let error = must_err_with(
+        proof::execute_manifest(&repo_root(), &typed),
+        "wrong POD payload range must fail live critic",
+    )
+    .to_string();
+    assert!(
+        error.contains("missing expected finding") || error.contains("unexpected extra finding"),
+        "unexpected error: {error}"
+    );
     Ok(())
 }
 

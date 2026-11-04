@@ -57,6 +57,20 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(self.run_safe(["build", *options]), 75, options)
             self.assertFalse(self.slot.exists())
 
+    def test_local_config_cli_args_injected_when_present(self):
+        seen = []
+
+        def cargo(command, env):
+            seen.append(command)
+            return 0
+
+        local_path = self.root / ".cargo" / "config.local.toml"
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text("[build]\njobs = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_safe(["check"], cargo), 0)
+        self.assertIn(str(local_path), seen[0])
+        self.assertLess(seen[0].index(str(local_path)), seen[0].index("unstable.unstable-options=false"))
+
     def test_separate_short_values_and_program_arguments_remain_supported(self):
         seen = []
         def cargo(command, env):
@@ -143,6 +157,53 @@ class AdmissionTests(unittest.TestCase):
         self.env = dict(env, MIN_FREE_GB="1e299", CARGO_EXPECTED_GROWTH_GB="1e299")
         self.assertEqual(self.run_safe(["build"]), 75)
         self.assertFalse(self.slot.exists())
+
+    def test_percent_ceiling_names_max_used_pct_not_zero_shortfall(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        # 356 GiB free is far above the 40 GiB floor, but 91.3% used >= 85%.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 3740*gib, 356*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], {})
+        message = str(caught.exception)
+        self.assertIn("MAX_USED_PCT", message)
+        self.assertIn("max_used_pct=85", message)
+        self.assertNotIn("insufficient disk headroom", message)
+        self.assertNotIn("shortfall_bytes=0", message)
+        self.assertNotIn("shortfall_bytes", caught.exception.details)
+        self.assertEqual(caught.exception.details["max_used_pct"], 85.0)
+        self.assertGreater(caught.exception.details["pct_shortfall_bytes"], 0)
+        self.assertEqual(caught.exception.details["additional_free_bytes_needed"],
+                         caught.exception.details["pct_shortfall_bytes"])
+
+    def test_percent_ceiling_exact_boundary_reports_one_byte_remedy(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        # Exactly 85% used: gate denies, and the remedy must be 1 byte, not 0.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib, 150*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], {})
+        self.assertEqual(caught.exception.details["additional_free_bytes_needed"], 1)
+        # Freeing the reported amount makes the same gate pass.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib - 1, 150*gib + 1)):
+            report = safe.check_capacity([self.slot], {})
+        self.assertIn("destinations", report)
+
+    def test_absolute_floor_still_names_headroom_with_positive_shortfall(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        env = {"MIN_FREE_GB": "40", "MAX_USED_PCT": "100"}
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4086*gib, 10*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], env)
+        message = str(caught.exception)
+        self.assertIn("insufficient disk headroom", message)
+        self.assertIn("shortfall_bytes=", message)
+        self.assertNotIn("shortfall_bytes=0", message)
+        self.assertEqual(caught.exception.details["shortfall_bytes"], 30*gib)
 
     def test_byte_budget_is_in_emitted_resource_descriptor(self):
         import contextlib
