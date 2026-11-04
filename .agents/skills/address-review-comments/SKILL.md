@@ -160,6 +160,35 @@ The reply must answer the comment in its inline context. Mention files, symbols,
 or contracts only when they carry the reasoning; do not paste logs or narrate agent
 activity.
 
+## Complete feedback before disposition
+
+At entry or a material feedback wake, run `scripts/reviews/feedback <pr> <owner/repo>`.
+It joins the sanctioned paginated thread inventory with every page of full inline
+comments/replies, ordinary issue comments, and submitted review bodies. The thread
+listing's `excerpt` is navigation, not the full finding. Read those bodies and their
+later replies/dispositions; inspect the controlling issue's substantive comments too
+(`gh api --paginate --slurp repos/<owner/repo>/issues/<issue>/comments?per_page=100`).
+A missing page, inaccessible body, or moved acquisition head is `NOT_PROVEN`, never an
+empty inventory. The helper's `next_step` is a just-in-time prompt, not a verdict.
+
+GitHub `COMMENTED` is submission metadata. A body saying `REPAIR_REQUIRED`,
+`CHANGES_REQUIRED`, or describing a concrete unresolved defect remains actionable
+regardless of that metadata, author, or zero unresolved threads. Judge content and
+current applicability; a quoted example or an old finding with a verified later repair
+is not automatically a fresh blocker. Keep each substantive finding's source URL,
+current applicability, evidence, and disposition in the existing repair-wave packet.
+Do not invent a thread ID for an ordinary comment.
+
+For inline threads use `scripts/reviews/disposition` below. For an ordinary comment or
+review-body concern, post the same reasoned `Disposition:` / `Evidence:` record with
+its exact source URL through `gh pr comment <pr> --repo <owner/repo> --body-file <file>`.
+That native PR conversation surface is the durable disposition; it has no thread to
+resolve. A follow-up requires a linked issue and why the current claim is satisfied.
+Re-read feedback after posting to verify the record exists, answers the original
+concern on the observed current head, and has no later contradictory finding. Zero
+unresolved threads alone never completes this join. Open substantive ordinary-comment
+findings are `MUTABLE_FINDINGS_OPEN` (and `MERGE_BLOCKED` at integration).
+
 ## Procedure
 
 1. Enumerate the PR's review threads with `scripts/reviews/threads <pr> [owner/repo] [--unresolved-only] [--json]`. This read-only enumerator is the sanctioned source of the `<threadId>` required by `disposition --thread` in step 9. `scripts/reviews/state` returns an aggregate classification without per-thread identity and cannot supply it; do not hand-roll a `reviewThreads` GraphQL query.
@@ -184,7 +213,7 @@ activity.
 8. If the repair introduced substantial proof machinery, run `$simplify-candidate`; then update the PR synthesis to the current candidate rather than appending a repair diary.
 9. Write the canonical human reply under the **Reply quality** contract: keep the `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines and put the concise reasoned judgment between them. Pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
 10. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply and post it. Terminal classes then resolve the thread; non-terminal classes keep it open, and reopen a falsely-resolved thread before posting evidence.
-11. Re-run the enumerator with `--unresolved-only --json` and confirm `unresolved_count` is 0, or that every remaining thread carries a non-terminal disposition naming a live blocker. Bot threads (Devin, Gemini, Codex, CodeRabbit, cubic) and outdated threads count: the `main` ruleset requires review-thread resolution, so zero unresolved review threads is a precondition of arming auto-merge, and a finishing wave that leaves one open bot thread has not finished.
+11. Re-run `scripts/reviews/feedback <pr> <owner/repo>` to verify full-content dispositions and current-head binding, then re-run the enumerator with `--unresolved-only --json` and confirm `unresolved_count` is 0, or that every remaining thread carries a non-terminal disposition naming a live blocker. Bot threads (Devin, Gemini, Codex, CodeRabbit, cubic) and outdated threads count: the `main` ruleset requires review-thread resolution, so zero unresolved review threads is a precondition of protected integration, and a finishing wave that leaves one open bot thread has not finished.
 12. If source/proof changed, invalidate and refresh only the affected review dimensions. If the wave changed no candidate, claim, or review dimension, preserve the existing review and continue at the earliest genuinely missing judgment.
 
 Do not call raw thread-resolution APIs, resolve performatively, or use pr-responded or
