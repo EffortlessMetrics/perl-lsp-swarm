@@ -111,7 +111,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "000000000000000000000000000000000000c437",
               "content_digest": "000000000000000000000000000000000000000000000000000000000007aa2d",
-              "reference": "cargo xtask pr-close-proof --pr 5023"
+              "reference": "cargo xtask pr-close-proof --pr 5023",
+              "schema_version": "landing_proof.v1"
             }
           }
         },
@@ -181,7 +182,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "000000000000000000000000000000000000c437",
               "content_digest": "000000000000000000000000000000000000000000000000000000000007aa2d",
-              "reference": "cargo xtask pr-close-proof --pr 5023"
+              "reference": "cargo xtask pr-close-proof --pr 5023",
+              "schema_version": "landing_proof.v1"
             }
           }
         },

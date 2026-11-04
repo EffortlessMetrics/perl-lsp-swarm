@@ -1303,3 +1303,64 @@ fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::e
     }
     Ok(())
 }
+
+/// Editing a defining file without reindexing must not present the old
+/// indexed `Pkg::sub` as a current callable (#16646 review).
+#[cfg(feature = "workspace")]
+#[test]
+fn qualified_callable_hover_fails_closed_when_defining_file_is_stale()
+-> Result<(), Box<dyn std::error::Error>> {
+    let definer_uri = "file:///workspace/lib/StaleCallable.pm";
+    let caller_uri = "file:///workspace/script/stale_callable.pl";
+    let definer_v1 = "package StaleCallable;\nsub run { return 1; }\n1;\n";
+    let definer_v2 = "package StaleCallable;\n1;\n";
+    let caller = "print StaleCallable::run();\n";
+
+    let server = LspServer::new();
+    server.test_apply_did_open(definer_uri, definer_v1, 1)?;
+    server.test_apply_did_open(caller_uri, caller, 1)?;
+    server
+        .test_index_file_in_building_state(definer_uri, definer_v1)
+        .map_err(std::io::Error::other)?;
+    server.test_index_file_in_building_state(caller_uri, caller).map_err(std::io::Error::other)?;
+    server.test_simulate_indexing_complete();
+
+    let run_character = u32::try_from(must_some(caller.find("run")))?;
+    let fresh = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": caller_uri },
+        "position": { "line": 0, "character": run_character }
+    })))?);
+    let fresh_value = must_some(fresh["contents"]["value"].as_str());
+    assert!(
+        fresh_value.contains("Defined in `StaleCallable`")
+            || fresh_value.contains("sub StaleCallable::run"),
+        "fresh index should prove StaleCallable::run, got: {fresh_value}"
+    );
+
+    server
+        .test_replace_document_without_index(definer_uri, definer_v2, 2)
+        .map_err(std::io::Error::other)?;
+    assert!(
+        !server.workspace_index_stale_for_document(caller_uri),
+        "unchanged caller must stay fresh under the per-document helper"
+    );
+    assert!(
+        server.workspace_index_stale_for_any_open_document(),
+        "edited defining file must stale the workspace-wide index"
+    );
+
+    let stale = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": caller_uri },
+        "position": { "line": 0, "character": run_character }
+    })))?);
+    let stale_value = must_some(stale["contents"]["value"].as_str());
+    assert!(
+        !stale_value.contains("Defined in `StaleCallable`"),
+        "stale defining-file index must not prove StaleCallable::run, got: {stale_value}"
+    );
+    assert!(
+        !stale_value.contains("**Subroutine**"),
+        "stale defining-file index must not emit a subroutine card, got: {stale_value}"
+    );
+    Ok(())
+}

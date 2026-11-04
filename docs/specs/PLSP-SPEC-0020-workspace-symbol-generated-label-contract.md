@@ -196,8 +196,13 @@ exact generated source locations, or edit authorization for generated members.
   and `policy/workspace-symbol-classes.toml` sets
   `requires_high_confidence = false` while keeping `low_confidence` in
   `blocks`. That retained blocker is the guarantee: low-confidence and
-  dynamic-boundary candidates stay excluded from the live surface. Widening the
-  band, or dropping the `low_confidence` blocker, requires a new revision here
-  and the labeled generated-member rank/noise receipts that
+  dynamic-boundary candidates stay excluded from the live surface. The admitted
+  band is also declared machine-readably in the shared class as
+  `admits_confidence = ["Medium"]` and enforced by `cargo xtask
+  workspace-symbol-classes` validation, so a second generated producer cannot
+  inherit Medium admission from this class without the declaration passing
+  validation. Widening the band (in either `admits_confidence` or the retained
+  blockers), or dropping the `low_confidence` blocker, requires a new revision
+  here and the labeled generated-member rank/noise receipts that
   `docs/project/status/provider_promotion_ledger.md` still lists as next proof.
 - Revision 1: original contract, high-confidence generated facts only.

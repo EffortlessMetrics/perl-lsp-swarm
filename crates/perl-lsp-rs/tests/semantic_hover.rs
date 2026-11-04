@@ -555,30 +555,62 @@ mod tied_variable_hover_tests {
         let content = hover_content(&response).ok_or("expected hover content for tied $counter")?;
 
         assert!(
-            content.contains("Tie::Counter"),
+            content.contains("**Tied to**: `Tie::Counter`"),
             "hover should mention tied class 'Tie::Counter', got: {content}"
         );
         Ok(())
     }
 
-    /// Hover on a tied variable when the class is given as a runtime variable should
-    /// not panic and should gracefully degrade (no class shown is acceptable).
+    /// Runtime-dependent package expressions must retain the variable card without
+    /// presenting expression source as an exact tied class (#18304).
     #[test]
-    fn test_hover_on_tied_variable_unknown_class_does_not_panic()
+    fn test_hover_on_tied_variable_runtime_class_remains_unknown()
     -> Result<(), Box<dyn std::error::Error>> {
-        let code = "my $cls = 'Tie::Counter';\ntie my $x, $cls;\nmy $y = $x;\n";
-        let uri = "file:///test_tied_dynamic.pl";
+        let server = TestServerBuilder::new().build();
+        for (case, package) in [
+            ("variable", "$class"),
+            ("double_interpolation", r#""Tie::$kind""#),
+            ("qq_interpolation", "qq{Tie::$kind}"),
+            ("command_quote", "qx{printf Tie::Counter}"),
+            // The AST marks the quote mode, not the presence of interpolation.
+            // Until a canonical value proves it, omit this optional annotation.
+            ("constant_double_quote", r#""Tie::Counter""#),
+        ] {
+            let code = format!(
+                "my $kind;\nmy $class;\ntie my $counter, {package};\nmy $copy = $counter;\n"
+            );
+            let uri = format!("file:///test_tied_{case}.pl");
+            server.open_document(&uri, &code);
+            let (line, character) = find_pos(&code, "$counter", 3)?;
+            let response = server.get_hover(&uri, line, character);
+            let content = hover_content(&response).ok_or("expected tied variable card")?;
+            assert!(
+                content.contains("Scalar Variable") && content.contains("`$counter`"),
+                "{case} must retain the selected variable card: {content}"
+            );
+            assert!(
+                !content.contains("**Tied to**:"),
+                "{case} must not present a runtime expression as a class: {content}"
+            );
+        }
+        Ok(())
+    }
 
+    /// A sigil inside single quotes is literal text, not an interpolation.
+    #[test]
+    fn test_hover_on_tied_variable_literal_sigil_keeps_class()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = "tie my $counter, 'Tie::$kind';\nmy $copy = $counter;\n";
+        let uri = "file:///test_tied_literal_sigil.pl";
         let server = TestServerBuilder::new().build();
         server.open_document(uri, code);
-
-        // Hover over $x on line 2 (the usage site) — must not panic
-        let (line, character) = find_pos(code, "$x", 2)?;
+        let (line, character) = find_pos(code, "$counter", 1)?;
         let response = server.get_hover(uri, line, character);
-        println!("TIED DYNAMIC CLASS HOVER RESPONSE: {response:#}");
-
-        // Must not panic; result may be null or generic — both acceptable
-        let _ = hover_content(&response);
+        let content = hover_content(&response).ok_or("expected tied variable card")?;
+        assert!(
+            content.contains("**Tied to**: `Tie::$kind`"),
+            "single quotes must preserve the literal class value: {content}"
+        );
         Ok(())
     }
 }

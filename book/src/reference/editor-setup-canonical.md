@@ -6,7 +6,7 @@ For VS Code-compatible editors, the extension can download `perllsp`
 automatically. Generic LSP clients need an exact `perllsp` binary available to
 the client, either because you installed it yourself or because the integration
 has a separately proven managed-install path. If you still need the binary,
-start with [INSTALLATION.md](INSTALLATION.md).
+start with [INSTALLATION.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md).
 
 The verified GitHub `v0.17.0` assets are public beta. Marketplace and package-
 manager versions remain pending or not proven by that receipt; verify `perllsp --version` and
@@ -18,7 +18,7 @@ exercised together. Current support tiers are tracked separately from this setup
 page; editor rows below state their narrower boundary where needed.
 
 If the server starts but the editor does not behave correctly, see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+[TROUBLESHOOTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/TROUBLESHOOTING.md).
 
 ## What Every Editor Needs
 
@@ -37,22 +37,22 @@ perllsp --health
 
 | Editor | Fast path | Detailed guide |
 | --- | --- | --- |
-| VS Code | install the extension or point it at `perllsp --stdio` | [docs/EDITORS/VS_CODE_SETUP.md](../EDITORS/VS_CODE_SETUP.md) |
-| Cursor | install the VS Code-compatible extension and configure it with the `perl-lsp.*` settings namespace | [docs/EDITORS/CURSOR_SETUP.md](../EDITORS/CURSOR_SETUP.md) |
-| Trae (ByteDance) | install the VS Code-compatible extension or set command to `perllsp --stdio` | [docs/EDITORS/TRAE_SETUP.md](../EDITORS/TRAE_SETUP.md) |
-| IntelliJ IDEA / LSP4IJ | use LSP4IJ 0.20.0+ and keep the exact template/binary stage explicit; released built-in, imported corrected, and managed-install states are independent | [docs/EDITORS/INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) |
-| Neovim | define a custom `perllsp` config with `vim.lsp.config()` and enable via `vim.lsp.enable()` (legacy `nvim-lspconfig` supported for older Neovim) | [docs/EDITORS/NEOVIM_SETUP.md](../EDITORS/NEOVIM_SETUP.md) |
-| Vim | use `vim-lsp` with `perllsp --stdio` | [docs/EDITORS/VIM_SETUP.md](../EDITORS/VIM_SETUP.md) |
-| coc.nvim | configure `languageserver.perl-lsp` in `coc-settings.json` to launch `perllsp --stdio`; works in Neovim and Vim when the buffer filetype is `perl` | [docs/EDITORS/COC_NEOVIM_SETUP.md](../EDITORS/COC_NEOVIM_SETUP.md) |
-| Emacs | use `lsp-mode` or `eglot` with `perllsp --stdio` | [docs/EDITORS/EMACS_SETUP.md](../EDITORS/EMACS_SETUP.md) |
-| Helix | use the reviewed manual Perl 5 override; released stable and current master are separate client cohorts | [docs/EDITORS/HELIX_SETUP.md](../EDITORS/HELIX_SETUP.md) |
-| Zed | **Planned / not proven:** the public Perl extension does not register `perllsp`; do not reuse its independent `perl-lsp` ID | [docs/EDITORS/ZED_SETUP.md](../EDITORS/ZED_SETUP.md) |
-| Sublime Text | register `perllsp` in LSP package settings | [docs/EDITORS/SUBLIME_SETUP.md](../EDITORS/SUBLIME_SETUP.md) |
-| Amazon Kiro | register a Perl LSP client using `perllsp --stdio` | [docs/EDITORS/KIRO_SETUP.md](../EDITORS/KIRO_SETUP.md) |
-| Claude Code | provide a plugin `.lsp.json` pointing to `perllsp --stdio` | [docs/EDITORS/CLAUDE_CODE_SETUP.md](../EDITORS/CLAUDE_CODE_SETUP.md) |
-| Codex CLI | configure an MCP bridge such as `lsp-mcp`; the bridge exposes tools to Codex and launches `perllsp --stdio` internally | [docs/EDITORS/CODEX_CLI_SETUP.md](../EDITORS/CODEX_CLI_SETUP.md) |
-| Codex Desktop | **Not proven:** no documented custom language server surface; do not configure `perllsp` there | [docs/EDITORS/CODEX_DESKTOP_SETUP.md](../EDITORS/CODEX_DESKTOP_SETUP.md) |
-| OpenCode | configure a custom `perl-lsp` server in `opencode.json` | [docs/EDITORS/OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) |
+| VS Code | install the extension or point it at `perllsp --stdio` | [docs/EDITORS/VS_CODE_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/VS_CODE_SETUP.md) |
+| Cursor | install the VS Code-compatible extension and configure it with the `perl-lsp.*` settings namespace | [docs/EDITORS/CURSOR_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/CURSOR_SETUP.md) |
+| Trae (ByteDance) | install the VS Code-compatible extension or set command to `perllsp --stdio` | [docs/EDITORS/TRAE_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/TRAE_SETUP.md) |
+| IntelliJ IDEA / LSP4IJ | use LSP4IJ 0.20.0+ and keep the exact template/binary stage explicit; released built-in, imported corrected, and managed-install states are independent | [docs/EDITORS/INTELLIJ_IDEA_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/INTELLIJ_IDEA_SETUP.md) |
+| Neovim | define a custom `perllsp` config with `vim.lsp.config()` and enable via `vim.lsp.enable()` (legacy `nvim-lspconfig` supported for older Neovim) | [docs/EDITORS/NEOVIM_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/NEOVIM_SETUP.md) |
+| Vim | use `vim-lsp` with `perllsp --stdio` | [docs/EDITORS/VIM_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/VIM_SETUP.md) |
+| coc.nvim | configure `languageserver.perl-lsp` in `coc-settings.json` to launch `perllsp --stdio`; works in Neovim and Vim when the buffer filetype is `perl` | [docs/EDITORS/COC_NEOVIM_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/COC_NEOVIM_SETUP.md) |
+| Emacs | use `lsp-mode` or `eglot` with `perllsp --stdio` | [docs/EDITORS/EMACS_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/EMACS_SETUP.md) |
+| Helix | use the reviewed manual Perl 5 override; released stable and current master are separate client cohorts | [docs/EDITORS/HELIX_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/HELIX_SETUP.md) |
+| Zed | **Planned / not proven:** the public Perl extension does not register `perllsp`; do not reuse its independent `perl-lsp` ID | [docs/EDITORS/ZED_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/ZED_SETUP.md) |
+| Sublime Text | register `perllsp` in LSP package settings | [docs/EDITORS/SUBLIME_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/SUBLIME_SETUP.md) |
+| Amazon Kiro | register a Perl LSP client using `perllsp --stdio` | [docs/EDITORS/KIRO_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/KIRO_SETUP.md) |
+| Claude Code | provide a plugin `.lsp.json` pointing to `perllsp --stdio` | [docs/EDITORS/CLAUDE_CODE_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/CLAUDE_CODE_SETUP.md) |
+| Codex CLI | configure an MCP bridge such as `lsp-mcp`; the bridge exposes tools to Codex and launches `perllsp --stdio` internally | [docs/EDITORS/CODEX_CLI_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/CODEX_CLI_SETUP.md) |
+| Codex Desktop | **Not proven:** no documented custom language server surface; do not configure `perllsp` there | [docs/EDITORS/CODEX_DESKTOP_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/CODEX_DESKTOP_SETUP.md) |
+| OpenCode | configure a custom `perl-lsp` server in `opencode.json` | [docs/EDITORS/OPENCODE_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/OPENCODE_SETUP.md) |
 
 ## Minimal Configurations
 
@@ -103,7 +103,7 @@ vim.lsp.enable('perllsp')
 ```
 
 For latency-focused editing, use the lean profile from
-[docs/EDITORS/NEOVIM_SETUP.md](../EDITORS/NEOVIM_SETUP.md). It starts
+[docs/EDITORS/NEOVIM_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/NEOVIM_SETUP.md). It starts
 `perllsp` with `--runtime-mode e2e`, syntax-only diagnostics, zero diagnostic
 debounce, disabled eager workspace indexing, and disabled file watchers. That
 profile favors responsiveness over full semantic/module/critic/dead-code
@@ -117,7 +117,7 @@ editor-specific guide has the full snippets for both.
 ### Vim
 
 Use `vim-lsp` configured to launch `perllsp --stdio`. See
-[docs/EDITORS/VIM_SETUP.md](../EDITORS/VIM_SETUP.md) for complete examples.
+[docs/EDITORS/VIM_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/VIM_SETUP.md) for complete examples.
 
 ### coc.nvim
 
@@ -184,7 +184,7 @@ shebangs = ["perl"]
 ```
 
 The checked fixture is
-[`docs/examples/helix/languages.toml`](../examples/helix/languages.toml).
+[`docs/examples/helix/languages.toml`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/examples/helix/languages.toml).
 This safe override deliberately stops the same entry from owning Raku-family
 file detection; it does not supply or imply Raku LSP support.
 
@@ -206,8 +206,8 @@ has prepared a separate `perllsp` registration and checked submission packet,
 but it remains a development artifact until it is submitted, accepted, released,
 and exercised in the actual host.
 
-See [docs/EDITORS/ZED_SETUP.md](../EDITORS/ZED_SETUP.md) for the product-identity
-boundary and [docs/integrations/ZED_UPSTREAM_SUBMISSION.md](../integrations/ZED_UPSTREAM_SUBMISSION.md)
+See [docs/EDITORS/ZED_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/ZED_SETUP.md) for the product-identity
+boundary and [docs/integrations/ZED_UPSTREAM_SUBMISSION.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/integrations/ZED_UPSTREAM_SUBMISSION.md)
 for the exact upstream candidate.
 
 ### Sublime Text
@@ -253,14 +253,14 @@ cwd = "/absolute/path/to/project"
 ```
 
 Do not register `perllsp --stdio` directly as an MCP server; it speaks LSP, not
-MCP. See [docs/EDITORS/CODEX_CLI_SETUP.md](../EDITORS/CODEX_CLI_SETUP.md) for
+MCP. See [docs/EDITORS/CODEX_CLI_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/CODEX_CLI_SETUP.md) for
 the full workflow, bridge config, and troubleshooting.
 
 ### OpenCode
 
 Create or update `opencode.json` and register a custom LSP server with
 `"command": ["perllsp", "--stdio"]` and Perl extensions like `.pl`, `.pm`,
-and `.t`. See [docs/EDITORS/OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) for a full example.
+and `.t`. See [docs/EDITORS/OPENCODE_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/OPENCODE_SETUP.md) for a full example.
 
 ### IntelliJ IDEA / LSP4IJ
 
@@ -282,7 +282,7 @@ local exact-source candidate
 
 A built-in template that finds an existing PATH binary does not prove the
 LSP4IJ-managed installer path. See
-[docs/EDITORS/INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) for the
+[docs/EDITORS/INTELLIJ_IDEA_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/INTELLIJ_IDEA_SETUP.md) for the
 full evidence and installation boundaries.
 
 For shared project behavior, prefer `.perl-lsp.toml`. Corrected LSP4IJ client
@@ -290,7 +290,7 @@ settings use sparse server-native `perl.*` overrides; VS Code `perl-lsp.*`
 settings are not the generic server schema. Reserve `initializationOptions` for
 values that actually require initialize/reinitialize timing.
 
-Use the [legacy Raw Command fallback](../EDITORS/INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md)
+Use the [legacy Raw Command fallback](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md)
 for local/unreleased candidates, temporary custom launch flags, or a LSP4IJ
 build where the relevant template route is unavailable.
 
@@ -299,7 +299,7 @@ Protocol-profile evidence can prove capability negotiation such as standard
 matching actual IntelliJ/LSP4IJ host cell from #7719/#7122.
 
 Debugger setup is a separate subject. See
-[docs/EDITORS/INTELLIJ_DAP_SETUP.md](../EDITORS/INTELLIJ_DAP_SETUP.md); the
+[docs/EDITORS/INTELLIJ_DAP_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/INTELLIJ_DAP_SETUP.md); the
 presence of an upstream Perl DAP template does not prove `perl-dap` launch,
 breakpoint, variable, stepping, attach, or cleanup behavior.
 
@@ -327,7 +327,7 @@ push.
 - **OpenCode:** the server force-enables push diagnostics for OpenCode clients
   regardless of capability advertisement, because OpenCode's agent feedback
   loop relies on push. See
-  [OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) Troubleshooting.
+  [OPENCODE_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/OPENCODE_SETUP.md) Troubleshooting.
 - **LSP4IJ:** the server has historical JetBrains-family watched-file
   compatibility debt. #7710 owns retiring or exactly bounding that workaround
   from the supported LSP4IJ capability profile; #7719 owns the real-host
@@ -342,11 +342,11 @@ push.
 - If the server starts but the editor stays idle, check the editor's LSP log
   and confirm the workspace root is correct.
 - If completions or diagnostics are missing, move to
-  [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the next steps.
+  [TROUBLESHOOTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/TROUBLESHOOTING.md) for the next steps.
 
 ### Codex Desktop
 
 **Not proven / unsupported.** Codex Desktop exposes no documented surface for
 registering a custom language server, so there is no `perllsp` configuration to
-perform. See [CODEX_DESKTOP_SETUP.md](../EDITORS/CODEX_DESKTOP_SETUP.md) for
+perform. See [CODEX_DESKTOP_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/CODEX_DESKTOP_SETUP.md) for
 the current host boundaries and the client support ledger for its earned tier.

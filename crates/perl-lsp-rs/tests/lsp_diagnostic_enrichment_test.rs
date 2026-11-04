@@ -3,64 +3,33 @@
 //! (code/category/fixable/tags), and suggestion fields are serialized through the
 //! pull-diagnostics runtime path — not just the dead-code PullDiagnosticsProvider path.
 
-use perl_lsp::{JsonRpcRequest, LspServer};
+mod support;
+
 use serde_json::json;
+use std::time::Duration;
+use support::lsp_harness::LspHarness;
 
-/// Initialize an LspServer and open a document. Returns the server.
-fn open_document(uri: &str, content: &str) -> LspServer {
-    let server = LspServer::new();
-
-    let _ = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".into(),
-        params: Some(json!({
-            "processId": 1,
-            "capabilities": {}
-        })),
-    });
-
-    let _ = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: None,
-        method: "initialized".into(),
-        params: Some(json!({})),
-    });
-
-    let _ = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: None,
-        method: "textDocument/didOpen".into(),
-        params: Some(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": content
-            }
-        })),
-    });
-
-    server
+/// Initialize an LspHarness and open a document.
+fn open_document(uri: &str, content: &str) -> Result<LspHarness, Box<dyn std::error::Error>> {
+    let mut harness = LspHarness::new();
+    harness.initialize_default()?;
+    harness.open(uri, content)?;
+    harness.barrier();
+    Ok(harness)
 }
 
 /// Call textDocument/diagnostic and return the items array.
 fn get_diagnostics(
-    server: &LspServer,
+    harness: &mut LspHarness,
     uri: &str,
 ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
-    let response = server
-        .handle_request(JsonRpcRequest {
-            _jsonrpc: "2.0".into(),
-            id: Some(perl_lsp::protocol::JsonRpcId::Integer(99_i64)),
-            method: "textDocument/diagnostic".into(),
-            params: Some(json!({
-                "textDocument": { "uri": uri }
-            })),
-        })
-        .ok_or("No response from textDocument/diagnostic")?;
-
-    let result = response.result.ok_or("Response missing result")?;
+    let result = harness.request_with_timeout(
+        "textDocument/diagnostic",
+        json!({
+            "textDocument": { "uri": uri }
+        }),
+        Duration::from_secs(30),
+    )?;
     let items = result["items"].as_array().ok_or("Expected items array")?.clone();
     Ok(items)
 }
@@ -71,8 +40,8 @@ fn test_data_field_populated_via_jsonrpc_path() -> Result<(), Box<dyn std::error
     let uri = "file:///test_data_enrichment.pl";
     // Missing 'use strict' triggers PL100 (MissingStrict)
     let content = "print 'hello';\n";
-    let server = open_document(uri, content);
-    let items = get_diagnostics(&server, uri)?;
+    let mut harness = open_document(uri, content)?;
+    let items = get_diagnostics(&mut harness, uri)?;
 
     // Find a diagnostic with a code
     let diag_with_code = items
@@ -95,8 +64,8 @@ fn test_data_field_populated_via_jsonrpc_path() -> Result<(), Box<dyn std::error
 fn test_pl100_data_fields_correct() -> Result<(), Box<dyn std::error::Error>> {
     let uri = "file:///test_pl100_data.pl";
     let content = "print 'hello';\n";
-    let server = open_document(uri, content);
-    let items = get_diagnostics(&server, uri)?;
+    let mut harness = open_document(uri, content)?;
+    let items = get_diagnostics(&mut harness, uri)?;
 
     let diag = items
         .iter()
@@ -120,8 +89,8 @@ fn test_pl105_has_fixable_true_after_adding_quick_fix() -> Result<(), Box<dyn st
     let uri = "file:///test_pl105_fixable.pl";
     // PL105 (VariableRedeclaration) now has a quick-fix: remove duplicate 'my' (#3469)
     let content = "use strict; use warnings; my $x = 1; my $x = 2;\n";
-    let server = open_document(uri, content);
-    let items = get_diagnostics(&server, uri)?;
+    let mut harness = open_document(uri, content)?;
+    let items = get_diagnostics(&mut harness, uri)?;
 
     // Verify every diagnostic with a code has a valid data object
     for d in &items {
@@ -152,8 +121,8 @@ fn test_suggestion_appended_to_message() -> Result<(), Box<dyn std::error::Error
     // ("Add 'use strict;' at the top of the file"). This reliably exercises
     // the suggestion serialization path in handle_document_diagnostic.
     let content = "print 'hello';\n";
-    let server = open_document(uri, content);
-    let items = get_diagnostics(&server, uri)?;
+    let mut harness = open_document(uri, content)?;
+    let items = get_diagnostics(&mut harness, uri)?;
 
     // PL100 must fire and its message must contain the appended suggestion text.
     let pl100 = items
@@ -177,18 +146,11 @@ fn test_workspace_diagnostic_data_populated() -> Result<(), Box<dyn std::error::
     let uri = "file:///test_ws_enrichment.pl";
     // Missing strict/warnings will trigger coded diagnostics
     let content = "print 'hello';\n";
-    let server = open_document(uri, content);
+    let mut harness = open_document(uri, content)?;
 
-    let response = server
-        .handle_request(JsonRpcRequest {
-            _jsonrpc: "2.0".into(),
-            id: Some(perl_lsp::protocol::JsonRpcId::Integer(99_i64)),
-            method: "workspace/diagnostic".into(),
-            params: Some(json!({})),
-        })
-        .ok_or("No response from workspace/diagnostic")?;
+    let result =
+        harness.request_with_timeout("workspace/diagnostic", json!({}), Duration::from_secs(30))?;
 
-    let result = response.result.ok_or("workspace/diagnostic response missing result")?;
     let reports = result["items"].as_array().ok_or("Expected items array")?;
 
     // Find the full-kind report for our URI
@@ -229,43 +191,21 @@ fn test_markup_message_support_populates_standard_message_markup()
 
     // Initialize with markupMessageSupport: true so pull diagnostics may emit
     // the standard LSP 3.18 Diagnostic.message MarkupContent shape.
-    let server = LspServer::new();
-    let _ = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".into(),
-        params: Some(json!({
-            "processId": 1,
-            "capabilities": {
-                "textDocument": {
-                    "diagnostic": {
-                        "markupMessageSupport": true
-                    }
+    let mut harness = LspHarness::new();
+    harness.initialize_with_init_options(
+        Some(json!({
+            "textDocument": {
+                "diagnostic": {
+                    "markupMessageSupport": true
                 }
             }
         })),
-    });
-    let _ = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: None,
-        method: "initialized".into(),
-        params: Some(json!({})),
-    });
-    let _ = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".into(),
-        id: None,
-        method: "textDocument/didOpen".into(),
-        params: Some(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": content
-            }
-        })),
-    });
+        json!({}),
+    )?;
+    harness.open(uri, content)?;
+    harness.barrier();
 
-    let items = get_diagnostics(&server, uri)?;
+    let items = get_diagnostics(&mut harness, uri)?;
 
     // PL100 (MissingStrict) must fire and carry MarkupContent in the standard
     // Diagnostic.message field. The data.messageMarkup extension remains as
@@ -295,6 +235,10 @@ fn test_markup_message_support_populates_standard_message_markup()
         "messageMarkup.value must include the diagnostic code; got: {:?}",
         value
     );
+    assert!(
+        value.contains("Suggestion: Add 'use strict;'"),
+        "markup-capable clients must receive the actionable suggestion: {value:?}"
+    );
 
     let message = &pl100["message"];
     assert!(
@@ -310,8 +254,8 @@ fn test_markup_message_support_populates_standard_message_markup()
 
     // The same path must keep string Diagnostic.message and omit messageMarkup
     // when the client omits the capability.
-    let server_no_markup = open_document("file:///test_no_markup.pl", content);
-    let items_no_markup = get_diagnostics(&server_no_markup, "file:///test_no_markup.pl")?;
+    let mut harness_no_markup = open_document("file:///test_no_markup.pl", content)?;
+    let items_no_markup = get_diagnostics(&mut harness_no_markup, "file:///test_no_markup.pl")?;
     let pl100_no_markup = items_no_markup
         .iter()
         .find(|d| d["code"].as_str() == Some("PL100"))
@@ -320,6 +264,11 @@ fn test_markup_message_support_populates_standard_message_markup()
         pl100_no_markup["message"].is_string(),
         "Diagnostic.message must remain a string without markupMessageSupport; got: {}",
         pl100_no_markup["message"]
+    );
+    let plain = pl100_no_markup["message"].as_str().ok_or("plain message must be a string")?;
+    assert!(
+        plain.contains("Suggestion: Add 'use strict;'"),
+        "plain clients must receive the same actionable suggestion: {plain:?}"
     );
     assert!(
         pl100_no_markup["data"]["messageMarkup"].is_null(),
@@ -337,8 +286,8 @@ fn test_related_information_forwarded() -> Result<(), Box<dyn std::error::Error>
     // eval "string" fires PL600 (SecurityStringEval) which always populates
     // related_information with one entry pointing to the eval location.
     let content = "use strict; use warnings;\neval \"dangerous_code()\";\n";
-    let server = open_document(uri, content);
-    let items = get_diagnostics(&server, uri)?;
+    let mut harness = open_document(uri, content)?;
+    let items = get_diagnostics(&mut harness, uri)?;
 
     // PL600 must fire.
     let eval_diag = items
@@ -384,8 +333,8 @@ fn test_sql_injection_code_description_is_owasp_referenced()
         "my $user_id = <STDIN>;\n",
         "my $sth = $dbh->prepare(\"SELECT * FROM users WHERE id = $user_id\");\n",
     );
-    let server = open_document(uri, content);
-    let items = get_diagnostics(&server, uri)?;
+    let mut harness = open_document(uri, content)?;
+    let items = get_diagnostics(&mut harness, uri)?;
 
     let sql_diag = items
         .iter()
@@ -408,8 +357,8 @@ fn test_sql_injection_code_description_is_owasp_referenced()
         "my $sth = $dbh->prepare('SELECT * FROM users WHERE id = ?');\n",
         "$sth->execute(42);\n",
     );
-    let safe_server = open_document(safe_uri, safe_content);
-    let safe_items = get_diagnostics(&safe_server, safe_uri)?;
+    let mut safe_harness = open_document(safe_uri, safe_content)?;
+    let safe_items = get_diagnostics(&mut safe_harness, safe_uri)?;
     assert!(
         safe_items.iter().all(|d| d["code"].as_str() != Some("PL607")),
         "placeholder prepare with bind values must stay silent on the wire: {safe_items:?}"

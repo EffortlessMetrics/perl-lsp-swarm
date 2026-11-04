@@ -6,10 +6,15 @@
 //! validation, and canonical identity here prevents each consumer from
 //! inventing a subtly different profile model.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
+use xtask::unsupported_fact_catalog;
 
 pub const SCHEMA_VERSION: &str = "compiler_profile.v1";
 
@@ -219,6 +224,55 @@ pub fn list(root: &Path) -> Result<()> {
         check(&root.join(relative_path))?;
     }
     Ok(())
+}
+
+/// Resolve a `--check`/`--report` catalog argument: an empty value (bare
+/// flag) selects the landed seed catalog under `root`.
+pub fn unsupported_catalog_path(root: &Path, arg: &Path) -> PathBuf {
+    if arg.as_os_str().is_empty() {
+        root.join(unsupported_fact_catalog::CATALOG_PATH)
+    } else {
+        arg.to_path_buf()
+    }
+}
+
+/// Validate one unsupported-fact catalog, failing closed on any violation
+/// (SPEC-0038 X1). Prints a one-line success summary; no provider or
+/// compiler behavior changes.
+pub fn unsupported_check(path: &Path) -> Result<()> {
+    let catalog = load_unsupported_catalog(path)?;
+    let violations = unsupported_fact_catalog::validate_catalog(&catalog);
+    if !violations.is_empty() {
+        bail!(
+            "unsupported catalog check failed with {} violation(s):\n{}",
+            violations.len(),
+            violations.join("\n")
+        );
+    }
+    println!(
+        "{}: {} classes, 0 violations",
+        unsupported_fact_catalog::SCHEMA_VERSION,
+        catalog.entries.len()
+    );
+    Ok(())
+}
+
+/// Print the deterministic summary of one unsupported-fact catalog
+/// (SPEC-0038 X2). Parsing still fails closed; content enforcement is
+/// `--check`'s job.
+pub fn unsupported_report(path: &Path) -> Result<()> {
+    let catalog = load_unsupported_catalog(path)?;
+    print!("{}", unsupported_fact_catalog::render_report(&catalog));
+    Ok(())
+}
+
+fn load_unsupported_catalog(
+    path: &Path,
+) -> Result<unsupported_fact_catalog::UnsupportedFactCatalog> {
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("read unsupported-fact catalog {}", path.display()))?;
+    unsupported_fact_catalog::parse_catalog(&source)
+        .map_err(|report| anyhow!("parse unsupported-fact catalog {}: {report:?}", path.display()))
 }
 
 impl DynamicBoundary {

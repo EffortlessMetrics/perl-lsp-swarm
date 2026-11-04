@@ -6,6 +6,8 @@ function makeDependencies(): DocumentCommandContext & {
   formatDocument: jest.Mock;
   showIncPaths: jest.Mock;
   openModule: jest.Mock;
+  createModule: jest.Mock;
+  createTest: jest.Mock;
   showParserAst: jest.Mock;
 } {
   return {
@@ -13,6 +15,8 @@ function makeDependencies(): DocumentCommandContext & {
     formatDocument: jest.fn(async () => undefined),
     showIncPaths: jest.fn(async () => undefined),
     openModule: jest.fn(async () => undefined),
+    createModule: jest.fn(async () => undefined),
+    createTest: jest.fn(async () => undefined),
     showParserAst: jest.fn(async () => undefined),
   };
 }
@@ -31,17 +35,21 @@ describe('registerDocumentCommandGroup', () => {
     const dependencies = makeDependencies();
     registeredDisposables = registerDocumentCommandGroup(dependencies);
 
-    expect(registeredDisposables).toHaveLength(5);
+    expect(registeredDisposables).toHaveLength(7);
     await vscode.commands.executeCommand('perl-lsp.checkSyntax');
     await vscode.commands.executeCommand('perl-lsp.formatDocument');
     await vscode.commands.executeCommand('perl-lsp.showIncPaths');
     await vscode.commands.executeCommand('perl-lsp.openModule');
+    await vscode.commands.executeCommand('perl-lsp.createModule');
+    await vscode.commands.executeCommand('perl-lsp.createTest');
     await vscode.commands.executeCommand('perl-lsp.showParserAst');
 
     expect(dependencies.checkSyntax).toHaveBeenCalledTimes(1);
     expect(dependencies.formatDocument).toHaveBeenCalledTimes(1);
     expect(dependencies.showIncPaths).toHaveBeenCalledTimes(1);
     expect(dependencies.openModule).toHaveBeenCalledTimes(1);
+    expect(dependencies.createModule).toHaveBeenCalledTimes(1);
+    expect(dependencies.createTest).toHaveBeenCalledTimes(1);
     expect(dependencies.showParserAst).toHaveBeenCalledTimes(1);
   });
 
@@ -53,6 +61,8 @@ describe('registerDocumentCommandGroup', () => {
     expect(dependencies.formatDocument).not.toHaveBeenCalled();
     expect(dependencies.showIncPaths).not.toHaveBeenCalled();
     expect(dependencies.openModule).not.toHaveBeenCalled();
+    expect(dependencies.createModule).not.toHaveBeenCalled();
+    expect(dependencies.createTest).not.toHaveBeenCalled();
     expect(dependencies.showParserAst).not.toHaveBeenCalled();
   });
 });

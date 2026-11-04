@@ -1,0 +1,9 @@
+project: product
+component: Lexer
+kind: Fixed
+body: "The bare-regex POD guard no longer re-arms on the line that closes a multiline bare regex: a code line ending in a bare slash while the guard is armed is treated as the close of the possible body, so a genuine POD opener after the closed regex is honored again and POD declarations no longer leak into the known-sub table (which had flipped later same-name slashes from division onto the regex path)."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18248"
+  Slug: bare-regex-pod-guard-rearm
+  Breaking: "no"

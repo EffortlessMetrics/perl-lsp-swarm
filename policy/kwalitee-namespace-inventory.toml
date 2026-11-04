@@ -11,7 +11,7 @@
 # exhaustively for the namespace spellings (`perl-kwalitee`, `perl_kwalitee`,
 # `PerlKwalitee`, `PERL_KWALITEE`) and reconciles every occurrence against the
 # rows below. It fails closed on an unclassified new reference, a stale
-# classification whose source line moved or vanished, a duplicate
+# classification whose source line text changed or vanished, a duplicate
 # classification, and any closed-vocabulary violation. It never mutates a
 # caller, a doc, or an alias (#8752 non-goals).
 #
@@ -198,7 +198,7 @@ note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof,
 reference_hashes = ["37574987ad457d02ecb27a6d50f1cc1446f24c112e0a938c8a0e0b2335e2316f", "87a11a0124beda3993077c9c49df567ca02a3f5b8f93149b836d57045f5f88d7"]
 
 [[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.json"
+path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release.json"
 classification = "legacy_compatibility"
 migration_target = "legacy_receipt_readability"
 owner_issue = 7192
@@ -208,27 +208,7 @@ note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof,
 reference_hashes = ["1acc75ceb78280421fd61f0e2327972f115fd077ecf3b7366b05f885bea67028", "c360e6ffedfbc14972ee7a6005e5fb240040295ccd5b3680f27448d1fb5ac849", "e62d4ff2334c87c4a5a33b160ca611331f294840b107e201a7d25d3f423d8c22", "ea9d764e0616a7a8872986d9bb0b372f5ffc0cc12429315daf80aa906572c880"]
 
 [[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.md"
-classification = "legacy_compatibility"
-migration_target = "legacy_receipt_readability"
-owner_issue = 7192
-removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
-allowed_to_remain = true
-note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-reference_hashes = ["37574987ad457d02ecb27a6d50f1cc1446f24c112e0a938c8a0e0b2335e2316f", "87a11a0124beda3993077c9c49df567ca02a3f5b8f93149b836d57045f5f88d7"]
-
-[[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.json"
-classification = "legacy_compatibility"
-migration_target = "legacy_receipt_readability"
-owner_issue = 7192
-removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
-allowed_to_remain = true
-note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-reference_hashes = ["1acc75ceb78280421fd61f0e2327972f115fd077ecf3b7366b05f885bea67028", "c360e6ffedfbc14972ee7a6005e5fb240040295ccd5b3680f27448d1fb5ac849", "e62d4ff2334c87c4a5a33b160ca611331f294840b107e201a7d25d3f423d8c22", "ea9d764e0616a7a8872986d9bb0b372f5ffc0cc12429315daf80aa906572c880"]
-
-[[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.md"
+path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release.md"
 classification = "legacy_compatibility"
 migration_target = "legacy_receipt_readability"
 owner_issue = 7192
@@ -376,6 +356,16 @@ removal_condition = "Generated migration reference retires with the frozen ledge
 allowed_to_remain = true
 note = "Generated, byte-pinned migration reference; historical readability, not a caller."
 reference_hashes = ["457ada90dd06721b3eeb833f565014b81aba41ff74fd18c93bccbb49868b1dfe", "46f226a347a15fb8cf284da1f25f44e7a1e154371574fdaf72e797a4b385ef86", "d3707339592253c2f753070598cd389e38cfc8f97d20fd9305140bb7ba6ec41f", "dc294355c6a2b6034b980276756b0cae18f5f93e032fa8db6d70eb140b2a7f46"]
+
+[[entry]]
+path = "docs/releases/domain6-windows-editor-distribution-first-mile.v1.json"
+classification = "historical_prose"
+migration_target = "none"
+owner_issue = 8752
+removal_condition = "None; frozen release-evidence history stays readable."
+allowed_to_remain = true
+note = "Version-pinned disposition ledger naming the legacy parity test as touched-path history; carries no authority and no execution."
+reference_hashes = ["8282e66f966c9d8f0cfb0e007395beb0c993ec16ca9fb584787f24691b8a23e8"]
 
 [[entry]]
 path = "docs/reviews/3313-deep-review.md"

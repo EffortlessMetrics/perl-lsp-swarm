@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { AsyncResource, createHook } from 'async_hooks';
 import type * as http from 'http';
 import type { CancellationTokenLike, DisposableLike } from './boundedHttpJson';
 
@@ -33,10 +34,6 @@ export function unlinkPartialDownloadDest(dest: string): void {
   }
 }
 
-async function defaultRemovePartialFile(dest: string): Promise<void> {
-  unlinkPartialDownloadDest(dest);
-}
-
 function destinationDirectoryEntryExists(dest: string): boolean {
   try {
     fs.lstatSync(dest);
@@ -49,35 +46,95 @@ function destinationDirectoryEntryExists(dest: string): boolean {
   }
 }
 
+/** Default injected remover. Native `ensurePartialDownloadDestGone` owns unlink. */
+async function noopRemovePartialFile(_dest: string): Promise<void> {}
+
 /**
- * Run the injected remover, then the native unlink. Succeeds only when the
- * directory entry is gone. Injected failures are ignored so the native
- * fallback remains authoritative.
+ * Native fail-closed dest removal. No-op when the directory entry is already
+ * gone, so a successful injected remover is the only unlink for that dest.
+ */
+function ensurePartialDownloadDestGone(dest: string): void {
+  if (!destinationDirectoryEntryExists(dest)) {
+    return;
+  }
+  unlinkPartialDownloadDest(dest);
+  if (destinationDirectoryEntryExists(dest)) {
+    throw new Error('destination remains');
+  }
+}
+
+/** Join filesystem requests started before this remover settles, including callback APIs
+ * whose caller returns before the callback. This owns their completion rather
+ * than racing a second unlink against a Windows delete-pending handle.
+ * Future timer-scheduled work is outside the remover's completion contract.
+ */
+async function removeAndJoinFilesystemRequests(
+  dest: string,
+  removePartialFile: (dest: string) => Promise<void>,
+): Promise<void> {
+  const scope = new AsyncResource('PartialDownloadCleanup', { requireManualDestroy: true });
+  const descendants = new Set([scope.asyncId()]);
+  const pending = new Set<number>();
+  let removerSettled = false;
+  let resolveDrained: () => void = () => {};
+  const drained = new Promise<void>((resolve) => {
+    resolveDrained = resolve;
+  });
+  const hook = createHook({
+    init(id, type, trigger) {
+      if (!descendants.has(trigger)) return;
+      // Once the remover settles, only a native request's synchronous
+      // callback can extend its completion chain. Later Promise/timer work
+      // does not own this cleanup operation.
+      if (removerSettled && !pending.has(trigger)) return;
+      // A returned promise does not own future fire-and-forget scheduled
+      // work. Awaited timers remain covered by the remover promise itself.
+      if (type === 'Timeout' || type === 'Immediate') return;
+      descendants.add(id);
+      if (type === 'FSREQCALLBACK' || type === 'FSREQPROMISE') pending.add(id);
+    },
+    destroy(id) {
+      descendants.delete(id);
+      pending.delete(id);
+      if (removerSettled && pending.size === 0) resolveDrained();
+    },
+  });
+  hook.enable();
+  try {
+    try {
+      await scope.runInAsyncScope(removePartialFile, undefined, dest);
+    } finally {
+      removerSettled = true;
+      if (pending.size === 0) resolveDrained();
+      await drained;
+    }
+  } finally {
+    hook.disable();
+    scope.emitDestroy();
+  }
+}
+
+/**
+ * Run the injected remover, then native unlink only if dest still exists.
+ * Succeeds only when the directory entry is gone. Injected failures are
+ * ignored so the native fallback remains authoritative.
  */
 export async function cleanupPartialDownloadDest(
   dest: string,
-  removePartialFile: (dest: string) => Promise<void> = defaultRemovePartialFile,
+  removePartialFile: (dest: string) => Promise<void> = noopRemovePartialFile,
 ): Promise<void> {
   try {
-    await removePartialFile(dest);
+    await removeAndJoinFilesystemRequests(dest, removePartialFile);
   } catch {
     // The native fallback below is authoritative for the cleanup result.
   }
-  let cleanupFailure: unknown;
   try {
-    unlinkPartialDownloadDest(dest);
-  } catch (fallbackError) {
-    cleanupFailure = fallbackError;
-  }
-  let destinationRemains = false;
-  try {
-    destinationRemains = destinationDirectoryEntryExists(dest);
-  } catch (existsError) {
-    cleanupFailure ??= existsError;
-  }
-  if (cleanupFailure !== undefined || destinationRemains) {
-    const reason = cleanupFailure instanceof Error ? cleanupFailure.message : 'destination remains';
-    throw new Error(reason);
+    ensurePartialDownloadDestGone(dest);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('destination remains');
   }
 }
 
@@ -121,7 +178,7 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     maxRedirects = 5,
     followRedirect,
     createWriteStream = (path) => fs.createWriteStream(path),
-    removePartialFile = defaultRemovePartialFile,
+    removePartialFile = noopRemovePartialFile,
   } = options;
 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {

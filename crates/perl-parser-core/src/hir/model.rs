@@ -89,7 +89,10 @@ pub struct AstAnchor {
 pub enum RecoveryConfidence {
     /// Lowered from a normally parsed AST node.
     Parsed,
-    /// Lowered from a parser recovery wrapper with a partial valid tree.
+    /// Lowered from a parser recovery wrapper with a partial valid tree, or
+    /// from a parser-synthesized non-source operand (a fabricated node with
+    /// no source span, such as the zero-width `Number("1")` condition of
+    /// `while ()`), where no normally parsed source node exists to lower.
     Recovered,
     /// Lowered from a partially known or placeholder AST shape.
     Partial,
@@ -113,10 +116,19 @@ pub enum RecoveryConfidence {
 /// previous `Call { args: [Opaque{Block}, …] }` fallback for
 /// `try`/`catch`/`finally` and, unlike that fallback, retain the statements
 /// inside each region.
+/// v7 adds the [`HirExpr::Literal`] first-cohort scalar leaf (#17538), which
+/// replaces the previous `Opaque` fallback for plain decimal numbers,
+/// noninterpolating strings, and `undef`, and retains the exact payload.
+/// v8 retains the `qr//`, `m//`, and bare `/.../` surface form in
+/// [`HirRegex::form`](super::body::HirRegex::form) (#14638). This slice
+/// originally claimed v7; `main` took that number for the Literal leaf
+/// first, so the regex form layout is a further increment rather than a
+/// second meaning for one version.
 ///
 /// [`HirExpr::Try`]: super::body::HirExpr::Try
 /// [`HirCatchHandler`]: super::body::HirCatchHandler
-pub const HIR_BODY_MODEL_VERSION: u32 = 6;
+/// [`HirExpr::Literal`]: super::body::HirExpr::Literal
+pub const HIR_BODY_MODEL_VERSION: u32 = 8;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -277,6 +289,11 @@ pub enum BarewordRole {
     MethodReceiver,
     /// Bareword used as the object in an indirect-object call.
     IndirectObject,
+    /// Sigil-prefixed receiver of a dynamic indirect constructor call, such
+    /// as the `$class` in `new $class`. The receiver is a runtime value, not
+    /// a static class name, so it is distinguishable from the bareword in
+    /// `new Foo` without consumers sniffing the name for a sigil (#15031).
+    DynamicIndirectObject,
     /// Bareword used as an autoquoted hash key.
     HashKey,
 }
@@ -1013,6 +1030,12 @@ pub struct Binding {
     pub name: String,
     /// Source range of the binding declaration token.
     pub range: SourceLocation,
+    /// First source offset at which references can see this binding.
+    ///
+    /// A declaration with an initializer becomes visible after the entire
+    /// declaration: `my $x = $x` reads an outer `$x` on the right. Parameter
+    /// and catch bindings without a declaration item begin after their token.
+    pub visible_from: usize,
     /// Storage class represented by the declaration.
     pub storage: StorageClass,
     /// Package context active for this binding, when known.
@@ -1458,6 +1481,14 @@ pub struct ExportDeclaration {
     pub tag_name: Option<String>,
     /// Static exported symbols.
     pub symbols: Vec<String>,
+    /// Names in [`Self::symbols`] whose Sub::Exporter value is a generator
+    /// rather than this package's own sub of that name.
+    ///
+    /// Empty for classic Exporter/`Exporter::Tiny` declarations and for a
+    /// Sub::Exporter name whose value is `undef`/`undef()` (no generator).
+    /// A setup-wide custom `generator` lists every declared name here, because
+    /// none of them is shown to be the package's own sub.
+    pub generator_backed: Vec<String>,
     /// Source range for the declaration.
     pub range: SourceLocation,
     /// HIR item that produced this declaration, when available.
@@ -1948,6 +1979,9 @@ pub struct FrameworkExportedSymbolFact {
     pub declaration_item: Option<HirId>,
     /// Backing visible-symbol fact for provider-shadow proof.
     pub visible_symbol: VisibleSymbol,
+    /// Whether this name is a direct source-anchored export or a generator-backed
+    /// declared name. Classic Exporter declarations are always [`FrameworkExportMechanism::Direct`].
+    pub mechanism: FrameworkExportMechanism,
     /// Source declaration provenance.
     pub source_provenance: Provenance,
     /// Source declaration confidence.
@@ -1956,6 +1990,17 @@ pub struct FrameworkExportedSymbolFact {
     pub provenance: Provenance,
     /// Adapter fact confidence.
     pub confidence: Confidence,
+}
+
+/// How one exported name was declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FrameworkExportMechanism {
+    /// The name is expected to be this package's own sub of that name.
+    Direct,
+    /// The name is declared, but a generator produces the installed code.
+    /// This does not establish the generated value or callable signature.
+    GeneratorBacked,
 }
 
 /// Export relationship represented by a framework fact.
@@ -2058,12 +2103,42 @@ fn project_exported_symbols_from_declaration(
             range: declaration.range,
             declaration_item: declaration.declaration_item,
             visible_symbol: visible_symbol_for_export(declaration, symbol, kind),
+            mechanism: export_mechanism(declaration, symbol),
             source_provenance: stash_provenance_to_fact(declaration.provenance),
-            source_confidence: stash_confidence_to_fact(declaration.confidence),
+            source_confidence: export_source_confidence(declaration, symbol),
             provenance: Provenance::FrameworkSynthesis,
             confidence: Confidence::Medium,
         });
     }
+}
+
+fn name_is_generator_backed(declaration: &ExportDeclaration, symbol: &str) -> bool {
+    declaration.generator_backed.iter().any(|name| name == symbol)
+}
+
+fn export_mechanism(declaration: &ExportDeclaration, symbol: &str) -> FrameworkExportMechanism {
+    if name_is_generator_backed(declaration, symbol) {
+        FrameworkExportMechanism::GeneratorBacked
+    } else {
+        FrameworkExportMechanism::Direct
+    }
+}
+
+fn export_source_confidence(declaration: &ExportDeclaration, symbol: &str) -> Confidence {
+    if name_is_generator_backed(declaration, symbol) {
+        return Confidence::Medium;
+    }
+    // A mixed Sub::Exporter list stores Medium on the whole declaration because
+    // some sibling is generator-backed. Direct names in that list stay High.
+    // Medium from any other cause — empty `generator_backed`, classic Exporter,
+    // a future producer — must not be promoted.
+    if !declaration.generator_backed.is_empty() {
+        return match declaration.confidence {
+            StashConfidence::Low => Confidence::Low,
+            StashConfidence::Medium | StashConfidence::High => Confidence::High,
+        };
+    }
+    stash_confidence_to_fact(declaration.confidence)
 }
 
 fn visible_symbol_for_export(

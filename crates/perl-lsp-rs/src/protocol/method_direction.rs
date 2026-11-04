@@ -280,6 +280,7 @@ pub(crate) const REGISTRY: &[MethodDescriptor] = &[
     c2s("textDocument/selectionRange", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     // ── Workspace features (client→server) ─────────────────────────────────
     c2s("workspace/symbol", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
+    c2s("workspaceSymbol/resolve", EnvelopeKind::Request, LifecyclePhase::RequiresInitialized),
     ext(
         "workspace/symbol/resolve",
         EnvelopeKind::Request,
