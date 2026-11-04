@@ -40,20 +40,52 @@ pub(crate) fn candidate_priority<T: AsRef<Path>>(candidate: T) -> u8 {
 ///    entry via `dir.join`) resolves against the CWD and is indistinguishable
 ///    from a planted binary.  This is the primary guard against the
 ///    empty-PATH-entry bypass.
-/// 2. **CWD exclusion**: candidates whose parent directory canonicalizes to `cwd`
-///    are dropped.  If canonicalize fails (non-existent dir in a unit test)
-///    the raw path is compared instead — production candidates always come from
-///    real `.is_file()`-verified PATH dirs where canonicalize succeeds.
+/// 2. **CWD exclusion**: candidates whose **canonical file path** lies inside the
+///    canonical CWD subtree (including the CWD directory itself) are dropped.
+///    This covers immediate-parent checks, nested directories such as
+///    `<cwd>/bin/tool.exe`, and symlink/junction targets that resolve into the
+///    CWD even when the literal path sits outside it.  If `canonicalize` fails for
+///    the candidate file, the candidate is dropped (fail closed).
 ///
 /// Returns `None` when every candidate is filtered out or when `candidates` is
 /// empty (tool genuinely not on PATH; better than running a planted binary).
 ///
 /// Native paths are retained so non-UTF-8 PATH directories remain usable on Unix.
+/// Returns `true` when `path` is a filesystem root (e.g. `/` or `C:\`).
+fn is_filesystem_root(path: &Path) -> bool {
+    path.parent().is_none()
+}
+
+/// Returns `true` when `path` is exactly `cwd_canon` or a descendant of it.
+///
+/// At a filesystem root, every absolute path shares the `/` prefix on Unix (or the
+/// drive root on Windows), so subtree matching would reject all installed tools.
+/// In that case fall back to immediate-parent equality only.
+fn canonical_path_is_under_cwd(path: &Path, cwd_canon: &Path) -> bool {
+    if path == cwd_canon {
+        return true;
+    }
+    if is_filesystem_root(cwd_canon) {
+        let parent = path.parent().unwrap_or(Path::new(""));
+        return parent == cwd_canon;
+    }
+    path.starts_with(cwd_canon)
+}
+
+/// Returns `true` when the candidate must be rejected because its canonical target
+/// lies inside the CWD subtree, or when canonicalization fails (fail closed).
+fn candidate_resolves_inside_cwd(candidate: &Path, cwd_canon: &Path) -> bool {
+    match std::fs::canonicalize(candidate) {
+        Ok(candidate_canon) => canonical_path_is_under_cwd(&candidate_canon, cwd_canon),
+        Err(_) => true,
+    }
+}
+
 pub(crate) fn select_path_candidate<T: AsRef<Path>>(
     candidates: &[T],
     cwd: &Path,
 ) -> Option<PathBuf> {
-    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let cwd_canon = std::fs::canonicalize(cwd).ok()?;
 
     candidates
         .iter()
@@ -67,15 +99,7 @@ pub(crate) fn select_path_candidate<T: AsRef<Path>>(
             if !c.is_absolute() {
                 return false;
             }
-            // Layer 2: reject if the parent directory canonicalizes to the CWD.
-            // If canonicalize fails (directory does not exist on disk) fall back
-            // to the raw path for comparison — the candidate will not have passed
-            // `.is_file()` in `resolve_windows_program` anyway, so this path is
-            // only reachable in unit tests with synthetic candidate lists.
-            let candidate_parent = c.parent().unwrap_or(Path::new(""));
-            let parent_canon = std::fs::canonicalize(candidate_parent)
-                .unwrap_or_else(|_| candidate_parent.to_path_buf());
-            parent_canon != cwd_canon
+            !candidate_resolves_inside_cwd(c, &cwd_canon)
         })
         .max_by_key(|c| candidate_priority((*c).as_ref()))
         .map(|c| (*c).as_ref().to_path_buf())

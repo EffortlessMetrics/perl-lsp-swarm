@@ -8,12 +8,26 @@
 # metadata; unrelated head movement does not create another disposition reply.
 # A historical match may be replayed only while it is the latest observed
 # disposition. Later findings/decisions require a fresh evidence-bearing action.
+#
+# Sweep mode (#17095 item 1):
+#   scripts/reviews/disposition --sweep-bot-outdated --pr N [--dry-run]
+# Enumerates unresolved threads via scripts/reviews/threads (or a recorded
+# payload via --threads-json), selects opening-author __typename == Bot AND
+# isOutdated, posts one templated superseded disposition:v1 reply citing the
+# current head SHA, then resolves through this same marker path. Human threads
+# and current (non-outdated) bot threads are untouched. --dry-run prints the
+# selection and intended replies without mutating. Test against fixtures;
+# never against live PRs from the contract suite.
 set -euo pipefail
 
 die_usage() { echo "ERROR: $1" >&2; exit 2; }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+THREADS_BIN="$SCRIPT_DIR/threads"
+
 PR="" THREAD="" CLASS="" REPLY="" COMMIT="" ISSUE="" SUPERSEDED_BY="" ARGUMENT=""
-REPO="" HEAD="" BY="" DRY_RUN=0
+REPO="" HEAD="" BY="" DRY_RUN=0 SWEEP_BOT_OUTDATED=0 THREADS_JSON="" NO_REAPPLY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr)            PR="${2:-}"; shift 2 ;;
@@ -28,15 +42,28 @@ while [[ $# -gt 0 ]]; do
         --head)          HEAD="${2:-}"; shift 2 ;;
         --by)            BY="${2:-}"; shift 2 ;;
         --dry-run)       DRY_RUN=1; shift ;;
+        --sweep-bot-outdated) SWEEP_BOT_OUTDATED=1; shift ;;
+        --threads-json)  THREADS_JSON="${2:-}"; shift 2 ;;
+        --no-reapply)    NO_REAPPLY=1; shift ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
 
-[[ -n "$PR" ]]     || die_usage "--pr is required"
-[[ -n "$THREAD" ]] || die_usage "--thread is required"
-[[ -n "$CLASS" ]]  || die_usage "--class is required"
-[[ -n "$REPLY" ]]  || die_usage "--reply is required"
+[[ -n "$PR" ]] || die_usage "--pr is required"
 command -v jq >/dev/null 2>&1 || die_usage "jq not found on PATH"
+
+if [[ "$SWEEP_BOT_OUTDATED" -eq 1 ]]; then
+    [[ -z "$THREAD" && -z "$CLASS" && -z "$REPLY" ]] \
+        || die_usage "--sweep-bot-outdated cannot be combined with --thread, --class, or --reply"
+    if [[ -n "$THREADS_JSON" && ! -f "$THREADS_JSON" ]]; then
+        die_usage "--threads-json file not found: $THREADS_JSON"
+    fi
+else
+    [[ -z "$THREADS_JSON" ]] || die_usage "--threads-json is only valid with --sweep-bot-outdated"
+    [[ -n "$THREAD" ]] || die_usage "--thread is required"
+    [[ -n "$CLASS" ]]  || die_usage "--class is required"
+    [[ -n "$REPLY" ]]  || die_usage "--reply is required"
+fi
 
 positive_issue() {
     [[ "$ISSUE" =~ ^[0-9]+$ && "$ISSUE" -gt 0 ]]
@@ -44,51 +71,53 @@ positive_issue() {
 
 EVIDENCE=""
 THREAD_TRANSITION=""
-case "$CLASS" in
-    fixed)
-        [[ -n "$COMMIT" ]] || die_usage "class=fixed requires --commit <sha>"
-        EVIDENCE="$(jq -cn --arg c "$COMMIT" '{commit:$c}')"
-        THREAD_TRANSITION="resolve"
-        ;;
-    refuted)
-        [[ -n "$ARGUMENT" ]] || die_usage "class=refuted requires --argument <text>"
-        EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
-        THREAD_TRANSITION="resolve"
-        ;;
-    superseded)
-        [[ -n "$SUPERSEDED_BY" ]] || die_usage "class=superseded requires --superseded-by <n|url>"
-        EVIDENCE="$(jq -cn --arg s "$SUPERSEDED_BY" '{superseded_by:$s}')"
-        THREAD_TRANSITION="resolve"
-        ;;
-    post-merge-follow-up)
-        positive_issue || die_usage "class=post-merge-follow-up requires --issue <positive-integer>"
-        [[ -n "$ARGUMENT" ]] || die_usage "class=post-merge-follow-up requires --argument <why the current claim is already satisfied>"
-        EVIDENCE="$(jq -cn --argjson i "$ISSUE" --arg a "$ARGUMENT" '{issue:$i,argument:$a}')"
-        THREAD_TRANSITION="resolve"
-        ;;
-    current-blocker)
-        [[ -n "$ARGUMENT" ]] || die_usage "class=current-blocker requires --argument <current defect and required repair>"
-        EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
-        THREAD_TRANSITION="keep_open"
-        ;;
-    blocked-by-prerequisite)
-        positive_issue || die_usage "class=blocked-by-prerequisite requires --issue <positive-integer>"
-        [[ -n "$ARGUMENT" ]] || die_usage "class=blocked-by-prerequisite requires --argument <why the defect remains current>"
-        EVIDENCE="$(jq -cn --argjson i "$ISSUE" --arg a "$ARGUMENT" '{issue:$i,argument:$a}')"
-        THREAD_TRANSITION="keep_open"
-        ;;
-    not-proven)
-        [[ -n "$ARGUMENT" ]] || die_usage "class=not-proven requires --argument <missing or contradictory evidence>"
-        EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
-        THREAD_TRANSITION="keep_open"
-        ;;
-    follow-up)
-        die_usage "class=follow-up is ambiguous; use post-merge-follow-up when the current claim is already satisfied, or current-blocker/blocked-by-prerequisite when the defect remains"
-        ;;
-    *)
-        die_usage "invalid --class '$CLASS' (fixed|refuted|superseded|post-merge-follow-up|current-blocker|blocked-by-prerequisite|not-proven)"
-        ;;
-esac
+if [[ "$SWEEP_BOT_OUTDATED" -eq 0 ]]; then
+    case "$CLASS" in
+        fixed)
+            [[ -n "$COMMIT" ]] || die_usage "class=fixed requires --commit <sha>"
+            EVIDENCE="$(jq -cn --arg c "$COMMIT" '{commit:$c}')"
+            THREAD_TRANSITION="resolve"
+            ;;
+        refuted)
+            [[ -n "$ARGUMENT" ]] || die_usage "class=refuted requires --argument <text>"
+            EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
+            THREAD_TRANSITION="resolve"
+            ;;
+        superseded)
+            [[ -n "$SUPERSEDED_BY" ]] || die_usage "class=superseded requires --superseded-by <n|url>"
+            EVIDENCE="$(jq -cn --arg s "$SUPERSEDED_BY" '{superseded_by:$s}')"
+            THREAD_TRANSITION="resolve"
+            ;;
+        post-merge-follow-up)
+            positive_issue || die_usage "class=post-merge-follow-up requires --issue <positive-integer>"
+            [[ -n "$ARGUMENT" ]] || die_usage "class=post-merge-follow-up requires --argument <why the current claim is already satisfied>"
+            EVIDENCE="$(jq -cn --argjson i "$ISSUE" --arg a "$ARGUMENT" '{issue:$i,argument:$a}')"
+            THREAD_TRANSITION="resolve"
+            ;;
+        current-blocker)
+            [[ -n "$ARGUMENT" ]] || die_usage "class=current-blocker requires --argument <current defect and required repair>"
+            EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
+            THREAD_TRANSITION="keep_open"
+            ;;
+        blocked-by-prerequisite)
+            positive_issue || die_usage "class=blocked-by-prerequisite requires --issue <positive-integer>"
+            [[ -n "$ARGUMENT" ]] || die_usage "class=blocked-by-prerequisite requires --argument <why the defect remains current>"
+            EVIDENCE="$(jq -cn --argjson i "$ISSUE" --arg a "$ARGUMENT" '{issue:$i,argument:$a}')"
+            THREAD_TRANSITION="keep_open"
+            ;;
+        not-proven)
+            [[ -n "$ARGUMENT" ]] || die_usage "class=not-proven requires --argument <missing or contradictory evidence>"
+            EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
+            THREAD_TRANSITION="keep_open"
+            ;;
+        follow-up)
+            die_usage "class=follow-up is ambiguous; use post-merge-follow-up when the current claim is already satisfied, or current-blocker/blocked-by-prerequisite when the defect remains"
+            ;;
+        *)
+            die_usage "invalid --class '$CLASS' (fixed|refuted|superseded|post-merge-follow-up|current-blocker|blocked-by-prerequisite|not-proven)"
+            ;;
+    esac
+fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
     command -v gh >/dev/null 2>&1 || die_usage "gh not found on PATH (required unless --dry-run)"
@@ -98,6 +127,186 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
 else
     [[ -n "$HEAD" ]] || HEAD="DRYRUN-HEAD"
     [[ -n "$BY" ]]   || BY="dryrun-actor"
+fi
+
+# Classify recorded GraphQL reviewThreads payloads and scripts/reviews/threads
+# --json documents with the same predicate: unresolved + isOutdated + opening
+# author __typename == Bot. Fail closed on unrecognized shapes.
+_sweep_classify() {
+    jq -c '
+        # Match scripts/reviews/threads page validation: a nodes array with
+        # top-level GraphQL errors is an incomplete result, not a sweep input.
+        def graphql_errors_ok:
+            (has("errors") | not) or .errors == [];
+        def items:
+            if type == "array" then .
+            elif type == "object" then
+                if graphql_errors_ok | not then
+                    error("GraphQL errors in thread payload")
+                elif (.threads | type) == "array" then .threads
+                elif (.data.repository.pullRequest.reviewThreads.nodes | type) == "array" then
+                    .data.repository.pullRequest.reviewThreads.nodes
+                else error("unrecognized thread payload")
+                end
+            else error("unrecognized thread payload")
+            end;
+        def author_typename:
+            if (.author_typename | type) == "string" then .author_typename
+            else (.comments.nodes[0].author.__typename // null)
+            end;
+        def author_login:
+            if (.author | type) == "string" then .author
+            else (.comments.nodes[0].author.login // null)
+            end;
+        def has_disposition_marker:
+            any(
+                ((.comments.nodes // [])[] | (.body // ""));
+                test("<!-- disposition:v[0-9]+ ")
+            );
+        def skip_reason:
+            if .isResolved != false then "already-resolved"
+            elif .isOutdated != true then "not-outdated"
+            elif (author_typename | type) != "string" then "missing-author"
+            elif author_typename != "Bot" then "not-bot"
+            elif has_disposition_marker then "already-disposed"
+            else null
+            end;
+        [items[] | {
+            id,
+            path: (.path // null),
+            author: author_login,
+            author_typename: author_typename,
+            reason: skip_reason
+        }]
+        | {
+            selected: [.[] | select(.reason == null) | del(.reason)],
+            skipped:  [.[] | select(.reason != null)]
+        }
+    '
+}
+
+_sweep_load_payload() {
+    if [[ -n "$THREADS_JSON" ]]; then
+        cat "$THREADS_JSON"
+        return
+    fi
+    command -v gh >/dev/null 2>&1 || die_usage "gh not found on PATH (required to enumerate threads unless --threads-json is given)"
+    [[ -f "$THREADS_BIN" ]] || die_usage "scripts/reviews/threads not found at $THREADS_BIN"
+    if [[ -z "$REPO" ]]; then
+        REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+            || die_usage "could not resolve owner/repo; pass --repo"
+    fi
+    "$THREADS_BIN" "$PR" "$REPO" --unresolved-only --json
+}
+
+_sweep_assert_payload_identity() {
+    local payload_file="$1" payload_pr payload_repo
+    payload_pr="$(jq -r 'if has("pr") then (.pr | tostring) else empty end' "$payload_file")"
+    payload_repo="$(jq -r 'if has("repo") and (.repo | type) == "string" then .repo else empty end' "$payload_file")"
+    [[ "$DRY_RUN" -eq 0 ]] || return 0
+    if [[ -z "$payload_pr" ]]; then
+        echo "ERROR: live sweep with --threads-json requires a threads document whose pr matches --pr; GraphQL-only payloads are --dry-run only" >&2
+        return 1
+    fi
+    if [[ "$payload_pr" != "$PR" ]]; then
+        echo "ERROR: --threads-json pr $payload_pr does not match --pr $PR; refusing live mutation" >&2
+        return 1
+    fi
+    if [[ -n "$payload_repo" && -n "$REPO" && "$payload_repo" != "$REPO" ]]; then
+        echo "ERROR: --threads-json repo $payload_repo does not match --repo $REPO; refusing live mutation" >&2
+        return 1
+    fi
+}
+
+_sweep_bot_outdated() {
+    local work payload_file classified_file summary thread_id reply
+    local -a ids child_args
+    work="$(mktemp -d)"
+    payload_file="$work/payload.json"
+    classified_file="$work/classified.json"
+    if ! _sweep_load_payload > "$payload_file"; then
+        rm -rf "$work"
+        echo "ERROR: failed to load sweep payload for PR #$PR" >&2
+        exit 2
+    fi
+    if [[ -n "$THREADS_JSON" ]]; then
+        _sweep_assert_payload_identity "$payload_file" || { rm -rf "$work"; exit 2; }
+    fi
+    if ! _sweep_classify < "$payload_file" > "$classified_file"; then
+        rm -rf "$work"
+        echo "ERROR: failed to classify sweep payload for PR #$PR" >&2
+        exit 2
+    fi
+    # jq succeeds with empty stdin and streams one result per input value.
+    # Require exactly one classified document whose selected/skipped rows
+    # all carry a non-empty string id. Empty arrays remain a valid zero.
+    if ! jq -s -e '
+        length == 1
+        and (.[0] |
+            type == "object"
+            and (.selected | type) == "array"
+            and (.skipped | type) == "array"
+            and all((.selected + .skipped)[];
+                type == "object"
+                and ((.id | type) == "string")
+                and ((.id | length) > 0)
+            )
+        )
+    ' "$classified_file" >/dev/null; then
+        rm -rf "$work"
+        echo "ERROR: failed to classify sweep payload for PR #$PR" >&2
+        exit 2
+    fi
+    # Keep the classified document off argv: large PRs already blew --argjson
+    # in scripts/reviews/threads (#6178).
+    if ! summary="$(jq -s -e -c --arg pr "$PR" --arg head "$HEAD" --argjson dry "$DRY_RUN" '
+        .[0] | {
+            mode: "sweep-bot-outdated",
+            pr: (try ($pr | tonumber) catch $pr),
+            head: $head,
+            dry_run: ($dry == 1),
+            selected: .selected,
+            skipped: .skipped
+        }
+    ' "$classified_file")" || [[ -z "$summary" ]]; then
+        rm -rf "$work"
+        echo "ERROR: failed to render sweep selection for PR #$PR" >&2
+        exit 2
+    fi
+    printf '%s\n' "$summary"
+
+    mapfile -t ids < <(jq -s -r '.[0].selected[].id' "$classified_file")
+    rm -rf "$work"
+    reply="$(printf '%s\n' \
+        "Disposition: superseded" \
+        "" \
+        "Bot-authored review thread whose anchored hunk no longer exists at HEAD ${HEAD}." \
+        "" \
+        "Evidence: superseded by ${HEAD}")"
+    for thread_id in "${ids[@]+"${ids[@]}"}"; do
+        [[ -n "$thread_id" ]] || continue
+        child_args=(
+            --pr "$PR"
+            --thread "$thread_id"
+            --class superseded
+            --superseded-by "$HEAD"
+            --reply "$reply"
+            --head "$HEAD"
+            --by "$BY"
+            --no-reapply
+        )
+        [[ -n "$REPO" ]] && child_args+=(--repo "$REPO")
+        [[ "$DRY_RUN" -eq 1 ]] && child_args+=(--dry-run)
+        bash "$SELF" "${child_args[@]}" || {
+            echo "ERROR: sweep failed on thread $thread_id" >&2
+            exit 2
+        }
+    done
+}
+
+if [[ "$SWEEP_BOT_OUTDATED" -eq 1 ]]; then
+    _sweep_bot_outdated
+    exit 0
 fi
 
 # Keep the v1 marker envelope readable by historical parsers. The added
@@ -197,6 +406,10 @@ if ! MARKER_STATE="$(jq -ce --arg class "$CLASS" --argjson evidence "$EVIDENCE" 
               $parsed[]
               | select(. != null and ((.v // null) == 1) and .class == $class and .evidence == $evidence)
             ] | length),
+            v1: ([
+              $parsed[]
+              | select(. != null and ((.v // null) == 1))
+            ] | length),
             latest_matching: (($parsed[-1] // {}) |
               .v == 1 and .class == $class and .evidence == $evidence),
             is_resolved: ($node.isResolved == true)
@@ -209,9 +422,10 @@ fi
 
 INVALID="$(jq -r '.invalid' <<<"$MARKER_STATE")"
 EXISTING="$(jq -r '.matching' <<<"$MARKER_STATE")"
+V1="$(jq -r '.v1' <<<"$MARKER_STATE")"
 IS_RESOLVED="$(jq -r '.is_resolved' <<<"$MARKER_STATE")"
 LATEST_MATCHING="$(jq -r '.latest_matching' <<<"$MARKER_STATE")"
-if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ || ! "$IS_RESOLVED" =~ ^(true|false)$ || ! "$LATEST_MATCHING" =~ ^(true|false)$ ]]; then
+if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ || ! "$V1" =~ ^[0-9]+$ || ! "$IS_RESOLVED" =~ ^(true|false)$ || ! "$LATEST_MATCHING" =~ ^(true|false)$ ]]; then
     echo "ERROR: invalid disposition state values for thread $THREAD" >&2
     exit 2
 fi
@@ -226,6 +440,13 @@ fi
 if [[ "$EXISTING" -gt 0 && "$LATEST_MATCHING" != "true" ]]; then
     echo "ERROR: superseded disposition on thread $THREAD; inspect the latest finding and provide current evidence before retrying" >&2
     exit 2
+fi
+
+# Sweep must not re-resolve a reopened thread from a prior matching marker.
+# A later human comment at the same head stays open for manual disposition.
+if [[ "$NO_REAPPLY" -eq 1 && "$V1" -gt 0 ]]; then
+    echo "OK skip already-disposed thread $THREAD (leaving GitHub state unchanged)"
+    exit 0
 fi
 
 # For a live blocker, restore truthful GitHub state before doing anything that
