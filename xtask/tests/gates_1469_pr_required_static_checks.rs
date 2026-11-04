@@ -679,3 +679,27 @@ fn ci_workflow_includes_unit_parser_stack_full_in_matrix() -> Result<(), Box<dyn
 
     Ok(())
 }
+
+/// TEST: merge-gate policy shard executes check-panic-test (#17632)
+///
+/// The ledger names `cargo xtask ci-hygiene check-panic-test` as its consumer;
+/// this gate wires `just ci-panic-test-ratchet` into the required policy matrix.
+#[test]
+fn ci_workflow_includes_panic_test_ratchet_in_policy_shard() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root();
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci.yml")));
+
+    let policy_shard_start = must_some(workflow.find("- name: policy"));
+    let rest = &workflow[policy_shard_start..];
+    let next_job = rest.find("\n          - name:").unwrap_or(rest.len());
+    let policy_section = &rest[..next_job];
+
+    assert!(
+        policy_section.contains("panic_test_ratchet"),
+        "policy merge-gate shard must include panic_test_ratchet so \
+         ci/panic_test_identities.json is exercised in CI (#17632)"
+    );
+
+    Ok(())
+}
