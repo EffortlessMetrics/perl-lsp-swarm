@@ -144,6 +144,89 @@ print(json.dumps(result))
         self.assertEqual(result['review_currentness'], 'NOT_PROVEN')
 
 
+class ThreadsShellSelection(unittest.TestCase):
+    """Native-Windows Git Bash / POSIX helper-path selection (offline stubs)."""
+
+    def _no_program_files(self):
+        return patch.dict(os.environ, {'ProgramFiles': '',
+                                       'ProgramFiles(x86)': '',
+                                       'ProgramW6432': ''})
+
+    def test_posix_uses_plain_bash_and_absolute_posix_threads_path(self):
+        with patch.object(feedback, '_is_windows', return_value=False), \
+                patch.object(feedback.shutil, 'which',
+                             side_effect=AssertionError('no discovery on POSIX')):
+            command = feedback._threads_command(7, 'o/r')
+        self.assertEqual(command[0], 'bash')
+        self.assertEqual(command[2:], ['7', 'o/r', '--json'])
+        self.assertTrue(Path(command[1]).is_absolute())
+        self.assertNotIn('\\', command[1])
+        self.assertTrue(command[1].endswith('/threads'))
+
+    def test_windows_selects_git_bash_not_wsl_shim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'Git'
+            (root / 'cmd').mkdir(parents=True)
+            (root / 'bin').mkdir()
+            git = root / 'cmd' / 'git.exe'
+            bash = root / 'bin' / 'bash.exe'
+            git.write_text('')
+            bash.write_text('')
+            shim = Path(tmp) / 'Windows' / 'System32' / 'bash.exe'
+            shim.parent.mkdir(parents=True)
+            shim.write_text('')
+            which = lambda name: str(git) if name == 'git' else str(shim)
+            with self._no_program_files(), \
+                    patch.object(feedback, '_is_windows', return_value=True), \
+                    patch.object(feedback.shutil, 'which', side_effect=which):
+                command = feedback._threads_command(7, 'o/r')
+        self.assertEqual(command[0], str(bash))
+        self.assertNotIn('System32', command[0])
+        self.assertNotIn('\\', command[1])
+        self.assertTrue(Path(command[1]).is_absolute())
+        self.assertTrue(command[1].endswith('/threads'))
+
+    def test_windows_missing_git_bash_fails_honestly_without_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = Path(tmp) / 'Windows' / 'System32' / 'bash.exe'
+            shim.parent.mkdir(parents=True)
+            shim.write_text('')
+            which = lambda name: str(shim) if name == 'bash' else None
+            with self._no_program_files(), \
+                    patch.object(feedback, '_is_windows', return_value=True), \
+                    patch.object(feedback.shutil, 'which', side_effect=which):
+                with self.assertRaisesRegex(OSError, 'Git Bash not found'):
+                    feedback._bash_executable()
+
+    def test_windows_command_flows_through_collect_in_same_call_order(self):
+        sentinel = ['GIT_BASH', '/abs/threads', '7', 'o/r', '--json']
+        replies = [{'head': {'sha': HEAD}},
+                   {'threads': [], 'unresolved_count': 0},
+                   [[]], [[]], [[]], {'head': {'sha': HEAD}}]
+        with patch.object(feedback, '_threads_command',
+                          return_value=sentinel) as threads_command, \
+                patch.object(feedback, 'read_json', side_effect=replies) as read:
+            result = feedback.collect(7, 'o/r')
+        threads_command.assert_called_once_with(7, 'o/r')
+        self.assertEqual(len(read.call_args_list), 6)
+        self.assertEqual(read.call_args_list[1].args[0], sentinel)
+        rest = [c.args[0] for c in read.call_args_list if '--slurp' in c.args[0]]
+        self.assertEqual(len(rest), 3)
+        for command in rest:
+            self.assertIn('--paginate', command)
+            self.assertTrue(command[-1].endswith('?per_page=100'))
+        self.assertEqual(result['threads']['unresolved_count'], 0)
+
+    def test_threads_failure_aborts_before_rest_pages(self):
+        replies = [{'head': {'sha': HEAD}},
+                   subprocess.CalledProcessError(127, ['bash'])]
+        with patch.object(feedback, '_threads_command', return_value=['bash', 'threads']), \
+                patch.object(feedback, 'read_json', side_effect=replies) as read:
+            with self.assertRaises(subprocess.CalledProcessError):
+                feedback.collect(7, 'o/r')
+        self.assertEqual(len(read.call_args_list), 2)
+
+
 class FinishingSkillScenarios(unittest.TestCase):
     """Prompt-contract regressions complement acquisition/currentness executable tests.
 

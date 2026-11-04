@@ -5,6 +5,7 @@ export interface UntrustedHostTestOptions {
   /** One or more development extension roots; each becomes its own CLI flag. */
   extensionDevelopmentPath: string | string[];
   extensionTestsPath: string;
+  /** Enumerable values override inherited env; undefined explicitly unsets that key. */
   extensionTestsEnv: NodeJS.ProcessEnv;
   launchArgs: string[];
 }
@@ -32,9 +33,25 @@ export function runWithoutForcedWorkspaceTrust(options: UntrustedHostTestOptions
     `--extensionTestsPath=${options.extensionTestsPath}`,
     ...developmentPathArgs(options.extensionDevelopmentPath),
   ];
+  const extensionTestsEnv = { ...options.extensionTestsEnv };
+  const env = { ...process.env, ...extensionTestsEnv };
+  for (const [key, value] of Object.entries(extensionTestsEnv)) {
+    if (value === undefined) {
+      delete env[key];
+    }
+  }
+  // Published Marketplace installs have no observed archive digest. The caller
+  // deletes it from its overlay; merging ambient env must not resurrect it.
+  // An explicit caller value, including an empty string, still takes precedence.
+  if (
+    env.PERL_LSP_PUBLISHED_EXTENSION_SOURCE?.trim() === 'marketplace' &&
+    !Object.hasOwn(extensionTestsEnv, 'PERL_LSP_VSIX_SHA256')
+  ) {
+    delete env.PERL_LSP_VSIX_SHA256;
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(options.vscodeExecutablePath, args, {
-      env: { ...process.env, ...options.extensionTestsEnv },
+      env,
       stdio: 'inherit',
       windowsHide: true,
     });

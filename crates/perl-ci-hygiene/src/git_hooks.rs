@@ -284,6 +284,49 @@ if [ "$IS_DELETE_ONLY" = true ]; then
     exit 0
 fi
 
+# --- Detect doc-only changes for the fast-path gate ---
+# A push is doc-only if every changed file matches one of:
+#   *.md, *.txt, LICENSE*, CHANGELOG*, docs/**, .github/ISSUE_TEMPLATE/**,
+#   or */LICENSE* (crate-subdir license files, e.g. crates/*/LICENSE-APACHE)
+# Doc-only pushes skip code gates entirely instead of running the full
+# ci-gate, since the test suite and workspace-wide rustfmt check are
+# pointless for prose-only changes and can fail spuriously on Windows (#4047).
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Bind gate children to this worktree before clearing Git's hook-local selectors.
+# Fixture Git commands must discover their own repositories from their cwd.
+VALIDATION_GIT_DIR="$(git rev-parse --absolute-git-dir)" || exit 1
+VALIDATION_COMMON_DIR="$(git rev-parse --git-common-dir)" || exit 1
+[ -n "$VALIDATION_COMMON_DIR" ] || exit 1
+VALIDATION_COMMON_DIR="$(cd -- "$VALIDATION_COMMON_DIR" && pwd -P)" || exit 1
+VALIDATION_LOCAL_ENV="$(git rev-parse --local-env-vars)" || exit 1
+if [ -z "$REPO_ROOT" ] || [ -z "$VALIDATION_GIT_DIR" ] || [ -z "$VALIDATION_COMMON_DIR" ] || [ -z "$VALIDATION_LOCAL_ENV" ]; then
+    echo "pre-push validation worktree binding is incomplete; refusing gates" >&2
+    exit 1
+fi
+run_validation_child() (
+    local name actual_root actual_git_dir actual_common_dir
+    for name in $VALIDATION_LOCAL_ENV; do
+        unset "$name"
+    done
+    cd -- "$REPO_ROOT" || return
+    actual_root="$(git rev-parse --show-toplevel)" || return
+    actual_git_dir="$(git rev-parse --absolute-git-dir)" || return
+    actual_common_dir="$(git rev-parse --git-common-dir)" || return
+    [ -n "$actual_common_dir" ] || return 1
+    actual_common_dir="$(cd -- "$actual_common_dir" && pwd -P)" || return
+    if [ "$actual_root" != "$REPO_ROOT" ] || [ "$actual_git_dir" != "$VALIDATION_GIT_DIR" ] || [ "$actual_common_dir" != "$VALIDATION_COMMON_DIR" ]; then
+        echo "pre-push validation worktree binding changed; refusing gates" >&2
+        return 1
+    fi
+    "$@"
+)
+DOC_ONLY=true
+TEST_FILES_CHANGED=false
+HAS_DIFFABLE_REF=false
+# Track unique crate names for the single-crate tier.
+# We use a newline-separated string rather than an array for POSIX compat.
+SINGLE_CRATE_NAMES=""
+SINGLE_CRATE_ALL_UNDER_CRATES=true
 # Reject an unsupported batch before admission/bootstrap or any earlier ref's checks.
 # Peel for checkout comparison, but keep the literal pushed objects below.
 if ! HEAD_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"; then
@@ -331,6 +374,184 @@ for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
     ) || exit "$?"
 done
 
+# --- Single-crate proportional gate ---
+# If every code change is under a single crates/<name>/ directory, run a
+# targeted cargo fmt/clippy/test -p <name> instead of the full workspace gate.
+# Falls back to the full gate if classification is ambiguous.
+SINGLE_CRATE_COUNT="$(printf '%s' "$SINGLE_CRATE_NAMES" | grep -c . 2>/dev/null || echo 0)"
+if [ "$SINGLE_CRATE_ALL_UNDER_CRATES" = true ] && [ "$SINGLE_CRATE_COUNT" = "1" ]; then
+    SINGLE_CRATE_DIR="$(printf '%s' "$SINGLE_CRATE_NAMES" | tr -d '[:space:]')"
+    # Resolve the Cargo package name from Cargo.toml, not the directory basename.
+    # This fixes the perl-lsp -> perl-lsp-rs mismatch (issue #4512).
+    # Falls back to directory name if cargo xtask is unavailable.
+    SINGLE_CRATE_NAME="$(cargo xtask resolve-package-name "crates/${SINGLE_CRATE_DIR}" 2>/dev/null || printf '%s' "$SINGLE_CRATE_DIR")"
+    echo "Single-crate push (${SINGLE_CRATE_DIR} -> ${SINGLE_CRATE_NAME}) — running targeted gate"
+    echo "   (Skip with: git push --no-verify)"
+    echo ""
+    # Clippy target selection follows the crate's CI cohort, because the tier
+    # is meant to narrow SCOPE (one crate instead of the workspace), not to
+    # apply a different contract than CI does.
+    #
+    # Cargo's default selection is lib + bins, so a bare `cargo clippy -p X`
+    # cannot see tests/, benches/ or examples/ at all. For a crate in the
+    # clippy_tests_kernel cohort that is a real hole: the #14549 regression was
+    # a duplicated #![deny(clippy::map_err_ignore)] in
+    # crates/perl-workspace-core/tests/, a file this tier never compiled, so it
+    # reached main and reddened the kernel gate for every PR.
+    #
+    # But --all-targets is NOT universally right here. The crates in
+    # CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES (#15677, #15613) are deliberately
+    # outside that cohort because they retain measured test-target lint debt;
+    # CI lints them through clippy_strict, which is lib + bins. Applying
+    # --all-targets to those would fail every otherwise valid push on
+    # pre-existing findings that CI does not gate on.
+    #
+    # So read the cohort from the gate policy rather than assuming one answer,
+    # and match its exact lint flags. The list is parsed out of the
+    # clippy_tests_kernel command itself, so it cannot drift from what CI runs;
+    # unparseable or missing policy falls back to the narrower command.
+    #
+    # --locked on every command so a gate run cannot quietly rewrite Cargo.lock
+    # and have CI reject the push it just approved. Deliberately NOT
+    # --all-targets on cargo test: that flag drops doctests, which the current
+    # invocation does run.
+    clippy_tests_kernel_cohort() {
+        awk '
+            /^  - name: clippy_tests_kernel$/ { in_gate = 1; next }
+            in_gate && /^  - name: / { in_gate = 0 }
+            in_gate {
+                line = $0
+                sub(/^[[:space:]]+/, "", line)
+                sub(/[[:space:]]+$/, "", line)
+                # Whole-line match only: prose in this block mentions "-p <crate>"
+                # when narrating past admissions, and those must not count.
+                if (line ~ /^-p [A-Za-z0-9_-]+$/) { print substr(line, 4) }
+            }
+        ' "$1"
+    }
+
+    GATE_POLICY_FILE="$REPO_ROOT/.ci/gate-policy.yaml"
+    CLIPPY_ALL_TARGETS=false
+    if [ -f "$GATE_POLICY_FILE" ]; then
+        if clippy_tests_kernel_cohort "$GATE_POLICY_FILE" \
+            | grep -qxF "$SINGLE_CRATE_NAME" 2>/dev/null; then
+            CLIPPY_ALL_TARGETS=true
+        fi
+    fi
+
+    if [ "$CLIPPY_ALL_TARGETS" = true ]; then
+        echo "   clippy: --all-targets (crate is in the clippy_tests_kernel cohort)"
+    else
+        echo "   clippy: lib + bins (crate is outside the clippy_tests_kernel cohort)"
+    fi
+    echo ""
+
+    run_single_crate_gate() {
+        cargo fmt -p "$SINGLE_CRATE_NAME" -- --check || return
+        if [ "$CLIPPY_ALL_TARGETS" = true ]; then
+            cargo clippy -p "$SINGLE_CRATE_NAME" --all-targets --locked \
+                -- -D warnings -A missing_docs || return
+        else
+            cargo clippy -p "$SINGLE_CRATE_NAME" --locked -- -D warnings || return
+        fi
+        cargo test -p "$SINGLE_CRATE_NAME" --locked
+    }
+    GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
+    trap 'rm -f "$GATE_LOG"' EXIT
+    set +e
+    run_validation_child run_single_crate_gate 2>&1 | tee "$GATE_LOG"
+    GATE_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [ "$GATE_STATUS" -ne 0 ]; then
+        echo ""
+        echo "❌ Single-crate gate failed (exit $GATE_STATUS)"
+        echo "   See bypass policy at the top of .git/hooks/pre-push for when"
+        echo "   --no-verify is appropriate."
+        exit "$GATE_STATUS"
+    fi
+    echo "✅ Single-crate gate passed"
+    exit 0
+fi
+
+echo "Running local fast gate before push: nix develop -c just pr-fast"
+echo "   (Skip with: git push --no-verify)"
+echo ""
+
+# --- Check if test files changed and CURRENT_STATUS.md needs updating ---
+if [ "$TEST_FILES_CHANGED" = true ] && [ -f "$REPO_ROOT/scripts/update-current-status.py" ]; then
+    echo "📊 Test files changed — checking if docs/project/status/ is up to date..."
+    if command -v python3 &>/dev/null; then
+        run_validation_child python3 "$REPO_ROOT/scripts/update-current-status.py" 2>/dev/null || true
+        if ! git diff --quiet -- docs/project/status/ 2>/dev/null; then
+            echo ""
+            echo "⚠️  docs/project/status/ has stale test counts!"
+            echo "   Run: python3 scripts/update-current-status.py"
+            echo "   Then commit the updated files before pushing."
+            echo "   git add docs/project/status/"
+            echo ""
+            exit 1
+        fi
+    fi
+fi
+
+# --- Run the full gate, capturing output for failure-mode hints ---
+GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
+trap 'rm -f "$GATE_LOG"' EXIT
+
+run_gate() {
+    if command -v nix &>/dev/null && [ -f flake.nix ]; then
+        nix develop -c just pr-fast
+    elif command -v just &>/dev/null; then
+        just pr-fast
+    else
+        echo "⚠️  Neither 'nix develop' nor 'just' available, skipping pre-push gate"
+        echo "   Install just: cargo install just"
+        return 0
+    fi
+}
+
+set +e
+run_validation_child run_gate 2>&1 | tee "$GATE_LOG"
+GATE_STATUS=${PIPESTATUS[0]}
+set -e
+
+if [ "$GATE_STATUS" -ne 0 ]; then
+    echo ""
+    echo "❌ pr-fast failed (exit $GATE_STATUS) — checking for known issues..."
+    HINTED=false
+    if grep -q 'ci-parser-features-check' "$GATE_LOG" 2>/dev/null && \
+       grep -qE 'os error 5|Access is denied' "$GATE_LOG" 2>/dev/null; then
+        echo "   • Known: Windows file-lock race in ci-parser-features-check (#3202)"
+        echo "     Workaround: re-run the gate, or use --no-verify if you're confident"
+        echo "     your change is unrelated to xtask/parser-features."
+        HINTED=true
+    fi
+    if grep -qE 'cargo (xtask )?fmt.*--check' "$GATE_LOG" 2>/dev/null && \
+       grep -qE 'Diff in|rustfmt' "$GATE_LOG" 2>/dev/null; then
+        echo "   • Formatting drift — run \`cargo xtask fmt\` to auto-fix"
+        HINTED=true
+    fi
+    if grep -qE 'clippy::|warning: .*-> .*\.rs' "$GATE_LOG" 2>/dev/null; then
+        echo "   • Clippy warnings — look for the error above and fix the warnings"
+        HINTED=true
+    fi
+    if grep -qE 'os error 206|filename.*too long|ERROR_FILENAME_EXCED' "$GATE_LOG" 2>/dev/null; then
+        echo "   • Windows CreateProcess command-line length limit (os error 206)"
+        echo "     'cargo fmt --all' passes all 1200+ source files in one command,"
+        echo "     exceeding the ~32K-char CreateProcess limit on Windows."
+        echo "     Fix: bash scripts/install-githooks.sh"
+        echo "     This installs the current hook which uses 'cargo xtask fmt' (per-crate)."
+        echo "     See: docs/contributing/FIRST_PR.md"
+        HINTED=true
+    fi
+    if [ "$HINTED" = false ]; then
+        echo "   No known-issue patterns matched. Read the gate output above."
+    fi
+    echo ""
+    echo "   See bypass policy at the top of .git/hooks/pre-push for when"
+    echo "   --no-verify is appropriate."
+    exit "$GATE_STATUS"
+fi
 echo "Publication consistency passed; focused proof and required late qualification remain separate."
 # Generated-status inventory remains affected candidate proof (#9559/#17939),
 # not an automatic publishing side effect. Its direct CLI is unchanged.
@@ -695,6 +916,45 @@ mod tests {
             !hook.contains("cp \"$REPO_ROOT_FOR_HOOK/hooks/pre-push\" \"$0\""),
             "hook must not copy directly over the installed hook"
         );
+    }
+
+    // The generated hook guards its validation children with `command -v
+    // python3`, a POSIX-only name (Windows ships `python.exe`), so the
+    // end-to-end fixture below can only hold on unix.
+    #[cfg(unix)]
+    #[test]
+    fn generated_pre_push_validation_children_preserve_outer_repository() -> Result<()> {
+        let area = std::env::temp_dir().join(format!(
+            "hook-validation-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&area)?;
+        let hook = area.join("generated-pre-push");
+        fs::write(&hook, pre_push_hook_script())?;
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/tests/test_pre_push_validation_child.py");
+        let output = Command::new("python3")
+            .arg(script)
+            .arg("--hook")
+            .arg(&hook)
+            .arg("--evidence")
+            .arg(&area)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "generated hook qualification failed; evidence {}\nstdout: {}\nstderr: {}",
+            area.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // This run is deliberately retained under the caller's task TEMP.
+        // Print the success path too so its owner can manage evidence retention.
+        std::io::Write::write_all(
+            &mut std::io::stderr(),
+            format!("retained generated hook evidence: {}\n", area.display()).as_bytes(),
+        )?;
+        Ok(())
     }
 
     #[test]

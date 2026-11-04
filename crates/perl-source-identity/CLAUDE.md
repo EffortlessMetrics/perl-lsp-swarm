@@ -54,7 +54,10 @@ decoding is the caller's job.
 - All durable IDs are domain-separated SHA-256: each type hashes under a
   unique domain tag via `DomainHasher`, so IDs of different kinds never
   collide even with identical material, and every field is length-prefixed so
-  field boundaries cannot shift (`["a", "bc"]` and `["ab", "c"]` differ).
+  field boundaries cannot shift (`["a", "bc"]` and `["ab", "c"]` differ) for
+  field sizes up to [`SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]. Oversize fields are
+  rejected fail-closed; use the `try_*` constructors when buffer size is not
+  known to fit the v1 bound.
 - One identity, one spelling: wire forms are `sha256:…`, `project:sha256:…`,
   `root:sha256:…`, `src:sha256:…` with exactly 64 lowercase hex digits;
   wrong prefixes and uppercase hex are rejected, not normalized, because

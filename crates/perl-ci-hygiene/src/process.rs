@@ -297,6 +297,10 @@ fn failed_command(command: &str, status: i32, detail: String) -> color_eyre::eyr
     color_eyre::eyre::eyre!("command '{command}' failed (exit {status}): {detail}")
 }
 
+fn failed_command_without_exit_code(command: &str, detail: String) -> color_eyre::eyre::Report {
+    color_eyre::eyre::eyre!("command '{command}' terminated without an exit code: {detail}")
+}
+
 pub(crate) fn command_with_output(
     repo_root: &Path,
     command: &str,
@@ -378,11 +382,12 @@ pub(crate) fn command_with_output_allow_empty_match(
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
     let output = run_captured(repo_root, command, args, env_vars)?;
-    let status = child_exit_code(output.status);
-    if status != 0 && status != 1 {
-        return Err(failed_command(command, status, lossy_text(&output.stderr)));
+    let stderr = lossy_text(&output.stderr);
+    match output.status.code() {
+        Some(0) | Some(1) => Ok(lossy_text(&output.stdout)),
+        Some(status) => Err(failed_command(command, status, stderr)),
+        None => Err(failed_command_without_exit_code(command, stderr)),
     }
-    Ok(lossy_text(&output.stdout))
 }
 
 pub(crate) fn command_with_output_allow_failure(

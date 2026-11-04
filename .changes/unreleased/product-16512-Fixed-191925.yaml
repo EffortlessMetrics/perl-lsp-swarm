@@ -1,0 +1,9 @@
+project: product
+component: Parser
+kind: Fixed
+body: "Preserve whether a regex expression came from qr//, m//, or a bare /.../ in the parser AST and canonical body HIR. This changes the public Regex AST and HIR shapes."
+time: 2026-09-26T19:19:25Z
+custom:
+  PR: "16512"
+  Slug: parser-regex-surface-form
+  Breaking: "yes"
