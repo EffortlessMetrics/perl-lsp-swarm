@@ -235,9 +235,43 @@ const FIXTURES: &[Observation] = &[
         repository_policy_allows_fresh_trigger: true,
         expected: (Action::NonMutatingRefresh, ResultClass::PrInFlight),
     },
+    Observation {
+        name: "unrelated movement must not hide a pending current-subject check",
+        unrelated_or_behind_only: true,
+        evidence_current: false,
+        pending_current_subject: true,
+        failed_current_subject: false,
+        material_merge_tree_changed: false,
+        ordinary_rerun_evaluates_new_subject: false,
+        exact_subject_dispatch_admissible: false,
+        policy_requires_new_subject: false,
+        provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
+        expected: (Action::Wait, ResultClass::PrInFlight),
+    },
+    Observation {
+        name: "unrelated movement must not hide a failed current-subject check",
+        unrelated_or_behind_only: true,
+        evidence_current: false,
+        pending_current_subject: false,
+        failed_current_subject: true,
+        material_merge_tree_changed: false,
+        ordinary_rerun_evaluates_new_subject: false,
+        exact_subject_dispatch_admissible: false,
+        policy_requires_new_subject: false,
+        provider_can_bind_fresh_trigger: true,
+        repository_policy_allows_fresh_trigger: true,
+        expected: (Action::ClassifyFailure, ResultClass::MergeBlocked),
+    },
 ];
 
 fn classify(obs: Observation) -> (Action, ResultClass) {
+    if obs.pending_current_subject && !obs.material_merge_tree_changed {
+        return (Action::Wait, ResultClass::PrInFlight);
+    }
+    if obs.failed_current_subject && !obs.material_merge_tree_changed {
+        return (Action::ClassifyFailure, ResultClass::MergeBlocked);
+    }
     if obs.unrelated_or_behind_only && !obs.material_merge_tree_changed {
         return (Action::NoOp, ResultClass::ExistingEvidence);
     }

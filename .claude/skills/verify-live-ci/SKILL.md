@@ -262,7 +262,8 @@ evidence rule:
   `ci: re-request fresh merge-tree checks`) re-evaluates the current tree and is the
   honest action; the bound is at most one fresh trigger per observed material base
   movement — never per wait cycle — and the established candidate writer owns the
-  action. If the mechanic is unavailable or the trigger cannot be bound to the new
+  action. If the mechanic is unavailable, repository policy forbids the fresh
+  trigger, or the trigger cannot be bound to the new
   subject, no admissible exact-subject producer means `NOT_PROVEN`; preserve the named
   capability blocker. The empty-commit ban covers manufacturing a current status on an
   unchanged subject, not re-evaluating a changed merge tree (#12174, #12251, #12256,
