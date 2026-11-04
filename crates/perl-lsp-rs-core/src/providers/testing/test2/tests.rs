@@ -8,6 +8,11 @@ fn test2_imports_recognizes_bundles_and_tools() {
     assert!(is_test2_module("Test2::V0"));
     assert!(is_test2_module("Test2::V1"));
     assert!(is_test2_module("Test2::Bundle::Extended"));
+    assert!(is_test2_module("Test2::Bundle::More"));
+    assert!(is_test2_module("Test2::Bundle::Simple"));
+    assert!(is_test2_module("Test2::Suite"));
+    assert!(is_test2_module("Test2::Tools::AsyncSubtest"));
+    assert!(is_test2_module("Test2::Tools::Target"));
     assert!(is_test2_module("Test2::Tools::Basic"));
     assert!(is_test2_module("Test2::Tools::Compare"));
     assert!(is_test2_module("Test2::Plugin::UTF8"));
@@ -23,7 +28,9 @@ fn test2_imports_bundle_classification() {
     assert!(is_test2_bundle("Test2::V0"));
     assert!(is_test2_bundle("Test2::V1"));
     assert!(is_test2_bundle("Test2::Bundle::Extended"));
-    assert!(is_test2_bundle("Test2::Suite"));
+    assert!(is_test2_bundle("Test2::Bundle::More"));
+    assert!(is_test2_bundle("Test2::Bundle::Simple"));
+    assert!(!is_test2_bundle("Test2::Suite"), "Suite is namespace-only, not a bundle");
 
     // Individual tool modules do NOT turn on strict/warnings.
     assert!(!is_test2_bundle("Test2::Tools::Basic"));
@@ -192,8 +199,8 @@ fn v1_pragma_default_predicate_exact_module_match_boundary() {
     // `resolve_import`'s bundle-pragma boundary (test2.rs:336) is
     // `module == "Test2::V1"`. Hold the raw args fixed (empty import list) and
     // flip only the module name between two bundles: Test2::V1 (no pragmas by
-    // default) and Test2::Suite (pragmas on by default, like Test2::V0). This
-    // proves the predicate needs an *exact* "Test2::V1" match, not "any
+    // default) and Test2::Bundle::Extended (V0-style pragmas on by default).
+    // This proves the predicate needs an *exact* "Test2::V1" match, not "any
     // bundle".
     let v1 = must_some_with(resolve_import("Test2::V1", ""), "Test2::V1 recognized");
     assert_eq!(
@@ -202,12 +209,131 @@ fn v1_pragma_default_predicate_exact_module_match_boundary() {
         "Test2::V1 enables no pragmas by default"
     );
 
-    let suite = must_some_with(resolve_import("Test2::Suite", ""), "Test2::Suite recognized");
+    let extended =
+        must_some_with(resolve_import("Test2::Bundle::Extended", ""), "Extended recognized");
     assert_eq!(
-        suite.pragmas,
+        extended.pragmas,
         Some(Test2Pragmas { strict: true, warnings: true }),
-        "Test2::Suite (a bundle that is not Test2::V1) enables both pragmas by default"
+        "Test2::Bundle::Extended inherits V0 caller pragma defaults"
     );
+}
+
+#[test]
+fn pinned_suite_is_namespace_only_without_imports_or_pragmas() {
+    let plain = must_some_with(resolve_import("Test2::Suite", ""), "Suite is a known module");
+    assert!(plain.symbols.is_empty(), "Suite has no importer");
+    assert_eq!(plain.pragmas, None, "Suite does not install caller pragmas");
+
+    let explicit =
+        must_some_with(resolve_import("Test2::Suite", "qw/ok plan/"), "Suite stays recognized");
+    assert!(explicit.symbols.is_empty(), "explicit Suite imports must not become facts");
+}
+
+#[test]
+fn pinned_bundle_more_and_simple_exports_without_caller_pragmas() {
+    let more = must_some_with(resolve_import("Test2::Bundle::More", ""), "More recognized");
+    assert_eq!(more.pragmas, None, "More is an ordinary Exporter bundle");
+    for expected in [
+        "ok",
+        "pass",
+        "fail",
+        "skip",
+        "todo",
+        "diag",
+        "note",
+        "plan",
+        "skip_all",
+        "done_testing",
+        "BAIL_OUT",
+        "is",
+        "isnt",
+        "like",
+        "unlike",
+        "is_deeply",
+        "cmp_ok",
+        "isa_ok",
+        "can_ok",
+        "subtest",
+    ] {
+        assert!(more.symbols.contains(expected), "More default missing `{expected}`");
+    }
+
+    let simple = must_some_with(resolve_import("Test2::Bundle::Simple", ""), "Simple recognized");
+    assert_eq!(simple.pragmas, None);
+    assert_eq!(
+        simple.symbols.iter().cloned().collect::<Vec<_>>(),
+        vec!["done_testing", "ok", "plan", "skip_all"]
+    );
+}
+
+#[test]
+fn pinned_bundle_extended_matches_v0_default_exports() {
+    let extended_defaults =
+        must_some_with(module_default_exports("Test2::Bundle::Extended"), "Extended modeled");
+    let v0_defaults = must_some_with(module_default_exports("Test2::V0"), "V0 modeled");
+    assert_eq!(extended_defaults, v0_defaults);
+}
+
+#[test]
+fn pinned_api_standalone_default_imports_nothing() {
+    let defaults = must_some_with(module_default_exports("Test2::API"), "API modeled");
+    assert!(defaults.is_empty(), "plain use Test2::API imports nothing");
+    let resolved = must_some_with(resolve_import("Test2::API", ""), "API recognized");
+    assert!(resolved.symbols.is_empty());
+    assert_eq!(resolved.pragmas, None);
+}
+
+#[test]
+fn pinned_classic_compare_standalone_defaults_are_not_v0_subset() {
+    let defaults =
+        must_some_with(module_default_exports("Test2::Tools::ClassicCompare"), "ClassicCompare");
+    assert_eq!(defaults, &["cmp_ok", "is", "is_deeply", "isnt", "like", "unlike"]);
+}
+
+#[test]
+fn pinned_async_subtest_default_exports() {
+    let defaults =
+        must_some_with(module_default_exports("Test2::Tools::AsyncSubtest"), "AsyncSubtest");
+    assert_eq!(defaults, &["async_subtest", "fork_subtest", "thread_subtest"]);
+}
+
+#[test]
+fn pinned_direct_target_import_generates_helpers_without_bundle_defaults() {
+    let scalar = must_some_with(
+        resolve_import("Test2::Tools::Target", "'Some::Package'"),
+        "Target recognized",
+    );
+    assert!(scalar.symbols.contains("CLASS"));
+    assert!(!scalar.symbols.contains("ok"));
+    assert_eq!(scalar.pragmas, None);
+
+    let named = must_some_with(
+        resolve_import("Test2::Tools::Target", "service => 'Some::Service'"),
+        "Target hash pair recognized",
+    );
+    assert!(named.symbols.contains("service"));
+    assert!(!named.symbols.contains("ok"));
+
+    let collision = must_some_with(
+        resolve_import("Test2::Tools::Target", "ok => 'Some::Service'"),
+        "Target hash key overlapping V0 default recognized",
+    );
+    assert!(
+        collision.symbols.contains("ok"),
+        "target helpers must survive names that also appear in V0 defaults"
+    );
+    assert!(!collision.symbols.contains("is"));
+}
+
+#[test]
+fn pinned_extended_v1_tag_with_positive_import_keeps_full_export_set() {
+    let resolved = must_some_with(
+        resolve_import("Test2::Bundle::Extended", "':v1', 'ok'"),
+        "Extended recognized",
+    );
+    assert!(resolved.symbols.contains("ok"));
+    assert!(resolved.symbols.contains("is"));
+    assert!(resolved.symbols.contains("subtest"));
 }
 
 #[test]

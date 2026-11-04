@@ -999,7 +999,7 @@ class PayloadOracleTests(unittest.TestCase):
 
     @staticmethod
     def clean_payload() -> dict[str, object]:
-        return {
+        payload = {
             "schema_version": 1,
             "generated_at": "2026-08-20T05:23:25Z",
             "window_days": 14,
@@ -1034,6 +1034,7 @@ class PayloadOracleTests(unittest.TestCase):
                 "source_run_ids": [111, 222],
             },
         }
+        return aggregate_lane_history.stamp_content_digest(payload)
 
     def test_clean_payload_validates(self) -> None:
         self.assertEqual([], aggregate_lane_history.validate_history_payload(self.clean_payload()))
@@ -1254,6 +1255,88 @@ class PayloadOracleTests(unittest.TestCase):
             aggregate_lane_history.validate_history_payload(
                 data, expected_lane_ids=expected_lane_ids
             ),
+        )
+
+    def test_missing_content_digest_fails(self) -> None:
+        payload = self.clean_payload()
+        payload.pop("content_digest", None)
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("content_digest" in v for v in violations), violations)
+
+    def test_wrong_content_digest_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["content_digest"] = "0" * 64
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(
+            any("content_digest does not match" in v for v in violations),
+            violations,
+        )
+
+
+class Issue17987MergeFabricationTests(unittest.TestCase):
+    """#17987: a clean textual merge fabricates a (lane_count, generated_at) pair.
+
+    Anchor blobs are the payloads from issue comment 6508144999 (main
+    `0534c392`, #16805 `84cdd480`, #16852 `08055818`, merged tree
+    `ddec48c1`). The historical files had no co-anchor; these tests stamp
+    an honest `content_digest` the way the producer now does, then replay
+    the merge that keeps one parent's digest with the other parent's mix.
+    """
+
+    ANCHOR_DIR = Path(__file__).with_name("testdata") / "issue_17987"
+
+    def load_anchor(self, name: str) -> dict[str, object]:
+        path = self.ANCHOR_DIR / f"{name}.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def honest(self, name: str) -> dict[str, object]:
+        payload = self.load_anchor(name)
+        return aggregate_lane_history.stamp_content_digest(payload)
+
+    def test_honest_main_16805_and_16852_payloads_validate(self) -> None:
+        for name in ("main", "pr-16805", "pr-16852"):
+            with self.subTest(name=name):
+                payload = self.honest(name)
+                lanes = payload["lanes"]
+                self.assertIsInstance(lanes, dict)
+                self.assertEqual(payload["lane_count"], len(lanes))
+                self.assertEqual(
+                    [],
+                    aggregate_lane_history.validate_history_payload(payload),
+                    name,
+                )
+
+    def test_merged_payload_fails_with_either_parent_digest(self) -> None:
+        merged = self.load_anchor("merged")
+        self.assertEqual(27, merged["lane_count"])
+        self.assertEqual("2026-10-29T05:22:45Z", merged["generated_at"])
+        merged_lanes = merged["lanes"]
+        self.assertIsInstance(merged_lanes, dict)
+        self.assertEqual(27, len(merged_lanes))
+        for parent in ("pr-16805", "pr-16852"):
+            with self.subTest(parent=parent):
+                mixed = json.loads(json.dumps(merged))
+                mixed["content_digest"] = self.honest(parent)["content_digest"]
+                violations = aggregate_lane_history.validate_history_payload(mixed)
+                self.assertTrue(
+                    any("content_digest does not match" in v for v in violations),
+                    violations,
+                )
+
+    def test_merged_payload_without_digest_fails(self) -> None:
+        violations = aggregate_lane_history.validate_history_payload(
+            self.load_anchor("merged")
+        )
+        self.assertTrue(any("content_digest" in v for v in violations), violations)
+
+    def test_swapping_generated_at_onto_16805_breaks_digest(self) -> None:
+        """The exact fabricated pair: #16805's 27-lane set stamped with #16852's date."""
+        mixed = self.honest("pr-16805")
+        mixed["generated_at"] = self.load_anchor("pr-16852")["generated_at"]
+        violations = aggregate_lane_history.validate_history_payload(mixed)
+        self.assertTrue(
+            any("content_digest does not match" in v for v in violations),
+            violations,
         )
 
 
