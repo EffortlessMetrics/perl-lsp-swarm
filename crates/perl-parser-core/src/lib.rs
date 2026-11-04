@@ -178,9 +178,11 @@ pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
     BudgetTracker, ErrorCategory, ErrorClass, InvalidSignatureOrderingKind,
-    InvalidSignatureParameterKind, ParseBudget, ParseCoreDimension, ParseDiagnosticSeverity,
-    ParseError, ParseOutput, ParseResult, ParseStopCause, RecoverySalvageClass,
-    RecoverySalvageProfile,
+    InvalidSignatureParameterKind, ParseBudget, ParseBudgetExhaustionDimension,
+    ParseCancellationIdentity, ParseCatastrophicCause, ParseCompletion, ParseCompletionClass,
+    ParseCompletionRange, ParseCompletionStage, ParseCompletionValidationError, ParseCoreDimension,
+    ParseDiagnosticSeverity, ParseError, ParseOutput, ParseResult, ParseStopCause,
+    RecoverySalvageClass, RecoverySalvageProfile,
 };
 
 /// Builtin function signature lookup tables.

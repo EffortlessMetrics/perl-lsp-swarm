@@ -34,6 +34,8 @@ DEFAULT_DOCS = Path("docs/ci/gate-policy-economics.md")
 DEFAULT_GATE_POLICY = Path(".ci/gate-policy.yaml")
 DEFAULT_LANES = Path("policy/ci-lanes.toml")
 
+SCHEMA_VERSION = "gate_lane_mapping.v1"
+
 # Many-to-one and one-to-many mappings between gate-policy.yaml gate names and
 # policy/ci-lanes.toml lane keys. Right-hand side is a list of lane keys (a
 # single gate may map to multiple lanes, e.g. an aggregate gate that runs in
@@ -55,6 +57,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The serialization ratchet runs in pr-fast and again in the required
     # merge-gate policy shard, so both execution lanes own its economics.
     "serial_test_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    # The regex-static ratchet (#16260) mirrors serial_test_ratchet: pr-fast
+    # shift-left plus the required merge-gate meta shard, so both execution
+    # lanes own its economics.
+    "regex_static_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is
@@ -557,6 +563,7 @@ def main() -> int:
 
     if args.json_out:
         report = {
+            "schema_version": SCHEMA_VERSION,
             "gate_policy": str(args.gate_policy),
             "lanes": str(args.lanes),
             "gate_count": len(gate_names),

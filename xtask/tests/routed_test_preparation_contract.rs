@@ -107,6 +107,24 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
             step["with"]["name"].as_str().is_some_and(|name| name.starts_with("pr-fast-receipt-"))
         })
         .ok_or("missing receipt artifact")?;
+    let upload_if = upload["if"].as_str().ok_or("missing receipt upload guard")?;
+    assert!(
+        upload_if.contains("hashFiles('target/receipts/receipt.json') != ''"),
+        "tier-named receipt upload must require receipt.json (#17915)"
+    );
+    let missing = steps
+        .iter()
+        .find(|step| {
+            step["with"]["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("pr-fast-missing-receipt-"))
+        })
+        .ok_or("missing missing-receipt diagnostics artifact")?;
+    let missing_if = missing["if"].as_str().ok_or("missing diagnostics upload guard")?;
+    assert!(
+        missing_if.contains("hashFiles('target/receipts/receipt.json') == ''"),
+        "missing-receipt diagnostics must publish only without receipt.json"
+    );
     let paths = upload["with"]["path"].as_str().ok_or("missing artifact paths")?;
     assert!(
         paths.lines().any(|path| path.trim() == "target/receipts/routed-test-build/receipt.json")
