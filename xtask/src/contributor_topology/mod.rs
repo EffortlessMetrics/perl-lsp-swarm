@@ -9,7 +9,7 @@ mod static_sources;
 
 pub use projection::{build_projection, render_human, validate_projection};
 
-pub(super) const SCHEMA: u32 = 1;
+pub(super) const SCHEMA: &str = "contributor_topology.v1";
 pub(super) const PRODUCT_IDENTITY_PATH: &str = "policy/product-identity.toml";
 pub(super) const SYNC_PROTOCOL_PATH: &str = "docs/swarm/sync-protocol.md";
 pub(super) const RELEASE_TOPOLOGY_SCHEMA_PATH: &str = "schemas/release_topology.v1.schema.json";
@@ -113,7 +113,7 @@ pub struct Observation {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Projection {
-    pub schema: u32,
+    pub schema_version: String,
     #[serde(rename = "static")]
     pub static_topology: StaticTopology,
     pub observation: Observation,

@@ -14,6 +14,52 @@
 //!
 //! This module is representation-only. It adds no production consumer, migrates
 //! no baseline, and accepts no transition.
+//!
+//! # Proof boundaries
+//!
+//! Axis-level validity is decided three independent ways over the full
+//! 2500-combination product: [`ResultAxes::new`], the published
+//! `perl_core_harness.result_axes.v2` schema, and a test-local rule table
+//! re-derived from the issue's terms rather than from [`ResultAxes::new`].
+//! The report level cannot be enumerated:
+//! `published_schema_and_rust_agree_on_report_fixtures` states each fixture's
+//! expected decision by hand, but hand-selected fixtures cannot prove that a
+//! report-level rule is not missing from both `RunAxesReport::validate` and
+//! the published schema. Generating report space and comparing both
+//! validators against stated report-level rules is a separate instrument that
+//! this module does not provide.
+//!
+//! # Schema enforceability (#14177)
+//!
+//! The published JSON Schema is a **shape contract**: types, required fields,
+//! enumerations, and the subset of report rules JSON Schema 2020-12 can
+//! express structurally. It is not a full invariant contract. Rules that
+//! compare two numbers — including a support claim weighed against nested
+//! rail counts — stay in the Rust validators. Structural nested checks the
+//! schema can already express, such as a clean rollup over detail
+//! observations, stay in the schema. That boundary is accepted for v2, not
+//! unfinished schema work. Closing the arithmetic gap would require a
+//! different validation language or a v3 wire format. Generating the schema
+//! from the Rust rules would only pin the expressible subset; it cannot
+//! carry those comparisons.
+//!
+//! Ingest points that must run Rust validation:
+//!
+//! - **Axis construction and axis wire ingest:** [`ResultAxes::new`], including
+//!   `ResultAxes` deserialization (via a private repr that calls `new`).
+//! - **Report wire ingest:** `RunAxesReport` deserialization (via a private
+//!   repr that calls [`RunAxesReport::validate`]).
+//! - **In-process report assembly:** producers that fill [`RunAxesReport`]
+//!   public fields must call [`RunAxesReport::validate`] before serializing
+//!   or treating the value as honest.
+//! - **Current-authority ingest:**
+//!   [`RunAxesReport::admissible_as_current_authority`] before using a report
+//!   as current authority for its series.
+//!
+//! An external producer that validates only the published schema is therefore
+//! laxer than this crate. The report-fixture corpus marks those remaining
+//! disagreements `RustStricter` under the accepted residual classes, not as
+//! v2 schema defects.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1364,11 +1410,16 @@ impl TryFrom<RunAxesReportRepr> for RunAxesReport {
 /// A complete v2 result report for one measured series.
 ///
 /// Like [`ResultAxes`], this envelope goes through an invariant check before it
-/// exists: deserialization is generated from [`RunAxesReportRepr`] and the
-/// converted value must pass [`RunAxesReport::validate`], so a report that
-/// fails a report-level rule cannot be obtained by parsing. A payload that only
-/// needed to stay readable for diagnosis is rejected at the boundary instead of
-/// being trusted because it parsed.
+/// exists: deserialization is generated from a private repr and the converted
+/// value must pass [`RunAxesReport::validate`], so a report that fails a
+/// report-level rule cannot be obtained by parsing. A payload that only needed
+/// to stay readable for diagnosis is rejected at the boundary instead of being
+/// trusted because it parsed.
+///
+/// That deserialize door is one named ingest point of the accepted #14177
+/// shape-contract decision. The published schema does not carry cross-field
+/// arithmetic; filling these public fields in process is another ingest, and
+/// callers must still run [`RunAxesReport::validate`] before publishing.
 ///
 /// `files` and `invocations` are samples, not necessarily complete coverage of
 /// the denominator: a report may carry every file record or only the
@@ -1414,6 +1465,10 @@ impl RunAxesReport {
     /// Runs every component validator plus the cross-part rules: valid evidence
     /// needs a complete measurement, and legacy-adapted evidence stays
     /// historical.
+    ///
+    /// Named ingest (#14177): call this after assembling a report from public
+    /// fields, and rely on deserialization to call it for wire payloads. The
+    /// published schema is a shape contract and does not replace this check.
     ///
     /// # Errors
     ///
@@ -1620,6 +1675,9 @@ impl RunAxesReport {
     }
 
     /// Whether this report may serve as current authority for its series.
+    ///
+    /// Named ingest (#14177): current-authority consumers must go through this
+    /// check rather than trusting schema validation or a parsed report alone.
     ///
     /// # Errors
     ///
@@ -2828,6 +2886,295 @@ mod tests {
         Ok(())
     }
 
+    // ---- Independent rule table (issue #15578) ----
+    //
+    // The sweep above proves agreement: its oracle for "what should this
+    // combination decide" is the constructor itself, so a rule missing from
+    // both surfaces stays green. The table below states the intended validity
+    // of every combination in the issue's terms, re-derived from the axis
+    // variants without calling `ResultAxes::new` or any classification helper
+    // the constructor is written against. Each rejection names the rule it
+    // breaks, so a rule dropped from the constructor, from the schema, or from
+    // this table surfaces as a row no surviving surface satisfies.
+
+    /// Independent decision for one axis combination, stated in the issue's
+    /// terms: evidence decides first, process failure is never valid evidence,
+    /// only `implemented` underwrites `general`, `fixture_replay` never
+    /// implies `general`, and `unavailable` names no mechanism.
+    ///
+    /// Deliberately avoids `ResultAxes::new`,
+    /// `EvidenceValidity::supports_domain_conclusion`,
+    /// `ObservedOutcome::is_domain_outcome`,
+    /// `SemanticSupport::is_positive_claim`, and
+    /// `CompatibilityAdmission::may_underwrite_general_support`: a bug in any
+    /// of those must not pass its own test.
+    fn intended_axis_decision(
+        evidence: EvidenceValidity,
+        observation: ObservedOutcome,
+        admission: CompatibilityAdmission,
+        support: SemanticSupport,
+        mechanism: CorrectnessMechanism,
+    ) -> Result<(), &'static str> {
+        let evidence_is_valid = evidence == EvidenceValidity::Valid;
+        let observed_a_domain_outcome =
+            matches!(observation, ObservedOutcome::Clean | ObservedOutcome::FailuresObserved);
+
+        // Evidence decides first: clean and failing observations are product
+        // conclusions, and only valid evidence may carry one.
+        if observed_a_domain_outcome && !evidence_is_valid {
+            return Err(
+                "evidence decides first: a clean or failing observation requires valid evidence",
+            );
+        }
+        // Process failure is never valid evidence: the instrument itself
+        // failed, so there is no domain conclusion for evidence to back.
+        if observation == ObservedOutcome::ProcessOrProtocolFailed && evidence_is_valid {
+            return Err("process failure is never valid evidence");
+        }
+        // An admission is a compile-time claim, so it needs valid evidence too.
+        if admission != CompatibilityAdmission::NotAssessed && !evidence_is_valid {
+            return Err("a stated admission requires valid evidence");
+        }
+        // General and partial are positive claims: they assert that semantics
+        // are supported, so each needs valid evidence, an observed domain
+        // outcome, an admission that could carry it, and a mechanism that ran.
+        if matches!(support, SemanticSupport::General | SemanticSupport::Partial) {
+            if !evidence_is_valid {
+                return Err("a positive support claim requires valid evidence");
+            }
+            if !observed_a_domain_outcome {
+                return Err("a positive support claim requires an observed domain outcome");
+            }
+            if matches!(
+                admission,
+                CompatibilityAdmission::Unsupported | CompatibilityAdmission::NotAssessed
+            ) {
+                return Err(
+                    "an unsupported or unassessed admission cannot back a positive support claim",
+                );
+            }
+            if mechanism == CorrectnessMechanism::None {
+                return Err("a positive support claim requires a correctness mechanism");
+            }
+        }
+        // Only `implemented` underwrites `general`.
+        if support == SemanticSupport::General && admission != CompatibilityAdmission::Implemented {
+            return Err("only an implemented admission underwrites general support");
+        }
+        // `fixture_replay` never implies `general`.
+        if support == SemanticSupport::General && mechanism == CorrectnessMechanism::FixtureReplay {
+            return Err("fixture replay proves recorded output, not general semantics");
+        }
+        // `unavailable` names no mechanism: it asserts that no support rail
+        // exists, so any named mechanism contradicts it.
+        if support == SemanticSupport::Unavailable && mechanism != CorrectnessMechanism::None {
+            return Err("unavailable support names no mechanism");
+        }
+        Ok(())
+    }
+
+    const RULE_TABLE_EVIDENCE: [EvidenceValidity; 5] = [
+        EvidenceValidity::Valid,
+        EvidenceValidity::NotProven,
+        EvidenceValidity::Invalid,
+        EvidenceValidity::Stale,
+        EvidenceValidity::Cancelled,
+    ];
+    const RULE_TABLE_OBSERVATION: [ObservedOutcome; 4] = [
+        ObservedOutcome::Clean,
+        ObservedOutcome::FailuresObserved,
+        ObservedOutcome::ProcessOrProtocolFailed,
+        ObservedOutcome::NotAssessed,
+    ];
+    const RULE_TABLE_ADMISSION: [CompatibilityAdmission; 5] = [
+        CompatibilityAdmission::Implemented,
+        CompatibilityAdmission::StaticallyClassified,
+        CompatibilityAdmission::AcceptedDebt,
+        CompatibilityAdmission::Unsupported,
+        CompatibilityAdmission::NotAssessed,
+    ];
+    const RULE_TABLE_SUPPORT: [SemanticSupport; 5] = [
+        SemanticSupport::General,
+        SemanticSupport::Partial,
+        SemanticSupport::Blocked,
+        SemanticSupport::Unavailable,
+        SemanticSupport::NotAssessed,
+    ];
+    const RULE_TABLE_MECHANISM: [CorrectnessMechanism; 5] = [
+        CorrectnessMechanism::None,
+        CorrectnessMechanism::FixtureReplay,
+        CorrectnessMechanism::EirExecution,
+        CorrectnessMechanism::RealPerlOracle,
+        CorrectnessMechanism::CuratedGold,
+    ];
+
+    /// Every combination of the five axis products, in a stable order.
+    fn rule_table_combinations() -> impl Iterator<
+        Item = (
+            EvidenceValidity,
+            ObservedOutcome,
+            CompatibilityAdmission,
+            SemanticSupport,
+            CorrectnessMechanism,
+        ),
+    > {
+        RULE_TABLE_EVIDENCE.into_iter().flat_map(move |evidence| {
+            RULE_TABLE_OBSERVATION.into_iter().flat_map(move |observation| {
+                RULE_TABLE_ADMISSION.into_iter().flat_map(move |admission| {
+                    RULE_TABLE_SUPPORT.into_iter().flat_map(move |support| {
+                        RULE_TABLE_MECHANISM.into_iter().map(move |mechanism| {
+                            (evidence, observation, admission, support, mechanism)
+                        })
+                    })
+                })
+            })
+        })
+    }
+
+    #[test]
+    fn the_constructor_decides_every_axis_combination_as_the_rule_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut checked = 0usize;
+        let mut mismatches: Vec<String> = Vec::new();
+        for (evidence, observation, admission, support, mechanism) in rule_table_combinations() {
+            checked += 1;
+            let intended =
+                intended_axis_decision(evidence, observation, admission, support, mechanism);
+            let decided = ResultAxes::new(evidence, observation, admission, support, mechanism);
+            if intended.is_ok() != decided.is_ok() {
+                mismatches.push(format!(
+                    "{evidence}/{observation}/{admission}/{support}/{mechanism}: table says \
+                     {:?} but constructor says {} ({})",
+                    intended.is_ok(),
+                    decided.is_ok(),
+                    decided.map(|_| String::new()).unwrap_or_else(|e| e.to_string()),
+                ));
+            }
+        }
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if !mismatches.is_empty() {
+            return Err(format!(
+                "the constructor and the independent rule table disagree on {} combination(s):\n{}",
+                mismatches.len(),
+                mismatches.join("\n")
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_published_schema_decides_every_axis_combination_as_the_rule_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let axes_schema = axes_schema()?;
+        let mut checked = 0usize;
+        let mut mismatches: Vec<String> = Vec::new();
+        for (evidence, observation, admission, support, mechanism) in rule_table_combinations() {
+            checked += 1;
+            let value = serde_json::json!({
+                "evidence": evidence.as_str(),
+                "observation": observation.as_str(),
+                "admission": admission.as_str(),
+                "support": support.as_str(),
+                "mechanism": mechanism.as_str(),
+            });
+            let intended =
+                intended_axis_decision(evidence, observation, admission, support, mechanism);
+            let schema_accepts = axes_schema.is_valid(&value);
+            if intended.is_ok() != schema_accepts {
+                mismatches.push(format!(
+                    "{}/{}/{}/{}/{}: table says {:?} but schema says {}",
+                    evidence.as_str(),
+                    observation.as_str(),
+                    admission.as_str(),
+                    support.as_str(),
+                    mechanism.as_str(),
+                    intended.is_ok(),
+                    schema_accepts,
+                ));
+            }
+        }
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if !mismatches.is_empty() {
+            return Err(format!(
+                "the published schema and the independent rule table disagree on {} combination(s):\n{}",
+                mismatches.len(),
+                mismatches.join("\n")
+            ).into());
+        }
+        Ok(())
+    }
+
+    /// Hand-computed acceptance counts for the rule table, derived from the
+    /// issue's rules and not from running any validator.
+    ///
+    /// Per support level, over evidence(5) x observation(4) x admission(5) x
+    /// mechanism(5):
+    /// - `general`: valid x {clean, failures_observed} x implemented x
+    ///   {eir_execution, real_perl_oracle, curated_gold} = 1*2*1*3 = 6
+    ///   (`fixture_replay` excluded, `none` excluded);
+    /// - `partial`: valid x {clean, failures_observed} x {implemented,
+    ///   statically_classified, accepted_debt} x any non-none mechanism =
+    ///   1*2*3*4 = 24;
+    /// - `blocked` and `not_assessed`: only the three evidence rules apply.
+    ///   Surviving (evidence, observation, admission) triples: valid x
+    ///   {clean, failures_observed, not_assessed} x any admission = 15, plus
+    ///   each non-valid evidence x {process_or_protocol_failed, not_assessed}
+    ///   x not_assessed = 8, so 23; times any of 5 mechanisms = 115;
+    /// - `unavailable`: the same 23 triples with mechanism `none` only = 23.
+    ///
+    /// Total: 6 + 24 + 115 + 115 + 23 = 283 accepted of 2500.
+    #[test]
+    fn the_rule_table_is_total_and_matches_hand_computed_acceptance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut checked = 0usize;
+        let mut accepted = 0usize;
+        let mut accepted_by_support: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for (evidence, observation, admission, support, mechanism) in rule_table_combinations() {
+            checked += 1;
+            if intended_axis_decision(evidence, observation, admission, support, mechanism).is_ok()
+            {
+                accepted += 1;
+                *accepted_by_support.entry(support.as_str()).or_insert(0) += 1;
+            }
+        }
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if accepted != 283 {
+            return Err(format!(
+                "hand-computed accepted combinations: expected 283, got {accepted}"
+            )
+            .into());
+        }
+        for (support, expected) in [
+            ("general", 6),
+            ("partial", 24),
+            ("blocked", 115),
+            ("not_assessed", 115),
+            ("unavailable", 23),
+        ] {
+            let actual = accepted_by_support.get(support).copied().unwrap_or(0);
+            if actual != expected {
+                return Err(format!(
+                    "{support} accepted combinations: expected {expected}, got {actual}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn published_schema_decides_axes_exactly_as_the_constructor()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2998,15 +3345,26 @@ mod tests {
         Ok(())
     }
 
+    /// Accepted residual of the #14177 shape-contract decision: rules the
+    /// published schema structurally cannot carry.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum AcceptedSchemaResidual {
+        AdmissionDistributionVersusDenominator,
+        DeclaredVersusDistributedAcceptedDebt,
+        ParsePassedVersusTotal,
+        RollupVersusDistribution,
+        AggregateSupportVersusRailCoverage,
+    }
+
     /// How the published schema is expected to relate to the Rust validator for
     /// one report fixture.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum SchemaAgreement {
         /// Both accept, or both reject.
         Same,
-        /// Rust rejects and the schema accepts, because the rule compares two
-        /// values and JSON Schema cannot express cross-field arithmetic.
-        RustStricter,
+        /// Rust rejects and the schema accepts. That is the accepted v2
+        /// boundary for this residual class, not a missing schema rule.
+        RustStricter(AcceptedSchemaResidual),
     }
 
     fn valid_report() -> Result<RunAxesReport, ResultAxisViolation> {
@@ -3155,7 +3513,9 @@ mod tests {
             "aggregate support with no rail backing its mechanism",
             serde_json::to_value(unbacked_support)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(
+                AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
+            ),
         ));
 
         let mut weak_rail = valid_report()?;
@@ -3174,7 +3534,9 @@ mod tests {
             "general support resting on a stale rail",
             serde_json::to_value(weak_rail)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(
+                AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
+            ),
         ));
 
         let mut adopted_regression = valid_report()?;
@@ -3216,7 +3578,7 @@ mod tests {
             "clean parse rail with failed subjects",
             serde_json::to_value(short_parse)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(AcceptedSchemaResidual::ParsePassedVersusTotal),
         ));
 
         let mut overstated = valid_report()?;
@@ -3225,7 +3587,7 @@ mod tests {
             "general rollup over a distribution containing blocked subjects",
             serde_json::to_value(overstated)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(AcceptedSchemaResidual::RollupVersusDistribution),
         ));
 
         let mut blank_boundary = valid_report()?;
@@ -3250,16 +3612,18 @@ mod tests {
             SchemaAgreement::Same,
         ));
 
-        // Rules that compare two numbers. JSON Schema 2020-12 has no way to
-        // relate one property to another, so the schema cannot carry these and
-        // the Rust validator is deliberately the stricter authority.
+        // Accepted #14177 residual: JSON Schema 2020-12 cannot relate one
+        // property to another, so these stay Rust-only by decision, not as
+        // unfinished schema work.
         let mut short_distribution = valid_report()?;
         short_distribution.admission.by_admission = distribution(&[("implemented", 3)]);
         fixtures.push((
             "admission distribution under the denominator",
             serde_json::to_value(short_distribution)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(
+                AcceptedSchemaResidual::AdmissionDistributionVersusDenominator,
+            ),
         ));
 
         let mut debt_mismatch = valid_report()?;
@@ -3271,7 +3635,9 @@ mod tests {
             "declared zero debt against a distribution that has some",
             serde_json::to_value(debt_mismatch)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(
+                AcceptedSchemaResidual::DeclaredVersusDistributedAcceptedDebt,
+            ),
         ));
 
         let mut parse_overrun = valid_report()?;
@@ -3280,7 +3646,7 @@ mod tests {
             "parse rail passing more than it covered",
             serde_json::to_value(parse_overrun)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(AcceptedSchemaResidual::ParsePassedVersusTotal),
         ));
 
         let partial_axes = ResultAxes::new(
@@ -3327,7 +3693,7 @@ mod tests {
             "partial rollup over a wholly general distribution",
             serde_json::to_value(partial_over_general)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(AcceptedSchemaResidual::RollupVersusDistribution),
         ));
 
         let mut general_over_debt = valid_report()?;
@@ -3337,7 +3703,7 @@ mod tests {
             "general rollup over a wholly accepted-debt admission distribution",
             serde_json::to_value(general_over_debt)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(AcceptedSchemaResidual::RollupVersusDistribution),
         ));
 
         // Reaching into a nested rail's counts to weigh them against the
@@ -3360,7 +3726,9 @@ mod tests {
             "partial support backed only by a rail that passed nothing",
             serde_json::to_value(zero_success_rail)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::RustStricter(
+                AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
+            ),
         ));
 
         Ok(fixtures)
@@ -3387,16 +3755,111 @@ mod tests {
                     "'{name}': published schema accepts={schema_accepts} but Rust \
                      accepts={rust_accepts}; the schema and the validator have drifted"
                 ),
-                SchemaAgreement::RustStricter => {
+                SchemaAgreement::RustStricter(residual) => {
                     assert!(!rust_accepts, "'{name}' is only rust-stricter if Rust rejects it");
                     assert!(
                         schema_accepts,
-                        "'{name}': marked RustStricter, but the schema rejected it too — \
-                         reclassify the fixture as Same"
+                        "'{name}' ({residual:?}): marked RustStricter, but the schema \
+                         rejected it too — reclassify the fixture as Same; a rule the \
+                         schema can carry is not an accepted residual"
                     );
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn published_schema_declares_the_shape_contract() -> Result<(), Box<dyn std::error::Error>> {
+        let description = schema_document()?
+            .get("description")
+            .and_then(|value| value.as_str())
+            .ok_or("published schema is missing a description")?
+            .to_string();
+        assert!(
+            description.to_ascii_lowercase().contains("shape contract"),
+            "schema description must record the #14177 shape-contract decision; got: \
+             {description}"
+        );
+        assert!(
+            description.contains("14177"),
+            "schema description must name #14177 so the decision stays findable; got: \
+             {description}"
+        );
+        let lowered = description.to_ascii_lowercase();
+        assert!(
+            !lowered.contains("reach into nested"),
+            "schema description must not claim nested structure is inexpressible; \
+             structural nested checks already live in this document. got: {description}"
+        );
+        assert!(
+            !description.contains("ResultAxes::new"),
+            "report-level description must not name ResultAxes::new; that constructor \
+             owns axis combinations. got: {description}"
+        );
+        assert!(
+            description.contains("RunAxesReport::validate"),
+            "report-level ingest must name RunAxesReport::validate; got: {description}"
+        );
+        assert!(
+            lowered.contains("cross-field numeric") || lowered.contains("compare two numbers"),
+            "schema description must name cross-field numeric comparison as the \
+             inexpressible remainder. got: {description}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rust_stricter_corpus_covers_every_accepted_residual()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let expected = [
+            AcceptedSchemaResidual::AdmissionDistributionVersusDenominator,
+            AcceptedSchemaResidual::DeclaredVersusDistributedAcceptedDebt,
+            AcceptedSchemaResidual::ParsePassedVersusTotal,
+            AcceptedSchemaResidual::RollupVersusDistribution,
+            AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, _fixture, rust_should_accept, agreement) in report_fixtures()? {
+            if let SchemaAgreement::RustStricter(residual) = agreement {
+                assert!(
+                    !rust_should_accept,
+                    "'{name}' is classified RustStricter but expected to pass Rust"
+                );
+                seen.insert(residual);
+            }
+        }
+        for residual in expected {
+            assert!(
+                seen.contains(&residual),
+                "accepted residual {residual:?} has no RustStricter fixture; the corpus \
+                 no longer reflects the #14177 decision"
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            expected.len(),
+            "RustStricter corpus named unexpected residual classes: {seen:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn in_process_report_assembly_is_a_named_rust_ingest() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut candidate = valid_report()?;
+        candidate.admission.by_admission = distribution(&[("implemented", 3)]);
+        assert!(
+            candidate.validate().is_err(),
+            "filling public fields must still require RunAxesReport::validate; that is \
+             the named in-process ingest under #14177"
+        );
+        let wire = serde_json::to_value(&candidate)?;
+        assert!(
+            serde_json::from_value::<RunAxesReport>(wire).is_err(),
+            "serializing an unvalidated in-process report must still be refused at \
+             wire ingest"
+        );
         Ok(())
     }
 

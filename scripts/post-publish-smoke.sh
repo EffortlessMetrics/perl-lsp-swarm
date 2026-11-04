@@ -14,6 +14,8 @@
 #   3. A downstream project can depend on library crates via `cargo add`
 #   4. The tree-sitter-perl-c facade works end-to-end in a consumer project
 #   5. perl-parser public API compiles and produces non-empty ASTs
+#   6. scripts/install.sh downloads, SHA256SUM-verifies, and installs the
+#      GitHub release archive (Linux/macOS hosts; skipped elsewhere)
 #
 # Scope: top-10 highest-value crates (binaries + key libraries).  Not every
 # crate in the publish allowlist — that would take too long.
@@ -214,6 +216,49 @@ for BIN_CRATE in "${!BINARY_CRATES[@]}"; do
         fail "$BIN_NAME not found in PATH after install"
     fi
 done
+
+# ---------------------------------------------------------------------------
+# Section 1b: Installer script — release archive + SHA256SUMS path (#16368)
+# ---------------------------------------------------------------------------
+
+section "Installer script release-archive path"
+
+# vscode-managed-binary-smoke builds from source and post-publish-smoke used to
+# cover crates.io only, so nothing executed the installer chain a non-cargo
+# user actually runs. This check runs the canonical installer against the
+# published GitHub release archive into an isolated INSTALL_DIR: download,
+# SHA256SUMS verification, binary extraction, and the installed --version.
+INSTALLER_SCRIPT="$(dirname -- "${BASH_SOURCE[0]}")/install.sh"
+INSTALLER_HOST="$(uname -s 2>/dev/null || printf 'unknown')"
+case "$INSTALLER_HOST" in
+    Linux|Darwin)
+        if [[ "$SKIP_INSTALL" == "1" ]]; then
+            pass "install.sh release-archive path skipped (SKIP_INSTALL=1)"
+        elif [[ ! -f "$INSTALLER_SCRIPT" ]]; then
+            fail "installer script not found at $INSTALLER_SCRIPT"
+        else
+            INSTALLER_DIR="$(mktemp -d)"
+            CLEANUP_DIRS+=("$INSTALLER_DIR")
+            INSTALLER_LOG="$(mktemp)"
+            if INSTALL_DIR="$INSTALLER_DIR" VERSION="v$VERSION" \
+                bash "$INSTALLER_SCRIPT" >"$INSTALLER_LOG" 2>&1; then
+                INSTALLED_VERSION_OUTPUT="$("$INSTALLER_DIR/perllsp" --version 2>&1 | head -n 1)"
+                if [[ "$INSTALLED_VERSION_OUTPUT" =~ $VERSION ]]; then
+                    pass "install.sh installed perllsp and --version reports $VERSION (got: $INSTALLED_VERSION_OUTPUT)"
+                else
+                    fail "install.sh finished but installed perllsp --version did not report $VERSION (got: $INSTALLED_VERSION_OUTPUT)"
+                fi
+            else
+                fail "install.sh failed for v$VERSION (archive download, SHA256SUMS verify, or install step); installer log:"
+                cat "$INSTALLER_LOG" >&2
+            fi
+            rm -f "$INSTALLER_LOG"
+        fi
+        ;;
+    *)
+        pass "install.sh release-archive path skipped (installer supports Linux/macOS, host is $INSTALLER_HOST)"
+        ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Section 2: Library consumption — cargo add + build

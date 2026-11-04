@@ -253,6 +253,51 @@ fn catch_binding_is_a_source_exact_write_place() {
     );
 }
 
+#[test]
+fn catch_declaration_write_keeps_its_binding_with_and_without_outer_shadow() {
+    for source in [
+        "sub f { try { 1 } catch ($e) { print $e; } }",
+        "sub f { my $e; try { 1 } catch ($e) { print $e; } }",
+    ] {
+        let file = lower(source);
+        let body = subroutine_body(&file);
+        let HirExpr::Try { catch_handlers, .. } = try_expr(body) else { unreachable!() };
+        let HirCatchHandler { binding: Some(place), .. } = &catch_handlers[0] else {
+            panic!("catch must have its declaration place");
+        };
+        let catch_start = source.find("catch ($e)").expect("catch binding") + "catch (".len();
+        let catch_binding = file
+            .scope_graph
+            .bindings
+            .iter()
+            .find(|b| b.range.start == catch_start)
+            .expect("source-exact catch binding");
+        let Some(HirExpr::Variable(var)) = body.expr(*place) else {
+            panic!("catch declaration place must be a variable");
+        };
+        assert_eq!(var.binding, Some(catch_binding.id));
+        assert_eq!(var.kind, VariableKind::Lexical);
+        assert_eq!(var.access, AccessMode::Write);
+        let read_start = source.rfind("$e").expect("handler read");
+        let read = file
+            .scope_graph
+            .references
+            .iter()
+            .find(|reference| reference.range.start == read_start)
+            .expect("handler reference");
+        assert_eq!(read.resolved_binding, Some(catch_binding.id));
+        let graph = lower_hir_bodies(&file);
+        assert!(graph.nodes.iter().any(|node| {
+            matches!(&node.operation, PirOperation::LexicalWrite { name } if name.name == "e")
+                && node.source_anchor.range.is_some_and(|range| range.start == catch_start)
+        }));
+        assert!(graph.nodes.iter().all(|node| {
+            !matches!(node.operation, PirOperation::StashWrite { .. })
+                || node.source_anchor.range.is_none_or(|range| range.start != catch_start)
+        }));
+    }
+}
+
 /// The bare `catch { }` form introduces no binding.
 #[test]
 fn bare_catch_has_no_binding() {

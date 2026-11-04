@@ -242,7 +242,7 @@ macro_rules! visit_kind_children {
                 }
             }
             NodeKind::MandatoryParameter { variable } => $emit!(FieldId::VARIABLE, variable),
-            NodeKind::OptionalParameter { variable, default_value } => {
+            NodeKind::OptionalParameter { variable, default_value, .. } => {
                 $emit!(FieldId::VARIABLE, variable);
                 $emit!(FieldId::DEFAULT_VALUE, default_value);
             }

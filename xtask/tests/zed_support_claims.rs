@@ -88,10 +88,13 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
         "Zed setup guide must not claim public perllsp registration"
     );
     assert!(
-        editor_setup.contains("Planned / not proven"),
+        editor_setup.contains("| Zed | **Planned / not proven:**"),
         "combined editor setup must keep Zed planned/not-proven"
     );
-    assert_eq!(book_setup, editor_setup, "mdBook projection drifted from canonical editor setup");
+    assert!(
+        book_setup.contains("| Zed | **Planned / not proven:**"),
+        "mdBook editor setup must keep Zed planned/not-proven"
+    );
     assert!(
         troubleshooting.contains("public Perl extension does not register `perllsp`"),
         "troubleshooting must keep the public-extension boundary"
@@ -102,11 +105,22 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
     );
 
     let combined_zed = markdown_section(&editor_setup, "### Zed", "### ")?;
+    let book_zed = markdown_section(&book_setup, "### Zed", "### ")?;
+    for (path, text) in [
+        ("docs/how-to/EDITOR_SETUP.md", combined_zed),
+        ("book/src/reference/editor-setup-canonical.md", book_zed),
+    ] {
+        assert!(
+            text.trim_start().starts_with("**Planned / not proven.**"),
+            "{path} Zed section must start with planned/not-proven status"
+        );
+    }
     let troubleshooting_zed =
         markdown_section(&troubleshooting, "## Zed Does Not Start `perllsp`", "## ")?;
     for (path, text) in [
         ("docs/EDITORS/ZED_SETUP.md", zed.as_str()),
         ("docs/how-to/EDITOR_SETUP.md", combined_zed),
+        ("book/src/reference/editor-setup-canonical.md", book_zed),
         ("docs/how-to/TROUBLESHOOTING.md", troubleshooting_zed),
     ] {
         assert!(

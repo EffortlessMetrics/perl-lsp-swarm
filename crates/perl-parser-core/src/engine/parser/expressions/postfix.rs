@@ -51,7 +51,21 @@ impl<'a> Parser<'a> {
     /// 4. Array subscript (`[...]`)
     /// 5. Hash subscript with block handling (`{...}`)
     /// 6. Function call parentheses (`(...)`)
-    pub(crate) fn parse_postfix_chain(&mut self, mut expr: Node) -> ParseResult<Node> {
+    pub(crate) fn parse_postfix_chain(&mut self, expr: Node) -> ParseResult<Node> {
+        self.parse_postfix_chain_with(expr, false)
+    }
+
+    /// Arrow-only postfix continuation for word `not` results (#13932,
+    /// FC-WORD-NOT-POSTFIX-OVERADMIT). Perl admits `->` chains on a
+    /// parenthesized `not` result (`not($x)->foo`) but rejects direct `[]`,
+    /// `{}`, `++`, `--`, and call continuations (`not($x)[0]`, `not($x)++`
+    /// are syntax errors per perl 5.38.2 `-c`). Anything else stays
+    /// unconsumed so statement recovery reports it instead of a clean AST.
+    pub(crate) fn parse_arrow_chain(&mut self, expr: Node) -> ParseResult<Node> {
+        self.parse_postfix_chain_with(expr, true)
+    }
+
+    fn parse_postfix_chain_with(&mut self, mut expr: Node, arrow_only: bool) -> ParseResult<Node> {
         let mut postfix_chain_depth = 0usize;
 
         // Closure to track nesting depth and prevent stack overflow on deeply
@@ -68,6 +82,12 @@ impl<'a> Parser<'a> {
         };
 
         loop {
+            // #13932 (FC-WORD-NOT-POSTFIX-OVERADMIT): word `not` results admit
+            // only `->` continuations. Anything else is left unconsumed so
+            // statement recovery reports the residue instead of a clean AST.
+            if arrow_only && !matches!(self.peek_kind(), Some(TokenKind::Arrow)) {
+                break;
+            }
             // #15649: leave a surviving do-while trailing `{` for
             // `parse_statement_modifier` to reject with `DoWhileTrailingBlock`.
             // This single gate covers every direct-`{` postfix arm below (hash
@@ -131,7 +151,7 @@ impl<'a> Parser<'a> {
                     || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "%{}");
 
                 if is_at_slice || is_pct_slice {
-                    self.tokens.next()?; // consume {
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -144,7 +164,7 @@ impl<'a> Parser<'a> {
                     } else {
                         NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
                     };
-                    expr = Node::new(kind, SourceLocation { start, end });
+                    expr = self.charge_node(kind, SourceLocation { start, end })?;
                     continue;
                 }
             }
@@ -164,10 +184,10 @@ impl<'a> Parser<'a> {
                     let func_name = name.clone();
                     let arg = self.parse_unary()?;
                     let end = arg.location.end;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::FunctionCall { name: func_name, args: vec![arg] },
                         SourceLocation { start, end },
-                    );
+                    )?;
                     continue;
                 }
             }
@@ -182,10 +202,10 @@ impl<'a> Parser<'a> {
                     let end = op_token.end();
 
                     record_postfix_layer()?;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(expr) },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
 
                 Some(TokenKind::Arrow) => {
@@ -203,7 +223,7 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
                                 // ->@[...] array slice
-                                self.tokens.next()?; // consume [
+                                self.advance_token()?; // consume [
                                 let index = self.parse_expression()?;
                                 self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -212,17 +232,17 @@ impl<'a> Parser<'a> {
 
                                 // Represent as a special binary operation for array slice dereference
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Binary {
                                         op: "->@[]".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(index),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->@{...} postfix hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let keys = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -230,13 +250,22 @@ impl<'a> Parser<'a> {
                                 let end = self.previous_position().max(keys.location.end);
 
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::HashSlice {
                                         target: Box::new(expr),
                                         keys: Box::new(keys),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
+                                // A postfix slice does not admit an implicit
+                                // subscript. Recover here so re-entering primaries
+                                // cannot accept it, and retain the complete slice.
+                                if matches!(
+                                    self.peek_kind(),
+                                    Some(TokenKind::LeftBracket | TokenKind::LeftBrace)
+                                ) {
+                                    return Ok(self.recover_invalid_hash_slice_subscript(expr));
+                                }
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
@@ -253,7 +282,7 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let key = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -262,14 +291,14 @@ impl<'a> Parser<'a> {
 
                                 // Represent as a special binary operation for hash slice dereference
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Binary {
                                         op: "->%{}".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(key),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
@@ -339,7 +368,7 @@ impl<'a> Parser<'a> {
                                     .peek_second()
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
-                                self.tokens.next()?; // consume $#
+                                self.advance_token()?; // consume $#
                                 expr = self.consume_arrow_star_deref(expr, "->$#*")?;
                                 record_postfix_layer()?;
                                 continue;
@@ -370,10 +399,10 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::MethodCall { object: Box::new(expr), method, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftParen) => {
@@ -386,15 +415,15 @@ impl<'a> Parser<'a> {
                             all_args.extend(args);
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftBracket) => {
                             // Arrow array dereference: $ref->[index]
-                            self.tokens.next()?; // consume [
+                            self.advance_token()?; // consume [
                             let index = self.parse_expression()?;
                             self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -402,19 +431,19 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: "->[]".to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(index),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftBrace) => {
                             // Arrow hash dereference: $ref->{key}
-                            self.tokens.next()?; // consume {
+                            self.advance_token()?; // consume {
                             let key = self.parse_hash_subscript_key()?;
                             self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -422,14 +451,14 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: "->{}".to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(key),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         _ => {
@@ -467,10 +496,10 @@ impl<'a> Parser<'a> {
                             args.push(self.parse_ternary()?);
                         }
                         let end = args.last().map_or(expr.location.end, |a| a.location.end);
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::FunctionCall { name, args },
                             SourceLocation { start, end },
-                        );
+                        )?;
                         continue;
                     }
                     // Detect array slices: @arr[...] or @{$aref}[...]
@@ -478,7 +507,7 @@ impl<'a> Parser<'a> {
                         || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
 
                     // Array indexing - can be a single index or slice with multiple indices
-                    self.tokens.next()?; // consume [
+                    self.advance_token()?; // consume [
 
                     // Check if this might be a slice (multiple indices)
                     let mut indices = vec![self.parse_expression()?];
@@ -512,10 +541,10 @@ impl<'a> Parser<'a> {
                             })?
                             .location
                             .end;
-                        Node::new(
+                        self.charge_node(
                             NodeKind::ArrayLiteral { elements: indices },
                             SourceLocation { start, end },
-                        )
+                        )?
                     };
 
                     let start = expr.location.start;
@@ -523,22 +552,22 @@ impl<'a> Parser<'a> {
 
                     record_postfix_layer()?;
                     if is_array_slice {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::ArraySlice {
                                 target: Box::new(expr),
                                 indices: Box::new(index),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     } else {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: "[]".to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(index),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     }
                 }
 
@@ -571,7 +600,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if self.is_at_statement_end() {
@@ -607,11 +636,11 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if is_bare_func {
-                                        if !self.should_continue_bare_call_after_block() {
+                                        if !self.should_continue_bare_call_after_separator() {
                                             break;
                                         }
                                     } else if self.is_implicit_arg_terminator() {
@@ -656,7 +685,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -674,7 +703,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_implicit_arg_terminator() {
@@ -693,10 +722,10 @@ impl<'a> Parser<'a> {
                                 .location
                                 .end;
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                             continue; // Continue the loop
                         }
                     }
@@ -707,7 +736,7 @@ impl<'a> Parser<'a> {
                     if self.in_do_while_condition && !self.do_while_keep_consuming_brace(&expr) {
                         break;
                     }
-                    self.tokens.next()?; // consume {
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -716,14 +745,14 @@ impl<'a> Parser<'a> {
 
                     // Represent as binary subscript operation
                     record_postfix_layer()?;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: "{}".to_string(),
                             left: Box::new(expr),
                             right: Box::new(key),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
 
                 Some(TokenKind::LeftParen) if matches!(&expr.kind, NodeKind::Identifier { .. }) => {
@@ -737,10 +766,10 @@ impl<'a> Parser<'a> {
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::ArrayLiteral { elements: words },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if matches!(name.as_str(), "print" | "say" | "printf" | "send") {
                             // `print( $fh EXPR )` — filehandle-style inside explicit parens.
                             // parse_args() treats every argument as comma-separated, so
@@ -752,19 +781,19 @@ impl<'a> Parser<'a> {
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else {
                             let args = self.parse_args()?;
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     }
                 }
@@ -785,17 +814,17 @@ impl<'a> Parser<'a> {
 
                     record_postfix_layer()?;
                     expr = if matches!(&expr.kind, NodeKind::Undef) {
-                        Node::new(
+                        self.charge_node(
                             NodeKind::FunctionCall { name: "undef".to_string(), args },
                             SourceLocation { start, end },
-                        )
+                        )?
                     } else {
                         let mut all_args = vec![expr];
                         all_args.extend(args);
-                        Node::new(
+                        self.charge_node(
                             NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
                             SourceLocation { start, end },
-                        )
+                        )?
                     };
                 }
 
@@ -817,10 +846,10 @@ impl<'a> Parser<'a> {
                             // A qualified CORE builtin remains executable before a fat comma;
                             // do not let the generic key conversion turn it into a string.
                             let start = expr.location.start;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args: vec![] },
                                 SourceLocation { start, end: expr.location.end },
-                            );
+                            )?;
                         } else if Self::is_nullary_builtin(name) {
                             // Nullary builtins (shift, pop, caller, wantarray, etc.) can also
                             // take an explicit sigil-starting argument, e.g. `shift @arr`.
@@ -845,10 +874,10 @@ impl<'a> Parser<'a> {
                                 .last()
                                 .map(|arg: &Node| arg.location.end)
                                 .unwrap_or(expr.location.end);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if !Self::is_builtin_function(name)
                             && !self.is_at_statement_end()
                             && self.peek_kind() != Some(TokenKind::FatArrow)
@@ -883,10 +912,10 @@ impl<'a> Parser<'a> {
 
                             let start = expr.location.start;
                             let end = args.last().map_or(expr.location.end, |arg| arg.location.end);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if name.contains("::")
                             && !self.is_at_statement_end()
                             && self.peek_kind() != Some(TokenKind::FatArrow)
@@ -927,10 +956,10 @@ impl<'a> Parser<'a> {
                             }
                             let start = expr.location.start;
                             let end = self.previous_position();
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if Self::is_builtin_function(name)
                             || Self::core_qualified_builtin_name(name).is_some()
                             || self.looks_like_bare_call(name)
@@ -958,7 +987,8 @@ impl<'a> Parser<'a> {
                             // that implicitly use $_ when no explicit argument is given, so that
                             // `defined && ...`, `length > 0`, `ord >= 32` parse correctly.
                             let next_is_binary_operator =
-                                self.peek_kind().is_some_and(Self::is_binary_operator);
+                                self.peek_kind().is_some_and(Self::is_binary_operator)
+                                    && !self.peek_is_autoquoted_word_operator();
                             let optional_arg_has_explicit_sub_arg =
                                 Self::is_optional_arg_builtin(bare_name)
                                     && self.is_explicit_sub_sigil_argument_start();
@@ -976,15 +1006,11 @@ impl<'a> Parser<'a> {
                             // tokenized as Identifiers. A builtin followed by one of these
                             // should be treated as having no arguments, so that
                             // `ref eq 'CODE'` parses as `ref() eq 'CODE'` (not `ref(eq)`).
-                            // `cmp` is also a string comparison operator tokenized as Identifier.
-                            let is_str_op_terminated = self.peek_kind()
-                                == Some(TokenKind::Identifier)
-                                && self.tokens.peek().ok().is_some_and(|t| {
-                                    matches!(
-                                        t.text.as_ref(),
-                                        "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "cmp"
-                                    )
-                                });
+                            // Before `=>` they are autoquoted arguments instead
+                            // (`has eq => 1`, #16691). `cmp` is `StringCompare` and
+                            // is admitted by `is_autoquoted_bareword_kind`.
+                            let is_str_op_terminated = self.peek_is_identifier_string_comparison()
+                                && !self.is_keyword_before_fat_arrow();
 
                             let mut scalar_filehandle = false;
                             if self.is_implicit_arg_terminator()
@@ -993,10 +1019,10 @@ impl<'a> Parser<'a> {
                                 || is_str_op_terminated
                             {
                                 // Bare builtin with no arguments
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::FunctionCall { name: name.clone(), args: vec![] },
                                     expr.location,
-                                );
+                                )?;
                             } else {
                                 // Parse arguments without parentheses
                                 let mut args = Vec::new();
@@ -1033,7 +1059,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1057,23 +1083,20 @@ impl<'a> Parser<'a> {
                                             && txt.starts_with(|c: char| {
                                                 c.is_ascii_lowercase() || c == '_'
                                             })
-                                            && !matches!(
-                                                txt,
-                                                "eq" | "ne"
-                                                    | "lt"
-                                                    | "le"
-                                                    | "gt"
-                                                    | "ge"
-                                                    | "cmp"
-                                                    | "x"
-                                            )
+                                            && !Self::is_identifier_string_comparison(txt)
+                                            && txt != "x"
                                             && !Self::is_block_list_func(txt)
                                     })
                                 {
                                     // sort FUNCNAME LIST — `sort by_name @list`
                                     // Parse the comparator function name as the first arg,
-                                    // then collect the list to sort.
-                                    args.push(self.parse_ternary()?);
+                                    // then collect the list to sort. The comparator
+                                    // slot suppresses bare-call promotion so
+                                    // `sort mycmp Foo::Bar, 1` keeps its shape.
+                                    self.in_sort_comparator = true;
+                                    let comparator = self.parse_ternary();
+                                    self.in_sort_comparator = false;
+                                    args.push(comparator?);
 
                                     while !self.is_implicit_arg_terminator()
                                         && !matches!(
@@ -1093,7 +1116,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1132,7 +1155,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1155,7 +1178,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_at_statement_end() {
@@ -1189,7 +1212,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1214,7 +1237,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
@@ -1226,6 +1249,14 @@ impl<'a> Parser<'a> {
                                     && self.peek_kind() != Some(TokenKind::LeftParen)
                                 {
                                     args.push(self.parse_shift()?);
+                                    // Named-unary arity: `foo(ref cmp => 1)` is
+                                    // `foo(ref('cmp'), 1)`. Autoquote the bareword
+                                    // argument and leave `=>` as the enclosing comma.
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
+                                    }
                                 } else {
                                     scalar_filehandle =
                                         self.is_expression_scalar_filehandle_pattern(name);
@@ -1309,7 +1340,7 @@ impl<'a> Parser<'a> {
                                                 if self.peek_kind() == Some(TokenKind::FatArrow)
                                                     && let Some(arg) = args.last_mut()
                                                 {
-                                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                                    self.auto_quote_bareword_before_fat_comma(arg)?;
                                                 }
                                                 self.consume_token()?;
                                             }
@@ -1374,7 +1405,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
@@ -1386,11 +1417,12 @@ impl<'a> Parser<'a> {
 
                                 let start = expr.location.start;
 
+                                // Flattening retains individual word spans, while
+                                // the call still owns the complete qw delimiter.
                                 let end = args
                                     .last()
-                                    .map(|arg| arg.location.end)
-                                    .or(flattened_qw_end)
-                                    .unwrap_or_else(|| self.previous_position());
+                                    .map_or_else(|| self.previous_position(), |arg| arg.location.end)
+                                    .max(flattened_qw_end.unwrap_or(0));
 
                                 expr = if scalar_filehandle {
                                     let mut message_args = args;
@@ -1402,19 +1434,19 @@ impl<'a> Parser<'a> {
                                     } else {
                                         message_args.remove(0)
                                     };
-                                    Node::new(
+                                    self.charge_node(
                                         NodeKind::IndirectCall {
                                             method: name.clone(),
                                             object: Box::new(object),
                                             args: message_args,
                                         },
                                         SourceLocation { start, end },
-                                    )
+                                    )?
                                 } else {
-                                    Node::new(
+                                    self.charge_node(
                                         NodeKind::FunctionCall { name: name.clone(), args },
                                         SourceLocation { start, end },
-                                    )
+                                    )?
                                 };
                             }
                         }
@@ -1436,13 +1468,13 @@ impl<'a> Parser<'a> {
                             let arg = self.parse_ternary()?;
                             let start = expr.location.start;
                             let end = arg.location.end;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall {
                                     name: "undef".to_string(),
                                     args: vec![arg],
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     }
                     break;
@@ -1474,14 +1506,20 @@ impl<'a> Parser<'a> {
             // `?` starts a ternary operator at a higher expression level; it is
             // not a valid start of a bare-call argument so it terminates arg collection.
             Some(TokenKind::Question) => true,
-            Some(TokenKind::If)
-            | Some(TokenKind::Unless)
-            | Some(TokenKind::While)
-            | Some(TokenKind::Until)
-            | Some(TokenKind::For)
-            | Some(TokenKind::Foreach)
-            | Some(TokenKind::DataMarker) => true,
-            Some(kind) if kind.is_low_precedence_word_operator() => true,
+            Some(kind)
+                if (Self::is_stmt_modifier_kind(kind) && kind != TokenKind::When)
+                    || kind.is_word_operator()
+                    || self.peek_is_identifier_string_comparison() =>
+            {
+                // `when` is a statement modifier (`is_stmt_modifier_kind`) but
+                // not a list-operator terminator here; given/when recovery
+                // stays on the modifier path. Other modifiers, word operators,
+                // and Identifier comparison words still end the call unless
+                // they are autoquoted before `=>` (`has if => 1`, `has or => 1`,
+                // #16639; `has eq => 1`, `has cmp => 1`, #16691).
+                !self.is_keyword_before_fat_arrow()
+            }
+            Some(TokenKind::DataMarker) => true,
             None => true,
             _ => false,
         }
@@ -1540,11 +1578,11 @@ impl<'a> Parser<'a> {
     /// Consume the next token as a bareword string node (for quote-op names used
     /// as hash keys, e.g. the `m` in `$h{m}` or `@h{m, s}`).
     fn consume_as_bareword_string(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
-        Ok(Node::new(
+        let token = self.advance_token()?;
+        self.charge_node(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
             SourceLocation { start: token.start(), end: token.end() },
-        ))
+        )
     }
 
     /// Parse hash subscript key expression, treating lone keywords as bare
@@ -1613,7 +1651,9 @@ impl<'a> Parser<'a> {
         }
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        Ok(Some(
+            self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })?,
+        ))
     }
 
     fn peek_is_keyword_bareword_key(&mut self, allow_terminal_control_key: bool) -> bool {
@@ -1655,21 +1695,43 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
-        Ok(Node::new(
+        let token = self.advance_token()?;
+        self.charge_node(
             NodeKind::Identifier { name: token.text.to_string() },
             SourceLocation { start: token.start(), end: token.end() },
-        ))
+        )
+    }
+
+    fn recover_invalid_hash_slice_subscript(&mut self, expr: Node) -> Node {
+        let start = expr.location.start;
+        let prefix_end = expr.location.end;
+        let message =
+            "A postfix hash slice needs parentheses or an explicit arrow before a subscript";
+        let location = self.current_position();
+        self.record_error(ParseError::syntax(message, location));
+        // Reuse the annotated synthetic recovery-node constructor and retain
+        // the completed slice for downstream analysis.
+        let mut error = self.create_error_node(message.to_string(), vec![]);
+        if let NodeKind::Error { partial, .. } = &mut error.kind {
+            *partial = Some(Box::new(expr));
+        }
+        // Use the existing bounded recovery path to consume the invalid suffix.
+        self.synchronize();
+        error.location = SourceLocation { start, end: self.previous_position().max(prefix_end) };
+        error
     }
 
     fn recover_truncated_arrow(&mut self, expr: Node) -> Node {
         let start = expr.location.start;
         let end = self.previous_position();
-        self.errors.push(ParseError::Recovered {
+        self.record_error(ParseError::Recovered {
             site: RecoverySite::PostfixChain,
             kind: RecoveryKind::TruncatedChain,
             location: end,
         });
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension
+        // (same exemption class as the missing-operand recovery node).
         Node::new(
             NodeKind::Error {
                 message: "Incomplete arrow expression".to_string(),
@@ -1721,7 +1783,9 @@ impl<'a> Parser<'a> {
         }
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        Ok(Some(
+            self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })?,
+        ))
     }
 
     /// Finish an arrow star-form postfix dereference from the consumed `*` token.
@@ -1732,10 +1796,10 @@ impl<'a> Parser<'a> {
     fn consume_arrow_star_deref(&mut self, expr: Node, op: &'static str) -> ParseResult<Node> {
         let star = self.consume_token()?;
         let start = expr.location.start;
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Unary { op: op.to_string(), operand: Box::new(expr) },
             SourceLocation { start, end: star.end() },
-        ))
+        )
     }
 }
 

@@ -69,6 +69,31 @@ Exits with status 0 if all files parse successfully, 1 otherwise.
 Output the features catalog as JSON and exit.
 The output reflects the active feature profile.
 .TP
+.B \-\-identity
+Print the installed\-binary identity packet and exit.
+The packet reports product, executable, build, artifact, and compatibility
+identity separately; a matching version alone does not establish parity.
+This is a one\-shot query and must be the only argument.
+.TP
+.B \-\-identity\-json
+Print that identity packet as
+.B perl_lsp.binary_identity.v1
+JSON and exit.
+This is a one\-shot query and must be the only argument.
+.TP
+.B \-\-info \-\-json
+The composed spelling of the JSON identity packet.
+Accepting
+.B \-\-info
+together with
+.B \-\-json
+prints the same packet as
+.BR \-\-identity\-json .
+Both flags must be the only arguments; any additional operand is rejected
+rather than answered with human
+.B \-\-info
+text.
+.TP
 .BI \-\-completion " SHELL"
 Generate shell completion script for the given shell and print it to
 stdout, then exit.

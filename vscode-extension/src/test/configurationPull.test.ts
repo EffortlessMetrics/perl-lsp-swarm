@@ -8,8 +8,15 @@ type FolderValues = Record<string, unknown>;
  * Stand in for `workspace.getConfiguration('perl-lsp', scope)` with genuinely
  * different values per folder, so a resolver that ignores `scopeUri` is
  * observably wrong rather than merely unproven.
+ *
+ * The `global` bucket models user-scoped settings (`inspect().globalValue`),
+ * which every scope observes; folder buckets model workspace-folder values,
+ * which must stay invisible to the unscoped answer (#17334).
  */
-function installScopedConfiguration(byScope: Record<string, FolderValues>): void {
+function installScopedConfiguration(
+  byScope: Record<string, FolderValues>,
+  globalValues: FolderValues = {},
+): void {
   const unscoped = byScope[''] ?? {};
 
   // VS Code accepts either a Uri or a `{ uri, languageId }` scope object; the
@@ -41,13 +48,28 @@ function installScopedConfiguration(byScope: Record<string, FolderValues>): void
       const values = byScope[key] ?? unscoped;
 
       return {
-        get: jest.fn((setting: string, defaultValue?: unknown) =>
-          setting in values ? values[setting] : defaultValue,
-        ),
-        has: jest.fn((setting: string) => setting in values),
-        inspect: jest.fn((setting: string) =>
-          setting in values ? { workspaceFolderValue: values[setting] } : undefined,
-        ),
+        get: jest.fn((setting: string, defaultValue?: unknown) => {
+          // Real VS Code precedence: a defined folder value wins over the
+          // user/global value, which itself wins over the default.
+          if (setting in values) {
+            return values[setting];
+          }
+          if (setting in globalValues) {
+            return globalValues[setting];
+          }
+          return defaultValue;
+        }),
+        has: jest.fn((setting: string) => setting in values || setting in globalValues),
+        inspect: jest.fn((setting: string) => {
+          const inspected: Record<string, unknown> = {};
+          if (setting in globalValues) {
+            inspected.globalValue = globalValues[setting];
+          }
+          if (setting in values) {
+            inspected.workspaceFolderValue = values[setting];
+          }
+          return Object.keys(inspected).length > 0 ? inspected : undefined;
+        }),
         update: jest.fn(),
       };
     },
@@ -151,7 +173,14 @@ describe('workspace/configuration folder ownership (#14447)', () => {
     expect(forward[1]).toEqual(reversed[0]);
   });
 
-  test('the unscoped item is resolved without a resource', async () => {
+  test('the unscoped item is answered from user/global state only (#17334)', async () => {
+    // Corrected deliberately with the #17334 fix: the previous expectation
+    // (`{ workspace: { includePaths: ['workspace/lib'] } }` for a
+    // workspace-scoped value) pinned the leak the scoped-includePaths fix
+    // (#14447/#16955) was merged to prevent. The unscoped pull item is applied
+    // by the server as a session-global base layer, so workspace/folder values
+    // must never appear in it — the real wire contract is pinned by the
+    // PERL_LSP_FOLDER_CONFIG_HOST extension-host suite.
     installScopedConfiguration({
       '': { includePaths: ['workspace/lib'] },
       [FOLDER_A]: { includePaths: ['a/lib'] },
@@ -163,9 +192,69 @@ describe('workspace/configuration folder ownership (#14447)', () => {
       jest.fn(),
     );
 
-    // The unscoped slot is applied by the server as a base layer under every
-    // folder, so it must never carry one folder's value.
-    expect(result[0]).toEqual({ workspace: { includePaths: ['workspace/lib'] } });
+    // Workspace/folder-scoped values cannot reach the unscoped answer.
+    expect(result[0]).toEqual({});
+  });
+
+  test('the unscoped item carries user-scoped include paths (#17334)', async () => {
+    // Standalone-file mode: there are no folders, so the user's global
+    // includePaths are the only configuration and must still reach the server.
+    installScopedConfiguration({ '': {} }, { includePaths: ['user/lib'] });
+
+    const result = await resolvePerlConfiguration(
+      { items: [{ section: PERL_CONFIGURATION_SECTION }] },
+      undefined,
+      jest.fn(),
+    );
+
+    expect(result[0]).toEqual({ workspace: { includePaths: ['user/lib'] } });
+  });
+
+  test('folder values never leak into the unscoped pull answer next to them (#17334)', async () => {
+    // The wire shape the folder-configuration host test pins: the server asks
+    // for [unscoped, folderA] and the unscoped slot stays `{}` while the
+    // folder slot carries the folder value.
+    installScopedConfiguration({
+      '': {},
+      [FOLDER_A]: { includePaths: ['a/lib'] },
+    });
+
+    const result = await resolvePerlConfiguration(
+      {
+        items: [
+          { section: PERL_CONFIGURATION_SECTION },
+          { scopeUri: FOLDER_A, section: PERL_CONFIGURATION_SECTION },
+        ],
+      },
+      undefined,
+      jest.fn(),
+    );
+
+    expect(result[0]).toEqual({});
+    expect(result[1]).toEqual({ workspace: { includePaths: ['a/lib'] } });
+  });
+
+  test('the combined pull keeps global and folder include paths in their own slots', async () => {
+    // Folder values must win inside the folder slot (VS Code precedence) while
+    // the unscoped slot answers from user scope only (#17334).
+    installScopedConfiguration(
+      { '': {}, [FOLDER_A]: { includePaths: ['a/lib'] } },
+      { includePaths: ['user/lib'] },
+    );
+
+    const result = await resolvePerlConfiguration(
+      {
+        items: [
+          { section: PERL_CONFIGURATION_SECTION },
+          { scopeUri: FOLDER_A, section: PERL_CONFIGURATION_SECTION },
+        ],
+      },
+      undefined,
+      jest.fn(),
+    );
+
+    expect(result[0]).toEqual({ workspace: { includePaths: ['user/lib'] } });
+    expect(result[1]).toEqual({ workspace: { includePaths: ['a/lib'] } });
   });
 
   test('an unparseable scopeUri falls back to the unscoped view, not another folder', async () => {

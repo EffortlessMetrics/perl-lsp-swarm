@@ -96,6 +96,28 @@ const STATIC_CAPABILITY_DEFECT: OwnershipDefect = {
 };
 
 /**
+ * Both AI completion toggles are forwarded to the server, where the generic
+ * settings parser rejects `aiCompletion.enabled` and
+ * `aiCompletion.streaming.enabled` on arrival (#4997), and remote backend
+ * construction fails closed in production until a server-owned trusted
+ * activation adapter lands (#10817).
+ *
+ * So the transport is real but has no effect: the extension holds the value,
+ * pushes it, and the server drops it with a warning. `aiCompletion.enabled` also
+ * drives the extension's own enable journey, so it is genuinely `both`-owned —
+ * the defect is the server end, not the manifest scope.
+ */
+const AI_ACTIVATION_REJECTED_DEFECT: OwnershipDefect = {
+  reason:
+    'Transport reaches the server but has no effect there: the generic settings ' +
+    'parser rejects `enabled` and `streaming.enabled` on arrival (#4997), and ' +
+    'remote AI construction fails closed in production until the server-owned ' +
+    'trusted activation adapter lands (#10817). The value is a reserved ' +
+    'preference, not an activation authority.',
+  owner: '#10817',
+};
+
+/**
  * One row per contributed `perl-lsp.*` setting.
  *
  * `configurationOwnership.test.ts` proves this table and
@@ -109,6 +131,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'machine',
     owner: 'both',
     transport: 'didChangeConfiguration',
+    defect: AI_ACTIVATION_REJECTED_DEFECT,
   },
   {
     key: 'perl-lsp.aiCompletion.streaming.enabled',
@@ -116,21 +139,12 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'machine',
     owner: 'both',
     transport: 'didChangeConfiguration',
+    defect: AI_ACTIVATION_REJECTED_DEFECT,
   },
   {
     key: 'perl-lsp.autoDownload',
     manifestScope: 'machine',
     semanticScope: 'machine',
-    owner: 'extension',
-    transport: 'local-only',
-  },
-  {
-    // `populateCreatedFiles` in extension.ts resolves the gate against each
-    // created URI, so a folder override selects the behaviour for files created
-    // in that folder (#14547). Local-only: the value never reaches the server.
-    key: 'perl-lsp.autoPopulateNewFiles',
-    manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
     owner: 'extension',
     transport: 'local-only',
   },
@@ -194,6 +208,17 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     owner: 'server',
     transport: 'didChangeConfiguration',
     defect: CRITIC_SESSION_STATE_DEFECT,
+  },
+  {
+    // `folderlessDebugLaunchRefusal`/`buildDapExecutableArgs` in debugAdapter.ts
+    // read this key and forward each entry as a `--trusted-root` argv flag of
+    // the locally spawned perl-dap (#16554). Local-only: the value never
+    // reaches the language server; it only shapes the debug adapter spawn.
+    key: 'perl-lsp.debug.trustedRoots',
+    manifestScope: 'machine',
+    semanticScope: 'machine',
+    owner: 'extension',
+    transport: 'local-only',
   },
   {
     key: 'perl-lsp.disabledFeatures',
@@ -273,6 +298,8 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     manifestScope: 'resource',
     semanticScope: 'workspace-folder',
     owner: 'server',
+    // With no workspace folders there is no scoped pull; the extension keeps
+    // the standalone-file include path alive via didChangeConfiguration.
     transport: 'workspace/configuration',
   },
   {

@@ -1,6 +1,6 @@
 ---
 name: publish-pr
-description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, ready by default, with draft reserved for a named remote-only proof or collaboration need.
+description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, with frequent draft publication and explicit late qualification after substantive review.
 ---
 
 # Publish PR
@@ -32,9 +32,9 @@ A candidate publishes ready only when all applicable local preparation is curren
 
 If this threshold is not met, return to `$build-candidate` rather than opening a churn-producing ready PR.
 
-## Draft exceptions and transition
+## Draft publication and transition
 
-Use draft only for:
+Use focused draft publication for ongoing collaboration and independent review, as well as:
 
 - remote-only proof or platform behavior;
 - real branch collaboration;
@@ -45,19 +45,37 @@ Record the exact draft reason and its completion condition in the PR body.
 
 For an existing draft, inspect that named condition. When it is complete, re-evaluate the full ready-publication threshold and explicitly mark the PR ready through the provider's native GitHub action (for example `gh pr ready <n>` or the equivalent connector operation). Do not leave a completed draft in a self-repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair instead of marking ready.
 
+Before changing readiness, inspect the actual workflow triggers. Readiness is not an
+explicit qualification request, but independent producers may still start expensive
+work on that event during partial adoption. Follow the shared development method's
+late-qualification boundary only after substantive review is current; consume the real
+#17900 request operation when available, and report its absence rather than inventing
+one. Preserve all mandatory proof and live protection requirements; publish draft evidence honestly.
+
 ## PR review index
 
 Proportionality mirrors `$review-pr`'s carve-out: a candidate whose cumulative diff is
 mechanical — generated regeneration, lint-site collapse, allowlist row removal,
 comment-only edits — may publish a reduced index of three sections: **Claim**,
-**Proof**, and **Non-goals**. The full index remains the default for anything crossing
+**Proof**, and **Non-goals**. Include **Hosted proof** in that reduced index when
+local toolchain proof was not run. The full index remains the default for anything crossing
 a production seam.
 
 The order is load-bearing: establish claim and authority before proof; trace the changed
 production path; record focused and affected proof with `pass` / `fail` / `not-run` /
-`NOT_PROVEN`; challenge a realistic wrong implementation with negative, stale,
-failure, recovery, or opposite-direction controls; simplify before publication; bound
-the claim and non-goals; then name risk, rollback, and review locations.
+`NOT_PROVEN`; fill **Hosted proof** with named hosted checks and the commit they
+actually evaluated whenever local toolchain proof was not run; challenge a realistic
+wrong implementation with negative, stale, failure, recovery, or opposite-direction
+controls; simplify before publication; bound the claim and non-goals; then name risk,
+rollback, and review locations.
+
+When this lane has no local Rust toolchain, check **Hosted-only** in **Hosted proof**
+and name the hosted checks that replace `cargo fmt` / Clippy / tests. Do not claim
+those hosted checks passed until current GitHub evidence exists. "Local Rust proof
+NOT RUN" is the hosted-only mark, not a substitute for naming the checks. Hosted-only
+is a PR-body and reviewer classification; it does not rewrite the ready-publication
+threshold above. Authors without a toolchain still use the named draft exception for
+remote-only proof until hosted evidence exists.
 
 ```markdown
 ## Claim
@@ -65,6 +83,7 @@ the claim and non-goals; then name risk, rollback, and review locations.
 ## Governing contract
 ## Changed production path
 ## Proof
+## Hosted proof
 ## Test hardening
 ## Simplification
 ## Deviations

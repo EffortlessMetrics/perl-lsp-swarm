@@ -25,10 +25,11 @@
 //!   candidates; Dynamic/Unavailable → fall back to legacy.
 
 use perl_semantic_facts::{
-    Confidence, EntityId, OccurrenceFact, OccurrenceKind, Provenance, ProviderFactFreshness,
-    ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState, ProviderSurface,
+    AnchorId, Confidence, EntityId, OccurrenceFact, OccurrenceKind, Provenance,
+    ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState,
+    ProviderSurface,
 };
-use perl_workspace::semantic::queries::SemanticQueries;
+use perl_workspace::semantic::queries::{AnchorSourceSpan, SemanticQueries};
 use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, ShadowResultSummary,
     summarize_identities,
@@ -237,10 +238,27 @@ pub fn find_references_live_source_backed<Q: SemanticQueries>(
     let new_summary = semantic_occurrences_to_summary(&all_occurrences);
     let old_summary = legacy_locations_to_summary(&legacy_locations);
 
+    // #17247: resolve every occurrence's anchor span in ONE batched pass. The
+    // per-occurrence `anchor_source_span` scanned the whole borrowed shard
+    // snapshot once per occurrence (and again per occurrence in the quality
+    // note below), making references latency quadratic in workspace size.
+    // Per-id semantics are unchanged: the batch answers exactly what the
+    // single-anchor form answers, including duplicate ids failing closed.
+    let occurrence_anchor_ids: Vec<AnchorId> =
+        all_occurrences.iter().map(|occurrence| occurrence.anchor_id).collect();
+    let anchor_spans: std::collections::HashMap<AnchorId, Option<AnchorSourceSpan>> =
+        semantic_queries
+            .anchor_source_spans(&occurrence_anchor_ids)
+            .into_iter()
+            .zip(occurrence_anchor_ids.iter())
+            .map(|(span, anchor_id)| (*anchor_id, span))
+            .collect();
+
     let live_occurrences = if !all_occurrences.is_empty()
-        && all_occurrences.iter().all(|occurrence| {
-            is_live_source_backed_reference_occurrence(semantic_queries, occurrence)
-        }) {
+        && all_occurrences
+            .iter()
+            .all(|occurrence| is_live_source_backed_reference_occurrence(&anchor_spans, occurrence))
+    {
         Some(all_occurrences.clone())
     } else {
         None
@@ -257,11 +275,7 @@ pub fn find_references_live_source_backed<Q: SemanticQueries>(
         ShadowQueryInput { symbol: symbol.to_string() },
         old_summary,
         new_summary,
-        vec![references_live_source_backed_quality_note(
-            semantic_queries,
-            &result,
-            &all_occurrences,
-        )],
+        vec![references_live_source_backed_quality_note(&anchor_spans, &result, &all_occurrences)],
         references_fact_source_traces(&all_occurrences, fallback_state),
     );
 
@@ -314,13 +328,14 @@ fn references_cutover_fallback_state(result: &ReferencesCutoverResult) -> Provid
 
 /// Whether `occurrence` qualifies for the live source-backed slice.
 ///
-/// The source-backed check resolves the occurrence's anchor from the snapshot
-/// `semantic_queries` borrows. It must not re-enter `WorkspaceIndex`: this
+/// The source-backed check reads the occurrence's anchor span from the
+/// batch-resolved `anchor_spans` map (#17247) instead of re-scanning the
+/// snapshot per occurrence. It must not re-enter `WorkspaceIndex`: this
 /// filter runs inside `with_semantic_queries_for_uri`, whose `fact_shards`
 /// read guard a nested `semantic_anchor_wire_location` could deadlock against
 /// a queued reindex (#15644).
-fn is_live_source_backed_reference_occurrence<Q: SemanticQueries>(
-    semantic_queries: &Q,
+fn is_live_source_backed_reference_occurrence(
+    anchor_spans: &std::collections::HashMap<AnchorId, Option<AnchorSourceSpan>>,
     occurrence: &OccurrenceFact,
 ) -> bool {
     occurrence.confidence == Confidence::High
@@ -334,7 +349,7 @@ fn is_live_source_backed_reference_occurrence<Q: SemanticQueries>(
                 | OccurrenceKind::MethodCall
                 | OccurrenceKind::StaticMethodCall
         )
-        && semantic_queries.anchor_source_span(occurrence.anchor_id).is_some()
+        && anchor_spans.get(&occurrence.anchor_id).is_some_and(Option::is_some)
 }
 
 fn is_live_reference_provenance(provenance: Provenance) -> bool {
@@ -390,8 +405,8 @@ fn references_fact_source_traces(
     traces
 }
 
-fn references_live_source_backed_quality_note<Q: SemanticQueries>(
-    semantic_queries: &Q,
+fn references_live_source_backed_quality_note(
+    anchor_spans: &std::collections::HashMap<AnchorId, Option<AnchorSourceSpan>>,
     result: &ReferencesCutoverResult,
     occurrences: &[OccurrenceFact],
 ) -> String {
@@ -419,7 +434,7 @@ fn references_live_source_backed_quality_note<Q: SemanticQueries>(
         .iter()
         .filter(|occurrence| {
             occurrence.kind == OccurrenceKind::GeneratedUse
-                || semantic_queries.anchor_source_span(occurrence.anchor_id).is_none()
+                || anchor_spans.get(&occurrence.anchor_id).is_none_or(Option::is_none)
         })
         .count();
     let low_confidence_fallbacks =
@@ -508,8 +523,10 @@ fn references_trace_shape(
             Provenance::FrameworkSynthesis,
             fallback_state,
         ),
+        // Import/export and pragma inference are AST/workspace-index derived (#3046):
+        // they must not serialize as compiler/PIR producer identity.
         Provenance::ImportExportInference | Provenance::PragmaInference => {
-            (ProviderFactSourceKind::CompilerFact, occurrence.provenance, fallback_state)
+            (ProviderFactSourceKind::SemanticFact, occurrence.provenance, fallback_state)
         }
         Provenance::NameHeuristic | Provenance::SearchFallback => (
             ProviderFactSourceKind::Fallback,
@@ -1129,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    fn references_compiler_shadow_traces_import_export_occurrence()
+    fn references_semantic_shadow_traces_import_export_occurrence()
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occ = make_occurrence(
@@ -1152,11 +1169,53 @@ mod tests {
 
         assert!(result.legacy_result.is_empty());
         assert_eq!(trace.surface, ProviderSurface::References);
-        assert_eq!(trace.source, ProviderFactSourceKind::CompilerFact);
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
         assert_eq!(trace.provenance, Provenance::ImportExportInference);
         assert_eq!(trace.confidence, Confidence::High);
         assert_eq!(trace.freshness, ProviderFactFreshness::Fresh);
         assert_eq!(trace.fallback_state, ProviderFallbackState::Shadow);
+        Ok(())
+    }
+
+    #[test]
+    fn references_trace_shape_never_labels_ast_inference_as_compiler_fact() {
+        for provenance in [Provenance::ImportExportInference, Provenance::PragmaInference] {
+            let occurrence =
+                make_occurrence(1, 10, 20, OccurrenceKind::Reference, provenance, Confidence::High);
+            let (source, _, _) =
+                references_trace_shape(&occurrence, ProviderFallbackState::Primary);
+            assert_eq!(
+                source,
+                ProviderFactSourceKind::SemanticFact,
+                "{provenance:?} must not serialize as compiler producer identity (#3046)"
+            );
+        }
+    }
+
+    #[test]
+    fn references_semantic_shadow_traces_pragma_inference_occurrence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let occ = make_occurrence(
+            5,
+            50,
+            60,
+            OccurrenceKind::Reference,
+            Provenance::PragmaInference,
+            Confidence::High,
+        );
+        let queries = StubSemanticQueries::new(vec![occ]);
+
+        let result = find_references_shadow(
+            index.find_references("pragma_target"),
+            &queries,
+            "pragma_target",
+            EntityId(60),
+        );
+        let trace = first_trace(&result.receipt)?;
+
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
+        assert_eq!(trace.provenance, Provenance::PragmaInference);
         Ok(())
     }
 
@@ -1415,7 +1474,7 @@ mod tests {
         assert!(note.contains("import_export_fallbacks=0"));
         assert!(note.contains("partial live exact/imported references cutover"));
         let trace = first_trace(&outcome.receipt)?;
-        assert_eq!(trace.source, ProviderFactSourceKind::CompilerFact);
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
         assert_eq!(trace.fallback_state, ProviderFallbackState::Primary);
         Ok(())
     }

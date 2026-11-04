@@ -7,6 +7,10 @@
 //! the error side. `parse()`'s success return remains `crate::AstNode`, and
 //! there is no `parse_strict`.
 //!
+//! [`crate::PureRustPerlParser::parse_strict`] adds a whole-source strict entry
+//! point without recovery or normalization. Legacy [`crate::PureRustPerlParser::parse`]
+//! remains the recovering compatibility adapter.
+//!
 //! On the success side the one integrated consumer is the heredoc contract
 //! (#8220), which reports through
 //! [`crate::PureRustPerlParser::parse_heredoc_outcome`] as a

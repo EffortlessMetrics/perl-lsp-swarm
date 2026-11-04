@@ -172,6 +172,12 @@ pub(super) fn is_package_qualified_not_core(s: &str, op_start: usize) -> bool {
 /// This rejects dangerous operations when `allowSideEffects` is false, but it
 /// does not provide interpreter isolation or OS sandboxing.
 ///
+/// The refusals below name `allowSideEffects` as the recovery, which is only
+/// reachable from the `repl` context since #9385. They stay context-free here so
+/// this function remains pure; `eval::trust::retarget_side_effect_hint` rewrites
+/// the hint at the adapter seam for read-oriented contexts, where following that
+/// advice would hit a second refusal.
+///
 /// AC10.2: Safe evaluation mode validates expressions don't have side effects
 ///
 /// This function uses a pre-compiled regex for performance and includes
@@ -427,6 +433,24 @@ mod tests {
             let err = validate_safe_expression(expr);
             assert!(err.is_some(), "expected block for {expr:?}");
         }
+    }
+
+    #[test]
+    fn safe_eval_admits_keys_values_and_still_refuses_each() {
+        // #18436 item 2: keys/values are read-only hash snapshots. The iterator
+        // reset they cause is accepted; `each` still advances the iterator.
+        for expr in ["keys %h", "values %$ref", "scalar keys %h"] {
+            let err = validate_safe_expression(expr);
+            assert!(err.is_none(), "unexpected block for {expr:?}: {err:?}");
+        }
+        assert!(
+            validate_safe_expression("each %h").is_some(),
+            "each advances the iterator and must remain denied"
+        );
+        assert!(
+            validate_safe_expression("keys %h; system('true')").is_some(),
+            "compound expressions must still refuse remaining dangerous ops"
+        );
     }
 
     #[test]

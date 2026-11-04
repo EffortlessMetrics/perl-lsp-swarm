@@ -64,11 +64,18 @@ class = "async"
 reason = "Do not hold RefCell borrows across await points."
 
 [[lint]]
-name = "clippy::mutex_atomic"
-level = "warn"
+name = "clippy::async_yields_async"
+level = "deny"
 status = "active"
 class = "async"
-reason = "Primitive mutex candidates remain visible while #9884 classifies compound invariants and memory-order requirements before any atomic conversion."
+reason = "Async functions must not return nested Futures without awaiting them (#2323)."
+
+[[lint]]
+name = "clippy::mutex_atomic"
+level = "deny"
+status = "active"
+class = "async"
+reason = "Mutex-wrapped atomics should use direct atomic types; promoted to deny after a zero-finding workspace lib measurement (#2323 / #9884)."
 
 [[lint]]
 name = "clippy::collapsible_if"

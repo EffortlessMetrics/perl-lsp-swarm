@@ -213,11 +213,11 @@ After implementation:
 
 ## Cross-References
 
-- **[CLAUDE.md](../CLAUDE.md)**: Performance achievements and essential commands
-- **[COMPREHENSIVE_TESTING_GUIDE.md](../tutorials/COMPREHENSIVE_TESTING_GUIDE.md)**: Complete testing framework documentation
-- **[BENCHMARK_FRAMEWORK.md](BENCHMARK_FRAMEWORK.md)**: Parser performance benchmarking methodology
-- **[ADR-0002](adr/0002-api-documentation-infrastructure.md)**: Documentation infrastructure decision record
-- **[THREADING_CONFIGURATION_GUIDE.md](THREADING_CONFIGURATION_GUIDE.md)**: Adaptive threading and performance optimization
+- **[CLAUDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CLAUDE.md)**: Performance achievements and essential commands
+- **[COMPREHENSIVE_TESTING_GUIDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/COMPREHENSIVE_TESTING_GUIDE.md)**: Complete testing framework documentation
+- **[BENCHMARK_FRAMEWORK.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/benchmarks/BENCHMARK_FRAMEWORK.md)**: Parser performance benchmarking methodology
+- **[ADR-0002](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/adr/0002-api-documentation-infrastructure.md)**: Documentation infrastructure decision record
+- **[THREADING_CONFIGURATION_GUIDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/THREADING_CONFIGURATION_GUIDE.md)**: Adaptive threading and performance optimization
 
 ## Summary
 

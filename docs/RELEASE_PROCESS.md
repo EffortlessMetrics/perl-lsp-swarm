@@ -591,13 +591,13 @@ All binaries include SHA256 checksums in their packages.
 
 ### Downloads
 
-- [Linux x86_64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-unknown-linux-gnu.tar.gz)
-- [Linux aarch64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-aarch64-unknown-linux-gnu.tar.gz)
-- [Linux x86_64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-unknown-linux-musl.tar.gz)
-- [Linux aarch64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-aarch64-unknown-linux-musl.tar.gz)
-- [macOS x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-apple-darwin.tar.gz)
-- [macOS aarch64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-aarch64-apple-darwin.tar.gz)
-- [Windows x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-pc-windows-msvc.zip)
+- [Linux x86_64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-unknown-linux-gnu.tar.gz)
+- [Linux aarch64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-aarch64-unknown-linux-gnu.tar.gz)
+- [Linux x86_64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-unknown-linux-musl.tar.gz)
+- [Linux aarch64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-aarch64-unknown-linux-musl.tar.gz)
+- [macOS x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-apple-darwin.tar.gz)
+- [macOS aarch64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-aarch64-apple-darwin.tar.gz)
+- [Windows x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-pc-windows-msvc.zip)
 ```
 
 ## Additional Resources

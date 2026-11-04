@@ -111,8 +111,16 @@ fn test_dap_launch_with_invalid_program() {
 
     let _ = adapter.handle_request(1, "initialize", None);
 
+    // Authority-backed launches require an absolute `program` path (#8656),
+    // and the rooted POSIX spelling `/nonexistent/file.pl` is relative on
+    // Windows — the absolute-path gate would intercept before the
+    // debugger-start remediation this test pins (#17174A). A never-created
+    // file inside a tempdir is absolute on every platform.
+    let fixture = must(tempdir());
+    let program = fixture.path().join("nonexistent_launch_program.pl");
+    assert!(!program.exists(), "fixture program must not exist");
     let launch_args = json!({
-        "program": "/nonexistent/file.pl",
+        "program": program.display().to_string(),
         "args": [],
         "stopOnEntry": false
     });

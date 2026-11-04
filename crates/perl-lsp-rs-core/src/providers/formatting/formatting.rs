@@ -17,9 +17,9 @@ pub use crate::providers::formatting_types::{
 };
 use crate::tooling::perltidy::native::{
     FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
-    FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
-    FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters, TypedFormatResult,
-    inferred_line_ending,
+    FormatExecutionStrategy, FormatIdentity, FormatLineEndingDisposition, FormatOutcome,
+    FormatReasonCode, FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters,
+    TypedFormatResult, inferred_line_ending,
 };
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
@@ -208,6 +208,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
                 self.mode,
                 FormatEngine::Disabled,
                 FormatRequestTarget::Document,
+                FormatExecutionStrategy::Disabled,
                 context,
                 FormatReasonCode::FormatterDisabled,
                 "enable formatting or select a supported formatter mode",
@@ -276,6 +277,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
                     self.mode,
                     FormatEngine::Unknown,
                     target,
+                    FormatExecutionStrategy::NotStarted,
                     context,
                     FormatReasonCode::UnsafeRange,
                     error.next_action(),
@@ -295,6 +297,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
                 self.mode,
                 FormatEngine::Unknown,
                 target,
+                FormatExecutionStrategy::ExternalPartialUnsupported,
                 context,
                 FormatReasonCode::UnsafeRange,
                 "external Perl::Tidy compatibility currently supports whole-document formatting only",
@@ -304,6 +307,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
                 self.mode,
                 FormatEngine::Disabled,
                 target,
+                FormatExecutionStrategy::Disabled,
                 context,
                 FormatReasonCode::FormatterDisabled,
                 "enable formatting or select a supported formatter mode",
@@ -386,6 +390,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
             requested_mode: self.mode,
             actual_engine: FormatEngine::ExternalLegacy,
             target,
+            execution: FormatExecutionStrategy::ExternalWholeDocument,
             context,
             disposition,
             reason,
@@ -721,12 +726,28 @@ fn finalized_decision(
     if formatted == source {
         edits.clear();
     }
+    // Preserve the typed preserving variants (#17708): the projected edit
+    // list only decides applied vs no-change, not whether literal
+    // preservation was in play.
+    let preserving = matches!(
+        outcome.reason,
+        FormatReasonCode::AppliedPreservingLiterals
+            | FormatReasonCode::AlreadyFormattedPreservingLiterals
+    );
     if edits.is_empty() {
         outcome.disposition = FormatDisposition::NoChange;
-        outcome.reason = FormatReasonCode::AlreadyFormatted;
+        outcome.reason = if preserving {
+            FormatReasonCode::AlreadyFormattedPreservingLiterals
+        } else {
+            FormatReasonCode::AlreadyFormatted
+        };
     } else {
         outcome.disposition = FormatDisposition::Applied;
-        outcome.reason = FormatReasonCode::Applied;
+        outcome.reason = if preserving {
+            FormatReasonCode::AppliedPreservingLiterals
+        } else {
+            FormatReasonCode::Applied
+        };
     }
     outcome.change = change_summary(source, &formatted, &edits);
     outcome.safety.line_endings = line_ending_disposition(source, &formatted);
@@ -741,6 +762,7 @@ struct ProviderOutcomeInput<'a> {
     requested_mode: FormatterMode,
     actual_engine: FormatEngine,
     target: FormatRequestTarget,
+    execution: FormatExecutionStrategy,
     context: &'a FormatContext,
     disposition: FormatDisposition,
     reason: FormatReasonCode,
@@ -762,6 +784,7 @@ fn provider_outcome(input: ProviderOutcomeInput<'_>) -> FormatOutcome {
             config_fingerprint: input.config_fingerprint,
         },
         target: input.target,
+        execution: input.execution,
         change: change_summary(input.source, input.formatted, input.edits),
         safety: input.safety,
         next_action: input.next_action,
@@ -773,6 +796,7 @@ fn refused_decision(
     requested_mode: FormatterMode,
     actual_engine: FormatEngine,
     target: FormatRequestTarget,
+    execution: FormatExecutionStrategy,
     context: &FormatContext,
     reason: FormatReasonCode,
     next_action: &str,
@@ -784,6 +808,7 @@ fn refused_decision(
         requested_mode,
         actual_engine,
         target,
+        execution,
         context,
         disposition: FormatDisposition::Refused,
         reason,
@@ -1159,6 +1184,7 @@ mod decision_projection_tests {
                 config_fingerprint: String::new(),
             },
             target: FormatRequestTarget::Document,
+            execution: FormatExecutionStrategy::NativeDocument,
             // An intermediate formatter result that the final projection must
             // replace rather than inherit.
             change: FormatChangeSummary {
@@ -1218,6 +1244,31 @@ mod decision_projection_tests {
                 "next action must survive the evidence reset"
             );
         }
+    }
+
+    #[test]
+    fn finalized_decision_keeps_preserving_reason_variants() {
+        let mut outcome = stale_outcome();
+        outcome.reason = FormatReasonCode::AppliedPreservingLiterals;
+        let applied = finalized_decision(
+            outcome.clone(),
+            "my$x=1;\nmy $r = qr/a/;\n",
+            "my $x = 1;\nmy $r = qr/a/;\n".to_string(),
+            vec![FormatTextEdit {
+                range: FormatRange::whole_document("my$x=1;\nmy $r = qr/a/;\n"),
+                new_text: "my $x = 1;\nmy $r = qr/a/;\n".to_string(),
+            }],
+        );
+        assert_eq!(applied.outcome.reason, FormatReasonCode::AppliedPreservingLiterals);
+
+        outcome.reason = FormatReasonCode::AlreadyFormattedPreservingLiterals;
+        let unchanged = finalized_decision(
+            outcome,
+            "my $r = qr/a/;\n",
+            "my $r = qr/a/;\n".to_string(),
+            Vec::new(),
+        );
+        assert_eq!(unchanged.outcome.reason, FormatReasonCode::AlreadyFormattedPreservingLiterals);
     }
 
     /// The external adapter's envelope is validated, not trusted.
