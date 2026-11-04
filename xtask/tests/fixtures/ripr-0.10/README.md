@@ -1,5 +1,29 @@
 # Real `ripr` producer output — 0.9.0 / 0.10.0 differential
 
+`hosted-16619-static-limitations.json` and
+`hosted-16619-counted-raw-gaps.json` are field-preserving projections of
+`ripr/review/comments.json` and `ripr/pr/raw-check.json` from hosted run
+36419991913, artifact 10974153790
+(SHA-256 `f833083add52b3cd37c40819c8c7f30101f341d78895a3506be8a41a7a5972f6`).
+The guidance projection retains the receipt identity, all three inline
+`call_presence` cards, and all seven `summary_only` cards. The raw projection
+retains the three counted `no_static_path` findings. Fields unused by this
+audit are omitted; retained values are unchanged. The
+evaluated merge head is `cb695fb0bc2b7c74a311bbbed95cf7adae3b3222`, from
+PR head `7280bb349f6986b04661e3d46bdc062fd0d4e210`. Each call expression
+is unchanged in PR #16619's base-to-head diff, but its owner function changed.
+The three cards say `gap_state: static_limitation` and `why_not_actionable`
+while still carrying generic `suggested_test` text. RIPR 0.10.0's
+`review_comments.rs` emits this combination, so the suggestion is not a
+contradictory actionable disposition.
+
+The raw count is **not** these three static cards. Its probes identify changed
+output literals at `workspace_trust_report.rs:66` (two) and `:126` (one).
+The seventh `summary_only` card is actionable but concerns an unchanged
+`doctor.rs:257` seam and is absent from that counted basis. A gate must join
+individual counted findings to guidance before subtracting dispositions;
+matching head/base and subtracting by count alone does not establish that join.
+
 These files are **captured producer output**, not hand-authored JSON. #9113 requires
 the 0.10 migration to be proved against what the tool actually emits, because the
 repository has a recorded failure mode where a version bump changed JSON fields and

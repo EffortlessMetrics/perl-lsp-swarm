@@ -229,6 +229,10 @@ impl PrintAllowScope {
         self.pending_attr = true;
     }
 
+    pub(super) fn clear_pending_attribute(&mut self) {
+        self.pending_attr = false;
+    }
+
     pub(super) fn allows_current_line(&self) -> bool {
         self.pending_attr || self.active_brace_depth > 0
     }

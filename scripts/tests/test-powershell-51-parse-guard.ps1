@@ -5,6 +5,8 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $Paths = @(
     (Join-Path $Root "install.ps1"),
     (Join-Path $PSScriptRoot "test-install-ps1-checksum-required.ps1"),
+    (Join-Path $PSScriptRoot "new-install-ps1-native-fixture.ps1"),
+    (Join-Path $PSScriptRoot "test-install-ps1-installed-verification.ps1"),
     (Join-Path $PSScriptRoot "test-install-ps1-archive-safety.ps1"),
     (Join-Path $PSScriptRoot "test-install-ps1-product-unit-promotion.ps1"),
     $PSCommandPath

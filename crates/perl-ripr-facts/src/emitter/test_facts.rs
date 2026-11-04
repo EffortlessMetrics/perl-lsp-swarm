@@ -11,6 +11,7 @@ use perl_symbol::surface::{SymbolRefKind, extract_symbol_refs};
 use serde_json::{Value, json};
 
 use super::discovery::collect_t_files;
+use super::matcher_grading::{MatcherGrade, grade_matchers};
 use super::oracles::oracle_for;
 
 /// Recognized test frameworks, most-specific first. Maps a module name (as it
@@ -68,10 +69,16 @@ pub(crate) fn emit_tests_and_oracles(
         let import_prov_id = format!("prov:test_discovery:{file_id}");
 
         // Parse first (borrowing `content`), so `content` can then move into
-        // `LineIndex` without a per-file clone.
-        let parsed = {
+        // `LineIndex` without a per-file clone. `parse()` returns `Ok`
+        // whenever the parser *recovered*, so read `errors()` too — the
+        // `--check` path warns that reading only the `Result` silently passes
+        // files `perl -c` rejects (#17255).
+        let (parsed, blocking_errors, advisory_errors) = {
             let mut parser = Parser::new(&content);
-            parser.parse()
+            let result = parser.parse();
+            let (blocking, advisory): (Vec<_>, Vec<_>) =
+                parser.errors().iter().partition(|err| err.blocks_clean_parse());
+            (result, blocking.len(), advisory.len())
         };
         let ast = match parsed {
             Ok(ast) => ast,
@@ -107,20 +114,51 @@ pub(crate) fn emit_tests_and_oracles(
             }
         };
 
+        // The `Err` arm above `continue`s, so reaching here means recovery
+        // succeeded — but silent recovery contradicts `--check`, which FAILs
+        // files with blocking diagnostics. Advisory-only files PASS `--check`
+        // (`cli.rs`: `failed = fatal || !blocking.is_empty()`), so they get
+        // their own limitation that never claims failure or syntax recovery.
+        if blocking_errors > 0 {
+            limitations.push(json!({
+                "limitation_id": format!("test-parse-recovered:{file_id}"),
+                "kind": "recovered_parse_errors",
+                "message": format!(
+                    "parsed test file `{relative_path}` with error recovery ({blocking_errors} blocking, {advisory_errors} advisory); test/oracle facts below come from the recovered tree and `--check` FAILs this file"
+                ),
+                "evidence_refs": [file_id.clone()],
+            }));
+        } else if advisory_errors > 0 {
+            limitations.push(json!({
+                "limitation_id": format!("test-parse-advisories:{file_id}"),
+                "kind": "advisory_diagnostics",
+                "message": format!(
+                    "parsed test file `{relative_path}` cleanly with {advisory_errors} advisory diagnostic(s); test/oracle facts below come from the clean tree and `--check` passes this file with advisories"
+                ),
+                "evidence_refs": [file_id.clone()],
+            }));
+        }
+
         // Detect the framework and collect each oracle's span + source-text
         // `expression` while `content` is still borrowed — then `content` can
         // move into `LineIndex` (no clone) for the range conversions.
         let (framework, use_span) = framework_from_ast(&ast);
+        let graded = grade_matchers(&ast);
         let oracle_hits: Vec<(String, &'static str, &'static str, usize, usize, String)> =
             extract_symbol_refs(&ast)
                 .into_iter()
                 .filter(|reference| reference.kind == SymbolRefKind::SubroutineCall)
                 .filter_map(|reference| {
-                    oracle_for(&reference.name).map(|(kind, strength)| {
-                        let (start_byte, end_byte) = reference.full_span;
-                        let expression = call_expression(&content, start_byte, end_byte);
-                        (reference.name, kind, strength, start_byte, end_byte, expression)
-                    })
+                    let (start_byte, end_byte) = reference.full_span;
+                    // An exception block nested in a graded `like(dies {...}, ...)`
+                    // is the same observation as the `like`, not a second oracle.
+                    if graded.iter().any(|call| call.nested_start == Some(start_byte)) {
+                        return None;
+                    }
+                    let (kind, strength) = graded_oracle(&reference.name, start_byte, &graded)
+                        .or_else(|| oracle_for(&reference.name))?;
+                    let expression = call_expression(&content, start_byte, end_byte);
+                    Some((reference.name, kind, strength, start_byte, end_byte, expression))
                 })
                 .collect();
 
@@ -200,6 +238,23 @@ pub(crate) fn emit_tests_and_oracles(
     }
 
     (tests, oracles, provenance, limitations)
+}
+
+/// The matcher-graded `(kind, strength)` for a `throws_ok` or
+/// `like(dies {...}, ...)` call starting at `start`, if it was graded.
+/// A `like` over an exception block observes an exception, so it reports
+/// `exception_observer` rather than the value-`like` kind.
+fn graded_oracle(
+    name: &str,
+    start: usize,
+    graded: &[super::matcher_grading::GradedCall],
+) -> Option<(&'static str, &'static str)> {
+    let call = graded.iter().find(|call| call.name == name && call.start == start)?;
+    let strength = match call.grade {
+        MatcherGrade::Pinned => "strong_exact",
+        MatcherGrade::Broad => "weak_broad",
+    };
+    Some(("exception_observer", strength))
 }
 
 /// The whole-file range `(0,0)..(end)` as a schema range value.

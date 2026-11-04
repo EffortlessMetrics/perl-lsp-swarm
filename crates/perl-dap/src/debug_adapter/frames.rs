@@ -154,7 +154,16 @@ impl DebugAdapter {
                 &output,
             );
             let (frames, arguments) = Self::parse_stack_frames_from_text(input);
-            let frames = Self::filter_user_visible_frames(frames);
+            // The framed `T` report's first line names the debugger's own
+            // `DB::DB` frame when execution is suspended inside called code;
+            // its position is the true suspension point, while the topmost
+            // user frame's `called from` position names the call site
+            // (#17171). Reconcile before the internal frame is filtered away.
+            let suspension = Self::suspension_position_from_internal_frames(&frames);
+            let frames = Self::reconcile_top_frame_with_suspension_position(
+                Self::filter_user_visible_frames(frames),
+                suspension.as_ref(),
+            );
             match Self::rebind_generation_frame_ids(
                 frames,
                 arguments,
@@ -311,6 +320,43 @@ impl DebugAdapter {
                 expensive: false,
                 named_variables: None,
                 indexed_variables: Some(arguments.len() as i64),
+            });
+        }
+
+        let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+        let frame_name = session_guard.as_ref().and_then(|session| {
+            session
+                .stack_frames
+                .first()
+                .filter(|frame| frame.id == frame_id)
+                .map(|frame| frame.name.clone())
+        });
+        drop(session_guard);
+        if frame_name
+            .as_ref()
+            .is_some_and(|name| Self::observed_package_identity_from_frame_name(name).is_some())
+            && let Some(package_ref) =
+                (VariableReference::Scope { frame_id, kind: ScopeKind::Package }).encode()
+        {
+            scopes.push(Scope {
+                name: "Package".to_string(),
+                presentation_hint: Some("registers".to_string()),
+                variables_reference: i64::from(package_ref),
+                expensive: false,
+                named_variables: None,
+                indexed_variables: None,
+            });
+        }
+        if let Some(globals_ref) =
+            (VariableReference::Scope { frame_id, kind: ScopeKind::Globals }).encode()
+        {
+            scopes.push(Scope {
+                name: "Globals".to_string(),
+                presentation_hint: Some("globals".to_string()),
+                variables_reference: i64::from(globals_ref),
+                expensive: false,
+                named_variables: None,
+                indexed_variables: None,
             });
         }
 
@@ -484,11 +530,9 @@ mod pagination_tests {
         };
         let scope_values =
             body.get("scopes").and_then(Value::as_array).ok_or("scopes body was not an array")?;
-        assert_eq!(scope_values.len(), 2);
-        assert!(scope_values.iter().all(|scope| {
-            scope.get("name") != Some(&json!("Package"))
-                && scope.get("name") != Some(&json!("Globals"))
-        }));
+        assert_eq!(scope_values.len(), 4);
+        assert!(scope_values.iter().any(|scope| scope.get("name") == Some(&json!("Package"))));
+        assert!(scope_values.iter().any(|scope| scope.get("name") == Some(&json!("Globals"))));
         let arguments_scope = scope_values
             .iter()
             .find(|scope| scope.get("name") == Some(&json!("Arguments")))
@@ -722,6 +766,66 @@ mod pagination_tests {
             || frame.get("line").and_then(Value::as_i64) != Some(7)
         {
             return Err(format!("unexpected first framed snapshot: {frame}").into());
+        }
+        Ok(())
+    }
+
+    /// Regression for #17171: suspended inside a called sub, the framed `T`
+    /// report opens with the debugger's own `DB::DB` frame carrying the true
+    /// suspension line (9), while the first user frame's `called from`
+    /// position names the call site (12). The topmost user-visible frame
+    /// must report the suspension line and source, not the call site.
+    #[test]
+    fn framed_stack_trace_reports_suspension_line_not_the_call_site()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let adapter = Arc::new(DebugAdapter::new());
+        install_stack_trace_test_session(&adapter, Vec::new())?;
+        let worker = {
+            let adapter = Arc::clone(&adapter);
+            std::thread::spawn(move || {
+                adapter.handle_stack_trace(1, 1, Some(json!({ "threadId": 1 })))
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("initial stackTrace query was not submitted".into());
+        }
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test(
+            "@ = DB::DB called from file 'F:/dbg/hello.pl' line 9",
+        );
+        adapter.push_recent_output_line_for_test(
+            "$ = main::add(2, 3) called from file 'F:/dbg/hello.pl' line 12",
+        );
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let response = worker.join().map_err(|_| "stackTrace worker panicked")?;
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err(format!("unexpected stackTrace response: {response:?}").into());
+        };
+        let frames =
+            body.get("stackFrames").and_then(Value::as_array).ok_or("missing stackFrames")?;
+        if body.get("totalFrames") != Some(&json!(1)) {
+            return Err(format!("internal DB:: frame must stay filtered out: {body}").into());
+        }
+        let frame = frames.first().ok_or("topmost user frame was missing")?;
+        if frame.get("name").and_then(Value::as_str) != Some("main::add")
+            || frame.get("line").and_then(Value::as_i64) != Some(9)
+        {
+            return Err(format!(
+                "top frame must be main::add at the suspension line 9, got: {frame}"
+            )
+            .into());
+        }
+        if frame.get("source").and_then(|source| source.get("path")).and_then(Value::as_str)
+            != Some("F:/dbg/hello.pl")
+        {
+            return Err(format!("top frame source must be the suspension file: {frame}").into());
         }
         Ok(())
     }

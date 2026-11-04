@@ -35,6 +35,12 @@ use perl_ast::{Node, NodeKind};
 ///   `class`).
 /// - `container` — unqualified name of the enclosing package, `None` at
 ///   the top level
+/// - `declarator` — the scope keyword used to declare variables (`"my"`,
+///   `"our"`, `"local"`, `"state"`) or a lexical subroutine (`"my"`/`"state"`,
+///   `"our"` for an explicitly package-scoped sub), or `None` when no scope
+///   declarator is present, including package subs, packages, and constants.
+///   `"our"` variables are package-scoped and visible across files; `"my"`
+///   variables are lexically-scoped and file-local.
 /// - `declarator` — the scope keyword used to declare variables
 ///   (`"my"`, `"our"`, `"local"`, `"state"`) or named subroutines
 ///   (`"my"`, `"our"`, `"state"`), or `None` when no scope keyword applies.
@@ -53,6 +59,9 @@ pub struct SymbolDecl {
     pub anchor_span: Option<(usize, usize)>,
     /// Enclosing package name, if the declaration is inside a `package`.
     pub container: Option<String>,
+    /// Scope declarator for variable declarations and subroutines: `"my"`,
+    /// `"our"`, `"local"`, or `"state"`.  `None` when no scope declarator is
+    /// present, including package subs, packages, constants, and classes.
     /// Scope declarator: variables support `"my"`, `"our"`, `"local"`, and
     /// `"state"`; named subroutines support `"my"`, `"our"`, and `"state"`.
     /// `None` when no scope keyword applies.
@@ -207,7 +216,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
         }
 
         // ── Method (Perl 5.38+ `use feature 'class'`) ─────────────────────
-        NodeKind::Method { name: method_name, body, .. } => {
+        NodeKind::Method { name: method_name, name_span, body, .. } => {
             let container = ctx.current_package.clone();
             let qualified_name = ctx.qualify(method_name);
             out.push(SymbolDecl {
@@ -215,7 +224,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 name: method_name.clone(),
                 qualified_name,
                 full_span: (node.location.start, node.location.end),
-                anchor_span: None, // Method has no name_span in current AST
+                anchor_span: name_span.as_ref().map(|span| (span.start, span.end)),
                 container,
                 declarator: None,
             });
@@ -305,12 +314,14 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
         NodeKind::FunctionCall { name, args } if ctx.const_fast_enabled && name == "const" => {
             for arg in args {
                 push_const_fast_decl(arg, node, ctx, out);
+                walk_wrapper_value(arg, ctx, out);
             }
         }
 
         NodeKind::FunctionCall { name, args } if ctx.readonly_enabled && name == "Readonly" => {
             for arg in args {
                 push_readonly_decl(arg, node, ctx, out);
+                walk_wrapper_value(arg, ctx, out);
             }
         }
 
@@ -334,8 +345,10 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
             walk(expression, ctx, out);
         }
 
-        // All other nodes: no declaration to project.
-        _ => {}
+        // Non-declaration wrappers still contain declarations: control-flow
+        // bodies, call arguments and assigned closures must not swallow them.
+        // Explicit package/block handlers above retain lexical context rules.
+        _ => node.for_each_child(|child| walk(child, ctx, out)),
     }
 }
 
@@ -414,6 +427,20 @@ fn is_constant_name_candidate(arg: &str) -> bool {
 fn push_unique(names: &mut Vec<String>, name: String) {
     if !names.iter().any(|existing| existing == &name) {
         names.push(name);
+    }
+}
+
+// The wrapper owns variable projection; visit its value once without emitting
+// duplicate variable declarations or dropping declarations in the initializer.
+fn walk_wrapper_value(arg: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
+    match &arg.kind {
+        NodeKind::VariableDeclaration { initializer, .. }
+        | NodeKind::VariableListDeclaration { initializer, .. } => {
+            if let Some(value) = initializer {
+                walk(value, ctx, out);
+            }
+        }
+        _ => walk(arg, ctx, out),
     }
 }
 

@@ -699,8 +699,8 @@ pub struct DocumentState {
     /// Set when a `didChange` array violated the advertised Full/UTF-16 envelope.
     ///
     /// Last-good text remains retained as predecessor evidence. It is not current
-    /// client state: [`Self::current_parsed`] and [`Self::parsed_for_user_answers`]
-    /// return `None` until an accepted full-document replacement, close/reopen, or
+    /// client state: [`Self::current_parsed`] returns `None` until an accepted
+    /// full-document replacement, close/reopen, or
     /// restart clears the flag. [`Self::latest_parsed`] still exposes the
     /// predecessor snapshot so workspace-index eligibility can tell “was indexed”
     /// from “never parsed.”
@@ -909,21 +909,6 @@ impl DocumentState {
     /// [`Self::current_parsed`].
     pub fn latest_parsed(&self) -> Option<Arc<ParsedSnapshot>> {
         self.parsed.clone()
-    }
-
-    /// Snapshot usable for user-facing answers.
-    ///
-    /// Ordinary pending parse may fall back to [`Self::latest_parsed`] when the
-    /// current generation has no snapshot yet. Full-sync desynchronization is
-    /// not pending parse: predecessor AST must not answer the user until an
-    /// accepted full replacement recovers.
-    #[must_use]
-    pub(crate) fn parsed_for_user_answers(&self) -> Option<Arc<ParsedSnapshot>> {
-        if self.full_sync_required {
-            None
-        } else {
-            self.current_parsed().or_else(|| self.latest_parsed())
-        }
     }
 
     /// The published parse result, but only if it was parsed from the
@@ -1137,10 +1122,6 @@ mod tests {
             "last-good parse cannot masquerade as current after a Full-sync violation"
         );
         assert!(
-            doc.parsed_for_user_answers().is_none(),
-            "stale-tolerant user answers must not use predecessor AST while desynchronized"
-        );
-        assert!(
             doc.latest_parsed().is_some(),
             "predecessor snapshot stays retained as last-good evidence"
         );
@@ -1178,7 +1159,6 @@ mod tests {
             "an accepted full replacement must allow current publication again"
         );
         assert!(doc.current_parsed().is_some());
-        assert!(doc.parsed_for_user_answers().is_some());
     }
 
     #[test]

@@ -91,6 +91,8 @@ describe('contributed setting ownership table (#14447)', () => {
     const defective = SETTING_OWNERSHIP.filter((row) => row.defect).map((row) => row.key);
 
     expect(defective).toEqual([
+      'perl-lsp.aiCompletion.enabled',
+      'perl-lsp.aiCompletion.streaming.enabled',
       'perl-lsp.critic.enabled',
       'perl-lsp.critic.exclude',
       'perl-lsp.critic.include',
@@ -104,6 +106,28 @@ describe('contributed setting ownership table (#14447)', () => {
       'perl-lsp.perlcritic.severity',
       'perl-lsp.perltidyConfig',
     ]);
+  });
+
+  test('the AI completion toggles are recorded as rejected by the server (#16585)', () => {
+    // Both rows claim `didChangeConfiguration` with a server consumer, but the
+    // generic parser drops `enabled` and `streaming.enabled` on arrival (#4997)
+    // and remote AI fails closed until the trusted adapter lands (#10817). The
+    // transport is real and has no effect, so each row must carry the defect
+    // rather than reading as an honoured activation path.
+    for (const key of [
+      'perl-lsp.aiCompletion.enabled',
+      'perl-lsp.aiCompletion.streaming.enabled',
+    ]) {
+      const row = settingOwnership(key);
+
+      expect(row).toMatchObject({
+        manifestScope: 'machine',
+        owner: 'both',
+        transport: 'didChangeConfiguration',
+      });
+      expect(row?.defect?.owner).toBe('#10817');
+      expect(row?.defect?.reason).toContain('#4997');
+    }
   });
 
   test('a row claiming a server transport names a server consumer or a defect', () => {

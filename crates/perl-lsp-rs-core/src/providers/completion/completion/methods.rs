@@ -10,6 +10,7 @@ use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_lexer::find_data_marker_byte_lexed;
 use perl_semantic_analyzer::symbol::{Symbol, SymbolKind, SymbolTable};
+use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -1129,42 +1130,102 @@ fn moo_is_truthy(value: &str) -> bool {
     matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
 }
 
+/// Packages the receiver resolves to, or `None` when the receiver carries no
+/// exact evidence.
+///
+/// `Unknown` and `Dynamic` receivers resolve to nothing on purpose: the
+/// bounded Unknown-receiver fallback (#7929) and its fail-closed dynamic
+/// boundary are owned by the receiver-aware workspace path, not here.
+fn receiver_packages(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+    type_engine: Option<&TypeInferenceEngine>,
+) -> Option<Vec<String>> {
+    let evidence = super::workspace::classify_receiver_with_symbol_table(
+        context,
+        source,
+        type_engine,
+        Some(symbol_table),
+    );
+    let mut packages = evidence.candidate_packages().to_vec();
+    if let Some(package) = evidence.package() {
+        packages.push(package.to_string());
+    }
+    (!packages.is_empty()).then_some(packages)
+}
+
+/// Declaring package of a document symbol, defaulting to `main` for a symbol
+/// carrying no package qualifier.
+fn symbol_package(symbol: &Symbol) -> &str {
+    symbol.qualified_name.rsplit_once("::").map_or("main", |(package, _)| package)
+}
+
 /// Add method completions
+///
+/// Document-resident method candidates are scoped to the packages the receiver
+/// resolves to. Every other package in the same document — including a role
+/// that only some other class composes — does not define a method of this
+/// receiver, so offering it is a visibility leak rather than a ranking choice
+/// (#16983).
+///
+/// A symbol-table entry groups same-name definitions across packages and kinds
+/// (variables are keyed without their sigil), so one definition must be both
+/// callable and receiver-resident before the group is offered; admission and
+/// metadata selection read that same restricted set.
+///
+/// `Unknown` and `Dynamic` receivers keep the previous document-wide behavior:
+/// the receiver-aware workspace path owns their bounded fallback and their
+/// fail-closed cases, and guessing here would reintroduce the leak.
 pub fn add_method_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     source: &str,
     symbol_table: &SymbolTable,
+    type_engine: Option<&TypeInferenceEngine>,
 ) {
     let mut seen: HashSet<&str> = HashSet::new();
 
+    let receiver_packages = receiver_packages(context, source, symbol_table, type_engine);
+
     // Prefer discovered in-file methods first (including synthesized framework accessors).
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or(&context.prefix);
-    for (name, symbols) in &symbol_table.symbols {
-        let is_callable = symbols
-            .iter()
-            .any(|symbol| matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method));
-        if !is_callable {
-            continue;
+    // A bare-name group spans packages and kinds (`add_symbol` keys variables
+    // by name without their sigil), so admission and metadata selection must
+    // read one combined predicate: a callable in a foreign package must not
+    // license a non-callable same-named symbol in the receiver's package.
+    // Receivers without resolved packages keep the document-wide behavior.
+    let scoped_callable = |symbol: &Symbol| {
+        if !matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method) {
+            return false;
         }
+        match receiver_packages.as_deref() {
+            Some(packages) => packages.iter().any(|package| symbol_package(symbol) == package),
+            None => true,
+        }
+    };
+    for (name, symbols) in &symbol_table.symbols {
+        let Some(callable_symbol) = symbols.iter().find(|symbol| scoped_callable(symbol)) else {
+            continue;
+        };
 
         if !method_prefix.is_empty() && !name.starts_with(method_prefix) {
             continue;
         }
 
         // Check if this is a synthesized Moo/Moose accessor (declaration == "has")
-        let callable_symbol = symbols
-            .iter()
-            .find(|symbol| matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method));
-
-        let is_moo_accessor =
-            callable_symbol.and_then(|s| s.declaration.as_deref()).is_some_and(|d| d == "has");
+        let is_moo_accessor = callable_symbol.declaration.as_deref().is_some_and(|d| d == "has");
 
         let (detail, documentation) = if is_moo_accessor {
-            let attrs = callable_symbol.map(|s| s.attributes.as_slice()).unwrap_or(&[]);
-            ("Moo/Moose accessor".to_string(), Some(moo_accessor_documentation(name, attrs)))
+            (
+                "Moo/Moose accessor".to_string(),
+                Some(moo_accessor_documentation(name, callable_symbol.attributes.as_slice())),
+            )
         } else {
-            let doc = symbols.iter().find_map(|symbol| symbol.documentation.clone());
+            let doc = symbols
+                .iter()
+                .filter(|symbol| scoped_callable(symbol))
+                .find_map(|symbol| symbol.documentation.clone());
             ("method".to_string(), doc)
         };
 
@@ -1178,7 +1239,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("1_{}", name))),
                 filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -1215,14 +1276,12 @@ pub fn add_method_completions(
     };
 
     for (method, desc) in methods {
-        let is_static_api_method = static_api_methods
-            .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
-        let is_instance_api_method = instance_api_methods
-            .is_some_and(|catalog| catalog.iter().any(|(name, _)| *name == method));
-        if (is_static_api_method || is_instance_api_method)
-            && !method_prefix.is_empty()
-            && !method.starts_with(method_prefix)
-        {
+        // Every catalog candidate is prefix-filtered, not just the static and
+        // instance API lists (#17161): the response promises
+        // `isIncomplete: false`, so a generic like `AUTOLOAD` that does not
+        // start with the typed prefix must not be returned at all — it would
+        // rank against (and above) the method the user is typing toward.
+        if !method_prefix.is_empty() && !method.starts_with(method_prefix) {
             continue;
         }
         if seen.insert(method) {
@@ -1235,7 +1294,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("2_{}", method))),
                 filter_text: Some(Cow::Owned(method.to_string())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -1249,6 +1308,10 @@ pub fn add_method_completions(
             ("isa", "Check if object is of given class"),
             ("can", "Check if object can call method"),
         ] {
+            // Same `isIncomplete: false` contract as the main catalog (#17161).
+            if !method_prefix.is_empty() && !method.starts_with(method_prefix) {
+                continue;
+            }
             if seen.insert(method) {
                 completions.push(CompletionItem {
                     label: Cow::Owned(method.to_string()),
@@ -1261,7 +1324,7 @@ pub fn add_method_completions(
                     additional_edits: vec![],
                     text_edit_range: Some((
                         context.method_text_edit_start(source),
-                        context.position,
+                        context.suffix_end,
                     )),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,

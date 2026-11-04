@@ -364,11 +364,18 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
     // literal line: the binary path spelling is incidental (it moved from
     // `./target/debug/xtask` to `"$CARGO_TARGET_DIR/debug/xtask"` in #4912), while the
     // signal, grace period, 3600s ceiling, tier, base, and --receipt are the contract.
-    let watchdog_line = pr_smoke_job
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("timeout ") && line.contains("gates --tier pr-fast"))
-        .ok_or("pr-smoke must wrap the pr-fast gate runner in a `timeout` watchdog")?;
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow)?;
+    let steps = parsed["jobs"]["pr-smoke"]["steps"]
+        .as_sequence()
+        .ok_or("pr-smoke must define workflow steps")?;
+    let runners: Vec<_> = steps
+        .iter()
+        .filter(|step| step["name"].as_str() == Some("Run PR-fast via shared xtask gate runner"))
+        .collect();
+    assert_eq!(runners.len(), 1, "pr-smoke must have exactly one shared gate runner step");
+    let script =
+        runners[0]["run"].as_str().ok_or("the shared gate runner must have a run script")?;
+    let watchdog_region = pr_fast_watchdog_region(script)?;
 
     for required in [
         "--signal=TERM",
@@ -380,9 +387,9 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         "--receipt",
     ] {
         assert!(
-            watchdog_line.contains(required),
+            watchdog_region.contains(required),
             "pr-smoke inner watchdog must leave enough room for unit_routed_full receipt \
-             output; missing {required:?} in: {watchdog_line}"
+             output; missing {required:?} in: {watchdog_region}"
         );
     }
 
@@ -396,6 +403,231 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
     );
 
     Ok(())
+}
+
+fn is_pr_fast_gate_command(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let Some(binary) = words.next() else {
+        return false;
+    };
+    let binary = if let Some(quoted) = binary.strip_prefix('"') {
+        let Some(binary) = quoted.strip_suffix('"') else { return false };
+        binary
+    } else {
+        binary
+    };
+    binary.ends_with("/debug/xtask")
+        && binary.chars().all(|ch| ch.is_ascii_alphanumeric() || "/${}._-".contains(ch))
+        && words.eq([
+            "gates",
+            "--tier",
+            "pr-fast",
+            "--subject",
+            "target/receipts/ci-subject.json",
+            "--receipt",
+        ])
+}
+
+fn is_runner_message(line: &str) -> bool {
+    let Some(message) = line.strip_prefix("echo \"").and_then(|text| text.strip_suffix('"')) else {
+        return false;
+    };
+    !message.chars().any(|ch| matches!(ch, '"' | '`' | '\\'))
+        && !message.replace("$status", "").contains('$')
+}
+
+/// Recognize the two supported runner shapes, rather than treating gate text in
+/// comments, another command, or outside the timed heredoc as watchdog coverage.
+/// This is a bounded workflow contract, not a general Bash parser.
+fn pr_fast_watchdog_region(script: &str) -> Result<String, &'static str> {
+    let lines: Vec<_> = script
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .collect();
+    let timed: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with("timeout "))
+        .collect();
+    if timed.len() != 1 {
+        return Err("pr-smoke must have one timeout watchdog around its gate runner");
+    }
+    let (start, line) = timed[0];
+    if !lines[..start].iter().all(|line| line.trim() == "set +e" || is_runner_message(line.trim()))
+    {
+        return Err("unsupported commands before the timeout watchdog");
+    }
+    let command = line
+        .trim()
+        .strip_prefix("timeout --signal=TERM --kill-after=60s 3600s ")
+        .ok_or("pr-smoke watchdog must retain TERM, 60s kill grace, and the 3600s ceiling")?;
+    let end = if is_pr_fast_gate_command(command) {
+        start
+    } else {
+        if command != "bash <<'PR_FAST'" {
+            return Err("pr-smoke timeout must execute xtask or the PR_FAST Bash heredoc");
+        }
+        let end = lines[start + 1..]
+            .iter()
+            .position(|line| *line == "PR_FAST")
+            .map(|offset| start + 1 + offset)
+            .ok_or("the timed PR_FAST heredoc must have a standalone terminator")?;
+        let body: Vec<_> = lines[start + 1..end].iter().map(|line| line.trim()).collect();
+        let Some(tail_start) = body.len().checked_sub(4) else {
+            return Err("the timed heredoc must run the gate and propagate its status");
+        };
+        if !is_pr_fast_gate_command(body[tail_start])
+            || body[tail_start + 1..]
+                != [
+                    "full_status=$?",
+                    "if [ \"$full_status\" -ne 0 ]; then exit \"$full_status\"; fi",
+                    "exit \"$navigation_status\"",
+                ]
+        {
+            return Err("the gate must execute inside PR_FAST and immediately propagate failure");
+        }
+        // Admit the reviewed navigation block as a whole. A token blacklist is
+        // insufficient: Bash can spell an early exit as 'exit' or ex""it.
+        // Intentional prelude changes need a paired contract-fixture update.
+        let navigation: Vec<_> = PR_FAST_NAVIGATION_PRELUDE.lines().map(str::trim).collect();
+        if body[..tail_start] != ["set -uo pipefail", "navigation_status=0"]
+            && body[..tail_start] != navigation
+        {
+            return Err("the timed gate must follow a supported, reviewed navigation prelude");
+        }
+        end
+    };
+    let after: Vec<_> = lines[end + 1..].iter().map(|line| line.trim()).collect();
+    let direct_status = after == ["status=$?", "exit \"$status\""];
+    let logged_status = after.len() == 10
+        && after[0..3] == ["status=$?", "case \"$status\" in", "124)"]
+        && is_runner_message(after[3])
+        && after[4..6] == [";;", "137|143)"]
+        && is_runner_message(after[6])
+        && after[7..] == [";;", "esac", "exit \"$status\""];
+    if !direct_status && !logged_status {
+        return Err("the step must capture the watchdog status immediately and exit with it");
+    }
+    Ok(lines[start..=end].join("\n"))
+}
+
+const PR_FAST_NAVIGATION_PRELUDE: &str = r#"set -uo pipefail
+navigation_status=0
+if [ "$PR_SMOKE_NAVIGATION_PROOF" = 'true' ]; then
+  source_sha="$(git rev-parse --verify HEAD)"
+  source_status=$?
+  echo "NAVIGATION_PROOF source=$source_sha"
+  for target in cross_file_goto_definition_tests navigation_regression_tests; do
+    log="target/receipts/logs/navigation-${target}.log"
+    target_status=1
+    if ! printf 'NAVIGATION_PROOF source=%s target=%s\n' "$source_sha" "$target" | tee "$log"; then
+      navigation_status=1
+    fi
+    if [ "$source_status" -eq 0 ]; then
+      cargo test -p perl-lsp-rs --locked --test "$target" -- --test-threads=1 --color never 2>&1 | tee -a "$log"
+      result=("${PIPESTATUS[@]}")
+      target_status="${result[0]}"
+      if [ "${result[1]}" -ne 0 ] || ! grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' "$log"; then
+        target_status=1
+      fi
+    else
+      echo 'NOT_PROVEN: current source identity prerequisite failed' | tee -a "$log"
+    fi
+    if ! printf 'NAVIGATION_PROOF source=%s target=%s exit=%s\n' "$source_sha" "$target" "$target_status" | tee -a "$log"; then
+      navigation_status=1
+    fi
+    if [ "$target_status" -ne 0 ]; then navigation_status=1; fi
+  done
+fi"#;
+
+const DIRECT_PR_FAST: &str = "timeout --signal=TERM --kill-after=60s 3600s ./target/debug/xtask gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt\nstatus=$?\nexit \"$status\"\n";
+const HEREDOC_PR_FAST: &str = "timeout --signal=TERM --kill-after=60s 3600s bash <<'PR_FAST'\nset -uo pipefail\nnavigation_status=0\n\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt\nfull_status=$?\nif [ \"$full_status\" -ne 0 ]; then exit \"$full_status\"; fi\nexit \"$navigation_status\"\nPR_FAST\nstatus=$?\nexit \"$status\"\n";
+
+#[test]
+fn pr_fast_watchdog_accepts_direct_and_heredoc_runners() {
+    for script in [DIRECT_PR_FAST, HEREDOC_PR_FAST] {
+        assert!(pr_fast_watchdog_region(script).is_ok(), "supported timed runner: {script}");
+    }
+}
+
+#[test]
+fn pr_fast_watchdog_rejects_untimed_or_status_losing_runners() {
+    let cases = [
+        ("missing watchdog", DIRECT_PR_FAST.replacen("timeout ", "", 1)),
+        ("wrong ceiling", DIRECT_PR_FAST.replace("3600s", "60s")),
+        ("wrong signal", DIRECT_PR_FAST.replace("--signal=TERM", "--signal=KILL")),
+        ("wrong grace", DIRECT_PR_FAST.replace("--kill-after=60s", "--kill-after=1s")),
+        (
+            "unrelated timed command",
+            DIRECT_PR_FAST.replace("3600s ./target", "3600s true\n./target"),
+        ),
+        ("printed gate", DIRECT_PR_FAST.replace("3600s ./target", "3600s echo ./target")),
+        ("untimed nested shell", HEREDOC_PR_FAST.replace("3600s bash", "3600s true\nbash")),
+        (
+            "gate outside heredoc",
+            HEREDOC_PR_FAST.replace("\n\"$CARGO_TARGET_DIR", "\nPR_FAST\n\"$CARGO_TARGET_DIR"),
+        ),
+        (
+            "commented gate",
+            HEREDOC_PR_FAST.replace("\n\"$CARGO_TARGET_DIR", "\n# \"$CARGO_TARGET_DIR"),
+        ),
+        (
+            "nested heredoc data",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\ncat <<'DATA'"),
+        ),
+        (
+            "early successful exit",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\nexit 0"),
+        ),
+        (
+            "conditional gate",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\nif false; then"),
+        ),
+        ("printed outer runner", format!("cat <<'DATA'\n{HEREDOC_PR_FAST}")),
+        (
+            "quoted gate data",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\nprintf '\n"),
+        ),
+        (
+            "inline early exit",
+            HEREDOC_PR_FAST
+                .replace("navigation_status=0", "navigation_status=0\necho ready;exit 0"),
+        ),
+        (
+            "quoted early exit",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\n'exit' 0"),
+        ),
+        (
+            "concatenated early exit",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\nex\"\"it 0"),
+        ),
+        (
+            "escaped early exit",
+            HEREDOC_PR_FAST.replace("navigation_status=0", "navigation_status=0\n\\exit 0"),
+        ),
+        (
+            "unclosed binary quote",
+            DIRECT_PR_FAST.replace("./target/debug/xtask", "\"./target/debug/xtask"),
+        ),
+        (
+            "gate capture after command",
+            HEREDOC_PR_FAST.replace("full_status=$?", "true\nfull_status=$?"),
+        ),
+        ("lost gate status", HEREDOC_PR_FAST.replace("full_status=$?", "full_status=0")),
+        (
+            "lost navigation status",
+            HEREDOC_PR_FAST.replace("exit \"$navigation_status\"", "exit 0"),
+        ),
+        (
+            "outer capture after command",
+            HEREDOC_PR_FAST.replace("\nstatus=$?", "\ntrue\nstatus=$?"),
+        ),
+        ("lost outer status", HEREDOC_PR_FAST.replace("\nstatus=$?", "\nstatus=0")),
+        ("successful step exit", HEREDOC_PR_FAST.replace("exit \"$status\"", "exit 0")),
+    ];
+    for (label, script) in cases {
+        assert!(pr_fast_watchdog_region(&script).is_err(), "must refuse {label}: {script}");
+    }
 }
 
 /// TEST: pr_fast tier has at least 5 gates (the static checks + others)
