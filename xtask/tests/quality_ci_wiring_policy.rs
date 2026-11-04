@@ -241,6 +241,101 @@ fn pr_smoke_publishes_failing_gate_names_through_the_reporter() -> Result<()> {
     Ok(())
 }
 
+/// #16214: the validator reports a same-repository HTTP 404 as an absent
+/// issue — a verdict about the pull request — and every other 404 as an
+/// instrument failure, because GitHub answers 404 rather than 403 for a
+/// resource the caller may not be allowed to see. That narrowing is only
+/// sound while this job can actually read the subject repository's issues.
+/// Drop `issues: read` and the same-repo branch starts reporting "the issue
+/// is not there" when the truth is "this token was not allowed to look",
+/// which is the exact defect the split removes. Parsed rather than grepped,
+/// so a permission moved to another job does not satisfy it.
+#[test]
+fn semantic_close_containment_keeps_the_issue_read_its_404_rule_depends_on() -> Result<()> {
+    let root = repo_root_checked()?;
+    let workflow: Value = serde_yaml_ng::from_str(&fs::read_to_string(
+        root.join(".github/workflows/semantic-close-containment.yml"),
+    )?)?;
+
+    let job = workflow.get("jobs").and_then(|jobs| jobs.get("containment")).ok_or_else(|| {
+        anyhow!(
+            "semantic-close-containment.yml no longer declares a `containment` job; the \
+                 404-absence rule's permission control cannot locate what it guards"
+        )
+    })?;
+
+    let issues = job
+        .get("permissions")
+        .and_then(|permissions| permissions.get("issues"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "the `containment` job declares no `issues:` permission; \
+                 `classify_gh_failure` treats a same-repository 404 as an absent issue, which \
+                 is only true while this job can read that repository's issues"
+            )
+        })?;
+    ensure!(
+        issues == "read" || issues == "write",
+        "the `containment` job grants `issues: {issues}`; the same-repository 404-is-absence \
+         rule in `classify_gh_failure` needs read access, or a 404 stops meaning absence"
+    );
+    Ok(())
+}
+
+/// #16214: the exit codes the validator can return, and the workflow's own
+/// header documenting them, drifted apart — the header still said `3 =
+/// NOT_PROVEN/instrument failure` after the two were split. That drift is
+/// silent for anyone reading the YAML as authority, and it re-teaches exactly
+/// the conflation the split removed. Bind the two.
+#[test]
+fn semantic_close_containment_header_documents_every_exit_the_binary_can_return() -> Result<()> {
+    let root = repo_root_checked()?;
+    let binary = fs::read_to_string(root.join("xtask/src/bin/semantic-close-containment.rs"))?;
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/semantic-close-containment.yml"))?;
+
+    let header_end = workflow.find("\nname:").ok_or_else(|| {
+        anyhow!("semantic-close-containment.yml has no `name:` key, so it has no header to check")
+    })?;
+    let header = workflow.get(..header_end).ok_or_else(|| {
+        anyhow!(
+            "the semantic-close-containment.yml header offset {header_end} is not a char boundary"
+        )
+    })?;
+
+    // Every documented exit constant, read off the binary rather than listed
+    // here, so adding a fifth code fails this test instead of passing it.
+    let mut codes = vec![0];
+    for line in binary.lines() {
+        let Some(rest) = line.strip_prefix("const EXIT_") else { continue };
+        let Some((_, value)) = rest.split_once(": i32 = ") else { continue };
+        let value = value.trim_end_matches(';').trim();
+        codes.push(value.parse::<i32>().map_err(|error| {
+            anyhow!("semantic-close-containment.rs declares a non-numeric exit constant {value:?}: {error}")
+        })?);
+    }
+    ensure!(
+        codes.len() >= 4,
+        "expected the binary to declare at least three EXIT_ constants beside 0, found {codes:?}; \
+         the header contract test is not reading the constants it thinks it is"
+    );
+
+    for code in &codes {
+        ensure!(
+            header.contains(&format!("{code} = ")),
+            "the semantic-close-containment.yml header does not document exit {code}, which the \
+             validator can return; a reader outside the web UI sees only the number"
+        );
+    }
+    ensure!(
+        !header.contains("NOT_PROVEN/instrument failure"),
+        "the semantic-close-containment.yml header still documents NOT_PROVEN and instrument \
+         failure as one exit code; #16214 split them"
+    );
+    Ok(())
+}
+
 #[test]
 fn ripr_workflow_blocks_new_gaps_and_requires_receipts() {
     let root = repo_root();
@@ -1064,6 +1159,17 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     }
     let ci_route_source =
         must(fs::read_to_string(root.join("xtask").join("src").join("tasks").join("ci_route.rs")));
+    must(ci_nightly_coverage_route_consumer_contract(coverage_job));
+    let stale_coverage_consumer =
+        coverage_job.replacen("unsupported ci-route schema", "ignored schema drift", 1);
+    assert_ne!(
+        stale_coverage_consumer, coverage_job,
+        "negative control must disable the nightly ci-route schema_version gate"
+    );
+    assert!(
+        ci_nightly_coverage_route_consumer_contract(&stale_coverage_consumer).is_err(),
+        "nightly coverage route consumer must fail closed on schema_version (#15308)"
+    );
     must(cross_check_ci_route_schema_version_literals(&ci_route_source, &codecov_router));
     let mutated_python_receipt = codecov_router.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
     assert_ne!(
@@ -2336,6 +2442,26 @@ fn cross_check_ci_route_schema_version_literals(
          Rust (xtask/src/tasks/ci_route.rs) = {rust_lit:?}, \
          Python (scripts/ci/route-codecov-packs.py) = {python_lit:?}; \
          both producers write to target/receipts/quality/ci-route.json and must share one envelope identifier"
+    );
+    Ok(())
+}
+
+/// Pin #15308: the nightly `test-coverage` job must validate
+/// `ci-route.json` `schema_version` before truthiness on `coverage_proof_packs`.
+fn ci_nightly_coverage_route_consumer_contract(coverage_job: &str) -> Result<()> {
+    let marker = "coverage_required=\"$(python3";
+    let start = coverage_job
+        .find(marker)
+        .ok_or_else(|| anyhow!("missing nightly coverage_required ci-route consumer"))?;
+    let snippet = &coverage_job[start..];
+    ensure!(
+        snippet.contains("if schema != \"ci-route.v1\":")
+            && snippet.contains("unsupported ci-route schema"),
+        "coverage route consumer must validate ci-route.v1 before reading coverage_proof_packs (#15308)"
+    );
+    ensure!(
+        snippet.contains("coverage_proof_packs"),
+        "coverage route consumer must still derive coverage_required from coverage_proof_packs (#15308)"
     );
     Ok(())
 }

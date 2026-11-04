@@ -129,6 +129,73 @@ fn typed_signature_type_constraint_does_not_warn() {
     assert_no_prototype_warning("sub typed_sig (Type $x) { }");
 }
 
+// --- Quote-like spellings as prototype text (#13919) ---
+
+#[test]
+fn quote_like_spellings_survive_as_prototype_payload() {
+    // Quote-like spellings inside a prototype are payload text: the lexer
+    // must not let the closing paren start a quote, the declaration and its
+    // prototype content survive, and the invalid-character warning contract
+    // is unchanged.
+    for word in ["q", "qq", "qw", "qx", "qr", "m", "s", "tr", "y"] {
+        for source in [format!("sub named({word}) {{ 1 }}"), format!("sub forward({word});")] {
+            let mut parser = Parser::new(&source);
+            let ast = must(parser.parse());
+            let NodeKind::Program { statements } = &ast.kind else {
+                panic!("expected a program for `{source}`");
+            };
+            assert_eq!(statements.len(), 1, "declaration lost for `{source}`");
+            let NodeKind::Subroutine { prototype, .. } = &statements[0].kind else {
+                panic!("expected a subroutine for `{source}`, got {:?}", statements[0].kind);
+            };
+            let prototype =
+                prototype.as_deref().unwrap_or_else(|| panic!("prototype lost for `{source}`"));
+            let NodeKind::Prototype { content } = &prototype.kind else {
+                panic!("expected a prototype node for `{source}`, got {:?}", prototype.kind);
+            };
+            assert_eq!(content, word, "prototype payload changed for `{source}`");
+            assert_has_prototype_warning(&source);
+        }
+    }
+}
+
+#[test]
+fn quote_like_signature_defaults_keep_their_quote_tokens() {
+    // Signature defaults are expressions in the same parenthesised window:
+    // their quote-like operators must not be flattened to identifiers.
+    for source in ["sub f($x = q{hello}) { return $x }", "sub f($x = m/ab/) { return $x }"] {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let NodeKind::Program { statements } = &ast.kind else {
+            panic!("expected a program for `{source}`");
+        };
+        assert_eq!(statements.len(), 1, "declaration lost for `{source}`");
+        let NodeKind::Subroutine { prototype, signature, .. } = &statements[0].kind else {
+            panic!("expected a subroutine for `{source}`, got {:?}", statements[0].kind);
+        };
+        assert!(prototype.is_none(), "signature misread as prototype for `{source}`");
+        assert!(signature.is_some(), "signature lost for `{source}`");
+        assert_no_prototype_warning(source);
+    }
+}
+
+#[test]
+fn quote_like_after_prototype_still_lexes_as_operator() {
+    // Positive control: leaving prototype mode restores ordinary quote-like
+    // recognition immediately.
+    assert_no_prototype_warning("sub named($) { q{text} }");
+    let mut parser = Parser::new("sub named($) { q{text} }");
+    let ast = must(parser.parse());
+    let NodeKind::Program { statements } = &ast.kind else {
+        panic!("expected a program");
+    };
+    assert!(
+        matches!(statements[0].kind, NodeKind::Subroutine { .. }),
+        "expected a subroutine, got {:?}",
+        statements[0].kind
+    );
+}
+
 // --- Structural check: invalid prototype still parses as a subroutine ---
 
 #[test]

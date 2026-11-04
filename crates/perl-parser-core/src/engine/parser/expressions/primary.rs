@@ -181,9 +181,9 @@ impl<'a> Parser<'a> {
 
     /// Locate one word inside a `qw` token without assigning the whole list span.
     ///
-    /// The cleaned word list can omit comments, so locations are found in the original
-    /// token text and advanced monotonically. A conservative token-wide fallback keeps
-    /// malformed recovery nodes representable when a cleaned word cannot be located.
+    /// Locations are found in the original token body and advanced monotonically.
+    /// A conservative token-wide fallback keeps malformed recovery nodes representable
+    /// when a word cannot be located.
     fn qw_word_location(
         token_text: &str,
         token_start: usize,
@@ -282,9 +282,25 @@ impl<'a> Parser<'a> {
                     })?;
 
                 let has_embedded_code = self.analyze_regex_body_for_ast(&body, token.start())?;
+                // The lexer emits all three forms as TokenKind::Regex. Retain
+                // the operator from the token before its delimiters/body are
+                // normalized by the strict extractor.
+                let form = if token.text.starts_with("qr") {
+                    perl_ast::RegexSurfaceForm::Qr
+                } else if token.text.starts_with('m') {
+                    perl_ast::RegexSurfaceForm::MatchOperator
+                } else {
+                    perl_ast::RegexSurfaceForm::BarePattern
+                };
 
                 self.charge_node(
-                    NodeKind::Regex { pattern, replacement: None, modifiers, has_embedded_code },
+                    NodeKind::Regex {
+                        form,
+                        pattern,
+                        replacement: None,
+                        modifiers,
+                        has_embedded_code,
+                    },
                     SourceLocation { start: token.start(), end: token.end() },
                 )
             }
@@ -368,13 +384,14 @@ impl<'a> Parser<'a> {
                             content
                         };
 
-                    // Split into words, stripping # line comments first (perlop).
-                    let cleaned = strip_qw_comments(content_str);
+                    // `#` inside qw is literal data, even when Perl warns about
+                    // a possible attempt to put comments in the list (perldiag).
                     // Anchor matching at the original content slice so an
                     // operator/comment prefix cannot steal a matching word.
-                    let content_offset = text.get(2..).and_then(|rest| rest.chars().next()).map_or(2, |delimiter| 2 + delimiter.len_utf8());
+                    let content_offset = quote_parser::quote_operator_open_and_content(text, "qw")
+                        .map_or(2, |(_, content)| text.len() - content.len());
                     let mut search_offset = content_offset;
-                    let words: Vec<Node> = cleaned
+                    let words: Vec<Node> = content_str
                         .split_whitespace()
                         .map(|word| {
                             let location = Self::qw_word_location(
@@ -1175,11 +1192,23 @@ impl<'a> Parser<'a> {
             }
 
             TokenKind::Undef => {
-                let token = self.advance_token()?;
-                self.charge_node(
-                    NodeKind::Undef,
-                    SourceLocation { start: token.start(), end: token.end() },
-                )
+                // `undef => 1` is Perl's autoquoted key `"undef"`, not the
+                // undefined-value term. `looks_like_bare_call` admits this
+                // keyword before `=>` (#16639); convert it here so
+                // `auto_quote_bareword_before_fat_comma` sees an Identifier.
+                if self.is_keyword_before_fat_arrow() {
+                    let token = self.advance_token()?;
+                    self.charge_node(
+                        NodeKind::Identifier { name: token.text.to_string() },
+                        SourceLocation { start: token.start(), end: token.end() },
+                    )
+                } else {
+                    let token = self.advance_token()?;
+                    self.charge_node(
+                        NodeKind::Undef,
+                        SourceLocation { start: token.start(), end: token.end() },
+                    )
+                }
             }
 
             // Handle 'sub' specially - it might be an anonymous subroutine
@@ -1254,7 +1283,6 @@ impl<'a> Parser<'a> {
             | TokenKind::Default
             | TokenKind::Catch
             | TokenKind::Finally
-            | TokenKind::Continue
             | TokenKind::Class
             | TokenKind::Method
             | TokenKind::Format
@@ -1294,7 +1322,7 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            TokenKind::Next | TokenKind::Last | TokenKind::Redo => {
+            TokenKind::Next | TokenKind::Last | TokenKind::Redo | TokenKind::Continue => {
                 if self.is_keyword_before_fat_arrow() {
                     let token = self.advance_token()?;
                     self.charge_node(

@@ -181,6 +181,13 @@ pub struct ParseBudget {
     /// Default: 64 MiB. Collection is monotone within a drain, so ordinary
     /// files charge on the order of their own size; the default exists to bound
     /// pathological inputs, not to constrain real Perl.
+    ///
+    /// This is the sole heredoc-specific budget dimension in parser-core (#7291,
+    /// residue #13786). Queue admission, terminator comparisons, retained body
+    /// segments, and attachment walks are bounded incidentally by scan bytes,
+    /// `MAX_HEREDOC_DEPTH`, and the enclosing statement subtree — not by separate
+    /// counters — so #7085 / #7112 can consume `budget_usage.heredoc_scan_bytes`
+    /// without a second heredoc model.
     pub max_heredoc_scan_bytes: usize,
 
     /// Maximum number of non-EOF tokens the parser may consume in one
@@ -720,6 +727,22 @@ pub enum ParseError {
         range: perl_ast::SourceLocation,
     },
 
+    /// A `catch` variable head that redeclares the automatically declared
+    /// catch variable with an explicit declarator: `catch (my $e)`.
+    ///
+    /// Perl has never accepted this form; Perl 5.44 names it with the
+    /// fatal diagnostic `Can't redeclare catch variable as "%s"`. The
+    /// catch binding itself is retained (the variable after the keyword
+    /// still binds), so this error is recorded alongside the parse rather
+    /// than failing it outright (#13333).
+    #[error("Can't redeclare catch variable as \"{keyword}\" at {range:?}")]
+    CatchVariableRedeclaration {
+        /// The offending declarator keyword (`my`, `our`, or `state`).
+        keyword: String,
+        /// The keyword's half-open byte range.
+        range: perl_ast::SourceLocation,
+    },
+
     /// A block follows a do-while condition: `do { ... } while (cond) { ... }`
     ///
     /// Real Perl rejects this construct outright (`syntax error near ") {"`),
@@ -730,6 +753,32 @@ pub enum ParseError {
     #[error("Unexpected block after do-while condition at position {location}")]
     DoWhileTrailingBlock {
         /// Byte position of the unexpected `{`
+        location: usize,
+    },
+
+    /// A `continue` block follows a C-style `for` loop:
+    /// `for (init; cond; update) { ... } continue { ... }`
+    ///
+    /// Real Perl rejects this construct outright (`syntax error near
+    /// "} continue"`): `continue` blocks attach to `while`/`until`/`foreach`
+    /// loops only, never to C-style `for`. Like [`Self::DoWhileTrailingBlock`]
+    /// it has no sensible recovery, so the parse fails outright (#16296).
+    #[error("Unexpected continue block after C-style for loop at position {location}")]
+    CStyleForContinueBlock {
+        /// Byte position of the unexpected `continue`
+        location: usize,
+    },
+
+    /// A package-qualified name used as a loop-control label:
+    /// `last FOO::BAR`.
+    ///
+    /// Real Perl rejects qualified labels outright: labels are plain
+    /// identifiers. Like [`Self::DoWhileTrailingBlock`] it has no sensible
+    /// recovery — leaving the name in place would re-parse as a package
+    /// call — so the parse fails outright (#16296).
+    #[error("Unexpected qualified name as loop-control label at position {location}")]
+    QualifiedLoopControlLabel {
+        /// Byte position of the label
         location: usize,
     },
 
@@ -899,7 +948,10 @@ impl ErrorClass for ParseError {
             | Self::SyntaxError { .. }
             | Self::InvalidSignatureParameter { .. }
             | Self::InvalidSignatureOrdering { .. }
+            | Self::CatchVariableRedeclaration { .. }
             | Self::DoWhileTrailingBlock { .. }
+            | Self::CStyleForContinueBlock { .. }
+            | Self::QualifiedLoopControlLabel { .. }
             | Self::LexerError { .. }
             | Self::InvalidNumber { .. }
             | Self::InvalidString
@@ -912,8 +964,16 @@ impl ErrorClass for ParseError {
 
 /// Error classification and diagnostic generation for parsed Perl code.
 pub mod classifier;
+/// Typed parser-operation completion, distinct from diagnostics.
+pub mod completion;
 /// Error recovery strategies and traits for the Perl parser.
 pub mod recovery;
+
+pub use completion::{
+    ParseBudgetExhaustionDimension, ParseCancellationIdentity, ParseCatastrophicCause,
+    ParseCompletion, ParseCompletionClass, ParseCompletionRange, ParseCompletionStage,
+    ParseCompletionValidationError,
+};
 
 use perl_ast::Node;
 
@@ -1208,6 +1268,20 @@ impl ParseOutput {
     /// enforced by construction (private storage + derived projection).
     pub fn stop_cause(&self) -> Option<ParseStopCause> {
         self.stop_cause
+    }
+
+    /// Typed completion of the parser operation that produced this output.
+    ///
+    /// This is a projection of the stored [`ParseOutput::stop_cause`],
+    /// [`ParseOutput::recovered_count`], and AST — the same construction
+    /// pattern as [`ParseOutput::terminated_early`]. Completing the operation
+    /// records those fields; `completion()` does not scan diagnostics, and
+    /// storing a duplicate completion field would be a second authority that
+    /// `set_stop_cause` could leave stale. The snapshot copies this projection
+    /// so snapshot consumers never reclassify.
+    #[must_use]
+    pub fn completion(&self) -> ParseCompletion {
+        ParseCompletion::from_parser_terminal(self.stop_cause, self.recovered_count, &self.ast)
     }
 
     /// Replace the terminal stop cause (checked compatibility mutation).
@@ -1627,14 +1701,17 @@ impl ParseError {
             ParseError::UnexpectedToken { location, .. } => Some(*location),
             ParseError::SyntaxError { location, .. } => Some(*location),
             ParseError::InvalidSignatureParameter { range, .. }
-            | ParseError::InvalidSignatureOrdering { range, .. } => Some(range.start),
+            | ParseError::InvalidSignatureOrdering { range, .. }
+            | ParseError::CatchVariableRedeclaration { range, .. } => Some(range.start),
             ParseError::Advisory { location, .. } => Some(*location),
             ParseError::Recovered { location, .. } => Some(*location),
             // Anchored at the declaration whose collection was refused, so
             // `get_error_contexts` reports that line rather than falling back
             // to EOF. Must stay consistent with `diagnostic_anchor`.
             ParseError::HeredocBudgetExhausted { location, .. }
-            | ParseError::DoWhileTrailingBlock { location } => Some(*location),
+            | ParseError::DoWhileTrailingBlock { location }
+            | ParseError::CStyleForContinueBlock { location }
+            | ParseError::QualifiedLoopControlLabel { location } => Some(*location),
             _ => None,
         }
     }
@@ -1715,12 +1792,15 @@ impl ParseError {
         match self {
             Self::UnexpectedEof => ParseDiagnosticAnchor::EndOfInput,
             Self::InvalidSignatureParameter { range, .. }
-            | Self::InvalidSignatureOrdering { range, .. } => {
+            | Self::InvalidSignatureOrdering { range, .. }
+            | Self::CatchVariableRedeclaration { range, .. } => {
                 ParseDiagnosticAnchor::Exact(range.start)
             }
             Self::UnexpectedToken { location, .. }
             | Self::SyntaxError { location, .. }
             | Self::DoWhileTrailingBlock { location }
+            | Self::CStyleForContinueBlock { location }
+            | Self::QualifiedLoopControlLabel { location }
             | Self::Advisory { location, .. }
             | Self::HeredocBudgetExhausted { location, .. }
             | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),

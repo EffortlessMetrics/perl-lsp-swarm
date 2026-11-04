@@ -1,0 +1,50 @@
+{
+  "schema_version": "sublime_package_control_subject.v1",
+  "status": "blocked_pending_listing",
+  "channel": {
+    "name": "package_control_default",
+    "package_name": "LSP-perllsp",
+    "observable": false,
+    "listing_url": null,
+    "channel_commit": null
+  },
+  "package": {
+    "name": "LSP-perllsp",
+    "public_repository": "EffortlessMetrics/LSP-perllsp",
+    "version": null,
+    "tag": null,
+    "tree_sha256": null,
+    "installed_digest": null
+  },
+  "lsp_package": {
+    "repository": "sublimelsp/LSP",
+    "version": "2.13.0",
+    "ref": "cc9f5201d9f053d9ab67aa0ea575b494fd133803"
+  },
+  "perllsp_asset": {
+    "release": null,
+    "target": null,
+    "asset_name": null,
+    "asset_url": null,
+    "asset_sha256": null
+  },
+  "compatibility": {
+    "result": "not_proven",
+    "record_id": "lsp-perllsp-unreleased__sublime-lsp-2.13.0__perllsp-0.17.0"
+  },
+  "clean_profile": {
+    "identity": null,
+    "prior_package_absent": null,
+    "prior_managed_server_absent": null,
+    "manual_perl_server_absent": null,
+    "custom_package_source_absent": null,
+    "prior_cache_absent": null,
+    "competing_perl_provider_absent": null,
+    "workspace_does_not_replace_server_authority": null
+  },
+  "promotion": {
+    "public_artifact_installed": "not_proven",
+    "package_control_leading_setup": "not_proven"
+  },
+  "claim_boundary": "A Package Control pass requires a listed default-channel subject, a clean profile, and independently observed install and first-use cells. Exact-source, custom-channel, local checkout, listing-only, and blocked-subject evidence cannot satisfy that pass. public_artifact_installed and Package Control as a leading setup path remain not_proven until a later evidence stage binds a real listed install."
+}

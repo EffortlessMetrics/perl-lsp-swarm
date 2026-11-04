@@ -43,6 +43,49 @@ const METRIC_READERS = {
   shutdown_ms: (receipt) => receipt.lifecycle?.shutdown?.duration_ms,
 };
 
+const FEATURE_DOMAINS = [
+  'mcp',
+  'whats_new',
+  'providers',
+  'configuration',
+  'debugger',
+  'onboarding',
+];
+
+function currentFeatureActivationMeasurements(receipt) {
+  const block = receipt.startup?.feature_activation;
+  if (!block || block.schema_version !== 'feature_activation_metrics.v1') {
+    return undefined;
+  }
+  const measurements = block.measurements;
+  return Array.isArray(measurements) ? measurements : undefined;
+}
+
+for (const domain of FEATURE_DOMAINS) {
+  METRIC_READERS[`feature_${domain}_registration_ms`] = (receipt) => {
+    const measurements = currentFeatureActivationMeasurements(receipt);
+    if (!measurements) {
+      return undefined;
+    }
+    const match = measurements.find((entry) => entry?.domain === domain);
+    if (!match || typeof match.registration_ms !== 'number') {
+      return undefined;
+    }
+    return match.registration_ms;
+  };
+  METRIC_READERS[`feature_${domain}_first_use_ms`] = (receipt) => {
+    const measurements = currentFeatureActivationMeasurements(receipt);
+    if (!measurements) {
+      return undefined;
+    }
+    const match = measurements.find((entry) => entry?.domain === domain);
+    if (!match || typeof match.first_use_ms !== 'number') {
+      return undefined;
+    }
+    return match.first_use_ms;
+  };
+}
+
 function percentile(values, fraction) {
   if (values.length === 0) {
     return null;
@@ -111,6 +154,11 @@ function summarizeReceipts(receipts) {
 
   const binaryResolutionSources = {};
   const runClassifications = {};
+  // Installed accessibility receipts (#7865): project which verdicts the
+  // installed runs recorded and which inventory contracts they exercised, so
+  // the bounded accessibility evidence survives the receipt roll-up.
+  const accessibilityVerdicts = {};
+  const accessibilityInventoryDigests = {};
   for (const { receipt } of receipts) {
     const source = receipt.startup?.language_client?.binary_resolution_source;
     if (typeof source === 'string') {
@@ -120,6 +168,25 @@ function summarizeReceipts(receipts) {
     if (typeof classification === 'string') {
       runClassifications[classification] = (runClassifications[classification] ?? 0) + 1;
     }
+    const accessibility = receipt.accessibility;
+    // Project only receipts in the schema the validator accepts (#7865):
+    // a differently-schema'd or malformed block is not honest evidence and
+    // must not silently count as an accessibility verdict or inventory
+    // contract in the roll-up.
+    if (
+      accessibility &&
+      typeof accessibility === 'object' &&
+      accessibility.schema_version === 'vscode_accessibility.v1'
+    ) {
+      const verdict = accessibility.verdict;
+      if (typeof verdict === 'string') {
+        accessibilityVerdicts[verdict] = (accessibilityVerdicts[verdict] ?? 0) + 1;
+      }
+      const digest = accessibility.candidate?.inventory_digest;
+      if (typeof digest === 'string') {
+        accessibilityInventoryDigests[digest] = (accessibilityInventoryDigests[digest] ?? 0) + 1;
+      }
+    }
   }
 
   return {
@@ -128,6 +195,8 @@ function summarizeReceipts(receipts) {
     sample_count: receipts.length,
     binary_resolution_sources: binaryResolutionSources,
     run_classifications: runClassifications,
+    accessibility_verdicts: accessibilityVerdicts,
+    accessibility_inventory_digests: accessibilityInventoryDigests,
     metrics,
   };
 }

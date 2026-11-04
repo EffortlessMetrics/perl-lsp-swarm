@@ -255,6 +255,18 @@ class AggregateWiringTests(unittest.TestCase):
                 status = gate.main()
         return status, output.getvalue()
 
+    def _annotation_command(self, out: str) -> str | None:
+        """The emitted workflow command, or None.
+
+        Matched at the start of a line, because that is where the runner
+        reads one; a `::error` quoted inside the summary table is not a
+        command and must not be mistaken for the annotation under test.
+        """
+        for line in out.splitlines():
+            if line.startswith("::error "):
+                return line
+        return None
+
     def test_the_16087_case_stays_red_but_says_why(self) -> None:
         """The #16087 case: red is right, the sentence was the defect.
 
@@ -300,6 +312,123 @@ class AggregateWiringTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertIn("applicable dependency did not succeed", summary)
         self.assertNotIn("NOT a test failure", summary)
+
+    def test_the_verdict_reaches_the_surface_the_api_serves(self) -> None:
+        """The residual #16087 defect: the sentence existed and no reader got it.
+
+        `test_the_16087_case_stays_red_but_says_why` asserts the summary,
+        and the summary goes to `$GITHUB_STEP_SUMMARY`, which REST does not
+        serve. This job's check run also carries no `output` body. So every
+        assertion in that test passed while a reader on the API still saw
+        `Process completed with exit code 1` and nothing else — which is the
+        symptom the issue opens with. Annotations are the surface REST does
+        serve, so the claim is made here, on the emitted command.
+        """
+        needs = _measured_cancelled_run()
+
+        _, out = self._exit_status(needs, LATEST_HEAD_SHA=NEWER_HEAD)
+
+        command = self._annotation_command(out)
+        self.assertIsNotNone(command, "no annotation was emitted for a red verdict")
+        assert command is not None
+        self.assertIn("NOT a test failure", command)
+        self.assertIn(REPLACEMENT_RUN, command)
+
+    def test_a_green_run_hangs_no_error_annotation_off_the_check(self) -> None:
+        """The other side, and the reason the emission is guarded.
+
+        GitHub renders `::error::` as a failure annotation whatever the exit
+        code, so a classifier that printed one unconditionally would decorate
+        every green aggregate with an error a reader has no way to dismiss.
+        Every assertion in the test above passes against that classifier;
+        this is what stops it.
+        """
+        _, out = self._exit_status(applicable_needs())
+
+        self.assertIsNone(self._annotation_command(out))
+
+    def test_the_annotation_and_the_exit_code_cannot_disagree(self) -> None:
+        """The binding, across every shape this classifier can reach.
+
+        Two independent reads of `GREEN_STATUSES` would drift, and the
+        failure would be silent in the direction that matters: a red check
+        whose only explanation is suppressed. `main` derives both from one
+        `green`, and this is the control on that.
+        """
+        cases = {
+            "success": (applicable_needs(), {}),
+            "failure": (applicable_needs(shard_result="failure"), {}),
+            "superseded": (_measured_cancelled_run(), {"LATEST_HEAD_SHA": NEWER_HEAD}),
+        }
+        for name, (needs, env) in cases.items():
+            with self.subTest(shape=name):
+                status, out = self._exit_status(needs, **env)
+                annotated = self._annotation_command(out) is not None
+                self.assertEqual(
+                    status == 1,
+                    annotated,
+                    f"{name}: exit {status} but annotated={annotated}",
+                )
+
+    def test_a_reason_cannot_open_a_second_workflow_command(self) -> None:
+        """Escaping, asserted on the one thing escaping is for.
+
+        A newline ends a workflow command, so an unescaped one in the reason
+        would put whatever follows at the start of a line, where the runner
+        reads it as a command of its own. The malformed-input branch
+        interpolates a parser error into the reason, which is the path where
+        text the script did not write reaches this function.
+        """
+        forged = gate.Verdict("failure", "harmless\n::error::forged")
+
+        line = gate.annotation(forged)
+
+        # The property is not that the text is gone — it stays, inertly, as
+        # message content. It is that the runner reads commands at the start
+        # of a line, and after escaping there is only one line, which is the
+        # one this function meant to emit.
+        emitted = line.splitlines()
+        self.assertEqual(1, len(emitted))
+        self.assertTrue(emitted[0].startswith("::error title=CI Gate aggregate::"))
+        self.assertIn("%0A::error::forged", line)
+
+    def test_a_literal_percent_survives_the_round_trip(self) -> None:
+        """The escape that is only wrong when the others are right.
+
+        `%` must be escaped first, or escaping a newline to `%0A` and then
+        escaping `%` turns it into `%250A` and the reader sees the escape
+        rather than the break. Ordering is invisible to every assertion
+        above, so it gets its own.
+        """
+        line = gate.annotation(gate.Verdict("failure", "coverage fell to 94%"))
+
+        self.assertIn("coverage fell to 94%25", line)
+
+    def test_both_annotation_producers_escape_identically(self) -> None:
+        """Convergence, pinned rather than remembered.
+
+        `summarize_pr_fast_gates.py` reached this surface first (#15492,
+        landed as #16198) and this file is the second producer of a workflow
+        command in `scripts/ci/`. Two escapers of the same three characters
+        drift, and the failure is silent: one lane's annotation truncates
+        where the other's does not. Importing across the two is not
+        available — each is run as a script, so neither is importable under
+        the other's loader — so the copies are bound by a control instead.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "summarize_pr_fast_gates", SCRIPT.with_name("summarize_pr_fast_gates.py")
+        )
+        if spec is None or spec.loader is None:
+            self.skipTest("pr-fast summariser is not present")
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+
+        hostile = "100% done\r\nsecond line"
+        expected = smoke.escape_data(hostile)
+
+        escaped = gate.annotation(gate.Verdict("failure", hostile))
+
+        self.assertIn(expected, escaped, f"{escaped!r} does not carry {expected!r}")
 
     def test_a_hand_cancelled_run_with_no_newer_head_stays_red(self) -> None:
         """A maintainer cancelling a run is not supersession.

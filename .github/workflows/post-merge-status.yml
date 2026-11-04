@@ -40,7 +40,10 @@ jobs:
     name: Generate bounded status payload
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Slow-mode step 5 reaches 19m39s against the 20m job budget; 6 of the last
+    # 8 runs were killed at exactly job_start+20m (check-run annotation "The job
+    # has exceeded the maximum execution time of 20m0s"). Evidence: #16568.
+    timeout-minutes: 30
     permissions:
       contents: read
     outputs:
@@ -59,7 +62,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -267,12 +270,16 @@ jobs:
           # --head matches branch name only, including fork branches; restrict
           # closure to same-repository PRs so a fork branch that happens to
           # share the automation branch name is never touched.
-          gh pr list --state open --head automation/post-merge-status \
+          # --repo is mandatory here: this job has no checkout, so implicit
+          # repository discovery cannot resolve and every `gh pr` call fails
+          # with "failed to run git: fatal: not a git repository" (run
+          # 36298260514).
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --head automation/post-merge-status \
             --json number,isCrossRepository \
             --jq '.[] | select(.isCrossRepository | not) | .number' |
           while read -r pr; do
             [ -n "$pr" ] || continue
-            gh pr close "$pr" --comment "Superseded: regeneration at ${GITHUB_SHA} found the canonical generated files already current (changed=false), so this open payload is stale (#12606)."
+            gh pr close "$pr" --repo "$GITHUB_REPOSITORY" --comment "Superseded: regeneration at ${GITHUB_SHA} found the canonical generated files already current (changed=false), so this open payload is stale (#12606)."
           done
 
   open-pr:

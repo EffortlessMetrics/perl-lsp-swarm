@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Admit one explicitly named test target through the strict Linux Clippy route while retaining pinned drivers, scoped storage budgets and descendant settlement.
+time: 2026-10-13T04:43:16Z
+custom:
+  PR: "17810"
+  Slug: named-clippy-test
+  Breaking: "no"

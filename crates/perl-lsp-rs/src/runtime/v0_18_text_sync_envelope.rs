@@ -49,9 +49,10 @@ pub(crate) fn admit_full_document_changes(changes: &[Value]) -> FullDocumentAdmi
     for (change_index, change) in changes.iter().enumerate() {
         match serde_json::from_value::<TextDocumentContentChangeEvent>(change.clone()) {
             // The LSP full-document event is the text-only variant: the raw
-            // member must not carry a `range` key at all, because serde also
-            // deserializes an explicit `"range": null` into `None`.
-            Ok(event) if change.get("range").is_none() => {
+            // member must not carry a `range` or `rangeLength` key at all,
+            // because serde also deserializes an explicit `"range": null` or
+            // `"rangeLength": null` into `None`.
+            Ok(event) if change.get("range").is_none() && change.get("rangeLength").is_none() => {
                 replacements.push(strip_utf8_bom(&event.text).to_string());
             }
             Ok(_) => {
@@ -78,54 +79,66 @@ pub(crate) fn final_full_replacement_text(replacements: &[String]) -> Option<&st
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::expect_used,
-        clippy::panic,
-        reason = "unit tests of encode/admit classification"
-    )]
     use super::*;
+    use anyhow::{Result, ensure};
     use serde_json::json;
 
     #[test]
-    fn full_replacement_array_is_admitted_and_last_text_wins() {
+    fn full_replacement_array_is_admitted_and_last_text_wins() -> Result<()> {
         let admission = admit_full_document_changes(&[
             json!({ "text": "first\n" }),
             json!({ "text": "\u{FEFF}second\n" }),
         ]);
         match admission {
             FullDocumentAdmission::Accepted { replacements } => {
-                assert_eq!(replacements, vec!["first\n".to_string(), "second\n".to_string()]);
-                assert_eq!(final_full_replacement_text(&replacements), Some("second\n"));
+                ensure!(
+                    replacements == vec!["first\n".to_string(), "second\n".to_string()],
+                    "ordered replacements must strip BOM: {replacements:?}"
+                );
+                ensure!(
+                    final_full_replacement_text(&replacements) == Some("second\n"),
+                    "last ordered replacement must win: {replacements:?}"
+                );
             }
             FullDocumentAdmission::Violation { reason, .. } => {
-                panic!("expected admission, got {reason}")
+                return Err(anyhow::anyhow!("expected admission, got {reason}"));
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn ranged_or_malformed_or_empty_array_is_a_violation() {
-        assert!(matches!(
-            admit_full_document_changes(&[]),
-            FullDocumentAdmission::Violation { .. }
-        ));
-        assert!(matches!(
-            admit_full_document_changes(&[json!({
-                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
-                "text": "x"
-            })]),
-            FullDocumentAdmission::Violation { .. }
-        ));
-        assert!(matches!(
-            admit_full_document_changes(&[json!({ "text": "ok\n" }), json!({ "range": true })]),
-            FullDocumentAdmission::Violation { .. }
-        ));
+    fn ranged_or_malformed_or_empty_array_is_a_violation() -> Result<()> {
+        ensure!(
+            matches!(admit_full_document_changes(&[]), FullDocumentAdmission::Violation { .. }),
+            "empty array must be refused"
+        );
+        ensure!(
+            matches!(
+                admit_full_document_changes(&[json!({
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+                    "text": "x"
+                })]),
+                FullDocumentAdmission::Violation { .. }
+            ),
+            "ranged member must be refused"
+        );
+        ensure!(
+            matches!(
+                admit_full_document_changes(&[json!({ "text": "ok\n" }), json!({ "range": true })]),
+                FullDocumentAdmission::Violation { .. }
+            ),
+            "malformed member after valid replacement must refuse whole array"
+        );
         // An explicit `"range": null` is not the text-only full-document
         // variant: the raw member must not carry a `range` key at all.
-        assert!(matches!(
-            admit_full_document_changes(&[json!({ "range": null, "text": "ok\n" })]),
-            FullDocumentAdmission::Violation { change_index: Some(0), .. }
-        ));
+        ensure!(
+            matches!(
+                admit_full_document_changes(&[json!({ "range": null, "text": "ok\n" })]),
+                FullDocumentAdmission::Violation { change_index: Some(0), .. }
+            ),
+            "explicit null range must be refused at index zero"
+        );
         let mixed = admit_full_document_changes(&[
             json!({ "text": "committed-if-partial\n" }),
             json!({
@@ -133,19 +146,100 @@ mod tests {
                 "text": "x"
             }),
         ]);
-        assert!(
+        ensure!(
             matches!(mixed, FullDocumentAdmission::Violation { change_index: Some(1), .. }),
             "valid first member plus ranged second must not admit a partial array"
         );
-        assert!(matches!(
-            admit_full_document_changes(&[]),
-            FullDocumentAdmission::Violation { change_index: None, .. }
-        ));
-        assert!(matches!(
-            admit_full_document_changes(&[
-                json!({ "range": "INVALID_RANGE_CANARY", "text": "secret" })
-            ]),
-            FullDocumentAdmission::Violation { change_index: Some(0), .. }
-        ));
+        ensure!(
+            matches!(
+                admit_full_document_changes(&[]),
+                FullDocumentAdmission::Violation { change_index: None, .. }
+            ),
+            "empty array must have no violating member index"
+        );
+        ensure!(
+            matches!(
+                admit_full_document_changes(&[
+                    json!({ "range": "INVALID_RANGE_CANARY", "text": "secret" })
+                ]),
+                FullDocumentAdmission::Violation { change_index: Some(0), .. }
+            ),
+            "malformed range must be refused at index zero"
+        );
+        Ok(())
+    }
+
+    const RANGED_REASON: &str =
+        "ranged contentChanges are unsupported under advertised Full text sync";
+
+    fn ensure_ranged_violation(
+        admission: FullDocumentAdmission,
+        change_index: usize,
+        context: &str,
+    ) -> Result<()> {
+        ensure!(
+            matches!(
+                admission,
+                FullDocumentAdmission::Violation {
+                    reason: RANGED_REASON,
+                    change_index: Some(index),
+                } if index == change_index
+            ),
+            "{context}: {admission:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn orphan_range_length_is_a_ranged_violation() -> Result<()> {
+        ensure_ranged_violation(
+            admit_full_document_changes(&[json!({
+                "rangeLength": 0,
+                "text": "orphan-zero\n"
+            })]),
+            0,
+            "orphan rangeLength 0 must take the ranged-change refusal",
+        )?;
+        ensure_ranged_violation(
+            admit_full_document_changes(&[json!({
+                "rangeLength": 4,
+                "text": "orphan-nonzero\n"
+            })]),
+            0,
+            "orphan rangeLength 4 must take the ranged-change refusal",
+        )?;
+        ensure_ranged_violation(
+            admit_full_document_changes(&[json!({
+                "rangeLength": null,
+                "text": "orphan-null\n"
+            })]),
+            0,
+            "explicit null rangeLength must take the ranged-change refusal",
+        )?;
+
+        let mixed_suffix = admit_full_document_changes(&[
+            json!({ "text": "committed-if-partial\n" }),
+            json!({ "rangeLength": 4, "text": "orphan-suffix\n" }),
+        ]);
+        ensure_ranged_violation(
+            mixed_suffix,
+            1,
+            "valid first member plus orphan rangeLength must not admit a partial array",
+        )?;
+
+        match admit_full_document_changes(&[json!({ "text": "plain-full\n" })]) {
+            FullDocumentAdmission::Accepted { replacements } => {
+                ensure!(
+                    replacements == vec!["plain-full\n".to_string()],
+                    "plain full-text member must still be admitted: {replacements:?}"
+                );
+            }
+            FullDocumentAdmission::Violation { reason, .. } => {
+                return Err(anyhow::anyhow!(
+                    "plain full-text control must be admitted, got {reason}"
+                ));
+            }
+        }
+        Ok(())
     }
 }

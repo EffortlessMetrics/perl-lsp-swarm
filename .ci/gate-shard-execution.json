@@ -40,6 +40,10 @@
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },
+    "regex_static_ratchet": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
     "release_history_check": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
@@ -197,6 +201,10 @@
       "on_dependency_failure": "blocked_not_proven"
     },
     "code_action_generation_ledger": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
+    "unsafe_prod_check": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     }

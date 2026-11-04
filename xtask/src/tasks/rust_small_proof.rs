@@ -42,15 +42,18 @@ type CargoStep = (&'static str, &'static [&'static str]);
 
 /// The semantic proof floor preserved from the routed lanes (#8407). Order and
 /// flags are load-bearing: they are what "Perl LSP Rust Small Result" meant the
-/// night this consolidation landed.
+/// night this consolidation landed. Build-producing steps use the same agent
+/// profile as the scorecard to avoid a second dev/test artifact family.
 const CARGO_STEPS: &[CargoStep] = &[
     ("fetch locked inputs", &["fetch", "--locked"]),
-    ("workspace compile check", &["check", "--workspace", "--locked"]),
+    ("workspace compile check", &["check", "--workspace", "--locked", "--profile", "agent"]),
     (
         "parser semantic smoke",
         &[
             "test",
             "--locked",
+            "--profile",
+            "agent",
             "-p",
             "perl-parser",
             "--test",
@@ -64,6 +67,8 @@ const CARGO_STEPS: &[CargoStep] = &[
         &[
             "test",
             "--locked",
+            "--profile",
+            "agent",
             "-p",
             "perl-parser",
             "--test",
@@ -77,6 +82,8 @@ const CARGO_STEPS: &[CargoStep] = &[
         &[
             "test",
             "--locked",
+            "--profile",
+            "agent",
             "-p",
             "perl-parser",
             "--test",
@@ -90,12 +97,29 @@ const CARGO_STEPS: &[CargoStep] = &[
         &[
             "test",
             "--locked",
+            "--profile",
+            "agent",
             "-p",
             "perl-lsp-rs",
             "--test",
             "lsp_smoke",
             "--",
             "--test-threads=1",
+            "--nocapture",
+        ],
+    ),
+    (
+        "postfix hash-slice recovery",
+        &[
+            "test",
+            "--locked",
+            "--profile",
+            "agent",
+            "-p",
+            "perl-parser-core",
+            "--test",
+            "postfix_hash_slice_tests",
+            "--",
             "--nocapture",
         ],
     ),
@@ -239,7 +263,7 @@ pub struct RustSmallProofReceipt {
     pub result: ProofResult,
 }
 
-/// The full ordered step vocabulary: the six pinned cargo steps, then census,
+/// The full ordered step vocabulary: the seven pinned cargo steps, then census,
 /// replay, and diff hygiene. Built from the same constants the runtime uses, so
 /// a step added to `CARGO_STEPS` without a receipt entry is impossible.
 fn expected_steps() -> Vec<(String, Vec<String>)> {
@@ -1148,11 +1172,14 @@ tests::gamma: test
     fn lane_steps_are_pinned_in_order_and_identity() {
         // Mutation guard: any drift in the semantic proof floor (target names,
         // lock discipline, nocapture/threading identity) must fail here.
-        assert_eq!(CARGO_STEPS.len(), 6);
+        assert_eq!(CARGO_STEPS.len(), 7);
         assert_eq!(CARGO_STEPS[0], ("fetch locked inputs", &["fetch", "--locked"][..]));
         assert_eq!(
             CARGO_STEPS[1],
-            ("workspace compile check", &["check", "--workspace", "--locked"][..])
+            (
+                "workspace compile check",
+                &["check", "--workspace", "--locked", "--profile", "agent"][..]
+            )
         );
         assert_eq!(
             CARGO_STEPS[2],
@@ -1161,6 +1188,8 @@ tests::gamma: test
                 &[
                     "test",
                     "--locked",
+                    "--profile",
+                    "agent",
                     "-p",
                     "perl-parser",
                     "--test",
@@ -1177,6 +1206,8 @@ tests::gamma: test
                 &[
                     "test",
                     "--locked",
+                    "--profile",
+                    "agent",
                     "-p",
                     "perl-parser",
                     "--test",
@@ -1193,6 +1224,8 @@ tests::gamma: test
                 &[
                     "test",
                     "--locked",
+                    "--profile",
+                    "agent",
                     "-p",
                     "perl-parser",
                     "--test",
@@ -1209,12 +1242,32 @@ tests::gamma: test
                 &[
                     "test",
                     "--locked",
+                    "--profile",
+                    "agent",
                     "-p",
                     "perl-lsp-rs",
                     "--test",
                     "lsp_smoke",
                     "--",
                     "--test-threads=1",
+                    "--nocapture",
+                ][..]
+            )
+        );
+        assert_eq!(
+            CARGO_STEPS[6],
+            (
+                "postfix hash-slice recovery",
+                &[
+                    "test",
+                    "--locked",
+                    "--profile",
+                    "agent",
+                    "-p",
+                    "perl-parser-core",
+                    "--test",
+                    "postfix_hash_slice_tests",
+                    "--",
                     "--nocapture",
                 ][..]
             )
@@ -1545,7 +1598,7 @@ tests::gamma: test
     #[test]
     fn a_failed_lane_records_the_untouched_remainder_as_not_run() {
         // The receipt of a lane that stopped at step 2 must still carry all
-        // nine steps: omission and non-execution have to stay distinguishable.
+        // ten steps: omission and non-execution have to stay distinguishable.
         let mut recorder = Recorder::new();
         recorder.record(
             "fetch locked inputs",
@@ -1555,7 +1608,7 @@ tests::gamma: test
         );
         recorder.record(
             "workspace compile check",
-            argv("cargo", &["check", "--workspace", "--locked"]),
+            argv("cargo", &["check", "--workspace", "--locked", "--profile", "agent"]),
             StepOutcome::ProductFailure,
             Some(101),
         );
@@ -2149,7 +2202,7 @@ tests::gamma: test
         );
         recorder.record(
             "workspace compile check",
-            argv("cargo", &["check", "--workspace", "--locked"]),
+            argv("cargo", &["check", "--workspace", "--locked", "--profile", "agent"]),
             StepOutcome::ProductFailure,
             Some(101),
         );
@@ -2308,11 +2361,11 @@ tests::gamma: test
         // The point-tests above mutate fixed indices, so a regression that only
         // breaks certain positions — an off-by-one skipping the last step, or a
         // check that fires for `CARGO_STEPS` entries but silently misses the
-        // census/replay/diff-hygiene steps at 6/7/8 — could survive them. Each
+        // census/replay/diff-hygiene tail — could survive them. Each
         // mutation below is re-run at every index, which also documents that
         // these checks are position-independent.
         let count = expected_steps().len();
-        assert_eq!(count, 9, "the sweep must cover the whole lane");
+        assert_eq!(count, 10, "the sweep must cover the whole lane");
 
         for index in 0..count {
             let name = || receipt_step_name(index);
@@ -2356,6 +2409,44 @@ tests::gamma: test
                 rejection(&bad_exit, None).contains("rather than 0"),
                 "an ok step {index} ({}) with a nonzero exit code was accepted",
                 name()
+            );
+        }
+    }
+
+    #[test]
+    fn every_build_step_rejects_profile_drift_in_receipts() {
+        // Legacy default-profile receipts and flags moved into libtest arguments
+        // must not certify the normalized lane, even if they report success.
+        for index in 1..CARGO_STEPS.len() {
+            let receipt = success_receipt();
+            let Some(profile_index) =
+                receipt.steps[index].argv.iter().position(|arg| arg == "--profile")
+            else {
+                panic!("build step {index} must pin its profile");
+            };
+
+            let mut missing = receipt.clone();
+            missing.steps[index].argv.drain(profile_index..profile_index + 2);
+            assert!(
+                rejection(&missing, None).contains("does not match the pinned lane argv"),
+                "legacy profile at step {index} was accepted"
+            );
+
+            let mut wrong = receipt.clone();
+            wrong.steps[index].argv[profile_index + 1] = "dev".to_string();
+            assert!(
+                rejection(&wrong, None).contains("does not match the pinned lane argv"),
+                "wrong profile at step {index} was accepted"
+            );
+
+            let mut misplaced = missing;
+            if !misplaced.steps[index].argv.iter().any(|arg| arg == "--") {
+                misplaced.steps[index].argv.push("--".to_string());
+            }
+            misplaced.steps[index].argv.extend(["--profile".to_string(), "agent".to_string()]);
+            assert!(
+                rejection(&misplaced, None).contains("does not match the pinned lane argv"),
+                "profile after the libtest separator at step {index} was accepted"
             );
         }
     }

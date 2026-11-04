@@ -100,6 +100,14 @@ pub(crate) struct ObservationProcessPlan {
 /// exact files, glob patterns) plus the contract's runner switches; it never
 /// expands the target into explicit `.t` members, so the upstream runner
 /// itself performs the selection.
+///
+/// One switches-only form is admitted: when a target's selectors contain a
+/// manifest population and every other selector is a recursive root, the
+/// target names an upstream-internal selection (for example `t/TEST --core`,
+/// whose pinned source expands its core roots and core MANIFEST subset only
+/// on the zero-file-argument path). Passing the roots verbatim would echo
+/// directory names instead of members, so the argv is the contract's runner
+/// switches alone and upstream still performs every part of the selection.
 pub(crate) fn selector_arguments(
     matrix: &UpstreamTargetMatrix,
     entry: &TargetMatrixEntry,
@@ -113,6 +121,53 @@ pub(crate) fn selector_arguments(
         ));
     }
     let (selectors, _script_forms) = effective_selection(matrix, entry)?;
+    // Admission is pinned to the exact upstream `--core` shape, not to any
+    // switches-plus-manifest combination: environment variants of the full
+    // target inherit a manifest population with their own switches
+    // (`--utf8`, `--deparse`, ...) and must keep refusing, because their
+    // zero-argument population is platform- and build-dependent.
+    // The complete upstream core root set at the pinned revision. The
+    // switches-only form is admitted only for exactly this population: a
+    // narrower target carrying --core plus a subset of roots would
+    // silently widen to the full core selection upstream performs.
+    const CORE_ROOTS: [&str; 13] = [
+        "base", "comp", "run", "cmd", "io", "re", "opbasic", "op", "uni", "mro", "class", "perf",
+        "test_pl",
+    ];
+    let root_paths: std::collections::BTreeSet<&str> = selectors
+        .iter()
+        .filter_map(|selector| match selector {
+            TargetSelector::RecursiveRoot { path } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect();
+    let manifest_count = selectors
+        .iter()
+        .filter(|selector| {
+            matches!(
+                selector,
+                TargetSelector::ManifestPopulation {
+                    component: crate::model::ManifestPopulation::CoreRootLib
+                }
+            )
+        })
+        .count();
+    let upstream_internal = entry.contract.runner_switches.as_slice() == ["--core"]
+        && manifest_count == 1
+        && root_paths.len() == CORE_ROOTS.len()
+        && CORE_ROOTS.iter().all(|root| root_paths.contains(root))
+        && selectors.iter().all(|selector| {
+            matches!(
+                selector,
+                TargetSelector::RecursiveRoot { .. }
+                    | TargetSelector::ManifestPopulation {
+                        component: crate::model::ManifestPopulation::CoreRootLib
+                    }
+            )
+        });
+    if upstream_internal {
+        return Ok(entry.contract.runner_switches.clone());
+    }
     let mut arguments = Vec::new();
     for switch in &entry.contract.runner_switches {
         arguments.push(switch.clone());
@@ -532,9 +587,16 @@ mod contract_tests {
             "manifest_root_lib",
             "make_test_reonly",
             "prep_test",
-            // Carries a manifest-population selector even though its authority
-            // is t/TEST: `--core` populations stay outside this route.
-            "selector_test_core",
+            // Environment variants inherit the full target's manifest
+            // population with non-core switches: only the exact `--core`
+            // shape is admitted switches-only, so every variant refuses.
+            "variant_deparse",
+            "variant_taintwarn",
+            "variant_utf8",
+            "variant_utf16_be_bom",
+            "variant_utf16_be_no_bom",
+            "variant_utf16_le_bom",
+            "variant_utf16_le_no_bom",
         ] {
             let found = entry(&matrix, target_id)?;
             let Err(error) = selector_arguments(&matrix, found) else {
