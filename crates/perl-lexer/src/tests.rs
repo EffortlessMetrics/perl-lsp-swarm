@@ -911,10 +911,7 @@ fn vstring_autoquoted_fat_comma_does_not_autoquote_a_dotted_candidate() {
     // while single-component `v5 => 1` autoquotes. The fat-comma arm must
     // therefore only fire for candidates without a dot.
     let lexer = PerlLexer::new("v65.66 => 1");
-    assert!(
-        !lexer.vstring_is_autoquoted(0, 6),
-        "dotted v-string before => is not autoquoted"
-    );
+    assert!(!lexer.vstring_is_autoquoted(0, 6), "dotted v-string before => is not autoquoted");
     let lexer = PerlLexer::new("v5 => 1");
     assert!(lexer.vstring_is_autoquoted(0, 2), "single-component candidate still autoquotes");
 }
