@@ -18,6 +18,8 @@ const LOCAL_ENV: &[&str] = &[
     "GIT_NO_REPLACE_OBJECTS",
     "GIT_REPLACE_REF_BASE",
     "GIT_PREFIX",
+    // Older Git versions still report and interpret this internal selector.
+    "GIT_INTERNAL_SUPER_PREFIX",
     "GIT_SHALLOW_FILE",
     "GIT_COMMON_DIR",
 ];
@@ -102,7 +104,7 @@ mod tests {
             return probe(Path::new(&root));
         }
 
-        for mode in ["hook", "objects", "config"] {
+        for mode in ["hook", "objects", "config", "super-prefix"] {
             let temp = tempfile::tempdir()?;
             let root = temp.path();
             let caller = root.join("caller");
@@ -144,6 +146,9 @@ mod tests {
                         .env("GIT_OBJECT_DIRECTORY", git_dir.join("objects"))
                         .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", git_dir.join("objects"));
                 }
+                "super-prefix" => {
+                    child.env("GIT_INTERNAL_SUPER_PREFIX", "foreign/");
+                }
                 _ => {
                     child
                         .env("GIT_CONFIG", git_dir.join("config"))
@@ -178,6 +183,12 @@ mod tests {
         ensure!(native.lines().any(|key| key == "GIT_DIR"));
         let command = command();
         let removals = command.get_envs().collect::<BTreeMap<_, _>>();
+        // Keep the older-version contract covered even when the installed Git
+        // no longer lists or interprets this key.
+        ensure!(
+            removals.get(OsString::from("GIT_INTERNAL_SUPER_PREFIX").as_os_str()) == Some(&None),
+            "legacy Git-local super-prefix must be explicitly removed"
+        );
         for key in native.lines() {
             ensure!(
                 removals.get(OsString::from(key).as_os_str()) == Some(&None),

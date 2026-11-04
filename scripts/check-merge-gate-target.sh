@@ -12,9 +12,9 @@ ref_name="${3:-${GITHUB_REF:-}}"
 case "$event_name" in
   merge_group)
     # A merge-group event is eligible only when the queue belongs to a
-    # protected branch; accept an explicit main/master merge-queue ref and
+    # protected branch; accept GitHub's gh-readonly-queue ref for main/master and
     # treat anything else (including a missing ref) as NOT_PROVEN.
-    if [[ "$ref_name" == refs/heads/main-merge-queue/* || "$ref_name" == refs/heads/master-merge-queue/* ]]; then
+    if [[ "$ref_name" == refs/heads/gh-readonly-queue/main/* || "$ref_name" == refs/heads/gh-readonly-queue/master/* ]]; then
       echo "Merge gate target: merge-group evaluation is eligible for protected queue '$ref_name'."
     else
       echo "::error title=Merge gate target unknown::Merge-group ref '$ref_name' is not a protected-branch merge queue; merge-gate evaluation is NOT_PROVEN." >&2

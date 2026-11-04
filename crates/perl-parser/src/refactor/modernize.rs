@@ -213,12 +213,12 @@ impl PerlModernizer {
         result
     }
 
-    /// Modernize a Perl file on disk based on specified patterns
-    pub fn modernize_file(
-        &mut self,
-        file: &std::path::Path,
-        _patterns: &[crate::refactoring::ModernizationPattern],
-    ) -> crate::ParseResult<usize> {
+    /// Modernize a Perl file on disk in place.
+    ///
+    /// The retired unified refactoring engine owned the former `patterns`
+    /// parameter (#5231); modernization here is analysis-driven and takes no
+    /// pattern selection.
+    pub fn modernize_file(&mut self, file: &std::path::Path) -> crate::ParseResult<usize> {
         // Read file content
         let content = std::fs::read_to_string(file)
             .map_err(|e| crate::ParseError::syntax(format!("Failed to read file: {}", e), 0))?;

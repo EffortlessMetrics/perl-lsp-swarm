@@ -23,17 +23,18 @@ import sys
 SOURCE = Path(__file__).resolve().parents[1] / 'cargo_admitted.py'
 
 
-def fixture_inputs(request):
+def fixture_inputs(request, extras=()):
     paths = {'src/lib.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml'}
     if '--test' in request:
         paths.update({'tests/' + request[request.index('--test') + 1] + '.rs', 'tests/other.rs'})
+    paths.update(extras)
     return paths
 
 
-def bind_inputs(root, destination, request):
+def bind_inputs(root, destination, request, extras=()):
     destination.mkdir()
     binding = {}
-    for relative in sorted(fixture_inputs(request)):
+    for relative in sorted(fixture_inputs(request, extras)):
         data = (root / relative).read_bytes()
         retained = destination / relative
         retained.parent.mkdir(parents=True, exist_ok=True)
@@ -42,8 +43,8 @@ def bind_inputs(root, destination, request):
     return binding
 
 
-def verify_inputs(root, destination, request, binding):
-    if set(binding) != fixture_inputs(request):
+def verify_inputs(root, destination, request, binding, extras=()):
+    if set(binding) != fixture_inputs(request, extras):
         raise RuntimeError('missing or unexpected fixture input binding')
     for relative, identity in binding.items():
         for path in (root / relative, destination / relative):
@@ -55,7 +56,10 @@ def verify_inputs(root, destination, request, binding):
 parser = argparse.ArgumentParser(description='Owned, offline native Clippy fail/clean qualification; retains artifacts')
 parser.add_argument('--proof-root', required=True, type=Path)
 parser.add_argument('--named-only', action='store_true', help='Run only the affected named-test pair')
+parser.add_argument('--keep-going-only', action='store_true', help='Run only the keep-going census controls')
 options = parser.parse_args()
+if options.named_only and options.keep_going_only:
+    parser.error('--named-only and --keep-going-only are mutually exclusive')
 if not options.proof_root.is_absolute() or not options.proof_root.is_dir():
     parser.error('--proof-root must be an existing absolute owner-approved directory')
 spec = importlib.util.spec_from_file_location('admitted', SOURCE)
@@ -107,10 +111,10 @@ for name in safe.CAPACITY_ENV:
     env.pop(name, None)
 args = ['clippy', '-p', 'consumer', '--all-targets', '--profile', 'agent', '--locked', '--offline', '--', '-D', 'warnings']
 
-def execute(label, source, request=args):
+def execute(label, source, request=args, extra_inputs=()):
     (ROOT / 'src/lib.rs').write_text(source)
     retained_inputs = BASE / (label + '-inputs')
-    binding = bind_inputs(ROOT, retained_inputs, request)
+    binding = bind_inputs(ROOT, retained_inputs, request, extra_inputs)
     preflight = subprocess.run([sys.executable, str(SOURCE), '--preflight', *request], cwd=ROOT,
                                env=env, capture_output=True, text=True)
     prefix = 'cargo-admitted preflight: '
@@ -123,7 +127,7 @@ def execute(label, source, request=args):
     budget_file = BASE / (label + '-budget.json')
     budget_file.write_text(json.dumps(budget))
     output = (BASE / (label + '-stdout.txt')).open('w')
-    verify_inputs(ROOT, retained_inputs, request, binding)
+    verify_inputs(ROOT, retained_inputs, request, binding, extra_inputs)
     process = subprocess.Popen([sys.executable, str(SOURCE), '--budget-file', str(budget_file), *request],
                                cwd=ROOT, env=env, stdout=output, stderr=subprocess.PIPE, text=True)
     lines, lock, identity, marker, pgid = [], None, None, None, None
@@ -169,13 +173,13 @@ def execute(label, source, request=args):
     receipt['lease_disposition'] = 'released by original owner after kernel ECHILD proof and matching identity'
     if lock.exists():
         raise RuntimeError('release postcondition failed')
-    verify_inputs(ROOT, retained_inputs, request, binding)
+    verify_inputs(ROOT, retained_inputs, request, binding, extra_inputs)
     receipt['inputs_verified'] = True
     (BASE / (label + '-receipt.json')).write_text(json.dumps(receipt, indent=2))
     print(label, 'product_exit', status, 'group_absent', group_absent, 'lease_verified_released')
     return status, stderr
 
-if not options.named_only:
+if not options.named_only and not options.keep_going_only:
     failed, diagnostic = execute('lint-failure', 'pub fn witness() -> usize { let values = vec![1, 2, 3]; values.len() }\n')
     if failed != 101 or 'clippy::useless_vec' not in diagnostic:
         raise RuntimeError('Clippy-specific fail control not observed: ' + diagnostic)
@@ -190,26 +194,68 @@ if not options.named_only:
         raise RuntimeError('both normal and test library targets were not observed')
     print('REAL ADMITTED CLIPPY FAIL/CLEAN PAIR PASS; FIXTURE ONLY; native Windows NOT_PROVEN')
 
-# A real named target must retain default features and lint policy, while a
-# deliberately invalid unselected target proves Cargo did not expand selection.
-(ROOT / 'tests').mkdir()
-(ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
-named = ROOT / 'tests/named-proof.rs'
-prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'
-request = ['clippy', '-p', 'consumer', '--test', 'named-proof', '--profile', 'agent',
-           '--locked', '--offline', '--', '-D', 'warnings']
-named.write_text(prefix + '#[test]\nfn witness() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
-failed, diagnostic = execute('named-lint-failure', 'pub fn witness() -> usize { 3 }\n', request)
-if failed != 101 or 'clippy::useless_vec' not in diagnostic or 'tests/named-proof.rs' not in diagnostic:
-    raise RuntimeError('named-target lint failure not observed: ' + diagnostic)
-named.write_text(prefix + '#[test]\nfn witness() { let values = [1, 2, 3]; assert_eq!(values.len(), 3); }\n')
-passed, diagnostic = execute('named-clean', 'pub fn witness() -> usize { 3 }\n', request)
-if passed != 0:
-    raise RuntimeError('named clean control failed: ' + diagnostic)
-artifacts = [json.loads(line) for line in (BASE / 'named-clean-stdout.txt').read_text().splitlines() if line.startswith('{')]
-compiled = [item for item in artifacts if item.get('reason') == 'compiler-artifact']
-if (len(compiled) != 2 or {item['target']['name'] for item in compiled} != {'consumer', 'named-proof'}
-        or any(item['features'] != ['default', 'witness'] or item['profile']['opt_level'] != '0' for item in compiled)
-        or [item['profile']['test'] for item in compiled if item['target']['name'] == 'named-proof'] != [True]):
-    raise RuntimeError('named-target/default-features/agent-profile identity not observed')
-print('REAL NAMED TEST FAIL/CLEAN PAIR PASS; UNSELECTED TARGET EXCLUDED; FIXTURE ONLY')
+if not options.named_only:
+    keep_going = ['clippy', '-p', 'consumer', '--all-targets', '--profile', 'agent',
+                  '--locked', '--offline', '--keep-going', '--', '-D', 'warnings']
+    census_inputs = {'tests/first_fail.rs', 'tests/second_fail.rs'}
+    (ROOT / 'tests').mkdir(exist_ok=True)
+    (ROOT / 'tests/first_fail.rs').write_text(
+        '#[test]\nfn first() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    (ROOT / 'tests/second_fail.rs').write_text(
+        '#[test]\nfn second() { let values = vec![4, 5, 6]; assert_eq!(values.len(), 3); }\n')
+    lib = 'pub fn witness() -> usize { 0 }\n'
+    failed, diagnostic = execute('keep-going-dual-lint', lib, keep_going, census_inputs)
+    if failed != 101:
+        raise RuntimeError('keep-going dual-lint control did not fail: ' + diagnostic)
+    if diagnostic.count('clippy::useless_vec') < 2:
+        raise RuntimeError('keep-going did not observe both independent lint targets: ' + diagnostic)
+    if 'tests/first_fail.rs' not in diagnostic or 'tests/second_fail.rs' not in diagnostic:
+        raise RuntimeError('keep-going missed an independent diagnostic-bearing target: ' + diagnostic)
+    blocked_source = 'compile_error!("prerequisite failure blocks dependents");\n'
+    blocked_inputs = census_inputs | {'tests/unvisited.rs'}
+    (ROOT / 'tests/unvisited.rs').write_text(
+        '#[test]\nfn unvisited() { let values = vec![9, 9, 9]; assert_eq!(values.len(), 3); }\n')
+    blocked, diagnostic = execute('keep-going-prerequisite-blocked', blocked_source, keep_going, blocked_inputs)
+    if blocked != 101:
+        raise RuntimeError('prerequisite-blocked keep-going control did not fail: ' + diagnostic)
+    if 'prerequisite failure blocks dependents' not in diagnostic:
+        raise RuntimeError('library prerequisite failure not observed: ' + diagnostic)
+    blocked_artifacts = [json.loads(line) for line in (BASE / 'keep-going-prerequisite-blocked-stdout.txt').read_text().splitlines() if line.startswith('{')]
+    blocked_compiled = [item for item in blocked_artifacts if item.get('reason') == 'compiler-artifact']
+    if any(item.get('target', {}).get('name') == 'unvisited' for item in blocked_compiled):
+        raise RuntimeError('prerequisite-blocked target produced compiler work: ' + diagnostic)
+    named_keep_going = ['clippy', '-p', 'consumer', '--test', 'named-proof', '--profile', 'agent',
+                        '--locked', '--offline', '--keep-going', '--', '-D', 'warnings']
+    named = ROOT / 'tests/named-proof.rs'
+    prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'
+    (ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
+    named.write_text(prefix + '#[test]\nfn witness() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    failed, diagnostic = execute('named-keep-going-lint', 'pub fn witness() -> usize { 3 }\n', named_keep_going)
+    if failed != 101 or 'clippy::useless_vec' not in diagnostic or 'tests/named-proof.rs' not in diagnostic:
+        raise RuntimeError('named keep-going lint failure not observed: ' + diagnostic)
+    print('REAL KEEP-GOING DUAL-LINT AND PREREQUISITE-BLOCKED PASS; NAMED KEEP-GOING PASS; FIXTURE ONLY')
+
+if not options.keep_going_only:
+    # A real named target must retain default features and lint policy, while a
+    # deliberately invalid unselected target proves Cargo did not expand selection.
+    (ROOT / 'tests').mkdir()
+    (ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
+    named = ROOT / 'tests/named-proof.rs'
+    prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'
+    request = ['clippy', '-p', 'consumer', '--test', 'named-proof', '--profile', 'agent',
+               '--locked', '--offline', '--', '-D', 'warnings']
+    named.write_text(prefix + '#[test]\nfn witness() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    failed, diagnostic = execute('named-lint-failure', 'pub fn witness() -> usize { 3 }\n', request)
+    if failed != 101 or 'clippy::useless_vec' not in diagnostic or 'tests/named-proof.rs' not in diagnostic:
+        raise RuntimeError('named-target lint failure not observed: ' + diagnostic)
+    named.write_text(prefix + '#[test]\nfn witness() { let values = [1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    passed, diagnostic = execute('named-clean', 'pub fn witness() -> usize { 3 }\n', request)
+    if passed != 0:
+        raise RuntimeError('named clean control failed: ' + diagnostic)
+    artifacts = [json.loads(line) for line in (BASE / 'named-clean-stdout.txt').read_text().splitlines() if line.startswith('{')]
+    compiled = [item for item in artifacts if item.get('reason') == 'compiler-artifact']
+    if (len(compiled) != 2 or {item['target']['name'] for item in compiled} != {'consumer', 'named-proof'}
+            or any(item['features'] != ['default', 'witness'] or item['profile']['opt_level'] != '0' for item in compiled)
+            or [item['profile']['test'] for item in compiled if item['target']['name'] == 'named-proof'] != [True]):
+        raise RuntimeError('named-target/default-features/agent-profile identity not observed')
+    print('REAL NAMED TEST FAIL/CLEAN PAIR PASS; UNSELECTED TARGET EXCLUDED; FIXTURE ONLY')
