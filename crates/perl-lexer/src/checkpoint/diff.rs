@@ -14,6 +14,10 @@ pub struct CheckpointDiff {
     pub eof_state_changed: bool,
     /// Whether the [`crate::checkpoint::CheckpointContext`] variant changed.
     pub context_changed: bool,
+    /// Whether cumulative angle-scan budget counters (bytes/steps spent)
+    /// differ. Spent budget is monotonic, so budget-only divergence is
+    /// behavior-bearing state, not position churn (#16224).
+    pub angle_budget_changed: bool,
 }
 
 impl CheckpointDiff {
@@ -24,6 +28,7 @@ impl CheckpointDiff {
             || self.prototype_state_changed
             || self.eof_state_changed
             || self.context_changed
+            || self.angle_budget_changed
     }
 }
 
@@ -40,6 +45,7 @@ mod tests {
             prototype_state_changed: false,
             eof_state_changed: false,
             context_changed: false,
+            angle_budget_changed: false,
         };
 
         assert!(!diff.has_state_changes());
@@ -54,6 +60,7 @@ mod tests {
             prototype_state_changed: false,
             eof_state_changed: false,
             context_changed: false,
+            angle_budget_changed: false,
         };
 
         assert!(diff.has_state_changes());
@@ -69,6 +76,7 @@ mod tests {
                 prototype_state_changed: false,
                 eof_state_changed: false,
                 context_changed: false,
+                angle_budget_changed: false,
             },
             CheckpointDiff {
                 position_delta: 0,
@@ -77,6 +85,7 @@ mod tests {
                 prototype_state_changed: true,
                 eof_state_changed: false,
                 context_changed: false,
+                angle_budget_changed: false,
             },
             CheckpointDiff {
                 position_delta: 0,
@@ -85,6 +94,7 @@ mod tests {
                 prototype_state_changed: false,
                 eof_state_changed: true,
                 context_changed: false,
+                angle_budget_changed: false,
             },
             CheckpointDiff {
                 position_delta: 0,
@@ -93,9 +103,25 @@ mod tests {
                 prototype_state_changed: false,
                 eof_state_changed: false,
                 context_changed: true,
+            angle_budget_changed: false,
             },
         ] {
             assert!(diff.has_state_changes());
         }
+    }
+
+    #[test]
+    fn has_state_changes_returns_true_when_only_angle_budget_changes() {
+        let diff = CheckpointDiff {
+            position_delta: 0,
+            mode_changed: false,
+            delimiter_stack_changed: false,
+            prototype_state_changed: false,
+            eof_state_changed: false,
+            context_changed: false,
+            angle_budget_changed: true,
+        };
+
+        assert!(diff.has_state_changes());
     }
 }

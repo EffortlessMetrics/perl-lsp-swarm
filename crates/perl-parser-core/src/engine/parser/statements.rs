@@ -40,6 +40,10 @@ impl<'a> Parser<'a> {
                         ParseError::RecursionLimit
                             | ParseError::RecursionDepthExhausted { .. }
                             | ParseError::CoreBudgetExhausted { .. }
+                            | ParseError::AngleContextFallback { .. }
+                            | ParseError::AngleScan {
+                                error: perl_lexer::LexerError::AngleBudgetExhausted { .. }
+                            }
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                             | ParseError::DoWhileTrailingBlock { .. }
@@ -1976,12 +1980,18 @@ impl<'a> Parser<'a> {
                         // for the same reason on C-style `for`, and
                         // `QualifiedLoopControlLabel` on qualified labels
                         // (#16296).
+                        //
+                        // `AngleContextFallback` is terminal as well: a nested
+                        // buffered angle must surface the typed rebuild request
+                        // instead of recovering into an ordinary error block
+                        // (FC-ANGLE-FALLBACK-ORDINARY-BLOCK, #16224).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
                                 | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
+                                | ParseError::AngleContextFallback { .. }
                                 | ParseError::DoWhileTrailingBlock { .. }
                                 | ParseError::CStyleForContinueBlock { .. }
                                 | ParseError::QualifiedLoopControlLabel { .. }

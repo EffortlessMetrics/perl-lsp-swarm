@@ -557,6 +557,9 @@ impl<'a> Parser<'a> {
     ) -> ParseResult<()> {
         let label = operation.label();
         match self.tokens.apply_contextual(operation) {
+            ContextualOpResult::AngleScanned(result) => {
+                result.map(|_| ()).map_err(|error| ParseError::AngleScan { error })
+            }
             ContextualOpResult::AppliedLive
             | ContextualOpResult::AppliedReplay
             | ContextualOpResult::NotRequired => Ok(()),
@@ -679,6 +682,8 @@ include!("expressions/calls.rs");
 include!("expressions/hashes.rs");
 include!("expressions/quotes.rs");
 
+#[cfg(test)]
+mod angle_resource_tests;
 #[cfg(test)]
 mod attribute_source_body_tests;
 #[cfg(test)]

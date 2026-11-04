@@ -2129,6 +2129,84 @@ fn build_deref_body(
 
 fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
     match error {
+        ParseError::AngleContextFallback { reason, location } => {
+            ParseError::AngleContextFallback { reason, location: location.saturating_add(offset) }
+        }
+        ParseError::AngleScan {
+            error: perl_lexer::LexerError::UnterminatedAngle { position, recovery },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::UnterminatedAngle {
+                position: position.saturating_add(offset),
+                recovery: recovery.saturating_add(offset),
+            },
+        },
+        ParseError::AngleScan {
+            error:
+                perl_lexer::LexerError::AngleBudgetExhausted { dimension, limit, usage, position },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::AngleBudgetExhausted {
+                dimension,
+                limit,
+                usage,
+                position: position.saturating_add(offset),
+            },
+        },
+        ParseError::AngleScan { error: perl_lexer::LexerError::UnterminatedString { position } } => {
+            ParseError::AngleScan {
+                error: perl_lexer::LexerError::UnterminatedString {
+                    position: position.saturating_add(offset),
+                },
+            }
+        }
+        ParseError::AngleScan { error: perl_lexer::LexerError::UnterminatedRegex { position } } => {
+            ParseError::AngleScan {
+                error: perl_lexer::LexerError::UnterminatedRegex {
+                    position: position.saturating_add(offset),
+                },
+            }
+        }
+        ParseError::AngleScan {
+            error: perl_lexer::LexerError::InvalidEscape { char, position },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::InvalidEscape {
+                char,
+                position: position.saturating_add(offset),
+            },
+        },
+        ParseError::AngleScan {
+            error: perl_lexer::LexerError::InvalidNumber { position, reason },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::InvalidNumber {
+                position: position.saturating_add(offset),
+                reason,
+            },
+        },
+        ParseError::AngleScan {
+            error: perl_lexer::LexerError::UnexpectedChar { char, position },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::UnexpectedChar {
+                char,
+                position: position.saturating_add(offset),
+            },
+        },
+        ParseError::AngleScan { error: perl_lexer::LexerError::InvalidUtf8 { position } } => {
+            ParseError::AngleScan {
+                error: perl_lexer::LexerError::InvalidUtf8 {
+                    position: position.saturating_add(offset),
+                },
+            }
+        }
+        ParseError::AngleScan {
+            error: perl_lexer::LexerError::HeredocError { position, reason },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::HeredocError {
+                position: position.saturating_add(offset),
+                reason,
+            },
+        },
+        ParseError::AngleScan { error: perl_lexer::LexerError::Other(message) } => {
+            ParseError::AngleScan { error: perl_lexer::LexerError::Other(message) }
+        }
         ParseError::UnexpectedToken { expected, found, location } => ParseError::UnexpectedToken {
             expected,
             found,

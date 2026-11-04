@@ -5,9 +5,38 @@ use thiserror::Error;
 /// Result type for lexer operations
 pub type Result<T> = std::result::Result<T, LexerError>;
 
+/// Independently governed work units for angle-term scanning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AngleScanDimension {
+    /// Inspected UTF-8 source bytes.
+    Bytes,
+    /// Inspected Unicode scalars, including escaped lookahead.
+    Steps,
+}
+
 /// Errors that can occur during lexing
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LexerError {
+    /// A recognized angle term reached LF or EOF without an unescaped closer.
+    #[error("Unterminated angle term at {position}; recovery boundary {recovery}")]
+    UnterminatedAngle {
+        /// Opening delimiter byte offset.
+        position: usize,
+        /// First preserved recovery delimiter, or LF/EOF.
+        recovery: usize,
+    },
+    /// Cumulative source-operation work refused the next angle inspection.
+    #[error("Angle scan {dimension:?} budget exhausted at {position}: {usage}/{limit}")]
+    AngleBudgetExhausted {
+        /// Refused work unit.
+        dimension: AngleScanDimension,
+        /// Configured source-operation limit.
+        limit: usize,
+        /// Work spent before refusal.
+        usage: usize,
+        /// Byte offset where inspection was refused.
+        position: usize,
+    },
     /// Unterminated string literal
     #[error("Unterminated string literal starting at position {position}")]
     UnterminatedString {
@@ -78,6 +107,8 @@ impl LexerError {
     /// Get the position where the error occurred
     pub fn position(&self) -> Option<usize> {
         match self {
+            LexerError::UnterminatedAngle { position, .. }
+            | LexerError::AngleBudgetExhausted { position, .. } => Some(*position),
             LexerError::UnterminatedString { position }
             | LexerError::UnterminatedRegex { position }
             | LexerError::InvalidEscape { position, .. }
