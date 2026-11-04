@@ -40,7 +40,9 @@ import {
   settleFormattingProviderCall,
   setPerlCriticSeverity,
   syncPerlCriticConfiguration,
+  warnConfiguredServerPathMissing,
   workspaceTrustClientRuntimeState,
+  _resetServerPathMissingWarningForTest,
 } from '../extension';
 import {
   openDemoProjectCommand,
@@ -216,6 +218,83 @@ describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => 
       diagnoseConfiguredServerPath('', false, channel as unknown as vscode.LogOutputChannel),
     ).toBeNull();
     expect(channel.info).not.toHaveBeenCalled();
+  });
+});
+
+describe('warnConfiguredServerPathMissing (perl-lsp.serverPath fallback, #16535)', () => {
+  beforeEach(() => {
+    _resetServerPathMissingWarningForTest();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+    (vscode.window.showWarningMessage as jest.Mock).mockImplementation(async () => undefined);
+    _resetServerPathMissingWarningForTest();
+  });
+
+  test('warns once per session, naming the broken path and the settings remedy', () => {
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      'perl-lsp.serverPath "/mnt/share/perllsp" does not exist; ' +
+        'using the auto-downloaded binary instead.',
+      'Check serverPath Setting',
+    );
+
+    // A restart or configuration change inside the same session must not
+    // repeat the warning.
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('choosing the settings button opens perl-lsp.serverPath', async () => {
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Check serverPath Setting');
+
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+      'workbench.action.openSettings',
+      'perl-lsp.serverPath',
+    );
+  });
+
+  test('dismissing the warning does not open settings', async () => {
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+      'workbench.action.openSettings',
+      'perl-lsp.serverPath',
+    );
+  });
+
+  test('an unavailable fallback does not consume the once-per-session warning', () => {
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'unavailable');
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+
+    // A later resolution with a real fallback must still warn, and only then
+    // does the once-per-session guard latch.
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    ['bundled', 'using the bundled binary instead.'],
+    ['path', 'using a binary from PATH instead.'],
+    ['unavailable', 'no fallback binary is available.'],
+  ] as const)('names the resolved %s fallback without claiming a download', (source, ending) => {
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', source);
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      `perl-lsp.serverPath "/mnt/share/perllsp" does not exist; ${ending}`,
+      'Check serverPath Setting',
+    );
   });
 });
 
@@ -1637,8 +1716,10 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 // ---------------------------------------------------------------------------
 describe('suggestAiCompletionIfSupported (#1634)', () => {
   function makeWorkspaceState(shown = false) {
+    // #16585 review: the receipt is versioned per corrected gate; the
+    // unversioned key belonged to the obsolete pre-gate prompt.
     const store = new Map<string, unknown>([
-      ['perl-lsp.aiCompletion.firstRunNotificationShown', shown],
+      ['perl-lsp.aiCompletion.firstRunNotificationShown.v2', shown],
     ]);
     return {
       get: jest.fn((key: string, defaultValue?: unknown) =>
@@ -1667,6 +1748,16 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
   const clientWithoutInline: CapabilityClient = {
     initializeResult: { capabilities: { hoverProvider: true } },
   };
+  // Gated on a server that can actually arm the backend, not on
+  // `inlineCompletionProvider`, which every shipped profile advertises (#16585).
+  const clientWithActivation: CapabilityClient = {
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
+  };
 
   afterEach(() => {
     jest.clearAllMocks();
@@ -1679,7 +1770,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     context.workspaceState = makeWorkspaceState(false);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Enable');
 
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('AI-powered inline completions'),
@@ -1693,7 +1784,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
       vscode.ConfigurationTarget.Global,
     );
     expect(context.workspaceState.update).toHaveBeenCalledWith(
-      'perl-lsp.aiCompletion.firstRunNotificationShown',
+      'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
       true,
     );
   });
@@ -1706,11 +1797,25 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
+  test('stays silent when only inline-completion support is advertised (#16585)', async () => {
+    // The dead end this issue removes: the journey fired for every user and
+    // reported a success the server cannot honour.
+    const update = mountConfig(false);
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(context.workspaceState.update).not.toHaveBeenCalled();
+  });
+
   test('stays silent when AI completion is already enabled', async () => {
     mountConfig(true);
     const context = makeContext();
     context.workspaceState = makeWorkspaceState(false);
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
@@ -1718,7 +1823,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     mountConfig(false);
     const context = makeContext();
     context.workspaceState = makeWorkspaceState(true);
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 

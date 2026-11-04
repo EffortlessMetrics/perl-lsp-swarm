@@ -792,7 +792,7 @@ fn oversized_blob_is_rejected_by_size_before_buffering() {
     let cwd = scratch.path();
     let git = |args: &[&str]| {
         let output = must_with(
-            std::process::Command::new("git").args(args).current_dir(cwd).output(),
+            crate::git_environment::command().args(args).current_dir(cwd).output(),
             "spawning git",
         );
         assert!(
@@ -823,7 +823,7 @@ fn oversized_blob_is_rejected_by_size_before_buffering() {
     let head = must_with(
         String::from_utf8(
             must_with(
-                std::process::Command::new("git")
+                crate::git_environment::command()
                     .args(["rev-parse", "HEAD"])
                     .current_dir(cwd)
                     .output(),
