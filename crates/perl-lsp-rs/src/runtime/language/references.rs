@@ -4819,6 +4819,9 @@ mod tests {
             )
             .into());
         }
+        Ok(())
+    }
+
     /// #17157: references anchored at a `package` declaration must resolve the
     /// same symbol identity as a usage-anchored query and return the full
     /// cross-file usage set, not only the declaration.
