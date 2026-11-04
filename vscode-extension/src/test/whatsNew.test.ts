@@ -14,7 +14,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type * as vscode from 'vscode';
-import { WhatsNewManager, extractVersionSection, markdownToHtml } from '../whatsNew';
+import {
+  WhatsNewManager,
+  extractVersionSection,
+  markdownToHtml,
+  resolveVersionSection,
+} from '../whatsNew';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -214,6 +219,41 @@ describe('extractVersionSection', () => {
     const section = extractVersionSection(changelog, '1.0.0');
     expect(section).toContain('Something');
     expect(section).not.toContain('Older');
+  });
+});
+
+describe('resolveVersionSection', () => {
+  const UNRELEASED_CHANGELOG = `# Change Log
+
+## [Unreleased]
+
+### Added
+- Unreleased feature
+
+## [0.17.0] - 2026-01-01
+
+### Fixed
+- Old fix
+`;
+
+  test('falls back to ## [Unreleased] when the exact version header is missing', () => {
+    const section = resolveVersionSection(UNRELEASED_CHANGELOG, '0.18.0');
+    expect(section).toContain('[Unreleased]');
+    expect(section).toContain('Unreleased feature');
+    expect(section).not.toContain('Old fix');
+  });
+
+  test('falls back from a pre-release tag to the release core version', () => {
+    const changelog = `${SAMPLE_CHANGELOG}`;
+    const section = resolveVersionSection(changelog, '0.13.0-rc.1');
+    expect(section).toContain('New feature A');
+  });
+
+  test('prefers an exact version match over Unreleased', () => {
+    const section = resolveVersionSection(UNRELEASED_CHANGELOG, '0.17.0');
+    expect(section).toContain('0.17.0');
+    expect(section).toContain('Old fix');
+    expect(section).not.toContain('Unreleased feature');
   });
 });
 

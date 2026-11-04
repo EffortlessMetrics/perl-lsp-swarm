@@ -1946,25 +1946,42 @@ function runActivationHousekeeping(
     false,
     () => new OnboardingManager(context, outputChannel),
   );
+  const languageServerRunning = languageClientLifecycle?.snapshot.state === 'running';
+
   if (onboarding?.shouldShowWelcome()) {
     featureActivationMetrics.markFirstUse('onboarding');
-    // Fire-and-forget; failures must not block extension startup.
-    onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      outputChannel.error(`[onboarding] Error showing welcome: ${msg}`);
-    });
     // Mark the version seen on first install so the next activation
     // (after an update) triggers the What's New panel instead of welcome.
     whatsNewManager.markVersionSeen().catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       outputChannel.error(`[whats-new] Error marking version seen: ${msg}`);
     });
+
+    if (onboarding.shouldOfferWelcomeNotification(languageServerRunning)) {
+      // Fire-and-forget; failures must not block extension startup.
+      onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.error(`[onboarding] Error showing welcome: ${msg}`);
+      });
+    } else {
+      // Healthy cold start — skip the stacked welcome toast (#18432).
+      onboarding.markWelcomed().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.error(`[onboarding] Error marking welcomed: ${msg}`);
+      });
+    }
   } else if (whatsNewManager.shouldShowWhatsNew()) {
     // Extension was updated — show What's New panel.
     // Fire-and-forget; failures must not block extension startup.
     whatsNewManager
       .markVersionSeen()
       .then(() => {
+        if (!whatsNewManager.hasReleaseNotesContent()) {
+          outputChannel.info(
+            '[whats-new] Skipping auto-open — no changelog section for this version',
+          );
+          return undefined;
+        }
         return whatsNewManager.showWhatsNew();
       })
       .catch((err: unknown) => {
