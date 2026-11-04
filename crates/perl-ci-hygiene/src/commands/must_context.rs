@@ -410,7 +410,7 @@ pub(crate) fn check(repo_root: &Path, base: Option<&str>) -> Result<i32> {
 }
 
 /// Candidate base refs tried, in order, when no explicit base is supplied.
-fn base_candidates() -> Vec<String> {
+pub(crate) fn base_candidates() -> Vec<String> {
     let mut candidates = Vec::new();
     if let Ok(value) = std::env::var("CI_SCOPE_BASE") {
         candidates.push(value);
@@ -431,7 +431,7 @@ fn base_candidates() -> Vec<String> {
 /// unevaluated run rather than as a violation. A shallow clone with no
 /// `origin/main` and no `HEAD~1` must not be able to fail this guard, because
 /// an absent diff is not a dropped explanation.
-fn resolve_base(repo_root: &Path, requested: Option<&str>) -> Result<Option<String>> {
+pub(crate) fn resolve_base(repo_root: &Path, requested: Option<&str>) -> Result<Option<String>> {
     if let Some(base) = requested {
         if ref_exists(repo_root, base) {
             return Ok(Some(base.to_owned()));
@@ -449,7 +449,7 @@ fn resolve_base(repo_root: &Path, requested: Option<&str>) -> Result<Option<Stri
 /// `base...HEAD` instead reported a clean result for exactly the uncommitted
 /// change the local gate exists to catch. In CI the tree is clean, so the two
 /// ranges agree.
-fn merge_base(repo_root: &Path, base: &str) -> String {
+pub(crate) fn merge_base(repo_root: &Path, base: &str) -> String {
     Command::new("git")
         .current_dir(repo_root)
         .args(["merge-base", base, "HEAD"])
@@ -463,7 +463,10 @@ fn merge_base(repo_root: &Path, base: &str) -> String {
 }
 
 /// Returns `true` when `git rev-parse --verify` resolves `reference`.
-fn ref_exists(repo_root: &Path, reference: &str) -> bool {
+///
+/// Shared with the secret-scan gate, which degrades to an empty commit
+/// history (rather than erroring) when `HEAD` itself does not resolve.
+pub(crate) fn ref_exists(repo_root: &Path, reference: &str) -> bool {
     Command::new("git")
         .current_dir(repo_root)
         .args(["rev-parse", "--verify", "--quiet", reference])

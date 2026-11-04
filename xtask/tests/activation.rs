@@ -84,6 +84,8 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     // 95 -> 96: routed integration-test compilation preparation (#17459).
     // 96 -> 97: `regex_static_ratchet` entered .ci/gate-policy.yaml (#16260).
     ("gate", 97),
+    // 95 -> 96: `secret_scan` entered .ci/gate-policy.yaml with #17428.
+    ("gate", 96),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -103,6 +105,8 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // 95/95 -> 96/96: unit_routed_full_build adds one required compilation gate (#17459).
     // 96/96 -> 97/97: regex_static_ratchet adds one required pr_fast gate (#16260).
     ("gate-policy-gates", 97, 97),
+    // 95/95 -> 96/96: secret_scan (#17428) entered .ci/gate-policy.yaml.
+    ("gate-policy-gates", 96, 96),
     // 15/15 -> 16/16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]]
     // target added by the #17154 ripr packet benchmark suite (#17170).
     // 16/16 -> 17/17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]]
