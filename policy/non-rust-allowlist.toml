@@ -768,6 +768,22 @@ broad_glob_reason = "Editor extension is a first-class shipped artifact; TypeScr
 created = "2026-05-07"
 review_after = "2026-12-07"
 
+[[allow]]
+id = "non-rust-demo-workspace-perl-lsp-config"
+path = "demo_workspace/.perl-lsp.toml"
+kind = "config"
+language = "toml"
+surface = "editor"
+classification = "config"
+owner = "editor/vscode"
+reason = "Declarative LSP client config pinning `include_paths = [\"lib\"]` for the tracked demo root (#16592); it is byte-identical to the packaged copy under vscode-extension/assets/demo-project, which the broad `non-rust-vscode-extension` glob already covers."
+covered_by = [
+  "cd vscode-extension && npm test -- --runTestsByPath src/test/packageManifest.test.ts",
+  "cargo xtask non-rust inventory --check",
+]
+created = "2026-10-01"
+review_after = "2026-10-31"
+
 # =============================================================================
 # Build / release tooling
 # =============================================================================
@@ -2707,9 +2723,25 @@ owner = "parser/incremental"
 reason = "Versioned evidence-convergence ledger classifying every compatibility test, source-test module, benchmark, and governed document in the perl-incremental-parsing adapter with owner, plane, disposition, and claim boundary (#6971)."
 covered_by = [
   "cargo test -p perl-incremental-parsing --locked --test authority_disposition_contract",
+  "cargo test -p perl-incremental-parsing --locked --test disposition_contract_falsifiers",
 ]
 created = "2026-08-18"
 review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-behavior-disposition-falsifier-fixtures"
+glob = "crates/perl-incremental-parsing/tests/fixtures/behavior_disposition/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "parser/incremental"
+reason = "Negative-control disposition ledger manifests for #7752: omitted Cargo targets, phantom autotest paths, invalid enum tokens, and semantic disposition violations."
+covered_by = [
+  "cargo test -p perl-incremental-parsing --locked --test disposition_contract_falsifiers",
+]
+created = "2026-11-02"
+review_after = "2026-12-02"
 
 [[allow]]
 id = "non-rust-current-upstream-subject-manifest"

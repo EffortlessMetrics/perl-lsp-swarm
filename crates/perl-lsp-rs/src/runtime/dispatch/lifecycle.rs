@@ -2,7 +2,7 @@
 //!
 //! Wraps LSP lifecycle requests (initialize, shutdown, exit).
 
-use super::super::{JsonRpcError, LspServer, Ordering, Value, json};
+use super::super::{JsonRpcError, LspServer, Ordering, Value, exit_policy, json};
 use std::time::Duration;
 
 const TRACE_LEVEL_OFF: &str = "off";
@@ -62,6 +62,10 @@ impl LspServer {
         {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
         }
+
+        // Forward any client-visible notices recorded while applying
+        // configuration during initialize (#18056).
+        self.flush_client_notices();
 
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
@@ -152,19 +156,31 @@ impl LspServer {
         reason = "abnormal protocol exit must leave its reason on stderr where the default warn filter drops the info-level trace (#17337)"
     )]
     pub(super) fn handle_exit_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        // `process::exit` skips destructors. Close all outbound admission gates
-        // and give the existing writer a bounded chance to flush frames that
-        // were already accepted. A timeout remains unsettled and is reported
-        // as such; it must never be treated as successful delivery.
-        let settlement = self.outbound.close_and_wait(OUTBOUND_SETTLEMENT_TIMEOUT);
-        match settlement.as_ref() {
-            Some(outcome) => outcome.report_settlement(),
-            None => tracing::error!("outbound writer did not settle before process exit"),
-        }
+        // Teardown skips Rust destructors on both exit paths (process exit
+        // and per-connection release). Close all outbound admission gates and
+        // give the existing writer a bounded chance to flush frames that were
+        // already accepted. A timeout remains unsettled and is reported as
+        // such; it must never be treated as successful delivery.
+        let settlement = self.outbound.settle_for_exit(OUTBOUND_SETTLEMENT_TIMEOUT);
+        settlement.report();
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
         let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
+        if self.exit_policy == exit_policy::ExitPolicy::EndConnection {
+            // Socket transport (#17331): this connection's `exit` ends only
+            // this connection. Release this session's serve loop and let the
+            // frontend close the peer socket; the listener and concurrent
+            // sessions keep serving. The protocol exit status stays in the
+            // log, and global logging must stay up for the surviving
+            // sessions, so the process logging guard is not drained here.
+            tracing::info!(
+                exit_code,
+                "LSP connection exiting; server continues serving other sessions"
+            );
+            self.notify_connection_exit();
+            return Ok(None);
+        }
         if exit_code == 0 {
             tracing::info!(exit_code, "LSP server exiting");
         } else {
@@ -179,7 +195,7 @@ impl LspServer {
                 exit_code,
                 "LSP server exiting: `exit` notification received without a prior `shutdown`"
             );
-            let settlement_note = match settlement.as_ref() {
+            let settlement_note = match settlement.writer.as_ref() {
                 Some(outcome) if !outcome.is_io_failure() => "outbound settled",
                 Some(_) => "outbound settled with I/O failure",
                 None => "outbound did not settle",
