@@ -342,6 +342,18 @@ fn is_dynamic_plugin(name: &str) -> bool {
     })
 }
 
+/// Canonical plugin identity for the environment adapter registry (#2980).
+#[must_use]
+pub fn plugin_registry_identity(heading: &str) -> &str {
+    canonical_plugin(heading)
+}
+
+/// Whether a plugin heading is known to generate metadata at `dzil` time.
+#[must_use]
+pub fn plugin_generates_metadata(heading: &str) -> bool {
+    is_dynamic_plugin(heading)
+}
+
 fn strip_ini_comment(line: &str) -> &str {
     let mut in_single = false;
     let mut in_double = false;

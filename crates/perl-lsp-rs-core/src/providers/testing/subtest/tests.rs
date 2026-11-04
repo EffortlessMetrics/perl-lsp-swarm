@@ -1,7 +1,57 @@
 //! Tests for Test2 subtest discovery.
 
 use super::*;
+use crate::providers::document_symbols::{CALLABLE_DOCUMENT_SYMBOL_PRIORITY, DocumentSymbol};
+use perl_position_tracking::{WirePosition, WireRange};
 use perl_test_must::{must_some_with, must_with};
+
+fn wire_range(start_line: u32, start_char: u32, end_line: u32, end_char: u32) -> WireRange {
+    WireRange {
+        start: WirePosition { line: start_line, character: start_char },
+        end: WirePosition { line: end_line, character: end_char },
+    }
+}
+
+fn fixture_symbol(name: &str, kind: u32, range: WireRange) -> DocumentSymbol {
+    DocumentSymbol {
+        name: name.to_string(),
+        detail: "subtest".to_string(),
+        kind,
+        range,
+        selection_range: range,
+        children: Vec::new(),
+        sort_priority: CALLABLE_DOCUMENT_SYMBOL_PRIORITY,
+    }
+}
+
+fn names_after_insertion(existing: Vec<DocumentSymbol>, inserted: DocumentSymbol) -> Vec<String> {
+    let mut children = existing;
+    insert_by_source_position(&mut children, inserted);
+    children.into_iter().map(|symbol| symbol.name).collect()
+}
+
+fn kinds_after_insertion(existing: Vec<DocumentSymbol>, inserted: DocumentSymbol) -> Vec<u32> {
+    let mut children = existing;
+    insert_by_source_position(&mut children, inserted);
+    children.into_iter().map(|symbol| symbol.kind).collect()
+}
+
+fn assert_insertion_order(
+    existing: Vec<DocumentSymbol>,
+    inserted: DocumentSymbol,
+    expected: &[&str],
+) {
+    let names = names_after_insertion(existing, inserted);
+    assert_eq!(names, expected);
+}
+
+fn assert_insertion_kinds(
+    existing: Vec<DocumentSymbol>,
+    inserted: DocumentSymbol,
+    expected: &[u32],
+) {
+    assert_eq!(kinds_after_insertion(existing, inserted), expected);
+}
 
 fn discover(source: &str) -> Vec<DiscoveredSubtest> {
     let mut parser = perl_parser::Parser::new(source);
@@ -401,4 +451,57 @@ fn ordinary_array_and_hash_follow_callables_in_compiler_priority_order() {
     let names: Vec<&str> = package.children.iter().map(|child| child.name.as_str()).collect();
 
     assert_eq!(names, vec!["middle", "later", "@items", "%items_by_name"]);
+}
+
+/// #18379: same priority, start, and end line but a shorter end character must
+/// sort before a longer sibling, matching `sort_pending_indices`. On main the
+/// insertion key omitted `end.character`, so inserting the shorter span after
+/// the longer sibling left them reversed. API-contract fixture (synthetic
+/// ranges); not a single production subtest shape.
+#[test]
+fn child_insertion_orders_siblings_by_end_character_matching_assembler() {
+    let shorter_end = wire_range(2, 4, 2, 12);
+    let longer_end = wire_range(2, 4, 2, 28);
+    let shorter = fixture_symbol("short", 12, shorter_end);
+    let make_long = |range: WireRange| fixture_symbol("long", 12, range);
+
+    assert_insertion_order(vec![make_long(longer_end)], shorter.clone(), &["short", "long"]);
+    assert_insertion_order(vec![shorter.clone()], make_long(longer_end), &["short", "long"]);
+
+    let mut incumbent = fixture_symbol("short", 12, shorter_end);
+    incumbent.detail = "incumbent".to_string();
+    let mut newcomer = fixture_symbol("short", 12, shorter_end);
+    newcomer.detail = "newcomer".to_string();
+    let mut children = vec![incumbent];
+    insert_by_source_position(&mut children, newcomer);
+    assert_eq!(children.len(), 2);
+    assert_eq!(
+        children[0].detail, "incumbent",
+        "partition_point `<=` must keep an equal-key sibling before a later insert"
+    );
+    assert_eq!(children[1].detail, "newcomer");
+}
+
+/// #18379: full-span ties break on name, then kind, like the assembler.
+#[test]
+fn child_insertion_name_then_kind_tiebreak_matches_assembler_from_either_order() {
+    let span = wire_range(1, 0, 1, 40);
+    let alpha = fixture_symbol("alpha", 12, span);
+    let beta = fixture_symbol("beta", 12, span);
+    assert_insertion_order(vec![beta.clone()], alpha.clone(), &["alpha", "beta"]);
+    assert_insertion_order(vec![alpha.clone()], beta.clone(), &["alpha", "beta"]);
+
+    let alpha_high_kind = fixture_symbol("alpha", 12, span);
+    let beta_low_kind = fixture_symbol("beta", 7, span);
+    assert_insertion_order(
+        vec![beta_low_kind.clone()],
+        alpha_high_kind.clone(),
+        &["alpha", "beta"],
+    );
+    assert_insertion_order(vec![alpha_high_kind], beta_low_kind, &["alpha", "beta"]);
+
+    let twin_a = fixture_symbol("twin", 7, span);
+    let twin_b = fixture_symbol("twin", 12, span);
+    assert_insertion_kinds(vec![twin_b.clone()], twin_a.clone(), &[7, 12]);
+    assert_insertion_kinds(vec![twin_a.clone()], twin_b.clone(), &[7, 12]);
 }

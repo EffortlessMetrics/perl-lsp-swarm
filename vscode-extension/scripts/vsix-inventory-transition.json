@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7816,
-  "reason": "Cross-process managed cache mutation lock (#7816): managedCacheLock wiring increases bundled extension.js; inventory measured from hosted VS Code smoke projected_actual.",
-  "base_baseline_file_sha256": "1233267f59fc7a419b838be670662dcecdff5bea5cb6bdc03b54c225ebbdea6d",
-  "base_inventory_sha256": "67f9e75176be9de4b49f088559bd864607aafa66d70015a744a7e50003caa5fd",
-  "candidate_baseline_file_sha256": "0633a7e9aa1ea0246ab5ad17079bbf5df52fa8c7c4813dd53b65bdd56ca2d833",
-  "candidate_inventory_sha256": "86e984708b37c1da15009138adc353afc1a437324ea12308b978960679213a60"
+  "owner_issue": 7119,
+  "reason": "Remove generic MCP passthrough module, manifest contributions, and inert setting; rebundle extension.js and package.json.",
+  "base_baseline_file_sha256": "0633a7e9aa1ea0246ab5ad17079bbf5df52fa8c7c4813dd53b65bdd56ca2d833",
+  "candidate_baseline_file_sha256": "292d722be60c88ef570ed1ab0ff04a3693b2429e5a888b10aac84009f0bba53d",
+  "base_inventory_sha256": "86e984708b37c1da15009138adc353afc1a437324ea12308b978960679213a60",
+  "candidate_inventory_sha256": "7d2af3584b62f7648c64abde174d11b61b2298660813892177ef38d45a0bc6b8"
 }
