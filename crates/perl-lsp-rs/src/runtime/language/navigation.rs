@@ -1534,6 +1534,25 @@ fn same_file_definition_matches_qualification(
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
     ) || (definition.kind == crate::symbol::SymbolKind::Constant
         && definition.declaration.as_deref() == Some("constant"));
+    // A missing named CodeRef can otherwise select its containing route/sub
+    // through SemanticModel's general symbol-at-position fallback.
+    if let Some(node) = crate::declaration::find_node_at_offset(ast, offset)
+        && let crate::ast::NodeKind::AmperCall { name, .. } = &node.kind
+        && !name.is_empty()
+        && !name.starts_with(['$', '@', '%'])
+    {
+        let matches_name = definition.name == *name
+            || definition.qualified_name == *name
+            // Leading `::` addresses Perl's root namespace: `::handler`
+            // denotes `main::handler`, and `::App::handler` denotes App's sub.
+            || name.strip_prefix("::").is_some_and(|absolute_name| {
+                definition.qualified_name.strip_prefix("main::").unwrap_or(&definition.qualified_name)
+                    == absolute_name
+            });
+        if !is_callable || !matches_name {
+            return false;
+        }
+    }
     let Ok(regex) = get_fqn_regex() else {
         return true;
     };
@@ -2095,7 +2114,7 @@ impl LspServer {
                         // empty rather than falling through to the workspace-index lookup —
                         // the index is @INC-unaware and would surface files that `no lib`
                         // has cancelled. Fixes #8537.
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),
@@ -2138,7 +2157,7 @@ impl LspServer {
                         return Ok(Some(json!([])));
                     }
                     EarlyDefinitionTarget::Module(module_name) => {
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),

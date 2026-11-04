@@ -2,6 +2,11 @@
 
 Run with the installed repository toolchain and populated Cargo cache:
 python3 scripts/tests/test_xtask_parser_dependencies.py
+
+CI invokes this proof directly in ci-gate-self-tests.yml's parser-policy-self-test.
+Its graph-only setup warms the parser-tasks superset; each assertion then resolves
+its own exact feature selection offline. No Rust compilation is needed. The
+parser_dependency_graph integration wrapper remains part of full xtask testing.
 """
 
 import os

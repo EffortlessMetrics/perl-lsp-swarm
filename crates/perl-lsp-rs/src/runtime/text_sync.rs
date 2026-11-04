@@ -823,13 +823,18 @@ impl LspServer {
                     super::v0_18_text_sync_envelope::FullDocumentAdmission::Accepted {
                         replacements,
                     } => {
-                        let text = super::v0_18_text_sync_envelope::final_full_replacement_text(
-                            &replacements,
-                        )
-                        .unwrap_or("")
-                        .to_string();
-                        match crate::security::validate_buffer_line_lengths(&text) {
-                            Ok(()) => Ok(text),
+                        // Every normalized member must pass the hard admission
+                        // bound; a short final text cannot hide an earlier violation.
+                        match replacements.iter().try_for_each(|text| {
+                            crate::security::validate_buffer_line_lengths(text)
+                        }) {
+                            Ok(()) => {
+                                Ok(super::v0_18_text_sync_envelope::final_full_replacement_text(
+                                    &replacements,
+                                )
+                                .unwrap_or("")
+                                .to_string())
+                            }
                             Err(err) => {
                                 tracing::warn!(
                                     "Admitted full replacement for {uri} exceeds per-line buffer bound ({err}); last-good text was not mutated"

@@ -20,6 +20,30 @@ use super::hover::HoverInfo;
 use super::tokens::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 use perl_semantic_facts::Confidence;
 
+/// Return the single POD block that ends `before`, if one does.
+///
+/// The block must end with a `=cut` line as the last non-blank line. Its
+/// start is the first POD directive line after the previous `=cut` (or
+/// file start); code lines between that boundary and the opening
+/// directive belong to an earlier declaration and are excluded (#17298).
+fn trailing_pod_block(before: &str) -> Option<String> {
+    let lines: Vec<&str> = before.lines().collect();
+    let last = lines.iter().rposition(|line| !line.trim().is_empty())?;
+    if lines[last].trim_end() != "=cut" {
+        return None;
+    }
+    let boundary = (0..last).rev().find(|&i| lines[i].trim_end() == "=cut").map_or(0, |i| i + 1);
+    // POD directives begin at column 0 (perlpod); an indented `=foo` line
+    // in preceding code is not a block opening.
+    let opening = (boundary..last).find(|&i| {
+        let line = lines[i];
+        line.len() > 1
+            && line.starts_with('=')
+            && line.as_bytes().get(1).is_some_and(u8::is_ascii_alphanumeric)
+    })?;
+    Some(lines[opening..=last].join("\n"))
+}
+
 impl SemanticAnalyzer {
     /// Analyze a node and generate semantic information
     pub(super) fn analyze_node(&mut self, node: &Node, scope_id: ScopeId) {
@@ -1081,8 +1105,14 @@ impl SemanticAnalyzer {
     /// the `m` flag, `$` matches at the end of every line, which made the
     /// previous regex match POD blocks anywhere in `before` and leak them
     /// into hover docs for unrelated subs that followed.
+    ///
+    /// The POD branch is line-based, not a single end-anchored regex: a
+    /// leftmost regex match starts at the *first* `=directive` in the file
+    /// and expands across intermediate `=cut`s and sub source to reach the
+    /// final `=cut` (#17298). Instead, the trailing block is bounded by
+    /// the previous `=cut` (or file start), and any code lines between
+    /// that boundary and the block's opening directive are excluded.
     pub(super) fn extract_documentation(&self, start: usize) -> Option<String> {
-        static POD_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
         static COMMENT_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
         if self.source.is_empty() || start > self.source.len() {
@@ -1090,17 +1120,11 @@ impl SemanticAnalyzer {
         }
         let before = &self.source[..start];
 
-        // Check for POD blocks ending with =cut, anchored at end of string.
-        let pod_re = POD_RE
-            .get_or_init(|| Regex::new(r"(?s)(=[a-zA-Z0-9].*?\r?\n=cut(?:\r?\n)?)\s*\z"))
-            .as_ref()
-            .ok()?;
-        if let Some(caps) = pod_re.captures(before)
-            && let Some(pod_text) = caps.get(1)
-        {
+        // Check for a POD block ending with =cut at the very end.
+        if let Some(pod_text) = trailing_pod_block(before) {
             // Strip POD inline formatting codes (B<>, I<>, C<>, L<>, E<>, etc.)
             // so hover displays clean text, not raw POD markup.
-            return Some(perl_pod::strip_pod_formatting(pod_text.as_str().trim()));
+            return Some(perl_pod::strip_pod_formatting(pod_text.trim()));
         }
 
         // Check for consecutive comment lines, anchored at end of string.

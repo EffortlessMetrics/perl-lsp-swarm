@@ -1,0 +1,873 @@
+{
+  "architecture": {
+    "alternatives": [
+      {
+        "assessment": "Native, disk-only, exact legacy pm/pl/t and exclusion behavior; inline parsing, unsorted traversal, links and incomplete-success require explicit migration.",
+        "decision": "retain ownership, correct named policy rows through #10756/#10766",
+        "id": "current-project-walker",
+        "source": "crates/perl-lsp-rs/src/cli/check_project.rs"
+      },
+      {
+        "assessment": "Git subprocess and fallback can select different sets; broader case-insensitive source/shebang/XS families, include roots, sorting and cancellation, but ignored paths/traversal errors can vanish; DiscoveryResult lacks operational path evidence and finite entry budget. Does not itself run an index, yet importing its default semantics into CLI changes authority.",
+        "decision": "refuse wholesale reuse for v1; reuse only separately proven pure lower-level primitives without default workspace policy",
+        "id": "workspace-discovery",
+        "source": "crates/perl-workspace/src/discovery/mod.rs; crates/perl-lsp-rs/src/runtime/file_discovery.rs"
+      },
+      {
+        "assessment": "Pure extension/name predicates exist, but canonical editor families and workspace skip names differ from CLI v1; extensionless path helper reads disk.",
+        "decision": "do not silently reuse wider predicates or content probes; keep explicit versioned CLI policy rows",
+        "id": "source-and-ignore-predicates",
+        "source": "crates/perl-parser-core/src/syntax/source_file.rs; crates/perl-workspace/src/ignore/mod.rs"
+      },
+      {
+        "assessment": "Could expose finite deterministic error-aware selection, but adds a new generic authority before a second static consumer exists.",
+        "decision": "defer general service; smallest extraction under existing #10756 ownership",
+        "id": "new-general-filesystem-service",
+        "source": "alternative design, no implementation"
+      }
+    ],
+    "chosen": "Retain CLI-owned static selection in #10756; extract a small policy-driven plan/result boundary without introducing another general scanner or workspace index.",
+    "migration": [
+      "#10756 preserves the legacy report under a named compatibility selection identity while carrying explicit incomplete/path/read evidence; no silent legacy behavior switch.",
+      "#10756/#10766 implement canonical v1 selection and strict/report completeness deliberately. Correct/refuse rows are future migration obligations, not claims of implemented behavior.",
+      "#10897 owns canonical parser evaluation; #10809 owns typed category projection; #11269/#11270 consume the accepted result once, without rewalking/reparsing.",
+      "The legacy alias remains text-only under #11270; older #7233 JSON proposal is superseded for projects by the later controller and its current reconciliation comment."
+    ],
+    "reverse_when": [
+      "An existing discovery API can produce the same versioned static selection, reversible paths, finite budgets and complete operational evidence without Git/index/default-policy coupling.",
+      "Independent native-platform evidence requires a platform-specific path identity or exclusion amendment.",
+      "Another real static consumer demonstrates that a generic service removes semantic duplication rather than only shortening code."
+    ]
+  },
+  "binary_sha256": "2b32a94860cae41e9cdb93a4f86b339ee92c9dc80f0bda58a526ab56b52f6b55",
+  "fixture_sha256": "098208f05d443c2e60988281daa961d6e77f5fa064c496e0682c7eae33a84ad4",
+  "instrument": {
+    "begin_control": "--check exit 0; marker absent",
+    "blocking_control": "--check exit 1",
+    "maximum_fixture_files": 256,
+    "path_trap_control": "fake interpreter exit 97; marker present, then cleared",
+    "timeout_seconds_per_process": 10
+  },
+  "not_proven": [
+    "Native Windows and macOS, drive/UNC/case-folding/normalization behavior.",
+    "Concurrent removal/replacement during traversal/read; no production injection hook is introduced.",
+    "Production cooperative cancellation, depth/entry/selected/time budget enforcement, parser interruption and byte limits.",
+    "Large-tree asymptotic/resource envelope: 256 files are bounded evidence only.",
+    "Exhaustive process/syscall audit or absolute interpreter invocation; PATH traps, BEGIN marker and native source trace are bounded controls.",
+    "Atomic snapshot or undetected read races; non-UTF-8 root CLI argument behavior.",
+    "Installed/release/RC/editor integration and canonical executor transport parity remain separate."
+  ],
+  "observations": [
+    {
+      "current": {
+        "exit": 0,
+        "scanned": 0,
+        "selected_display": [],
+        "unscanned_display": []
+      },
+      "id": "empty",
+      "policy_rows": [
+        "no-input"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "input.pl",
+          "input.pm",
+          "input.t"
+        ],
+        "unscanned_display": []
+      },
+      "id": "extensions",
+      "policy_rows": [
+        "extensions"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "LOCAL/case.t",
+          "local-suffix/own.pl",
+          "local.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-local",
+      "policy_rows": [
+        "exclude-local",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-local",
+      "policy_rows": [
+        "exclude-local",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "BLIB/case.t",
+          "blib-suffix/own.pl",
+          "blib.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-blib",
+      "policy_rows": [
+        "exclude-blib",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-blib",
+      "policy_rows": [
+        "exclude-blib",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "VENDOR/case.t",
+          "vendor-suffix/own.pl",
+          "vendor.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-vendor",
+      "policy_rows": [
+        "exclude-vendor",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-vendor",
+      "policy_rows": [
+        "exclude-vendor",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "NODE_MODULES/case.t",
+          "node_modules-suffix/own.pl",
+          "node_modules.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-node_modules",
+      "policy_rows": [
+        "exclude-node_modules",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-node_modules",
+      "policy_rows": [
+        "exclude-node_modules",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          ".GIT/case.t",
+          ".git-suffix/own.pl",
+          ".git.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-git",
+      "policy_rows": [
+        "exclude-git",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-git",
+      "policy_rows": [
+        "exclude-git",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "TARGET/case.t",
+          "target-suffix/own.pl",
+          "target.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-target",
+      "policy_rows": [
+        "exclude-target",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-target",
+      "policy_rows": [
+        "exclude-target",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          ".BUILD/case.t",
+          ".build-suffix/own.pl",
+          ".build.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-build",
+      "policy_rows": [
+        "exclude-build",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-build",
+      "policy_rows": [
+        "exclude-build",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "AUTO/case.t",
+          "auto-suffix/own.pl",
+          "auto.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "exclude-auto",
+      "policy_rows": [
+        "exclude-auto",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-auto",
+      "policy_rows": [
+        "exclude-auto",
+        "root-excluded-name"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 7,
+        "selected_display": [
+          ".cache/code.pm",
+          ".hg/code.pm",
+          ".hidden.pm",
+          ".hidden/inside.pl",
+          ".perl-lsp/cache.t",
+          ".svn/code.pm",
+          "ignored.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "hidden-ignored",
+      "policy_rows": [
+        "hidden-ignore"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 6,
+        "selected_display": [
+          "dir-alias/own.pm",
+          "escape-dir/escape.t",
+          "escape.pl",
+          "file-alias.pl",
+          "lib/own.pm",
+          "vendor-shortcut/dep.pm"
+        ],
+        "unscanned_display": [
+          "dangling.pm",
+          "loop"
+        ]
+      },
+      "id": "links",
+      "policy_rows": [
+        "symlinks",
+        "outside-loop",
+        "hardlinks"
+      ]
+    },
+    {
+      "current": {
+        "exit": 0,
+        "scanned": 0,
+        "selected_display": [],
+        "unscanned_display": [
+          "loop"
+        ]
+      },
+      "id": "only-loop",
+      "policy_rows": [
+        "outside-loop",
+        "no-input"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "explicit-link",
+      "policy_rows": [
+        "root-directory",
+        "symlinks"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 2,
+        "selected_display": [
+          "original.pm",
+          "second.pl"
+        ],
+        "unscanned_display": []
+      },
+      "id": "hardlinks",
+      "policy_rows": [
+        "hardlinks"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "denied.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "unreadable-file",
+      "policy_rows": [
+        "unreadable"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 1,
+        "selected_display": [
+          "own.pm"
+        ],
+        "unscanned_display": [
+          "denied"
+        ]
+      },
+      "id": "unreadable-subtree",
+      "policy_rows": [
+        "unreadable"
+      ]
+    },
+    {
+      "current": {
+        "exit": 0,
+        "scanned": 1,
+        "selected_display": [],
+        "unscanned_display": [
+          "denied"
+        ]
+      },
+      "id": "partial-threshold",
+      "policy_rows": [
+        "unreadable",
+        "no-input"
+      ]
+    },
+    {
+      "current": {
+        "exit": 0,
+        "scanned": 5,
+        "selected_display": [
+          "bad.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "threshold-compensation",
+      "policy_rows": [
+        "no-input"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 6,
+        "selected_display": [
+          "bad-\ufffd.pm",
+          "colon:name.pl",
+          "e\u0301.pm",
+          "\u00e9.pm",
+          "\u00e9t\u00e9.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "unicode-bytes",
+      "policy_rows": [
+        "path-identity"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "a.pm: b.pm",
+          "a: b.pm",
+          "plain.pm"
+        ],
+        "unscanned_display": [
+          "locked: subtree"
+        ]
+      },
+      "id": "colon-space",
+      "policy_rows": [
+        "path-identity",
+        "unreadable"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 3,
+        "selected_display": [
+          "a.pm",
+          "middle.t",
+          "z.pl"
+        ],
+        "unscanned_display": []
+      },
+      "id": "creation-order",
+      "policy_rows": [
+        "ordering"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": 256,
+        "selected_display": [
+          "f000.pm",
+          "f001.pm",
+          "f002.pm",
+          "f003.pm",
+          "f004.pm",
+          "f005.pm",
+          "f006.pm",
+          "f007.pm",
+          "f008.pm",
+          "f009.pm",
+          "f010.pm",
+          "f011.pm",
+          "f012.pm",
+          "f013.pm",
+          "f014.pm",
+          "f015.pm",
+          "f016.pm",
+          "f017.pm",
+          "f018.pm",
+          "f019.pm",
+          "f020.pm",
+          "f021.pm",
+          "f022.pm",
+          "f023.pm",
+          "f024.pm",
+          "f025.pm",
+          "f026.pm",
+          "f027.pm",
+          "f028.pm",
+          "f029.pm",
+          "f030.pm",
+          "f031.pm",
+          "f032.pm",
+          "f033.pm",
+          "f034.pm",
+          "f035.pm",
+          "f036.pm",
+          "f037.pm",
+          "f038.pm",
+          "f039.pm",
+          "f040.pm",
+          "f041.pm",
+          "f042.pm",
+          "f043.pm",
+          "f044.pm",
+          "f045.pm",
+          "f046.pm",
+          "f047.pm",
+          "f048.pm",
+          "f049.pm",
+          "f050.pm",
+          "f051.pm",
+          "f052.pm",
+          "f053.pm",
+          "f054.pm",
+          "f055.pm",
+          "f056.pm",
+          "f057.pm",
+          "f058.pm",
+          "f059.pm",
+          "f060.pm",
+          "f061.pm",
+          "f062.pm",
+          "f063.pm",
+          "f064.pm",
+          "f065.pm",
+          "f066.pm",
+          "f067.pm",
+          "f068.pm",
+          "f069.pm",
+          "f070.pm",
+          "f071.pm",
+          "f072.pm",
+          "f073.pm",
+          "f074.pm",
+          "f075.pm",
+          "f076.pm",
+          "f077.pm",
+          "f078.pm",
+          "f079.pm",
+          "f080.pm",
+          "f081.pm",
+          "f082.pm",
+          "f083.pm",
+          "f084.pm",
+          "f085.pm",
+          "f086.pm",
+          "f087.pm",
+          "f088.pm",
+          "f089.pm",
+          "f090.pm",
+          "f091.pm",
+          "f092.pm",
+          "f093.pm",
+          "f094.pm",
+          "f095.pm",
+          "f096.pm",
+          "f097.pm",
+          "f098.pm",
+          "f099.pm",
+          "f100.pm",
+          "f101.pm",
+          "f102.pm",
+          "f103.pm",
+          "f104.pm",
+          "f105.pm",
+          "f106.pm",
+          "f107.pm",
+          "f108.pm",
+          "f109.pm",
+          "f110.pm",
+          "f111.pm",
+          "f112.pm",
+          "f113.pm",
+          "f114.pm",
+          "f115.pm",
+          "f116.pm",
+          "f117.pm",
+          "f118.pm",
+          "f119.pm",
+          "f120.pm",
+          "f121.pm",
+          "f122.pm",
+          "f123.pm",
+          "f124.pm",
+          "f125.pm",
+          "f126.pm",
+          "f127.pm",
+          "f128.pm",
+          "f129.pm",
+          "f130.pm",
+          "f131.pm",
+          "f132.pm",
+          "f133.pm",
+          "f134.pm",
+          "f135.pm",
+          "f136.pm",
+          "f137.pm",
+          "f138.pm",
+          "f139.pm",
+          "f140.pm",
+          "f141.pm",
+          "f142.pm",
+          "f143.pm",
+          "f144.pm",
+          "f145.pm",
+          "f146.pm",
+          "f147.pm",
+          "f148.pm",
+          "f149.pm",
+          "f150.pm",
+          "f151.pm",
+          "f152.pm",
+          "f153.pm",
+          "f154.pm",
+          "f155.pm",
+          "f156.pm",
+          "f157.pm",
+          "f158.pm",
+          "f159.pm",
+          "f160.pm",
+          "f161.pm",
+          "f162.pm",
+          "f163.pm",
+          "f164.pm",
+          "f165.pm",
+          "f166.pm",
+          "f167.pm",
+          "f168.pm",
+          "f169.pm",
+          "f170.pm",
+          "f171.pm",
+          "f172.pm",
+          "f173.pm",
+          "f174.pm",
+          "f175.pm",
+          "f176.pm",
+          "f177.pm",
+          "f178.pm",
+          "f179.pm",
+          "f180.pm",
+          "f181.pm",
+          "f182.pm",
+          "f183.pm",
+          "f184.pm",
+          "f185.pm",
+          "f186.pm",
+          "f187.pm",
+          "f188.pm",
+          "f189.pm",
+          "f190.pm",
+          "f191.pm",
+          "f192.pm",
+          "f193.pm",
+          "f194.pm",
+          "f195.pm",
+          "f196.pm",
+          "f197.pm",
+          "f198.pm",
+          "f199.pm",
+          "f200.pm",
+          "f201.pm",
+          "f202.pm",
+          "f203.pm",
+          "f204.pm",
+          "f205.pm",
+          "f206.pm",
+          "f207.pm",
+          "f208.pm",
+          "f209.pm",
+          "f210.pm",
+          "f211.pm",
+          "f212.pm",
+          "f213.pm",
+          "f214.pm",
+          "f215.pm",
+          "f216.pm",
+          "f217.pm",
+          "f218.pm",
+          "f219.pm",
+          "f220.pm",
+          "f221.pm",
+          "f222.pm",
+          "f223.pm",
+          "f224.pm",
+          "f225.pm",
+          "f226.pm",
+          "f227.pm",
+          "f228.pm",
+          "f229.pm",
+          "f230.pm",
+          "f231.pm",
+          "f232.pm",
+          "f233.pm",
+          "f234.pm",
+          "f235.pm",
+          "f236.pm",
+          "f237.pm",
+          "f238.pm",
+          "f239.pm",
+          "f240.pm",
+          "f241.pm",
+          "f242.pm",
+          "f243.pm",
+          "f244.pm",
+          "f245.pm",
+          "f246.pm",
+          "f247.pm",
+          "f248.pm",
+          "f249.pm",
+          "f250.pm",
+          "f251.pm",
+          "f252.pm",
+          "f253.pm",
+          "f254.pm",
+          "f255.pm"
+        ],
+        "unscanned_display": []
+      },
+      "id": "bounded-large",
+      "policy_rows": [
+        "budget-cancellation"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": null,
+        "selected_display": [],
+        "unscanned_display": []
+      },
+      "id": "missing-root",
+      "policy_rows": [
+        "root-directory"
+      ]
+    },
+    {
+      "current": {
+        "exit": 1,
+        "scanned": null,
+        "selected_display": [],
+        "unscanned_display": []
+      },
+      "id": "file-root",
+      "policy_rows": [
+        "root-directory"
+      ]
+    },
+    {
+      "current": {
+        "exit": 0,
+        "scanned": 0,
+        "selected_display": [],
+        "unscanned_display": [
+          "."
+        ]
+      },
+      "id": "unreadable-root",
+      "policy_rows": [
+        "unreadable",
+        "no-input"
+      ]
+    },
+    {
+      "current": {
+        "exit": 0,
+        "scanned": 1,
+        "selected_display": [],
+        "unscanned_display": []
+      },
+      "id": "begin-noexecution",
+      "policy_rows": [
+        "no-execution"
+      ]
+    }
+  ],
+  "ordering": "Unsorted production traversal; only observed sets are canonicalized in this receipt. Raw order is research evidence, never desired semantics.",
+  "platform": "linux-nonroot",
+  "policy_id": "project_check_selection.v1:ca71877ab70353c47ea6afe849cda6cf74751a28ea4be8537ee8e58fcf88e462",
+  "schema": "project_check_selection_decision.v1",
+  "source_commit": "9e83b961ee60b16f299a34b08e2ae07d5c8a4527",
+  "source_sha256": "9bae1b3f8cd58e80354babb6e7618b728d9724497ea01cfffac70599c35b46f6"
+}

@@ -724,8 +724,14 @@ impl<'a> Parser<'a> {
         if saw_fat_arrow && elements.len().is_multiple_of(2) {
             // Convert to HashLiteral
             let mut pairs = Vec::with_capacity(elements.len() / 2);
-            for chunk in elements.chunks(2) {
-                pairs.push((chunk[0].clone(), chunk[1].clone()));
+            let mut elements = elements.into_iter();
+            while let Some(key) = elements.next() {
+                // The even-length branch guarantees a value for every key.
+                // Move the owned nodes: cloning here recopies nested ASTs at
+                // every enclosing fat-arrow list.
+                if let Some(value) = elements.next() {
+                    pairs.push((key, value));
+                }
             }
             self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {

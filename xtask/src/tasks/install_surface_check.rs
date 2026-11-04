@@ -1053,17 +1053,31 @@ mod tests {
 
     /// The exemption binds to the checked-in schema: the same pinned bytes stop
     /// being typed historical evidence the moment the document no longer validates,
-    /// and the quoted decision line is reported again.
+    /// and a forbidden substring in a narration field is reported again.
+    ///
+    /// #16559 removed the live `install.ps1 | iex` quote from the closeout. This
+    /// test injects that substring into a copy so it still proves schema-failure
+    /// re-exposes the pattern, rather than requiring the artifact to advertise
+    /// the piped form.
     #[test]
     fn the_pinned_artifact_loses_the_exemption_when_it_stops_conforming() -> Result<()> {
         let rel_path =
             Path::new("docs/releases/domain6-windows-editor-distribution-first-mile.v1.json");
         let text = fs::read_to_string(project_root()?.join(rel_path))?;
-        let tampered = text.replace(
+        let quoted = if text.contains("install.ps1 | iex") {
+            text
+        } else {
+            text.replacen("piped-to-iex one-liner", "install.ps1 | iex one-liner", 1)
+        };
+        assert!(
+            quoted.contains("install.ps1 | iex"),
+            "exemption-loss trigger must be present on the copy"
+        );
+        let tampered = quoted.replace(
             r#""schema": "post_sync_release_reconciliation.v1""#,
             r#""schema": "some_other_schema.v1""#,
         );
-        assert_ne!(tampered, text, "the schema declaration must be present");
+        assert_ne!(tampered, quoted, "the schema declaration must be present");
 
         let file = SourceFile { rel_path: rel_path.to_path_buf(), text: tampered };
         let mut violations = Vec::new();

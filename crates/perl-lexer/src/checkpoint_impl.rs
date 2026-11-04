@@ -34,6 +34,7 @@ impl Checkpointable for PerlLexer<'_> {
             current_quote_op,
             qw_recovery_enabled,
             eof_emitted,
+            pod_cut_cache: _,
             scan_limit,
             logical_source,
             generation,

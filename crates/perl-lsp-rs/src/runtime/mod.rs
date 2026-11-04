@@ -103,10 +103,7 @@ pub(crate) struct WorkspaceTopologyTransitionGate {
     pub(crate) started: std::sync::mpsc::Sender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
-use perl_tdd_support::{
-    tdd_basic::TestGenerator,
-    test_runner::{TestKind, TestRunner},
-};
+use perl_tdd_support::test_runner::{TestKind, TestRunner};
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
@@ -500,6 +497,12 @@ pub struct LspServer {
     /// rather than a process-level `Once`, so each `LspServer` session is its own
     /// window (#16551).
     pub(crate) core_module_notice_shown: Arc<AtomicBool>,
+    /// Bounded pending/notified module identities and background scan capacity.
+    pub(crate) module_ambiguity_notices:
+        Arc<lifecycle::module_resolution::ModuleAmbiguityNoticeState>,
+    #[cfg(test)]
+    pub(crate) module_ambiguity_probe_gate:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:

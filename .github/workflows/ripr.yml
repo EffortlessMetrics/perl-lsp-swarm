@@ -17,16 +17,10 @@
 # entry in .ci/policies/required-checks.toml.
 #
 # merge_group added in #1232: required for GitHub merge queue.
-# In merge_group context:
-#   - github.base_ref is absent; BASE_REF resolves via
-#     github.event.merge_group.base_ref (the queue target branch).
-#   - PR_LABELS is empty (no pull_request event); ripr runs without label routing.
-#   - IS_FORK_PR is false — merge queue only admits trusted same-repo SHAs.
-#   - ripr diff analysis uses origin/<base_ref>..HEAD; the merge-test commit HEAD
-#     is the squash of PR + base, so the diff is semantically equivalent to PR diff.
-#   - pull_request runs also record github.event.pull_request.head.sha as
-#     PR_HEAD_SHA, separately from the evaluated merge ref. merge_group runs leave
-#     PR_HEAD_SHA empty because a queue ref may contain multiple PRs.
+# All evidence lanes compare the event's immutable base SHA with the exact
+# checked-out integration SHA. PR receipts retain the raw event head separately;
+# merge-group receipts leave PR_HEAD_SHA empty because a queue contains multiple PRs.
+# The shared checkout guard refuses unavailable or contradictory event objects.
 
 name: ripr
 
@@ -51,6 +45,14 @@ on:
         required: false
         default: false
         type: boolean
+      base_sha:
+        description: 'Exact comparison base for a non-cache manual run'
+        required: false
+        type: string
+      head_sha:
+        description: 'Exact checkout head for a non-cache manual run'
+        required: false
+        type: string
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
@@ -319,7 +321,9 @@ jobs:
       # default (800 in ripr 0.10.0), moving the fail-closed boundary onto the
       # capable lane whenever a large closure routes here.
       RIPR_MAX_DIFF_INDEX_FILES: "2560"
-      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      RIPR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base_sha }}
+      RIPR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha) || inputs.head_sha }}
+      RIPR_EVALUATED_SHA: ${{ github.sha }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
       CARGO_HOME: /mnt/ci-cache/cargo-home
@@ -376,6 +380,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Require immutable RIPR subject
+        shell: bash
+        run: bash scripts/ci/require-ripr-subject.sh
 
       - name: Prepare RIPR freshness handoff
         shell: bash
@@ -441,7 +449,8 @@ jobs:
             --memory="28g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
             -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
-            -e BASE_REF="$BASE_REF" \
+            -e RIPR_BASE_SHA -e RIPR_EVENT_HEAD_SHA -e RIPR_EVALUATED_SHA \
+            -e GITHUB_EVENT_NAME \
             -e PR_HEAD_SHA="$PR_HEAD_SHA" \
             -e RIPR_FRESHNESS_HANDOFF=/freshness \
             -e RIPR_FRESHNESS_TOKEN="$RIPR_FRESHNESS_TOKEN" \
@@ -471,9 +480,7 @@ jobs:
               # runs as a different UID. Mark it safe so git commands work.
               git config --global --add safe.directory /workspace
 
-              # merge_group.base_ref is a full ref ("refs/heads/main"); strip prefix
-              # so git diff/fetch use just the branch name (e.g. "main").
-              BASE_REF="${BASE_REF#refs/heads/}"
+              bash scripts/ci/require-ripr-subject.sh
 
               rustc --version
               cargo --version
@@ -486,22 +493,22 @@ jobs:
 
               # Generation phase: keep going on individual failures so we can
               # still upload whatever artifacts were produced.
-              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
+              cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
               mkdir -p target/receipts/quality
-              printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
-              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
+              printf '\''{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n'\'' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
+              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
-              # Advisory: reports the suppression ledger's own expires/review_after
+              # Advisory: reports suppression ledger expires/review_after
               # dates, which nothing else in the toolchain reads. Never gates.
               cargo xtask ripr-suppression-audit || true
 
               # Validation phase.
-              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+              cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
               cargo xtask ripr-pr-summary --check
               cargo xtask ripr-annotations --check
@@ -512,8 +519,9 @@ jobs:
                 --ripr-receipt target/receipts/quality/ripr-plus.json \
                 --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
                 --review-receipt target/ripr/review/comments.json \
-                --ripr-base "origin/$BASE_REF" \
-                --ripr-head HEAD \
+                --ripr-base "$RIPR_BASE_SHA" \
+                --ripr-head "$RIPR_EVALUATED_SHA" \
+                --ripr-pr-head "$PR_HEAD_SHA" \
                 --receipt target/receipts/quality/quality-gate-ripr.json \
                 --summary target/receipts/quality/quality-gate-ripr.md
               cargo xtask quality-gate \
@@ -521,8 +529,9 @@ jobs:
                 --ripr-receipt target/receipts/quality/ripr-plus.json \
                 --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
                 --review-receipt target/ripr/review/comments.json \
-                --ripr-base "origin/$BASE_REF" \
-                --ripr-head HEAD \
+                --ripr-base "$RIPR_BASE_SHA" \
+                --ripr-head "$RIPR_EVALUATED_SHA" \
+                --ripr-pr-head "$PR_HEAD_SHA" \
                 --receipt target/receipts/quality/quality-gate-ripr.json \
                 --summary target/receipts/quality/quality-gate-ripr.md \
                 --check
@@ -628,7 +637,9 @@ jobs:
     timeout-minutes: 135
     env:
       RIPR_VERSION: "0.10.0"
-      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      RIPR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base_sha }}
+      RIPR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha) || inputs.head_sha }}
+      RIPR_EVALUATED_SHA: ${{ github.sha }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
     steps:
@@ -636,6 +647,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Require immutable RIPR subject
+        shell: bash
+        run: bash scripts/ci/require-ripr-subject.sh
 
       - name: Prepare RIPR freshness handoff
         shell: bash
@@ -648,14 +663,6 @@ jobs:
 
       - name: Toolchain (rust-toolchain.toml pins 1.95.0)
         run: rustc --version
-
-      - name: Normalize base ref
-        shell: bash
-        run: |
-          # merge_group.base_ref is a full ref ("refs/heads/main"); strip prefix
-          # so subsequent steps that use $BASE_REF pass just the branch name.
-          stripped="${BASE_REF#refs/heads/}"
-          echo "BASE_REF=$stripped" >> "$GITHUB_ENV"
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -776,7 +783,9 @@ jobs:
           # never as an OOM kill.
           timeout --signal=TERM --kill-after=30s 40m docker run --rm --name "$container_name" \
             --cpus=4 --memory=14g --memory-swap=14g \
-            -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
+            -e RIPR_VERSION -e PR_HEAD_SHA \
+            -e RIPR_BASE_SHA -e RIPR_EVENT_HEAD_SHA -e RIPR_EVALUATED_SHA \
+            -e GITHUB_EVENT_NAME \
             -e RIPR_MAX_DIFF_INDEX_FILES=2560 \
             -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
             -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT \
@@ -788,7 +797,8 @@ jobs:
               git config --global --add safe.directory /workspace
               mkdir -p target/ripr/pr
               printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
-              base_arg="origin/$BASE_REF"
+              bash scripts/ci/require-ripr-subject.sh
+              base_arg="$RIPR_BASE_SHA"
               cargo install ripr --version "$RIPR_VERSION" --locked
               rustc_version="$(rustc --version)"; cargo_version="$(cargo --version)"
               ripr_version="$(ripr --version)"; ripr_path="$(command -v ripr)"
@@ -801,13 +811,13 @@ jobs:
               bash scripts/ci/observe-xtask-build.sh container "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo build -p xtask --locked
               ripr doctor
               set +e
-              timeout --signal=TERM --kill-after=30s 25m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA"
+              timeout --signal=TERM --kill-after=30s 25m /usr/bin/time -v -o target/ripr/pr/ripr-measurement-time.txt cargo xtask ripr-pr --base "$base_arg" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA"
               analysis_status=$?
               set -e
               printf "analysis_exit=%s\n" "$analysis_status" >> target/ripr/pr/ripr-measurement-config.txt
               if [ "$analysis_status" -ne 0 ]; then exit "$analysis_status"; fi
               test -s target/ripr/pr/repo-exposure.json
-              cargo xtask ripr-pr --base "$base_arg" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+              cargo xtask ripr-pr --base "$base_arg" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
               marker="$RIPR_FRESHNESS_HANDOFF/clear-succeeded"
               test -f "$marker" && test "$(cat "$marker")" = "$RIPR_FRESHNESS_TOKEN"
             '
@@ -900,7 +910,7 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        run: bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -929,9 +939,10 @@ jobs:
             echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
             exit 1
           fi
-          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          bash scripts/ci/require-ripr-subject.sh
+          cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
@@ -949,8 +960,9 @@ jobs:
             --ripr-receipt target/receipts/quality/ripr-plus.json \
             --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
             --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
+            --ripr-base "$RIPR_BASE_SHA" \
+            --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md
           cargo xtask quality-gate \
@@ -958,8 +970,9 @@ jobs:
             --ripr-receipt target/receipts/quality/ripr-plus.json \
             --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
             --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
+            --ripr-base "$RIPR_BASE_SHA" \
+            --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md \
             --check
@@ -1081,7 +1094,9 @@ jobs:
       # ordinary multi-crate closures. Pin the same measured boundary as the
       # primary hosted lane so a CLI version bump cannot silently shrink it.
       RIPR_MAX_DIFF_INDEX_FILES: "2560"
-      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      RIPR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base_sha }}
+      RIPR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha) || inputs.head_sha }}
+      RIPR_EVALUATED_SHA: ${{ github.sha }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
     steps:
@@ -1102,6 +1117,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Require immutable RIPR subject
+        shell: bash
+        run: bash scripts/ci/require-ripr-subject.sh
+
       - name: Prepare RIPR freshness handoff
         shell: bash
         run: |
@@ -1112,12 +1131,6 @@ jobs:
 
       - name: Toolchain (rust-toolchain.toml pins 1.95.0)
         run: rustc --version
-
-      - name: Normalize base ref
-        shell: bash
-        run: |
-          stripped="${BASE_REF#refs/heads/}"
-          echo "BASE_REF=$stripped" >> "$GITHUB_ENV"
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -1159,7 +1172,7 @@ jobs:
         run: ripr doctor
 
       - name: Generate PR evidence
-        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
+        run: cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA"
 
       # #16431: exact-head memoization of the repo-wide RIPR+ receipt -- same
       # restore/adjudicate/guard contract as the primary hosted lane above.
@@ -1236,7 +1249,7 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -1265,9 +1278,10 @@ jobs:
             echo "RIPR artifact invalidation did not complete for this producer invocation" >&2
             exit 1
           fi
-          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          bash scripts/ci/require-ripr-subject.sh
+          cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
+          cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
@@ -1285,8 +1299,9 @@ jobs:
             --ripr-receipt target/receipts/quality/ripr-plus.json \
             --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
             --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
+            --ripr-base "$RIPR_BASE_SHA" \
+            --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md
           cargo xtask quality-gate \
@@ -1294,8 +1309,9 @@ jobs:
             --ripr-receipt target/receipts/quality/ripr-plus.json \
             --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
             --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
+            --ripr-base "$RIPR_BASE_SHA" \
+            --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md \
             --check

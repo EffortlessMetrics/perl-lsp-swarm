@@ -10,7 +10,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use cli::srp::{SrpCommand, SrpMicrocratesArgs, UnwiredScanArgs};
 use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod allocation_tracker;
 mod cli;
@@ -833,6 +833,9 @@ enum Commands {
         /// Head revision used for diff-scoped RIPR receipt commands.
         #[arg(long, default_value = "HEAD")]
         ripr_head: String,
+        /// Raw PR head, independently binding the integration comparison.
+        #[arg(long)]
+        ripr_pr_head: Option<String>,
         /// Commit the repo-wide RIPR+ total-debt receipt may be bound to
         /// instead of the head, for `--mode enforce-new-ripr` only. Normally
         /// the merge base the pull request is measured against. Must name the
@@ -4535,6 +4538,15 @@ enum CompilerProfileCommand {
     List,
     /// Validate one profile document and print its stable identity.
     Check { path: PathBuf },
+    /// Validate the unsupported-fact catalog or print its deterministic summary (#4770 slice 2).
+    Unsupported {
+        /// Validate a catalog and fail closed on any violation (default: the landed seed catalog).
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "CATALOG")]
+        check: Option<String>,
+        /// Print a deterministic summary of a catalog (default: the landed seed catalog).
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "CATALOG")]
+        report: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -6172,6 +6184,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_pr_head,
             ripr_baseline_commit,
             receipt,
             summary,
@@ -6187,6 +6200,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_pr_head: ripr_pr_head.filter(|head| !head.trim().is_empty()),
             ripr_baseline_commit,
             receipt,
             summary,
@@ -7288,6 +7302,28 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
                 CompilerProfileCommand::Check { path } => {
                     tasks::compiler_profile::check(&path).map_err(|error| eyre!(error.to_string()))
+                }
+                CompilerProfileCommand::Unsupported { check, report } => {
+                    if check.is_none() && report.is_none() {
+                        bail!("compiler-profile unsupported requires --check and/or --report");
+                    }
+                    if let Some(path) = check.as_deref() {
+                        let resolved = tasks::compiler_profile::unsupported_catalog_path(
+                            &root,
+                            Path::new(path),
+                        );
+                        tasks::compiler_profile::unsupported_check(&resolved)
+                            .map_err(|error| eyre!(error.to_string()))?;
+                    }
+                    if let Some(path) = report.as_deref() {
+                        let resolved = tasks::compiler_profile::unsupported_catalog_path(
+                            &root,
+                            Path::new(path),
+                        );
+                        tasks::compiler_profile::unsupported_report(&resolved)
+                            .map_err(|error| eyre!(error.to_string()))?;
+                    }
+                    Ok(())
                 }
             }
         }

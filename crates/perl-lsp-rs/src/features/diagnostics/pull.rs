@@ -182,11 +182,9 @@ impl PullDiagnosticsContext {
         severity: i32,
         root: Option<&str>,
     ) -> AcceptedCriticSnapshot {
-        let config = ServerConfig {
-            perlcritic_enabled: enabled,
-            perlcritic_severity: severity.clamp(1, 5) as u8,
-            ..ServerConfig::default()
-        };
+        let mut config = ServerConfig::default();
+        config.perlcritic_enabled = enabled;
+        config.perlcritic_severity = severity.clamp(1, 5) as u8;
         AcceptedCriticSnapshot::capture(&config, root)
     }
 
@@ -1719,13 +1717,11 @@ mod tests {
         exclude: Vec<String>,
         root: &str,
     ) -> AcceptedCriticSnapshot {
-        let config = perl_lsp_rs_core::config::ServerConfig {
-            native_critic_profile: profile.to_string(),
-            perlcritic_severity: severity,
-            native_critic_include: include,
-            native_critic_exclude: exclude,
-            ..perl_lsp_rs_core::config::ServerConfig::default()
-        };
+        let mut config = perl_lsp_rs_core::config::ServerConfig::default();
+        config.native_critic_profile = profile.to_string();
+        config.perlcritic_severity = severity;
+        config.native_critic_include = include;
+        config.native_critic_exclude = exclude;
         AcceptedCriticSnapshot::capture(&config, Some(root))
     }
 
@@ -3018,8 +3014,10 @@ system($path);
 
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
+        let mut disabled_config = ServerConfig::default();
+        disabled_config.perlcritic_enabled = false;
         context.accepted_critic_snapshot = AcceptedCriticSnapshot::capture(
-            &ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() },
+            &disabled_config,
             Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
         );
         context.perlcritic_enabled = false;
@@ -3633,10 +3631,9 @@ system($path);
             context.accepted_critic_snapshot = if enabled {
                 accepted_state_at_root("strict", 3, Vec::new(), Vec::new(), root)
             } else {
-                AcceptedCriticSnapshot::capture(
-                    &ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() },
-                    Some(root),
-                )
+                let mut disabled_config = ServerConfig::default();
+                disabled_config.perlcritic_enabled = false;
+                AcceptedCriticSnapshot::capture(&disabled_config, Some(root))
             };
             context
         }

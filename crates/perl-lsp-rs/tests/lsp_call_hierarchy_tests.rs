@@ -1555,7 +1555,7 @@ fn test_outgoing_calls_distinguish_bareword_class_receivers() -> TestResult {
         let found = qualified_keys
             .iter()
             .find(|(qualified, _)| qualified == qualified_name)
-            .unwrap_or_else(|| panic!("missing outgoing callee {}", qualified_name));
+            .ok_or_else(|| format!("missing outgoing callee {}", qualified_name))?;
         assert_eq!(
             found.1, range_count,
             "callee {} expected {} fromRanges, got {}",

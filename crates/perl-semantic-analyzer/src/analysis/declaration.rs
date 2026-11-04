@@ -387,7 +387,9 @@ impl<'a> DeclarationProvider<'a> {
             }
             // Handle string literals that are method names inside modifier calls:
             // `before 'save' => sub { }` — cursor on 'save' navigates to sub save { }
-            NodeKind::String { value, .. } => self.find_modifier_target_declaration(node, value),
+            NodeKind::String { value, .. } => self
+                .find_modifier_target_declaration(node, value)
+                .or_else(|| self.find_recorded_subroutine_reference_declaration(node)),
             // Cursor on a `sub foo { }` name at its declaration site — self-location.
             // Without this arm, goto-definition on the sub name returns null (#5052 item 3).
             NodeKind::Subroutine { name: Some(name), .. } => {
@@ -403,6 +405,43 @@ impl<'a> DeclarationProvider<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Consume an existing semantic reference without promoting arbitrary strings.
+    fn find_recorded_subroutine_reference_declaration(
+        &self,
+        node: &Node,
+    ) -> Option<Vec<LocationLink>> {
+        let analyzer =
+            super::semantic::SemanticAnalyzer::analyze_with_source(&self.ast, &self.content);
+        let reference =
+            analyzer.symbol_table().references.values().flatten().find(|reference| {
+                reference.kind == crate::symbol::SymbolKind::Subroutine
+                    && reference.location.start == node.location.start
+                    && reference.location.end == node.location.end
+            })?;
+        let definitions = analyzer.resolve_reference_to_symbols(reference);
+        let definition = definitions.first()?;
+        // The legacy resolver can fall back to the caller's bare name when a
+        // qualified package is absent. That is not this reference's definition.
+        if reference.name.contains("::") && definition.qualified_name != reference.name {
+            return None;
+        }
+        let declaration = self.find_node_at_offset(&self.ast, definition.location.start)?;
+        if declaration.location.start != definition.location.start
+            || declaration.location.end != definition.location.end
+            || !matches!(
+                declaration.kind,
+                NodeKind::Subroutine { .. } | NodeKind::Method { .. } | NodeKind::Assignment { .. }
+            )
+        {
+            return None;
+        }
+        Some(vec![self.create_location_link(
+            node,
+            declaration,
+            self.get_subroutine_name_range(declaration),
+        )])
     }
 
     /// Find variable declaration using scope-aware lookup

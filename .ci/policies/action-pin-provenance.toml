@@ -235,6 +235,17 @@ sha = 'fb8b3582c8e4def4969c97caa2f19720cb33a72f'
 kind = 'release_tag'
 value = 'v7.0.0'
 
+# Verified against upstream on 2026-10-01:
+#   gh api repos/codecov/codecov-action/git/ref/tags/v7.1.0
+#   046562be8d17331600874a09d2c2062c27752c20  refs/tags/v7.1.0  (tag object)
+#   -> commit 0b35c9ecc4f0529d0eb674914510c22f85b196b4 (annotated tag,
+#      SSH signature verified: valid)
+[[pin]]
+action = 'codecov/codecov-action'
+sha = '0b35c9ecc4f0529d0eb674914510c22f85b196b4'
+kind = 'release_tag'
+value = 'v7.1.0'
+
 [[pin]]
 action = 'codecov/test-results-action'
 sha = '0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3'
@@ -364,11 +375,16 @@ sha = '5f6978faf089d4d20b00c7766989d076bb2fc7f1'
 kind = 'legacy_debt'
 value = 'v8.1.1'
 
+# Verified against upstream on 2026-10-01:
+#   gh api repos/shogo82148/actions-setup-perl/git/refs/tags/v1.44.0
+#   -> object.type 'commit' ac3202722f5744e62a8fa3af3e1aaaebb08861f3
+#      (lightweight tag; upstream commit 2026-09-10,
+#      "Strawberry perl v5.42.3.1 is released (#2740)")
 [[pin]]
 action = 'shogo82148/actions-setup-perl'
-sha = '53e33bb27be492a926eee378e8a5f7ff6618b061'
+sha = 'ac3202722f5744e62a8fa3af3e1aaaebb08861f3'
 kind = 'release_tag'
-value = 'v1.43.1'
+value = 'v1.44.0'
 
 [[pin]]
 action = 'softprops/action-gh-release'

@@ -10,7 +10,7 @@
 
 use color_eyre::eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -163,8 +163,10 @@ pub fn load_catalog_file(root: &Path) -> Result<UnsupportedFactCatalog> {
     parse_catalog(&text)
 }
 
-/// Check the slice-1 shape contract, collecting one violation per defect.
-/// An empty return means the catalog satisfies the contract.
+/// Check the catalog contract (SPEC-0038 X1), collecting one violation per
+/// defect. An empty return means the catalog satisfies the contract. Slice 1
+/// contributed the shape rules; slice 2 adds the consumer-behavior and
+/// blocking-combination rules the `--check` CLI enforces.
 pub fn validate_catalog(catalog: &UnsupportedFactCatalog) -> Vec<String> {
     let mut violations = Vec::new();
     validate_schema_version(catalog, &mut violations);
@@ -172,6 +174,8 @@ pub fn validate_catalog(catalog: &UnsupportedFactCatalog) -> Vec<String> {
     validate_id_shapes(catalog, &mut violations);
     validate_outside_profile_suffix(catalog, &mut violations);
     validate_oracle_unknown_projection(catalog, &mut violations);
+    validate_consumer_behavior(catalog, &mut violations);
+    validate_blocking_combinations(catalog, &mut violations);
     violations
 }
 
@@ -252,6 +256,28 @@ fn validate_oracle_unknown_projection(
     }
 }
 
+fn validate_consumer_behavior(catalog: &UnsupportedFactCatalog, violations: &mut Vec<String>) {
+    for entry in &catalog.entries {
+        if entry.allowed_provider_behaviors.is_empty() {
+            violations.push(format!(
+                "class '{}': allowed_provider_behaviors must name at least one consumer behavior (E1/X1)",
+                entry.class_id
+            ));
+        }
+    }
+}
+
+fn validate_blocking_combinations(catalog: &UnsupportedFactCatalog, violations: &mut Vec<String>) {
+    for entry in &catalog.entries {
+        if entry.compile_acceptance_blocks && !entry.downstream_blocks {
+            violations.push(format!(
+                "class '{}': compile_acceptance_blocks requires downstream_blocks; a class that blocks acceptance cannot leave downstream facts unblocked (E2/X1)",
+                entry.class_id
+            ));
+        }
+    }
+}
+
 /// Serialize the catalog in canonical form: entries sorted by `class_id`,
 /// struct field order, no host paths or timestamps. The seed file is stored
 /// in exactly this form, so canonicalization round-trips byte-identical.
@@ -259,6 +285,94 @@ pub fn canonical_toml(catalog: &UnsupportedFactCatalog) -> Result<String> {
     let mut sorted = catalog.clone();
     sorted.entries.sort_by(|left, right| left.class_id.cmp(&right.class_id));
     toml::to_string(&sorted).with_context(|| "failed to serialize catalog to canonical TOML")
+}
+
+/// Render the deterministic `--report` summary (SPEC-0038 X2): one header
+/// line with stable counts followed by one line per class sorted by
+/// `class_id`. No host paths, no timestamps, no input-order dependence.
+/// This is a pure projection; enforcement stays in [`validate_catalog`].
+pub fn render_report(catalog: &UnsupportedFactCatalog) -> String {
+    let mut entries: Vec<&UnsupportedFactEntry> = catalog.entries.iter().collect();
+    entries.sort_by(|left, right| left.class_id.cmp(&right.class_id));
+    let compile_blocks = entries.iter().filter(|entry| entry.compile_acceptance_blocks).count();
+    let downstream_blocks = entries.iter().filter(|entry| entry.downstream_blocks).count();
+    let mut layer_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in &entries {
+        *layer_counts.entry(owning_layer_name(entry.owning_layer)).or_insert(0) += 1;
+    }
+    let layers = layer_counts
+        .iter()
+        .map(|(layer, count)| format!("{layer}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut report = format!(
+        "{SCHEMA_VERSION} classes={} compile_blocks={compile_blocks} downstream_blocks={downstream_blocks} layers={layers}\n",
+        entries.len()
+    );
+    for entry in entries {
+        let mut behaviors: Vec<&str> = entry
+            .allowed_provider_behaviors
+            .iter()
+            .map(|behavior| provider_behavior_name(*behavior))
+            .collect();
+        behaviors.sort_unstable();
+        report.push_str(&format!(
+            "{} {} compile={} downstream={} behaviors={} oracle={}/{}\n",
+            entry.class_id,
+            owning_layer_name(entry.owning_layer),
+            entry.compile_acceptance_blocks,
+            entry.downstream_blocks,
+            behaviors.join(","),
+            oracle_result_class_name(entry.oracle_result_class),
+            oracle_promotion_effect_name(entry.oracle_promotion_effect),
+        ));
+    }
+    report
+}
+
+fn owning_layer_name(layer: OwningLayer) -> &'static str {
+    match layer {
+        OwningLayer::Parser => "parser",
+        OwningLayer::Hir => "hir",
+        OwningLayer::Pir => "pir",
+        OwningLayer::Semantic => "semantic",
+        OwningLayer::Provider => "provider",
+        OwningLayer::Oracle => "oracle",
+        OwningLayer::Eir => "eir",
+    }
+}
+
+fn provider_behavior_name(behavior: ProviderBehavior) -> &'static str {
+    match behavior {
+        ProviderBehavior::Block => "block",
+        ProviderBehavior::Fallback => "fallback",
+        ProviderBehavior::Advisory => "advisory",
+        ProviderBehavior::RequireConfirmation => "require_confirmation",
+    }
+}
+
+fn oracle_result_class_name(class: OracleResultClass) -> &'static str {
+    match class {
+        OracleResultClass::OracleAgrees => "oracle_agrees",
+        OracleResultClass::CompilerMissing => "compiler_missing",
+        OracleResultClass::CompilerExtra => "compiler_extra",
+        OracleResultClass::RangeMismatch => "range_mismatch",
+        OracleResultClass::ProvenanceMismatch => "provenance_mismatch",
+        OracleResultClass::ConfidenceOrFreshnessMismatch => "confidence_or_freshness_mismatch",
+        OracleResultClass::DynamicOrUnsupported => "dynamic_or_unsupported",
+        OracleResultClass::OracleAmbientUnbounded => "oracle_ambient_unbounded",
+        OracleResultClass::StaleOrPartial => "stale_or_partial",
+        OracleResultClass::Unknown => "unknown",
+    }
+}
+
+fn oracle_promotion_effect_name(effect: OraclePromotionEffect) -> &'static str {
+    match effect {
+        OraclePromotionEffect::SupportsPromotion => "supports_promotion",
+        OraclePromotionEffect::BlocksPromotion => "blocks_promotion",
+        OraclePromotionEffect::KnownLimitation => "known_limitation",
+        OraclePromotionEffect::Unknown => "unknown",
+    }
 }
 
 #[cfg(test)]
@@ -663,6 +777,97 @@ mod tests {
         catalog.entries.reverse();
         let canonical = canonical_toml(&catalog)?;
         assert_eq!(canonical, file_bytes, "canonical form must not depend on input entry order");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_empty_provider_behaviors() -> TestResult {
+        let mut catalog = parse_seed()?;
+        find_entry_mut(&mut catalog, "autoload")?.allowed_provider_behaviors.clear();
+        let violations = validate_round_tripped(&catalog)?;
+        assert!(
+            violations.iter().any(|violation| violation.contains("allowed_provider_behaviors")
+                && violation.contains("autoload")),
+            "missing consumer behavior must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_compile_blocks_without_downstream() -> TestResult {
+        let mut catalog = parse_seed()?;
+        find_entry_mut(&mut catalog, "source_filter")?.downstream_blocks = false;
+        let violations = validate_round_tripped(&catalog)?;
+        assert!(
+            violations.iter().any(|violation| violation
+                .contains("compile_acceptance_blocks requires downstream_blocks")
+                && violation.contains("source_filter")),
+            "incompatible blocking combination must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn allows_downstream_open_when_compile_open() -> TestResult {
+        let mut catalog = parse_seed()?;
+        find_entry_mut(&mut catalog, "autoload")?.downstream_blocks = false;
+        let violations = validate_round_tripped(&catalog)?;
+        assert!(
+            violations.iter().all(|violation| !violation.contains("requires downstream_blocks")),
+            "an entry that does not block acceptance may leave downstream open: {violations:?}"
+        );
+        Ok(())
+    }
+
+    const EXPECTED_SEED_REPORT: &str = "unsupported_fact_catalog.v1 classes=14 compile_blocks=3 downstream_blocks=14 layers=hir:4,parser:3,semantic:7\n\
+        ambient_module_resolution hir compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        ambiguous_bareword parser compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        autoload hir compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        compile_time_execution_outside_profile semantic compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        dynamic_stash_mutation hir compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        generated_no_source semantic compile=false downstream=true behaviors=fallback,require_confirmation oracle=dynamic_or_unsupported/blocks_promotion\n\
+        host_capability_outside_profile semantic compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        regex_construct_outside_profile semantic compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        runtime_builtin_outside_profile semantic compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        source_filter parser compile=true downstream=true behaviors=block,require_confirmation oracle=dynamic_or_unsupported/blocks_promotion\n\
+        symbolic_ref hir compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n\
+        unknown_boundary_evidence semantic compile=true downstream=true behaviors=block,require_confirmation oracle=unknown/blocks_promotion\n\
+        unsupported_parser_construct parser compile=true downstream=true behaviors=block,require_confirmation oracle=dynamic_or_unsupported/blocks_promotion\n\
+        xs_native_dependency semantic compile=false downstream=true behaviors=advisory,fallback oracle=dynamic_or_unsupported/blocks_promotion\n";
+
+    #[test]
+    fn report_pins_seed_summary() -> TestResult {
+        let catalog = parse_seed()?;
+        assert_eq!(render_report(&catalog), EXPECTED_SEED_REPORT);
+        Ok(())
+    }
+
+    #[test]
+    fn report_ignores_input_order() -> TestResult {
+        let catalog = parse_seed()?;
+        let rendered = render_report(&catalog);
+        let mut shuffled = catalog.clone();
+        shuffled.entries.reverse();
+        assert_eq!(
+            render_report(&shuffled),
+            rendered,
+            "report must not depend on input entry order"
+        );
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(
+            lines.len(),
+            SEED_IDS.len() + 1,
+            "report must carry one header plus one line per class"
+        );
+        let mut ids = Vec::with_capacity(SEED_IDS.len());
+        for line in &lines[1..] {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(fields.len(), 6, "report line must carry six fields: {line}");
+            ids.push(fields[0]);
+        }
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted, "report lines must be sorted by class_id");
         Ok(())
     }
 }

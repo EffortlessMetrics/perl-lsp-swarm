@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17018,
-  "reason": "Accept the measured 18-byte package.json increase from describing the external perlcritic engine as optional in both critic-setting descriptions for #17018; all 30 package members and every other member size are unchanged.",
+  "owner_issue": 17985,
+  "reason": "Accept the measured 114-byte package.json growth for the truthful native-only critic-engine description and its review-driven correction in #17985; all 30 package members and the emitted extension bundle remain otherwise unchanged.",
   "base_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
-  "candidate_baseline_file_sha256": "8dbfd39a86d17ea8b4402b6ba87a3881b8fda04fd637802b14db5ccc3e85f44f",
+  "candidate_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
   "base_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f",
-  "candidate_inventory_sha256": "1c9d42ddb2cbda6e079623e0d6d564209610ed515f0cd66c33bea908881955ad"
+  "candidate_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423"
 }

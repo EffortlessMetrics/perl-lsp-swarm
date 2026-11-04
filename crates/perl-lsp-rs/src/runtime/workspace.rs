@@ -2012,6 +2012,12 @@ impl LspServer {
         // republish runs once, after the metadata refresh below (#17332).
         let mut watched_delete = false;
 
+        // Whether a CREATED/CHANGED event was processed immediately (not
+        // queued for the debounced batch); those change the facts open
+        // consumers resolved through just as a delete does, so they earn
+        // the same republish tail (#17332).
+        let mut watched_create_or_change = false;
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -2055,6 +2061,7 @@ impl LspServer {
                     // processing so degraded modes never lose events.
                     metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
                     self.process_file_watcher_uri_immediate(&uri);
+                    watched_create_or_change = true;
                 }
                 _ => {}
             }
@@ -2069,9 +2076,12 @@ impl LspServer {
         // publications (e2e mode, or a missing/unavailable debouncer) use the
         // refreshed facts — a deleted metadata file retires its include root
         // here — and a bulk delete costs one sweep instead of one per change.
-        // Matches the `handle_did_delete_files` seam order.
-        if watched_delete {
-            self.republish_open_document_diagnostics();
+        // Matches the `handle_did_delete_files` seam order. A create or
+        // change processed immediately earns the same tail: restoring or
+        // editing a dependency must clear (or introduce) findings in open
+        // consumers with no buffer edit (#17332).
+        if watched_delete || watched_create_or_change {
+            self.refresh_diagnostics_after_watched_change();
         }
 
         // This is a notification, no response needed
@@ -2094,6 +2104,31 @@ impl LspServer {
         // folder once for the whole batch (#13640).
         let metadata_roots = self.project_metadata_roots_for_batch(uris.iter().map(String::as_str));
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // The batch only ever carries CREATED/CHANGED events, and the
+        // re-index above changed facts open consumers may have resolved
+        // through: republish (or ask pull clients to re-pull) once for the
+        // whole batch, mirroring the DELETED tail (#17332).
+        if !uris.is_empty() {
+            self.refresh_diagnostics_after_watched_change();
+        }
+    }
+
+    /// Republish diagnostics for open consumers after watched-file facts
+    /// changed, or ask a pull-diagnostics client to re-pull (#17332).
+    ///
+    /// The push republish is a no-op for a pull-diagnostics client, so its
+    /// open consumers would keep stale findings after a dependency delete,
+    /// restore, or edit. Ask it to re-pull instead, mirroring the
+    /// include-path seam.
+    fn refresh_diagnostics_after_watched_change(&self) {
+        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+            if let Err(error) = self.request_diagnostic_refresh() {
+                tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
+            }
+        } else {
+            self.republish_open_document_diagnostics();
+        }
     }
 
     /// Evict every indexed URI whose filesystem path is a descendant of
@@ -5373,6 +5408,59 @@ mod tests {
         assert_eq!(server.pending_workspace_configuration_requests.lock().len(), 1);
         assert_eq!(server.workspace_indexing_invocation_count(), before_invocations);
         Ok(())
+    }
+
+    /// #17332 (pull remainder): a watched DELETED event must ask a
+    /// pull-diagnostics client to re-pull, because the push republish is a
+    /// no-op for that client and its open consumers keep stale findings.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_delete_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let dir = tempfile::tempdir()?;
+        let consumer_path = dir.path().join("consumer.pm");
+        let consumer_uri =
+            url::Url::from_file_path(&consumer_path).map_err(|_| "invalid file path")?.to_string();
+        let deleted_uri = url::Url::from_file_path(dir.path().join("gone.pm"))
+            .map_err(|_| "invalid file path")?
+            .to_string();
+        server.client_capabilities.lock().diagnostic_refresh_support = true;
+        server.client_supports_pull_diags.store(true, Ordering::Release);
+        server.initialized.store(true, Ordering::Release);
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": consumer_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Consumer;\nuse Gone;\n1;\n"
+            }
+        }))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": deleted_uri, "type": 3 }]
+        })))?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let refresh_count = output
+                .messages()?
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("workspace/diagnostic/refresh")
+                })
+                .count();
+            if refresh_count == 1 {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "expected one pull diagnostic refresh after a watched delete, saw {refresh_count}"
+                )
+                .into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(feature = "workspace")]

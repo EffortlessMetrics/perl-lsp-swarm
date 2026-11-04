@@ -22,13 +22,13 @@ The repo was not casual about review.
 
 Evidence already preserved elsewhere:
 
-- [REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
+- [REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
   shows the Q3 swarm using labels as a review state machine
-- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md)
+- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](PR_REVIEW_LOOP_ARCHAEOLOGY.md)
   shows cleanup and follow-up passes as routine work
-- [REVIEWER_ECOLOGY_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEWER_ECOLOGY_ARCHAEOLOGY.md)
+- [REVIEWER_ECOLOGY_ARCHAEOLOGY.md](REVIEWER_ECOLOGY_ARCHAEOLOGY.md)
   shows layered review surfaces rather than one flat review model
-- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
+- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
   verifies `195` merged PRs in the bridge window with fast merge latency and a
   large `maint/pr-*` bridge family
 
@@ -42,14 +42,14 @@ The repo also had explicit quality discipline before the current swarm surface.
 
 Evidence:
 
-- [RECEIPTS_LIE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md)
+- [RECEIPTS_LIE_ARCHAEOLOGY.md](RECEIPTS_LIE_ARCHAEOLOGY.md)
   anchors the scar story in PR `#209`
-- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
+- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
   shows issue `#210` turning proof into gate machinery
-- [ZERO_PANIC.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/ZERO_PANIC.md)
+- [ZERO_PANIC.md](../ZERO_PANIC.md)
   and related research notes show repeated panic-safety, security, and hardening
   campaigns
-- [LESSONS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/LESSONS.md)
+- [LESSONS.md](../../project/LESSONS.md)
   shows the repo recording specific failures and systemic prevention
 
 This is not a repo that discovered quality only once the modern control plane
@@ -66,12 +66,12 @@ Evidence comes from multiple layers:
 
 - `agents2` and `agents3` already split work into generative, review, and
   integration lanes
-- [JULES_LANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/JULES_LANE_ARCHAEOLOGY.md)
+- [JULES_LANE_ARCHAEOLOGY.md](JULES_LANE_ARCHAEOLOGY.md)
   documents Bolt, Sentinel, and Palette as proto-specialist lanes
-- [FEATURE_GOVERNANCE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/FEATURE_GOVERNANCE.md)
+- [FEATURE_GOVERNANCE.md](../../project/FEATURE_GOVERNANCE.md)
   shows specialization at the code-architecture level through dedicated
   governance microcrates
-- [CLAUDE_MD_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CLAUDE_MD_EVOLUTION.md)
+- [CLAUDE_MD_EVOLUTION.md](../../project/CLAUDE_MD_EVOLUTION.md)
   shows increasingly targeted instruction surfaces, including per-crate guidance
 
 So the repo was already specializing judgment, ownership, and proof surfaces.
@@ -85,15 +85,15 @@ had to live inside the maintainer and the currently active prompts.
 
 The evidence is spread across the transition notes:
 
-- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
+- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
   shows a stable, AI-native, but still maintainer-heavy bridge era
-- [MAINTAINER_VISION_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md)
+- [MAINTAINER_VISION_ARCHAEOLOGY.md](MAINTAINER_VISION_ARCHAEOLOGY.md)
   shows maintainer judgment being recast repeatedly into better surfaces
-- [CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-  and [SWARM_SURFACE_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
+- [CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
+  and [SWARM_SURFACE_EVOLUTION.md](SWARM_SURFACE_EVOLUTION.md)
   show that the stable commands, skills, hooks, and committed swarm state only
   arrive later
-- [WORKTREE_PARALLELISM_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/WORKTREE_PARALLELISM_ARCHAEOLOGY.md)
+- [WORKTREE_PARALLELISM_ARCHAEOLOGY.md](WORKTREE_PARALLELISM_ARCHAEOLOGY.md)
   shows the repo wanting lane-based worktree execution before it could fully
   express it durably
 
@@ -128,7 +128,7 @@ The system had standards before it had enough infrastructure.
 One reason the current swarm can afford more trust is that the repo
 progressively externalized truth itself.
 
-[TRUTH_SURFACE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUTH_SURFACE_ARCHAEOLOGY.md)
+[TRUTH_SURFACE_ARCHAEOLOGY.md](TRUTH_SURFACE_ARCHAEOLOGY.md)
 shows that by 2026 the repo was pushing truth into:
 
 - computed status documents
@@ -165,11 +165,11 @@ The control plane was catching up to standards the repo already had.
 
 ## Evidence Pointers
 
-- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
-- [REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
-- [REVIEWER_ECOLOGY_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEWER_ECOLOGY_ARCHAEOLOGY.md)
-- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md)
-- [MAINTAINER_VISION_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md)
-- [CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-- [WORKTREE_PARALLELISM_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/WORKTREE_PARALLELISM_ARCHAEOLOGY.md)
-- [TRUTH_SURFACE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUTH_SURFACE_ARCHAEOLOGY.md)
+- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
+- [REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
+- [REVIEWER_ECOLOGY_ARCHAEOLOGY.md](REVIEWER_ECOLOGY_ARCHAEOLOGY.md)
+- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](PR_REVIEW_LOOP_ARCHAEOLOGY.md)
+- [MAINTAINER_VISION_ARCHAEOLOGY.md](MAINTAINER_VISION_ARCHAEOLOGY.md)
+- [CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
+- [WORKTREE_PARALLELISM_ARCHAEOLOGY.md](WORKTREE_PARALLELISM_ARCHAEOLOGY.md)
+- [TRUTH_SURFACE_ARCHAEOLOGY.md](TRUTH_SURFACE_ARCHAEOLOGY.md)
