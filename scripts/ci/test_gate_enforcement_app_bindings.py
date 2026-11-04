@@ -6,10 +6,14 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
+import tempfile
 import sys
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("validate_gate_enforcement_contract.py")
 SPEC = importlib.util.spec_from_file_location("gate_enforcement_contract_bindings", SCRIPT)
@@ -133,6 +137,147 @@ class AppBindingContractTests(unittest.TestCase):
             classic_app_id=4242,
         )
         self.assertNotEqual(canonical_digest(first), canonical_digest(second))
+
+
+class GitSubjectIsolationTests(unittest.TestCase):
+    """Real repositories and the actual CLI; no mocked Git verdicts."""
+
+    WORKFLOW = ".github/workflows/ci.yml"
+    POLICY = ".ci/policies/required-checks.toml"
+    WORKFLOW_TEXT = (
+        "name: Fixture\non:\n  workflow_dispatch: {}\njobs:\n"
+        "  check:\n    name: Bound Check\n    runs-on: ubuntu-latest\n    steps: []\n"
+    )
+    POLICY_TEXT = (
+        'version = 2\nsource = "github-enforcement-union"\n[[checks]]\n'
+        'name = "Bound Check"\nproducer = "repository-job"\n'
+        'workflow = ".github/workflows/ci.yml"\njob = "check"\n'
+        'workflow_result = "propagate"\nevents = ["workflow_dispatch"]\n'
+        'required = true\npolicy_role = "required"\n'
+        'applicability = "always-or-scoped-noop"\nenforcement = "github-ruleset"\n'
+        'ruleset_integration_id = 15368\n'
+    )
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="gate-subject-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.selected = self.root / "selected"
+        self.foreign = self.root / "foreign"
+        # Fixture setup deliberately does not use the production isolation helper.
+        self.clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        for repo in (self.selected, self.foreign):
+            repo.mkdir()
+            self.git(repo, "init", "-q", "--template=")
+            for name, content in ((self.WORKFLOW, self.WORKFLOW_TEXT),
+                                  (self.POLICY, self.POLICY_TEXT),
+                                  ("marker", repo.name)):
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            self.git(repo, "add", ".")
+            self.git(repo, "commit", "-qm", repo.name)
+        self.head = self.git(self.selected, "rev-parse", "HEAD")
+        self.assertNotEqual(self.head, self.git(self.foreign, "rev-parse", "HEAD"))
+        self.foreign_env = {
+            "GIT_DIR": str(self.foreign / ".git"),
+            "GIT_COMMON_DIR": str(self.foreign / ".git"),
+            "GIT_WORK_TREE": str(self.foreign),
+            "GIT_INDEX_FILE": str(self.foreign / ".git/index"),
+            "GIT_OBJECT_DIRECTORY": str(self.foreign / ".git/objects"),
+        }
+
+    def git(self, root: Path, *args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "-c", "core.hooksPath=", "-c", "commit.gpgsign=false",
+             "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *args],
+            env=self.clean_env, text=True, stderr=subprocess.PIPE,
+        ).strip()
+
+    def cli(self, *, env=None, root=None, selected_source=False):
+        receipt = self.root / "receipt.json"
+        args = [sys.executable, "-B", str(SCRIPT), "--root", str(root or self.selected),
+                "--json", "--receipt", str(receipt)]
+        if selected_source:
+            args.extend(("--qualification-source", self.WORKFLOW))
+        result = subprocess.run(args, cwd=self.root, env=dict(self.clean_env, **(env or {})),
+                                text=True, capture_output=True, timeout=20, check=False)
+        self.assertEqual(result.stderr, "", result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload, json.loads(receipt.read_text(encoding="utf-8")))
+        return result.returncode, payload
+
+    def test_foreign_repository_cannot_change_clean_cli_receipt(self) -> None:
+        for selected_source in (False, True):
+            with self.subTest(selected_source=selected_source):
+                code, baseline = self.cli(selected_source=selected_source)
+                self.assertEqual(code, 0)
+                self.assertEqual(baseline["subjects"]["repository_sha"], self.head)
+                contaminated_code, contaminated = self.cli(
+                    env=self.foreign_env, selected_source=selected_source)
+                self.assertEqual(contaminated_code, 0)
+                self.assertEqual(contaminated, baseline)
+                self.assertEqual(contaminated["live_enforcement_status"], "NOT_PROVEN")
+
+    def test_clean_foreign_repository_cannot_hide_selected_dirty_source(self) -> None:
+        path = self.selected / self.WORKFLOW
+        path.write_text(self.WORKFLOW_TEXT + "# uncommitted\n", encoding="utf-8")
+        code, receipt = self.cli(env=self.foreign_env)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "NOT_PROVEN")
+        self.assertIsNone(receipt["subjects"])
+        self.assertIn("tracked modifications", receipt["findings"][0]["message"])
+
+    def test_foreign_index_cannot_admit_untracked_selected_workflow(self) -> None:
+        name = ".github/workflows/extra.yml"
+        for repo in (self.selected, self.foreign):
+            (repo / name).write_text("name: Extra\non: workflow_dispatch\njobs: {}\n", encoding="utf-8")
+        self.git(self.foreign, "add", name)
+        self.git(self.foreign, "commit", "-qm", "track only foreign workflow")
+        code, receipt = self.cli(env=self.foreign_env)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "NOT_PROVEN")
+        self.assertIn("not tracked by git", receipt["findings"][0]["message"])
+        # Also isolate the index-only seam: identity must not depend on a foreign index.
+        with patch.dict(os.environ, dict(self.clean_env,
+                                        GIT_INDEX_FILE=str(self.foreign / ".git/index")), clear=True):
+            with self.assertRaisesRegex(ValueError, "not tracked by git"):
+                contract._safe_repo_path(self.selected, name, subject="workflow")
+
+    def test_runtime_git_config_cannot_change_selected_worktree(self) -> None:
+        baseline = self.cli()
+        runtime_config = {
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
+            "GIT_CONFIG_VALUE_0": str(self.foreign),
+        }
+        self.assertEqual(self.cli(env=runtime_config), baseline)
+
+    def test_linked_worktree_keeps_its_selected_identity(self) -> None:
+        linked = self.root / "linked"
+        self.git(self.selected, "worktree", "add", "--detach", str(linked), "HEAD")
+        self.assertTrue((linked / ".git").is_file())
+        baseline = self.cli(root=linked)
+        self.assertEqual(baseline[0], 0)
+        self.assertEqual(self.cli(root=linked, env=self.foreign_env), baseline)
+
+    def test_in_process_validation_preserves_parent_environment_and_foreign_repo(self) -> None:
+        foreign_before = self.git(self.foreign, "status", "--porcelain")
+        with patch.dict(os.environ, dict(self.clean_env, **self.foreign_env,
+                                        GATE_ISOLATION_SENTINEL="preserve"), clear=True):
+            before = dict(os.environ)
+            result = contract.validate(self.selected, self.selected / self.POLICY)
+            self.assertEqual(dict(os.environ), before)
+            self.assertEqual(result["subjects"]["repository_sha"], self.head)
+        self.assertEqual(self.git(self.foreign, "status", "--porcelain"), foreign_before)
+
+    def test_invalid_selected_root_does_not_fall_back_to_foreign_repository(self) -> None:
+        empty = self.root / "not-a-repository"
+        empty.mkdir()
+        code, receipt = self.cli(root=empty, env=self.foreign_env)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "NOT_PROVEN")
+        self.assertIsNone(receipt["subjects"])
+        self.assertIn("rev-parse", receipt["findings"][0]["message"])
 
 
 if __name__ == "__main__":

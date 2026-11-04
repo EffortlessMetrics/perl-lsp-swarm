@@ -168,16 +168,19 @@ Keep claim frames and wake events in runtime memory only. Reconstruct them from 
 PRs, reviews, checks, merges, and repository artifacts after compaction or replacement.
 Do not poll unchanged remote state.
 
-For the selected candidate, retain the same useful owning lead through an ordinary
-in-window qualification wait, actual result inspection, separate final current-repo
-judgment, authorized protected merge and landing read-back (#3390). Use supported
-waits/events or bounded checks; do not create a polling child or scheduled monitor.
-Release unnecessary child contexts. A real interruption, unusual capacity delay or
-exhausted window gets an exact resumable handoff. When all remaining work has real
-external blockers, return those blockers and their wake events instead of maintaining
-an idle watcher. Read `docs/agents/DEVELOPMENT_METHOD.md` for desired/staged/live
-qualification boundaries; existing automatic triggers remain live until coordinated
-cutover. Never invent the missing request command or arm routine auto-merge/queue.
+For the selected candidate, retain the same useful owning lead through in-session
+proof/review, exact-H conditional landing authorization, native queue qualification on
+actual G, protected landing and cheap M read-back. Authorization precedes enqueue;
+native landing does not wait for a second manual merge or compulsory post-green review.
+Use supported events or bounded checks without a polling child or scheduled monitor.
+A material finding returns to repair; a real interruption gets an exact resumable
+handoff. Preserve durable evidence independently of the warm worker.
+
+Read `docs/agents/DEVELOPMENT_METHOD.md` and `docs/ci/qualification-cutover.md` for the
+desired/staged/live boundary. Ordinary Draft, Ready and publication start no Actions,
+including cheap wrappers. Missing admission, G producer or protection capability is
+`NOT_PROVEN`; do not invent a request command, push to manufacture CI, bypass protection
+or treat a local source fixture as a deployed lifecycle.
 
 ## Useful GitHub handoffs
 
@@ -217,7 +220,7 @@ For substantive PRs the native route is:
 → cumulative `review-pr`
 → REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN |
   BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
-→ only REVIEW_CURRENT enters `verify-live-ci`
+→ REVIEW_CURRENT plus exact-H conditional landing authorization enters `verify-live-ci`
 → INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | NOT_PROVEN
 → `merge-reconcile`
 ```

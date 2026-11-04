@@ -1,4 +1,20 @@
-# Staged workflow composition for explicit qualification
+# Historical manual H/S workflow composition
+
+Status: **historical operating sequence; reusable source/evidence record**.
+The October 21–23 native-queue and no-development-CI rulings supersede the
+manual hosted activation path described below. Use
+[qualification-cutover.md](qualification-cutover.md) for the current transition
+plan and #17900/#17903/#17080/#10065 for actual acceptance and authorization.
+The retained local diagnostics may still establish their bounded source claims;
+they do not authorize pre-queue hosted qualification, application of the old
+root-trigger leaf, publication of protected checks, or a live settings change.
+Dated source and protection observations below are not current native readback.
+
+**November 4 source update:** the checked-in staged patch now contains the whole
+queue perimeter, zero generated-PR dispatch and native same-run protected fan-in.
+The metadata-only/manual projection described in the historical record below is
+retired. Read the current patch and the staged-source section of the cutover runbook;
+the old measurements do not validate the new generation.
 
 This branch composes #18066's adapter, #18069's admission/publication source at
 `a2a0ab9a9c2ab16f0672eee3269efd7a09560683`, #18063's source perimeter, and

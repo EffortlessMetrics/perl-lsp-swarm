@@ -31,84 +31,74 @@ artifact. When an earlier judgment was missed, perform the cheapest version that
 still improve the current artifact and continue. Do not replay history to manufacture
 process evidence.
 
-## Late qualification and publication
+## Queue-only qualification and publication
 
-The current accepted target is [#3390](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3390),
-including its October 17, 2026 selection and same-owner clarification. It supersedes
-routine queue/auto-merge and forced session handoff instructions in older guidance.
+The October 21 native-queue selection and October 22–23, 2026 clarification in
+[#3390](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3390), #17900 and
+#17903 supersede the October 17 manual H/S operating sequence. Follow
+[qualification-cutover.md](../ci/qualification-cutover.md) for source, enforcement,
+workflow enablement, first installation and rollback. A source candidate is not an
+activated generation.
 
 ```text
-cheap commit / push / Draft-or-Ready publication
-→ focused/affected authoring proof and independent substantive review
-→ select the candidate intended to land for this objective
-→ one explicit late qualification request for that candidate
-→ mandatory and risk-directed proof
-→ separate final vision/current-repository and protected-merge judgment
-→ explicit authorized protected merge, landing read-back and reconciliation
+cheap commit / push / Draft-or-Ready publication, with zero workflow starts
+→ focused/affected proof, substantive review and joined repairs in-session
+→ exact-H product/scope judgment and conditional landing authorization
+→ verified native enqueue
+→ selected integration qualification on actual merge-group G
+→ protected native landing
+→ cheap landed M read-back and reconciliation
 ```
 
-Publish focused drafts frequently after applicable local checks, keeping proof limits
-visible. Complete useful planning/specification review, discriminating red-green proof,
-test-efficiency/hardening, simplification, documentation and independent substantive
-review before requesting expensive qualification. Keep useful stages in warm sessions;
-a stage does not require a new identity. Alternative drafts may be reviewed cheaply;
-only the selected candidate gets expensive qualification. Independent objectives may
-qualify concurrently within admitted capacity; there is no global one-PR queue.
+Draft, Ready, synchronization, metadata edits, labels, reviews, comments and generated
+PR publication are not qualification requests. Skipped jobs and cheap wrappers still
+start workflows. Complete applicable proof, hardening, simplification, documentation
+and substantive review in the coding session before enqueue. Preserve the useful warm
+owner, worktree and toolchain context; a stage does not require a cold replacement.
+Independent objectives can proceed within admitted capacity without a global worker cap.
 
-**Desired, staged and live are different states.** At source `baa056ca7c`, `ci.yml`,
-`ripr.yml` and `em-ci-routed-rust.yml` still admit automatic non-draft PR work, including
-readiness changes; main/merge-group paths also exist. Draft publication avoids their
-broad PR lanes, but does not disable every policy/self-test workflow or installed
-local hook. Existing exact-subject manual inputs do not establish an approved request
-adapter or that results attach to the required PR/app identity. No qualified normal
-request command was established by this source inspection. Do not invent its name,
-use PR-body markers/labels/readiness as requests, or alter live triggers before the
-replacement required producers and matching settings are qualified.
+The owner authorizes the reviewed exact H and its product/scope fit before native
+enqueue, because native queue admission can lead directly to landing. Do not add a
+mandatory post-green approval pause or issue a second direct merge. A new material
+finding withdraws eligibility and returns to the specific repair owner. Native queue
+reformation produces a new G; old run/attempt evidence never proves the new subject.
+Unrelated base movement does not require rebase or broad replay of unchanged proof.
 
-[#17900](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17900) owns the thin
-request/explain operation and trusted exact-subject result publication;
-[#17903](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17903) owns the full
-workflow/reusable/indirect event perimeter. Consume their actual implemented operation,
-with expected repository/PR/head, observed base and selected portfolio. An API/CLI
-acknowledgment without a matching accepted run/attempt is `NOT_PROVEN`, not
-`PR_IN_FLIGHT`. Missing request capability is a concrete producer blocker; continue
-independent authoring work and report it instead of pushing to manufacture CI.
-Keep the existing required producers satisfiable during staging. #17080/#10065 own the
-coordinated source/settings cutover and native read-back. Existing #16134 retains
-Rust Small consumer ownership. No protection, credential or security-permission change
-is authorized by this documentation.
+[#17900](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17900) owns actual
+admission and trusted H publication; #17903 owns the full direct and indirect event
+perimeter; #17080/#10065 own coordinated activation and native canary. Consume the
+implemented, qualified operation. `native_queue.py` supplies exact-head enqueue
+transport to a trusted in-process authorizer and read-only observation, not a CLI
+authorization override, a full G-member acquirer or a complete deployment. Missing
+publisher, required G producer, effective protection or workflow-state capability is
+`NOT_PROVEN`. Continue useful in-session work and safe source preservation; do not
+push, toggle Ready or dispatch ordinary CI as a bootstrap.
 
-A changed candidate cannot inherit its predecessor's qualification request or exact
-run result. Later material adverse review blocks final judgment even at the same head.
-Preserve unaffected semantic review and exact test evidence with their original
-identities. Unrelated base movement does not require rebase or full replay; actual
-combined-change interaction needs affected proof. Head compare-and-swap does not freeze
-the base. Admission-only success, absent/empty execution and a green manual run on the
-wrong reporting identity cannot stand in for completed required proof.
+Bind H, trusted control, actual G/base/constituents, workflow/run/attempt, selected scope
+and landed M separately. Preserve all applicable protected names and application
+bindings. Acknowledgment is not queue custody; association is not complete G membership;
+empty, skipped, cancelled or wrong-subject evidence is not passing proof. Every selected
+candidate/G obligation must succeed independently of main health. The source-only
+staged perimeter and finalizer remain separate from native execution and protection.
 
-Retain the same useful owning lead through an ordinary qualification wait, result
-inspection, separate final judgment, protected merge and read-back when the delegated
-authority and execution window permit. Use supported waits/events or bounded checks;
-do not create a polling child, scheduled monitor or automatic merge. A real
-interruption, unusual capacity delay or exhausted window gets an exact resumable
-handoff with run/attempt, subject, limits and next action. Do not abandon ordinary
-in-window work to satisfy a blanket no-waiting-worker rule.
+Retain the same useful owner through ordinary queue waits, result inspection and M
+reconciliation. Use supported events or bounded checks, not a polling child or recurring
+monitor. A real interruption or exhausted window gets an exact handoff of subject,
+run/attempt, proof limits, next action and wake event. Preserve durable evidence so the
+work can survive disposal of its VM; warm context is useful execution state, not the
+only owner of the result.
 
-Target normally ≤20 minutes for complete active qualification, including required setup,
-compilation, selected tests, transfer, verification and cleanup; also report
-request-to-result wait separately. Preserve mandatory selection and unique proof.
-A timing conflict needs an evidence-backed disposition/optimization, not omitted tests,
-truncated accounting or a claimed successful cutover. Qualification itself never
-merges, enqueues or enables auto-merge; live protection and the owner's separate final
-judgment govern integration. Ordinary main health follows #3390's both-one-hour-and-ten-
-merges cadence target, not every-main-push full replay; existing source remains live
-until coordinated cutover.
+Target normally ≤20 minutes for complete active qualification, including setup,
+compilation, transfer, verification and finalization; report queue delay, retries and
+machine-minutes separately. Keep mandatory and uniquely useful proof. Time or merge
+count does not authorize routine main replay. Keep separately admitted release,
+security, deep, incident and cache purposes distinct; actual Pages deployment is
+publication. No protection, credential or security-permission change is authorized
+by this guidance alone.
 
-**Review tooling boundary:** `ub-review.yml` is paused with all review jobs disabled.
-Retained job IDs and historical calibration data do not prove active review. Current
-skills provide provider-native review. No deployed Tower stage controller or Tower-to-CI
-integration was established by this inspection. Future tooling must consume the actual
-request/run/subject/result boundary rather than claim authority from stage names.
+**Review tooling boundary:** `ub-review.yml` remains paused. Provider-native substantive
+review runs in-session; historical job IDs and calibration data do not establish an
+active reviewer or a deployed Tower controller.
 
 ## Operational authority
 
@@ -381,8 +371,8 @@ edit
 → exact staged structural proof
 → affected committed proof
 → candidate challenge/review
-→ current-head clean-environment CI
-→ integration/merge evidence
+→ actual merge-group G qualification
+→ protected landing and M evidence
 ```
 
 Run the cheapest discriminating proof first. Never weaken a test, ratchet, support
@@ -401,9 +391,10 @@ finish-pr
 → root selects differentiated review programmes
 → root joins and submits cumulative review-pr
 → REVIEW_CURRENT
-→ verify-live-ci
-→ INTEGRATION_READY
-→ merge-reconcile
+→ exact-H conditional landing authorization
+→ verify-live-ci / native enqueue and actual G
+→ protected native landing
+→ merge-reconcile / M read-back
 ```
 
 Green CI, mergeability, zero threads, bot approval, or author self-certification cannot

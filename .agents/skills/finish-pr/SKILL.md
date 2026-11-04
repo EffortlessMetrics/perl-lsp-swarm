@@ -1,6 +1,6 @@
 ---
 name: finish-pr
-description: Carry one selected pull request through publication, feedback repair, Codex-native substantive review, live integration, squash merge, and reconciliation.
+description: Carry one selected pull request through publication, feedback repair, Codex-native substantive review, native queue qualification, protected landing, and reconciliation.
 ---
 
 # Finish PR
@@ -119,7 +119,7 @@ no candidate or claim change + no stale review dimension
 → continue at the earliest genuinely missing judgment
 
 `REVIEW_CURRENT`
-→ stabilize the reviewed candidate head for required CI
+→ establish exact-H conditional landing authorization
 → `$verify-live-ci`
 
 `INTEGRATION_READY`
@@ -188,13 +188,10 @@ substantial proof surface, run `$simplify-candidate` before final challenge. Rec
 the PR body to the candidate's current claim, proof, limitations, and remaining work;
 do not retain an ever-growing diary of superseded intermediate defects.
 
-After the affected final challenge and substantive review return `REVIEW_CURRENT`, keep
-the reviewed candidate head stable while required checks evaluate it. Reopen mutation
-only for a current candidate defect, material claim contradiction, candidate-owned
-required-check failure, actual merge conflict, demonstrated combined-tree interaction,
-or the bounded fresh merge-tree re-evaluation selected by `$verify-live-ci` under the
-currentness contract. `$verify-live-ci` remains the sole action owner for that exception;
-this skill does not prescribe an empty commit independently.
+After substantive review returns `REVIEW_CURRENT`, keep the selected H stable through
+conditional authorization and native queue qualification. Reopen mutation for a material
+finding, actual conflict or demonstrated combined-tree interaction. Queue reformation
+supplies new G evidence; it does not authorize an empty commit or ordinary CI trigger.
 
 Do not mutate the stabilized head for duplicate corroboration, wording preference,
 reviewer quota or availability, optional stronger proof that cannot change the current
@@ -214,23 +211,24 @@ review, CI classification, and oracle work may assist.
 - a combined-tree interaction is repaired in the smallest affected candidate;
 - only affected proof and review are refreshed.
 
-After substantive review, select the candidate intended to land and consume the
-actual #17900 qualification operation through `verify-live-ci`. Missing capability
-is `NOT_PROVEN` with its producer blocker; a push or Ready toggle is not a request.
-Keep mandatory selected proof and reporting identity intact during staged cutover.
+After substantive review, select the intended exact H and establish its product/scope
+fit, current findings, protection and conditional landing authorization. Consume the
+qualified #17900 native enqueue operation through `verify-live-ci`; an API acknowledgment
+is not observed queue custody. Missing capability is `NOT_PROVEN`, with the specific
+producer blocker. Draft/Ready changes, comments, pushes and generated publication start
+no Actions, including metadata wrappers.
 
-Record an accepted matching run/attempt as `PR_IN_FLIGHT`. Keep the same useful lead
-through an ordinary in-window wait, terminal result inspection, separate final
-vision/current-repository judgment, protected merge and landing read-back. Use supported
-waits/events or bounded checks without a polling child. A real interruption, unusual
-capacity delay or exhausted window gets an exact resumable handoff. Pending checks do
-not stale otherwise current substantive review.
+Keep the useful owner through native G qualification and protected M reconciliation.
+The queue can land when required G proof succeeds; authorization therefore precedes
+enqueue. Do not add a compulsory post-green pause or perform a duplicate direct merge.
+Keep mandatory selected proof and application identity; every selected G obligation
+must succeed independently of main colour. Missing, skipped, stale or cancelled proof
+is not green. A material finding withdraws eligibility and returns to repair.
 
-Do not arm routine auto-merge or enqueue. Qualification completion has no merge side
-effect. Before explicit integration, require `REVIEW_CURRENT`, current mandatory
-results and live protection, and zero unresolved threads of any author. An open thread
-is `MERGE_BLOCKED`, routed through `address-review-comments`, not a pending-run excuse.
-The actual protected merge and read-back remain single-sourced in `merge-reconcile`.
+Use supported waits/events or bounded checks without a polling child. A real interruption
+gets an exact resumable handoff. The `merge-reconcile` owner reads actual protected
+landing and its effect against the reviewed claim. An open unresolved thread is
+`MERGE_BLOCKED`, not a pending-run excuse.
 
 The live ruleset requires thread resolution: zero unresolved review threads is a
 precondition of protected integration.

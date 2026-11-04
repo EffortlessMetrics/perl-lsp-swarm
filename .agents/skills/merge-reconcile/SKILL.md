@@ -1,6 +1,6 @@
 ---
 name: merge-reconcile
-description: Require current substantive review and live integration before squash merge, then reconcile the landed or deliberately closed root-held claim without exact-head ceremony.
+description: Join current review, exact-H conditional authorization and native G proof, then reconcile the landed or deliberately closed root-held claim without exact-head ceremony.
 ---
 
 # Merge and reconcile
@@ -21,7 +21,7 @@ Inspect the live PR state first.
 - `CLOSED_UNMERGED` with an evidence-backed close/supersede disposition → reconcile
   within that disposition.
 - `CLOSED_UNMERGED` without a durable disposition → `NOT_PROVEN`.
-- `OPEN` → establish substantive review, then live integration, then protected merge.
+- `OPEN` → establish review and exact-H conditional authorization, then native queue custody and G proof.
 - unknown or partial state → `NOT_PROVEN`.
 
 ## Review predecessor
@@ -111,58 +111,39 @@ A pending check leaves `REVIEW_CURRENT` intact and returns `PR_IN_FLIGHT`. Do no
 unchanged state. A missing, skipped, stale, cancelled, or instrument-failed result is
 not success.
 
-Only this conjunction authorizes the ordinary protected merge path:
+Reconciliation of completed native integration requires both judgments:
 
 ```text
 REVIEW_CURRENT
 AND
 INTEGRATION_READY
-→ protected squash merge
+→ read protected native landing and reconcile M
 ```
 
 The live ruleset requires thread resolution: zero unresolved review threads is a
 precondition of protected integration.
 
-## Protected merge
+## Protected native landing
 
-Use the current head SHA only as compare-and-swap protection at the instant of merge:
+The irreversible authorization is conditional landing permission for exact H before
+native enqueue. At that boundary, read current review/findings, product/scope fit,
+threads, head and complete applicable protection together. A nonzero unresolved-thread
+count is `MERGE_BLOCKED`; missing review binding or unavailable protection is `NOT_PROVEN`.
+Refresh only materially affected proof/review. A new substantive finding blocks
+eligibility even when the SHA is unchanged.
 
-```text
-gh pr merge <n> --squash --match-head-commit <current-head-sha>
-```
+Consume the qualified #17900 transport with expected head compare-and-swap and observe
+actual queue custody. It does not freeze the base. Preserve actual G/base/constituents
+and selected workflow/run/attempt separately. Native queue qualification can directly
+lead to protected landing, so do not add a compulsory post-green approval pause, run a
+duplicate `gh pr merge`, bypass protection or manufacture a workflow with an empty push.
 
-Re-run `scripts/reviews/threads <pr> --unresolved-only --json` immediately before
-merge. A non-zero `unresolved_count` is `MERGE_BLOCKED`; route through
-`address-review-comments`. Reacquire current head, base applicability, required
-results, review/findings and protection together before the final judgment.
-Read ordinary-comment dispositions as well as thread resolution, and verify semantic
-review binding with `check-pr-semantic-review-currentness.py --expected-head` for this
-observed head. Missing/stale binding or unavailable protection is `NOT_PROVEN`.
-Inspect terminal selected qualification evidence (skipped/draft-no-proof is not passing
-proof), then explicitly assess whether the candidate still fits current repository
-behavior and accepted product vision. Record that separate final judgment before the
-expected-head protected merge. A new substantive finding routes back to repair even
-when the SHA is unchanged. These boundary reads do not require rerunning unchanged
-proof or a full review on every routine push.
-
-Under #3390, pending qualification does not authorize auto-merge, enqueueing, or a
-probe that bypasses missing proof. Retain the owning lead through ordinary in-window
-waits using supported events or bounded checks, then inspect terminal evidence and
-make the separate integration decision. A real interruption gets an exact resumable
-handoff. Never use administrative bypass, an empty push or a waiver invented to save
-time. A bounded writer/reviewer does not gain integration authority from its role.
-
-The expected-head guard prevents racing a moving candidate.
-It does not make review currentness depend on the SHA.
-Refresh only proof, review, and integration dimensions affected by the new commit.
-If the head moves, consume a new explicit request for the selected candidate. Do not inherit old qualification or force an unrelated
-rebase. The expected-head guard protects head identity; it does not atomically freeze
-the base. A successful merge call is not landing evidence: read the durable PR/commit
-state before reconciliation.
-
-For automation-authored PRs whose `pull_request` runs remain `action_required`, green
-`workflow_dispatch` runs on the same head do not substitute for required PR contexts.
-Use an actual trusted approval/identity path or preserve integration as `NOT_PROVEN`.
+Retain the useful owner through ordinary waits and read back the actual PR/commit M.
+An acknowledgment, armed auto-merge flag, green manual workflow or source fixture is not
+landing evidence. A real interruption gets an exact resumable handoff. If H changes,
+reestablish eligibility for that H; if G reforms, old G proof cannot be relabeled.
+Missing supported H publication, truthful G producers or compatible enforcement is a
+specific activation blocker, not permission to fall back to ordinary CI.
 
 ## Reconciliation
 

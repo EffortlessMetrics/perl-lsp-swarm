@@ -107,7 +107,7 @@ NOT_PROVEN
 - `INTEGRATION_READY` means current protection/integration facts permit the irreversible
   transition.
 - `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
-  requested review or an accepted qualification run; no routine queue/auto-merge.
+  verified native queue custody or its actual G qualification run.
 - `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
   review thread of any author, current change request, ruleset failure, or
   prerequisite blocks merge.
@@ -129,118 +129,51 @@ input to the ordered decision below.
 
 ## Required-status production order
 
-This skill is the single status-production action owner. It selects, performs, or routes
-one admissible action from one current snapshot. When an action requires branch mutation,
-the established candidate writer alone performs it.
+Use the accepted queue route in `docs/ci/qualification-cutover.md`. All substantive
+authoring checks and review happen in-session before this boundary.
 
-1. **A current-subject run is queued or active.** Read it back against the expected
-   context and subject, then wait for that run. Do not duplicate it. The run counts only
-   when its workflow and reporting identity can publish the missing required context;
-   a queued or active advisory-only run does not satisfy this action.
-2. **The current run is `action_required` or needs trusted approval/identity.** Use the
-   actual trusted approval path before dispatch, rerun, or branch mutation. Re-read the
-   run and return `PR_IN_FLIGHT` only when GitHub confirms the approval/identity
-   transition on the expected subject.
-3. **No current-subject run exists and exact-subject dispatch is admissible.** Dispatch
-   only when the workflow accepts the exact inputs and can publish the missing required
-   context or a trusted receipt live policy admits. Re-read the created run, its inputs,
-   evaluated subject, and reporting identity before waiting. An exact advisory-only run
-   is not a substitute.
-4. **A completed transient or instrument failure can be rerun against the same relevant
-   subject.** Rerun only a run whose workflow and reporting identity can publish the
-   missing required context; a transient failure of an advisory-only run falls through
-   to action 3 or 5. Request one bounded rerun, then re-read a new attempt for that run
-   and subject. A command exit or API success without a new attempt is not
-   `PR_IN_FLIGHT`.
-5. **Material base movement changed a merge-tree subject and the old attempt cannot
-   answer it.** Prefer an admissible exact-subject dispatch that can satisfy the missing
-   required context, with the same read-back as action 3.
-6. **No admissible exact-subject route can evaluate the required changed merge tree and
-   the currentness contract's narrow fresh-trigger exception applies.** Authorize one
-   verified-clean empty commit through the established candidate writer. The writer
-   proves no file or mode change, pushes the expected branch, and returns the new head.
-   Re-read the PR head before waiting for the resulting required run. This is not a
-   retry-to-green mechanism and this skill does not mutate the branch directly.
-7. **No action can be proven admissible or persisted.** Return terminal `NOT_PROVEN`
-   with the missing policy, subject, capability, reporting identity, or read-back. Do not
-   guess by pushing or call an unobserved action in flight. If the fresh-trigger
-   mechanic is unavailable or its new-subject relationship cannot be proven, remain
-   `NOT_PROVEN` rather than inventing a clean or current result.
+1. Read exact H, current substantive review, product/scope fit, conditional landing
+   authorization, unresolved findings and the complete effective protection union.
+   Missing approval, capability or protection stays `NOT_PROVEN`/`MERGE_BLOCKED`.
+2. If native custody already exists for that H, observe it rather than enqueue again.
+   Otherwise invoke the qualified exact-H enqueue owner once and read back custody.
+   Lost acknowledgment is observation/recovery, never a blind second mutation.
+3. Observe actual G/base/complete constituents and every selected named/App-bound
+   result in its exact workflow run and attempt. Queue reformation changes the proof
+   subject. Neither an associated PR nor a live queue prefix proves complete membership.
+4. A concrete transient failure may justify a bounded supported retry only while
+   the subject, attempt and eligibility remain valid. Product failure returns to its
+   repair owner. Never substitute a pre-queue workflow dispatch or an empty push.
+5. Read protected native landing and M through `merge-reconcile`. Landing may already
+   have happened when completion is observed; do not issue a second direct merge.
 
-### Remote-action persistence law
+A command invocation or API 2xx is not an observed transition. Return `PR_IN_FLIGHT`
+only for exact persisted native custody/run state with an accountable owner and wake
+event. A supported H publisher is admission evidence; it cannot replace actual G proof.
+Do not accept candidate JSON or a green manual run as an authorization override.
 
-A command invocation, API 2xx, or requested transition is not itself evidence that the
-transition exists. Return `PR_IN_FLIGHT` after approval, dispatch, rerun, or writer
-handoff only when a fresh GitHub read confirms:
+## Currentness and native group reformation
 
-```text
-expected PR/head or merge subject
-+ expected context/workflow/run identity
-+ expected new state or attempt
-+ exact terminal wake event
-```
-
-If read-back fails, is contradictory, or names another subject, preserve the action
-failure or return `NOT_PROVEN`. Do not take a second status-production action from the
-same snapshot; re-read only after the named wake event.
-
-## Currentness and fresh-trigger decision
-
-Classify the current snapshot before selecting a status-production action. Provider
-mechanics may differ; the result class and next route must not.
-
-```text
-existing evidence still current for the required subject
-→ use it; no retrigger or mutation
-
-required check pending for the current subject
-→ observe once; return PR_IN_FLIGHT; do not poll or mutate
-
-required check failed for the current subject
-→ classify product/test/integration/instrument cause; a fresh trigger is not a retry-to-green
-
-unrelated or behind-only main movement, conflict-free
-→ no candidate mutation, rebase, or trigger
-
-material merge-tree/base subject changed
-+ supported rerun or exact-subject dispatch evaluates the new subject
-→ prefer that non-mutating mechanism; bind evidence to the new subject
-
-material merge-tree/base subject changed
-+ policy requires a fresh result
-+ ordinary rerun would replay the stale snapshot
-+ no admissible exact-subject dispatch
-+ provider can bind the sanctioned writer-owned fresh trigger to the new subject
-+ effective repository policy admits the writer-owned fresh trigger
-→ one bounded fresh trigger (`ci: re-request fresh merge-tree checks`); at most one per observed material base movement; re-read before PR_IN_FLIGHT
-
-material merge-tree subject changed
-+ mechanic unavailable, repository policy forbids the fresh trigger, or trigger/new-subject relationship unproven
-→ NOT_PROVEN; do not invent equivalence or a clean/current result
-```
-
-This is not admission, queue custody, or a second lifecycle. Ordinary pushes remain
-development communication, not a qualification button.
+Preserve unchanged semantic review and local proof. A changed H requires current
+eligibility and new exact-head admission. Actual queue/base reformation creates a new
+G and invalidates old G execution evidence; consume the native operation's new subject.
+Do not rebase or create an empty commit for behind-only movement or to manufacture CI.
+If no qualified producer can prove the required subject, report that specific missing
+capability while continuing independent authoring work.
 
 ## Terminal inspection and ownership
 
-For the selected late qualification, retain one accountable owner through terminal
-run/attempt inspection, then the separate vision/current-repository judgment and
-protected merge decision. Use supported completion events or bounded checks during
-the ordinary wait window. Do not return an ownerless `PR_IN_FLIGHT` merely because a
-worker ended. On a real interruption, name `continuation_owner`, `next_action`, the
-exact request/head/merge subject and run/attempt, pending contexts and `wake_event` in
-the existing handoff packet; require receiver acceptance before transferring ownership.
-Missing ownership is `NOT_PROVEN`, not a successful handoff. Do not add a state registry,
-recurring poller, or repeat unchanged snapshots.
+Retain one useful accountable owner through ordinary native queue waits, exact
+run/attempt inspection and protected M read-back. Conditional product/scope and landing
+authorization occurred before enqueue. Native landing does not require another manual
+approval pause. A new material finding withdraws eligibility and returns to repair.
 
-At terminal completion ask: did the selected tests actually execute on the admitted
-subject? Inspect result/log/artifact content, not only the badge. `SKIPPED`, `NEUTRAL`,
-`draft-no-proof`, and "no analysis executed" do not prove tests passed, even if a wrapper
-is green. Preserve not-applicable separately with policy evidence; mandatory selected
-proof still needs actual execution. Carry required union and reporting identity through
-terminal results; do not drop the slow tail. Then return the evidence to
-`$merge-reconcile` for its final current-repository/vision and protection judgment.
+Inspect the selected result/log/artifact content. Every applicable G obligation must
+have run and succeeded independently of main health. `SKIPPED`, `NEUTRAL`, cancellation,
+missing evidence and a green wrapper do not prove it. Preserve policy-supported
+not-applicable separately. Missing title membership, publishing or protection remains
+an explicit blocker. On a real interruption, hand off exact H/G/run/attempt, proof limits,
+continuation owner, next action and wake event; keep durable evidence outside the VM.
 
 ## Live evidence classification
 
@@ -257,22 +190,8 @@ evidence rule:
   integration fact. Request a job rerun where appropriate without mutating the branch.
   Never rebase, push an empty commit, or replay unrelated CI merely to manufacture a
   current status;
-- a rerun of a merge-tree-evaluated check replays its original merge snapshot: after
-  material base movement (release bumps, fmt/clippy sweeps landing on main), prefer an
-  admissible exact-subject producer for the changed subject. When that producer cannot
-  evaluate the new tree, a fresh trigger (empty-commit head bump, e.g.
-  `ci: re-request fresh merge-tree checks`) re-evaluates the current tree and is the
-  honest action; the bound is at most one fresh trigger per observed material base
-  movement — never per wait cycle — and the established candidate writer owns the
-  action. If the mechanic is unavailable, repository policy forbids the fresh
-  trigger, or the trigger cannot be bound to the new
-  subject, no admissible exact-subject producer means `NOT_PROVEN`; preserve the named
-  capability blocker. The empty-commit ban covers manufacturing a current status on an
-  unchanged subject, not re-evaluating a changed merge tree (#12174, #12251, #12256,
-  #12258 each unblocked only through the fresh trigger). Query main's own head
-  check-runs when evidence suggests a base-owned failure before repairing
-  branch-locally.
-
+- actual native group reformation creates a new G. Use that exact native subject and
+  attempt; do not relabel old proof, dispatch pre-queue CI or push an empty trigger.
 
 Classify failures as candidate-owned, base-owned, integration interaction,
 test/oracle defect, instrument failure, environment/capacity, pending, or

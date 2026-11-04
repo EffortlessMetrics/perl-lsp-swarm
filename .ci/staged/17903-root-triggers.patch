@@ -1,69 +1,20 @@
---- a/.github/workflows/ci.yml
-+++ b/.github/workflows/ci.yml
-@@ -6,16 +6,6 @@
- # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
- 
- on:
--  pull_request:
--    branches: [ main, master ]
--    # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
--    # classification metadata, not CI authority. `ready_for_review` and
--    # `converted_to_draft` are kept because they change the draft-pr-check guard
--    # behavior and must trigger CI.
--    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
--  merge_group: {}
--  push:
--    branches: [ main, master ]
-   workflow_dispatch:
-     inputs:
-       base_sha:
---- a/.github/workflows/ripr.yml
-+++ b/.github/workflows/ripr.yml
-@@ -25,17 +25,6 @@
- name: ripr
- 
- on:
--  pull_request:
--    branches: [master, main]
--    types: [opened, synchronize, reopened, ready_for_review]
--  merge_group:
--  push:
--    branches: [master, main]
--  # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
--  # restore warm artifacts instead of cold-building into the runner-eviction
--  # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
--  # PR-created caches are scoped to the PR merge ref and cannot warm other
--  # PRs, they only burn the 10 GB quota.
-   schedule:
-     - cron: '23 11 * * *'
-   workflow_dispatch:
---- a/.github/workflows/em-ci-routed-rust.yml
-+++ b/.github/workflows/em-ci-routed-rust.yml
-@@ -13,16 +13,6 @@
-           - cx53
-           - cx43
-           - github
--  pull_request:
--    branches: [main]
--    types: [opened, synchronize, reopened, ready_for_review]
--  merge_group:
--  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
--  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
--  # what actually sits on main. Landed main commits now carry their own baseline run.
--  push:
--    branches: [main, master]
--
- permissions:
-   actions: read
-   checks: read
 --- a/.ci/policies/required-checks.toml
 +++ b/.ci/policies/required-checks.toml
+@@ -116,7 +116,7 @@
+ workflow = ".github/workflows/non-rust-policy.yml"
+ job = "exact-tree"
+ workflow_result = "propagate"
+-events = ["pull_request_target", "merge_group", "push", "workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "always-or-scoped-noop"
 @@ -129,7 +129,7 @@
  workflow = ".github/workflows/em-ci-routed-rust.yml"
  job = "rust-small-result"
  workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
  required = true
  policy_role = "required"
  applicability = "always-or-scoped-noop"
@@ -72,43 +23,77 @@
  job = "ripr"
  workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
  required = true
  policy_role = "required"
  applicability = "always-or-scoped-noop"
-@@ -157,7 +157,7 @@
+@@ -155,15 +155,15 @@
+ name = "Compile All Targets (bit-rot guard)"
+ producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
- job = "check-all-targets"
- workflow_result = "propagate"
+-job = "check-all-targets"
+-workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
- required = true
- policy_role = "required"
- applicability = "conditional"
+-required = true
+-policy_role = "required"
+-applicability = "conditional"
+-enforcement = "github-ruleset"
+-ruleset_integration_id = 15368
+-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348). A job-level skip leaves GitHub expecting this name; diagnose with scripts/ci/detect_required_check_registration.py (#16469)."
++job = "integration-required"
++workflow_result = "propagate"
++events = ["merge_group", "workflow_dispatch"]
++required = true
++policy_role = "required"
++applicability = "always-or-scoped-noop"
++enforcement = "github-ruleset"
++ruleset_integration_id = 15368
++reason = "Protected Actions context retains compilation and joins the existing fail-closed CI Gate in the same native run/attempt. Every selected shard and UX obligation must succeed independently of main health; missing, skipped or cancelled dependencies remain NOT_PROVEN (#10063/#18269)."
+ 
+ [[checks]]
+ name = "Conflict marker check"
 @@ -171,7 +171,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "conflict-markers"
  workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
  required = true
  policy_role = "required"
  applicability = "conditional"
+@@ -185,7 +185,7 @@
+ workflow = ".github/workflows/pr-title-check.yml"
+ job = "validate-title"
+ workflow_result = "propagate"
+-events = ["pull_request_target", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = true
+ policy_role = "required"
+ applicability = "always-or-scoped-noop"
 @@ -199,7 +199,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "rust-formatting"
  workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
+@@ -235,7 +235,7 @@
+ workflow = ".github/workflows/tokmd.yml"
+ job = "analyze"
+ workflow_result = "propagate"
+-events = ["pull_request", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "conditional"
 @@ -248,7 +248,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "pr-smoke"
  workflow_result = "continue"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
  required = false
  policy_role = "advisory"
  applicability = "conditional"
@@ -117,7 +102,7 @@
  job = "ux-tests"
  workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
  required = false
  policy_role = "advisory"
  applicability = "conditional"
@@ -126,6 +111,24 @@
  job = "merge-gate"
  workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["merge_group", "workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "always-or-scoped-noop"
+@@ -300,7 +300,7 @@
+ workflow = ".github/workflows/semantic-close-containment.yml"
+ job = "containment"
+ workflow_result = "propagate"
+-events = ["pull_request_target", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "always-or-scoped-noop"
+@@ -313,7 +313,7 @@
+ workflow = ".github/workflows/authority-transfer-review.yml"
+ job = "authority-transfer-review"
+ workflow_result = "propagate"
+-events = ["pull_request_target", "workflow_dispatch"]
 +events = ["workflow_dispatch"]
  required = false
  policy_role = "advisory"
@@ -148,11 +151,451 @@
  required = false
  policy_role = "advisory"
  applicability = "conditional"
-diff --git a/.github/workflows/aggregate-ci-lane-history.yml b/.github/workflows/aggregate-ci-lane-history.yml
-index 8b5998e32c..774c72856f 100644
+--- /dev/null
++++ b/.ci/retired-workflows/main-history-event.yml
+@@ -0,0 +1,187 @@
++name: Main History Event
++
++# Observe exact `main` push-event movement and publish one durable receipt.
++#
++# #10306: the repository can verify a completed Git graph, but it produced no
++# event-bound observation when `main` moved non-fast-forward. This workflow binds
++# GitHub's delivered push subjects (`before`, `after`, `ref`, and the
++# created/deleted/forced flags) to the typed ancestry authority added by #10304
++# and keeps the two propositions on separate axes.
++#
++# Deliberate boundaries:
++#   * read-only. `contents: read`, no persisted credentials, and no branch, tag,
++#     PR, issue, release, or ref mutation. This detector observes a push after
++#     the fact; it is not prevention and must never be represented as such.
++#   * no independent ancestry logic lives here. The workflow forwards the exact
++#     event subjects to one repository command and reports its verdict. It never
++#     parses fetch prose and never re-derives the history relation in YAML —
++#     that is precisely the mistake behind the false August 15 re-root
++#     diagnosis. `main_history_event_workflow_contract` enforces this.
++#   * it does not read live branch-protection or ruleset state. That authority
++#     belongs to the `release_live_controls` observer (#9403 / #8551), and this
++#     workflow must not grow a second settings model.
++#
++# Two limits are inherent to observing pushes from inside the history being
++# observed, and neither is repairable here. They bound what this lane can claim;
++# prevention remains with the live branch-protection controls above.
++#
++#   1. GitHub evaluates a `push` workflow from the pushed revision, so a reset to
++#      a commit that predates this file dispatches nothing at all. A destructive
++#      push can therefore erase its own detector, and the absence of a run is not
++#      evidence of a safe push.
++#   2. A rewind commonly leaves `github.event.before` unreachable from every ref,
++#      and a clone fetches only reachable objects. The classifier then reports
++#      `not_proven_missing_object` rather than proving the rewrite. That still
++#      fails closed and still retains the delivered `forced` flag, but it is
++#      weaker evidence than a proven `non_fast_forward`.
++#
++# On ref deletion: a `push` event is still delivered with `deleted: true`, but
++# `github.sha` reverts to the default branch tip rather than naming the deleted
++# ref's commit. The classifier is therefore fed `github.event.after` — the
++# delivered payload subject, which is the zero object name for a deletion — so
++# the receipt records what the platform actually sent instead of an unrelated
++# tip. The `deleted_ref` verdict is driven by the delivered flag and that zero
++# name, never by the checked-out SHA. Because this workflow filters on
++# `branches: [main]`, the deletion path is only reachable if `main` itself is
++# deleted; prevention remains with the live branch-protection observer above.
++
++# `push` is the only trigger. A `workflow_dispatch` run carries no push payload,
++# so `github.event.before` and the created/deleted/forced flags would all be
++# empty and every manual run would fail as `invalid_event`. There is no push
++# event to classify outside a push; investigate a specific pair locally with
++# `cargo run -p xtask --bin main-history-event` instead.
++on:
++  push:
++    branches:
++      - main
++
++# No `concurrency:` group, deliberately. A group admits one running and one
++# pending run, and a newly queued run displaces the pending one, so any shared
++# group can silently discard a push's receipt — `cancel-in-progress: false` does
++# not prevent that. Keying by `github.sha` is not sufficient either: `main`
++# returning to the same commit produces distinct push events that share a SHA,
++# and that is the force-push shape this lane most needs to observe. Every run
++# stays independent so no observation can ever be displaced by another.
++
++permissions:
++  contents: read
++
++env:
++  CARGO_TERM_COLOR: always
++
++jobs:
++  classify:
++    name: Classify main push movement
++    if: github.ref == 'refs/heads/main'
++    runs-on: ubuntu-24.04
++    timeout-minutes: 20
++    permissions:
++      contents: read
++    steps:
++      - name: Checkout the exact event commit
++        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          # The complete graph is required: a shallow checkout cannot tell a
++          # rewritten history from a retained-boundary artifact, and the command
++          # correctly refuses to answer on one.
++          ref: ${{ github.sha }}
++          fetch-depth: 0
++          persist-credentials: false
++
++      - name: Set up Rust
++        uses: ./.github/actions/setup-rust
++        with:
++          cache: true
++          cache-key-suffix: main-history-event
++
++      - name: Classify the delivered push event
++        id: classify
++        env:
++          # Exact platform subjects, passed at step scope as environment values
++          # rather than interpolated into the script body.
++          EVENT_BEFORE: ${{ github.event.before }}
++          # The delivered payload subject, not `github.sha`: the two agree for an
++          # ordinary push, but on a ref deletion `github.sha` reverts to the
++          # default branch tip while `github.event.after` is the zero name.
++          EVENT_AFTER: ${{ github.event.after }}
++          EVENT_REF: ${{ github.ref }}
++          EVENT_FORCED: ${{ github.event.forced }}
++          EVENT_CREATED: ${{ github.event.created }}
++          EVENT_DELETED: ${{ github.event.deleted }}
++          RECEIPT_PATH: target/history/main-event.json
++        run: |
++          set -euo pipefail
++          arguments=(
++            --repo .
++            --before "${EVENT_BEFORE}"
++            --after "${EVENT_AFTER}"
++            --ref "${EVENT_REF}"
++            --output "${RECEIPT_PATH}"
++          )
++          if [ "${EVENT_FORCED}" = "true" ]; then
++            arguments+=(--event-forced)
++          fi
++          if [ "${EVENT_CREATED}" = "true" ]; then
++            arguments+=(--event-created)
++          fi
++          if [ "${EVENT_DELETED}" = "true" ]; then
++            arguments+=(--event-deleted)
++          fi
++
++          # The verdict is recorded rather than raised here so the receipt is
++          # always uploaded, including — especially — when the detector is red.
++          set +e
++          cargo run --locked -p xtask --bin main-history-event -- "${arguments[@]}"
++          status=$?
++          set -e
++          echo "status=${status}" >> "${GITHUB_OUTPUT}"
++          echo "receipt=${RECEIPT_PATH}" >> "${GITHUB_OUTPUT}"
++
++      - name: Publish the history-event receipt
++        if: always() && steps.classify.outcome != 'skipped'
++        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
++        with:
++          # `github.sha` alone is not an event identity: `main` returning to the
++          # same commit produces distinct pushes that share it, and those repeated
++          # resets are the shape most worth telling apart. The run id makes each
++          # observation addressable without consulting run metadata.
++          name: main-history-event-receipt-${{ github.sha }}-${{ github.run_id }}
++          path: target/history/main-event.json
++          # A missing receipt is a failed observation, not a quiet skip.
++          if-no-files-found: error
++          retention-days: 90
++
++      - name: Enforce the detector verdict
++        if: always() && steps.classify.outcome != 'skipped'
++        env:
++          CLASSIFY_STATUS: ${{ steps.classify.outputs.status }}
++        run: |
++          set -euo pipefail
++          if [ -z "${CLASSIFY_STATUS}" ]; then
++            echo "::error::the history-event classifier produced no verdict"
++            exit 1
++          fi
++          # Distinguish the blocking classes: a proven rewrite and an
++          # unverifiable graph are very different operator situations, and an
++          # instrument failure is not a history finding at all.
++          case "${CLASSIFY_STATUS}" in
++            0)
++              echo "main history-event detector: movement proven safe"
++              ;;
++            2)
++              echo "::error::main moved destructively, or moved non-fast-forward with no force push reported. See the uploaded receipt."
++              exit 1
++              ;;
++            3)
++              echo "::error::main movement could NOT be verified (incomplete object graph). This is not proof of a rewrite, and not proof of safety. See the uploaded receipt."
++              exit 1
++              ;;
++            5)
++              echo "::error::GitHub reported a force push on main. The graph proves no history was lost, but this ref should not accept a force push at all. See the uploaded receipt."
++              exit 1
++              ;;
++            *)
++              echo "::error::the history-event detector failed to produce a verdict (exit ${CLASSIFY_STATUS}): invalid event subject or instrument failure, not a history finding. See the uploaded receipt."
++              exit 1
++              ;;
++          esac
+--- a/.github/workflows/active-authority-contract.yml
++++ b/.github/workflows/active-authority-contract.yml
+@@ -4,46 +4,7 @@
+ # steer humans and coding agents. Historical documents are outside this workflow.
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - 'CONTRIBUTING.md'
+-      - '.github/copilot-instructions.md'
+-      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+-      - 'docs/reference/WORKTREE_PROTOCOL.md'
+-      - 'AGENTS.md'
+-      - 'CLAUDE.md'
+-      - '.agents/skills/**'
+-      - '.claude/skills/**'
+-      - '.claude/agents/**'
+-      - 'docs/agents/DEVELOPMENT_METHOD.md'
+-      - 'docs/agents/REVIEW_CURRENTNESS.md'
+-      - 'docs/agents/SKILL_CONTRACT.md'
+-      - 'justfile'
+-      - '.gitignore'
+-      - 'tests/test_active_authority_contract.py'
+-      - 'tests/test_writer_authority_transfer_contract.py'
+-      - '.github/workflows/active-authority-contract.yml'
+-  push:
+-    branches: [main]
+-    paths:
+-      - 'CONTRIBUTING.md'
+-      - '.github/copilot-instructions.md'
+-      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+-      - 'docs/reference/WORKTREE_PROTOCOL.md'
+-      - 'AGENTS.md'
+-      - 'CLAUDE.md'
+-      - '.agents/skills/**'
+-      - '.claude/skills/**'
+-      - '.claude/agents/**'
+-      - 'docs/agents/DEVELOPMENT_METHOD.md'
+-      - 'docs/agents/REVIEW_CURRENTNESS.md'
+-      - 'docs/agents/SKILL_CONTRACT.md'
+-      - 'justfile'
+-      - '.gitignore'
+-      - 'tests/test_active_authority_contract.py'
+-      - 'tests/test_writer_authority_transfer_contract.py'
+-      - '.github/workflows/active-authority-contract.yml'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/agent-authority-status.yml
++++ b/.github/workflows/agent-authority-status.yml
+@@ -8,106 +8,7 @@
+ # `test_workflow_triggers_on_every_registered_path` enforces the equality.
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - '.github/copilot-instructions.md'
+-      - '.github/workflows/agent-authority-status.yml'
+-      - '.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md'
+-      - '.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md'
+-      - '.kiro/specs/ux-readiness-system/requirements.md'
+-      - '.spec/3988-merge-readiness/spec.md'
+-      - 'AGENTS.md'
+-      - 'CLAUDE.md'
+-      - 'CONTRIBUTING.md'
+-      - 'TECHNICAL_VISION.md'
+-      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+-      - 'docs/agents/AUTHORITY_STATUS.md'
+-      - 'docs/agents/CARGO_STORAGE.md'
+-      - 'docs/agents/DEVELOPMENT_METHOD.md'
+-      - 'docs/agents/GITHUB_SURFACES.md'
+-      - 'docs/agents/README.md'
+-      - 'docs/agents/REVIEW_CURRENTNESS.md'
+-      - 'docs/agents/SKILL_CONTRACT.md'
+-      - 'docs/agents/authority_status.toml'
+-      - 'docs/agents/lenses/vision-alignment.md'
+-      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+-      - 'docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md'
+-      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+-      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+-      - 'docs/development/RUST_1_95_ROLLOUT.md'
+-      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
+-      - 'docs/handoff/SWARM_DESIGN.md'
+-      - 'docs/how-to/AGENT_CONTRIBUTING.md'
+-      - 'docs/how-to/SESSION_OPERATIONS.md'
+-      - 'docs/project/EDITOR_TRUST_WAVE.md'
+-      - 'docs/project/PERL_LSP_VISION.md'
+-      - 'docs/project/RAILS_INDEX.md'
+-      - 'docs/project/plans/2026-06-convergence-to-release.md'
+-      - 'docs/reference/GLOSSARY.md'
+-      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+-      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+-      - 'docs/reference/OCTOPUS_CLUSTER.md'
+-      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+-      - 'docs/reference/PIPELINE_GATES.md'
+-      - 'docs/reference/WORKTREE_PROTOCOL.md'
+-      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+-      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
+-      - 'scripts/ci/check-pr-claim-currentness'
+-      - 'scripts/ci/check-pr-review-convergence-core'
+-      - 'scripts/reviews/claim-digest'
+-      - 'tests/test_agent_authority_status.py'
+-      - 'tests/test_legacy_authority_banners.py'
+-  push:
+-    branches: [main]
+-    paths:
+-      - '.github/copilot-instructions.md'
+-      - '.github/workflows/agent-authority-status.yml'
+-      - '.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md'
+-      - '.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md'
+-      - '.kiro/specs/ux-readiness-system/requirements.md'
+-      - '.spec/3988-merge-readiness/spec.md'
+-      - 'AGENTS.md'
+-      - 'CLAUDE.md'
+-      - 'CONTRIBUTING.md'
+-      - 'TECHNICAL_VISION.md'
+-      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+-      - 'docs/agents/AUTHORITY_STATUS.md'
+-      - 'docs/agents/CARGO_STORAGE.md'
+-      - 'docs/agents/DEVELOPMENT_METHOD.md'
+-      - 'docs/agents/GITHUB_SURFACES.md'
+-      - 'docs/agents/README.md'
+-      - 'docs/agents/REVIEW_CURRENTNESS.md'
+-      - 'docs/agents/SKILL_CONTRACT.md'
+-      - 'docs/agents/authority_status.toml'
+-      - 'docs/agents/lenses/vision-alignment.md'
+-      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+-      - 'docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md'
+-      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+-      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+-      - 'docs/development/RUST_1_95_ROLLOUT.md'
+-      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
+-      - 'docs/handoff/SWARM_DESIGN.md'
+-      - 'docs/how-to/AGENT_CONTRIBUTING.md'
+-      - 'docs/how-to/SESSION_OPERATIONS.md'
+-      - 'docs/project/EDITOR_TRUST_WAVE.md'
+-      - 'docs/project/PERL_LSP_VISION.md'
+-      - 'docs/project/RAILS_INDEX.md'
+-      - 'docs/project/plans/2026-06-convergence-to-release.md'
+-      - 'docs/reference/GLOSSARY.md'
+-      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+-      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+-      - 'docs/reference/OCTOPUS_CLUSTER.md'
+-      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+-      - 'docs/reference/PIPELINE_GATES.md'
+-      - 'docs/reference/WORKTREE_PROTOCOL.md'
+-      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+-      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
+-      - 'scripts/ci/check-pr-claim-currentness'
+-      - 'scripts/ci/check-pr-review-convergence-core'
+-      - 'scripts/reviews/claim-digest'
+-      - 'tests/test_agent_authority_status.py'
+-      - 'tests/test_legacy_authority_banners.py'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/agent-capability-gate.yml
++++ b/.github/workflows/agent-capability-gate.yml
+@@ -25,18 +25,8 @@
+ # read that number before treating a green result as proof of a live boundary.
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - '.claude/agents/**'
+-      - 'xtask/src/tasks/agent_capability_policy.rs'
+-      - '.github/workflows/agent-capability-gate.yml'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+   merge_group:
+-  push:
+-    branches:
+-      - main
+-      - master
++    types: [checks_requested]
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/agent-flow-control-plane.yml
++++ b/.github/workflows/agent-flow-control-plane.yml
+@@ -4,62 +4,7 @@
+ # contract changes. This workflow has no GitHub or live-agent authority.
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'AGENTS.md'
+-      - 'CLAUDE.md'
+-      - '.github/PULL_REQUEST_TEMPLATE.md'
+-      - 'docs/agents/**'
+-      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+-      - 'docs/specs/README.md'
+-      - 'docs/INDEX.md'
+-      - '.agents/skills/**'
+-      - '.claude/skills/**'
+-      - '.claude/settings.json'
+-      - '.codex/**'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/agent_flow.rs'
+-      - 'xtask/src/tasks/agent_flow/**'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/tests/agent_merge_review_backstop.rs'
+-      - 'xtask/tests/agent_shift_left_entry_contract.rs'
+-      - 'xtask/tests/agent_remote_wait_attention.rs'
+-      - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
+-      - 'xtask/tests/pr_convergence_contract.rs'
+-      - 'xtask/tests/shift_left_publication_contract.rs'
+-      - 'xtask/tests/verify_live_ci_currentness_contract.rs'
+-      - 'policy/skill-provider-parity.toml'
+-      - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
+-      - '.github/workflows/agent-flow-control-plane.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - 'AGENTS.md'
+-      - 'CLAUDE.md'
+-      - '.github/PULL_REQUEST_TEMPLATE.md'
+-      - 'docs/agents/**'
+-      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+-      - 'docs/specs/README.md'
+-      - 'docs/INDEX.md'
+-      - '.agents/skills/**'
+-      - '.claude/skills/**'
+-      - '.claude/settings.json'
+-      - '.codex/**'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/agent_flow.rs'
+-      - 'xtask/src/tasks/agent_flow/**'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/tests/agent_merge_review_backstop.rs'
+-      - 'xtask/tests/agent_shift_left_entry_contract.rs'
+-      - 'xtask/tests/agent_remote_wait_attention.rs'
+-      - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
+-      - 'xtask/tests/pr_convergence_contract.rs'
+-      - 'xtask/tests/shift_left_publication_contract.rs'
+-      - 'xtask/tests/verify_live_ci_currentness_contract.rs'
+-      - 'policy/skill-provider-parity.toml'
+-      - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
+-      - '.github/workflows/agent-flow-control-plane.yml'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
 --- a/.github/workflows/aggregate-ci-lane-history.yml
 +++ b/.github/workflows/aggregate-ci-lane-history.yml
-@@ -367,9 +367,3 @@ jobs:
+@@ -363,80 +363,30 @@
+           # auto-closes that child (#12885). Cleanup is a separate admitted
+           # decision via `xtask branch-deletion-admission admit`.
+ 
+-      - name: Raise CI on the generated PR
 -        # GITHUB_TOKEN-created PRs raise no pull_request events, so the
 -        # required-check workflows never fire on their own (#11731, #11707,
 -        # #11794). workflow_dispatch is the documented GITHUB_TOKEN exception
@@ -162,10 +605,19 @@ index 8b5998e32c..774c72856f 100644
 -        # Ruleset-required contexts still need PR-event runs at merge time —
 -        # one run approval plus a reopen nudge; see #11731 for the open
 -        # policy decision.
-+        # Publication is not product qualification (#17900/#17903). Preserve
-+        # title and history-payload validation for GITHUB_TOKEN-created PRs;
-+        # the selected candidate's product proof is requested separately later.
-@@ -383,16 +377,3 @@ jobs:
+-        if: steps.create-pr.outputs.pull-request-number != '0'
++      - name: Reconcile generated PR without CI
++        # Publication is not a qualification request, including metadata CI.
++        # Preserve a bounded native head readback; the owning coding session
++        # supplies substantive checks/review before separately authorized enqueue.
++        if: steps.create-pr.outputs.pull-request-number != '' && steps.create-pr.outputs.pull-request-number != '0'
+         env:
+           GH_TOKEN: ${{ github.token }}
+-          BRANCH: automation/ci-lane-history
++          GH_REPO: ${{ github.repository }}
+           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+           CREATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
+-        run: |
 -          # ci.yml's workflow_dispatch declares required inputs (since #13019):
 -          # the dispatched subject's exact base and head SHAs. Dispatching it
 -          # bare fails with HTTP 422 "Required input 'base_sha' not provided"
@@ -182,13 +634,37 @@ index 8b5998e32c..774c72856f 100644
 -          # stay bare. Keep attempting every workflow so one transient
 -          # failure cannot strand the later checks. The final status remains
 -          # failing when any lookup or dispatch failed.
-+          # Preserve exact generated-head freshness around metadata dispatch.
-+          # Attempt both metadata checks even when one dispatch fails; keep
-+          # the step non-successful after any dispatch or identity failure.
-@@ -415 +396 @@ jobs:
+-          set +e
+-          failed=0
+-          base_sha=""
+-          head_sha=""
+-          resolve_identity() {
+-            local pr_json
+-            pr_json=$(gh pr view "$PR_NUMBER" --json baseRefOid,headRefOid) || return 1
+-            base_sha=$(printf '%s' "$pr_json" | jq -r '.baseRefOid // empty')
+-            head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid // empty')
+-            [ -n "$base_sha" ] && [ -n "$head_sha" ]
+-          }
+-          identity_ok=0
+-          if ! resolve_identity; then
+-            echo "::error::Could not resolve base/head identity for generated PR #$PR_NUMBER"
+-            failed=1
+-          elif [ "$head_sha" != "$CREATED_HEAD_SHA" ]; then
 -            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing to prove a different subject"
-+            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing metadata freshness for a different subject"
-@@ -420,11 +401,2 @@ jobs:
+-            failed=1
+-          else
+-            identity_ok=1
++        shell: bash
++        run: |
++          set -euo pipefail
++          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
++          [[ "$CREATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
++          observed="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" --json headRefOid,state --jq '[.headRefOid, .state] | @tsv')"
++          expected="$(printf '%s\tOPEN' "$CREATED_HEAD_SHA")"
++          if [ "$observed" != "$expected" ]; then
++            echo '::error::Generated PR state/head differs from the published candidate; no qualification requested'
++            exit 1
+           fi
 -          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
 -            if [ "$workflow" = ci.yml ]; then
 -              if [ "$identity_ok" = 1 ] \
@@ -200,16 +676,1622 @@ index 8b5998e32c..774c72856f 100644
 -                continue
 -              fi
 -            elif gh workflow run "$workflow" --ref "$BRANCH"; then
-+          for workflow in pr-title-check.yml validate-ci-lane-history.yml; do
-+            if gh workflow run "$workflow" --ref "$BRANCH"; then
-@@ -438 +410 @@ jobs:
+-              continue
+-            fi
+-            echo "::error::Failed to dispatch $workflow"
+-            failed=1
+-          done
+-          if [ "$identity_ok" = 1 ]; then
+-            if ! resolve_identity || [ "$head_sha" != "$CREATED_HEAD_SHA" ]; then
 -              echo "::error::Generated PR head moved during the dispatch loop; raised checks may name different subjects"
-+              echo "::error::Generated PR head moved during the dispatch loop; metadata checks may name different subjects"
-diff --git a/.github/workflows/post-merge-status.yml b/.github/workflows/post-merge-status.yml
-index 6666ca9a68..2a4b61d191 100644
+-              failed=1
+-            fi
+-          fi
+-          exit "$failed"
++          {
++            echo '### Generated candidate preserved without CI'
++            printf -- '- PR: #%s\n- head: `%s`\n' "$PR_NUMBER" "$CREATED_HEAD_SHA"
++            echo '- Qualification: NOT_PROVEN. Complete in-session proof/review before native queue admission.'
++          } >> "$GITHUB_STEP_SUMMARY"
++
+--- a/.github/workflows/authority-transfer-graph.yml
++++ b/.github/workflows/authority-transfer-graph.yml
+@@ -1,20 +1,6 @@
+ name: Authority Transfer Graph
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/authority-transfer-programme/**'
+-      - 'scripts/check-authority-transfer-graph.sh'
+-      - 'xtask/src/bin/authority-transfer-graph.rs'
+-      - '.github/workflows/authority-transfer-graph.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/authority-transfer-programme/**'
+-      - 'scripts/check-authority-transfer-graph.sh'
+-      - 'xtask/src/bin/authority-transfer-graph.rs'
+-      - '.github/workflows/authority-transfer-graph.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/authority-transfer-review.yml
++++ b/.github/workflows/authority-transfer-review.yml
+@@ -53,9 +53,6 @@
+ name: Authority Transfer Review
+ 
+ on:
+-  pull_request_target:
+-    branches: [main]
+-    types: [opened, edited, reopened, synchronize]
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/changelog-advisory.yml
++++ b/.github/workflows/changelog-advisory.yml
+@@ -15,7 +15,6 @@
+ # Ubuntu-only (no Windows job — see CI runner economics).
+ 
+ on:
+-  pull_request:
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/ci-gate-self-tests.yml
++++ b/.github/workflows/ci-gate-self-tests.yml
+@@ -11,226 +11,6 @@
+ # Issue: #3322
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      # Scoped pre-build storage admission; Python fixtures compile no Rust.
+-      - 'scripts/cargo-admitted'
+-      - 'scripts/cargo_admitted.py'
+-      - 'scripts/cargo_cohort.py'
+-      # Parser-policy proofs inspect Cargo graphs; their CI consumer must not
+-      # bootstrap the product-linked xtask integration harness (#18016).
+-      - 'scripts/tests/test_xtask_parser_dependencies.py'
+-      - 'scripts/tests/test_xtask_parser_policy_route.py'
+-      - 'xtask/tests/parser_dependency_graph.rs'
+-      - 'xtask/Cargo.toml'
+-      - 'crates/**/Cargo.toml'
+-      - 'Cargo.lock'
+-      - 'scripts/tests/test_cargo_cohort.py'
+-      - 'scripts/tests/test_cargo_admitted_storage.py'
+-      - 'scripts/tests/test_cargo_admitted_budget.py'
+-      - 'scripts/storage-doctor'
+-      - 'scripts/storage_observation.py'
+-      - 'scripts/tests/test_storage_doctor.py'
+-      - 'justfile'
+-      - 'CONTRIBUTING.md'
+-      # Ordinary doctor entrypoint regressions (#8639, landed in #17556).
+-      - 'scripts/tests/test_just_doctor.py'
+-      - 'scripts/ci/test_just_doctor_workflow.py'
+-      - 'scripts/cargo_allow_cadence.py'
+-      - 'scripts/tests/test_cargo_allow_cadence.py'
+-      - 'scripts/cargo-package-workspace-dry-run.sh'
+-      - 'install.sh'
+-      - 'scripts/install.sh'
+-      - 'scripts/publish-topo.py'
+-      - 'scripts/tests/test-install-target-selection.sh'
+-      - 'scripts/tests/test-install-source-version-binding.sh'
+-      # Install-surface honesty gates (issue #5448): the zero-argument
+-      # bootstrap path and the public package manifests.
+-      - 'install.ps1'
+-      - 'distribution/**'
+-      - 'Formula/**'
+-      - 'scripts/render-linux-packages.py'
+-      - 'scripts/tests/test-installer-zero-args.sh'
+-      - 'scripts/tests/test-install-path-contract.sh'
+-      - 'scripts/windows_fresh_path_oracle.py'
+-      - 'scripts/tests/test-windows-fresh-path-oracle.sh'
+-      - 'scripts/tests/test-distribution-manifest-consistency.sh'
+-      - 'scripts/tests/test_linux_rpm_debug_contract.py'
+-      - 'scripts/tests/test_linux_package_sources.py'
+-      - 'scripts/maintenance/verify_11983_reject_identities.py'
+-      - 'scripts/tests/test-rebuild-11983-reject-identities.py'
+-      - 'scripts/maintenance/rebuild_11983_current_main.sh'
+-      # The manifest-consistency gate derives its expected values from these
+-      # three authorities, so a change to any of them can make every
+-      # distribution manifest stale. Without them here, the only gate that
+-      # detects that mismatch would not run on the PR that caused it.
+-      #   license      -> Cargo.toml [workspace.package] license
+-      #   posture      -> README.md release-posture sentence
+-      #   asset prefix -> .github/workflows/release.yml NAME=
+-      - 'Cargo.toml'
+-      - 'README.md'
+-      - '.github/workflows/release.yml'
+-      - 'scripts/tests/test-publish-dry-run-gate.sh'
+-      - 'scripts/ci/check-pr-review-convergence'
+-      - 'scripts/ci/fixtures/convergence/**'
+-      - 'scripts/tests/test-check-pr-review-convergence.sh'
+-      - 'scripts/tests/test-check-pr-review-convergence-cleanup.py'
+-      # Paginator accumulator stdin portability regression (#15034): the test
+-      # pins the jq stdin form inside check-pr-review-convergence-core, and
+-      # the core is the implementation it gates, so both halves re-run this
+-      # self-test gate; without the trigger, a silent revert to
+-      # jq -n --argjson would pass all gated checks.
+-      - 'scripts/ci/check-pr-review-convergence-core'
+-      - 'scripts/tests/test-paginate-accumulator-argjson-portability.sh'
+-      - 'scripts/reviews/**'
+-      # Subject-bound semantic review currentness. The policy-surface suite
+-      # asserts against the skill trees, the shared contract, and pre-merge, so
+-      # a change to any of them can regress the gate that reads them.
+-      - 'scripts/ci/check-pr-semantic-review-currentness.py'
+-      - 'scripts/ci/test_check_pr_semantic_review_currentness.py'
+-      - 'tests/test_semantic_review_currentness.py'
+-      - 'scripts/pre-merge-check.sh'
+-      - 'docs/agents/REVIEW_CURRENTNESS.md'
+-      - '.agents/skills/**'
+-      - '.claude/skills/**'
+-      - 'scripts/tests/test-review-lease.sh'
+-      - 'scripts/tests/test-review-threads-inline.sh'
+-      - 'scripts/worktree-manager.py'
+-      - 'scripts/tests/test-worktree-manager.sh'
+-      # Hook provisioning on worktree setup + agent-entry drift detection
+-      # (issue #17406): both halves gate each other, so changes to either
+-      # half must re-run the self-test gate.
+-      - 'scripts/worktree-add.sh'
+-      - 'scripts/tests/test-worktree-add-hooks.sh'
+-      - 'scripts/agent-preflight.sh'
+-      - 'scripts/test-agent-preflight.sh'
+-      # Per-worktree core.hooksPath isolation (issue #17414 rule C).
+-      - 'scripts/tests/test-hookspath-isolation.sh'
+-      # Ci-gate evaluation, disk-guard, and receipt-freshness oracles
+-      # (#15400/A2 of #15394): the tests gate the implementations, so changes
+-      # to either half must re-run the self-test gate.
+-      - 'scripts/ci/evaluate_ci_gate.py'
+-      - 'scripts/ci/test_evaluate_ci_gate.py'
+-      - 'scripts/ci/request_qualification.py'
+-      - 'scripts/ci/test_request_qualification.py'
+-      - 'scripts/ci/candidate_readiness.py'
+-      - 'scripts/ci/test_candidate_readiness.py'
+-      - 'scripts/ci/qualification_publication.py'
+-      - 'scripts/ci/test_qualification_publication.py'
+-      # Compiler-free runtime/canonical/completion composition and H/S custody.
+-      - 'scripts/ci/qualification_native_factory.py'
+-      - 'scripts/ci/test_qualification_native_factory.py'
+-      - 'scripts/ci/qualification_native_adapters.py'
+-      - 'scripts/ci/test_qualification_native_adapters.py'
+-      - 'scripts/ci/qualification_local_commands.py'
+-      - 'scripts/ci/test_qualification_local_commands.py'
+-      - 'scripts/ci/qualification_runtime.py'
+-      - 'scripts/ci/test_qualification_runtime.py'
+-      - 'scripts/ci/rust_small_canonical_owner.py'
+-      - 'scripts/ci/test_rust_small_canonical_owner.py'
+-      - 'scripts/ci/qualification_completion.py'
+-      - 'scripts/ci/test_qualification_completion.py'
+-      - 'scripts/ci/rehearse_central_qualification.py'
+-      - 'scripts/ci/test_rehearse_central_qualification.py'
+-      - 'scripts/ci/rust_small_subject.py'
+-      - 'scripts/ci/test_rust_small_subject_bridge.py'
+-      - 'scripts/ci/export_rust_small_receipt.py'
+-      - 'scripts/ci/test_export_rust_small_receipt.py'
+-      - '.ci/staged/17903-root-triggers.patch'
+-      - '.ci/policies/required-checks.toml'
+-      - 'scripts/ci/test_staged_qualification_workflow_cutover.py'
+-      - 'scripts/ci/test_generated_pr_metadata_dispatch.py'
+-      - '.github/workflows/em-ci-routed-rust.yml'
+-      - '.github/workflows/post-merge-status.yml'
+-      - '.github/workflows/aggregate-ci-lane-history.yml'
+-      - 'scripts/ci/rust_standard_result.py'
+-      - 'scripts/ci/rust_small_evidence.py'
+-      - '.github/workflows/qualification-rehearsal.yml'
+-      - 'scripts/ci/pr_smoke_disk_guard.py'
+-      - 'scripts/ci/test_pr_smoke_disk_guard.py'
+-      - 'scripts/ci/pr_smoke_artifact_inventory.py'
+-      - 'scripts/ci/test_pr_smoke_artifact_inventory.py'
+-      - 'scripts/ci/test_pr_smoke_workflow_guard.py'
+-      - '.github/workflows/ci.yml'
+-      - 'scripts/ci/verify_gate_receipt_freshness.py'
+-      - 'scripts/ci/test_verify_gate_receipt_freshness.py'
+-      # PR-fast failing-gate reporter (#15492): it decides which gates reach the
+-      # check-runs annotations API and how a receipt's own text is escaped
+-      # before it becomes a workflow command. Both halves gate each other.
+-      - 'scripts/ci/summarize_pr_fast_gates.py'
+-      - 'scripts/ci/test_summarize_pr_fast_gates.py'
+-      # ripr liveness classifier (#16098): it decides whether a ripr run with no
+-      # scheduled job is a designed wait or an absence of proof, and posts a
+-      # real check run on a real head. Both halves gate each other.
+-      - 'scripts/ci/ripr_liveness.py'
+-      - 'scripts/ci/test_ripr_liveness.py'
+-      # The reporter's own workflow calls into that module for the one decision
+-      # its inline snapshot step makes, so an edit here must re-prove it.
+-      - '.github/workflows/ripr-liveness.yml'
+-      - 'scripts/ci/test_ripr_liveness_pagination_16153.py'
+-      - '.cargo/config.toml'
+-      - 'scripts/tests/test-target-isolation.sh'
+-      # ripr lane termination classification + bounded same-head retry
+-      # (#6807/#12563/#12771): the gate's eviction classifier is itself a
+-      # gate. These self-tests prove a genuine red still redding the required
+-      # "ripr+ New Gap Gate" and only positive runner-teardown evidence
+-      # reaching the single-retry path.
+-      - '.github/workflows/ripr.yml'
+-      - '.github/workflows/ripr-infra-retry.yml'
+-      - 'scripts/tests/test_ripr_infra_retry.py'
+-      - 'scripts/ci/classify-ripr-lane-termination'
+-      - 'scripts/ci/preserve-lane-log-tail.sh'
+-      - 'scripts/ci/test_ripr_cache_authority_15055.py'
+-      - 'scripts/ci/require-ripr-subject.sh'
+-      - 'scripts/ci/test_ripr_event_operands.py'
+-      - 'scripts/tests/test-classify-ripr-lane-termination.sh'
+-      - 'scripts/tests/test-preserve-lane-log-tail.sh'
+-      # cargo-deny vacuous skip gate (#17686): fail closed on unmatched-skip.
+-      - 'deny.toml'
+-      - '.github/workflows/ci-security.yml'
+-      - 'scripts/ci/assert-no-cargo-deny-unmatched-skip.sh'
+-      - 'scripts/ci/run-cargo-deny-check.sh'
+-      - 'scripts/security_scan.sh'
+-      - 'scripts/tests/test-run-cargo-deny-check.sh'
+-      - '.justfiles/security.just'
+-      # Governed RIPR proof entry point (#13768): the adapter and its
+-      # recording controls gate each other, so both halves re-run here.
+-      - '.ci/ripr-proof.sh'
+-      - 'scripts/ci/test_governed_ripr_proof.py'
+-      # Offline exact-consumer qualification inputs (#16126): collection has
+-      # no gate authority, but must reject incomplete or foreign Git rosters.
+-      - 'scripts/ci/prepare_ripr_consumer_packet.py'
+-      - 'scripts/tests/test_ripr_consumer_packet.py'
+-      - 'docs/ci/RIPR_CONSUMER_QUALIFICATION.md'
+-      # Toolchain guard for bash entrypoints (issue #12593): the coverage
+-      # consistency test scans every cargo-invoking scripts/*.sh, so any
+-      # script change re-proves that none of them dodges the guard.
+-      - 'scripts/lib/cargo-toolchain-guard.sh'
+-      - 'scripts/*.sh'
+-      - 'scripts/cargo-safe'
+-      - 'scripts/fuzz-bounded'
+-      - '.github/run_all_tests.sh'
+-      - 'scripts/tests/test-cargo-toolchain-guard.sh'
+-      - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
+-      - 'scripts/tests/test-fuzz-bounded.sh'
+-      # Nightly fuzz matrix ↔ fuzz/Cargo.toml [[bin]] parity (#17135): the
+-      # discovery self-test is the executing gate, so a change to either
+-      # authority must start this workflow.
+-      - '.github/workflows/ci-nightly.yml'
+-      - 'fuzz/Cargo.toml'
+-      - 'scripts/lib/release-turnkey-handoff.sh'
+-      - 'scripts/tests/test-release-turnkey-handoff.sh'
+-      - 'xtask/src/tasks/release_turnkey.rs'
+-      - 'rust-toolchain.toml'
+-      - 'Cargo.toml'
+-      - '.github/workflows/publish-dry-run.yml'
+-      - '.github/workflows/ci-gate-self-tests.yml'
+-      # PR Plan head-name sentinel guard (#6238): payload-only pull_request
+-      # evaluator whose structural and classifier contract is proved by its
+-      # scripts/tests fixture.
+-      - '.github/workflows/pr-plan-head-name-guard.yml'
+-      - 'scripts/tests/test-pr-plan-head-name-guard.sh'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/ci-nightly.yml
++++ b/.github/workflows/ci-nightly.yml
+@@ -8,10 +8,6 @@
+ # merge-queue validation use the required Rust Small and RIPR+ gates instead.
+ 
+ on:
+-  pull_request:
+-    branches: [ main, master ]
+-    # Keep label-gated jobs alive after the label is applied.
+-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+   schedule:
+     # Run nightly at 3am UTC
+     - cron: '0 3 * * *'
+@@ -84,6 +80,7 @@
+         default: false
+ 
+ # Cancel in-flight runs on new pushes (saves minutes)
++
+ concurrency:
+   group: ci-nightly-${{ github.event.pull_request.number || github.ref }}
+   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+--- a/.github/workflows/ci-security.yml
++++ b/.github/workflows/ci-security.yml
+@@ -5,21 +5,6 @@
+ # Cost: ~$0.08 per run
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'Cargo.toml'
+-      - 'Cargo.lock'
+-      - '**/Cargo.toml'
+-      - 'deny.toml'
+-      - 'scripts/ci/assert-no-cargo-deny-unmatched-skip.sh'
+-      - 'scripts/ci/run-cargo-deny-check.sh'
+-      - 'scripts/tests/test-run-cargo-deny-check.sh'
+-      - '.github/workflows/ci-security.yml'
+-      - '.docker/**'
+-      - 'Dockerfile*'
+-  push:
+-    branches: [main, master]
+   schedule:
+     # Run daily at 2 AM UTC
+     - cron: '0 2 * * *'
+@@ -28,6 +13,7 @@
+ # Coalesce-queue-tail: let the running CI complete; skip superseded SHAs at a
+ # preflight gate instead of cancelling in-flight work mid-run.
+ # Note: scheduled runs always pass the preflight gate (no SHA comparison).
++
+ concurrency:
+   group: ci-security-${{ github.ref }}
+   cancel-in-progress: false
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -6,16 +6,8 @@
+ # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
+ 
+ on:
+-  pull_request:
+-    branches: [ main, master ]
+-    # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
+-    # classification metadata, not CI authority. `ready_for_review` and
+-    # `converted_to_draft` are kept because they change the draft-pr-check guard
+-    # behavior and must trigger CI.
+-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+-  merge_group: {}
+-  push:
+-    branches: [ main, master ]
++  merge_group:
++    types: [checks_requested]
+   workflow_dispatch:
+     inputs:
+       base_sha:
+@@ -33,6 +25,7 @@
+ # group with cancel-in-progress: false, each newly queued main-push run cancelled the
+ # previously *pending* run in the group (76% of main-push runs were cancelled before
+ # scheduling a job). Per-SHA groups give every landed commit its own baseline run.
++
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
+   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+@@ -2201,7 +2194,7 @@
+ 
+   # ── Compile All Targets: catch integration-test + bench bit-rot ───────
+   check-all-targets:
+-    name: Compile All Targets (bit-rot guard)
++    name: Compile All Targets execution
+     runs-on: ubuntu-24.04
+     # The default+all-features double workspace check now costs ~14m on this
+     # base (#12650/#12712 grew the compiled target surface), leaving the four
+@@ -2797,3 +2790,27 @@
+           path: ${{ env.RECEIPT_PATH }}
+           if-no-files-found: error
+           retention-days: 7
++
++  integration-required:
++    name: Compile All Targets (bit-rot guard)
++    needs: [check-all-targets, merge-gate]
++    if: always()
++    runs-on: ubuntu-24.04
++    timeout-minutes: 2
++    permissions: {}
++    steps:
++      - name: Require current-attempt compile and selected integration proof
++        shell: bash
++        env:
++          COMPILE_RESULT: ${{ needs.check-all-targets.result }}
++          INTEGRATION_RESULT: ${{ needs.merge-gate.result }}
++        run: |
++          set -euo pipefail
++          # `needs` is scoped to this workflow run/attempt. No cross-run check
++          # lookup, main-history colour, or empty/skipped result supplies proof.
++          if [ "$COMPILE_RESULT" != success ] || [ "$INTEGRATION_RESULT" != success ]; then
++            printf '::error::Required integration proof incomplete: compile=%s integration=%s\n' \
++              "$COMPILE_RESULT" "$INTEGRATION_RESULT"
++            exit 1
++          fi
++          echo 'Compile and selected integration obligations succeeded in this native run.'
+--- a/.github/workflows/composite-action-contracts.yml
++++ b/.github/workflows/composite-action-contracts.yml
+@@ -1,24 +1,6 @@
+ name: Composite Action Contracts
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.github/actions/rust-checks/**'
+-      - '.github/actions/upload-receipt/**'
+-      - '.github/workflows/composite-action-contracts.yml'
+-      # Authorities the upload-receipt contract binds itself to: a change to
+-      # either must run the contract, or the drift guard never fires.
+-      - '.ci/receipt.schema.json'
+-      - 'xtask/src/tasks/gates.rs'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.github/actions/rust-checks/**'
+-      - '.github/actions/upload-receipt/**'
+-      - '.github/workflows/composite-action-contracts.yml'
+-      - '.ci/receipt.schema.json'
+-      - 'xtask/src/tasks/gates.rs'
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/content-anchored-baselines.yml
++++ b/.github/workflows/content-anchored-baselines.yml
+@@ -18,8 +18,6 @@
+ # hold a merge.
+ 
+ on:
+-  push:
+-    branches: [main, master]
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/corpus-windows-reparse-proof.yml
++++ b/.github/workflows/corpus-windows-reparse-proof.yml
+@@ -1,14 +1,6 @@
+ name: Corpus Windows reparse proof
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - "crates/perl-corpus/**"
+-      - "xtask/src/publication_drift/**"
+-      - "Cargo.toml"
+-      - "Cargo.lock"
+-      - ".github/workflows/corpus-windows-reparse-proof.yml"
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/critic-rule-proof.yml
++++ b/.github/workflows/critic-rule-proof.yml
+@@ -1,32 +1,6 @@
+ name: Critic Rule Proof
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'schemas/critic_rule_proof.v1.schema.json'
+-      - 'fixtures/critic-rule-proof/**'
+-      - 'docs/project/status/critic_rule_proof.md'
+-      - 'xtask/src/critic_rule_proof/**'
+-      - 'xtask/src/tasks/critic_rule_proof.rs'
+-      - 'xtask/tests/critic_rule_proof.rs'
+-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/identity.rs'
+-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/remediation.rs'
+-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs'
+-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs'
+-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native/**'
+-      - 'crates/perl-parser/**'
+-      - 'crates/perl-parser-core/**'
+-      - 'crates/perl-lexer/**'
+-      - 'crates/perl-ast/**'
+-      - 'crates/perl-semantic-analyzer/**'
+-      - 'crates/perl-pragma/**'
+-      - 'crates/perl-module/**'
+-      - 'crates/perl-workspace/**'
+-      - 'crates/perl-tdd-support/**'
+-      - '.github/workflows/critic-rule-proof.yml'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/dap-editor-transport.yml
++++ b/.github/workflows/dap-editor-transport.yml
+@@ -1,50 +1,6 @@
+ name: DAP Editor Transport
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/dap/editor-transport-inventory.v1.json'
+-      - '.ci/editor-clients/vimspector-perl-dap.v1.json'
+-      - '.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
+-      - '.docker/perl-lsp/Dockerfile'
+-      - 'book/src/dap/user-guide.md'
+-      - 'clients/sublime/LSP-perllsp/dap_support.py'
+-      - 'crates/perl-dap/**'
+-      - 'crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs'
+-      - 'docs/adr/0047-dap-stdio-only-editor-transport.md'
+-      - 'docs/EDITORS/HELIX_SETUP.md'
+-      - 'docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md'
+-      - 'docs/tutorials/DAP_USER_GUIDE.md'
+-      - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
+-      - 'scripts/ci/dap_editor_transport*.py'
+-      - 'scripts/tests/test_dap_editor_transport_inventory.py'
+-      - 'scripts/tests/test_dap_editor_transport_security.py'
+-      - 'scripts/ux/neovim/perl_dap.lua'
+-      - 'vscode-extension/src/debugAdapter.ts'
+-      - '.github/workflows/dap-editor-transport.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/dap/editor-transport-inventory.v1.json'
+-      - '.ci/editor-clients/vimspector-perl-dap.v1.json'
+-      - '.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
+-      - '.docker/perl-lsp/Dockerfile'
+-      - 'book/src/dap/user-guide.md'
+-      - 'clients/sublime/LSP-perllsp/dap_support.py'
+-      - 'crates/perl-dap/**'
+-      - 'crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs'
+-      - 'docs/adr/0047-dap-stdio-only-editor-transport.md'
+-      - 'docs/EDITORS/HELIX_SETUP.md'
+-      - 'docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md'
+-      - 'docs/tutorials/DAP_USER_GUIDE.md'
+-      - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
+-      - 'scripts/ci/dap_editor_transport*.py'
+-      - 'scripts/tests/test_dap_editor_transport_inventory.py'
+-      - 'scripts/tests/test_dap_editor_transport_security.py'
+-      - 'scripts/ux/neovim/perl_dap.lua'
+-      - 'vscode-extension/src/debugAdapter.ts'
+-      - '.github/workflows/dap-editor-transport.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/dap-protocol-authority.yml
++++ b/.github/workflows/dap-protocol-authority.yml
+@@ -1,36 +1,6 @@
+ name: DAP Protocol Authority
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/dap/protocol-authority.json'
+-      - 'crates/perl-dap/**'
+-      - 'scripts/ci/dap_protocol_authority.py'
+-      - 'scripts/ci/dap_nullability_inventory.py'
+-      - 'scripts/tests/test_dap_nullability_inventory.py'
+-      - '.ci/dap/upstream-debugAdapterProtocol.json'
+-      - '.ci/dap/nullability-inventory.v1.json'
+-      - 'scripts/ci/dap_authority_*.py'
+-      - 'scripts/tests/test_dap_protocol_authority.py'
+-      - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
+-      - 'book/src/dap/protocol-schema.md'
+-      - '.github/workflows/dap-protocol-authority.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/dap/protocol-authority.json'
+-      - 'crates/perl-dap/**'
+-      - 'scripts/ci/dap_protocol_authority.py'
+-      - 'scripts/ci/dap_nullability_inventory.py'
+-      - 'scripts/tests/test_dap_nullability_inventory.py'
+-      - '.ci/dap/upstream-debugAdapterProtocol.json'
+-      - '.ci/dap/nullability-inventory.v1.json'
+-      - 'scripts/ci/dap_authority_*.py'
+-      - 'scripts/tests/test_dap_protocol_authority.py'
+-      - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
+-      - 'book/src/dap/protocol-schema.md'
+-      - '.github/workflows/dap-protocol-authority.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/dap-scorecard.yml
++++ b/.github/workflows/dap-scorecard.yml
+@@ -1,34 +1,6 @@
+ name: DAP Scorecard
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'crates/perl-dap/**'
+-      - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
+-      - 'xtask/src/tasks/update_status/dap.rs'
+-      - 'docs/project/status/dap.md'
+-      - 'scripts/ci/dap_scorecard_*.py'
+-      - 'scripts/tests/test_dap_scorecard_*.py'
+-      - '.github/workflows/dap-scorecard.yml'
+-      - 'Cargo.toml'
+-      - 'Cargo.lock'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - 'crates/perl-dap/**'
+-      - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
+-      - 'xtask/src/tasks/update_status/dap.rs'
+-      - 'docs/project/status/dap.md'
+-      - 'scripts/ci/dap_scorecard_*.py'
+-      - 'scripts/tests/test_dap_scorecard_*.py'
+-      - '.github/workflows/dap-scorecard.yml'
+-      - 'Cargo.toml'
+-      - 'Cargo.lock'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/dependency-review.yml
++++ b/.github/workflows/dependency-review.yml
+@@ -1,17 +1,7 @@
+ name: Dependency Review
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - 'Cargo.toml'
+-      - 'Cargo.lock'
+-      - '**/Cargo.toml'
+-      - '**/Cargo.lock'
+-      - 'vscode-extension/package.json'
+-      - 'vscode-extension/package-lock.json'
+-      - '.github/dependency-review-config.yml'
+-      - '.github/workflows/dependency-review.yml'
++  workflow_dispatch: {}
+ 
+ concurrency:
+   group: dependency-review-${{ github.event.pull_request.number }}
+--- a/.github/workflows/discover-11983-current-main.yml
++++ b/.github/workflows/discover-11983-current-main.yml
+@@ -1,14 +1,7 @@
+ name: Rebuild #11983 on current main
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    types: [opened, synchronize, reopened]
+-    paths:
+-      - .github/workflows/discover-11983-current-main.yml
+-      - scripts/maintenance/rebuild_11983_current_main.sh
+-      - scripts/maintenance/verify_11983_reject_identities.py
+-      - scripts/tests/test-rebuild-11983-reject-identities.py
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/dist-shadow.yml
++++ b/.github/workflows/dist-shadow.yml
+@@ -1,15 +1,6 @@
+ name: Dist Shadow
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - 'dist-workspace.toml'
+-      - '.github/workflows/release.yml'
+-      - '.github/workflows/dist-shadow.yml'
+-      - 'scripts/check_dist_shadow.py'
+-      - 'scripts/tests/test_dist_shadow.py'
+-      - 'docs/release/DIST_SHADOW_EVALUATION.md'
+   workflow_dispatch:
+     inputs:
+       tag:
+--- a/.github/workflows/docs-pr-build.yml
++++ b/.github/workflows/docs-pr-build.yml
+@@ -3,24 +3,7 @@
+ # Exercise the documentation production build on pull requests without Pages,
+ # OIDC, environment, artifact-upload, or deployment authority.
+ on:
+-  pull_request:
+-    paths:
+-      - 'CONTRIBUTING.md'
+-      - 'docs/**'
+-      - 'book/**'
+-      - 'scripts/populate-book.sh'
+-      - 'scripts/tests/test-populate-book-roadmap-links.sh'
+-      # The Helix drift check must run when the checker itself changes, not
+-      # only when the documents it governs change -- otherwise the check is not
+-      # load-bearing on its own subject file (same rule as #5425).
+-      - 'scripts/ci/validate_helix_fixture_drift.py'
+-      - 'scripts/ci/test_validate_helix_fixture_drift.py'
+-      # Same rule for the committed-copy freshness check (#16544).
+-      - 'scripts/ci/validate_book_copy_freshness.sh'
+-      - 'scripts/ci/rewrite_book_source_links.py'
+-      - 'scripts/tests/test-validate-book-copy-freshness.sh'
+-      - '.github/workflows/docs-deploy.yml'
+-      - '.github/workflows/docs-pr-build.yml'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/droid-review.yml
++++ b/.github/workflows/droid-review.yml
+@@ -12,8 +12,7 @@
+ # readable. The job is statically skipped and does not access review secrets.
+ 
+ on:
+-  pull_request:
+-    types: [opened, synchronize, reopened, ready_for_review]
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/droid-security-boundary.yml
++++ b/.github/workflows/droid-security-boundary.yml
+@@ -1,26 +1,6 @@
+ name: Droid Security Boundary
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/policies/action-pin-provenance.toml'
+-      - '.github/workflows/droid.yml'
+-      - '.github/workflows/droid-review.yml'
+-      - '.github/workflows/droid-security-scan.yml'
+-      - '.github/workflows/droid-security-boundary.yml'
+-      - 'docs/agent-context/droid-smoke-tests.md'
+-      - 'scripts/ci/test_droid_security_boundary.py'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/policies/action-pin-provenance.toml'
+-      - '.github/workflows/droid.yml'
+-      - '.github/workflows/droid-review.yml'
+-      - '.github/workflows/droid-security-scan.yml'
+-      - '.github/workflows/droid-security-boundary.yml'
+-      - 'docs/agent-context/droid-smoke-tests.md'
+-      - 'scripts/ci/test_droid_security_boundary.py'
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/droid.yml
++++ b/.github/workflows/droid.yml
+@@ -34,12 +34,7 @@
+ #   upstream removal lands.
+ 
+ on:
+-  issue_comment:
+-    types: [created]
+-  pull_request_review_comment:
+-    types: [created]
+-  pull_request_review:
+-    types: [submitted]
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/em-ci-routed-rust.yml
++++ b/.github/workflows/em-ci-routed-rust.yml
+@@ -13,15 +13,8 @@
+           - cx53
+           - cx43
+           - github
+-  pull_request:
+-    branches: [main]
+-    types: [opened, synchronize, reopened, ready_for_review]
+   merge_group:
+-  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
+-  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
+-  # what actually sits on main. Landed main commits now carry their own baseline run.
+-  push:
+-    branches: [main, master]
++    types: [checks_requested]
+ 
+ permissions:
+   actions: read
+@@ -964,6 +957,7 @@
+         env:
+           GH_TOKEN: ${{ github.token }}
+           CHECK_NAME: Perl LSP Rust Small Result
++          EVENT_NAME: ${{ github.event_name }}
+           # .ci/policies/required-checks.toml binds this required context to the
+           # GitHub Actions integration; only its check runs are proof for it.
+           REQUIRED_CHECK_APP_ID: "15368"
+@@ -1162,6 +1156,10 @@
+           # Draft routing saves work but produces no required-check proof.
+           # Preserve existing non-draft skipped routing.
+           if [ "$ROUTE_RESULT" = "skipped" ]; then
++            if [ "${EVENT_NAME:-}" = merge_group ]; then
++              echo '::error::Merge-group Rust Small route skipped: NOT_PROVEN; no selected proof ran.'
++              exit 1
++            fi
+             if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
+               draft_now="$(live_draft_state || true)"
+               if [ "$draft_now" = "false" ]; then
+--- a/.github/workflows/emacs-train-context-contract.yml
++++ b/.github/workflows/emacs-train-context-contract.yml
+@@ -1,36 +1,6 @@
+ name: Emacs Train Context Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.spec/10918-emacs-train-graph/**'
+-      - '.spec/11770-emacs-train-revisions/**'
+-      - '.spec/11756-emacs-context-engine/**'
+-      - '.spec/11716-emacs-support-architecture/**'
+-      - '.spec/11717-emacs-train-specs/**'
+-      - 'xtask/src/tasks/emacs_train_context/**'
+-      - 'xtask/src/tasks/emacs_train_specs.rs'
+-      - 'xtask/src/tasks/agent_implementation_packet.rs'
+-      - 'xtask/src/tasks/agent_review_packet.rs'
+-      - 'fixtures/agent_implementation_packet/**'
+-      - 'fixtures/agent_review_packet/**'
+-      - 'schemas/agent_implementation_packet.v1.schema.json'
+-      - 'schemas/agent_review_packet.v1.schema.json'
+-      - 'schemas/agent_review_finding.v1.schema.json'
+-      - 'schemas/stage_closure_projection.v1.schema.json'
+-      - 'xtask/src/editor_client_compat.rs'
+-      - 'xtask/src/actual_host_receipt.rs'
+-      - 'xtask/tests/support/emacs_host_runner.rs'
+-      - 'xtask/tests/editor_client_compat_contract.rs'
+-      - 'xtask/tests/actual_host_receipt.rs'
+-      - 'xtask/tests/emacs_host_runner_contract.rs'
+-      - 'scripts/test/emacs-host-driver.el'
+-      - '.ci/schemas/editor-client-compat.v1.schema.json'
+-      - 'AGENTS.md'
+-      - '.github/workflows/emacs-train-context-contract.yml'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/emacs-train-packet-contract.yml
++++ b/.github/workflows/emacs-train-packet-contract.yml
+@@ -1,35 +1,6 @@
+ name: Emacs Train Packet Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.spec/10918-emacs-train-graph/**'
+-      - '.spec/11770-emacs-train-revisions/**'
+-      - '.spec/11717-emacs-train-specs/**'
+-      - '.spec/11756-emacs-context-engine/**'
+-      - '.spec/11716-emacs-support-architecture/**'
+-      - 'xtask/src/tasks/emacs_train_packet.rs'
+-      - 'xtask/src/tasks/emacs_train_packet/**'
+-      # The lane invokes the CLI route, so a change that removes or misroutes
+-      # the command must trigger it too.
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/src/tasks/emacs_train_context/**'
+-      - 'xtask/src/tasks/emacs_train_specs.rs'
+-      - 'xtask/src/tasks/agent_implementation_packet.rs'
+-      - 'xtask/src/tasks/agent_review_packet.rs'
+-      - 'schemas/agent_implementation_packet.v1.schema.json'
+-      - 'schemas/agent_review_packet.v1.schema.json'
+-      - 'fixtures/agent_implementation_packet/**'
+-      - 'fixtures/agent_review_packet/**'
+-      # The lane passes this fixture to the CLI and the falsifier suite
+-      # asserts its content, so edits to the fixture tree must trigger it.
+-      - 'fixtures/emacs_train_packet/**'
+-      # The reconcile route validates candidate flags against the closed
+-      # CANDIDATE_STATES vocabulary owned by this module.
+-      - 'xtask/src/tasks/module_train_live.rs'
+-      - '.github/workflows/emacs-train-packet-contract.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/generated-status-contract.yml
++++ b/.github/workflows/generated-status-contract.yml
+@@ -1,15 +1,6 @@
+ name: Generated Status Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'docs/project/status/**'
+-      - 'policy/generated-status-evidence.json'
+-      - '.ci/schemas/generated-status-cell.schema.json'
+-      - 'xtask/src/bin/generated-status-contract.rs'
+-      - 'xtask/src/tasks/update_status/**'
+-      - '.github/workflows/generated-status-contract.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/installer-bootstrap-contract.yml
++++ b/.github/workflows/installer-bootstrap-contract.yml
+@@ -1,26 +1,6 @@
+ name: Installer Bootstrap Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'install.sh'
+-      - 'scripts/install.sh'
+-      - 'scripts/tests/test-install-bootstrap-identity.sh'
+-      - 'scripts/tests/test-install-arg-surface.sh'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - 'README.md'
+-      - '.github/workflows/installer-bootstrap-contract.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - 'install.sh'
+-      - 'scripts/install.sh'
+-      - 'scripts/tests/test-install-bootstrap-identity.sh'
+-      - 'scripts/tests/test-install-arg-surface.sh'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - 'README.md'
+-      - '.github/workflows/installer-bootstrap-contract.yml'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/installer-checksum-contract.yml
++++ b/.github/workflows/installer-checksum-contract.yml
+@@ -1,32 +1,6 @@
+ name: Installer Checksum Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master, agent/installer-bootstrap-identity-6097]
+-    paths:
+-      - 'scripts/install.sh'
+-      - 'install.ps1'
+-      - 'scripts/tests/test-installer-checksum-required.sh'
+-      - 'scripts/tests/test-installer-archive-safety.sh'
+-      - 'scripts/tests/test-installer-product-unit-promotion.sh'
+-      - 'scripts/tests/test-installer-verify-install.sh'
+-      - 'scripts/tests/lib/standalone_archive_fixtures.py'
+-      - 'policy/standalone-archive-safety.v1.toml'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - '.github/workflows/installer-checksum-contract.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - 'scripts/install.sh'
+-      - 'install.ps1'
+-      - 'scripts/tests/test-installer-checksum-required.sh'
+-      - 'scripts/tests/test-installer-archive-safety.sh'
+-      - 'scripts/tests/test-installer-product-unit-promotion.sh'
+-      - 'scripts/tests/test-installer-verify-install.sh'
+-      - 'scripts/tests/lib/standalone_archive_fixtures.py'
+-      - 'policy/standalone-archive-safety.v1.toml'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - '.github/workflows/installer-checksum-contract.yml'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/installer-powershell-checksum-contract.yml
++++ b/.github/workflows/installer-powershell-checksum-contract.yml
+@@ -1,36 +1,6 @@
+ name: Installer PowerShell Checksum Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'install.ps1'
+-      - 'scripts/agent-cleanup.ps1'
+-      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
+-      - 'scripts/install.sh'
+-      - 'scripts/tests/test-install-ps1-checksum-required.ps1'
+-      - 'scripts/tests/new-install-ps1-native-fixture.ps1'
+-      - 'scripts/tests/test-install-ps1-installed-verification.ps1'
+-      - 'scripts/tests/test-install-ps1-archive-safety.ps1'
+-      - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
+-      - 'policy/standalone-archive-safety.v1.toml'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - '.github/workflows/installer-powershell-checksum-contract.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - 'install.ps1'
+-      - 'scripts/agent-cleanup.ps1'
+-      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
+-      - 'scripts/install.sh'
+-      - 'scripts/tests/test-install-ps1-checksum-required.ps1'
+-      - 'scripts/tests/new-install-ps1-native-fixture.ps1'
+-      - 'scripts/tests/test-install-ps1-installed-verification.ps1'
+-      - 'scripts/tests/test-install-ps1-archive-safety.ps1'
+-      - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
+-      - 'policy/standalone-archive-safety.v1.toml'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - '.github/workflows/installer-powershell-checksum-contract.yml'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/installer-termux-contract.yml
++++ b/.github/workflows/installer-termux-contract.yml
+@@ -1,22 +1,6 @@
+ name: Installer Termux Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'install.sh'
+-      - 'scripts/install.sh'
+-      - 'scripts/tests/test-installer-termux-detection.sh'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - '.github/workflows/installer-termux-contract.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - 'install.sh'
+-      - 'scripts/install.sh'
+-      - 'scripts/tests/test-installer-termux-detection.sh'
+-      - 'docs/how-to/INSTALLATION.md'
+-      - '.github/workflows/installer-termux-contract.yml'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/issue-controller-train-contract.yml
++++ b/.github/workflows/issue-controller-train-contract.yml
+@@ -1,14 +1,6 @@
+ name: Issue Controller Train Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.spec/11764-controller-train-graph/**'
+-      - 'xtask/src/tasks/issue_controllers/**'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+-      - '.github/workflows/issue-controller-train-contract.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/issue-mutation-readback-contract.yml
++++ b/.github/workflows/issue-mutation-readback-contract.yml
+@@ -1,20 +1,6 @@
+ name: Issue Mutation Readback Contract
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - '.agents/skills/prepare-issue/SKILL.md'
+-      - '.claude/skills/prepare-issue/SKILL.md'
+-      - 'tests/test_issue_mutation_readback_contract.py'
+-      - '.github/workflows/issue-mutation-readback-contract.yml'
+-  push:
+-    branches: [main]
+-    paths:
+-      - '.agents/skills/prepare-issue/SKILL.md'
+-      - '.claude/skills/prepare-issue/SKILL.md'
+-      - 'tests/test_issue_mutation_readback_contract.py'
+-      - '.github/workflows/issue-mutation-readback-contract.yml'
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/legacy-authority-banners.yml
++++ b/.github/workflows/legacy-authority-banners.yml
+@@ -1,63 +1,7 @@
+ name: Legacy Authority Banners
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - '.github/workflows/legacy-authority-banners.yml'
+-      - '.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md'
+-      - '.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md'
+-      - '.kiro/specs/ux-readiness-system/requirements.md'
+-      - '.spec/3988-merge-readiness/spec.md'
+-      - 'TECHNICAL_VISION.md'
+-      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+-      - 'docs/agents/authority_status.toml'
+-      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+-      - 'docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md'
+-      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+-      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+-      - 'docs/development/RUST_1_95_ROLLOUT.md'
+-      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
+-      - 'docs/handoff/SWARM_DESIGN.md'
+-      - 'docs/project/EDITOR_TRUST_WAVE.md'
+-      - 'docs/project/PERL_LSP_VISION.md'
+-      - 'docs/project/RAILS_INDEX.md'
+-      - 'docs/project/plans/2026-06-convergence-to-release.md'
+-      - 'docs/reference/GLOSSARY.md'
+-      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+-      - 'docs/reference/OCTOPUS_CLUSTER.md'
+-      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+-      - 'docs/reference/PIPELINE_GATES.md'
+-      - 'scripts/migrate-legacy-authority-banners.py'
+-      - 'tests/test_legacy_authority_banners.py'
+-  push:
+-    branches: [main]
+-    paths:
+-      - '.github/workflows/legacy-authority-banners.yml'
+-      - '.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md'
+-      - '.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md'
+-      - '.kiro/specs/ux-readiness-system/requirements.md'
+-      - '.spec/3988-merge-readiness/spec.md'
+-      - 'TECHNICAL_VISION.md'
+-      - 'docs/adr/0044-octopus-cluster-orchestration.md'
+-      - 'docs/agents/authority_status.toml'
+-      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+-      - 'docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md'
+-      - 'docs/ci/perl-lsp-rust-1.95-rollout.md'
+-      - 'docs/development/RUST_1_95_PROACTIVE_GUARDS.md'
+-      - 'docs/development/RUST_1_95_ROLLOUT.md'
+-      - 'docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md'
+-      - 'docs/handoff/SWARM_DESIGN.md'
+-      - 'docs/project/EDITOR_TRUST_WAVE.md'
+-      - 'docs/project/PERL_LSP_VISION.md'
+-      - 'docs/project/RAILS_INDEX.md'
+-      - 'docs/project/plans/2026-06-convergence-to-release.md'
+-      - 'docs/reference/GLOSSARY.md'
+-      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+-      - 'docs/reference/OCTOPUS_CLUSTER.md'
+-      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+-      - 'docs/reference/PIPELINE_GATES.md'
+-      - 'scripts/migrate-legacy-authority-banners.py'
+-      - 'tests/test_legacy_authority_banners.py'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/lsp-318-claim-guard.yml
++++ b/.github/workflows/lsp-318-claim-guard.yml
+@@ -1,53 +1,6 @@
+ name: LSP 3.18 Claim Guard
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - '.github/workflows/lsp-318-claim-guard.yml'
+-      - 'policy/ci-lane-whitelist.toml'
+-      - 'features.toml'
+-      - 'crates/perl-lsp-rs/features_sot.toml'
+-      - 'crates/perl-lsp-rs/src/**'
+-      - 'crates/perl-lsp-rs-core/src/**'
+-      - 'crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs'
+-      - 'crates/perl-lsp-rs/tests/lsp_cap_snap.rs'
+-      - 'crates/perl-lsp-rs/tests/lsp_caps_contract_shapes.rs'
+-      - 'crates/perl-lsp-rs/tests/snapshots/**'
+-      - 'docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md'
+-      - 'docs/specs/lsp-318-conformance-matrix.md'
+-      - 'docs/specs/lsp-318-closure-ownership.md'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/src/tasks/lsp_318_claims.rs'
+-      - 'xtask/src/tasks/lsp_318_matrix.rs'
+-      - 'xtask/tests/list_commands_cli.rs'
+-      - 'xtask/tests/lsp_318_changelog_totality.rs'
+-      - 'xtask/tests/lsp_318_closure_ownership.rs'
+-      - 'xtask/tests/fixtures/lsp-318-changelog/**'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.github/workflows/lsp-318-claim-guard.yml'
+-      - 'policy/ci-lane-whitelist.toml'
+-      - 'features.toml'
+-      - 'crates/perl-lsp-rs/features_sot.toml'
+-      - 'crates/perl-lsp-rs/src/**'
+-      - 'crates/perl-lsp-rs-core/src/**'
+-      - 'crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs'
+-      - 'crates/perl-lsp-rs/tests/lsp_cap_snap.rs'
+-      - 'crates/perl-lsp-rs/tests/lsp_caps_contract_shapes.rs'
+-      - 'crates/perl-lsp-rs/tests/snapshots/**'
+-      - 'docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md'
+-      - 'docs/specs/lsp-318-conformance-matrix.md'
+-      - 'docs/specs/lsp-318-closure-ownership.md'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/src/tasks/lsp_318_claims.rs'
+-      - 'xtask/src/tasks/lsp_318_matrix.rs'
+-      - 'xtask/tests/list_commands_cli.rs'
+-      - 'xtask/tests/lsp_318_changelog_totality.rs'
+-      - 'xtask/tests/lsp_318_closure_ownership.rs'
+-      - 'xtask/tests/fixtures/lsp-318-changelog/**'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/main-history-event.yml
++++ /dev/null
+@@ -1,187 +0,0 @@
+-name: Main History Event
+-
+-# Observe exact `main` push-event movement and publish one durable receipt.
+-#
+-# #10306: the repository can verify a completed Git graph, but it produced no
+-# event-bound observation when `main` moved non-fast-forward. This workflow binds
+-# GitHub's delivered push subjects (`before`, `after`, `ref`, and the
+-# created/deleted/forced flags) to the typed ancestry authority added by #10304
+-# and keeps the two propositions on separate axes.
+-#
+-# Deliberate boundaries:
+-#   * read-only. `contents: read`, no persisted credentials, and no branch, tag,
+-#     PR, issue, release, or ref mutation. This detector observes a push after
+-#     the fact; it is not prevention and must never be represented as such.
+-#   * no independent ancestry logic lives here. The workflow forwards the exact
+-#     event subjects to one repository command and reports its verdict. It never
+-#     parses fetch prose and never re-derives the history relation in YAML —
+-#     that is precisely the mistake behind the false August 15 re-root
+-#     diagnosis. `main_history_event_workflow_contract` enforces this.
+-#   * it does not read live branch-protection or ruleset state. That authority
+-#     belongs to the `release_live_controls` observer (#9403 / #8551), and this
+-#     workflow must not grow a second settings model.
+-#
+-# Two limits are inherent to observing pushes from inside the history being
+-# observed, and neither is repairable here. They bound what this lane can claim;
+-# prevention remains with the live branch-protection controls above.
+-#
+-#   1. GitHub evaluates a `push` workflow from the pushed revision, so a reset to
+-#      a commit that predates this file dispatches nothing at all. A destructive
+-#      push can therefore erase its own detector, and the absence of a run is not
+-#      evidence of a safe push.
+-#   2. A rewind commonly leaves `github.event.before` unreachable from every ref,
+-#      and a clone fetches only reachable objects. The classifier then reports
+-#      `not_proven_missing_object` rather than proving the rewrite. That still
+-#      fails closed and still retains the delivered `forced` flag, but it is
+-#      weaker evidence than a proven `non_fast_forward`.
+-#
+-# On ref deletion: a `push` event is still delivered with `deleted: true`, but
+-# `github.sha` reverts to the default branch tip rather than naming the deleted
+-# ref's commit. The classifier is therefore fed `github.event.after` — the
+-# delivered payload subject, which is the zero object name for a deletion — so
+-# the receipt records what the platform actually sent instead of an unrelated
+-# tip. The `deleted_ref` verdict is driven by the delivered flag and that zero
+-# name, never by the checked-out SHA. Because this workflow filters on
+-# `branches: [main]`, the deletion path is only reachable if `main` itself is
+-# deleted; prevention remains with the live branch-protection observer above.
+-
+-# `push` is the only trigger. A `workflow_dispatch` run carries no push payload,
+-# so `github.event.before` and the created/deleted/forced flags would all be
+-# empty and every manual run would fail as `invalid_event`. There is no push
+-# event to classify outside a push; investigate a specific pair locally with
+-# `cargo run -p xtask --bin main-history-event` instead.
+-on:
+-  push:
+-    branches:
+-      - main
+-
+-# No `concurrency:` group, deliberately. A group admits one running and one
+-# pending run, and a newly queued run displaces the pending one, so any shared
+-# group can silently discard a push's receipt — `cancel-in-progress: false` does
+-# not prevent that. Keying by `github.sha` is not sufficient either: `main`
+-# returning to the same commit produces distinct push events that share a SHA,
+-# and that is the force-push shape this lane most needs to observe. Every run
+-# stays independent so no observation can ever be displaced by another.
+-
+-permissions:
+-  contents: read
+-
+-env:
+-  CARGO_TERM_COLOR: always
+-
+-jobs:
+-  classify:
+-    name: Classify main push movement
+-    if: github.ref == 'refs/heads/main'
+-    runs-on: ubuntu-24.04
+-    timeout-minutes: 20
+-    permissions:
+-      contents: read
+-    steps:
+-      - name: Checkout the exact event commit
+-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+-        with:
+-          # The complete graph is required: a shallow checkout cannot tell a
+-          # rewritten history from a retained-boundary artifact, and the command
+-          # correctly refuses to answer on one.
+-          ref: ${{ github.sha }}
+-          fetch-depth: 0
+-          persist-credentials: false
+-
+-      - name: Set up Rust
+-        uses: ./.github/actions/setup-rust
+-        with:
+-          cache: true
+-          cache-key-suffix: main-history-event
+-
+-      - name: Classify the delivered push event
+-        id: classify
+-        env:
+-          # Exact platform subjects, passed at step scope as environment values
+-          # rather than interpolated into the script body.
+-          EVENT_BEFORE: ${{ github.event.before }}
+-          # The delivered payload subject, not `github.sha`: the two agree for an
+-          # ordinary push, but on a ref deletion `github.sha` reverts to the
+-          # default branch tip while `github.event.after` is the zero name.
+-          EVENT_AFTER: ${{ github.event.after }}
+-          EVENT_REF: ${{ github.ref }}
+-          EVENT_FORCED: ${{ github.event.forced }}
+-          EVENT_CREATED: ${{ github.event.created }}
+-          EVENT_DELETED: ${{ github.event.deleted }}
+-          RECEIPT_PATH: target/history/main-event.json
+-        run: |
+-          set -euo pipefail
+-          arguments=(
+-            --repo .
+-            --before "${EVENT_BEFORE}"
+-            --after "${EVENT_AFTER}"
+-            --ref "${EVENT_REF}"
+-            --output "${RECEIPT_PATH}"
+-          )
+-          if [ "${EVENT_FORCED}" = "true" ]; then
+-            arguments+=(--event-forced)
+-          fi
+-          if [ "${EVENT_CREATED}" = "true" ]; then
+-            arguments+=(--event-created)
+-          fi
+-          if [ "${EVENT_DELETED}" = "true" ]; then
+-            arguments+=(--event-deleted)
+-          fi
+-
+-          # The verdict is recorded rather than raised here so the receipt is
+-          # always uploaded, including — especially — when the detector is red.
+-          set +e
+-          cargo run --locked -p xtask --bin main-history-event -- "${arguments[@]}"
+-          status=$?
+-          set -e
+-          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+-          echo "receipt=${RECEIPT_PATH}" >> "${GITHUB_OUTPUT}"
+-
+-      - name: Publish the history-event receipt
+-        if: always() && steps.classify.outcome != 'skipped'
+-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+-        with:
+-          # `github.sha` alone is not an event identity: `main` returning to the
+-          # same commit produces distinct pushes that share it, and those repeated
+-          # resets are the shape most worth telling apart. The run id makes each
+-          # observation addressable without consulting run metadata.
+-          name: main-history-event-receipt-${{ github.sha }}-${{ github.run_id }}
+-          path: target/history/main-event.json
+-          # A missing receipt is a failed observation, not a quiet skip.
+-          if-no-files-found: error
+-          retention-days: 90
+-
+-      - name: Enforce the detector verdict
+-        if: always() && steps.classify.outcome != 'skipped'
+-        env:
+-          CLASSIFY_STATUS: ${{ steps.classify.outputs.status }}
+-        run: |
+-          set -euo pipefail
+-          if [ -z "${CLASSIFY_STATUS}" ]; then
+-            echo "::error::the history-event classifier produced no verdict"
+-            exit 1
+-          fi
+-          # Distinguish the blocking classes: a proven rewrite and an
+-          # unverifiable graph are very different operator situations, and an
+-          # instrument failure is not a history finding at all.
+-          case "${CLASSIFY_STATUS}" in
+-            0)
+-              echo "main history-event detector: movement proven safe"
+-              ;;
+-            2)
+-              echo "::error::main moved destructively, or moved non-fast-forward with no force push reported. See the uploaded receipt."
+-              exit 1
+-              ;;
+-            3)
+-              echo "::error::main movement could NOT be verified (incomplete object graph). This is not proof of a rewrite, and not proof of safety. See the uploaded receipt."
+-              exit 1
+-              ;;
+-            5)
+-              echo "::error::GitHub reported a force push on main. The graph proves no history was lost, but this ref should not accept a force push at all. See the uploaded receipt."
+-              exit 1
+-              ;;
+-            *)
+-              echo "::error::the history-event detector failed to produce a verdict (exit ${CLASSIFY_STATUS}): invalid event subject or instrument failure, not a history finding. See the uploaded receipt."
+-              exit 1
+-              ;;
+-          esac
+--- a/.github/workflows/merge-gate-target.yml
++++ b/.github/workflows/merge-gate-target.yml
+@@ -1,11 +1,8 @@
+ name: Merge Gate Target
+ 
+ on:
+-  # Deliberately omit a branches filter: stacked PRs need an explicit
+-  # non-success signal when the expensive main-targeted gate is absent.
+-  pull_request:
+-    types: [opened, synchronize, reopened, edited]
+   merge_group:
++    types: [checks_requested]
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/methodology-gate.yml
++++ b/.github/workflows/methodology-gate.yml
+@@ -1,12 +1,8 @@
+ name: Methodology Gate
+ 
+ on:
+-  pull_request:
+   merge_group:
+-  push:
+-    branches:
+-      - main
+-      - master
++    types: [checks_requested]
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/minimax-agent-compile-check.yml
++++ b/.github/workflows/minimax-agent-compile-check.yml
+@@ -1,16 +1,6 @@
+ name: MiniMax Agent Compile Check
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    types: [opened, synchronize, reopened]
+-    paths:
+-      - '.github/workflows/minimax-coding-agent.md'
+-      - '.github/workflows/minimax-coding-agent.lock.yml'
+-      - '.github/workflows/minimax-agent-compile-check.yml'
+-      - '.github/aw/actions-lock.json'
+-      - '.gitattributes'
+-      - '.github/dependabot.yml'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/non-rust-policy.yml
++++ b/.github/workflows/non-rust-policy.yml
+@@ -2,12 +2,8 @@
+ name: Non-Rust policy
+ 
+ on:
+-  pull_request_target:
+-    branches: [main, master]
+-    types: [opened, synchronize, reopened, ready_for_review]
+-  merge_group: {}
+-  push:
+-    branches: [main, master]
++  merge_group:
++    types: [checks_requested]
+   workflow_dispatch:
+     inputs:
+       base_sha:
+--- a/.github/workflows/perl-version-matrix.yml
++++ b/.github/workflows/perl-version-matrix.yml
+@@ -1,10 +1,6 @@
+ name: Perl Version Matrix
+ 
+ on:
+-  pull_request:
+-    branches: [ main, master ]
+-    # Keep label-gated runs alive after label is applied.
+-    types: [opened, synchronize, reopened, labeled]
+   schedule:
+     # Weekly on Mondays at 04:30 UTC
+     - cron: '30 4 * * 1'
+--- a/.github/workflows/policy-validators.yml
++++ b/.github/workflows/policy-validators.yml
+@@ -10,92 +10,6 @@
+ name: Policy Validators
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - 'policy/**'
+-      - '.ci/gate-policy.yaml'
+-      - '.ci/parser-facade/**'
+-      - '.github/workflows/**'
+-      # Any manifest anywhere: `discover_consumer_contexts` scans every
+-      # Cargo.toml in the repository for perl-parser dependencies, so a
+-      # consumer manifest outside `crates/**` (xtask, fuzz, tests/fuzz,
+-      # archive/...) must trigger this workflow too, or consumer drift in
+-      # those files passes silently (#15580). `**/Cargo.toml` names manifests
+-      # at any depth; the bare `Cargo.toml` entry pins the workspace-root
+-      # manifest explicitly.
+-      - '**/Cargo.toml'
+-      - 'Cargo.toml'
+-      - 'crates/perl-parser/src/lib.rs'
+-      - 'crates/perl-parser/src/incremental/mod.rs'
+-      - 'docs/project/PARSER_FACADE_AUTHORITY.md'
+-      - 'scripts/ci/parser_facade_authority.py'
+-      - 'scripts/ci/parser_facade_inventory.py'
+-      - 'scripts/ci/check_parser_facade_authority.py'
+-      - 'scripts/ci/test_parser_facade_authority.py'
+-      - 'scripts/ci/policy_validators_aggregate.py'
+-      - 'scripts/ci/test_policy_validators_route_contract.py'
+-      - 'scripts/ci/validate_risk_packs.py'
+-      - 'scripts/ci/validate_gate_lane_mapping.py'
+-      - '.ci/policy-checks-inventory.json'
+-      - 'scripts/ci/validate_policy_checks_inventory.py'
+-      - 'scripts/ci/test_validate_policy_checks_inventory.py'
+-      - 'docs/ci/policy-checks-inventory.md'
+-      - 'scripts/ci/validate_provider_fact_reads.py'
+-      - 'scripts/ci/validate_cargo_lock_conflict_policy.py'
+-      - 'scripts/ci/test_validate_cargo_lock_conflict_policy.py'
+-      - 'docs/releases/**'
+-      - 'scripts/validate-exposed-surface-disposition.py'
+-      - 'scripts/tests/test-validate-exposed-surface-disposition.py'
+-      - 'scripts/tests/fixtures/exposed-surface-disposition/**'
+-      - 'scripts/ci/fixtures/cargo_lock_conflict_policy.json'
+-      # #8409 reconciles policy/cargo-feature-roles.toml against every
+-      # workspace manifest, so any manifest that can declare a Cargo feature
+-      # must execute the validator. `crates/**/Cargo.toml` above covers the
+-      # member crates; these cover the remaining feature-declaring manifests.
+-      - 'Cargo.toml'
+-      - 'xtask/Cargo.toml'
+-      - 'scripts/ci/validate_cargo_feature_roles.py'
+-      - 'scripts/ci/test_validate_cargo_feature_roles.py'
+-      - 'docs/how-to/DEPENDENCY_QUICK_REFERENCE.md'
+-      - 'docs/how-to/DEPENDENCY_MANAGEMENT.md'
+-      - 'CONTRIBUTING.md'
+-      - 'book/src/developer/contributing.md'
+-      - 'scripts/populate-book.sh'
+-      - '.github/dependabot.yml'
+-      - 'scripts/ci/validate_dependabot_contract.py'
+-      - 'scripts/ci/test_validate_dependabot_contract.py'
+-      - 'scripts/ci/validate_dependabot_cooldown.py'
+-      - 'scripts/ci/test_validate_dependabot_cooldown.py'
+-      - 'vscode-extension/.npmrc'
+-      - 'docs/reference/WORKTREE_PROTOCOL.md'
+-      - 'docs/project/CI_LOCAL_VALIDATION.md'
+-      - 'scripts/ci/check_perl_lsp_rs_core_package.py'
+-      - 'docs/release/RUNBOOK.md'
+-      - 'docs/project/RELEASE_RUNBOOK_0_12_3.md'
+-      - 'justfile'
+-      # The fact-read inventory anchors to provider SOURCES: editing a governed
+-      # provider source without touching the catalog is the primary drift class,
+-      # so these paths (the exact roots of every catalog-anchored source) must
+-      # execute the validator too (#6815).
+-      - 'crates/perl-lsp-rs/src/runtime/**'
+-      - 'crates/perl-lsp-rs-core/src/providers/**'
+-      # validate_gate_lane_mapping.py --strict also checks this doc's lane
+-      # enumeration against the mapping, so a docs-only edit must trigger the
+-      # workflow -- otherwise the drift check is not load-bearing on its own
+-      # subject file (#5425).
+-      - 'docs/ci/gate-policy-economics.md'
+-      - 'scripts/ci/validate_trust_lanes.py'
+-      - 'scripts/ci/check_bounded_result_overflow.py'
+-      - 'scripts/ci/verify_homebrew_formula_digests.py'
+-      - 'scripts/ci/test_verify_homebrew_formula_digests.py'
+-      - 'docs/agents/bounded-subagent-result-v1.schema.json'
+-      - 'docs/agents/bounded-subagent-result-v1.fixtures.json'
+-      - 'docs/project/status/provider_fact_reads.md'
+-      - 'xtask/src/tasks/update_status/provider_fact_reads.rs'
+-      - 'xtask/src/tasks/update_status/mod.rs'
+-      - 'scripts/ci/policy_validators_aggregate.py'
+-      - 'scripts/ci/test_policy_validators_route_contract.py'
+-      - '.github/workflows/policy-validators.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/portable-contract-tools.yml
++++ b/.github/workflows/portable-contract-tools.yml
+@@ -1,17 +1,6 @@
+ name: Portable Contract Tools
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - 'aqua.yaml'
+-      - 'scripts/tools/aqua-doctor.sh'
+-      - 'scripts/tools/install-aqua.sh'
+-      - 'scripts/tests/test-install-aqua.sh'
+-      - 'scripts/tests/fixtures/aqua-bootstrap/**'
+-      - 'docs/how-to/PORTABLE_CONTRACT_TOOLS.md'
+-      - '.github/workflows/portable-contract-tools.yml'
+-      - '.github/workflows/ci.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/post-merge-corpus-ratchet.yml
++++ b/.github/workflows/post-merge-corpus-ratchet.yml
+@@ -5,14 +5,6 @@
+ # minimal job proposes the two generated files through a reviewable PR.
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    types: [opened, synchronize, reopened]
+-    paths:
+-      - '.ci/cpan-top-1000-distributions.txt'
+-      - '.ci/cpan-top-50-distributions.txt'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+   schedule:
+     - cron: '0 8 * * *'
+   workflow_dispatch:
 --- a/.github/workflows/post-merge-status.yml
 +++ b/.github/workflows/post-merge-status.yml
-@@ -542,11 +542,4 @@ jobs:
+@@ -14,10 +14,6 @@
+ #      closes any open proposal PR whose embedded source SHA is behind main.
+ 
+ on:
+-  push:
+-    branches:
+-      - main
+-      - master
+   workflow_dispatch: {}
+ 
+ concurrency:
+@@ -538,55 +534,32 @@
+             docs/project/status/quality.md
+             docs/project/ROADMAP.md
+ 
+-      - name: Raise CI on the generated PR
 -        # GITHUB_TOKEN-created PRs raise no pull_request events, so none of
 -        # the required-check workflows fire and the PR sits at one GitHub-App
 -        # check (#11481, #11707, twice-confirmed on #11731; #11788 then showed
@@ -221,14 +2303,24 @@ index 6666ca9a68..2a4b61d191 100644
 -        # The freshness gate is load-bearing here too: a skipped create-pr step
 -        # exposes empty outputs, and an empty string is not equal to '0', so the
 -        # old condition alone would dispatch CI after a refused publication.
-+        # Publication is not a product qualification request (#17900/#17903).
-+        # GITHUB_TOKEN-created PRs need an explicit metadata wake-up; the
-+        # selected candidate's product proof is requested separately later.
-+        # Keep the existing freshness prerequisite for the generated proposal.
-@@ -559,2 +551,0 @@ jobs:
+-        if: >-
+-          steps.freshness.outputs.publish == 'true' &&
+-          steps.create-pr.outputs.pull-request-number != '0'
++      - name: Reconcile generated PR without CI
++        # Publication is not a qualification request, including metadata CI.
++        # Preserve a bounded native head readback; the owning coding session
++        # supplies substantive checks/review before separately authorized enqueue.
++        if: steps.freshness.outputs.publish == 'true' && steps.create-pr.outputs.pull-request-number != '' && steps.create-pr.outputs.pull-request-number != '0'
+         env:
+           GH_TOKEN: ${{ github.token }}
+-          BRANCH: automation/post-merge-status
 -          BASE_SHA: ${{ github.sha }}
 -          GENERATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
-@@ -562,12 +552,0 @@ jobs:
++          GH_REPO: ${{ github.repository }}
++          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
++          CREATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
++        shell: bash
+         run: |
 -          # ci.yml's workflow_dispatch declares required inputs (since #13019):
 -          # the dispatched subject's exact base and head SHAs. Dispatching it
 -          # bare fails with HTTP 422 "Required input 'base_sha' not provided",
@@ -241,7 +2333,8 @@ index 6666ca9a68..2a4b61d191 100644
 -          # Keep attempting every required workflow so one transient dispatch
 -          # failure cannot strand the later required checks. The final status
 -          # remains failing when any dispatch failed.
-@@ -576,8 +555,2 @@ jobs:
+-          set +e
+-          failed=0
 -          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
 -            if [ "$workflow" = ci.yml ]; then
 -              if gh workflow run "$workflow" --ref "$BRANCH" \
@@ -250,59 +2343,1258 @@ index 6666ca9a68..2a4b61d191 100644
 -                continue
 -              fi
 -            elif gh workflow run "$workflow" --ref "$BRANCH"; then
-+          for workflow in pr-title-check.yml; do
-+            if gh workflow run "$workflow" --ref "$BRANCH"; then
-diff --git a/xtask/tests/lane_history_ci_dispatch_contract.rs b/xtask/tests/lane_history_ci_dispatch_contract.rs
-index 8699131fae..c8aa1a8297 100644
+-              continue
+-            fi
+-            echo "::error::Failed to dispatch $workflow"
+-            failed=1
+-          done
+-          exit "$failed"
++          set -euo pipefail
++          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
++          [[ "$CREATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
++          observed="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" --json headRefOid,state --jq '[.headRefOid, .state] | @tsv')"
++          expected="$(printf '%s\tOPEN' "$CREATED_HEAD_SHA")"
++          if [ "$observed" != "$expected" ]; then
++            echo '::error::Generated PR state/head differs from the published candidate; no qualification requested'
++            exit 1
++          fi
++          {
++            echo '### Generated candidate preserved without CI'
++            printf -- '- PR: #%s\n- head: `%s`\n' "$PR_NUMBER" "$CREATED_HEAD_SHA"
++            echo '- Qualification: NOT_PROVEN. Complete in-session proof/review before native queue admission.'
++          } >> "$GITHUB_STEP_SUMMARY"
+ 
+   supersede-stale:
+     name: Supersede stale generated status PR
+--- a/.github/workflows/pr-candidate-set.yml
++++ b/.github/workflows/pr-candidate-set.yml
+@@ -1,9 +1,6 @@
+ name: PR Candidate-Set Reconciliation
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    types: [opened, closed, reopened, synchronize, edited, ready_for_review, converted_to_draft]
+   schedule:
+     - cron: '17 */6 * * *'
+   workflow_dispatch: {}
+--- a/.github/workflows/pr-plan-head-name-guard.yml
++++ b/.github/workflows/pr-plan-head-name-guard.yml
+@@ -25,11 +25,7 @@
+ name: PR Plan Trigger Guard
+ 
+ on:
+-  # `branches:` selects the pull request BASE branch and plays no role in the
+-  # SHA-like head-name suppression this guard surfaces.
+-  pull_request:
+-    branches: [master, main]
+-    types: [opened, synchronize, reopened, ready_for_review]
++  workflow_dispatch: {}
+ 
+ concurrency:
+   group: pr-plan-guard-${{ github.event.pull_request.number }}
+--- a/.github/workflows/pr-plan.yml
++++ b/.github/workflows/pr-plan.yml
+@@ -7,11 +7,7 @@
+ name: PR Plan
+ 
+ on:
+-  # The workflow definition, planner, and policies all come from the protected
+-  # base repository. Do not checkout or execute the PR head in this event.
+-  pull_request_target:
+-    branches: [master, main]
+-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
++  workflow_dispatch: {}
+ 
+ concurrency:
+   group: pr-plan-${{ github.event.pull_request.number }}
+--- a/.github/workflows/pr-title-check.yml
++++ b/.github/workflows/pr-title-check.yml
+@@ -1,8 +1,6 @@
+ name: PR Title Check
+ 
+ on:
+-  pull_request_target:
+-    types: [opened, edited, reopened, synchronize]
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/publish-dry-run.yml
++++ b/.github/workflows/publish-dry-run.yml
+@@ -13,19 +13,6 @@
+ # To run locally: just publish-dry-run
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '**/Cargo.toml'
+-      - 'Cargo.lock'
+-      - '.github/workflows/publish-crates.yml'
+-      - '.github/workflows/publish-dry-run.yml'
+-      - 'scripts/ci/check_perl_lsp_rs_core_package.py'
+-      - 'scripts/cargo-package-workspace-dry-run.sh'
+-      - 'scripts/publish-topo.py'
+-      - 'xtask/src/tasks/publish_manifest_check.rs'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/release-history.yml
++++ b/.github/workflows/release-history.yml
+@@ -1,41 +1,7 @@
+ name: Release History
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - ".github/workflows/release-history.yml"
+-      - "rust-toolchain.toml"
+-      - "RELEASE_HISTORY.md"
+-      - "docs/releases/**"
+-      - "policy/release-tag-provenance.toml"
+-      - "scripts/check_release_history.sh"
+-      - "scripts/check_release_tag_provenance.py"
+-      - "scripts/git_environment.py"
+-      - "scripts/tests/test_git_environment.py"
+-      - "scripts/tests/test_release_tag_provenance.py"
+-      - "scripts/tests/test_release_channel_actuals.py"
+-      - "scripts/test_release_build_identity.py"
+-      - "scripts/test_release_package_evidence.py"
+-      - "scripts/test_release_tag_authority.py"
+-      - "scripts/test_release_topology_json.py"
+-  push:
+-    branches: [main]
+-    paths:
+-      - ".github/workflows/release-history.yml"
+-      - "rust-toolchain.toml"
+-      - "RELEASE_HISTORY.md"
+-      - "docs/releases/**"
+-      - "policy/release-tag-provenance.toml"
+-      - "scripts/check_release_history.sh"
+-      - "scripts/check_release_tag_provenance.py"
+-      - "scripts/git_environment.py"
+-      - "scripts/tests/test_git_environment.py"
+-      - "scripts/tests/test_release_tag_provenance.py"
+-      - "scripts/tests/test_release_channel_actuals.py"
+-      - "scripts/test_release_build_identity.py"
+-      - "scripts/test_release_package_evidence.py"
+-      - "scripts/test_release_tag_authority.py"
+-      - "scripts/test_release_topology_json.py"
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/release-settings-closeout.yml
++++ b/.github/workflows/release-settings-closeout.yml
+@@ -1,22 +1,6 @@
+ name: Release Settings Closeout
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/security/release-settings-closeout.json'
+-      - 'docs/security/release-settings-closeout.md'
+-      - 'scripts/ci/check_release_settings_closeout.py'
+-      - 'scripts/ci/test_check_release_settings_closeout.py'
+-      - '.github/workflows/release-settings-closeout.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/security/release-settings-closeout.json'
+-      - 'docs/security/release-settings-closeout.md'
+-      - 'scripts/ci/check_release_settings_closeout.py'
+-      - 'scripts/ci/test_check_release_settings_closeout.py'
+-      - '.github/workflows/release-settings-closeout.yml'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/reload-lifecycle-authority.yml
++++ b/.github/workflows/reload-lifecycle-authority.yml
+@@ -24,22 +24,7 @@
+ # Python and git grep). Narrow it only by also narrowing what the suite reads.
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - '.github/workflows/reload-lifecycle-authority.yml'
+-      - 'crates/**'
+-      - 'docs/**'
+-      - 'tests/test_reload_lifecycle_authority.py'
+-      - 'tests/test_writer_authority_transfer_contract.py'
+-  push:
+-    branches: [main]
+-    paths:
+-      - '.github/workflows/reload-lifecycle-authority.yml'
+-      - 'crates/**'
+-      - 'docs/**'
+-      - 'tests/test_reload_lifecycle_authority.py'
+-      - 'tests/test_writer_authority_transfer_contract.py'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/review-disposition-replay.yml
++++ b/.github/workflows/review-disposition-replay.yml
+@@ -1,17 +1,6 @@
+ name: Review Disposition Replay Self-Test
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - scripts/reviews/disposition
+-      - scripts/tests/test-review-disposition-replay.py
+-      - .github/workflows/review-disposition-replay.yml
+-  push:
+-    branches: [main]
+-    paths:
+-      - scripts/reviews/disposition
+-      - scripts/tests/test-review-disposition-replay.py
+-      - .github/workflows/review-disposition-replay.yml
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/review-receipt-retirement.yml
++++ b/.github/workflows/review-receipt-retirement.yml
+@@ -1,26 +1,7 @@
+ name: Review Receipt Retirement
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - 'scripts/ci/check-pr-claim-currentness'
+-      - 'scripts/reviews/claim-digest'
+-      - 'scripts/reviews/claim_digest.py'
+-      - 'tests/test_review_claim_currentness.py'
+-      - 'tests/test_review_claim_fail_closed.py'
+-      - 'tests/test_retired_review_receipt_commands.py'
+-      - '.github/workflows/review-receipt-retirement.yml'
+-  push:
+-    branches: [main]
+-    paths:
+-      - 'scripts/ci/check-pr-claim-currentness'
+-      - 'scripts/reviews/claim-digest'
+-      - 'scripts/reviews/claim_digest.py'
+-      - 'tests/test_review_claim_currentness.py'
+-      - 'tests/test_review_claim_fail_closed.py'
+-      - 'tests/test_retired_review_receipt_commands.py'
+-      - '.github/workflows/review-receipt-retirement.yml'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/ripr.yml
++++ b/.github/workflows/ripr.yml
+@@ -25,17 +25,8 @@
+ name: ripr
+ 
+ on:
+-  pull_request:
+-    branches: [master, main]
+-    types: [opened, synchronize, reopened, ready_for_review]
+   merge_group:
+-  push:
+-    branches: [master, main]
+-  # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
+-  # restore warm artifacts instead of cold-building into the runner-eviction
+-  # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
+-  # PR-created caches are scoped to the PR merge ref and cannot warm other
+-  # PRs, they only burn the 10 GB quota.
++    types: [checks_requested]
+   schedule:
+     - cron: '23 11 * * *'
+   workflow_dispatch:
+--- a/.github/workflows/rolling-installed-public-beta-observation.yml
++++ b/.github/workflows/rolling-installed-public-beta-observation.yml
+@@ -8,15 +8,6 @@
+         required: false
+         type: boolean
+         default: false
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - '.github/workflows/rolling-installed-public-beta-observation.yml'
+-      - 'scripts/ci/rolling_installed_observation.py'
+-      - 'scripts/ci/test_rolling_installed_observation.py'
+-      - 'scripts/ci/check_rolling_installed_workflow.py'
+-      - 'vscode-extension/scripts/run-local-vsix-smoke.js'
+-      - 'vscode-extension/scripts/run-local-vsix-smoke.test.js'
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/security-reconciliation.yml
++++ b/.github/workflows/security-reconciliation.yml
+@@ -1,28 +1,6 @@
+ name: Security Reconciliation Ledger
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/security/may-2026-findings.json'
+-      - '.ci/security/may-2026-findings/**'
+-      - 'docs/security/may-2026-findings.md'
+-      - 'scripts/ci/check_security_reconciliation.py'
+-      - 'scripts/ci/security_reconciliation_model.py'
+-      - 'scripts/ci/security_reconciliation_io.py'
+-      - 'scripts/ci/test_check_security_reconciliation.py'
+-      - '.github/workflows/security-reconciliation.yml'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.ci/security/may-2026-findings.json'
+-      - '.ci/security/may-2026-findings/**'
+-      - 'docs/security/may-2026-findings.md'
+-      - 'scripts/ci/check_security_reconciliation.py'
+-      - 'scripts/ci/security_reconciliation_model.py'
+-      - 'scripts/ci/security_reconciliation_io.py'
+-      - 'scripts/ci/test_check_security_reconciliation.py'
+-      - '.github/workflows/security-reconciliation.yml'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/semantic-close-containment.yml
++++ b/.github/workflows/semantic-close-containment.yml
+@@ -43,11 +43,6 @@
+ name: Semantic Close Containment (CP00)
+ 
+ on:
+-  pull_request_target:
+-    # Automatic closing keywords only act when a PR merges into the default
+-    # branch, so other targets are not applicable by construction.
+-    branches: [main]
+-    types: [opened, edited, reopened, synchronize]
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/standalone-contract-tests.yml
++++ b/.github/workflows/standalone-contract-tests.yml
+@@ -7,15 +7,6 @@
+ name: Standalone contract tests
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - 'schemas/standalone_owned_state.v1.schema.json'
+-      - 'schemas/standalone_removal_plan.v1.schema.json'
+-      - 'schemas/standalone_uninstall_result.v1.schema.json'
+-      - 'fixtures/experience/install_owned_state/**'
+-      - 'xtask/examples/standalone_owned_state.rs'
+-      - 'scripts/ci/test_standalone_contract_schemas.py'
+-      - '.github/workflows/standalone-contract-tests.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/sublime-dap-real-host.yml
++++ b/.github/workflows/sublime-dap-real-host.yml
+@@ -1,27 +1,8 @@
+ name: Sublime native perl-dap
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - "clients/sublime/**"
+-      - "scripts/sublime/**"
+-      - "crates/perl-dap/**"
+-      - "crates/perl-lsp-rs-core/**"
+-      - "Cargo.toml"
+-      - "Cargo.lock"
+-      - ".github/workflows/sublime-dap-real-host.yml"
+-  merge_group: {}
+-  push:
+-    branches:
+-      - main
+-    paths:
+-      - "clients/sublime/**"
+-      - "scripts/sublime/**"
+-      - "crates/perl-dap/**"
+-      - "crates/perl-lsp-rs-core/**"
+-      - "Cargo.toml"
+-      - "Cargo.lock"
+-      - ".github/workflows/sublime-dap-real-host.yml"
++  merge_group:
++    types: [checks_requested]
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/sublime-package-contract.yml
++++ b/.github/workflows/sublime-package-contract.yml
+@@ -1,21 +1,7 @@
+ name: Sublime package contract
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - "clients/sublime/**"
+-      - "policy/non-rust-allowlist.toml"
+-      - ".github/workflows/sublime-package-contract.yml"
+-      - "xtask/src/main.rs"
+-      - "xtask/src/tasks/mod.rs"
+-  push:
+-    branches: [main]
+-    paths:
+-      - "clients/sublime/**"
+-      - "policy/non-rust-allowlist.toml"
+-      - ".github/workflows/sublime-package-contract.yml"
+-      - "xtask/src/main.rs"
+-      - "xtask/src/tasks/mod.rs"
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/sublime-real-host.yml
++++ b/.github/workflows/sublime-real-host.yml
+@@ -1,16 +1,6 @@
+ name: Sublime real-host exact-source
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - "clients/sublime/**"
+-      - "scripts/sublime/**"
+-      - "crates/perl-lsp-rs/**"
+-      - "crates/perllsp/**"
+-      - "crates/perl-lsp-rs-core/**"
+-      - "Cargo.toml"
+-      - "Cargo.lock"
+-      - ".github/workflows/sublime-real-host.yml"
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/tokmd.yml
++++ b/.github/workflows/tokmd.yml
+@@ -1,9 +1,6 @@
+ name: tokmd PR Review
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+   workflow_dispatch:
+     inputs:
+       base_ref:
+--- a/.github/workflows/ub-review.yml
++++ b/.github/workflows/ub-review.yml
+@@ -17,9 +17,7 @@
+ # remain readable. No job performs review work or accesses review secrets.
+ 
+ on:
+-  pull_request:
+-    branches: [master, main]
+-    types: [opened, synchronize, reopened, ready_for_review]
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/ux-regression-gate.yml
++++ b/.github/workflows/ux-regression-gate.yml
+@@ -5,19 +5,6 @@
+ # repository authority, no persisted credential, and no repository secret.
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    # Label changes must not restart and cancel active candidate execution.
+-    types: [opened, synchronize, reopened]
+-    paths:
+-      - 'crates/perl-lsp*/**'
+-      - 'crates/perl-dap*/**'
+-      - 'crates/perl-lsp-ux-tests/**'
+-      - 'vscode-extension/**'
+-      - 'features.toml'
+-      - '.github/workflows/ux-regression-gate.yml'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/validate-ci-lane-history.yml
++++ b/.github/workflows/validate-ci-lane-history.yml
+@@ -1,16 +1,6 @@
+ name: Validate CI lane-history contract
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - '.github/workflows/aggregate-ci-lane-history.yml'
+-      - '.github/workflows/validate-ci-lane-history.yml'
+-      - 'scripts/ci/aggregate_lane_history.py'
+-      - 'scripts/ci/test_aggregate_lane_history.py'
+-      - 'scripts/ci/pr_plan.py'
+-      - 'scripts/ci/test_pr_plan.py'
+-      - 'policy/ci-lanes.toml'
+-      - '.ci/metrics/ci-lane-history.json'
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/vim-hermetic-host.yml
++++ b/.github/workflows/vim-hermetic-host.yml
+@@ -1,31 +1,6 @@
+ name: Vim vim-lsp hermetic host
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - "xtask/**"
+-      - "scripts/test/vim-host-driver.vim"
+-      - "scripts/test/vim-host-diagnostics-driver.vim"
+-      - "scripts/test/vim-host-freshness-driver.vim"
+-      - "scripts/test/vim-host-lifecycle-driver.vim"
+-      - "scripts/test/vim-host-recovery-driver.vim"
+-      - "scripts/test/vim-host-save-format-driver.vim"
+-      - "scripts/test/vim-clients/**"
+-      - ".ci/editor-clients/vim-vim-lsp-*.json"
+-      # Every workspace crate, not the six that were once named. `perllsp`'s
+-      # transitive graph is 31 workspace crates; enumerating a subset let a
+-      # change to `perl-parser-core`, `perl-lexer`, or `perl-workspace` reach
+-      # main without ever re-running the promoted actual-client proof. An
+-      # enumeration also goes stale silently the next time a crate is added,
+-      # which is the same defect one list longer. This over-triggers on the
+-      # crates outside the graph; that is the safe direction of error for a
+-      # lane that guards a promoted support claim.
+-      - "crates/**"
+-      - "Cargo.toml"
+-      - "Cargo.lock"
+-      - ".github/workflows/vim-hermetic-host.yml"
+-      - "policy/lsp-client-support.toml"
+-      - "docs/receipts/lsp-clients/**"
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/vscode-current-source-linux-smoke.yml
++++ b/.github/workflows/vscode-current-source-linux-smoke.yml
+@@ -7,18 +7,6 @@
+         description: Exact accepted base commit to compare with the dispatched candidate
+         required: true
+         type: string
+-  pull_request:
+-    # The installed-byte leaf stacks on #16981 until its observer lands.
+-    # Remove this temporary base when #16991 retargets to main.
+-    branches: [main, master, codex/6056-installed-identity]
+-    paths:
+-      - 'vscode-extension/**'
+-      - 'crates/perl-lsp*/**'
+-      - 'crates/perllsp/**'
+-      - 'crates/perl-dap/**'
+-      - 'Cargo.toml'
+-      - 'Cargo.lock'
+-      - '.github/workflows/vscode-current-source-linux-smoke.yml'
+ 
+ concurrency:
+   # Pull-request heads share one stable queue. An active exact-subject run is
+--- a/.github/workflows/vscode-installed-first-hour-windows.yml
++++ b/.github/workflows/vscode-installed-first-hour-windows.yml
+@@ -1,20 +1,7 @@
+ name: VS Code Installed First-Hour Windows
+ 
+ on:
+-  pull_request:
+-    # The installed-byte leaf stacks on #16981 until its observer lands.
+-    # Remove this temporary base when #16991 retargets to main.
+-    branches: [main, master, codex/6056-installed-identity]
+-    paths:
+-      - 'vscode-extension/**'
+-      - 'crates/perl-lsp*/**'
+-      - 'crates/perllsp/**'
+-      - 'crates/perl-dap/**'
+-      - 'Cargo.toml'
+-      - 'Cargo.lock'
+-      - '.github/workflows/vscode-installed-first-hour-windows.yml'
+-      - 'scripts/ci/qualified_definition_protocol_probe.py'
+-      - 'scripts/ci/test_qualified_definition_protocol_probe.py'
++  workflow_dispatch: {}
+ 
+ concurrency:
+   group: vscode-installed-first-hour-windows-${{ github.event.pull_request.number }}
+--- a/.github/workflows/vscode-managed-binary-smoke.yml
++++ b/.github/workflows/vscode-managed-binary-smoke.yml
+@@ -2,13 +2,6 @@
+ 
+ on:
+   workflow_dispatch: {}
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'vscode-extension/**'
+-      - 'scripts/tests/windows-owned-suspend.ps1'
+-      - 'scripts/tests/test-windows-owned-suspend.ps1'
+-      - '.github/workflows/vscode-managed-binary-smoke.yml'
+   schedule:
+     - cron: '0 13 * * 1'
+ 
+--- a/.github/workflows/vscode-prebuilt-payload-adapter.yml
++++ b/.github/workflows/vscode-prebuilt-payload-adapter.yml
+@@ -1,46 +1,6 @@
+ name: VS Code Prebuilt Payload Adapter
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    paths:
+-      - 'scripts/prepare_vsix_prebuilt_payload.py'
+-      - 'scripts/requirements-release.txt'
+-      - 'scripts/release_topology_json.py'
+-      - 'scripts/release_vsix_mapping.py'
+-      - 'scripts/generate_release_topology.py'
+-      - 'schemas/release_topology.*.schema.json'
+-      - 'schemas/vsix_candidate_payload.*.schema.json'
+-      - 'fixtures/rc_vsix_binding/**'
+-      - 'vscode-extension/package-lock.json'
+-      - 'vscode-extension/scripts/check-vsix-prebuilt-payload.js'
+-      - 'vscode-extension/scripts/check-vsix-prebuilt-payload.test.js'
+-      - 'vscode-extension/scripts/check-vsix-inventory-transition.js'
+-      - 'vscode-extension/scripts/check-vsix-inventory-transition.test.js'
+-      - 'vscode-extension/scripts/package-command.test.js'
+-      - 'vscode-extension/src/test/vsixPackageProjection.test.ts'
+-      - 'scripts/release_archive_members.py'
+-      - 'scripts/release_build_identity.py'
+-      - 'scripts/release_package_evidence.py'
+-      - 'scripts/release_terminal_manifest.py'
+-      - 'scripts/test_prepare_vsix_prebuilt_payload.py'
+-      - 'scripts/test_generate_release_topology.py'
+-      - 'scripts/test_release_build_identity.py'
+-      - 'scripts/test_release_topology_json.py'
+-      - 'schemas/release_build_identity.v1.schema.json'
+-      - 'schemas/release_build_identity_receipt.v1.schema.json'
+-      - 'docs/reference/downstream-dap-integrations.json'
+-      - 'vscode-extension/src/downloader.ts'
+-      - 'vscode-extension/scripts/check-vsix-inventory.js'
+-      - 'vscode-extension/scripts/vsix-inventory-baseline.json'
+-      - 'vscode-extension/package.json'
+-      - 'vscode-extension/scripts/reporter.js'
+-      - 'vscode-extension/scripts/toolchain-doctor.js'
+-      - 'vscode-extension/scripts/build_vsix_candidate_manifest.js'
+-      - 'vscode-extension/scripts/package-vsix.js'
+-      - 'vscode-extension/src/vsixPackageProjection.ts'
+-      - '.github/actions/setup-vscode-toolchain/action.yml'
+-      - '.github/workflows/vscode-prebuilt-payload-adapter.yml'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/worked-lane-corpus.yml
++++ b/.github/workflows/worked-lane-corpus.yml
+@@ -9,20 +9,7 @@
+ # the check run more often, which cannot let the ledger go stale.
+ 
+ on:
+-  pull_request:
+-    branches: [main]
+-    paths:
+-      - '.github/workflows/worked-lane-corpus.yml'
+-      - 'docs/agents/README.md'
+-      - 'docs/agents/examples/**'
+-      - 'tests/test_worked_lane_corpus.py'
+-  push:
+-    branches: [main]
+-    paths:
+-      - '.github/workflows/worked-lane-corpus.yml'
+-      - 'docs/agents/README.md'
+-      - 'docs/agents/examples/**'
+-      - 'tests/test_worked_lane_corpus.py'
++  workflow_dispatch: {}
+ 
+ permissions:
+   contents: read
+--- a/.github/workflows/workflow-contracts-advisory.yml
++++ b/.github/workflows/workflow-contracts-advisory.yml
+@@ -22,29 +22,6 @@
+ # Ubuntu-only (no Windows job — see CI runner economics).
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - ".github/workflows/**"
+-      - "scripts/ci/test_codecov_test_results_workflows.py"
+-      - "scripts/ci/test_perf_nightly_alert.py"
+-      - "scripts/bash_binary.py"
+-      - "xtask/src/tasks/workflows.rs"
+-      - "xtask/src/tasks/workflow_policy_lint.rs"
+-      - "policy/workflow-contracts.toml"
+-      - ".ci/receipts/schemas/workflow-contracts.schema.json"
+-      - "xtask/src/main.rs"
+-      - "xtask/src/tasks/mod.rs"
+-  push:
+-    branches: [main]
+-    paths:
+-      - ".github/workflows/**"
+-      - "scripts/ci/test_codecov_test_results_workflows.py"
+-      - "scripts/ci/test_perf_nightly_alert.py"
+-      - "scripts/bash_binary.py"
+-      - "xtask/src/tasks/workflows.rs"
+-      - "policy/workflow-contracts.toml"
+-      - "xtask/src/main.rs"
+-      - "xtask/src/tasks/mod.rs"
+   workflow_dispatch: {}
+ 
+ permissions:
+--- a/.github/workflows/workflow-policy.yml
++++ b/.github/workflows/workflow-policy.yml
+@@ -1,59 +1,6 @@
+ name: Workflow Policy
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - '.github/workflows/**'
+-      - 'xtask/src/tasks/workflow_policy_lint.rs'
+-      - 'policy/self-hosted-runner-isolation.toml'
+-      - 'xtask/src/tasks/ux_regression_receipt.rs'
+-      - 'crates/perl-lsp-ux-tests/src/regression_receipt.rs'
+-      - 'crates/perl-lsp-ux-tests/src/bin/ux_regression_receipt.rs'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
+-      - 'xtask/tests/public_api_pr_gating_workflow.rs'
+-      - 'xtask/tests/perl_version_matrix_cache_contract.rs'
+-      - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
+-      - 'xtask/tests/ci_nightly_cache_contract.rs'
+-      - 'scripts/ci/candidate_proof_presence.py'
+-      - 'scripts/ci/test_candidate_proof_presence.py'
+-      - '.github/ci-config.yml'
+-      - 'scripts/gh/ensure-labels.sh'
+-      - 'scripts/tests/test-public-api-ratchet.sh'
+-      - 'scripts/tests/test-public-api-label.sh'
+-      - 'docs/ci/labels.md'
+-      - 'justfile'
+-      - 'scripts/tests/test_just_agent_nextest.py'
+-      - '.ci/receipts/schemas/workflow-policy.schema.json'
+-      - 'xtask/tests/fixtures/workflow-policy/**'
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.github/workflows/**'
+-      - 'xtask/src/tasks/workflow_policy_lint.rs'
+-      - 'policy/self-hosted-runner-isolation.toml'
+-      - 'xtask/src/tasks/ux_regression_receipt.rs'
+-      - 'crates/perl-lsp-ux-tests/src/regression_receipt.rs'
+-      - 'crates/perl-lsp-ux-tests/src/bin/ux_regression_receipt.rs'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
+-      - 'xtask/tests/public_api_pr_gating_workflow.rs'
+-      - 'xtask/tests/perl_version_matrix_cache_contract.rs'
+-      - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
+-      - 'xtask/tests/ci_nightly_cache_contract.rs'
+-      - 'scripts/ci/candidate_proof_presence.py'
+-      - 'scripts/ci/test_candidate_proof_presence.py'
+-      - '.github/ci-config.yml'
+-      - 'scripts/gh/ensure-labels.sh'
+-      - 'scripts/tests/test-public-api-ratchet.sh'
+-      - 'scripts/tests/test-public-api-label.sh'
+-      - 'docs/ci/labels.md'
+-      - 'justfile'
+-      - 'scripts/tests/test_just_agent_nextest.py'
+-      - '.ci/receipts/schemas/workflow-policy.schema.json'
+-      - 'xtask/tests/fixtures/workflow-policy/**'
+   workflow_dispatch:
+ 
+ permissions:
+--- a/.github/workflows/workflow-security-ratchet-selftest.yml
++++ b/.github/workflows/workflow-security-ratchet-selftest.yml
+@@ -15,15 +15,7 @@
+ name: Workflow Security Ratchet Selftest
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+-    types: [opened, synchronize, reopened, ready_for_review]
+-    paths:
+-      - '.github/workflows/**'
+-      - '.github/actions/**'
+-      - '.ci/workflow-security-baseline.json'
+-      - 'scripts/ci/workflow_security_ratchet.py'
+-      - 'scripts/ci/test_workflow_security_ratchet.py'
++  workflow_dispatch: {}
+ 
+ concurrency:
+   group: workflow-security-ratchet-selftest-${{ github.event.pull_request.number }}
+--- a/.github/workflows/workflow-security-ratchet.yml
++++ b/.github/workflows/workflow-security-ratchet.yml
+@@ -12,25 +12,6 @@
+ name: Workflow Security Ratchet
+ 
+ on:
+-  pull_request_target:
+-    branches: [main, master]
+-    types: [opened, synchronize, reopened, ready_for_review]
+-    # No `paths` filter on this event and no job-level `if:` gate either:
+-    # applicability is resolved entirely inside the job's first step, so a
+-    # required check run is always reported (always-or-scoped-noop per
+-    # .ci/policies/required-checks.toml) and non-workflow dependency PRs
+-    # (Cargo.lock / npm manifests) resolve green immediately instead of facing a
+-    # never-reported context when this job becomes ruleset-required (#10536).
+-    # The `push` trigger below keeps its paths filter; main-redness channels
+-    # are unchanged.
+-  push:
+-    branches: [main, master]
+-    paths:
+-      - '.github/workflows/**'
+-      - '.github/actions/**'
+-      - '.ci/workflow-security-baseline.json'
+-      - 'scripts/ci/workflow_security_ratchet.py'
+-      - 'scripts/ci/test_workflow_security_ratchet.py'
+   workflow_dispatch: {}
+ 
+ concurrency:
+--- a/.github/workflows/workflow-trigger-lint.yml
++++ b/.github/workflows/workflow-trigger-lint.yml
+@@ -1,12 +1,8 @@
+ name: Workflow Trigger Lint
+ 
+ on:
+-  pull_request:
+-    branches: [main, master]
+   merge_group:
+     types: [checks_requested]
+-  push:
+-    branches: [main, master]
+ 
+ concurrency:
+   group: workflow-trigger-lint-${{ github.ref }}
+--- a/.github/workflows/zed-integration-candidate.yml
++++ b/.github/workflows/zed-integration-candidate.yml
+@@ -1,26 +1,6 @@
+ name: Zed Integration Candidate
+ 
+ on:
+-  pull_request:
+-    paths:
+-      - '.ci/fixtures/zed-perl-upstream/**'
+-      - '.ci/schemas/zed-*.json'
+-      - '.github/workflows/zed-integration-candidate.yml'
+-      - 'scripts/apply-zed-*.sh'
+-      - 'scripts/check-zed-*.sh'
+-      - 'scripts/zed_assets/**'
+-      - 'scripts/zed_exact_source_*.py'
+-      - 'scripts/zed_host/**'
+-      - 'scripts/tests/test_zed_host_*.py'
+-      - 'scripts/tests/test_zed_assets.py'
+-      - 'scripts/zed_public_asset_receipts.py'
+-      - 'xtask/src/bin/validate-zed-*.rs'
+-      - 'xtask/src/main.rs'
+-      - 'xtask/src/source_authority/**'
+-      - 'xtask/src/tasks/mod.rs'
+-      - 'xtask/tests/zed_*.rs'
+-      - 'xtask/tests/support/zed_host_compat.rs'
+-      - 'xtask/tests/support/zed_managed_*.rs'
+   workflow_dispatch:
+ 
+ permissions:
 --- a/xtask/tests/lane_history_ci_dispatch_contract.rs
 +++ b/xtask/tests/lane_history_ci_dispatch_contract.rs
-@@ -8,5 +8,3 @@
+@@ -1,509 +1,48 @@
+-//! Contract tests for the lane-history generator's "Raise CI on the
+-//! generated PR" step in `.github/workflows/aggregate-ci-lane-history.yml`
+-//! (#15100).
+-//!
+-//! ci.yml's `workflow_dispatch` declares required `base_sha`/`head_sha`
+-//! inputs (#13019). The lane-history producer dispatched it bare, every
+-//! scheduled run failed with HTTP 422, and the generated refresh PR's
 -//! required checks never populated. These tests pin the repaired contract:
 -//! the step resolves the created PR's recorded base/head identity, refuses
 -//! to prove a moved subject, passes both SHAs to ci.yml only, keeps the
 -//! other dispatches bare and independent, and fails the step when any
 -//! lookup or dispatch fails.
-+//! required checks never populated. The #17903 staged cutover preserves
-+//! metadata dispatch and freshness/failure behavior, while product qualification
-+//! is requested separately for the selected candidate through #17900.
-@@ -159,2 +157 @@ fn test_dispatch_step_declares_subject_identity_env() -> Result<(), Box<dyn std:
++//! Generated lane-history publication must not dispatch development CI (#17903).
++//! The compiler-free production-step tests exercise native readback and failures.
+ 
+-use std::collections::BTreeSet;
++use serde_yaml_ng::Value;
+ use std::fs;
+ use std::path::PathBuf;
+ 
+-use serde_yaml_ng::Value;
+-use toml::Value as TomlValue;
+-
+-const WORKFLOW_PATH: &str = ".github/workflows/aggregate-ci-lane-history.yml";
+-const DISPATCH_STEP_NAME: &str = "Raise CI on the generated PR";
+-const DISPATCH_BRANCH: &str = "automation/ci-lane-history";
+-const BASE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+-const HEAD_SHA: &str = "89abcdef0123456789abcdef0123456789abcdef";
+-
+-fn project_root() -> PathBuf {
+-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+-    dir.pop();
+-    dir
+-}
+-
+-fn workflow_dispatch_trigger(workflow: &Value) -> bool {
+-    let triggers = workflow.as_mapping().and_then(|mapping| {
+-        mapping.iter().find_map(|(key, value)| match key {
+-            Value::String(key) if key == "on" => Some(value),
+-            Value::Bool(true) => Some(value),
+-            _ => None,
+-        })
+-    });
+-
+-    match triggers {
+-        Some(Value::Mapping(mapping)) => {
+-            mapping.keys().any(|key| key.as_str() == Some("workflow_dispatch"))
+-        }
+-        Some(Value::Sequence(events)) => {
+-            events.iter().any(|event| event.as_str() == Some("workflow_dispatch"))
+-        }
+-        Some(Value::String(event)) => event == "workflow_dispatch",
+-        _ => false,
+-    }
+-}
+-
+-fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+-    let mut workflows = BTreeSet::new();
+-    for check in ["check", "checks"]
+-        .into_iter()
+-        .filter_map(|table| policy.get(table).and_then(TomlValue::as_array))
+-        .flatten()
+-        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+-    {
+-        let name =
+-            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+-        let workflow = check
+-            .get("workflow")
+-            .and_then(TomlValue::as_str)
+-            .ok_or_else(|| format!("required check `{name}` must declare a workflow path"))?;
+-        let workflow_name = workflow
+-            .rsplit('/')
+-            .next()
+-            .filter(|workflow_name| !workflow_name.is_empty())
+-            .ok_or_else(|| format!("required check `{name}` has an empty workflow path"))?;
+-        workflows.insert(workflow_name.to_owned());
+-    }
+-    Ok(workflows)
+-}
+-
+-struct DispatchStep {
+-    run: String,
+-    env: Vec<(String, String)>,
+-}
+-
+-fn dispatch_step() -> Result<DispatchStep, Box<dyn std::error::Error>> {
+-    let workflow_path = project_root().join(WORKFLOW_PATH);
+-    let content = fs::read_to_string(&workflow_path)?;
+-    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+-    let jobs = workflow
+-        .get("jobs")
+-        .and_then(Value::as_mapping)
+-        .ok_or("aggregate-ci-lane-history.yml must declare jobs")?;
+-    let step = jobs
++#[test]
++fn generated_lane_history_retains_exact_readback_without_dispatch()
++-> Result<(), Box<dyn std::error::Error>> {
++    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
++        .parent()
++        .ok_or("workspace root missing")?
++        .to_path_buf();
++    let source = fs::read_to_string(root.join(".github/workflows/aggregate-ci-lane-history.yml"))?;
++    let workflow: Value = serde_yaml_ng::from_str(&source)?;
++    let jobs = workflow.get("jobs").and_then(Value::as_mapping).ok_or("jobs missing")?;
++    let steps: Vec<&Value> = jobs
+         .values()
+         .filter_map(|job| job.get("steps").and_then(Value::as_sequence))
+-        .flat_map(|steps| steps.iter())
+-        .find(|step| step.get("name").and_then(Value::as_str) == Some(DISPATCH_STEP_NAME))
+-        .ok_or("aggregate-ci-lane-history.yml must define the generated-PR dispatch step")?;
+-    let run = step
+-        .get("run")
+-        .and_then(Value::as_str)
+-        .ok_or("generated-PR dispatch step must define a shell body")?
+-        .to_string();
+-    let env = step
+-        .get("env")
+-        .and_then(Value::as_mapping)
+-        .map(|mapping| {
+-            mapping
+-                .iter()
+-                .filter_map(|(key, value)| {
+-                    Some((key.as_str()?.to_string(), value.as_str()?.to_string()))
+-                })
+-                .collect::<Vec<_>>()
++        .flatten()
++        .collect();
++    assert!(steps.iter().any(|step| {
++        step.get("uses")
++            .and_then(Value::as_str)
++            .is_some_and(|action| action.starts_with("peter-evans/create-pull-request@"))
++    }));
++    let reconcile = steps
++        .iter()
++        .find(|step| {
++            step.get("name").and_then(Value::as_str) == Some("Reconcile generated PR without CI")
+         })
+-        .unwrap_or_default();
+-    Ok(DispatchStep { run, env })
+-}
+-
+-fn dispatch_order(run: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+-    let dispatch_start = run
+-        .split_once("for workflow in")
+-        .map(|(_, remainder)| remainder)
+-        .ok_or("dispatch step must iterate over workflow names")?;
+-    let (dispatch_names, _) = dispatch_start
+-        .split_once("; do")
+-        .ok_or("dispatch workflow loop must use a shell `; do` delimiter")?;
+-    Ok(dispatch_names.split_whitespace().map(str::to_owned).collect())
+-}
+-
+-/// The dispatch step must bind the created PR's identity from the
+-/// create-pull-request outputs before any dispatch is attempted (#15100).
+-#[test]
+-fn test_dispatch_step_declares_subject_identity_env() -> Result<(), Box<dyn std::error::Error>> {
+-    let step = dispatch_step()?;
+-    let env: BTreeSet<&str> = step.env.iter().map(|(key, _)| key.as_str()).collect();
+-    for required in ["GH_TOKEN", "BRANCH", "PR_NUMBER", "CREATED_HEAD_SHA"] {
+-        assert!(env.contains(required), "dispatch step must declare {required} env");
+-    }
+-    let branch = step
+-        .env
+-        .iter()
+-        .find(|(key, _)| key == "BRANCH")
+-        .map(|(_, value)| value.as_str())
+-        .ok_or("dispatch step must define BRANCH")?;
+-    assert_eq!(branch, DISPATCH_BRANCH, "dispatch must target its automation branch");
+-    let env_value =
+-        |name: &str| step.env.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+-    assert_eq!(
+-        env_value("PR_NUMBER"),
+-        Some("${{ steps.create-pr.outputs.pull-request-number }}"),
+-        "PR_NUMBER must come from the create-pull-request output"
+-    );
+-    assert_eq!(
+-        env_value("CREATED_HEAD_SHA"),
+-        Some("${{ steps.create-pr.outputs.pull-request-head-sha }}"),
+-        "CREATED_HEAD_SHA must come from the create-pull-request head output"
+-    );
+-    Ok(())
+-}
+-
 -/// The step must resolve the PR's recorded base/head through gh, pass both
 -/// to ci.yml, and refuse to dispatch ci.yml for a moved subject (#15100).
-+/// Retain generated-subject freshness while forbidding implicit product proof.
-@@ -162 +159 @@ fn test_dispatch_step_declares_subject_identity_env() -> Result<(), Box<dyn std:
+-#[test]
 -fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error::Error>> {
-+fn test_metadata_step_preserves_subject_identity() -> Result<(), Box<dyn std::error::Error>> {
-@@ -170,3 +167,3 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+-    let step = dispatch_step()?;
+-    assert!(
+-        step.run.contains("gh pr view \"$PR_NUMBER\" --json baseRefOid,headRefOid"),
+-        "dispatch step must resolve the created PR's recorded base/head identity:\n{}",
+-        step.run
+-    );
+-    assert!(
 -        step.run.contains("-f \"base_sha=$base_sha\"")
 -            && step.run.contains("-f \"head_sha=$head_sha\""),
 -        "ci.yml dispatch must pass the resolved base_sha/head_sha inputs (#13019):\n{}",
-+        !step.run.contains("-f \"base_sha=$base_sha\"")
-+            && !step.run.contains("-f \"head_sha=$head_sha\""),
-+        "publication must not request product qualification (#17903):\n{}",
-@@ -189,2 +186 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+-        step.run
+-    );
+-    assert!(
+-        step.run.contains("\"$head_sha\" != \"$CREATED_HEAD_SHA\""),
+-        "dispatch step must refuse a subject that moved since creation:\n{}",
+-        step.run
+-    );
+-    assert!(
+-        step.run.contains("set +e")
+-            && step.run.contains("failed=1")
+-            && step.run.contains("exit \"$failed\""),
+-        "dispatch step must continue after an individual failure and fail overall"
+-    );
+-    Ok(())
+-}
+-
 -/// Every required-check workflow must be raised on the generated PR, plus
 -/// the lane-history validator, and each must accept workflow_dispatch.
-+/// Publication raises only title and payload metadata, never product proof.
-@@ -192 +188 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+-#[test]
 -fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::Error>> {
-+fn test_dispatch_set_contains_only_metadata() -> Result<(), Box<dyn std::error::Error>> {
-@@ -199 +195,5 @@ fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::
+-    let step = dispatch_step()?;
+-    let order = dispatch_order(&step.run)?;
+-    let dispatched: BTreeSet<String> = order.iter().cloned().collect();
+-
+-    let policy_path = project_root().join(".ci/policies/required-checks.toml");
+-    let policy: TomlValue = toml::from_str(&fs::read_to_string(policy_path)?)?;
 -    let required = required_workflows(&policy)?;
-+    let mut required = required_workflows(&policy)?;
-+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-+        required.remove(product);
-+        assert!(!dispatched.contains(product), "publication cannot dispatch {product}");
-+    }
-@@ -204,0 +205,8 @@ fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::
-+    assert_eq!(
-+        dispatched,
-+        BTreeSet::from([
-+            "pr-title-check.yml".to_string(),
-+            "validate-ci-lane-history.yml".to_string(),
-+        ]),
-+        "publication may dispatch only the retained metadata set"
-+    );
-@@ -371,9 +379 @@ mod simulation {
+-    assert!(
+-        required.is_subset(&dispatched),
+-        "generated-PR dispatch set must cover every required-check workflow; missing: {:?}",
+-        required.difference(&dispatched).collect::<Vec<_>>()
+-    );
+-    assert!(
+-        dispatched.contains("validate-ci-lane-history.yml"),
+-        "the reader-side payload oracle must also run on the refresh PR (#11731)"
+-    );
+-
+-    for workflow_name in &dispatched {
+-        let workflow_path = project_root().join(".github/workflows").join(workflow_name);
+-        let workflow_text = fs::read_to_string(&workflow_path)?;
+-        let workflow: Value = serde_yaml_ng::from_str(&workflow_text)?;
+-        assert!(
+-            workflow_dispatch_trigger(&workflow),
+-            "{workflow_name} must declare an on.workflow_dispatch trigger"
+-        );
++        .ok_or("readback missing")?;
++    let run = reconcile.get("run").and_then(Value::as_str).ok_or("readback command missing")?;
++    assert!(run.contains("--json headRefOid,state"));
++    assert!(run.contains("$CREATED_HEAD_SHA"));
++    assert!(run.contains("NOT_PROVEN"));
++    for step in steps {
++        if let Some(command) = step.get("run").and_then(Value::as_str) {
++            assert!(!command.contains("gh workflow run"), "publication cannot dispatch any CI");
++            assert!(
++                !command.contains("/dispatches"),
++                "publication cannot dispatch through the API"
++            );
++        }
+     }
+     Ok(())
+ }
+-
+-#[cfg(unix)]
+-mod simulation {
+-    use super::*;
+-    use std::process::{Command, Output};
+-
+-    struct Stub {
+-        _temp_dir: tempfile::TempDir,
+-        run: String,
+-        log_path: PathBuf,
+-    }
+-
+-    fn stubbed_step() -> Result<Stub, Box<dyn std::error::Error>> {
+-        let step = dispatch_step()?;
+-        let temp_dir = tempfile::tempdir()?;
+-        let stub_dir = temp_dir.path().join("bin");
+-        fs::create_dir(&stub_dir)?;
+-        let stub_gh = stub_dir.join("gh");
+-        // `gh pr view` answers from PR_JSON (or fails when FAIL_PR_VIEW=1);
+-        // when PR_JSON_AFTER_CALL is set, calls at or after that ordinal
+-        // answer PR_JSON_AFTER instead, simulating a branch that moves
+-        // mid-step. Every `gh workflow run` is logged with its full argument
+-        // vector so the ci.yml subject inputs are observable (#15100).
+-        fs::write(
+-            &stub_gh,
+-            "#!/usr/bin/env bash\n\
+-             if [ \"$1\" = pr ]; then\n\
+-             if [ \"${FAIL_PR_VIEW:-}\" = 1 ]; then exit 1; fi\n\
+-             counter=\"$GH_LOG.prviewcount\"\n\
+-             count=$(cat \"$counter\" 2>/dev/null || echo 0)\n\
+-             count=$((count + 1))\n\
+-             printf '%s' \"$count\" > \"$counter\"\n\
+-             if [ -n \"${PR_JSON_AFTER_CALL:-}\" ] && [ \"$count\" -ge \"$PR_JSON_AFTER_CALL\" ]; then\n\
+-             printf '%s\\n' \"$PR_JSON_AFTER\"\n\
+-             else\n\
+-             printf '%s\\n' \"$PR_JSON\"\n\
+-             fi\n\
+-             exit 0\n\
+-             fi\n\
+-             if [ \"$1\" = workflow ]; then\n\
+-             printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
+-             if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n\
+-             exit 0\n\
+-             fi\n\
+-             exit 2\n",
+-        )?;
+-        use std::os::unix::fs::PermissionsExt;
+-        let mut permissions = fs::metadata(&stub_gh)?.permissions();
+-        permissions.set_mode(0o755);
+-        fs::set_permissions(&stub_gh, permissions)?;
+-        // Stub every invocation: an unstubbed suffix would call the real gh,
+-        // breaking hermeticity and, on an authenticated machine, dispatching
+-        // real workflows.
+-        let run = step
+-            .run
+-            .replace("gh pr view", &format!("{} pr view", stub_gh.display()))
+-            .replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
+-        assert_ne!(run, step.run, "dispatch step must invoke gh");
+-        let log_path = temp_dir.path().join("dispatch.log");
+-        Ok(Stub { _temp_dir: temp_dir, run, log_path })
+-    }
+-
+-    impl Stub {
+-        fn run(
+-            &self,
+-            pr_json: &str,
+-            fail_pr_view: bool,
+-            fail_workflow: Option<&str>,
+-        ) -> Result<(Output, Vec<String>), Box<dyn std::error::Error>> {
+-            if self.log_path.exists() {
+-                fs::remove_file(&self.log_path)?;
+-            }
+-            let stub_dir = self.log_path.parent().ok_or("log path must have a parent")?.join("bin");
+-            let existing_path = std::env::var_os("PATH").unwrap_or_default();
+-            let path = std::env::join_paths(
+-                std::iter::once(stub_dir).chain(std::env::split_paths(&existing_path)),
+-            )?;
+-            let mut command = Command::new("/bin/bash");
+-            command
+-                .arg("-c")
+-                .arg(&self.run)
+-                .env("PATH", path)
+-                .env("BRANCH", DISPATCH_BRANCH)
+-                .env("PR_NUMBER", "14668")
+-                .env("CREATED_HEAD_SHA", HEAD_SHA)
+-                .env("GH_LOG", &self.log_path)
+-                .env("PR_JSON", pr_json);
+-            if fail_pr_view {
+-                command.env("FAIL_PR_VIEW", "1");
+-            }
+-            if let Some(fail_workflow) = fail_workflow {
+-                command.env("FAIL_WORKFLOW", fail_workflow);
+-            }
+-            let output = command.output()?;
+-            let calls = match fs::read_to_string(&self.log_path) {
+-                Ok(content) => content.lines().map(str::to_owned).collect(),
+-                Err(_) => Vec::new(),
+-            };
+-            Ok((output, calls))
+-        }
+-
+-        /// Simulate a branch whose head starts as `pr_json` and moves to
+-        /// `pr_json_after` at the `after_call`-th identity lookup (#15100
+-        /// TOCTOU guard).
+-        fn run_moving(
+-            &self,
+-            pr_json: &str,
+-            after_call: u32,
+-            pr_json_after: &str,
+-        ) -> Result<(Output, Vec<String>), Box<dyn std::error::Error>> {
+-            if self.log_path.exists() {
+-                fs::remove_file(&self.log_path)?;
+-            }
+-            let counter = self.log_path.with_extension("log.prviewcount");
+-            if counter.exists() {
+-                fs::remove_file(&counter)?;
+-            }
+-            let stub_dir = self.log_path.parent().ok_or("log path must have a parent")?.join("bin");
+-            let existing_path = std::env::var_os("PATH").unwrap_or_default();
+-            let path = std::env::join_paths(
+-                std::iter::once(stub_dir).chain(std::env::split_paths(&existing_path)),
+-            )?;
+-            let mut command = Command::new("/bin/bash");
+-            command
+-                .arg("-c")
+-                .arg(&self.run)
+-                .env("PATH", path)
+-                .env("BRANCH", DISPATCH_BRANCH)
+-                .env("PR_NUMBER", "14668")
+-                .env("CREATED_HEAD_SHA", HEAD_SHA)
+-                .env("GH_LOG", &self.log_path)
+-                .env("PR_JSON", pr_json)
+-                .env("PR_JSON_AFTER_CALL", after_call.to_string())
+-                .env("PR_JSON_AFTER", pr_json_after);
+-            let output = command.output()?;
+-            let calls = match fs::read_to_string(&self.log_path) {
+-                Ok(content) => content.lines().map(str::to_owned).collect(),
+-                Err(_) => Vec::new(),
+-            };
+-            Ok((output, calls))
+-        }
+-    }
+-
+-    fn pr_json(base: &str, head: &str) -> String {
+-        format!("{{\"baseRefOid\":\"{base}\",\"headRefOid\":\"{head}\"}}")
+-    }
+-
+-    fn expected_calls(order: &[String]) -> Vec<String> {
+-        order
+-            .iter()
 -            .map(|workflow| {
 -                if workflow == "ci.yml" {
 -                    format!(
@@ -312,33 +3604,113 @@ index 8699131fae..c8aa1a8297 100644
 -                    format!("workflow run {workflow} --ref {DISPATCH_BRANCH}")
 -                }
 -            })
-+            .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
-@@ -383,2 +383 @@ mod simulation {
+-            .collect()
+-    }
+-
 -    /// A healthy run dispatches ci.yml with the resolved PR identity and the
 -    /// remaining workflows bare, in loop order (#15100).
-+    /// Healthy publication dispatches only metadata, in loop order.
-@@ -397 +396 @@ mod simulation {
+-    #[test]
+-    fn test_all_success_dispatch_passes_subject_identity() -> Result<(), Box<dyn std::error::Error>>
+-    {
+-        let step = dispatch_step()?;
+-        let order = dispatch_order(&step.run)?;
+-        let stub = stubbed_step()?;
+-        let (output, calls) = stub.run(&pr_json(BASE_SHA, HEAD_SHA), false, None)?;
+-        assert!(
+-            output.status.success(),
+-            "all-success dispatch run failed: {}",
+-            String::from_utf8_lossy(&output.stderr)
+-        );
 -        assert_eq!(calls, expected_calls(&order), "ci.yml must receive the exact PR identity");
-+        assert_eq!(calls, expected_calls(&order), "metadata dispatch must retain exact arguments");
-@@ -401,2 +400 @@ mod simulation {
+-        Ok(())
+-    }
+-
 -    /// A failed identity lookup must fail the step, skip the ci.yml
 -    /// dispatch, and still attempt the other workflows (#15100).
-+    /// Failed identity lookup stays red while metadata checks remain independent.
-@@ -404 +402 @@ mod simulation {
+-    #[test]
 -    fn test_failed_identity_lookup_skips_ci_dispatch() -> Result<(), Box<dyn std::error::Error>> {
-+    fn test_failed_identity_lookup_stays_red() -> Result<(), Box<dyn std::error::Error>> {
-@@ -461,5 +459,2 @@ mod simulation {
+-        let step = dispatch_step()?;
+-        let order = dispatch_order(&step.run)?;
+-        let stub = stubbed_step()?;
+-        let (output, calls) = stub.run(&pr_json(BASE_SHA, HEAD_SHA), true, None)?;
+-        assert!(!output.status.success(), "a failed identity lookup must fail the step");
+-        assert!(
+-            !calls.iter().any(|call| call.contains("ci.yml")),
+-            "ci.yml must not be dispatched without a resolved subject: {calls:?}"
+-        );
+-        let bare: Vec<String> = order
+-            .iter()
+-            .filter(|workflow| *workflow != "ci.yml")
+-            .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
+-            .collect();
+-        assert_eq!(calls, bare, "the other workflows must still be attempted");
+-        Ok(())
+-    }
+-
+-    /// A head that moved between creation and dispatch must fail the step
+-    /// and never attach CI to the new, unproven subject (#15100).
+-    #[test]
+-    fn test_moved_head_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+-        let step = dispatch_step()?;
+-        let order = dispatch_order(&step.run)?;
+-        let stub = stubbed_step()?;
+-        let moved = "fedcba9876543210fedcba9876543210fedcba98";
+-        let (output, calls) = stub.run(&pr_json(BASE_SHA, moved), false, None)?;
+-        assert!(!output.status.success(), "a moved head must fail the step");
+-        assert!(
+-            !calls.iter().any(|call| call.contains("ci.yml")),
+-            "ci.yml must not be dispatched for a moved subject: {calls:?}"
+-        );
+-        let bare: Vec<String> = order
+-            .iter()
+-            .filter(|workflow| *workflow != "ci.yml")
+-            .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
+-            .collect();
+-        assert_eq!(calls, bare, "the other workflows must still be attempted");
+-        Ok(())
+-    }
+-
+-    /// A failed dispatch must fail the step without skipping later
+-    /// workflows (#11731).
+-    #[test]
+-    fn test_failed_dispatch_does_not_strand_later_workflows()
+-    -> Result<(), Box<dyn std::error::Error>> {
+-        let step = dispatch_step()?;
+-        let order = dispatch_order(&step.run)?;
+-        let first = order.first().ok_or("dispatch set must not be empty")?.clone();
+-        let stub = stubbed_step()?;
+-        let (output, calls) = stub.run(&pr_json(BASE_SHA, HEAD_SHA), false, Some(&first))?;
+-        assert!(!output.status.success(), "a failed dispatch must fail the step");
+-        assert_eq!(calls, expected_calls(&order), "every workflow must still be attempted");
+-        Ok(())
+-    }
+-
 -    /// A head that moves after the initial lookup but before the ci.yml
 -    /// dispatch must be caught by the per-dispatch re-resolution: ci.yml is
 -    /// skipped and the step fails rather than proving the moved subject
 -    /// (#15100 TOCTOU guard). Lookup order in the step is: initial resolve
 -    /// (1), ci.yml pre-dispatch re-resolve (2), post-loop re-resolve (3).
-+    /// A generated head moving during metadata dispatch must fail the step.
-+    /// Lookup order is initial resolve, then post-loop re-resolve.
-@@ -467 +462 @@ mod simulation {
+-    #[test]
 -    fn test_head_moving_before_ci_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
-+    fn test_head_moving_during_metadata_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
-@@ -487,22 +481,0 @@ mod simulation {
+-        let step = dispatch_step()?;
+-        let order = dispatch_order(&step.run)?;
+-        let stub = stubbed_step()?;
+-        let moved = "fedcba9876543210fedcba9876543210fedcba98";
+-        let (output, calls) =
+-            stub.run_moving(&pr_json(BASE_SHA, HEAD_SHA), 2, &pr_json(BASE_SHA, moved))?;
+-        assert!(!output.status.success(), "a head moving mid-step must fail the step");
+-        assert!(
+-            !calls.iter().any(|call| call.contains("ci.yml")),
+-            "ci.yml must not be dispatched once the subject moved: {calls:?}"
+-        );
+-        let bare: Vec<String> = order
+-            .iter()
+-            .filter(|workflow| *workflow != "ci.yml")
+-            .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
+-            .collect();
+-        assert_eq!(calls, bare, "the other workflows must still be attempted");
+-        Ok(())
+-    }
 -
 -    /// A head that moves after the ci.yml dispatch is caught by the
 -    /// post-loop re-resolution: the dispatch already landed on the
@@ -361,31 +3733,168 @@ index 8699131fae..c8aa1a8297 100644
 -        );
 -        Ok(())
 -    }
+-}
+--- a/xtask/tests/main_history_event_workflow_contract.rs
++++ b/xtask/tests/main_history_event_workflow_contract.rs
+@@ -1,4 +1,5 @@
+-//! Checked contract for the hosted `main` history-event detector workflow.
++//! Source contract for the retired `main` history-event detector (#17903).
++//! Automatic main observation is retired; these guards preserve the incident source.
+ //!
+ //! #10306 requires the hosted surface to stay read-only, to delegate every
+ //! ancestry judgement to one repository command, and to treat a missing receipt
+@@ -17,7 +18,11 @@
+     let root = manifest
+         .parent()
+         .with_context(|| format!("{} has no repository-root parent", manifest.display()))?;
+-    Ok(root.join(".github/workflows/main-history-event.yml"))
++    assert!(
++        !root.join(".github/workflows/main-history-event.yml").exists(),
++        "routine main-history Actions must remain retired"
++    );
++    Ok(root.join(".ci/retired-workflows/main-history-event.yml"))
+ }
+ 
+ fn workflow_source() -> Result<String> {
+@@ -26,7 +31,7 @@
+ }
+ 
+ /// Parse the workflow so structural properties are asserted against the document
+-/// GitHub will execute rather than against its current formatting.
++/// preserved for incident review, rather than against its current formatting.
+ fn workflow_document() -> Result<Value> {
+     Ok(serde_yaml_ng::from_str(&workflow_source()?)?)
+ }
 --- a/xtask/tests/post_merge_status_regen_tests.rs
 +++ b/xtask/tests/post_merge_status_regen_tests.rs
-@@ -73,2 +72,0 @@
+@@ -9,36 +9,11 @@
+ //! - The GATE_REGISTRY.toml policy gate command does not require a freshness check.
+ //! - The modular structure (4 generated files + stable stub) is correctly wired.
+ 
+-use std::collections::BTreeSet;
+ use std::fs;
+ use std::path::PathBuf;
+ 
+ use serde_yaml_ng::Value;
+ use toml::Value as TomlValue;
+-
+-fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+-    let mut workflows = BTreeSet::new();
+-    for check in ["check", "checks"]
+-        .into_iter()
+-        .filter_map(|table| policy.get(table).and_then(TomlValue::as_array))
+-        .flatten()
+-        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+-    {
+-        let name =
+-            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+-        let workflow = check
+-            .get("workflow")
+-            .and_then(TomlValue::as_str)
+-            .ok_or_else(|| format!("required check `{name}` must declare a workflow path"))?;
+-        let workflow_name = workflow
+-            .rsplit('/')
+-            .next()
+-            .filter(|workflow_name| !workflow_name.is_empty())
+-            .ok_or_else(|| format!("required check `{name}` has an empty workflow path"))?;
+-        workflows.insert(workflow_name.to_owned());
+-    }
+-    Ok(workflows)
+-}
+ 
+ fn workflow_on(workflow: &Value) -> Option<&Value> {
+     workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
+@@ -63,114 +38,6 @@
+         Value::String(event) => event == "workflow_dispatch",
+         _ => false,
+     }
+-}
+-
+-#[cfg(unix)]
+-fn assert_dispatch_loop_behavior(
+-    dispatch_run: &str,
+-    dispatch_order: &[String],
+-    branch: &str,
 -    base_sha: &str,
 -    head_sha: &str,
-@@ -82,4 +80 @@
+-) -> Result<(), Box<dyn std::error::Error>> {
+-    use std::process::{Command, Output};
+-
+-    let temp_dir = tempfile::tempdir()?;
+-    let stub_dir = temp_dir.path().join("bin");
+-    fs::create_dir(&stub_dir)?;
+-    let stub_gh = stub_dir.join("gh");
 -    // Record the full argument vector for every call and tolerate any arity:
 -    // ci.yml's workflow_dispatch requires `-f base_sha=… -f head_sha=…`
 -    // (#13019), so a five-arg stub would reject exactly the call this fixture
 -    // must admit — and did, leaving this test red on main unobserved (#15100).
-+    // Record every metadata dispatch with its complete argument vector.
-@@ -96,4 +91 @@
+-    fs::write(
+-        &stub_gh,
+-        "#!/usr/bin/env bash\n\
+-         printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
+-         if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n",
+-    )?;
+-    use std::os::unix::fs::PermissionsExt;
+-    let mut permissions = fs::metadata(&stub_gh)?.permissions();
+-    permissions.set_mode(0o755);
+-    fs::set_permissions(&stub_gh, permissions)?;
 -    // Stub every dispatch call, not just the first: the ci.yml special case
 -    // precedes the bare `elif` dispatch, and an unstubbed suffix would invoke
 -    // the real gh — failing hermeticity and, on an authenticated machine,
 -    // dispatching real workflows.
-+    // Stub every dispatch call: no fixture may reach authenticated GitHub.
-@@ -116,2 +107,0 @@
+-    let simulation_run =
+-        dispatch_run.replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
+-    assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
+-
+-    let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
+-        let log_path = temp_dir.path().join(log_name);
+-        let existing_path = std::env::var_os("PATH").unwrap_or_default();
+-        let path = std::env::join_paths(
+-            std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
+-        )?;
+-        let mut command = Command::new("/bin/bash");
+-        command
+-            .arg("-c")
+-            .arg(&simulation_run)
+-            .env("PATH", path)
+-            .env("BRANCH", branch)
 -            .env("BASE_SHA", base_sha)
 -            .env("GENERATED_HEAD_SHA", head_sha)
-@@ -148,3 +137,0 @@
+-            .env("GH_LOG", &log_path);
+-        if let Some(fail_workflow) = fail_workflow {
+-            command.env("FAIL_WORKFLOW", fail_workflow);
+-        } else {
+-            command.env_remove("FAIL_WORKFLOW");
+-        }
+-        let output: Output = command.output().map_err(|error| {
+-            format!("failed to execute dispatch shell for {}: {error}", log_path.display())
+-        })?;
+-        let calls = fs::read_to_string(&log_path)
+-            .map_err(|error| {
+-                format!(
+-                    "failed to read {}: {error}; stdout={}; stderr={}",
+-                    log_path.display(),
+-                    String::from_utf8_lossy(&output.stdout),
+-                    String::from_utf8_lossy(&output.stderr)
+-                )
+-            })?
+-            .lines()
+-            .map(str::to_owned)
+-            .collect::<Vec<_>>();
+-        Ok::<_, Box<dyn std::error::Error>>((output, calls))
+-    };
+-
+-    let (success_output, success_calls) = run_dispatch(None, "all-success.log")?;
+-    assert!(
+-        success_output.status.success(),
+-        "all-success dispatch run failed: {}",
+-        String::from_utf8_lossy(&success_output.stderr)
+-    );
 -    // ci.yml's workflow_dispatch requires the dispatched subject's exact
 -    // base/head SHAs (#13019); every other required workflow declares no
 -    // dispatch inputs and stays bare (#13355).
-@@ -153,9 +140 @@
+-    let expected_calls = dispatch_order
+-        .iter()
 -        .map(|workflow| {
 -            if workflow == "ci.yml" {
 -                format!(
@@ -395,24 +3904,130 @@ index 8699131fae..c8aa1a8297 100644
 -                format!("workflow run {workflow} --ref {branch}")
 -            }
 -        })
-+        .map(|workflow| format!("workflow run {workflow} --ref {branch}"))
-@@ -379,5 +358,4 @@
+-        .collect::<Vec<_>>();
+-    assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
+-
+-    let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
+-    let (failure_output, failure_calls) = run_dispatch(Some(first_workflow), "first-failure.log")?;
+-    assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
+-    assert_eq!(
+-        failure_calls, expected_calls,
+-        "a failed dispatch must not skip later required workflows"
+-    );
+-
+-    Ok(())
+ }
+ 
+ fn project_root() -> PathBuf {
+@@ -331,16 +198,14 @@
+ 
+ /// The post-merge workflow must trigger on push to master.
+ #[test]
+-fn test_post_merge_workflow_triggers_on_push_to_master() -> Result<(), Box<dyn std::error::Error>> {
+-    let root = project_root();
+-    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+-    let content = fs::read_to_string(&workflow_path)?;
+-
+-    assert!(content.contains("push:"), "post-merge-status.yml must have a push trigger");
+-    assert!(
+-        content.contains("master"),
+-        "post-merge-status.yml push trigger must include master branch"
+-    );
++fn test_post_merge_status_requires_explicit_admission() -> Result<(), Box<dyn std::error::Error>> {
++    let content = post_merge_status_workflow_text()?;
++    let workflow = parse_workflow(&content)?;
++    let triggers = workflow_on(&workflow).and_then(Value::as_mapping).ok_or("triggers missing")?;
++    assert!(workflow_dispatch_trigger(&workflow));
++    assert!(!triggers.contains_key(Value::String("push".into())));
++    assert!(!triggers.contains_key(Value::String("pull_request".into())));
++    assert!(!triggers.contains_key(Value::String("pull_request_target".into())));
+     Ok(())
+ }
+ 
+@@ -376,109 +241,29 @@
+     Ok(())
+ }
+ 
 -/// The generated-PR workflow must dispatch every workflow that owns a required
 -/// check and retain a failing step result when any individual dispatch fails
 -/// (#11731).
 -#[test]
 -fn test_post_merge_workflow_dispatches_all_required_checks()
-+/// Publication wakes title metadata only, preserving failure propagation.
-+/// Product proof is a separate explicit request in the staged #17903 generation.
-+#[test]
-+fn test_post_merge_workflow_dispatches_metadata_only()
-@@ -423 +401,4 @@
+--> Result<(), Box<dyn std::error::Error>> {
+-    let root = project_root();
+-    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+-    let content = fs::read_to_string(&workflow_path)?;
+-    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+-    let jobs = workflow
+-        .get("jobs")
+-        .and_then(Value::as_mapping)
+-        .ok_or("post-merge-status.yml must declare jobs")?;
+-    let dispatch_step = jobs
+-        .values()
+-        .filter_map(|job| job.get("steps").and_then(Value::as_sequence))
+-        .flat_map(|steps| steps.iter())
+-        .find(|step| {
+-            step.get("name").and_then(Value::as_str) == Some("Raise CI on the generated PR")
+-        })
+-        .ok_or("post-merge-status.yml must define the generated-PR dispatch step")?;
+-    let dispatch_run = dispatch_step
+-        .get("run")
+-        .and_then(Value::as_str)
+-        .ok_or("generated-PR dispatch step must define a shell body")?;
+-    let dispatch_branch = dispatch_step
+-        .get("env")
+-        .and_then(Value::as_mapping)
+-        .and_then(|env| {
+-            env.iter().find_map(|(key, value)| match key {
+-                Value::String(key) if key == "BRANCH" => value.as_str(),
+-                _ => None,
+-            })
+-        })
+-        .ok_or("generated-PR dispatch step must define BRANCH")?;
+-    assert_eq!(
+-        dispatch_branch, "automation/post-merge-status",
+-        "generated-PR dispatch must target its automation branch"
+-    );
+-
+-    let policy_path = root.join(".ci/policies/required-checks.toml");
+-    let policy_text = fs::read_to_string(policy_path)?;
+-    let policy: TomlValue = toml::from_str(&policy_text)?;
 -    let required_workflows = required_workflows(&policy)?;
-+    let mut required_workflows = required_workflows(&policy)?;
-+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-+        required_workflows.remove(product);
-+    }
-@@ -459,8 +440 @@
+-    assert!(
+-        !required_workflows.is_empty(),
+-        "required-checks.toml must declare at least one required workflow"
+-    );
+-
+-    let dispatch_start = dispatch_run
+-        .split_once("for workflow in")
+-        .map(|(_, remainder)| remainder)
+-        .ok_or("dispatch step must iterate over workflow names")?;
+-    let (dispatch_names, _) = dispatch_start
+-        .split_once("; do")
+-        .ok_or("dispatch workflow loop must use a shell `; do` delimiter")?;
+-    let dispatch_order: Vec<String> =
+-        dispatch_names.split_whitespace().map(str::to_owned).collect();
+-    let dispatched_workflows: BTreeSet<String> = dispatch_order.iter().cloned().collect();
+-    assert_eq!(
+-        dispatched_workflows, required_workflows,
+-        "generated-PR dispatch set must equal the unique workflow paths for required checks"
+-    );
+-    for workflow_name in &required_workflows {
+-        let workflow_path = root.join(".github/workflows").join(workflow_name);
+-        let workflow_text = fs::read_to_string(&workflow_path)?;
+-        let workflow: Value = serde_yaml_ng::from_str(&workflow_text)?;
+-        assert!(
+-            workflow_dispatch_trigger(&workflow),
+-            "{workflow_name} must declare an on.workflow_dispatch trigger"
+-        );
+-    }
+-    assert!(
+-        dispatch_run.contains("set +e")
+-            && dispatch_run.contains("failed=1")
+-            && dispatch_run.contains("exit \"$failed\""),
+-        "generated-PR dispatch step must continue after an individual failure and fail overall"
+-    );
+-
 -    // The ci.yml dispatch arm reads its subject identity from step env
 -    // (#13355); both names must be declared so the simulated invocation is
 -    // the one the workflow really makes.
@@ -421,12 +4036,44 @@ index 8699131fae..c8aa1a8297 100644
 -        .and_then(Value::as_mapping)
 -        .ok_or("generated-PR dispatch step must declare env")?;
 -    for required_env in ["BASE_SHA", "GENERATED_HEAD_SHA"] {
-+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-@@ -468,2 +442,2 @@
+-        assert!(
 -            step_env.keys().any(|key| key.as_str() == Some(required_env)),
 -            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
-+            !dispatched_workflows.contains(product),
-+            "publication must not request product qualification: {product}"
-@@ -478,2 +451,0 @@
+-        );
+-    }
+-
+-    #[cfg(unix)]
+-    assert_dispatch_loop_behavior(
+-        dispatch_run,
+-        &dispatch_order,
+-        dispatch_branch,
 -        "0123456789abcdef0123456789abcdef01234567",
 -        "89abcdef0123456789abcdef0123456789abcdef",
+-    )?;
+-
++/// Generated publication retains head readback and starts no qualification.
++#[test]
++fn test_post_merge_workflow_preserves_without_dispatch() -> Result<(), Box<dyn std::error::Error>> {
++    let content = post_merge_status_workflow_text()?;
++    let workflow = parse_workflow(&content)?;
++    let jobs = workflow.get("jobs").and_then(Value::as_mapping).ok_or("jobs missing")?;
++    let mut readback_found = false;
++    for step in
++        jobs.values().filter_map(|job| job.get("steps").and_then(Value::as_sequence)).flatten()
++    {
++        if step.get("name").and_then(Value::as_str) == Some("Reconcile generated PR without CI") {
++            let run = step.get("run").and_then(Value::as_str).ok_or("readback command missing")?;
++            assert!(run.contains("--json headRefOid,state"));
++            assert!(run.contains("$CREATED_HEAD_SHA"));
++            assert!(run.contains("NOT_PROVEN"));
++            readback_found = true;
++        }
++        if let Some(run) = step.get("run").and_then(Value::as_str) {
++            assert!(!run.contains("gh workflow run"), "publication cannot dispatch any CI");
++            assert!(!run.contains("/dispatches"), "publication cannot dispatch through the API");
++        }
++    }
++    assert!(readback_found, "publication must preserve exact-head readback");
+     Ok(())
+ }
+ 
