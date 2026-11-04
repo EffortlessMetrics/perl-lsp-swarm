@@ -10,6 +10,39 @@ pub use crate::client_compat_fixture::{
 
 pub const SCHEMA_VERSION: &str = "editor_client_compat.v1";
 
+/// Version tag for the explicit collection/string bounds enforced by #10527.
+pub const RECEIPT_BOUNDS_VERSION: &str = "editor_client_compat_bounds.v1";
+
+/// Explicit deterministic limits for durable receipt surfaces (#10527).
+pub mod bounds {
+    pub const MAX_SAFE_IDENTITY_LEN: usize = 256;
+    pub const MAX_REASON_TOKEN_LEN: usize = 128;
+    pub const MAX_REPOSITORY_LEN: usize = 256;
+    pub const MAX_CLAIM_BOUNDARY_LEN: usize = 2_048;
+    pub const MAX_LIMITATION_ITEM_LEN: usize = 2_048;
+    pub const MAX_JOURNEY_CELLS: usize = 64;
+    pub const MAX_JOURNEY_EVIDENCE_PER_CELL: usize = 32;
+    pub const MAX_ARTIFACTS: usize = 32;
+    pub const MAX_LIMITATIONS: usize = 32;
+    pub const MAX_OBSERVED_DIAGNOSTIC_MESSAGES: usize = 32;
+    pub const MAX_POSITION_ENCODINGS_OFFERED: usize = 8;
+    pub const MAX_EMBEDDED_PROTOCOL_RECEIPT_BYTES: usize = 65_536;
+}
+
+/// Fail-closed CLI pin (#15340): refuse any envelope version other than the
+/// current [`SCHEMA_VERSION`] before a host entry point performs any work, so
+/// a future version bump cannot silently flip every consumer at once and an
+/// unknown per-invocation request fails loudly instead of emitting a shape
+/// the caller does not parse.
+pub fn ensure_api_version(api_version: &str) -> Result<()> {
+    ensure!(
+        api_version == SCHEMA_VERSION,
+        "unsupported editor_client_compat envelope version {api_version:?}: this build emits \
+         and validates only {SCHEMA_VERSION:?}"
+    );
+    Ok(())
+}
+
 /// Schema version of the protocol state-machine contract this one composes with.
 ///
 /// `actual_host_receipt.v1` (`contracts/actual_host_receipt.v1.schema.json`,
@@ -264,9 +297,51 @@ pub struct EditorClientCompatReceipt {
     pub claim_boundary: String,
 }
 
+/// Successful production validation product for downstream producers/consumers
+/// (#10610, #10965, #14398, #14399). Callers must not re-parse raw JSON or
+/// re-derive digest/bounds checks on the returned receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedEditorClientCompatReceipt {
+    receipt: EditorClientCompatReceipt,
+    bounds_version: &'static str,
+    protocol_receipt_digest: Option<String>,
+}
+
+impl ValidatedEditorClientCompatReceipt {
+    pub fn receipt(&self) -> &EditorClientCompatReceipt {
+        &self.receipt
+    }
+
+    pub fn bounds_version(&self) -> &'static str {
+        self.bounds_version
+    }
+
+    pub fn protocol_receipt_digest(&self) -> Option<&str> {
+        self.protocol_receipt_digest.as_deref()
+    }
+}
+
 impl EditorClientCompatReceipt {
     pub fn validate(&self) -> Result<()> {
+        self.validate_internal()
+    }
+
+    /// Validate, bind embedded protocol digests, enforce bounds, and return the
+    /// typed handoff consumed by receipt producers and registry adapters.
+    pub fn validate_and_bind(self) -> Result<ValidatedEditorClientCompatReceipt> {
+        self.validate_internal()?;
+        let protocol_receipt_digest =
+            self.protocol_evidence.as_ref().map(|evidence| evidence.receipt_sha256.clone());
+        Ok(ValidatedEditorClientCompatReceipt {
+            receipt: self,
+            bounds_version: RECEIPT_BOUNDS_VERSION,
+            protocol_receipt_digest,
+        })
+    }
+
+    fn validate_internal(&self) -> Result<()> {
         ensure!(self.schema_version == SCHEMA_VERSION, "unexpected schema_version");
+        self.validate_bounds()?;
         chrono::DateTime::parse_from_rfc3339(&self.observed_at)
             .context("observed_at must be an RFC 3339 date-time")?;
         validate_safe_identity(&self.repository, "repository")?;
@@ -532,6 +607,20 @@ impl EditorClientCompatReceipt {
             "protocol_evidence.run_id must be a stable reason token"
         );
         validate_sha256(&protocol.receipt_sha256, "protocol_evidence.receipt_sha256")?;
+        let embedded_bytes = serde_json::to_vec(&protocol.receipt)
+            .context("protocol_evidence.receipt must serialize for bounds checking")?;
+        ensure!(
+            embedded_bytes.len() <= bounds::MAX_EMBEDDED_PROTOCOL_RECEIPT_BYTES,
+            "protocol_evidence.receipt exceeds the maximum embedded receipt size ({} bytes)",
+            bounds::MAX_EMBEDDED_PROTOCOL_RECEIPT_BYTES
+        );
+
+        let bound_digest = crate::actual_host_receipt::receipt_content_digest(&protocol.receipt)
+            .map_err(|error| anyhow::anyhow!("embedded protocol receipt digest failed: {error}"))?;
+        ensure!(
+            protocol.receipt_sha256 == bound_digest,
+            "protocol_evidence.receipt_sha256 does not match the canonically serialized embedded receipt"
+        );
 
         let receipt = protocol
             .receipt
@@ -597,6 +686,90 @@ impl EditorClientCompatReceipt {
                 self.process_cleanup != CleanupResult::Pass,
                 "embedded protocol receipt detected an orphan but cleanup was reported as passing"
             );
+        }
+        Ok(())
+    }
+
+    fn validate_bounds(&self) -> Result<()> {
+        ensure_bounded_len(&self.repository, bounds::MAX_REPOSITORY_LEN, "repository")?;
+        ensure_bounded_len(&self.claim_boundary, bounds::MAX_CLAIM_BOUNDARY_LEN, "claim_boundary")?;
+        ensure!(
+            self.journey.len() <= bounds::MAX_JOURNEY_CELLS,
+            "journey exceeds the maximum cell count ({})",
+            bounds::MAX_JOURNEY_CELLS
+        );
+        ensure!(
+            self.artifacts.len() <= bounds::MAX_ARTIFACTS,
+            "artifacts exceed the maximum count ({})",
+            bounds::MAX_ARTIFACTS
+        );
+        ensure!(
+            self.limitations.len() <= bounds::MAX_LIMITATIONS,
+            "limitations exceed the maximum count ({})",
+            bounds::MAX_LIMITATIONS
+        );
+        ensure!(
+            self.diagnostics.observed_messages.len() <= bounds::MAX_OBSERVED_DIAGNOSTIC_MESSAGES,
+            "diagnostics.observed_messages exceed the maximum count ({})",
+            bounds::MAX_OBSERVED_DIAGNOSTIC_MESSAGES
+        );
+        ensure!(
+            self.capabilities.position_encodings_offered.len()
+                <= bounds::MAX_POSITION_ENCODINGS_OFFERED,
+            "capabilities.position_encodings_offered exceed the maximum count ({})",
+            bounds::MAX_POSITION_ENCODINGS_OFFERED
+        );
+
+        for limitation in &self.limitations {
+            ensure_bounded_len(limitation, bounds::MAX_LIMITATION_ITEM_LEN, "limitations[]")?;
+        }
+
+        for cell in &self.journey {
+            ensure_reason_token_bounded(&cell.id)?;
+            ensure!(
+                cell.evidence.len() <= bounds::MAX_JOURNEY_EVIDENCE_PER_CELL,
+                "journey cell `{}` exceeds the maximum evidence reference count ({})",
+                cell.id,
+                bounds::MAX_JOURNEY_EVIDENCE_PER_CELL
+            );
+            for evidence in &cell.evidence {
+                ensure_safe_identity_bounded(evidence, "journey evidence")?;
+            }
+            if let Some(limitation) = &cell.limitation {
+                ensure_bounded_len(
+                    limitation,
+                    bounds::MAX_LIMITATION_ITEM_LEN,
+                    "journey.limitation",
+                )?;
+            }
+        }
+
+        for artifact in &self.artifacts {
+            ensure_safe_identity_bounded(&artifact.id, "artifact id")?;
+        }
+
+        ensure_safe_identity_bounded(&self.platform.os, "platform.os")?;
+        ensure_safe_identity_bounded(&self.platform.os_version, "platform.os_version")?;
+        ensure_safe_identity_bounded(&self.platform.arch, "platform.arch")?;
+        ensure_safe_identity_bounded(&self.host.product, "host.product")?;
+        ensure_safe_identity_bounded(&self.host.version, "host.version")?;
+        ensure_safe_identity_bounded(&self.host.source_ref, "host.source_ref")?;
+        ensure_reason_token_bounded(&self.host.client_id)?;
+        ensure_safe_identity_bounded(&self.server.version, "server.version")?;
+        ensure_safe_identity_bounded(&self.server.protocol_version, "server.protocol_version")?;
+        ensure_reason_token_bounded(&self.workspace_fixture.id)?;
+        ensure_reason_token_bounded(&self.workspace_fixture.expectation_set_id)?;
+        if let Some(selected) = &self.capabilities.position_encoding_selected {
+            ensure_reason_token_bounded(selected)?;
+        }
+        for encoding in &self.capabilities.position_encodings_offered {
+            ensure_reason_token_bounded(encoding)?;
+        }
+        for message in &self.diagnostics.observed_messages {
+            ensure_reason_token_bounded(message)?;
+        }
+        if let Some(protocol) = &self.protocol_evidence {
+            ensure_reason_token_bounded(&protocol.run_id)?;
         }
         Ok(())
     }
@@ -680,6 +853,19 @@ fn validate_sha256(value: &str, field: &str) -> Result<()> {
     };
     ensure!(is_lower_hex(hex, 64), "{field} must use sha256:<64 lowercase hex> identity");
     Ok(())
+}
+
+fn ensure_bounded_len(value: &str, max_len: usize, field: &str) -> Result<()> {
+    ensure!(value.chars().count() <= max_len, "{field} exceeds the maximum length ({max_len})");
+    Ok(())
+}
+
+fn ensure_safe_identity_bounded(value: &str, field: &str) -> Result<()> {
+    ensure_bounded_len(value, bounds::MAX_SAFE_IDENTITY_LEN, field)
+}
+
+fn ensure_reason_token_bounded(value: &str) -> Result<()> {
+    ensure_bounded_len(value, bounds::MAX_REASON_TOKEN_LEN, "reason token")
 }
 
 fn validate_safe_identity(value: &str, field: &str) -> Result<()> {

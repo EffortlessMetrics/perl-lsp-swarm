@@ -1,8 +1,8 @@
 //! Parser benchmark statistics subcommand.
 //!
-//! Reads the most-recently-modified benchmark JSON from `benchmarks/results/`
-//! (or an explicit `--input` path), emits a human-readable table, and
-//! optionally writes `.ci/metrics/parser.json`.
+//! Reads the most-recently-modified parser-compatible benchmark JSON from
+//! `benchmarks/results/` (or an explicit `--input` path), emits a
+//! human-readable table, and optionally writes `.ci/metrics/parser.json`.
 
 use crate::utils::project_root;
 use chrono::Utc;
@@ -92,7 +92,12 @@ pub fn run(input: Option<PathBuf>, json: bool) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Return the most-recently modified `*.json` in `benchmarks/results/`.
+/// Return the most-recently modified parser-compatible `*.json` in
+/// `benchmarks/results/`.
+///
+/// The directory also holds `benchmark-result.v1` receipts (schema/result
+/// shape, no `benchmarks` object); those are skipped so a checkout whose
+/// newest files are receipts still resolves to parser data (#17390 review).
 fn find_latest_benchmark_json(root: &Path) -> Result<PathBuf> {
     let results_dir = root.join("benchmarks").join("results");
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&results_dir)
@@ -107,9 +112,17 @@ fn find_latest_benchmark_json(root: &Path) -> Result<PathBuf> {
 
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0)); // newest first
 
-    candidates.into_iter().map(|(_, p)| p).next().ok_or_else(|| {
-        color_eyre::eyre::eyre!("no *.json files found in {}", results_dir.display())
-    })
+    for (_, path) in candidates {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("reading candidate {}", path.display()))?;
+        if serde_json::from_str::<BenchmarkFile>(&raw).is_ok() {
+            return Ok(path);
+        }
+    }
+    Err(color_eyre::eyre::eyre!(
+        "no parser-compatible *.json files found in {}",
+        results_dir.display()
+    ))
 }
 
 /// Print a human-readable table sorted by mean descending.
@@ -230,6 +243,43 @@ mod tests {
     }
 
     #[test]
+    fn test_find_latest_skips_benchmark_result_receipts() -> Result<()> {
+        // Mixed directory: a newer benchmark-result.v1 receipt must not shadow
+        // the older parser JSON (#17390 review).
+        let tmp = TempDir::new()?;
+        let results = tmp.path().join("benchmarks").join("results");
+        fs::create_dir_all(&results)?;
+        fs::write(
+            results.join("2026-01-22-parser.json"),
+            r#"{"benchmarks":{"p":{"mean":{"nanoseconds":1000.0,"microseconds":1.0}}}}"#,
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(
+            results.join("2026-10-06-ripr-e1.json"),
+            r#"{"schema":"benchmark-result.v1","result":{"status":"measured"}}"#,
+        )?;
+        let picked = find_latest_benchmark_json(tmp.path())?;
+        assert_eq!(picked.file_name().and_then(|s| s.to_str()), Some("2026-01-22-parser.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_latest_errors_when_only_receipts_present() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let results = tmp.path().join("benchmarks").join("results");
+        fs::create_dir_all(&results)?;
+        fs::write(results.join("2026-10-06-ripr-e1.json"), r#"{"schema":"benchmark-result.v1"}"#)?;
+        match find_latest_benchmark_json(tmp.path()) {
+            Ok(p) => panic!("must error with no parser file, got {}", p.display()),
+            Err(e) => assert!(
+                format!("{e:?}").contains("no parser-compatible"),
+                "error must name the parser-compatible requirement: {e:?}"
+            ),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_print_table_does_not_panic_with_multiple_entries() -> Result<()> {
         let json = r#"{"benchmarks":{"fast":{"mean":{"nanoseconds":1000.0,"microseconds":1.0},"median":{"nanoseconds":900.0,"microseconds":0.9},"std_dev":{"nanoseconds":50.0,"microseconds":0.05},"source_lines":10},"slow":{"mean":{"nanoseconds":50000.0,"microseconds":50.0},"median":{"nanoseconds":48000.0,"microseconds":48.0},"std_dev":{"nanoseconds":2000.0,"microseconds":2.0},"source_lines":null}}}"#;
         let file: BenchmarkFile = serde_json::from_str(json)?;
@@ -312,8 +362,8 @@ mod tests {
         let err = find_latest_benchmark_json(tmp.path()).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("no *.json files found"),
-            "error must mention 'no *.json files found', got: {msg}"
+            msg.contains("no parser-compatible *.json files found"),
+            "error must mention 'no parser-compatible *.json files found', got: {msg}"
         );
     }
 }

@@ -1,0 +1,125 @@
+{
+  "schema": 4,
+  "release": "0.18.0-rc.7",
+  "track": "public-beta",
+  "frozen_product_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "prepared_swarm_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "workspace_version": "0.18.0-rc.7",
+  "published_crates": [
+    {
+      "name": "fixture-crate",
+      "package_path": "fixture",
+      "version": "0.18.0-rc.7",
+      "publish_order": 1,
+      "internal_dependencies": []
+    }
+  ],
+  "crate_count": 1,
+  "binary_targets": [
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "architecture": "x86_64",
+      "libc": "gnu",
+      "runner": "ubuntu-22.04",
+      "archive_name": "perllsp-0.18.0-rc.7-x86_64-unknown-linux-gnu.tar.gz",
+      "required_members": [
+        "perllsp",
+        "perl-dap",
+        "README.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "SHA256SUMS.txt"
+      ]
+    }
+  ],
+  "archive_count": 1,
+  "vsix": {
+    "version": "0.19.7",
+    "asset_name": "fixture-extension-0.19.7-0.18.0-rc.7.vsix",
+    "package_path": "vscode-extension",
+    "managed_targets": [
+      "x86_64-unknown-linux-gnu"
+    ],
+    "bundled_targets": [],
+    "candidate_id": "synthetic-rc-seven",
+    "publisher": "fixture-publisher",
+    "name": "fixture-extension",
+    "pre_release": true
+  },
+  "primary_channels": [
+    "github_release",
+    "crates_io",
+    "vscode_marketplace",
+    "open_vsx"
+  ],
+  "secondary_channels": {
+    "docker": "required",
+    "homebrew": "deferred"
+  },
+  "sources": {
+    "synthetic-fixture": {
+      "path": "synthetic-fixture",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "schemas/release_topology.v4.schema.json": {
+      "path": "schemas/release_topology.v4.schema.json",
+      "sha256": "d2fbd8e0b827840296b83bd4eebeaf7d7855e19db39605a685a8283aeaa03815"
+    }
+  },
+  "checksum_assets": [
+    {
+      "asset_name": "SHA256SUMS",
+      "algorithm": "sha256",
+      "channel": "github_release",
+      "archive_targets": [
+        "x86_64-unknown-linux-gnu"
+      ]
+    }
+  ],
+  "subject_projection": {
+    "sbom": {
+      "path": "dist/sbom-spdx.json",
+      "format": "SPDX-2.3",
+      "channel": "github_release"
+    },
+    "subject_list": {
+      "path": "attestation-subjects.sha256",
+      "role": "local_subject_list",
+      "algorithm": "sha256"
+    },
+    "named_artifacts": {
+      "dynamic_classes": [
+        "release_archives",
+        "validated_build_evidence"
+      ],
+      "fixed_artifacts": [
+        {
+          "path": "dist/SHA256SUMS",
+          "class": "checksum_set"
+        },
+        {
+          "path": "dist/sbom-spdx.json",
+          "class": "sbom"
+        },
+        {
+          "path": "dist/release-terminal-manifest.json",
+          "class": "terminal_manifest"
+        }
+      ],
+      "conditional_paths": [
+        {
+          "path": "release_notes.md",
+          "class": "release_notes",
+          "condition": "present"
+        }
+      ]
+    },
+    "external_records": {
+      "role": "external_attestation_records",
+      "producer": "actions/attest",
+      "subjects_from": "attestation-subjects.sha256",
+      "execution": "not_proven"
+    }
+  }
+}

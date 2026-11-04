@@ -11,7 +11,16 @@
 # This helper therefore never reports REVIEWED. Subject-bound semantic
 # currentness is owned by check-pr-semantic-review-currentness.py, and callers
 # must consult it separately before treating a candidate as reviewed.
+#
+# ── Schema-version check ──────────────────────────────────────────────────
+# check-pr-review-convergence-core publishes its JSON output under
+# `schema_version: "convergence_core.v1"`. A missing field is a deprecation
+# warning (older callers before #15278). A greater value is a refusal — the
+# output shape may have changed in a way this projection does not understand.
+# See issue #15278.
 set -euo pipefail
+
+SUPPORTED_SCHEMA_VERSIONS=("convergence_core.v1")
 
 if [[ $# -lt 1 ]]; then
     echo "usage: $0 <pr-number> [owner/repo]" >&2
@@ -53,10 +62,37 @@ if [[ -z "$JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$JSON"; then
     exit 2
 fi
 
+# Schema-version gate. A missing field is a deprecation (warn to stderr and
+# continue); an unknown / greater value is a refusal (loud error + exit 2).
+SCHEMA_VERSION="$(jq -r '.schema_version // ""' <<<"$JSON")"
+if [[ -z "$SCHEMA_VERSION" ]]; then
+    echo "WARN: check-pr-review-convergence output is missing schema_version; this projection predates #15278 and should be refreshed" >&2
+elif [[ ! " ${SUPPORTED_SCHEMA_VERSIONS[*]} " == *" $SCHEMA_VERSION "* ]]; then
+    echo "ERROR: unsupported convergence-core schema_version '$SCHEMA_VERSION' (this projection supports: ${SUPPORTED_SCHEMA_VERSIONS[*]})" >&2
+    jq -n --arg pr "$PR" --arg version "$SCHEMA_VERSION" '{
+      pr: ($pr | tonumber? // $pr),
+      state: "NOT_PROVEN",
+      reason: "unsupported_closeout_schema_version",
+      observed_schema_version: $version,
+      review_currentness: "NOT_PROVEN",
+      semantic_currentness_required: true,
+      exact_head_review_required: false
+    }'
+    exit 2
+fi
+
 CLASSIFICATION="$(jq -r '.formal_review.classification // "NOT_PROVEN"' <<<"$JSON")"
 CONVERGED="$(jq -r '.converged // false' <<<"$JSON")"
 HEAD="$(jq -r '.headRefOid // ""' <<<"$JSON")"
-SUBMITTED_HUMAN_REVIEW_COUNT="$(jq -r '.submitted_human_review_count // 0' <<<"$JSON")"
+# Prefer the honestly-named count. The `// 0` fallback chain keeps this
+# projection working against a parent that predates #15035, where only the
+# `submitted_human_review_count` alias is present. The alias is deprecated:
+# it claims "all submitted human reviews", but the value is a
+# non-dismissed, non-bot count over GitHub's latest-per-user `latestReviews`
+# projection. See check-pr-review-convergence for the full derivation.
+NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT="$(jq -r \
+    '.non_dismissed_latest_nonbot_review_count // .submitted_human_review_count // 0' \
+    <<<"$JSON")"
 
 # Native facts can converge; they cannot establish substantive review. Both
 # converged classifications therefore project to the same state, and the
@@ -80,13 +116,14 @@ jq -n \
     --arg state "$STATE" \
     --arg classification "$CLASSIFICATION" \
     --argjson converged "$CONVERGED" \
-    --argjson submittedReviews "$SUBMITTED_HUMAN_REVIEW_COUNT" \
+    --argjson submittedReviews "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" \
     '{
       pr: ($pr | tonumber? // $pr),
       observed_head: $head,
       state: $state,
       formal_review_classification: $classification,
       converged: $converged,
+      non_dismissed_latest_nonbot_review_count: $submittedReviews,
       submitted_human_review_count: $submittedReviews,
       review_currentness: "NOT_PROVEN",
       semantic_currentness_required: true,

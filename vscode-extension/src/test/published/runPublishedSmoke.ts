@@ -29,6 +29,24 @@ function envValue(name: string): string {
   return process.env[name]?.trim() ?? '';
 }
 
+export function hasCompleteCandidateIdentity(env: NodeJS.ProcessEnv): boolean {
+  const candidateId = env.PERL_LSP_CANDIDATE_ID?.trim() ?? '';
+  const artifactSetId = env.PERL_LSP_ARTIFACT_SET_ID?.trim() ?? '';
+  const sourceSha = env.PERL_LSP_CURRENT_SOURCE_SHA?.trim() ?? '';
+  const manifest = env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST?.trim() ?? '';
+  // A source SHA also identifies a standalone first-hour run. Candidate-only
+  // fields opt into the stronger identity contract, which remains all-or-none.
+  if (!candidateId && !artifactSetId && !manifest) {
+    return false;
+  }
+  if (!candidateId || !artifactSetId || !sourceSha || !manifest) {
+    throw new Error(
+      'Candidate-bound packaged smoke requires candidate ID, frozen product SHA, artifact-set ID, and artifact manifest together.',
+    );
+  }
+  return true;
+}
+
 export interface CandidateBoundInstallContext {
   source: ExtensionSource;
   version: string;
@@ -157,6 +175,33 @@ function selectedVsixSha256(installTarget: string): string | undefined {
     return undefined;
   }
   return crypto.createHash('sha256').update(fs.readFileSync(installTarget)).digest('hex');
+}
+
+function snapshotInstallTarget(
+  source: ExtensionSource,
+  installTarget: string,
+  downloadDir: string,
+): { installTarget: string; vsixSha256?: string } {
+  if (source === 'marketplace') {
+    return { installTarget };
+  }
+  // Capture once before installation. The private child directory preserves the
+  // archive basename without replacing an Open VSX download in its parent.
+  const bytes = fs.readFileSync(installTarget);
+  const vsixSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const snapshotDir = fs.mkdtempSync(path.join(downloadDir, 'vsix-snapshot-'));
+  const snapshotPath = path.join(snapshotDir, path.basename(installTarget));
+  fs.writeFileSync(snapshotPath, bytes, { flag: 'wx' });
+  return { installTarget: snapshotPath, vsixSha256 };
+}
+
+function assertVsixSnapshot(installTarget: string, vsixSha256: string | undefined): void {
+  if (vsixSha256 === undefined) {
+    return;
+  }
+  if (selectedVsixSha256(installTarget) !== vsixSha256) {
+    throw new Error(`Published VSIX snapshot changed or disappeared: ${installTarget}`);
+  }
 }
 
 function publishedSource(): ExtensionSource {
@@ -335,6 +380,7 @@ async function installExtension(
   installTarget: string,
   userDataDir: string,
   extensionsDir: string,
+  vsixSha256: string | undefined,
 ): Promise<void> {
   const resolvedCliArgs = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
   const cliPath = resolvedCliArgs[0];
@@ -354,6 +400,7 @@ async function installExtension(
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', cliPath, ...args] : args;
   try {
     await retryPublishedInstall(() => {
+      assertVsixSnapshot(installTarget, vsixSha256);
       const result = spawnSync(command, commandArgs, {
         encoding: 'utf8',
         windowsHide: true,
@@ -371,7 +418,7 @@ async function installExtension(
   }
 }
 
-function configureCurrentSourceSmoke(
+export function configureCurrentSourceSmoke(
   userDataDir: string,
   extensionsDir: string,
   workspaceTrustMode: 'disabled' | 'untrusted',
@@ -389,7 +436,9 @@ function configureCurrentSourceSmoke(
   fs.mkdirSync(settingsDir, { recursive: true });
   const settings: Record<string, unknown> = {
     'perl-lsp.autoDownload': false,
-    'perl-lsp.serverPath': path.resolve(serverPath),
+    // The supplied server is staged into the VSIX. Select that installed copy
+    // so the first-hour receipt observes the binary the extension actually runs.
+    'perl-lsp.serverPath': '',
     'perl-lsp.includePaths': [],
     'perl-lsp.critic.enabled': false,
   };
@@ -447,25 +496,27 @@ function configureCrashRecoverySmoke(userDataDir: string): void {
   fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
 }
 
+// The first host is expected to die only because Reload Window terminated
+// it. A rejected reload command also leaves the stage and dispatched
+// markers behind, so those two alone cannot classify the interruption: the
+// journey records that failure in its own marker, and its presence here
+// means the first host failed, not that it was interrupted.
+export function isExpectedReloadInterruption(receiptsRoot: string): boolean {
+  return (
+    fs.existsSync(path.join(receiptsRoot, 'update-closure-stage.json')) &&
+    fs.existsSync(path.join(receiptsRoot, 'update-closure-reload-dispatched')) &&
+    !fs.existsSync(path.join(receiptsRoot, 'update-closure-reload-failed'))
+  );
+}
+
 async function main(): Promise<void> {
   const source = publishedSource();
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
-  const candidateBound = Boolean(
-    envValue('PERL_LSP_CANDIDATE_ID') ||
-    envValue('PERL_LSP_ARTIFACT_SET_ID') ||
-    envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
-    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
-  );
-  const completeCandidateIdentity = [
-    envValue('PERL_LSP_CANDIDATE_ID'),
-    envValue('PERL_LSP_ARTIFACT_SET_ID'),
-    envValue('PERL_LSP_CURRENT_SOURCE_SHA'),
-    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
-  ].every(Boolean);
+  const candidateBound = hasCompleteCandidateIdentity(process.env);
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
-    completeCandidateIdentity,
+    candidateBound,
   );
   assertCandidateBoundInstallSource({
     source,
@@ -514,6 +565,12 @@ async function main(): Promise<void> {
     process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
     path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
   fs.mkdirSync(receiptsRoot, { recursive: true });
+  if (process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE === '1') {
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-stage.json'), { force: true });
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-result.json'), { force: true });
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-reload-dispatched'), { force: true });
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-reload-failed'), { force: true });
+  }
 
   if (!configuredWorkspace) {
     fs.writeFileSync(
@@ -523,17 +580,30 @@ async function main(): Promise<void> {
   }
 
   try {
+    const hostCachePath = envValue('PERL_LSP_VSCODE_CACHE_PATH');
     const { executablePath: vscodeExecutablePath } = await downloadVsCodeHostOrWriteFailureReceipt(
       receiptsRoot,
       vscodeVersion,
-      downloadAndUnzipVSCode,
+      hostCachePath
+        ? (options) => downloadAndUnzipVSCode({ ...options, cachePath: hostCachePath })
+        : downloadAndUnzipVSCode,
     );
-    const installTarget = await resolveInstallTarget(source, downloadDir);
+    const { installTarget, vsixSha256 } = snapshotInstallTarget(
+      source,
+      await resolveInstallTarget(source, downloadDir),
+      downloadDir,
+    );
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
     configureActivationFailureSmoke(userDataDir);
     configureCrashRecoverySmoke(userDataDir);
-    await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
-    const vsixSha256 = selectedVsixSha256(installTarget);
+    await installExtension(
+      vscodeExecutablePath,
+      installTarget,
+      userDataDir,
+      extensionsDir,
+      vsixSha256,
+    );
+    assertVsixSnapshot(installTarget, vsixSha256);
     const extensionTestsEnv: NodeJS.ProcessEnv = {
       ...process.env,
       PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
@@ -543,8 +613,12 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
+      PERL_LSP_UPDATE_CLOSURE_STAGE_FILE: path.join(receiptsRoot, 'update-closure-stage.json'),
     };
-    if (process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1') {
+    if (
+      process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1' &&
+      process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE !== '1'
+    ) {
       extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
     } else {
       delete extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP;
@@ -553,6 +627,7 @@ async function main(): Promise<void> {
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
     } else {
+      extensionTestsEnv.PERL_LSP_PUBLISHED_VSIX_PATH = installTarget;
       extensionTestsEnv.PERL_LSP_VSIX_SHA256 = vsixSha256;
     }
 
@@ -567,10 +642,34 @@ async function main(): Promise<void> {
         `--extensions-dir=${extensionsDir}`,
       ],
     };
-    if (workspaceTrustMode === 'untrusted') {
-      await runWithoutForcedWorkspaceTrust(testOptions);
+    const runHost = () =>
+      workspaceTrustMode === 'untrusted'
+        ? runWithoutForcedWorkspaceTrust(testOptions)
+        : runTests(testOptions);
+    if (process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE === '1') {
+      // Reload Window terminates the first extension test host. Re-enter with
+      // the same installed VSIX and profile, then require the second-host
+      // process receipt; the first host's exit alone is never success.
+      let firstHostInterrupted = false;
+      try {
+        await runHost();
+      } catch (error: unknown) {
+        if (!isExpectedReloadInterruption(receiptsRoot)) {
+          throw error;
+        }
+        firstHostInterrupted = true;
+      }
+      if (!firstHostInterrupted) {
+        throw new Error('Reload Window did not interrupt the first installed Extension Host.');
+      }
+      if (!fs.existsSync(path.join(receiptsRoot, 'update-closure-result.json'))) {
+        await runHost();
+      }
+      if (!fs.existsSync(path.join(receiptsRoot, 'update-closure-result.json'))) {
+        throw new Error('Installed update reload did not produce a post-reload server receipt.');
+      }
     } else {
-      await runTests(testOptions);
+      await runHost();
     }
   } finally {
     // Shared profile directories belong to the orchestrator that created

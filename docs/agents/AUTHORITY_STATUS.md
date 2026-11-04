@@ -70,13 +70,17 @@ classified `transitional`, not silently treated as current:
 
 | Path | Replacement | Retired text still present |
 | --- | --- | --- |
-| `scripts/ci/check-pr-review-convergence-core` | `scripts/ci/check-pr-review-convergence` — consume the collector only through the public semantic wrapper | “CANONICAL review-convergence authority” |
+| `scripts/ci/check-pr-review-convergence-core` | `scripts/ci/check-pr-review-convergence` — consume the collector only through the public semantic wrapper | “CANONICAL review-convergence authority”; “MUST call this script”; “ONE authority” |
 
-Containment there is genuinely unfinished: `scripts/pre-merge-check.sh` still invokes the
-core directly, bypassing the wrapper, and the core still carries exact-head receipt
-terminology. Issue #5778 closed as completed on 2026-08-14 without landing that
-containment, so this row names the wrapper rather than a closed issue, and the remaining
-work is residual #4555 work.
+Containment has landed: `scripts/pre-merge-check.sh` sets `NATIVE_CONVERGENCE` to the
+wrapper (`scripts/pre-merge-check.sh:19`) and the script contains no `core` reference;
+that landed in `883bf27a21` (2026-08-16), after issue #5778 closed as completed on
+2026-08-14. The retired text is not limited to the core's line-2 header (the
+`stale_marker` captured above): its opening comments also direct every skill/agent
+surface to call the core directly (`scripts/ci/check-pr-review-convergence-core:5-7`,
+“MUST call this script”) and declare it the “ONE authority, everything else points at
+it” (`scripts/ci/check-pr-review-convergence-core:34-37`). Code repair on this row is
+not complete until those comments are rewritten together with the header marker.
 
 Seven rows left this table because their replacements landed on `main` while this
 candidate was open. They are reclassified rather than kept pending:
@@ -145,6 +149,35 @@ owns CPANTS/kwalitee oracle work, not the Clippy programme. Its exact historical
 remains available from the redirect, but cannot select current work. #9850 is the sole
 product-Clippy controller; #10008 and #8153 keep their distinct broader Rust-hygiene
 scope.
+
+## Vision and north-star documents
+
+Every tracked `*VISION*.md` document and every document that presents itself as a
+north-star authority is now registered in `authority_status.toml` (#17826). The
+registry schema defines only `current`, `transitional`, `historical`, and
+`superseded`, so aspirational vision records are classified `historical` with notes
+that say they are aspirational; no vision claim is an acceptance predicate.
+
+| Path | Status | Current authority to use instead |
+| --- | --- | --- |
+| `TECHNICAL_VISION.md` | `historical` — aspirational strategic north star (v0.12.0, 2026-03-28) with definitive-platform and GA claims | `docs/project/CURRENT_STATUS.md`; shipped reality is the v0.17.0 public beta in `docs/project/status/release.md` |
+| `docs/project/PERL_LSP_VISION.md` | `historical` — aspirational research vision (2026-03-19) claiming 100 percent LSP coverage as GA | `docs/project/CURRENT_STATUS.md` |
+| `docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md` | `historical` — research article recording vision history, not itself a vision authority | this index |
+| `docs/agents/lenses/vision-alignment.md` | `current` — current review lens only; it is not a product vision document and sets no acceptance predicates | itself, for review-lens scope only |
+| `.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; "vision" names a reviewer role | this index |
+| `.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; "vision" names a reviewer role | this index |
+| `docs/project/EDITOR_TRUST_WAVE.md` | `historical` — dated wave plan with a North star section; principles survive only where current documents restate them | `docs/project/CURRENT_STATUS.md` |
+| `docs/project/plans/2026-06-convergence-to-release.md` | `historical` — dated narrative plan (umbrella #1209 closed) that itself points readers to live status | `docs/project/CURRENT_STATUS.md` |
+| `.kiro/specs/ux-readiness-system/requirements.md` | `historical` — Kiro-era requirements spec whose north-star sentence defines that system's purpose | `docs/project/CURRENT_STATUS.md` |
+
+Documents that merely mention a north star without presenting themselves as a
+vision or north-star authority are not vision documents: the root provider routes
+and this index quote the phrase to define the reading rule, already-registered
+historical documents carry it in their retention banners, and interview-question
+catalogues ask about north stars. Those paths are classified, where applicable,
+under their own subjects above. Filenames that contain the letters only as part of
+other words — `division` in the ambiguous-slash corpus documents, `revision` in
+`docs/reference/DOCUMENT_REVISION_MIGRATION.md` — are likewise not vision documents.
 
 ## Surviving principles
 

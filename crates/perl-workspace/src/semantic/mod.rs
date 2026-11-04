@@ -84,14 +84,37 @@ pub mod generated_member_extractor {
 /// Import-spec extraction for `ImportExportIndex` population during `index_file`.
 pub mod workspace_import_extractor {
     use crate::Node;
+    use perl_parser_core::hir::HirFile;
     use perl_semantic_facts::{FileId, ImportSpec};
 
     pub use super::workspace_import_extractor_core::extract_use_lib_facts;
 
-    /// Extract import facts and apply bounded framework-specific import semantics.
+    /// Extract import facts from canonical HIR projection and apply bounded
+    /// framework-specific import semantics.
     pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
         let mut specs = super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
         super::quickorm::normalize_import_specs(ast, &mut specs);
+        specs
+    }
+
+    /// Extract import facts from an already-lowered HIR file.
+    ///
+    /// Production indexing already lowers HIR for package/export facts; reuse
+    /// that projection instead of classifying flattened `Use.args`.
+    pub fn extract_import_specs_from_hir(
+        hir: &HirFile,
+        ast: &Node,
+        file_id: FileId,
+        source: Option<&str>,
+    ) -> Vec<ImportSpec> {
+        let mut specs = super::workspace_import_extractor_core::extract_import_specs_from_hir(
+            hir, ast, file_id,
+        );
+        if let Some(source) = source {
+            super::quickorm::normalize_import_specs_with_source(ast, &mut specs, source);
+        } else {
+            super::quickorm::normalize_import_specs(ast, &mut specs);
+        }
         specs
     }
 
@@ -102,9 +125,12 @@ pub mod workspace_import_extractor {
         file_id: FileId,
         source: &str,
     ) -> Vec<ImportSpec> {
-        let mut specs = super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
-        super::quickorm::normalize_import_specs_with_source(ast, &mut specs, source);
-        specs
+        extract_import_specs_from_hir(
+            &perl_parser_core::hir::lower_ast(ast),
+            ast,
+            file_id,
+            Some(source),
+        )
     }
 }
 

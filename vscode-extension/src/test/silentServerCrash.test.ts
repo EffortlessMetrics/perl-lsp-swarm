@@ -53,6 +53,7 @@ import {
   _handleLifecycleClientStateChangeForTest,
   _languageClientConnectionOptionsForTest,
   _restartServerForTest,
+  _promptForClientRefreshForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -385,6 +386,58 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     expect(lifecycle.client).toBeUndefined();
   });
 
+  test.each(['Restart Now', 'Later', undefined])(
+    'settings recovery choice %s respects explicit crash-budget reset',
+    async (choice) => {
+      let created = 0;
+      const lifecycle = new ExtensionLanguageClientLifecycle<
+        FakeLifecycleClient,
+        FakeLifecycleEvent
+      >({
+        resolveServerPath: async () => '/server/perllsp',
+        createClient: () => {
+          created += 1;
+          return new FakeLifecycleClient(Promise.resolve(), created);
+        },
+      });
+      _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+      await lifecycle.start();
+      for (let crash = 0; crash < 4; crash += 1) {
+        handleClientStateChange(crashEvent() as never);
+        await drain();
+      }
+      expect(created).toBe(4);
+      expect(lifecycle.snapshot.state).toBe('stopped');
+      expect(_autoRestartAttemptsForTest()).toBe(3);
+
+      const information = vscode.window.showInformationMessage as jest.Mock;
+      information.mockResolvedValueOnce(choice);
+      await _promptForClientRefreshForTest(makeContext());
+      expect(information).toHaveBeenCalledWith(
+        expect.stringContaining('settings changed'),
+        'Restart Now',
+        'Later',
+      );
+
+      if (choice === 'Restart Now') {
+        expect(created).toBe(5);
+        expect(lifecycle.snapshot.state).toBe('running');
+        expect(_autoRestartAttemptsForTest()).toBe(0);
+        // A newly configured generation gets an automatic recovery attempt.
+        handleClientStateChange(crashEvent() as never);
+        await drain();
+        expect(created).toBe(6);
+        expect(lifecycle.snapshot.state).toBe('running');
+        expect(_autoRestartAttemptsForTest()).toBe(1);
+      } else {
+        expect(created).toBe(4);
+        expect(lifecycle.snapshot.state).toBe('stopped');
+        expect(_autoRestartAttemptsForTest()).toBe(3);
+      }
+      await lifecycle.stop();
+      _setLanguageClientLifecycleForTest(undefined);
+    },
+  );
   test('a user-initiated stop suppresses the crash toast and the counter', async () => {
     _setUserInitiatedStopPendingForTest(true);
     handleClientStateChange(crashEvent() as never);

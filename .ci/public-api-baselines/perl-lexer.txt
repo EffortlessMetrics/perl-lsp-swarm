@@ -287,6 +287,7 @@ pub mod perl_lexer::symbol_table
 pub struct perl_lexer::symbol_table::LocalSymbolTable
 pub fn perl_lexer::symbol_table::LocalSymbolTable::is_empty(&self) -> bool
 pub fn perl_lexer::symbol_table::LocalSymbolTable::is_known_sub(&self, name: &str) -> bool
+pub fn perl_lexer::symbol_table::LocalSymbolTable::is_nullary_sub(&self, name: &str) -> bool
 pub fn perl_lexer::symbol_table::LocalSymbolTable::len(&self) -> usize
 pub fn perl_lexer::symbol_table::LocalSymbolTable::scan_subs(input: &str) -> perl_lexer::symbol_table::LocalSymbolTable
 pub fn perl_lexer::symbol_table::LocalSymbolTable::clone(&self) -> perl_lexer::symbol_table::LocalSymbolTable
@@ -594,6 +595,7 @@ pub fn perl_lexer::LexerPolicyIdentity::fmt(&self, f: &mut core::fmt::Formatter<
 pub struct perl_lexer::LocalSymbolTable
 pub fn perl_lexer::symbol_table::LocalSymbolTable::is_empty(&self) -> bool
 pub fn perl_lexer::symbol_table::LocalSymbolTable::is_known_sub(&self, name: &str) -> bool
+pub fn perl_lexer::symbol_table::LocalSymbolTable::is_nullary_sub(&self, name: &str) -> bool
 pub fn perl_lexer::symbol_table::LocalSymbolTable::len(&self) -> usize
 pub fn perl_lexer::symbol_table::LocalSymbolTable::scan_subs(input: &str) -> perl_lexer::symbol_table::LocalSymbolTable
 pub fn perl_lexer::symbol_table::LocalSymbolTable::clone(&self) -> perl_lexer::symbol_table::LocalSymbolTable
@@ -672,5 +674,6 @@ pub fn perl_lexer::is_lexer_keyword(token: &str) -> bool
 pub fn perl_lexer::is_lsp_completion_keyword(token: &str) -> bool
 pub fn perl_lexer::is_lsp_runtime_completion_keyword(token: &str) -> bool
 pub fn perl_lexer::is_parser_lsp_keyword(token: &str) -> bool
+pub fn perl_lexer::is_perl_identifier_continue(ch: char) -> bool
 pub fn perl_lexer::is_rename_keyword(token: &str) -> bool
 pub type perl_lexer::Result<T> = core::result::Result<T, perl_lexer::error::LexerError>

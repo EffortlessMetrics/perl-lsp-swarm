@@ -2,8 +2,13 @@
 xtask = "run --package xtask --"
 
 # Agent/local-safe aliases. These do not choose machine paths.
-# Machine paths belong in .cargo/config.local.toml, ~/.cargo/config.toml,
-# or scripts/cargo-safe.
+# Select machine storage in the task shell using docs/agents/CARGO_STORAGE.md.
+#
+# Optional machine-local overrides live in `.cargo/config.local.toml` (gitignored;
+# copy from `.cargo/config.local.toml.example`). Cargo does not discover that
+# filename automatically. Repository wrappers pass `--config` when it exists
+# (`scripts/cargo-safe`, `scripts/cargo-admitted`). For direct `cargo`, pass
+# `--config .cargo/config.local.toml` (or set machine-local keys via `CARGO_*`).
 agent-check = "check --workspace --all-targets --profile agent --locked"
 agent-test = "test --workspace --all-targets --profile agent --locked"
 agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs"
@@ -12,6 +17,11 @@ t2 = "test -- --test-threads=2"
 
 [build]
 rustflags = []
+
+# Lossless ELF debug compression on the pinned native Linux compiler-driver
+# route. Keep line tables and backtraces; other targets retain their defaults.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--compress-debug-sections=zlib"]
 
 [env]
 RUST_BACKTRACE = "1"

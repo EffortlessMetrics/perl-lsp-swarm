@@ -48,6 +48,8 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
         subject: str = "candidate-sha",
         main_workflow_run_ids: set[int] | None = None,
         candidate_workflow_run_ids: set[int] | None = None,
+        main_workflow_sha: str = "ci-workflow-sha",
+        candidate_workflow_sha: str = "ci-workflow-sha",
     ) -> refusal.Decision:
         return refusal.evaluate(
             main_runs=main,
@@ -65,8 +67,8 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
                 if candidate_workflow_run_ids is None
                 else candidate_workflow_run_ids
             ),
-            main_workflow_sha="ci-workflow-sha",
-            candidate_workflow_sha="ci-workflow-sha",
+            main_workflow_sha=main_workflow_sha,
+            candidate_workflow_sha=candidate_workflow_sha,
         )
 
     def test_red_main_and_red_candidate_blocks(self) -> None:
@@ -231,19 +233,75 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
         self.assertFalse(decision.blocks)
         self.assertTrue(refusal.finalize(decision).blocks)
 
-    def test_changed_candidate_workflow_is_not_comparable(self) -> None:
-        decision = refusal.evaluate(
-            main_runs=all_shards("main-sha", conclusion="failure"),
-            candidate_runs=all_shards("candidate-sha", conclusion="success"),
-            main_sha_before="main-sha",
-            main_sha_after="main-sha",
-            candidate_sha="candidate-sha",
-            main_workflow_run_ids=set(range(1, 9)),
-            candidate_workflow_run_ids=set(range(1, 9)),
-            main_workflow_sha="main-workflow-sha",
-            candidate_workflow_sha="changed-workflow-sha",
+    def test_base_only_workflow_advancement_keeps_exact_subject_evidence_comparable(self) -> None:
+        """Main advanced ci.yml; PR head still has the old blob; merge tree matches main.
+
+        Check runs stay bound to the PR head subject. Comparability must use
+        the effective merge/event workflow blob, not the stale head blob.
+        """
+        merge_tree = refusal.effective_workflow_tree_sha(
+            event_name="pull_request",
+            github_sha="merge-tree-sha",
+            pr_head_sha="pr-head-sha",
+        )
+        blob_by_tree = {
+            "merge-tree-sha": "new-main-ci-blob",
+            "pr-head-sha": "stale-pr-head-ci-blob",
+        }
+        decision = self.evaluate(
+            main=all_shards("main-sha", conclusion="failure"),
+            candidate=all_shards("pr-head-sha", conclusion="success"),
+            subject="pr-head-sha",
+            main_workflow_sha="new-main-ci-blob",
+            candidate_workflow_sha=blob_by_tree[merge_tree],
+        )
+        self.assertFalse(decision.blocks)
+        self.assertFalse(decision.waits_for_candidate)
+        self.assertNotIn("not comparable", " ".join(decision.warnings))
+
+    def test_reading_stale_pr_head_workflow_blob_is_the_false_positive_to_avoid(self) -> None:
+        """Wrong implementation: compare the PR-head ci.yml after a base-only advancement."""
+        decision = self.evaluate(
+            main=all_shards("main-sha", conclusion="failure"),
+            candidate=all_shards("pr-head-sha", conclusion="success"),
+            subject="pr-head-sha",
+            main_workflow_sha="new-main-ci-blob",
+            candidate_workflow_sha="stale-pr-head-ci-blob",
         )
         self.assertTrue(decision.waits_for_candidate)
+        self.assertIn("not comparable", " ".join(decision.warnings))
+        self.assertTrue(refusal.finalize(decision).blocks)
+
+    def test_pr_authored_ci_yml_change_is_not_comparable(self) -> None:
+        decision = self.evaluate(
+            main=all_shards("main-sha", conclusion="failure"),
+            candidate=all_shards("candidate-sha", conclusion="success"),
+            main_workflow_sha="main-workflow-sha",
+            candidate_workflow_sha="pr-authored-workflow-sha",
+        )
+        self.assertTrue(decision.waits_for_candidate)
+        self.assertIn("differs from canonical main", " ".join(decision.warnings))
+        self.assertTrue(refusal.finalize(decision).blocks)
+
+    def test_missing_effective_workflow_tree_is_not_comparable(self) -> None:
+        decision = self.evaluate(
+            main=all_shards("main-sha", conclusion="failure"),
+            candidate=all_shards("candidate-sha", conclusion="success"),
+            main_workflow_sha="main-workflow-sha",
+            candidate_workflow_sha="",
+        )
+        self.assertTrue(decision.waits_for_candidate)
+        self.assertIn("could not be read", " ".join(decision.warnings))
+        self.assertTrue(refusal.finalize(decision).blocks)
+
+    def test_missing_exact_subject_run_evidence_waits_then_fails_closed(self) -> None:
+        decision = self.evaluate(
+            main=all_shards("main-sha", conclusion="failure"),
+            candidate=all_shards("candidate-sha", conclusion="success"),
+            candidate_workflow_run_ids=set(),
+        )
+        self.assertTrue(decision.waits_for_candidate)
+        self.assertFalse(decision.blocks)
         self.assertTrue(refusal.finalize(decision).blocks)
 
     def test_payload_loader_accepts_slurped_pages(self) -> None:
@@ -266,13 +324,64 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
         self.assertEqual(set(), runs)
 
 
+class EffectiveWorkflowTreeTests(unittest.TestCase):
+    def test_pull_request_uses_github_sha_never_pr_head(self) -> None:
+        self.assertEqual(
+            refusal.effective_workflow_tree_sha(
+                event_name="pull_request",
+                github_sha="merge-tree-sha",
+                pr_head_sha="pr-head-sha",
+            ),
+            "merge-tree-sha",
+        )
+
+    def test_merge_group_uses_merge_group_head(self) -> None:
+        self.assertEqual(
+            refusal.effective_workflow_tree_sha(
+                event_name="merge_group",
+                github_sha="github-sha-should-not-win",
+                merge_group_head_sha="merge-group-head",
+                pr_head_sha="pr-head-sha",
+            ),
+            "merge-group-head",
+        )
+
+    def test_missing_effective_tree_does_not_fall_back_to_pr_head(self) -> None:
+        self.assertEqual(
+            refusal.effective_workflow_tree_sha(
+                event_name="pull_request",
+                github_sha="",
+                pr_head_sha="pr-head-sha",
+            ),
+            "",
+        )
+        self.assertEqual(
+            refusal.effective_workflow_tree_sha(
+                event_name="merge_group",
+                github_sha="github-sha-should-not-win",
+                merge_group_head_sha="",
+                pr_head_sha="pr-head-sha",
+            ),
+            "",
+        )
+
+    def test_non_candidate_events_have_no_effective_tree(self) -> None:
+        self.assertEqual(
+            refusal.effective_workflow_tree_sha(
+                event_name="push",
+                github_sha="main-sha",
+                pr_head_sha="pr-head-sha",
+            ),
+            "",
+        )
+
+
 class MainRedRefusalWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_probe_has_read_permission_and_no_push_trigger(self) -> None:
+    def test_probe_has_read_permission_and_push_is_not_a_refusal_subject(self) -> None:
         self.assertIn("  checks: read", self.workflow)
-        self.assertNotIn("\n  push:", self.workflow)
         self.assertNotIn("pr-smoke", self.workflow)
         probe_start = self.workflow.index("      - name: Probe main-red refusal")
         evaluate_start = self.workflow.index("      - name: Evaluate routed result")
@@ -281,6 +390,27 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
             "(github.event_name != 'pull_request' || github.event.pull_request.draft != true)",
             probe,
         )
+        # #16168: landed main commits now carry their own `Perl LSP Rust Small
+        # Result` baseline run, so this workflow declares a push trigger. The
+        # refusal probe stays candidate-vs-main; on push the candidate IS main,
+        # so there is no distinct subject to compare and the probe must stay
+        # non-applicable instead of comparing main against itself. Pin the
+        # trigger and the subject binding that keep those two facts together.
+        on_start = self.workflow.index("\non:\n")
+        permissions_start = self.workflow.index("\npermissions:\n")
+        triggers = self.workflow[on_start:permissions_start]
+        self.assertIn("  push:\n    branches: [main, master]", triggers)
+        binding = next(
+            line for line in probe.splitlines() if line.strip().startswith("CANDIDATE_SHA:")
+        )
+        self.assertIn("github.event_name == 'pull_request'", binding)
+        self.assertIn("github.event_name == 'merge_group'", binding)
+        self.assertIn("|| '' }}", binding)
+        self.assertNotIn("push", binding)
+        # An event with no bound subject (push, workflow_dispatch) must take
+        # the neutral path, never the refusal evaluation.
+        self.assertIn('if [ -n "${CANDIDATE_SHA:-}" ]; then', probe)
+        self.assertIn("main-red refusal probe is non-applicable", probe)
 
     def test_probe_reads_main_before_and_after_exact_check_lookup(self) -> None:
         probe_start = self.workflow.index("      - name: Probe main-red refusal")
@@ -295,10 +425,37 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         self.assertIn("contents/.github/workflows/ci.yml?ref=$1", probe)
         self.assertIn("--main-workflow-sha", probe)
         self.assertIn("--candidate-workflow-sha", probe)
+        self.assertIn("EFFECTIVE_WORKFLOW_TREE:", probe)
+        self.assertNotIn('read_workflow_sha "$CANDIDATE_SHA"', probe)
         self.assertIn("contents/scripts/ci/main_red_refusal.py?ref=${MAIN_SHA_BEFORE}", probe)
         self.assertIn('python3 "$TRUSTED_SCRIPT"', probe)
         self.assertIn("TRUSTED_SCRIPT_AVAILABLE", probe)
         self.assertIn("MAIN_SHA_AFTER", probe)
+
+    def test_probe_binds_effective_workflow_tree_separately_from_exact_subject(self) -> None:
+        probe_start = self.workflow.index("      - name: Probe main-red refusal")
+        evaluate_start = self.workflow.index("      - name: Evaluate routed result")
+        probe = self.workflow[probe_start:evaluate_start]
+        candidate_binding = next(
+            line for line in probe.splitlines() if line.strip().startswith("CANDIDATE_SHA:")
+        )
+        effective_binding = next(
+            line
+            for line in probe.splitlines()
+            if line.strip().startswith("EFFECTIVE_WORKFLOW_TREE:")
+        )
+        self.assertIn("github.event.pull_request.head.sha", candidate_binding)
+        self.assertIn("github.event.merge_group.head_sha", candidate_binding)
+        self.assertNotIn("github.sha", candidate_binding)
+        self.assertIn("github.sha", effective_binding)
+        self.assertIn("github.event.merge_group.head_sha", effective_binding)
+        self.assertNotIn("github.event.pull_request.head.sha", effective_binding)
+        self.assertIn('read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE"', probe)
+        self.assertNotIn('read_workflow_sha "$CANDIDATE_SHA"', probe)
+        self.assertEqual(probe.count('read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE"'), 2)
+        self.assertEqual(probe.count('if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then'), 2)
+        self.assertIn("commits/${CANDIDATE_SHA}/check-runs", probe)
+        self.assertIn("actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}", probe)
 
     def test_final_refusal_is_propagated_to_required_lane(self) -> None:
         probe_start = self.workflow.index("      - name: Probe main-red refusal")

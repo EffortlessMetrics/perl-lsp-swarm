@@ -504,25 +504,31 @@ fn evaluate_compatibility(
         }
     }
 
-    deduplicate(&mut mismatch);
-    deduplicate(&mut not_proven);
-    deduplicate(&mut partial);
+    conclude_compatibility(mismatch, not_proven, partial, limitations)
+}
+
+/// Collapse collected reason buckets into a single-valued state and the full
+/// reason union.
+///
+/// State precedence is `Mismatch` > `NotProven` > `CompatiblePartial` >
+/// `ExactMatch`. Reasons are concatenated in that same bucket order so a
+/// client receives every co-occurring repair token, not only the governing
+/// symptom. Uniqueness and wire order belong to the single caller
+/// ([`BinaryIdentityTransportStateV1::respond`]), which always
+/// deduplicates the returned vec. (#10184)
+fn conclude_compatibility(
+    mismatch: Vec<BinaryCompatibilityReason>,
+    not_proven: Vec<BinaryCompatibilityReason>,
+    partial: Vec<BinaryCompatibilityReason>,
+    limitations: Vec<String>,
+) -> (BinaryCompatibilityState, Vec<BinaryCompatibilityReason>, Vec<String>) {
     if !mismatch.is_empty() {
-        // Return the full reason union: mismatch governs the state, but any
-        // co-occurring not_proven or partial reasons must also surface so the
-        // client receives a complete repair set rather than only the
-        // highest-precedence symptom.  State remains single-valued. (#10184)
-        // Cross-bucket duplicates are normalized by the single caller.
         let mut reasons = mismatch;
         reasons.extend(not_proven);
         reasons.extend(partial);
         return (BinaryCompatibilityState::Mismatch, reasons, limitations);
     }
     if !not_proven.is_empty() {
-        // State is single-valued (not_proven takes precedence over partial),
-        // but all partial reasons must also surface so the client sees the full
-        // outstanding gap set rather than only the not_proven symptoms. (#10184)
-        // Cross-bucket duplicates are normalized by the single caller.
         let mut reasons = not_proven;
         reasons.extend(partial);
         return (BinaryCompatibilityState::NotProven, reasons, limitations);
@@ -874,7 +880,7 @@ mod tests {
         BINARY_IDENTITY_FEATURE_VERSION, BinaryCompatibilityReason, BinaryCompatibilityState,
         BinaryIdentityRequestV1, BinaryIdentityResponseV1, BinaryIdentityTransportStateV1,
         CANONICAL_EXTENSION_ID, CANONICAL_EXTENSION_PACKAGE, CANONICAL_EXTENSION_PUBLISHER,
-        ExpectedExtensionIdentityV1, MAX_IDENTITY_LEN, deduplicate,
+        ExpectedExtensionIdentityV1, MAX_IDENTITY_LEN, conclude_compatibility, deduplicate,
     };
     use crate::product_identity::{ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1};
 
@@ -1233,6 +1239,146 @@ mod tests {
                 BinaryCompatibilityReason::DapIdentityAbsent,
             ],
         );
+    }
+
+    #[test]
+    fn mismatch_state_includes_issue_named_not_proven_reasons() {
+        // #10184 named PacketSchemaUnsupported, ArtifactRoleNotProven, and
+        // PayloadNotRedacted as the tokens a single-bucket mismatch return
+        // discarded. The earlier union fixtures used
+        // ProductIdentityVersionUnsupported; this one is the named-token
+        // discriminator.
+        let mut state = state();
+        state.server.schema_version = "perl_lsp.binary_identity.v2".to_owned();
+        state.server.artifact.role = ArtifactRole::Unknown;
+        state.server.product.public_repository = "Other/project".to_owned();
+        let response = state.respond(request());
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::Mismatch,
+            "mismatch state must take precedence over the issue-named not_proven tokens"
+        );
+        // Schema and repository sanitization both replace fields, so
+        // PayloadNotRedacted is produced by the copy-safe projection rather
+        // than by a third hand-set mutation. ArtifactRoleNotProven is pushed
+        // twice (packet Unknown + compare_artifact_role); the wire list must
+        // still be unique.
+        assert_exact_reasons(
+            &response,
+            &[
+                BinaryCompatibilityReason::ProductRepositoryMismatch,
+                BinaryCompatibilityReason::PacketSchemaUnsupported,
+                BinaryCompatibilityReason::ArtifactRoleNotProven,
+                BinaryCompatibilityReason::PayloadNotRedacted,
+            ],
+        );
+    }
+
+    #[test]
+    fn mismatch_state_collapses_cross_bucket_duplicate_target_not_proven() {
+        // TargetNotProven is the one token that can land in two buckets at
+        // once: require_optional (Exact build, missing server target) pushes
+        // it to not_proven, and compare_optional (missing expected target,
+        // and DAP vs missing server target) pushes it to partial. Under a
+        // co-occurring mismatch the pre-fix single-bucket return dropped it
+        // entirely; a naive concat would emit it twice.
+        let mut state = state();
+        state.server.product.public_repository = "Other/project".to_owned();
+        state.server.build.target = None;
+        let mut request = request();
+        request.expected_extension.target = None;
+        let response = state.respond(request);
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::Mismatch,
+            "mismatch state must govern even when TargetNotProven occupies two lower buckets"
+        );
+        assert_exact_reasons(
+            &response,
+            &[
+                BinaryCompatibilityReason::ProductRepositoryMismatch,
+                BinaryCompatibilityReason::TargetNotProven,
+                BinaryCompatibilityReason::PayloadNotRedacted,
+            ],
+        );
+    }
+
+    #[test]
+    fn conclude_compatibility_unions_every_bucket_under_mismatch() {
+        let (state, reasons, limitations) = conclude_compatibility(
+            vec![BinaryCompatibilityReason::ProductRepositoryMismatch],
+            vec![
+                BinaryCompatibilityReason::PacketSchemaUnsupported,
+                BinaryCompatibilityReason::ArtifactRoleNotProven,
+                BinaryCompatibilityReason::PayloadNotRedacted,
+            ],
+            vec![BinaryCompatibilityReason::DapIdentityAbsent],
+            vec!["identity_payload_required_redaction".to_owned()],
+        );
+        assert_eq!(state, BinaryCompatibilityState::Mismatch);
+        assert_eq!(
+            reasons,
+            vec![
+                BinaryCompatibilityReason::ProductRepositoryMismatch,
+                BinaryCompatibilityReason::PacketSchemaUnsupported,
+                BinaryCompatibilityReason::ArtifactRoleNotProven,
+                BinaryCompatibilityReason::PayloadNotRedacted,
+                BinaryCompatibilityReason::DapIdentityAbsent,
+            ],
+            "mismatch must keep every lower-precedence token, in bucket-concat order"
+        );
+        assert_eq!(limitations, vec!["identity_payload_required_redaction".to_owned()]);
+    }
+
+    #[test]
+    fn conclude_compatibility_unions_partial_under_not_proven() {
+        let (state, reasons, _) = conclude_compatibility(
+            Vec::new(),
+            vec![BinaryCompatibilityReason::PayloadNotRedacted],
+            vec![BinaryCompatibilityReason::DapIdentityAbsent],
+            Vec::new(),
+        );
+        assert_eq!(state, BinaryCompatibilityState::NotProven);
+        assert_eq!(
+            reasons,
+            vec![
+                BinaryCompatibilityReason::PayloadNotRedacted,
+                BinaryCompatibilityReason::DapIdentityAbsent,
+            ]
+        );
+    }
+
+    #[test]
+    fn conclude_compatibility_does_not_invent_reasons_for_a_single_bucket() {
+        let (state, reasons, _) = conclude_compatibility(
+            vec![BinaryCompatibilityReason::VersionMismatch],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(state, BinaryCompatibilityState::Mismatch);
+        assert_eq!(reasons, vec![BinaryCompatibilityReason::VersionMismatch]);
+    }
+
+    #[test]
+    fn conclude_compatibility_empty_buckets_are_exact_match() {
+        let (state, reasons, limitations) =
+            conclude_compatibility(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(state, BinaryCompatibilityState::ExactMatch);
+        assert_eq!(reasons, vec![BinaryCompatibilityReason::ExactIdentityMatch]);
+        assert!(limitations.is_empty());
+    }
+
+    #[test]
+    fn conclude_compatibility_partial_only_stays_compatible_partial() {
+        let (state, reasons, _) = conclude_compatibility(
+            Vec::new(),
+            Vec::new(),
+            vec![BinaryCompatibilityReason::DapIdentityAbsent],
+            Vec::new(),
+        );
+        assert_eq!(state, BinaryCompatibilityState::CompatiblePartial);
+        assert_eq!(reasons, vec![BinaryCompatibilityReason::DapIdentityAbsent]);
     }
 
     #[test]

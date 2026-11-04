@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Security
+body: Windows DAP trusted-root checks use the full 128-bit directory ID and a no-follow RAII handle, rejecting unavailable identity and replacements with matching creation timestamps.
+time: 2026-09-29T17:01:06Z
+custom:
+  PR: 16986
+  Slug: windows-dap-launch-root-identity
+  Breaking: "no"
