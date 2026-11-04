@@ -24,22 +24,7 @@ name: Reload Lifecycle Authority
 # Python and git grep). Narrow it only by also narrowing what the suite reads.
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/reload-lifecycle-authority.yml'
-      - 'crates/**'
-      - 'docs/**'
-      - 'tests/test_reload_lifecycle_authority.py'
-      - 'tests/test_writer_authority_transfer_contract.py'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/reload-lifecycle-authority.yml'
-      - 'crates/**'
-      - 'docs/**'
-      - 'tests/test_reload_lifecycle_authority.py'
-      - 'tests/test_writer_authority_transfer_contract.py'
+  workflow_dispatch: {}
 
 permissions:
   contents: read

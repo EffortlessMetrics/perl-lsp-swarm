@@ -1,26 +1,6 @@
 name: Installer Bootstrap Contract
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'install.sh'
-      - 'scripts/install.sh'
-      - 'scripts/tests/test-install-bootstrap-identity.sh'
-      - 'scripts/tests/test-install-arg-surface.sh'
-      - 'docs/how-to/INSTALLATION.md'
-      - 'README.md'
-      - '.github/workflows/installer-bootstrap-contract.yml'
-  push:
-    branches: [main, master]
-    paths:
-      - 'install.sh'
-      - 'scripts/install.sh'
-      - 'scripts/tests/test-install-bootstrap-identity.sh'
-      - 'scripts/tests/test-install-arg-surface.sh'
-      - 'docs/how-to/INSTALLATION.md'
-      - 'README.md'
-      - '.github/workflows/installer-bootstrap-contract.yml'
   workflow_dispatch:
 
 permissions:

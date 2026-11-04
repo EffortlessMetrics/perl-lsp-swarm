@@ -1,14 +1,6 @@
 name: Issue Controller Train Contract
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - '.spec/11764-controller-train-graph/**'
-      - 'xtask/src/tasks/issue_controllers/**'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
-      - '.github/workflows/issue-controller-train-contract.yml'
   workflow_dispatch: {}
 
 concurrency:

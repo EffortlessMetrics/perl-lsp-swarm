@@ -65,7 +65,6 @@ REQUIRED = (
     "validate-title",
 )
 CONDITIONAL_REQUIRED_JOBS = {
-    ("Compile All Targets (bit-rot guard)", "check-all-targets"),
     ("Conflict marker check", "conflict-markers"),
 }
 

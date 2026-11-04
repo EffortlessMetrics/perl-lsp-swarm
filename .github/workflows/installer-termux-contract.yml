@@ -1,22 +1,6 @@
 name: Installer Termux Contract
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'install.sh'
-      - 'scripts/install.sh'
-      - 'scripts/tests/test-installer-termux-detection.sh'
-      - 'docs/how-to/INSTALLATION.md'
-      - '.github/workflows/installer-termux-contract.yml'
-  push:
-    branches: [main, master]
-    paths:
-      - 'install.sh'
-      - 'scripts/install.sh'
-      - 'scripts/tests/test-installer-termux-detection.sh'
-      - 'docs/how-to/INSTALLATION.md'
-      - '.github/workflows/installer-termux-contract.yml'
   workflow_dispatch:
 
 permissions:

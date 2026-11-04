@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This is a fixture for the declarative GitHub path filter. It does not claim
-# to simulate GitHub event delivery. It proves that both pull-request and push
-# filters keep the control-plane allowlist explicit and exclude product paths.
+# The control-plane contracts run in-session; this retained explicit diagnostic
+# must never turn Draft/Ready or main publication into an Actions run. Execute
+# the real publication contract and preserve its failure propagation.
 
 workflow='.github/workflows/agent-flow-control-plane.yml'
 test -f "$workflow"
@@ -12,99 +12,14 @@ python3 - "$workflow" <<'PY'
 from __future__ import annotations
 
 import sys
+import re
 from pathlib import Path
 
 
 WORKFLOW = Path(sys.argv[1])
-REQUIRED_PATHS = {
-    "AGENTS.md",
-    "CLAUDE.md",
-    ".github/PULL_REQUEST_TEMPLATE.md",
-    "docs/agents/**",
-    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
-    "docs/specs/README.md",
-    "docs/INDEX.md",
-    ".agents/skills/**",
-    ".claude/skills/**",
-    ".claude/settings.json",
-    ".codex/**",
-    "policy/skill-provider-parity.toml",
-    "xtask/src/main.rs",
-    "xtask/src/tasks/agent_flow.rs",
-    "xtask/src/tasks/agent_flow/**",
-    "xtask/src/tasks/mod.rs",
-    "xtask/tests/agent_merge_review_backstop.rs",
-    "xtask/tests/agent_shift_left_entry_contract.rs",
-    "xtask/tests/agent_remote_wait_attention.rs",
-    "xtask/tests/agent_shift_left_mutation_admission_contract.rs",
-    "xtask/tests/pr_convergence_contract.rs",
-    "xtask/tests/shift_left_publication_contract.rs",
-    "xtask/tests/verify_live_ci_currentness_contract.rs",
-    "scripts/tests/test-agent-flow-control-plane-trigger.sh",
-    ".github/workflows/agent-flow-control-plane.yml",
-}
-# Keep in sync with REQUIRED_WORKFLOW_PATHS in
-# xtask/tests/shift_left_publication_contract.rs (plus the trigger-only spec
-# path). The two layers are deliberate — this Python fixture bootstraps the
-# workflow wiring, the Rust test owns the focused contract — but a path added to
-# one and not the other leaves one ratchet green while the other turns red.
-TARGETS = (
-    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
-    ".github/PULL_REQUEST_TEMPLATE.md",
-    ".agents/skills/**",
-    ".claude/skills/**",
-    "xtask/tests/shift_left_publication_contract.rs",
-)
 REQUIRED_COMMAND = (
     "cargo test -p xtask --test shift_left_publication_contract --locked"
 )
-EVENTS = ("pull_request", "push")
-
-
-def indent(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
-
-
-def event_bounds(lines: list[str], event: str) -> tuple[int, int]:
-    marker = f"  {event}:"
-    try:
-        start = lines.index(marker)
-    except ValueError as error:
-        raise AssertionError(f"missing on.{event} event block") from error
-
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if indent(line) <= 2 and stripped.endswith(":"):
-            end = index
-            break
-    return start, end
-
-
-def event_paths(text: str, event: str) -> set[str]:
-    lines = text.splitlines()
-    start, end = event_bounds(lines, event)
-    block = lines[start:end]
-    try:
-        paths_index = block.index("    paths:")
-    except ValueError as error:
-        raise AssertionError(f"missing on.{event}.paths") from error
-
-    paths: set[str] = set()
-    for line in block[paths_index + 1 :]:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if indent(line) <= 4:
-            break
-        prefix = "- '"
-        if stripped.startswith(prefix) and stripped.endswith("'"):
-            paths.add(stripped[len(prefix) : -1])
-    return paths
-
 
 def publication_runs(text: str) -> list[str]:
     """`run:` bodies of steps named for the publication contract.
@@ -147,42 +62,26 @@ def validate(text: str) -> None:
     assert text.count(REQUIRED_COMMAND) == 1, (
         "agent-flow workflow must execute the shift-left publication contract exactly once"
     )
-    for event in EVENTS:
-        paths = event_paths(text, event)
-        missing = REQUIRED_PATHS - paths
-        assert not missing, f"on.{event}.paths missing {sorted(missing)!r}"
-        assert "**" not in paths, f"on.{event}.paths must not contain a repository-wide glob"
-        assert "crates/**" not in paths, f"on.{event}.paths must not contain product crates"
-        assert not any(
-            path.startswith("crates/perl-parser") for path in paths
-        ), f"on.{event}.paths must not include parser product paths"
+    on = re.search(r"(?m)^on:\n((?:[ \t].*\n|\n)*)", text)
+    assert on, "explicit event mapping missing"
+    events = set(re.findall(r"(?m)^  ([A-Za-z_]+):", on.group(1)))
+    assert events == {"workflow_dispatch"}, f"ordinary control-plane Actions restored: {events}"
 
-
-def remove_scoped_path(text: str, event: str, path: str) -> str:
-    lines = text.splitlines()
-    start, end = event_bounds(lines, event)
-    needle = f"      - '{path}'"
-    for index in range(start, end):
-        if lines[index] == needle:
-            del lines[index]
-            return "\n".join(lines) + "\n"
-    raise AssertionError(f"mutation fixture could not remove {path!r} from {event}")
 
 
 source = WORKFLOW.read_text(encoding="utf-8")
 validate(source)
 
-for event in EVENTS:
-    for target in TARGETS:
-        mutated = remove_scoped_path(source, event, target)
-        try:
-            validate(mutated)
-        except AssertionError:
-            pass
-        else:
-            raise AssertionError(
-                f"removing {target!r} only from on.{event}.paths must fail the contract"
-            )
+for event in ("pull_request", "pull_request_target", "pull_request_review",
+              "pull_request_review_comment", "issue_comment", "push"):
+    mutated = source.replace("on:\n", f"on:\n  {event}: {{}}\n", 1)
+    assert mutated != source
+    try:
+        validate(mutated)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(f"restoring ordinary {event} must fail the contract")
 
 without_publication_check = source.replace(REQUIRED_COMMAND, "true", 1)
 assert without_publication_check != source, "workflow-command mutation fixture must apply"

@@ -1,15 +1,6 @@
 name: Dist Shadow
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'dist-workspace.toml'
-      - '.github/workflows/release.yml'
-      - '.github/workflows/dist-shadow.yml'
-      - 'scripts/check_dist_shadow.py'
-      - 'scripts/tests/test_dist_shadow.py'
-      - 'docs/release/DIST_SHADOW_EVALUATION.md'
   workflow_dispatch:
     inputs:
       tag:

@@ -25,18 +25,8 @@ name: Agent Capability Gate
 # read that number before treating a green result as proof of a live boundary.
 
 on:
-  pull_request:
-    paths:
-      - '.claude/agents/**'
-      - 'xtask/src/tasks/agent_capability_policy.rs'
-      - '.github/workflows/agent-capability-gate.yml'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
   merge_group:
-  push:
-    branches:
-      - main
-      - master
+    types: [checks_requested]
 
 permissions:
   contents: read

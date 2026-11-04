@@ -18,8 +18,6 @@ name: Content-Anchored Baselines
 # hold a merge.
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch: {}
 
 permissions:

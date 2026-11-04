@@ -600,25 +600,27 @@ fn unsafe_full_checkpoint_chain_is_explicitly_disabled() -> Result<()> {
     ensure_full_chain_is_fail_closed(&workflow)?;
     ensure_bounded_top_50_is_safe_and_reachable(&workflow)?;
 
-    // The whole workflow keeps its narrow pull_request path triggers: only
-    // distribution-list edits may spawn PR runs; no new PR surface may appear.
-    let trigger_paths =
-        ["'.ci/cpan-top-1000-distributions.txt'", "'.ci/cpan-top-50-distributions.txt'"];
-    let raw = workflow_raw()?;
-    let after_pull_request = raw
-        .split("pull_request:")
-        .nth(1)
-        .ok_or_else(|| anyhow!("workflow must keep a pull_request trigger section"))?;
-    let schedule_anchor = after_pull_request
-        .find("schedule:")
-        .ok_or_else(|| anyhow!("workflow must keep its schedule trigger"))?;
-    let pull_section = &after_pull_request[..schedule_anchor];
-    for expected in trigger_paths {
-        assert!(
-            pull_section.contains(expected),
-            "pull_request path filter drifted: missing {expected}"
-        );
+    // Checkpoint work retains its schedule and explicit admission. Distribution
+    // edits are proved in-session and cannot start a development Action.
+    let events = workflow
+        .get("on")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("workflow event mapping missing"))?;
+    ensure!(
+        events.contains_key("schedule") && events.contains_key("workflow_dispatch"),
+        "checkpoint schedule and explicit proof admission must survive"
+    );
+    for event in [
+        "pull_request",
+        "pull_request_target",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "issue_comment",
+        "push",
+    ] {
+        ensure!(!events.contains_key(event), "ordinary event {event} must remain retired");
     }
+
     Ok(())
 }
 

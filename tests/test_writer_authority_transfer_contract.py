@@ -216,9 +216,10 @@ class WriterAuthorityTransferContractTests(unittest.TestCase):
 
     def test_workflow_wiring(self) -> None:
         workflow = read(WORKFLOW)
-        for event in ("pull_request", "push"):
-            with self.subTest(event=event):
-                self.assertIn(SELF_TEST, workflow_event_paths(workflow, event))
+        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
+        projection = read_workflow_catalog(ROOT)[WORKFLOW]
+        self.assertEqual(projection.events, frozenset({"workflow_dispatch"}))
+        self.assertFalse(projection.path_filtered_events)
 
         expected = normalize(
             "python3 -m unittest "

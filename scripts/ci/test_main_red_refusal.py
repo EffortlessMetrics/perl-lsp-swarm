@@ -399,7 +399,8 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         on_start = self.workflow.index("\non:\n")
         permissions_start = self.workflow.index("\npermissions:\n")
         triggers = self.workflow[on_start:permissions_start]
-        self.assertIn("  push:\n    branches: [main, master]", triggers)
+        self.assertIn("  merge_group:\n    types: [checks_requested]", triggers)
+        self.assertNotRegex(triggers, r"(?m)^  (push|pull_request|pull_request_target):")
         binding = next(
             line for line in probe.splitlines() if line.strip().startswith("CANDIDATE_SHA:")
         )

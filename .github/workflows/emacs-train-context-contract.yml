@@ -1,36 +1,6 @@
 name: Emacs Train Context Contract
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - '.spec/10918-emacs-train-graph/**'
-      - '.spec/11770-emacs-train-revisions/**'
-      - '.spec/11756-emacs-context-engine/**'
-      - '.spec/11716-emacs-support-architecture/**'
-      - '.spec/11717-emacs-train-specs/**'
-      - 'xtask/src/tasks/emacs_train_context/**'
-      - 'xtask/src/tasks/emacs_train_specs.rs'
-      - 'xtask/src/tasks/agent_implementation_packet.rs'
-      - 'xtask/src/tasks/agent_review_packet.rs'
-      - 'fixtures/agent_implementation_packet/**'
-      - 'fixtures/agent_review_packet/**'
-      - 'schemas/agent_implementation_packet.v1.schema.json'
-      - 'schemas/agent_review_packet.v1.schema.json'
-      - 'schemas/agent_review_finding.v1.schema.json'
-      - 'schemas/stage_closure_projection.v1.schema.json'
-      - 'xtask/src/editor_client_compat.rs'
-      - 'xtask/src/actual_host_receipt.rs'
-      - 'xtask/tests/support/emacs_host_runner.rs'
-      - 'xtask/tests/editor_client_compat_contract.rs'
-      - 'xtask/tests/actual_host_receipt.rs'
-      - 'xtask/tests/emacs_host_runner_contract.rs'
-      - 'scripts/test/emacs-host-driver.el'
-      - '.ci/schemas/editor-client-compat.v1.schema.json'
-      - 'AGENTS.md'
-      - '.github/workflows/emacs-train-context-contract.yml'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:

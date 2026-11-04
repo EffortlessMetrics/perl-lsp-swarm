@@ -1,17 +1,6 @@
 name: Portable Contract Tools
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'aqua.yaml'
-      - 'scripts/tools/aqua-doctor.sh'
-      - 'scripts/tools/install-aqua.sh'
-      - 'scripts/tests/test-install-aqua.sh'
-      - 'scripts/tests/fixtures/aqua-bootstrap/**'
-      - 'docs/how-to/PORTABLE_CONTRACT_TOOLS.md'
-      - '.github/workflows/portable-contract-tools.yml'
-      - '.github/workflows/ci.yml'
   workflow_dispatch: {}
 
 concurrency:

@@ -373,14 +373,18 @@ class RepositoryContractTests(unittest.TestCase):
                         presence.DECLARED_BUT_MISSING,
                     )
 
-    def test_every_proof_path_is_watched_on_pull_request_and_push(self) -> None:
-        for _identifier, path in self.proofs:
-            with self.subTest(path=path):
-                self.assertGreaterEqual(
-                    self.workflow.count(f"- '{path}'"),
-                    2,
-                    f"{path} must be watched on pull_request and push",
-                )
+    def test_every_proof_remains_declared_without_development_event_filters(self) -> None:
+        on = self.workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("workflow_dispatch:", on)
+        self.assertNotRegex(on, r"(?m)^  (pull_request|pull_request_target|push):")
+        # Unfiltered explicit execution still classifies every proof. A missing
+        # declared input must fail; trigger removal cannot buy a classifier skip.
+        for identifier, path in self.proofs:
+            with self.subTest(proof=identifier):
+                self.assertIn(f"--proof {identifier}={path}", self.workflow)
+                with TemporaryDirectory() as name:
+                    self.assertEqual(presence.classify(Path(name), self.workflow, path),
+                                     presence.DECLARED_BUT_MISSING)
 
 
 if __name__ == "__main__":

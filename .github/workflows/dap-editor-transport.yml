@@ -1,50 +1,6 @@
 name: DAP Editor Transport
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - '.ci/dap/editor-transport-inventory.v1.json'
-      - '.ci/editor-clients/vimspector-perl-dap.v1.json'
-      - '.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
-      - '.docker/perl-lsp/Dockerfile'
-      - 'book/src/dap/user-guide.md'
-      - 'clients/sublime/LSP-perllsp/dap_support.py'
-      - 'crates/perl-dap/**'
-      - 'crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs'
-      - 'docs/adr/0047-dap-stdio-only-editor-transport.md'
-      - 'docs/EDITORS/HELIX_SETUP.md'
-      - 'docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md'
-      - 'docs/tutorials/DAP_USER_GUIDE.md'
-      - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
-      - 'scripts/ci/dap_editor_transport*.py'
-      - 'scripts/tests/test_dap_editor_transport_inventory.py'
-      - 'scripts/tests/test_dap_editor_transport_security.py'
-      - 'scripts/ux/neovim/perl_dap.lua'
-      - 'vscode-extension/src/debugAdapter.ts'
-      - '.github/workflows/dap-editor-transport.yml'
-  push:
-    branches: [main, master]
-    paths:
-      - '.ci/dap/editor-transport-inventory.v1.json'
-      - '.ci/editor-clients/vimspector-perl-dap.v1.json'
-      - '.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
-      - '.docker/perl-lsp/Dockerfile'
-      - 'book/src/dap/user-guide.md'
-      - 'clients/sublime/LSP-perllsp/dap_support.py'
-      - 'crates/perl-dap/**'
-      - 'crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs'
-      - 'docs/adr/0047-dap-stdio-only-editor-transport.md'
-      - 'docs/EDITORS/HELIX_SETUP.md'
-      - 'docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md'
-      - 'docs/tutorials/DAP_USER_GUIDE.md'
-      - 'integrations/lsp4ij/upstream/0.20.1/dap/template.json'
-      - 'scripts/ci/dap_editor_transport*.py'
-      - 'scripts/tests/test_dap_editor_transport_inventory.py'
-      - 'scripts/tests/test_dap_editor_transport_security.py'
-      - 'scripts/ux/neovim/perl_dap.lua'
-      - 'vscode-extension/src/debugAdapter.ts'
-      - '.github/workflows/dap-editor-transport.yml'
   workflow_dispatch: {}
 
 concurrency:

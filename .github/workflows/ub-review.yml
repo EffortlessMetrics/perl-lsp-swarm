@@ -17,9 +17,7 @@ name: UB Review
 # remain readable. No job performs review work or accesses review secrets.
 
 on:
-  pull_request:
-    branches: [master, main]
-    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
 
 permissions:
   contents: read

@@ -20,8 +20,8 @@ fn perl_matrix_uses_default_branch_cache_producers() -> Result<(), Box<dyn std::
         .and_then(Value::as_mapping)
         .ok_or("perl-version-matrix.yml must declare mapping-valued triggers")?;
     assert!(
-        triggers.contains_key(Value::String("pull_request".into())),
-        "the matrix cache contract must run on ordinary pull requests"
+        !triggers.contains_key(Value::String("pull_request".into())),
+        "ordinary PR publication must not start matrix Actions"
     );
     assert!(
         !triggers.contains_key(Value::String("pull_request_target".into())),
@@ -35,7 +35,7 @@ fn perl_matrix_uses_default_branch_cache_producers() -> Result<(), Box<dyn std::
         triggers.contains_key(Value::String("workflow_dispatch".into())),
         "the matrix cache contract must retain its manual producer"
     );
-    let canonical: Vec<Value> = ["pull_request", "schedule", "workflow_dispatch"]
+    let canonical: Vec<Value> = ["schedule", "workflow_dispatch"]
         .iter()
         .map(|name| Value::String((*name).into()))
         .collect();
@@ -45,19 +45,8 @@ fn perl_matrix_uses_default_branch_cache_producers() -> Result<(), Box<dyn std::
         "new trigger events (workflow_run runs on the default-branch ref, workflow_call inherits \
          the caller's ref) can silently turn candidate code into a cache producer: {unexpected:?}"
     );
-    let pull_request = triggers
-        .get(Value::String("pull_request".into()))
-        .and_then(Value::as_mapping)
-        .ok_or("pull_request trigger must declare branch filters")?;
-    let branches = pull_request
-        .get(Value::String("branches".into()))
-        .and_then(Value::as_sequence)
-        .ok_or("pull_request trigger must declare branches")?;
-    assert_eq!(
-        branches,
-        &vec![Value::String("main".into()), Value::String("master".into())],
-        "cache producers must be limited to the canonical branches"
-    );
+    // Explicit/default-branch cache writer authority is checked below;
+    // removing PR roots does not widen that writer predicate.
     let job = workflow
         .get("jobs")
         .and_then(|jobs| jobs.get("perl-version-matrix"))

@@ -2,12 +2,8 @@
 name: Non-Rust policy
 
 on:
-  pull_request_target:
-    branches: [main, master]
-    types: [opened, synchronize, reopened, ready_for_review]
-  merge_group: {}
-  push:
-    branches: [main, master]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       base_sha:

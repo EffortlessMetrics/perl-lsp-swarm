@@ -43,11 +43,6 @@
 name: Semantic Close Containment (CP00)
 
 on:
-  pull_request_target:
-    # Automatic closing keywords only act when a PR merges into the default
-    # branch, so other targets are not applicable by construction.
-    branches: [main]
-    types: [opened, edited, reopened, synchronize]
   workflow_dispatch: {}
 
 permissions:

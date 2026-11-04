@@ -1,59 +1,6 @@
 name: Workflow Policy
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/**'
-      - 'xtask/src/tasks/workflow_policy_lint.rs'
-      - 'policy/self-hosted-runner-isolation.toml'
-      - 'xtask/src/tasks/ux_regression_receipt.rs'
-      - 'crates/perl-lsp-ux-tests/src/regression_receipt.rs'
-      - 'crates/perl-lsp-ux-tests/src/bin/ux_regression_receipt.rs'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
-      - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
-      - 'xtask/tests/public_api_pr_gating_workflow.rs'
-      - 'xtask/tests/perl_version_matrix_cache_contract.rs'
-      - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
-      - 'xtask/tests/ci_nightly_cache_contract.rs'
-      - 'scripts/ci/candidate_proof_presence.py'
-      - 'scripts/ci/test_candidate_proof_presence.py'
-      - '.github/ci-config.yml'
-      - 'scripts/gh/ensure-labels.sh'
-      - 'scripts/tests/test-public-api-ratchet.sh'
-      - 'scripts/tests/test-public-api-label.sh'
-      - 'docs/ci/labels.md'
-      - 'justfile'
-      - 'scripts/tests/test_just_agent_nextest.py'
-      - '.ci/receipts/schemas/workflow-policy.schema.json'
-      - 'xtask/tests/fixtures/workflow-policy/**'
-  push:
-    branches: [main, master]
-    paths:
-      - '.github/workflows/**'
-      - 'xtask/src/tasks/workflow_policy_lint.rs'
-      - 'policy/self-hosted-runner-isolation.toml'
-      - 'xtask/src/tasks/ux_regression_receipt.rs'
-      - 'crates/perl-lsp-ux-tests/src/regression_receipt.rs'
-      - 'crates/perl-lsp-ux-tests/src/bin/ux_regression_receipt.rs'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
-      - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
-      - 'xtask/tests/public_api_pr_gating_workflow.rs'
-      - 'xtask/tests/perl_version_matrix_cache_contract.rs'
-      - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
-      - 'xtask/tests/ci_nightly_cache_contract.rs'
-      - 'scripts/ci/candidate_proof_presence.py'
-      - 'scripts/ci/test_candidate_proof_presence.py'
-      - '.github/ci-config.yml'
-      - 'scripts/gh/ensure-labels.sh'
-      - 'scripts/tests/test-public-api-ratchet.sh'
-      - 'scripts/tests/test-public-api-label.sh'
-      - 'docs/ci/labels.md'
-      - 'justfile'
-      - 'scripts/tests/test_just_agent_nextest.py'
-      - '.ci/receipts/schemas/workflow-policy.schema.json'
-      - 'xtask/tests/fixtures/workflow-policy/**'
   workflow_dispatch:
 
 permissions:

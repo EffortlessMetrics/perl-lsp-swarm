@@ -1,17 +1,6 @@
 name: Review Disposition Replay Self-Test
 
 on:
-  pull_request:
-    paths:
-      - scripts/reviews/disposition
-      - scripts/tests/test-review-disposition-replay.py
-      - .github/workflows/review-disposition-replay.yml
-  push:
-    branches: [main]
-    paths:
-      - scripts/reviews/disposition
-      - scripts/tests/test-review-disposition-replay.py
-      - .github/workflows/review-disposition-replay.yml
   workflow_dispatch: {}
 
 permissions:

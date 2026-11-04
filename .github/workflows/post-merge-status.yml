@@ -14,10 +14,6 @@ name: Post-Merge Status Regeneration
 #      closes any open proposal PR whose embedded source SHA is behind main.
 
 on:
-  push:
-    branches:
-      - main
-      - master
   workflow_dispatch: {}
 
 concurrency:
@@ -538,55 +534,32 @@ jobs:
             docs/project/status/quality.md
             docs/project/ROADMAP.md
 
-      - name: Raise CI on the generated PR
-        # GITHUB_TOKEN-created PRs raise no pull_request events, so none of
-        # the required-check workflows fire and the PR sits at one GitHub-App
-        # check (#11481, #11707, twice-confirmed on #11731; #11788 then showed
-        # that ci.yml alone leaves "Perl LSP Rust Small Result",
-        # "ripr+ New Gap Gate", and "validate-title" permanently expected).
-        # workflow_dispatch is the documented GITHUB_TOKEN exception to loop
-        # prevention: dispatching each required-check workflow on the branch
-        # attaches its check runs to the PR head commit.
-        # The freshness gate is load-bearing here too: a skipped create-pr step
-        # exposes empty outputs, and an empty string is not equal to '0', so the
-        # old condition alone would dispatch CI after a refused publication.
-        if: >-
-          steps.freshness.outputs.publish == 'true' &&
-          steps.create-pr.outputs.pull-request-number != '0'
+      - name: Reconcile generated PR without CI
+        # Publication is not a qualification request, including metadata CI.
+        # Preserve a bounded native head readback; the owning coding session
+        # supplies substantive checks/review before separately authorized enqueue.
+        if: steps.freshness.outputs.publish == 'true' && steps.create-pr.outputs.pull-request-number != '' && steps.create-pr.outputs.pull-request-number != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: automation/post-merge-status
-          BASE_SHA: ${{ github.sha }}
-          GENERATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CREATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
+        shell: bash
         run: |
-          # ci.yml's workflow_dispatch declares required inputs (since #13019):
-          # the dispatched subject's exact base and head SHAs. Dispatching it
-          # bare fails with HTTP 422 "Required input 'base_sha' not provided",
-          # so the generated PR's required checks never populate (#13355).
-          # base_sha is this run's event SHA — the freshness gate above proved
-          # it equals the live default-branch tip, i.e. the generated PR's
-          # base. head_sha is the automation branch head the create-pr step
-          # just wrote, which is the same commit the --ref below dispatches.
-          # The other three workflows declare no dispatch inputs and stay bare.
-          # Keep attempting every required workflow so one transient dispatch
-          # failure cannot strand the later required checks. The final status
-          # remains failing when any dispatch failed.
-          set +e
-          failed=0
-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
-            if [ "$workflow" = ci.yml ]; then
-              if gh workflow run "$workflow" --ref "$BRANCH" \
-                -f "base_sha=$BASE_SHA" \
-                -f "head_sha=$GENERATED_HEAD_SHA"; then
-                continue
-              fi
-            elif gh workflow run "$workflow" --ref "$BRANCH"; then
-              continue
-            fi
-            echo "::error::Failed to dispatch $workflow"
-            failed=1
-          done
-          exit "$failed"
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CREATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          observed="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" --json headRefOid,state --jq '[.headRefOid, .state] | @tsv')"
+          expected="$(printf '%s\tOPEN' "$CREATED_HEAD_SHA")"
+          if [ "$observed" != "$expected" ]; then
+            echo '::error::Generated PR state/head differs from the published candidate; no qualification requested'
+            exit 1
+          fi
+          {
+            echo '### Generated candidate preserved without CI'
+            printf -- '- PR: #%s\n- head: `%s`\n' "$PR_NUMBER" "$CREATED_HEAD_SHA"
+            echo '- Qualification: NOT_PROVEN. Complete in-session proof/review before native queue admission.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   supersede-stale:
     name: Supersede stale generated status PR

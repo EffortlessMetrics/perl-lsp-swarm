@@ -1,36 +1,6 @@
 name: Installer PowerShell Checksum Contract
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'install.ps1'
-      - 'scripts/agent-cleanup.ps1'
-      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
-      - 'scripts/install.sh'
-      - 'scripts/tests/test-install-ps1-checksum-required.ps1'
-      - 'scripts/tests/new-install-ps1-native-fixture.ps1'
-      - 'scripts/tests/test-install-ps1-installed-verification.ps1'
-      - 'scripts/tests/test-install-ps1-archive-safety.ps1'
-      - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
-      - 'policy/standalone-archive-safety.v1.toml'
-      - 'docs/how-to/INSTALLATION.md'
-      - '.github/workflows/installer-powershell-checksum-contract.yml'
-  push:
-    branches: [main, master]
-    paths:
-      - 'install.ps1'
-      - 'scripts/agent-cleanup.ps1'
-      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
-      - 'scripts/install.sh'
-      - 'scripts/tests/test-install-ps1-checksum-required.ps1'
-      - 'scripts/tests/new-install-ps1-native-fixture.ps1'
-      - 'scripts/tests/test-install-ps1-installed-verification.ps1'
-      - 'scripts/tests/test-install-ps1-archive-safety.ps1'
-      - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
-      - 'policy/standalone-archive-safety.v1.toml'
-      - 'docs/how-to/INSTALLATION.md'
-      - '.github/workflows/installer-powershell-checksum-contract.yml'
   workflow_dispatch:
 
 permissions:

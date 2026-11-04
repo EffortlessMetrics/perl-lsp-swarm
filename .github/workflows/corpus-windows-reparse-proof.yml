@@ -1,14 +1,6 @@
 name: Corpus Windows reparse proof
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - "crates/perl-corpus/**"
-      - "xtask/src/publication_drift/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/corpus-windows-reparse-proof.yml"
   workflow_dispatch:
 
 permissions:

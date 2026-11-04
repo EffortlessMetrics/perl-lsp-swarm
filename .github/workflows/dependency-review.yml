@@ -1,17 +1,7 @@
 name: Dependency Review
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - 'vscode-extension/package.json'
-      - 'vscode-extension/package-lock.json'
-      - '.github/dependency-review-config.yml'
-      - '.github/workflows/dependency-review.yml'
+  workflow_dispatch: {}
 
 concurrency:
   group: dependency-review-${{ github.event.pull_request.number }}

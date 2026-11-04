@@ -1,10 +1,6 @@
 name: Perl Version Matrix
 
 on:
-  pull_request:
-    branches: [ main, master ]
-    # Keep label-gated runs alive after label is applied.
-    types: [opened, synchronize, reopened, labeled]
   schedule:
     # Weekly on Mondays at 04:30 UTC
     - cron: '30 4 * * 1'

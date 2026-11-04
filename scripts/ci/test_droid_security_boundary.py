@@ -162,13 +162,14 @@ class DroidSecurityBoundaryTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token.lower(), lowered)
 
-    def test_contract_workflow_is_path_scoped_and_read_only(self) -> None:
+    def test_contract_workflow_requires_explicit_admission_and_is_read_only(self) -> None:
         for path in (
             ".github/workflows/droid-security-scan.yml",
             ".github/workflows/droid-security-boundary.yml",
             "scripts/ci/test_droid_security_boundary.py",
         ):
-            self.assertIn(path, self.contract)
+            self.assertTrue((ROOT / path).is_file(), path)
+        self.assertEqual(_top_level_mapping(self.contract, "on"), ["workflow_dispatch"])
         self.assertTrue(_permission_blocks(self.contract))
         self.assertNotIn("write", _permission_values(self.contract))
         self.assertNotIn("id-token", self.contract)
@@ -242,10 +243,10 @@ class DroidMentionBoundaryTests(unittest.TestCase):
             timeout=15,
         )
 
-    def test_mentions_remain_explicit_human_requests_without_cancellation(self) -> None:
+    def test_mention_body_is_preserved_without_ordinary_comment_subscriptions(self) -> None:
         self.assertEqual(
             _top_level_mapping(self.mention, "on"),
-            ["issue_comment", "pull_request_review_comment", "pull_request_review"],
+            ["workflow_dispatch"],
         )
         self.assertEqual(self.mention.count(".user.type == 'User'"), 3)
         self.assertEqual(
@@ -375,7 +376,10 @@ class DroidMentionBoundaryTests(unittest.TestCase):
             ".github/workflows/droid-review.yml",
             ".ci/policies/action-pin-provenance.toml",
         ):
-            self.assertEqual(contract.count(f"- '{path}'"), 2)
+            self.assertTrue((ROOT / path).is_file(), path)
+        self.assertEqual(_top_level_mapping(contract, "on"), ["workflow_dispatch"])
+        # All permission, subject, identity and paused-review controls remain
+        # exercised in-session; a comment cannot start even a skipped wrapper.
 
     def test_subject_resolution_accepts_all_three_pr_event_shapes(self) -> None:
         repo = "EffortlessMetrics/perl-lsp-swarm"

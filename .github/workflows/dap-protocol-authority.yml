@@ -1,36 +1,6 @@
 name: DAP Protocol Authority
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - '.ci/dap/protocol-authority.json'
-      - 'crates/perl-dap/**'
-      - 'scripts/ci/dap_protocol_authority.py'
-      - 'scripts/ci/dap_nullability_inventory.py'
-      - 'scripts/tests/test_dap_nullability_inventory.py'
-      - '.ci/dap/upstream-debugAdapterProtocol.json'
-      - '.ci/dap/nullability-inventory.v1.json'
-      - 'scripts/ci/dap_authority_*.py'
-      - 'scripts/tests/test_dap_protocol_authority.py'
-      - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
-      - 'book/src/dap/protocol-schema.md'
-      - '.github/workflows/dap-protocol-authority.yml'
-  push:
-    branches: [main, master]
-    paths:
-      - '.ci/dap/protocol-authority.json'
-      - 'crates/perl-dap/**'
-      - 'scripts/ci/dap_protocol_authority.py'
-      - 'scripts/ci/dap_nullability_inventory.py'
-      - 'scripts/tests/test_dap_nullability_inventory.py'
-      - '.ci/dap/upstream-debugAdapterProtocol.json'
-      - '.ci/dap/nullability-inventory.v1.json'
-      - 'scripts/ci/dap_authority_*.py'
-      - 'scripts/tests/test_dap_protocol_authority.py'
-      - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
-      - 'book/src/dap/protocol-schema.md'
-      - '.github/workflows/dap-protocol-authority.yml'
   workflow_dispatch: {}
 
 concurrency:

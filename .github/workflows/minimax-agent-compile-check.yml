@@ -1,16 +1,6 @@
 name: MiniMax Agent Compile Check
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/minimax-coding-agent.md'
-      - '.github/workflows/minimax-coding-agent.lock.yml'
-      - '.github/workflows/minimax-agent-compile-check.yml'
-      - '.github/aw/actions-lock.json'
-      - '.gitattributes'
-      - '.github/dependabot.yml'
   workflow_dispatch:
 
 permissions:

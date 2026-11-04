@@ -13,19 +13,6 @@ name: Publish Dry-Run Gate
 # To run locally: just publish-dry-run
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - '**/Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/publish-crates.yml'
-      - '.github/workflows/publish-dry-run.yml'
-      - 'scripts/ci/check_perl_lsp_rs_core_package.py'
-      - 'scripts/cargo-package-workspace-dry-run.sh'
-      - 'scripts/publish-topo.py'
-      - 'xtask/src/tasks/publish_manifest_check.rs'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:

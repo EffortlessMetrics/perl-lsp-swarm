@@ -354,8 +354,7 @@ fn compile_all_targets_checks_out_the_integration_subject() -> Result<(), Box<dy
     // Guard the extractor itself: a silently-empty block would make the
     // assertion below pass for the wrong reason.
     assert!(
-        job.contains("name: Compile All Targets (bit-rot guard)")
-            && job.contains("actions/checkout@"),
+        job.contains("name: Compile All Targets execution") && job.contains("actions/checkout@"),
         "check-all-targets block was not extracted correctly; got:\n{job}"
     );
 
@@ -481,7 +480,7 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
     let job = job_block(&ci, "check-all-targets")
         .ok_or("ci.yml no longer defines a `check-all-targets` job")?;
     assert!(
-        job.contains("name: Compile All Targets (bit-rot guard)")
+        job.contains("name: Compile All Targets execution")
             && job.contains("\n    timeout-minutes: 35\n"),
         "job `check-all-targets.timeout-minutes` drifted from 35 (raised \
          from 25 after job 105961871648 cancelled in a contract step with \
@@ -563,7 +562,7 @@ fn compile_all_targets_is_owned_by_the_dedicated_job_not_a_shard()
          bit-rot property",
     )?;
     assert!(
-        job.contains("name: Compile All Targets (bit-rot guard)")
+        job.contains("name: Compile All Targets execution")
             && job.contains("\n        run: just check-all-targets\n"),
         "the standalone bit-rot owner must keep executing `just \
          check-all-targets`: dropping the shard copy is only valid while this \

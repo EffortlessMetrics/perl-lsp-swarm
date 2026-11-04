@@ -3,11 +3,11 @@ set -euo pipefail
 
 # Self-test for the PR Plan Trigger Guard workflow (#6238).
 #
-# The guard runs on pull_request to surface GitHub's documented SHA-like
-# head-branch suppression of pull_request_target events. This script proves,
+# The historical guard source detects GitHub's documented SHA-like
+# head-branch suppression. Ordinary event roots are retired. This proves,
 # against the checked-in workflow text only:
 #
-# 1. the structural contract: unsuppressed pull_request trigger, per-PR
+# 1. the structural contract: no ordinary event trigger, retained per-PR
 #    concurrency, least privilege, env-indirect payload access, no checkout /
 #    actions / secrets / write scopes;
 # 2. the classifier boundary matrix, using the exact regex extracted from the
@@ -53,20 +53,19 @@ def trigger_events(text: str) -> set[str]:
         if not line.startswith("  "):
             break
         stripped = line.strip()
-        if stripped.endswith(":") and not stripped.startswith("#"):
-            events.add(stripped[:-1])
+        match = re.match(r"^  ([A-Za-z_]+):", line)
+        if match:
+            events.add(match.group(1))
     return events
 
 
 events = trigger_events(text)
-if events != {"pull_request"}:
-    die(f"guard must trigger solely via unsuppressed pull_request, got {sorted(events)}")
+if events != {"workflow_dispatch"}:
+    die(f"ordinary publication must start no guard Action, got {sorted(events)}")
 for needle in (
     "name: PR Plan Trigger Guard",
     "on:",
-    "  pull_request:",
-    "    branches: [master, main]",
-    "    types: [opened, synchronize, reopened, ready_for_review]",
+    "  workflow_dispatch: {}",
 ):
     if needle not in text:
         die(f"missing expected line: {needle!r}")
@@ -159,6 +158,8 @@ PY
 
 echo "extracted reject pattern: ${reject_re}"
 
+# The retained PR-payload body is historical source, not a qualified
+# manual or G producer. This fixture supplies explicit strings locally.
 # --- classifier boundary matrix ---------------------------------------------
 # Semantics: matching names are the SHA-like class (guard fires, exit 1);
 # non-matching names are allowed through silently.

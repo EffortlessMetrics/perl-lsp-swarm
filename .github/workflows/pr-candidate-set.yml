@@ -1,9 +1,6 @@
 name: PR Candidate-Set Reconciliation
 
 on:
-  pull_request:
-    branches: [main, master]
-    types: [opened, closed, reopened, synchronize, edited, ready_for_review, converted_to_draft]
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch: {}

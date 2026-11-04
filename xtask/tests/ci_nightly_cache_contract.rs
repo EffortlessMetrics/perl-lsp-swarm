@@ -197,39 +197,8 @@ fn validate_triggers(workflow: &Value) -> Result<()> {
         .ok_or_else(|| anyhow!("ci-nightly.yml must declare mapping-valued triggers"))?;
     let names: BTreeSet<_> = triggers.keys().filter_map(Value::as_str).collect();
     ensure!(
-        names == BTreeSet::from(["pull_request", "schedule", "workflow_dispatch"]),
+        names == BTreeSet::from(["schedule", "workflow_dispatch"]),
         "unapproved nightly trigger set {names:?}; pull_request_target, merge_group, and extra events can make a canonical-looking ref a candidate writer"
-    );
-    let pull_request = triggers
-        .get(Value::String("pull_request".into()))
-        .and_then(Value::as_mapping)
-        .ok_or_else(|| anyhow!("pull_request must be a mapping"))?;
-    let branches: Vec<_> = pull_request
-        .get(Value::String("branches".into()))
-        .and_then(Value::as_sequence)
-        .ok_or_else(|| anyhow!("pull_request must declare branches"))?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    ensure!(
-        branches == ["main", "master"],
-        "pull_request branches must remain the canonical pair: {branches:?}"
-    );
-    let types: BTreeSet<_> = pull_request
-        .get(Value::String("types".into()))
-        .and_then(Value::as_sequence)
-        .ok_or_else(|| anyhow!("pull_request must declare activity types"))?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    ensure!(
-        types.contains("labeled"),
-        "pull_request must retain labeled so label-gated jobs stay PR-reachable without becoming cache writers"
-    );
-    ensure!(
-        types
-            == BTreeSet::from(["opened", "synchronize", "reopened", "ready_for_review", "labeled"]),
-        "pull_request activity types changed: {types:?}"
     );
     Ok(())
 }
@@ -457,8 +426,8 @@ fn nightly_rust_caches_use_explicit_writer_authority() -> Result<()> {
 fn workflow_policy_lane_executes_the_nightly_cache_contract() -> Result<()> {
     let policy = read_repo_file(POLICY)?;
     ensure!(
-        policy.matches(CONTRACT_TEST).count() >= 2,
-        "Workflow Policy path filters must cover {CONTRACT_TEST} on pull_request and push"
+        policy.contains(&format!("--proof ci_nightly_cache_contract={CONTRACT_TEST}")),
+        "explicit Workflow Policy execution must classify the actual {CONTRACT_TEST} input"
     );
     ensure!(
         policy.contains(&format!("run: {CONTRACT_COMMAND}")),
@@ -546,15 +515,15 @@ fn mutated_nightly_writer_postures_are_rejected() -> Result<()> {
     )?;
     reject_mutation(
         &source,
-        "on:\n  pull_request:\n",
-        "on:\n  pull_request_target:\n  pull_request:\n",
+        "\non:\n",
+        "\non:\n  pull_request_target: {}\n",
         "unapproved nightly trigger set",
     )?;
     reject_mutation(
         &source,
-        "    types: [opened, synchronize, reopened, ready_for_review, labeled]\n",
-        "    types: [opened, synchronize, reopened, ready_for_review]\n",
-        "must retain labeled",
+        "\non:\n",
+        "\non:\n  pull_request:\n    types: [labeled]\n",
+        "unapproved nightly trigger set",
     )?;
     reject_mutation(
         &source,

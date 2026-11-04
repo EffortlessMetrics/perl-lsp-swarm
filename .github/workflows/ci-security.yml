@@ -5,21 +5,6 @@ name: CI (Security)
 # Cost: ~$0.08 per run
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '**/Cargo.toml'
-      - 'deny.toml'
-      - 'scripts/ci/assert-no-cargo-deny-unmatched-skip.sh'
-      - 'scripts/ci/run-cargo-deny-check.sh'
-      - 'scripts/tests/test-run-cargo-deny-check.sh'
-      - '.github/workflows/ci-security.yml'
-      - '.docker/**'
-      - 'Dockerfile*'
-  push:
-    branches: [main, master]
   schedule:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
@@ -28,6 +13,7 @@ on:
 # Coalesce-queue-tail: let the running CI complete; skip superseded SHAs at a
 # preflight gate instead of cancelling in-flight work mid-run.
 # Note: scheduled runs always pass the preflight gate (no SHA comparison).
+
 concurrency:
   group: ci-security-${{ github.ref }}
   cancel-in-progress: false

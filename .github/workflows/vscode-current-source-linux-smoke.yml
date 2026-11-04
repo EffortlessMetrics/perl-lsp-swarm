@@ -7,18 +7,6 @@ on:
         description: Exact accepted base commit to compare with the dispatched candidate
         required: true
         type: string
-  pull_request:
-    # The installed-byte leaf stacks on #16981 until its observer lands.
-    # Remove this temporary base when #16991 retargets to main.
-    branches: [main, master, codex/6056-installed-identity]
-    paths:
-      - 'vscode-extension/**'
-      - 'crates/perl-lsp*/**'
-      - 'crates/perllsp/**'
-      - 'crates/perl-dap/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/vscode-current-source-linux-smoke.yml'
 
 concurrency:
   # Pull-request heads share one stable queue. An active exact-subject run is

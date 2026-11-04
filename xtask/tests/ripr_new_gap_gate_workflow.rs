@@ -1403,13 +1403,24 @@ gh() {
 }
 
 #[test]
-fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
+fn ripr_workflow_runs_on_actual_merge_group_without_path_filter()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
     let xtask_main = fs::read_to_string(root.join("xtask/src/main.rs"))?;
 
-    assert!(workflow.contains("pull_request:"), "ripr.yml must run from pull_request events");
+    let parsed: Value = serde_yaml_ng::from_str(&workflow)?;
+    let events = parsed.get("on").and_then(Value::as_mapping).ok_or("events missing")?;
+    for event in [
+        "pull_request",
+        "pull_request_target",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "issue_comment",
+        "push",
+    ] {
+        assert!(!events.contains_key(event), "ordinary event {event} must remain retired");
+    }
     assert!(
         workflow.contains("cancel-in-progress: false"),
         "RIPR evidence runs must queue newer heads instead of cancelling active analysis"
@@ -1419,8 +1430,8 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "RIPR must not turn normal PR synchronization into a cancelled no-verdict"
     );
     assert!(
-        workflow.contains("types: [opened, synchronize, reopened, ready_for_review]"),
-        "ripr.yml must rerun when a draft PR becomes ready for review because the job skips draft PRs"
+        workflow.contains("merge_group:\n    types: [checks_requested]"),
+        "RIPR qualification must use the actual native merge-group request"
     );
     assert!(
         !workflow.contains("\n    paths:"),
@@ -1973,7 +1984,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
 }
 
 #[test]
-fn ripr_docs_describe_unfiltered_ready_for_review_receipt_routing()
+fn ripr_docs_describe_in_session_and_actual_group_receipt_routing()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let docs = fs::read_to_string(root.join("docs/ci/ripr.md"))?;
@@ -1991,8 +2002,9 @@ fn ripr_docs_describe_unfiltered_ready_for_review_receipt_routing()
         "RIPR docs must describe the promoted new-gap blocking posture without final total-zero enforcement"
     );
     assert!(
-        when_it_runs.contains("Every PR targeting `master` or `main`"),
-        "RIPR docs must describe the workflow as an every-PR proof run"
+        when_it_runs.contains("actual `merge_group` subject")
+            && when_it_runs.contains("in-session"),
+        "RIPR docs must distinguish in-session authoring proof and actual G qualification"
     );
     assert!(
         when_it_runs.contains("No path filter is applied")
@@ -2002,8 +2014,8 @@ fn ripr_docs_describe_unfiltered_ready_for_review_receipt_routing()
         "RIPR docs must make docs/policy/workflow-only PR coverage explicit"
     );
     assert!(
-        when_it_runs.contains("ready_for_review"),
-        "RIPR docs must say draft PRs run the workflow when they become ready"
+        when_it_runs.contains("Draft/Ready publication starts no Actions"),
+        "RIPR docs must not direct ordinary publication to start qualification"
     );
     assert!(
         behavior.contains("target/ripr/pr/")

@@ -48,21 +48,12 @@ workflow = ".github/workflows/pr-title-check.yml"
 required = true
 contract_role = "required-workflow-shape"
 
-  # A metadata-only check. It reads the PR title through the API and never
-  # checks out or executes candidate contents, which is what lets it run on
-  # `pull_request_target` with write permission without crossing the trust
-  # boundary. The contract's remaining clauses assume a workflow that builds
-  # the candidate; they are the wrong requirements here rather than unmet ones.
+  # The actual-G leaf reads complete native membership and authenticated H
+  # intake, executes only protected B source and never receives write authority.
   [[check.exemption]]
   clause = "pull-request-trigger"
   status = "accepted"
-  reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
-  tracking = "16164"
-
-  [[check.exemption]]
-  clause = "merge-group-trigger"
-  status = "accepted"
-  reason = "A merge queue entry has no PR title to validate; the title was already validated on the PR."
+  reason = "Ordinary development Actions are prohibited. Current titles are validated for every proved actual-G member; trusted owning-session publication retains label/comment housekeeping (#17903/#18255)."
   tracking = "16164"
 
   [[check.exemption]]
@@ -116,7 +107,7 @@ producer = "repository-job"
 workflow = ".github/workflows/non-rust-policy.yml"
 job = "exact-tree"
 workflow_result = "propagate"
-events = ["pull_request_target", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
@@ -129,7 +120,7 @@ producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
 job = "rust-small-result"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
@@ -143,7 +134,7 @@ producer = "repository-job"
 workflow = ".github/workflows/ripr.yml"
 job = "ripr"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
@@ -155,15 +146,15 @@ reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts f
 name = "Compile All Targets (bit-rot guard)"
 producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
-job = "check-all-targets"
+job = "integration-required"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
-applicability = "conditional"
+applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348). A job-level skip leaves GitHub expecting this name; diagnose with scripts/ci/detect_required_check_registration.py (#16469)."
+reason = "Protected Actions context retains compilation and joins the existing fail-closed CI Gate in the same native run/attempt. Every selected shard and UX obligation must succeed independently of main health; missing, skipped or cancelled dependencies remain NOT_PROVEN (#10063/#18269)."
 
 [[checks]]
 name = "Conflict marker check"
@@ -171,7 +162,7 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "conflict-markers"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "conditional"
@@ -185,13 +176,13 @@ producer = "repository-job"
 workflow = ".github/workflows/pr-title-check.yml"
 job = "validate-title"
 workflow_result = "propagate"
-events = ["pull_request_target", "workflow_dispatch"]
+events = ["merge_group"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
+reason = "The existing Actions-bound validate-title context now proves the complete current native G prefix, every App-authenticated H-to-entry intake, ordered B/H tree equivalence and current per-member title semantics from protected B. No PR association or queued-ref number supplies membership. Publisher binding and effective protection still require explicit activation (#18255/#17903)."
 
 [[checks]]
 name = "Rust formatting"
@@ -199,7 +190,7 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "rust-formatting"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
@@ -235,7 +226,7 @@ producer = "repository-job"
 workflow = ".github/workflows/tokmd.yml"
 job = "analyze"
 workflow_result = "propagate"
-events = ["pull_request", "workflow_dispatch"]
+events = ["workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
@@ -248,7 +239,7 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "pr-smoke"
 workflow_result = "continue"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
@@ -261,7 +252,7 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "ux-tests"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
@@ -274,7 +265,7 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "merge-gate"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+events = ["merge_group", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
@@ -300,7 +291,7 @@ producer = "repository-job"
 workflow = ".github/workflows/semantic-close-containment.yml"
 job = "containment"
 workflow_result = "propagate"
-events = ["pull_request_target", "workflow_dispatch"]
+events = ["workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
@@ -313,7 +304,7 @@ producer = "repository-job"
 workflow = ".github/workflows/authority-transfer-review.yml"
 job = "authority-transfer-review"
 workflow_result = "propagate"
-events = ["pull_request_target", "workflow_dispatch"]
+events = ["workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
@@ -326,12 +317,12 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "public-api-pr"
 workflow_result = "propagate"
-events = ["pull_request", "push"]
+events = ["workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-reason = "#2266 auto-runs the cargo-public-api baseline ratchet when a PR touches a published facade surface or .ci/public-api-baselines/; out-of-scope diffs settle as green scoped-noops so a later ruleset promotion resolves cleanly instead of pending forever. #16815 also runs the same fail-closed `just public-api-check` on every push to main/master against that landed SHA, including commits outside facade/API scope; skipped or instrument-failed runs are not a passing ratchet."
+reason = "#2266 remains merge-advisory: required=false, policy_role=advisory, enforcement=neither. Applicable authoring proof is just public-api-check in-session; ci-nightly.yml:public-api-check retains schedule/explicit deep admission. The retained PR/push body is not G proof or a qualified manual equivalent. #17903 retires ordinary PR and #16815 main-push replay without promoting or deleting the existing advisory exception."
 
 [[checks]]
 name = "Semver Compatibility (facade PR)"
@@ -339,9 +330,9 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "semver-pr"
 workflow_result = "propagate"
-events = ["pull_request"]
+events = ["workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for API-ratcheted crates; stays merge-advisory (required=false) until baseline confidence supports hard-gating, but a detected break must fail the job conclusion (#17208)."
+reason = "#2266/#17208 retain merge-advisory semver against the canonical release baseline. Detected breaks still fail the check command; required=false and enforcement=neither remain unchanged. Run applicable authoring proof through scripts/ci/semver_pr_check.sh in-session; ci-nightly.yml:semver-check retains deep admission. The retained PR-only body is not G proof or a qualified manual equivalent."

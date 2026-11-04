@@ -107,12 +107,11 @@ class IssueMutationReadbackContractTests(unittest.TestCase):
 
     def test_workflow_executes_and_tracks_the_complete_contract(self) -> None:
         workflow = read(WORKFLOW_PATH)
-        for event in ("pull_request", "push"):
-            self.assertEqual(
-                set(TRIGGER_PATHS),
-                set(workflow_event_paths(workflow, event)),
-                f"workflow {event} paths do not match the complete readback contract",
-            )
+        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
+        projection = read_workflow_catalog(ROOT)[WORKFLOW_PATH]
+        self.assertEqual(projection.events, frozenset({"workflow_dispatch"}))
+        self.assertFalse(projection.path_filtered_events)
+
         self.assertIn(
             f"run: python3 -m unittest {TEST_PATH}",
             workflow,

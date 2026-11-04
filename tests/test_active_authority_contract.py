@@ -682,15 +682,13 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
 
 
 class WorkflowContractTests(unittest.TestCase):
-    def test_workflow_tracks_current_entrypoints_under_both_events(self) -> None:
-        workflow = read(WORKFLOW)
-        for event in ("pull_request", "push"):
-            self.assertEqual(
-                set(workflow_event_paths(workflow, event)),
-                set(TRIGGER_PATHS),
-                f"active-authority workflow `on.{event}.paths` does not match the "
-                "surfaces this contract reads",
-            )
+    def test_authority_contract_has_no_ordinary_event_root(self) -> None:
+        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
+        workflow = read_workflow_catalog(ROOT)[WORKFLOW]
+        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
+        self.assertFalse(workflow.path_filtered_events)
+        # The following executable-command test retains the complete content
+        # contract. Draft/Ready publication itself starts no check workflow.
 
     def test_workflow_runs_only_its_own_surface(self) -> None:
         import importlib.util

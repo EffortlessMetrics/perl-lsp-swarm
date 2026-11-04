@@ -25,11 +25,7 @@
 name: PR Plan Trigger Guard
 
 on:
-  # `branches:` selects the pull request BASE branch and plays no role in the
-  # SHA-like head-name suppression this guard surfaces.
-  pull_request:
-    branches: [master, main]
-    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
 
 concurrency:
   group: pr-plan-guard-${{ github.event.pull_request.number }}

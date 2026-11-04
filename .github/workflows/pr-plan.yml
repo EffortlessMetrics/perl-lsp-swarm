@@ -7,11 +7,7 @@
 name: PR Plan
 
 on:
-  # The workflow definition, planner, and policies all come from the protected
-  # base repository. Do not checkout or execute the PR head in this event.
-  pull_request_target:
-    branches: [master, main]
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_dispatch: {}
 
 concurrency:
   group: pr-plan-${{ github.event.pull_request.number }}

@@ -7,15 +7,6 @@
 name: Standalone contract tests
 
 on:
-  pull_request:
-    paths:
-      - 'schemas/standalone_owned_state.v1.schema.json'
-      - 'schemas/standalone_removal_plan.v1.schema.json'
-      - 'schemas/standalone_uninstall_result.v1.schema.json'
-      - 'fixtures/experience/install_owned_state/**'
-      - 'xtask/examples/standalone_owned_state.rs'
-      - 'scripts/ci/test_standalone_contract_schemas.py'
-      - '.github/workflows/standalone-contract-tests.yml'
   workflow_dispatch: {}
 
 concurrency:

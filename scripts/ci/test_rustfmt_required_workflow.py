@@ -138,7 +138,7 @@ def load_workflow(text: str | None = None) -> dict[str, Any]:
             # Any top-level key ends the previous section, so `concurrency`,
             # `permissions`, and `env` children cannot be mistaken for jobs.
             section = parsed.key if parsed.key == "jobs" else ""
-        elif section in {"jobs", "other-job"} and parsed and parsed.indent == 2:
+        elif section in {"jobs", "other-job", "formatter"} and parsed and parsed.indent == 2:
             section = "formatter" if parsed.key == JOB_ID else "other-job"
         elif section == "formatter" and parsed:
             value = yaml_structure._strip_scalar(parsed.value)
@@ -192,12 +192,17 @@ def named_step(job: dict[str, Any], name: str) -> dict[str, Any]:
 
 def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> None:
     triggers = workflow.get("on", {})
-    for event in ("pull_request", "merge_group", "push"):
-        if event not in triggers:
-            raise AssertionError(f"workflow must report on {event}")
-    pull_request = triggers.get("pull_request", {})
-    if "paths" in pull_request or "paths-ignore" in pull_request:
-        raise AssertionError("formatter context must remain terminal for docs-only PRs")
+    forbidden = {"pull_request", "pull_request_target", "pull_request_review",
+                 "pull_request_review_comment", "issue_comment", "push"}
+    if forbidden.intersection(triggers):
+        raise AssertionError("formatter must not start development or routine main Actions")
+    if "merge_group" not in triggers:
+        raise AssertionError("workflow must report on merge_group")
+    group = triggers["merge_group"]
+    if "paths" in group or "paths-ignore" in group:
+        raise AssertionError("formatter context must remain terminal for docs-only groups")
+    if group != {"types": ["checks_requested"]}:
+        raise AssertionError("formatter requires explicit merge_group checks_requested")
 
     job = workflow.get("jobs", {}).get(JOB_ID)
     if not isinstance(job, dict):
@@ -371,8 +376,8 @@ class RustfmtRequiredWorkflowTests(unittest.TestCase):
             validate_contract(self.workflow, broken)
 
 
-def replace_pull_request_trigger(workflow_text: str, replacement: str) -> str:
-    """Swap the entire `on.pull_request` block for `replacement`.
+def replace_merge_group_trigger(workflow_text: str, replacement: str) -> str:
+    """Swap the entire `on.merge_group` block for `replacement`.
 
     The real block carries comment lines and a `types:` key, so replacing only
     its first line would leave them dangling and produce invalid YAML rather
@@ -389,12 +394,12 @@ def replace_pull_request_trigger(workflow_text: str, replacement: str) -> str:
         (
             index
             for index, line in enumerate(lines)
-            if line.rstrip("\n") == "  pull_request:"
+            if line.rstrip("\n") == "  merge_group:"
         ),
         None,
     )
     if start is None:
-        raise AssertionError("`on.pull_request` block is not present in workflow source")
+        raise AssertionError("`on.merge_group` block is not present in workflow source")
     end = next(
         (
             index
@@ -407,7 +412,7 @@ def replace_pull_request_trigger(workflow_text: str, replacement: str) -> str:
     )
     if end is None:
         raise AssertionError(
-            "`on.pull_request` block has no following sibling key to bound it"
+            "`on.merge_group` block has no following sibling key to bound it"
         )
     return "".join(lines[:start] + [replacement] + lines[end:])
 
@@ -494,7 +499,7 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         for leaked in ("group", "cancel-in-progress", "contents", "CARGO_TERM_COLOR"):
             self.assertNotIn(leaked, triggers)
         self.assertEqual(
-            set(triggers), {"pull_request", "merge_group", "push", "workflow_dispatch"}
+            set(triggers), {"merge_group", "workflow_dispatch"}
         )
 
     # The next four tests are a deliberate 2x2: {paths, paths-ignore} x
@@ -507,8 +512,8 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         # Regression: trigger bodies parsed as empty dicts, so validate_contract's
         # docs-only guard was unreachable on real source no matter what it said.
         broken = self.workflow_text.replace(
-            "  pull_request:\n    branches:",
-            "  pull_request:\n    paths:\n      - '**.rs'\n    branches:",
+            "  merge_group:\n    types:",
+            "  merge_group:\n    paths:\n      - '**.rs'\n    types:",
             1,
         )
         self.assertNotEqual(broken, self.workflow_text)
@@ -517,8 +522,8 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
 
     def test_paths_ignore_filter_fails_closed(self) -> None:
         broken = self.workflow_text.replace(
-            "  pull_request:\n    branches:",
-            "  pull_request:\n    paths-ignore:\n      - '**.md'\n    branches:",
+            "  merge_group:\n    types:",
+            "  merge_group:\n    paths-ignore:\n      - '**.md'\n    types:",
             1,
         )
         self.assertNotEqual(broken, self.workflow_text)
@@ -526,23 +531,23 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
             self.validate_source(broken, self.policy_text)
 
     def test_flow_style_docs_only_filter_fails_closed(self) -> None:
-        # A line-based reader saw `pull_request: { ... }` as an empty body and
+        # A line-based reader saw `merge_group: { ... }` as an empty body and
         # let the docs-only guard pass on a workflow GitHub would skip for
         # Markdown-only PRs. ci.yml already uses flow style (`merge_group: {}`),
         # so this spelling is real, not hypothetical.
-        broken = replace_pull_request_trigger(
+        broken = replace_merge_group_trigger(
             self.workflow_text,
-            "  pull_request: { branches: [ main, master ], paths-ignore: ['**.md'] }\n",
+            "  merge_group: { types: [checks_requested], paths-ignore: ['**.md'] }\n",
         )
         self.assertNotEqual(broken, self.workflow_text)
-        self.assertIn("paths-ignore", load_triggers(broken)["pull_request"])
+        self.assertIn("paths-ignore", load_triggers(broken)["merge_group"])
         with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
             self.validate_source(broken, self.policy_text)
 
     def test_flow_style_paths_filter_fails_closed(self) -> None:
-        broken = replace_pull_request_trigger(
+        broken = replace_merge_group_trigger(
             self.workflow_text,
-            "  pull_request: { branches: [ main, master ], paths: ['**.rs'] }\n",
+            "  merge_group: { types: [checks_requested], paths: ['**.rs'] }\n",
         )
         self.assertNotEqual(broken, self.workflow_text)
         with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
@@ -553,19 +558,20 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         # whose event configuration is not even valid reported an unconfigured
         # event and satisfied both the required-trigger and docs-only checks.
         for spelling in ("true", "[branches]", "'yes'", "42"):
-            broken = replace_pull_request_trigger(
-                self.workflow_text, f"  pull_request: {spelling}\n"
+            broken = replace_merge_group_trigger(
+                self.workflow_text, f"  merge_group: {spelling}\n"
             )
             self.assertNotEqual(broken, self.workflow_text)
             with self.assertRaisesRegex(AssertionError, "expected a mapping"):
                 self.validate_source(broken, self.policy_text)
 
     def test_empty_trigger_body_is_accepted(self) -> None:
-        # Positive control for the check above: a bare `pull_request:` is legal
+        # Positive control for the check above: a bare `merge_group:` is legal
         # GitHub Actions, so rejecting non-mappings must not reject null bodies.
-        relaxed = replace_pull_request_trigger(self.workflow_text, "  pull_request:\n")
-        self.assertEqual(load_triggers(relaxed)["pull_request"], {})
-        self.validate_source(relaxed, self.policy_text)
+        relaxed = replace_merge_group_trigger(self.workflow_text, "  merge_group:\n")
+        self.assertEqual(load_triggers(relaxed)["merge_group"], {})
+        with self.assertRaisesRegex(AssertionError, "explicit merge_group"):
+            self.validate_source(relaxed, self.policy_text)
 
     def test_unparseable_workflow_source_fails_closed(self) -> None:
         # A corrupted or truncated ci.yml must red the gate with a named error,
@@ -574,29 +580,28 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
             load_triggers(self.workflow_text + "\n  : : :\n\t- bad\n")
 
     def test_trigger_replacement_stops_at_the_next_sibling_key(self) -> None:
-        # Regression: the boundary was found by hardcoding `merge_group:`, so
-        # reordering `on:` moved it silently past `push:` and the mutation
-        # expressed more than it said — the failure mode this suite exists to
-        # catch, in the suite's own helper.
-        reordered = self.workflow_text.replace("  merge_group: {}\n", "", 1).replace(
-            "  workflow_dispatch:\n", "  merge_group: {}\n  workflow_dispatch:\n", 1
-        )
-        self.assertNotEqual(reordered, self.workflow_text)
-        swapped = replace_pull_request_trigger(
-            reordered, "  pull_request: { branches: [ main, master ] }\n"
-        )
-        self.assertIn("push", load_triggers(swapped))
-        self.assertIn("merge_group", load_triggers(swapped))
+        source = "on:\n  merge_group:\n    types: [checks_requested]\n  workflow_dispatch: {}\n  repository_dispatch: {}\n"
+        swapped = replace_merge_group_trigger(source, "  merge_group: {types: [checks_requested]}\n")
+        self.assertEqual(set(load_triggers(swapped)), {"merge_group", "workflow_dispatch", "repository_dispatch"})
+        self.assertEqual(load_triggers(swapped)["workflow_dispatch"], {})
 
     def test_trigger_replacement_helper_fails_closed(self) -> None:
         # The helper carries the same fail-closed duty as the rest: a named
         # error, never a raw ValueError and never a silent wrong region.
         with self.assertRaisesRegex(AssertionError, "not present in workflow source"):
-            replace_pull_request_trigger("on:\n  push: {}\n", "  pull_request: {}\n")
+            replace_merge_group_trigger("on:\n  push: {}\n", "  merge_group:\n    types: [checks_requested]\n")
         with self.assertRaisesRegex(AssertionError, "no following sibling key"):
-            replace_pull_request_trigger(
-                "on:\n  pull_request:\n    branches: [ main ]\n", "x\n"
+            replace_merge_group_trigger(
+                "on:\n  merge_group:\n    types: [ main ]\n", "x\n"
             )
+
+    def test_restored_ordinary_events_fail_with_a_valid_group_producer(self) -> None:
+        for event in ("pull_request", "pull_request_target", "pull_request_review",
+                      "pull_request_review_comment", "issue_comment", "push"):
+            with self.subTest(event=event):
+                broken = self.workflow_text.replace("on:\n", f"on:\n  {event}: {{}}\n", 1)
+                with self.assertRaisesRegex(AssertionError, "must not start development"):
+                    self.validate_source(broken, self.policy_text)
 
     def test_quoted_on_key_is_read_the_same_as_the_bare_key(self) -> None:
         # YAML 1.1 resolves a bare `on` to boolean True; the quoted spelling
@@ -608,10 +613,10 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
 
     def test_dropping_a_required_trigger_from_source_fails_closed(self) -> None:
         broken = self.workflow_text.replace(
-            "  push:\n    branches: [ main, master ]\n", "", 1
+            "  merge_group:\n    types: [checks_requested]\n", "", 1
         )
         self.assertNotEqual(broken, self.workflow_text)
-        with self.assertRaisesRegex(AssertionError, "must report on push"):
+        with self.assertRaisesRegex(AssertionError, "must report on merge_group"):
             self.validate_source(broken, self.policy_text)
 
     def test_dropping_the_governed_job_from_workflow_source_fails_closed(self) -> None:
@@ -620,7 +625,7 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         self.assertLess(len(broken), len(self.workflow_text))
         # The mutation stays surgical: the rest of the workflow is still there.
         self.assertIn("\njobs:\n", broken)
-        self.assertIn("pull_request:", broken)
+        self.assertIn("merge_group:", broken)
         with self.assertRaisesRegex(AssertionError, "formatter context name drifted"):
             self.validate_source(broken, self.policy_text)
 

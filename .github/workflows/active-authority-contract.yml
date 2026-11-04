@@ -4,46 +4,7 @@ name: Active Authority Contract
 # steer humans and coding agents. Historical documents are outside this workflow.
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'CONTRIBUTING.md'
-      - '.github/copilot-instructions.md'
-      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
-      - 'docs/reference/WORKTREE_PROTOCOL.md'
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - '.agents/skills/**'
-      - '.claude/skills/**'
-      - '.claude/agents/**'
-      - 'docs/agents/DEVELOPMENT_METHOD.md'
-      - 'docs/agents/REVIEW_CURRENTNESS.md'
-      - 'docs/agents/SKILL_CONTRACT.md'
-      - 'justfile'
-      - '.gitignore'
-      - 'tests/test_active_authority_contract.py'
-      - 'tests/test_writer_authority_transfer_contract.py'
-      - '.github/workflows/active-authority-contract.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'CONTRIBUTING.md'
-      - '.github/copilot-instructions.md'
-      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
-      - 'docs/reference/WORKTREE_PROTOCOL.md'
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - '.agents/skills/**'
-      - '.claude/skills/**'
-      - '.claude/agents/**'
-      - 'docs/agents/DEVELOPMENT_METHOD.md'
-      - 'docs/agents/REVIEW_CURRENTNESS.md'
-      - 'docs/agents/SKILL_CONTRACT.md'
-      - 'justfile'
-      - '.gitignore'
-      - 'tests/test_active_authority_contract.py'
-      - 'tests/test_writer_authority_transfer_contract.py'
-      - '.github/workflows/active-authority-contract.yml'
+  workflow_dispatch: {}
 
 permissions:
   contents: read

@@ -352,8 +352,8 @@ def source_commit_api_combined_tree_wiring_errors(workflow_text: str) -> list[st
     on_block = workflow_text[on_start : on_end if on_end > 0 else on_start + 800]
     if "merge_group:" not in on_block:
         errors.append("workflow on: is missing merge_group")
-    if not re.search(r"push:\s*\n\s*branches:\s*\[\s*main,\s*master\s*\]", on_block):
-        errors.append("workflow on: is missing push to main/master")
+    if re.search(r"(?m)^  (push|pull_request|pull_request_target|pull_request_review|pull_request_review_comment|issue_comment):", on_block):
+        errors.append("workflow must not start development or routine main Actions")
     try:
         job = workflow_job_block(workflow_text, COMBINED_TREE_JOB)
     except ValueError:
@@ -881,7 +881,7 @@ class GateShardTests(unittest.TestCase):
         runner_invocation = runner_step[invocation_start:invocation_end]
         self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_invocation)
 
-    def test_source_commit_api_check_is_wired_for_merge_group_and_push(self) -> None:
+    def test_source_commit_api_check_is_wired_for_actual_merge_group(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
 
@@ -891,7 +891,9 @@ class GateShardTests(unittest.TestCase):
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
         mutants = {
-            "drop-merge-group-trigger": workflow.replace("  merge_group: {}\n", "", 1),
+            "drop-merge-group-trigger": workflow.replace("  merge_group:\n    types: [checks_requested]\n", "", 1),
+            "restore-main-trigger": workflow.replace("on:\n", "on:\n  push:\n    branches: [main]\n", 1),
+            "restore-pr-trigger": workflow.replace("on:\n", "on:\n  pull_request: {}\n", 1),
             "drop-merge-group-if": workflow.replace(
                 "github.event_name == 'merge_group' ||\n", "", 1
             ),

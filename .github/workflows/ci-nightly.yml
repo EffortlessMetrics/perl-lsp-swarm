@@ -8,10 +8,6 @@ name: CI (Nightly)
 # merge-queue validation use the required Rust Small and RIPR+ gates instead.
 
 on:
-  pull_request:
-    branches: [ main, master ]
-    # Keep label-gated jobs alive after the label is applied.
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
     # Run nightly at 3am UTC
     - cron: '0 3 * * *'
@@ -84,6 +80,7 @@ on:
         default: false
 
 # Cancel in-flight runs on new pushes (saves minutes)
+
 concurrency:
   group: ci-nightly-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}

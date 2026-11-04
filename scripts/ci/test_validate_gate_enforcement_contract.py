@@ -259,14 +259,14 @@ class TrustedBaseRatchetRequiredShapeTests(unittest.TestCase):
         end = lines.index("  main-selfcheck:")
         self.job_block = lines[start:end]
 
-    def test_verbatim_10536_row_maps_clean_against_live_catalog(self) -> None:
+    def test_retired_pr_producer_cannot_satisfy_the_deferred_10536_row(self) -> None:
         findings, mapped = contract.validate_context(
             TRUSTED_BASE_DRAFT_ROW,
             self.workflows,
             self.producers,
         )
-        self.assertEqual([], findings)
-        self.assertTrue(mapped)
+        self.assertEqual({"workflow_event_missing"}, {finding.code for finding in findings})
+        self.assertTrue(mapped)  # source identity survives; event qualification does not
 
     def test_emitting_job_is_unconditionally_reachable(self) -> None:
         self.assertIsNone(
@@ -286,9 +286,10 @@ class TrustedBaseRatchetRequiredShapeTests(unittest.TestCase):
             producers,
         )
 
-    def test_declared_event_reachability_holds_for_pull_request_target(self) -> None:
-        self.assertIn("pull_request_target", self.ratchet.events)
-        self.assertNotIn("pull_request_target", self.ratchet.path_filtered_events)
+    def test_retained_ratchet_requires_explicit_diagnostic_admission(self) -> None:
+        self.assertEqual(frozenset({"workflow_dispatch"}), self.ratchet.events)
+        self.assertFalse(self.ratchet.path_filtered_events)
+        # This source is not relabeled as a truthful G/H producer.
 
     def test_all_filtering_resolves_in_job_not_at_job_level(self) -> None:
         children = _job_direct_children(self.job_block)
@@ -326,7 +327,8 @@ class TrustedBaseRatchetRequiredShapeTests(unittest.TestCase):
         # push / workflow_dispatch validation of the trusted base.
         sibling = self.ratchet.jobs["main-selfcheck"]
         self.assertEqual(MAIN_SELFCHECK_CONDITION, sibling.condition)
-        self.assertIn("push", self.ratchet.events)
+        self.assertIn("workflow_dispatch", self.ratchet.events)
+        self.assertNotIn("push", self.ratchet.events)
 
     def test_reintroduced_job_level_event_gate_reddens_the_draft_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

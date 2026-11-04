@@ -1,34 +1,6 @@
 name: DAP Scorecard
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'crates/perl-dap/**'
-      - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
-      - 'xtask/src/tasks/update_status/dap.rs'
-      - 'docs/project/status/dap.md'
-      - 'scripts/ci/dap_scorecard_*.py'
-      - 'scripts/tests/test_dap_scorecard_*.py'
-      - '.github/workflows/dap-scorecard.yml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
-  push:
-    branches: [main, master]
-    paths:
-      - 'crates/perl-dap/**'
-      - 'crates/perl-lsp-rs-core/src/transport/framing.rs'
-      - 'xtask/src/tasks/update_status/dap.rs'
-      - 'docs/project/status/dap.md'
-      - 'scripts/ci/dap_scorecard_*.py'
-      - 'scripts/tests/test_dap_scorecard_*.py'
-      - '.github/workflows/dap-scorecard.yml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:

@@ -83,16 +83,8 @@ def validate_ci_route(workflow: dict) -> None:
             raise ValueError(message)
 
     triggers = workflow.get("on", workflow.get(True, {}))
-    require(set(triggers.get("pull_request", {})) == {"paths"},
-            "consumer must retain default PR activities and branches")
-    push = triggers.get("push", {})
-    require(set(push) == {"branches", "paths"} and push["branches"] == ["main"],
-            "consumer must retain main push coverage")
-    for event in ("pull_request", "push"):
-        paths = set(triggers.get(event, {}).get("paths", []))
-        require(not any(path.startswith("!") for path in paths), f"{event} path exclusions can suppress direct inputs")
-        require({".github/workflows/**", "scripts/ci/test_perf_nightly_alert.py",
-                 "scripts/bash_binary.py"} <= paths, f"incomplete {event} input coverage")
+    require(set(triggers) == {"workflow_dispatch"},
+            "advisory regression execution requires explicit admission; no development Actions")
     job = workflow["jobs"]["workflow-contracts"]
     require("if" not in job and not job.get("continue-on-error"), "consumer job can be skipped or suppressed")
     require(not workflow.get("defaults") and not job.get("defaults"), "consumer defaults can retarget execution")
@@ -279,36 +271,21 @@ class NightlyAlertTests(unittest.TestCase):
     def test_actual_advisory_ci_route_executes_regression(self) -> None:
         validate_ci_route(yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8")))
 
-    def test_ci_route_rejects_missing_input_triggers(self) -> None:
+    def test_ci_route_rejects_restored_ordinary_events(self) -> None:
         workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
-        validate_ci_route(workflow)  # mutants must start from a passing real route
+        validate_ci_route(workflow)
         key = "on" if "on" in workflow else True
-        for event in ("pull_request", "push"):
-            for path in (".github/workflows/**", "scripts/ci/test_perf_nightly_alert.py", "scripts/bash_binary.py"):
-                with self.subTest(event=event, path=path):
-                    mutant = copy.deepcopy(workflow)
-                    mutant[key][event]["paths"].remove(path)
-                    with self.assertRaises(ValueError):
-                        validate_ci_route(mutant)
-            for exclusion in ("!scripts/ci/test_perf_nightly_alert.py", "!scripts/bash_binary.py", "!scripts/**"):
-                with self.subTest(event=event, exclusion=exclusion):
-                    mutant = copy.deepcopy(workflow)
-                    mutant[key][event]["paths"].append(exclusion)
-                    with self.assertRaises(ValueError):
-                        validate_ci_route(mutant)
-        for event, field, value in (
-            ("push", "branches", ["develop"]),
-            ("push", "branches", ["main", "!main"]),
-            ("push", "branches-ignore", ["main"]),
-            ("pull_request", "types", ["closed"]),
-            ("pull_request", "branches", ["develop"]),
-            ("pull_request", "paths-ignore", ["scripts/**"]),
-        ):
-            with self.subTest(event=event, field=field, value=value):
+        for event in ("pull_request", "pull_request_target", "pull_request_review",
+                      "pull_request_review_comment", "issue_comment", "push"):
+            with self.subTest(event=event):
                 mutant = copy.deepcopy(workflow)
-                mutant[key][event][field] = value
-                with self.assertRaises(ValueError):
+                mutant[key][event] = {"paths": ["scripts/**"]}
+                with self.assertRaisesRegex(ValueError, "explicit admission"):
                     validate_ci_route(mutant)
+        mutant = copy.deepcopy(workflow)
+        mutant[key] = {}
+        with self.assertRaisesRegex(ValueError, "explicit admission"):
+            validate_ci_route(mutant)
 
     def test_ci_route_rejects_printed_skipped_or_suppressed_commands(self) -> None:
         workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))

@@ -25,17 +25,8 @@
 name: ripr
 
 on:
-  pull_request:
-    branches: [master, main]
-    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
-  push:
-    branches: [master, main]
-  # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
-  # restore warm artifacts instead of cold-building into the runner-eviction
-  # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
-  # PR-created caches are scoped to the PR merge ref and cannot warm other
-  # PRs, they only burn the 10 GB quota.
+    types: [checks_requested]
   schedule:
     - cron: '23 11 * * *'
   workflow_dispatch:

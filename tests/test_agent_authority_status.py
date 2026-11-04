@@ -387,59 +387,37 @@ class AgentAuthorityStatusTests(unittest.TestCase):
             self.assertIn("active doctrine", contract)
             self.assertIn("north star", contract)
 
-    def test_workflow_triggers_on_every_registered_path(self) -> None:
-        """Both event filters must equal the registry, not a hand-kept subset.
+    def test_registry_contract_remains_explicit_and_complete(self) -> None:
+        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
+        workflow = read_workflow_catalog(ROOT)[".github/workflows/agent-authority-status.yml"]
+        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
+        self.assertFalse(workflow.path_filtered_events)
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("python3 -m unittest", source)
+        self.assertIn("tests/test_agent_authority_status.py", source)
+        self.assertIn("tests/test_legacy_authority_banners.py", source)
+        self.assertEqual(validate_registry(load_registry()), [])
 
-        Previously the filters named only the registry and front-door files.
-        Deleting or renaming `DEVELOPMENT_METHOD.md`, `CONTRIBUTING.md`, or any
-        other registered authority therefore skipped this workflow entirely,
-        leaving the registry's `path exists` assertion false on `main` with no
-        check having run.
-        """
-        actual = {event: workflow_event_paths(event) for event in ("pull_request", "push")}
-        self.assertEqual(workflow_coverage_errors(actual, required_workflow_paths()), [])
+    def test_registered_path_removal_is_still_a_proof_failure(self) -> None:
+        # Exercise the actual complete-registry validator, not retired event
+        # path filters. A renamed/deleted registered document cannot pass.
+        from unittest.mock import patch
+        original_exists = Path.exists
+        for path in ("docs/agents/DEVELOPMENT_METHOD.md", "CONTRIBUTING.md",
+                     "scripts/ci/check-pr-review-convergence-core"):
+            with self.subTest(path=path):
+                def exists(candidate):
+                    return False if candidate == ROOT / path else original_exists(candidate)
+                with patch.object(Path, "exists", exists):
+                    errors = validate_registry(load_registry())
+                self.assertIn(f"{path}: registry path does not exist", errors)
 
-    def test_dropping_a_registered_path_from_one_filter_is_caught(self) -> None:
-        """The control the exact-set assertion could not provide.
-
-        Removal is checked one event at a time: a one-sided filter is the
-        realistic mistake, and it is invisible to any check that looks at the
-        union of both events.
-        """
-        required = required_workflow_paths()
-        for path in (
-            "docs/agents/DEVELOPMENT_METHOD.md",  # a registered current authority
-            "CONTRIBUTING.md",  # reclassified current by #6868
-            "scripts/ci/check-pr-review-convergence-core",  # still transitional
-            "tests/test_legacy_authority_banners.py",  # already executed; was not a trigger
-        ):
-            for event in ("pull_request", "push"):
-                with self.subTest(path=path, event=event):
-                    actual = {
-                        name: workflow_event_paths(name)
-                        for name in ("pull_request", "push")
-                    }
-                    actual[event] = actual[event] - {path}
-                    errors = workflow_coverage_errors(actual, required)
-                    self.assertTrue(
-                        any(
-                            f"on.{event}.paths omits" in error and path in error
-                            for error in errors
-                        ),
-                        errors,
-                    )
-
-    def test_registering_a_document_without_covering_it_is_caught(self) -> None:
-        """Adding a row must widen the trigger, not the blind spot."""
-        required = required_workflow_paths() | {"docs/agents/NEW_AUTHORITY.md"}
-        actual = {
-            event: workflow_event_paths(event) for event in ("pull_request", "push")
-        }
-
-        errors = workflow_coverage_errors(actual, required)
-        self.assertTrue(
-            any("NEW_AUTHORITY.md" in error for error in errors), errors
-        )
+    def test_registering_a_missing_document_is_a_proof_failure(self) -> None:
+        document = copy.deepcopy(load_registry())
+        document["documents"].append({"path": "docs/agents/NEW_AUTHORITY.md",
+            "status": "current", "successor": "", "notes": "negative control"})
+        self.assertIn("docs/agents/NEW_AUTHORITY.md: registry path does not exist",
+                      validate_registry(document))
 
     def test_successor_must_resolve_to_a_path_or_a_bounded_reference(self) -> None:
         self.assertEqual(successor_errors(load_registry()["documents"]), [])

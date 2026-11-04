@@ -17,13 +17,14 @@ const REVIEWER_SKILLS: &[(&str, &str)] = &[
     ("Codex", ".agents/skills/review-pr/SKILL.md"),
     ("Claude", ".claude/skills/review-pr/SKILL.md"),
 ];
-const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
-    TEMPLATE_PATH,
-    ".agents/skills/**",
-    ".claude/skills/**",
-    "xtask/tests/shift_left_publication_contract.rs",
+const ORDINARY_EVENTS: &[&str] = &[
+    "pull_request",
+    "pull_request_target",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "issue_comment",
+    "push",
 ];
-const WORKFLOW_EVENTS: &[&str] = &["pull_request", "push"];
 const REVIEW_INDEX_HEADINGS: &[&str] = &[
     "## Claim",
     "## Controlling issue",
@@ -82,26 +83,6 @@ fn mapping_value_mut<'a>(
         .ok_or_else(|| format!("missing YAML key {key:?}"))
 }
 
-fn workflow_paths(workflow: &serde_yaml_ng::Value, event: &str) -> Result<Vec<String>, String> {
-    let event_value = mapping_value(mapping_value(workflow, "on")?, event)?;
-    mapping_value(event_value, "paths")?
-        .as_sequence()
-        .ok_or_else(|| format!("workflow on.{event}.paths must be a YAML sequence"))?
-        .iter()
-        .map(|path| {
-            path.as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| format!("workflow on.{event}.paths entries must be strings"))
-        })
-        .collect()
-}
-
-/// Whether `step`'s `key` is a string equal to `expected`, ignoring surrounding
-/// whitespace. A missing key, a non-string value, and a different value are all
-/// simply "not equal": the caller ANDs these together, and keeping each fail
-/// path inside one named predicate makes that conjunction legible — the shape
-/// this replaced inlined two fallible lookups and a comparison per operand,
-/// where dropping one operand would silently weaken the ratchet.
 fn step_field_equals(step: &serde_yaml_ng::Value, key: &str, expected: &str) -> bool {
     mapping_value(step, key)
         .ok()
@@ -110,13 +91,12 @@ fn step_field_equals(step: &serde_yaml_ng::Value, key: &str, expected: &str) -> 
 }
 
 fn validate_workflow(workflow: &serde_yaml_ng::Value) -> Result<(), String> {
-    for &event in WORKFLOW_EVENTS {
-        let paths = workflow_paths(workflow, event)?;
-        for &required in REQUIRED_WORKFLOW_PATHS {
-            if !paths.iter().any(|path| path == required) {
-                return Err(format!("{WORKFLOW_PATH}: on.{event}.paths must watch {required:?}"));
-            }
-        }
+    let events =
+        mapping_value(workflow, "on")?.as_mapping().ok_or("workflow events must be a mapping")?;
+    if events.len() != 1 || !events.contains_key("workflow_dispatch") {
+        return Err(
+            "control-plane proof requires explicit admission; ordinary Actions are retired".into(),
+        );
     }
 
     let jobs = mapping_value(workflow, "jobs")?;
@@ -149,23 +129,6 @@ fn validate_workflow(workflow: &serde_yaml_ng::Value) -> Result<(), String> {
         return Err(format!(
             "{WORKFLOW_PATH}: publication-contract command must occur exactly once, found {command_count}"
         ));
-    }
-    Ok(())
-}
-
-fn remove_workflow_path(
-    workflow: &mut serde_yaml_ng::Value,
-    event: &str,
-    path: &str,
-) -> Result<(), String> {
-    let event_value = mapping_value_mut(mapping_value_mut(workflow, "on")?, event)?;
-    let paths = mapping_value_mut(event_value, "paths")?
-        .as_sequence_mut()
-        .ok_or_else(|| format!("workflow on.{event}.paths must be a YAML sequence"))?;
-    let original_len = paths.len();
-    paths.retain(|entry| entry.as_str() != Some(path));
-    if paths.len() == original_len {
-        return Err(format!("workflow fixture path {path:?} was not present"));
     }
     Ok(())
 }
@@ -461,20 +424,16 @@ fn ratchet_rejects_workflow_trigger_and_command_mutations() -> Result<(), Box<dy
     let workflow = workflow(&root)?;
     validate_workflow(&workflow).map_err(contract_error)?;
 
-    // Drive the mutation from REQUIRED_WORKFLOW_PATHS rather than from a
-    // hand-listed subset, so every required path — including this ratchet's own
-    // file, whose removal would stop the workflow re-running on changes to the
-    // very test enforcing it — is covered, and so a path added later cannot
-    // enter the requirement without also entering the proof.
-    for &event in WORKFLOW_EVENTS {
-        for &required in REQUIRED_WORKFLOW_PATHS {
-            let mut missing_path = workflow.clone();
-            remove_workflow_path(&mut missing_path, event, required).map_err(contract_error)?;
-            assert!(
-                validate_workflow(&missing_path).is_err(),
-                "removing the {required:?} trigger path from on.{event} must fail the contract"
-            );
-        }
+    // Actual production source is green before each restored-event mutant.
+    // No path/activity or job-level filter can discharge the zero-run boundary.
+    for &event in ORDINARY_EVENTS {
+        let mut restored = workflow.clone();
+        mapping_value_mut(&mut restored, "on")
+            .map_err(contract_error)?
+            .as_mapping_mut()
+            .ok_or("events mapping")?
+            .insert(serde_yaml_ng::Value::String(event.into()), serde_yaml_ng::Value::Null);
+        assert!(validate_workflow(&restored).is_err(), "restoring {event} must fail");
     }
 
     let mut missing_command = workflow.clone();

@@ -238,16 +238,20 @@ const PUBLIC_API_POLICY_INPUTS: [&str; 7] = [
 ];
 
 fn workflow_policy_covers_public_api_inputs(workflow: &str) -> bool {
-    let Some(pull_request) = event_section(workflow, "pull_request") else {
-        return false;
-    };
-    let Some(push) = event_section(workflow, "push") else {
-        return false;
-    };
-    PUBLIC_API_POLICY_INPUTS.iter().all(|path| {
-        let watched = format!("      - '{path}'");
-        pull_request.matches(&watched).count() == 1 && push.matches(&watched).count() == 1
-    }) && workflow.matches("name: Install just for executable recipe proofs").count() == 1
+    let explicit = event_section(workflow, "workflow_dispatch").is_some();
+    let ordinary = [
+        "pull_request",
+        "pull_request_target",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "issue_comment",
+        "push",
+    ]
+    .iter()
+    .any(|event| event_section(workflow, event).is_some());
+    explicit
+        && !ordinary
+        && workflow.matches("name: Install just for executable recipe proofs").count() == 1
         && workflow.matches("uses: taiki-e/install-action@").count() == 1
         && workflow.matches("name: Public API trigger label contract").count() == 1
         && workflow
@@ -794,8 +798,8 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
 }
 
 #[test]
-fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn std::error::Error>>
-{
+fn retained_compatibility_sources_preserve_both_canonical_proof_commands()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let workflow = read(&root, ".github/workflows/ci.yml")?;
 
@@ -946,21 +950,10 @@ fn registry_records_the_new_advisory_contexts() -> Result<(), Box<dyn std::error
             row.contains("applicability = \"conditional\""),
             "{context} follows the prerequisite-selected applicability convention"
         );
-        if job == "public-api-pr" {
-            assert!(
-                row.contains("events = [\"pull_request\", \"push\"]"),
-                "{context} must be reachable on pull_request and push (#16815)"
-            );
-            assert!(
-                row.contains("#16815"),
-                "{context} policy reason must name the main-push ratchet claim"
-            );
-        } else {
-            assert!(
-                row.contains("events = [\"pull_request\"]") && !row.contains("\"push\""),
-                "{context} stays pull_request-only"
-            );
-        }
+        assert!(
+            row.contains("events = [\"workflow_dispatch\"]"),
+            "{context} retains source for explicit inspection, not a PR/push/G qualification claim"
+        );
     }
 
     Ok(())
@@ -1126,7 +1119,8 @@ fn public_api_pr_event_matrix_rejects_pr_only_and_push_scoped_noop() -> Result<(
 }
 
 #[test]
-fn public_api_pr_live_workflow_covers_the_event_matrix() -> Result<(), Box<dyn std::error::Error>> {
+fn retained_public_api_body_preserves_its_legacy_event_matrix()
+-> Result<(), Box<dyn std::error::Error>> {
     let workflow = read(&project_root()?, ".github/workflows/ci.yml")?;
     let public_api = job_section(&workflow, "public-api-pr")
         .ok_or("ci.yml must define the public-api-pr rail")?;
@@ -1235,15 +1229,15 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
 {
     let root = project_root()?;
     let nightly = read(&root, ".github/workflows/ci-nightly.yml")?;
-    let activities = pull_request_activity_types(&nightly)
-        .ok_or("ci-nightly.yml must declare pull_request activity types")?;
-    let expected_activities = ["opened", "synchronize", "reopened", "ready_for_review", "labeled"];
-    if activities != expected_activities {
-        return Err(format!(
-            "public API label authorization must use the bounded activity set; got {activities:?}"
-        )
-        .into());
-    }
+    assert!(
+        event_section(&nightly, "pull_request").is_none(),
+        "labels and Ready transitions must not start nightly Actions"
+    );
+    assert!(event_section(&nightly, "schedule").is_some(), "nightly deep proof must survive");
+    assert!(
+        event_section(&nightly, "workflow_dispatch").is_some(),
+        "explicit deep proof must survive"
+    );
     if !nightly.contains(
         "group: ci-nightly-${{ github.event.pull_request.number || github.ref }}",
     ) || !nightly.contains(
@@ -1270,7 +1264,9 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     if job_has_effective_read_only_permissions(&workflow_write, "public-api-check") {
         return Err("a workflow-level write permission must fail the authority oracle".into());
     }
-    let without_labeled = nightly.replace(", labeled", "");
+    // The retired event parser retains its exact-label negative controls.
+    let parser_fixture = "\non:\n  pull_request:\n    types: [opened, labeled]\n  schedule:\n";
+    let without_labeled = parser_fixture.replace(", labeled", "");
     let without_labeled_activities = pull_request_activity_types(&without_labeled)
         .ok_or("labeled-removal fixture must retain a pull_request activity list")?;
     if without_labeled_activities.contains(&"labeled") {
@@ -1448,25 +1444,18 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
             "workflow policy must cover and execute every public API authority input".into()
         );
     }
+    // There are no path subscriptions to omit. Explicit execution reads the
+    // full input set and must retain every executable proof below.
     for input in PUBLIC_API_POLICY_INPUTS {
-        let without_input = policy.replace(&format!("      - '{input}'\n"), "");
-        if workflow_policy_covers_public_api_inputs(&without_input) {
-            return Err(
-                format!("removing {input} coverage must fail the recurrence contract").into()
-            );
-        }
+        assert!(root.join(input).is_file(), "public API proof input missing: {input}");
     }
-    let watched = "      - 'justfile'\n";
-    let push_section =
-        event_section(&policy, "push").ok_or("Workflow Policy must retain a push mapping")?;
-    let push_without_watched = push_section.replacen(watched, "", 1);
-    let unbalanced = policy.replacen(push_section, &push_without_watched, 1).replacen(
-        watched,
-        &format!("{watched}{watched}"),
-        1,
-    );
-    if workflow_policy_covers_public_api_inputs(&unbalanced) {
-        return Err("duplicate pull_request coverage must not replace missing push coverage".into());
+    for event in ["pull_request", "pull_request_target", "push", "issue_comment"] {
+        let restored = policy.replacen("on:\n", &format!("on:\n  {event}: {{}}\n"), 1);
+        assert_ne!(restored, policy);
+        assert!(
+            !workflow_policy_covers_public_api_inputs(&restored),
+            "restored {event} must fail the zero-development contract"
+        );
     }
     for executable_proof in [
         "      - name: Install just for executable recipe proofs\n",

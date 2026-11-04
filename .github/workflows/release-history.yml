@@ -1,41 +1,7 @@
 name: Release History
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/release-history.yml"
-      - "rust-toolchain.toml"
-      - "RELEASE_HISTORY.md"
-      - "docs/releases/**"
-      - "policy/release-tag-provenance.toml"
-      - "scripts/check_release_history.sh"
-      - "scripts/check_release_tag_provenance.py"
-      - "scripts/git_environment.py"
-      - "scripts/tests/test_git_environment.py"
-      - "scripts/tests/test_release_tag_provenance.py"
-      - "scripts/tests/test_release_channel_actuals.py"
-      - "scripts/test_release_build_identity.py"
-      - "scripts/test_release_package_evidence.py"
-      - "scripts/test_release_tag_authority.py"
-      - "scripts/test_release_topology_json.py"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/release-history.yml"
-      - "rust-toolchain.toml"
-      - "RELEASE_HISTORY.md"
-      - "docs/releases/**"
-      - "policy/release-tag-provenance.toml"
-      - "scripts/check_release_history.sh"
-      - "scripts/check_release_tag_provenance.py"
-      - "scripts/git_environment.py"
-      - "scripts/tests/test_git_environment.py"
-      - "scripts/tests/test_release_tag_provenance.py"
-      - "scripts/tests/test_release_channel_actuals.py"
-      - "scripts/test_release_build_identity.py"
-      - "scripts/test_release_package_evidence.py"
-      - "scripts/test_release_tag_authority.py"
-      - "scripts/test_release_topology_json.py"
+  workflow_dispatch: {}
 
 permissions:
   contents: read

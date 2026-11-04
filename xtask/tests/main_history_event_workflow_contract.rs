@@ -1,4 +1,5 @@
-//! Checked contract for the hosted `main` history-event detector workflow.
+//! Source contract for the retired `main` history-event detector (#17903).
+//! Automatic main observation is retired; these guards preserve the incident source.
 //!
 //! #10306 requires the hosted surface to stay read-only, to delegate every
 //! ancestry judgement to one repository command, and to treat a missing receipt
@@ -17,7 +18,11 @@ fn workflow_path() -> Result<PathBuf> {
     let root = manifest
         .parent()
         .with_context(|| format!("{} has no repository-root parent", manifest.display()))?;
-    Ok(root.join(".github/workflows/main-history-event.yml"))
+    assert!(
+        !root.join(".github/workflows/main-history-event.yml").exists(),
+        "routine main-history Actions must remain retired"
+    );
+    Ok(root.join(".ci/retired-workflows/main-history-event.yml"))
 }
 
 fn workflow_source() -> Result<String> {
@@ -26,7 +31,7 @@ fn workflow_source() -> Result<String> {
 }
 
 /// Parse the workflow so structural properties are asserted against the document
-/// GitHub will execute rather than against its current formatting.
+/// preserved for incident review, rather than against its current formatting.
 fn workflow_document() -> Result<Value> {
     Ok(serde_yaml_ng::from_str(&workflow_source()?)?)
 }

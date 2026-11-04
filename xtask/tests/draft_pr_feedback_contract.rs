@@ -118,23 +118,20 @@ fn triggers_of(workflow: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
 /// re-wrapping the flow sequence cannot fail the proof; only adding or
 /// removing a trigger — a semantic change to what re-runs the draft guard —
 /// must confront this contract.
-fn assert_draft_event_triggers(workflow: &Value) -> Result<(), Box<dyn std::error::Error>> {
-    let pull_request = mapping_value(triggers_of(workflow)?, "pull_request", "`on`")?;
-    let mut types: Vec<String> = mapping_value(pull_request, "types", "`on.pull_request`")?
-        .as_sequence()
-        .ok_or("`on.pull_request.types` must be a YAML sequence")?
-        .iter()
-        .map(|value| scalar_str(value, "`on.pull_request.types` entry").map(str::to_owned))
-        .collect::<Result<Vec<_>, _>>()?;
-    types.sort();
-
-    let expected = ["converted_to_draft", "opened", "ready_for_review", "reopened", "synchronize"];
-    assert!(
-        types == expected,
-        "`on.pull_request.types` must keep exactly the draft-guard trigger set \
-         {expected:?}: `ready_for_review` and `converted_to_draft` change the \
-         draft-pr-check guard behavior and must keep triggering CI. Found {types:?}"
-    );
+fn assert_queue_event_perimeter(workflow: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let events = triggers_of(workflow)?.as_mapping().ok_or("events must be a mapping")?;
+    for event in [
+        "pull_request",
+        "pull_request_target",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "issue_comment",
+        "push",
+    ] {
+        assert!(!events.contains_key(event), "{event} must not start development Actions");
+    }
+    let group = mapping_value(triggers_of(workflow)?, "merge_group", "on")?;
+    assert_eq!(group.get("types"), Some(&serde_yaml_ng::from_str::<Value>("[checks_requested]")?));
     Ok(())
 }
 
@@ -254,13 +251,14 @@ fn assert_rust_formatting_stays_independent(
 }
 
 #[test]
-fn drafts_keep_exact_head_cheap_feedback() -> Result<(), Box<dyn std::error::Error>> {
+fn draft_publication_is_silent_and_selected_proof_bodies_survive()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
     let workflow: Value = serde_yaml_ng::from_str(&ci)
         .map_err(|error| format!("ci.yml is not structurally valid YAML: {error}"))?;
 
-    assert_draft_event_triggers(&workflow)?;
+    assert_queue_event_perimeter(&workflow)?;
     assert_draft_guard_defers_full_ci(&workflow)?;
     assert_conflict_markers_run_on_every_route(&workflow)?;
     assert_rust_formatting_stays_independent(&workflow)?;

@@ -1,14 +1,7 @@
 name: Rebuild #11983 on current main
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
-    paths:
-      - .github/workflows/discover-11983-current-main.yml
-      - scripts/maintenance/rebuild_11983_current_main.sh
-      - scripts/maintenance/verify_11983_reject_identities.py
-      - scripts/tests/test-rebuild-11983-reject-identities.py
+  workflow_dispatch: {}
 
 permissions:
   contents: read

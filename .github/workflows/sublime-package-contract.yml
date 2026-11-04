@@ -1,21 +1,7 @@
 name: Sublime package contract
 
 on:
-  pull_request:
-    paths:
-      - "clients/sublime/**"
-      - "policy/non-rust-allowlist.toml"
-      - ".github/workflows/sublime-package-contract.yml"
-      - "xtask/src/main.rs"
-      - "xtask/src/tasks/mod.rs"
-  push:
-    branches: [main]
-    paths:
-      - "clients/sublime/**"
-      - "policy/non-rust-allowlist.toml"
-      - ".github/workflows/sublime-package-contract.yml"
-      - "xtask/src/main.rs"
-      - "xtask/src/tasks/mod.rs"
+  workflow_dispatch: {}
 
 permissions:
   contents: read

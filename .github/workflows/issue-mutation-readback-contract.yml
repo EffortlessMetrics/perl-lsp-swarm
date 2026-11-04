@@ -1,20 +1,6 @@
 name: Issue Mutation Readback Contract
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.agents/skills/prepare-issue/SKILL.md'
-      - '.claude/skills/prepare-issue/SKILL.md'
-      - 'tests/test_issue_mutation_readback_contract.py'
-      - '.github/workflows/issue-mutation-readback-contract.yml'
-  push:
-    branches: [main]
-    paths:
-      - '.agents/skills/prepare-issue/SKILL.md'
-      - '.claude/skills/prepare-issue/SKILL.md'
-      - 'tests/test_issue_mutation_readback_contract.py'
-      - '.github/workflows/issue-mutation-readback-contract.yml'
   workflow_dispatch: {}
 
 permissions:

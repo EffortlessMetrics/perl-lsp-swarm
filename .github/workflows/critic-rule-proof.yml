@@ -1,32 +1,6 @@
 name: Critic Rule Proof
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'schemas/critic_rule_proof.v1.schema.json'
-      - 'fixtures/critic-rule-proof/**'
-      - 'docs/project/status/critic_rule_proof.md'
-      - 'xtask/src/critic_rule_proof/**'
-      - 'xtask/src/tasks/critic_rule_proof.rs'
-      - 'xtask/tests/critic_rule_proof.rs'
-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/identity.rs'
-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/remediation.rs'
-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs'
-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs'
-      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native/**'
-      - 'crates/perl-parser/**'
-      - 'crates/perl-parser-core/**'
-      - 'crates/perl-lexer/**'
-      - 'crates/perl-ast/**'
-      - 'crates/perl-semantic-analyzer/**'
-      - 'crates/perl-pragma/**'
-      - 'crates/perl-module/**'
-      - 'crates/perl-workspace/**'
-      - 'crates/perl-tdd-support/**'
-      - '.github/workflows/critic-rule-proof.yml'
-      - 'xtask/src/main.rs'
-      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:

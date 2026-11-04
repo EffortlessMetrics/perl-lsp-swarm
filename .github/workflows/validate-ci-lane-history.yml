@@ -1,16 +1,6 @@
 name: Validate CI lane-history contract
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/aggregate-ci-lane-history.yml'
-      - '.github/workflows/validate-ci-lane-history.yml'
-      - 'scripts/ci/aggregate_lane_history.py'
-      - 'scripts/ci/test_aggregate_lane_history.py'
-      - 'scripts/ci/pr_plan.py'
-      - 'scripts/ci/test_pr_plan.py'
-      - 'policy/ci-lanes.toml'
-      - '.ci/metrics/ci-lane-history.json'
   workflow_dispatch: {}
 
 permissions:

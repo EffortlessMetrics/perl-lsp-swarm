@@ -40,10 +40,15 @@ so; `test_ledger_disclaims_runtime_authority` holds that line.
 from __future__ import annotations
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# The production recipe executes this file directly, not with ``-m unittest``.
+# Resolve the shared source catalog from that same repository root in both modes.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 EXAMPLES = ROOT / "docs" / "agents" / "examples"
 LEDGER = EXAMPLES / "README.md"
 AGENTS_README = ROOT / "docs" / "agents" / "README.md"
@@ -1230,16 +1235,14 @@ class WorkedLaneWorkflowTests(unittest.TestCase):
             f"convention rather than a check",
         )
 
-    def test_workflow_triggers_on_every_constrained_path(self) -> None:
-        for event in ("pull_request", "push"):
-            missing = sorted(self.REQUIRED_PATHS - workflow_paths(event))
-            self.assertEqual(
-                missing,
-                [],
-                f"on.{event}.paths is missing {missing}; a change that adds, "
-                f"renames, or deletes a worked lane has to run this check, or "
-                f"the ledger goes stale on main with no gate having run",
-            )
+    def test_complete_corpus_contract_requires_explicit_admission(self) -> None:
+        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
+        workflow = read_workflow_catalog(ROOT)[WORKFLOW_PATH]
+        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
+        self.assertFalse(workflow.path_filtered_events)
+        # The corpus validators above still scan every registered lane. With no
+        # event path filter, an input cannot opt out of an explicit proof run.
+        self.assertIn("python3 tests/test_worked_lane_corpus.py", _read(WORKFLOW))
 
 
 if __name__ == "__main__":  # pragma: no cover

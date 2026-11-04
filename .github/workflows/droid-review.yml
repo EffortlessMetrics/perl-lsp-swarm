@@ -12,8 +12,7 @@ name: Droid PR Review
 # readable. The job is statically skipped and does not access review secrets.
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
 
 permissions:
   contents: read

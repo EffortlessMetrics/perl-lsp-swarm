@@ -1,5 +1,12 @@
 # PR Plan
 
+> **Queue-only cutover (#17903):** ordinary PR Plan and head-name-sentinel
+> subscriptions are retired. Authoring economics and classifier checks run
+> in-session. The retained PR-payload workflow bodies are source for diagnosis,
+> not qualified manual or merge-group producers. The trigger model below records
+> the earlier integration; it does not authorize an empty push or closing and
+> reopening a PR to manufacture CI. Current route: [qualification cutover](qualification-cutover.md).
+
 Advisory CI economics forecast. Runs once per PR via
 [`.github/workflows/pr-plan.yml`](../../.github/workflows/pr-plan.yml) and writes
 `target/ci/ci-plan.json` + a step summary.

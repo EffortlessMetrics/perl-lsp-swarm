@@ -15,7 +15,6 @@ name: Changelog Ledger (Advisory)
 # Ubuntu-only (no Windows job — see CI runner economics).
 
 on:
-  pull_request:
   workflow_dispatch: {}
 
 permissions:

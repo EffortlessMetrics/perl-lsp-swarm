@@ -1,20 +1,6 @@
 name: Authority Transfer Graph
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - '.ci/authority-transfer-programme/**'
-      - 'scripts/check-authority-transfer-graph.sh'
-      - 'xtask/src/bin/authority-transfer-graph.rs'
-      - '.github/workflows/authority-transfer-graph.yml'
-  push:
-    branches: [main, master]
-    paths:
-      - '.ci/authority-transfer-programme/**'
-      - 'scripts/check-authority-transfer-graph.sh'
-      - 'xtask/src/bin/authority-transfer-graph.rs'
-      - '.github/workflows/authority-transfer-graph.yml'
   workflow_dispatch: {}
 
 concurrency:

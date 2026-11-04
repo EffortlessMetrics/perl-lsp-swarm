@@ -12,25 +12,6 @@
 name: Workflow Security Ratchet
 
 on:
-  pull_request_target:
-    branches: [main, master]
-    types: [opened, synchronize, reopened, ready_for_review]
-    # No `paths` filter on this event and no job-level `if:` gate either:
-    # applicability is resolved entirely inside the job's first step, so a
-    # required check run is always reported (always-or-scoped-noop per
-    # .ci/policies/required-checks.toml) and non-workflow dependency PRs
-    # (Cargo.lock / npm manifests) resolve green immediately instead of facing a
-    # never-reported context when this job becomes ruleset-required (#10536).
-    # The `push` trigger below keeps its paths filter; main-redness channels
-    # are unchanged.
-  push:
-    branches: [main, master]
-    paths:
-      - '.github/workflows/**'
-      - '.github/actions/**'
-      - '.ci/workflow-security-baseline.json'
-      - 'scripts/ci/workflow_security_ratchet.py'
-      - 'scripts/ci/test_workflow_security_ratchet.py'
   workflow_dispatch: {}
 
 concurrency:

@@ -22,29 +22,6 @@ name: Workflow Contracts (Advisory)
 # Ubuntu-only (no Windows job — see CI runner economics).
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/**"
-      - "scripts/ci/test_codecov_test_results_workflows.py"
-      - "scripts/ci/test_perf_nightly_alert.py"
-      - "scripts/bash_binary.py"
-      - "xtask/src/tasks/workflows.rs"
-      - "xtask/src/tasks/workflow_policy_lint.rs"
-      - "policy/workflow-contracts.toml"
-      - ".ci/receipts/schemas/workflow-contracts.schema.json"
-      - "xtask/src/main.rs"
-      - "xtask/src/tasks/mod.rs"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/**"
-      - "scripts/ci/test_codecov_test_results_workflows.py"
-      - "scripts/ci/test_perf_nightly_alert.py"
-      - "scripts/bash_binary.py"
-      - "xtask/src/tasks/workflows.rs"
-      - "policy/workflow-contracts.toml"
-      - "xtask/src/main.rs"
-      - "xtask/src/tasks/mod.rs"
   workflow_dispatch: {}
 
 permissions:

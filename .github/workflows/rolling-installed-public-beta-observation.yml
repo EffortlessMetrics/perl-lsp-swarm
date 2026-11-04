@@ -8,15 +8,6 @@ on:
         required: false
         type: boolean
         default: false
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/rolling-installed-public-beta-observation.yml'
-      - 'scripts/ci/rolling_installed_observation.py'
-      - 'scripts/ci/test_rolling_installed_observation.py'
-      - 'scripts/ci/check_rolling_installed_workflow.py'
-      - 'vscode-extension/scripts/run-local-vsix-smoke.js'
-      - 'vscode-extension/scripts/run-local-vsix-smoke.test.js'
 
 permissions:
   contents: read

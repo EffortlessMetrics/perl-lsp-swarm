@@ -464,8 +464,8 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     );
 
     assert!(
-        workflow.contains("types: [opened, synchronize, reopened, ready_for_review, labeled]"),
-        "ci-nightly may still host other label-gated jobs"
+        !workflow.contains("\n  pull_request:") && !workflow.contains("\n  push:"),
+        "nightly siblings must not restore ordinary development or main Actions"
     );
     assert!(
         coverage_job.contains("name: Codecov / Patch 95"),
@@ -984,10 +984,12 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && !coverage_job.contains("github.event_name == 'push'")
             && !coverage_job.contains("ci:coverage")
             && !coverage_job.contains("github.event_name == 'merge_group'")
-            // The shared workflow keeps a top-level `pull_request:` trigger for
-            // its label-gated sibling jobs; only the coverage job is restricted.
-            && workflow.contains("\n  pull_request:"),
-        "patch coverage must be advisory: only the coverage job is schedule/workflow_dispatch-only"
+            // Sibling development-event roots are retired too. Keep the
+            // actual deep schedule/manual purpose and all coverage proof.
+            && !workflow.contains("\n  pull_request:")
+            && !workflow.contains("\n  pull_request_target:")
+            && !workflow.contains("\n  push:"),
+        "patch coverage stays advisory schedule/manual proof with no development Actions"
     );
     let route_step =
         must_some(coverage_job.find("- name: Emit changed-file coverage route summary"));

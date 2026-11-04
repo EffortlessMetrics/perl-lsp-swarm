@@ -473,41 +473,18 @@ class ReloadLifecycleWorkflowWiringTest(unittest.TestCase):
             "the workflow must execute this suite in a run command, not merely name it",
         )
 
-    def test_every_read_surface_fires_both_events(self) -> None:
-        """Every input the suite READS must trigger the gate, under both events.
+    def test_content_contract_is_explicit_and_unfiltered(self) -> None:
+        from scripts.ci.validate_gate_enforcement_contract import read_workflow_catalog
+        workflow = read_workflow_catalog(ROOT)[WORKFLOW]
+        self.assertEqual(workflow.events, frozenset({"workflow_dispatch"}))
+        self.assertFalse(workflow.path_filtered_events)
+        # The real content suite above scans every referenced document and Rust
+        # type; explicit admission cannot substitute a path-filtered subset.
+        self.assertIn(f"python3 -m unittest {SELF_TEST}", self.workflow)
 
-        Naming only the files the suite mentions is not enough. The marker scan
-        reads all of `docs/`, and the type check reads all of `crates/`, so a
-        filter listing six files lets a competing authority in a seventh doc
-        merge without this gate ever running.
-        """
-        read_surfaces = (
-            SPEC,
-            SPEC_CATALOG,
-            DOC_INDEX,
-            DAP_RELOAD_ADR,
-            SELF_TEST,
-            WORKFLOW,
-            PARSER_SOURCE,
-            "docs/reference/SOME_OTHER_DOC.md",
-            "crates/perl-workspace/src/workspace/runtime_generation/core.rs",
-        )
-        for event in ("pull_request", "push"):
-            patterns = workflow_event_paths(self.workflow, event)
-            self.assertTrue(patterns, f"the {event} filter is empty")
-            for surface in read_surfaces:
-                with self.subTest(event=event, surface=surface):
-                    self.assertTrue(
-                        any(path_matches(pattern, surface) for pattern in patterns),
-                        f"{surface} can change without running this gate on {event}",
-                    )
-
-    def test_both_events_guard_the_same_surfaces(self) -> None:
-        self.assertEqual(
-            set(workflow_event_paths(self.workflow, "pull_request")),
-            set(workflow_event_paths(self.workflow, "push")),
-            "a one-sided filter disables candidate- or merge-time enforcement",
-        )
+    def test_no_ordinary_subscription_can_reappear(self) -> None:
+        on = self.workflow.split("\non:\n", 1)[1].split("\njobs:", 1)[0]
+        self.assertNotRegex(on, r"(?m)^  (pull_request|pull_request_target|pull_request_review|pull_request_review_comment|issue_comment|push):")
 
 
 class DetectorSelfTest(unittest.TestCase):

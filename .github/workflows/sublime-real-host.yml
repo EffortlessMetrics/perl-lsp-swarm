@@ -1,16 +1,6 @@
 name: Sublime real-host exact-source
 
 on:
-  pull_request:
-    paths:
-      - "clients/sublime/**"
-      - "scripts/sublime/**"
-      - "crates/perl-lsp-rs/**"
-      - "crates/perllsp/**"
-      - "crates/perl-lsp-rs-core/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/sublime-real-host.yml"
   workflow_dispatch:
 
 permissions:

@@ -15,15 +15,7 @@
 name: Workflow Security Ratchet Selftest
 
 on:
-  pull_request:
-    branches: [main, master]
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '.github/workflows/**'
-      - '.github/actions/**'
-      - '.ci/workflow-security-baseline.json'
-      - 'scripts/ci/workflow_security_ratchet.py'
-      - 'scripts/ci/test_workflow_security_ratchet.py'
+  workflow_dispatch: {}
 
 concurrency:
   group: workflow-security-ratchet-selftest-${{ github.event.pull_request.number }}

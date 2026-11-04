@@ -1,15 +1,6 @@
 name: Generated Status Contract
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'docs/project/status/**'
-      - 'policy/generated-status-evidence.json'
-      - '.ci/schemas/generated-status-cell.schema.json'
-      - 'xtask/src/bin/generated-status-contract.rs'
-      - 'xtask/src/tasks/update_status/**'
-      - '.github/workflows/generated-status-contract.yml'
   workflow_dispatch: {}
 
 concurrency:

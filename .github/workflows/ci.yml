@@ -6,16 +6,8 @@ name: CI
 # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
 
 on:
-  pull_request:
-    branches: [ main, master ]
-    # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
-    # classification metadata, not CI authority. `ready_for_review` and
-    # `converted_to_draft` are kept because they change the draft-pr-check guard
-    # behavior and must trigger CI.
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-  merge_group: {}
-  push:
-    branches: [ main, master ]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       base_sha:
@@ -33,6 +25,7 @@ on:
 # group with cancel-in-progress: false, each newly queued main-push run cancelled the
 # previously *pending* run in the group (76% of main-push runs were cancelled before
 # scheduling a job). Per-SHA groups give every landed commit its own baseline run.
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
@@ -2201,7 +2194,7 @@ jobs:
 
   # ── Compile All Targets: catch integration-test + bench bit-rot ───────
   check-all-targets:
-    name: Compile All Targets (bit-rot guard)
+    name: Compile All Targets execution
     runs-on: ubuntu-24.04
     # The default+all-features double workspace check now costs ~14m on this
     # base (#12650/#12712 grew the compiled target surface), leaving the four
@@ -2797,3 +2790,27 @@ jobs:
           path: ${{ env.RECEIPT_PATH }}
           if-no-files-found: error
           retention-days: 7
+
+  integration-required:
+    name: Compile All Targets (bit-rot guard)
+    needs: [check-all-targets, merge-gate]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Require current-attempt compile and selected integration proof
+        shell: bash
+        env:
+          COMPILE_RESULT: ${{ needs.check-all-targets.result }}
+          INTEGRATION_RESULT: ${{ needs.merge-gate.result }}
+        run: |
+          set -euo pipefail
+          # `needs` is scoped to this workflow run/attempt. No cross-run check
+          # lookup, main-history colour, or empty/skipped result supplies proof.
+          if [ "$COMPILE_RESULT" != success ] || [ "$INTEGRATION_RESULT" != success ]; then
+            printf '::error::Required integration proof incomplete: compile=%s integration=%s\n' \
+              "$COMPILE_RESULT" "$INTEGRATION_RESULT"
+            exit 1
+          fi
+          echo 'Compile and selected integration obligations succeeded in this native run.'

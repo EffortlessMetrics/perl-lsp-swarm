@@ -173,10 +173,10 @@ fn supported_evaluator_distinguishes_missing_input_and_malformed_contract() -> R
     fs::remove_file(fixture.path().join("xtask/src/tasks/file_policy.rs"))?;
     let (missing, stage) = guard_output(fixture.path())?;
     ensure!(!missing.status.success() && stage.trim() == "failure_stage=evaluator-availability");
-    write_available_evaluator(
-        fixture.path(),
-        &source.replace("  merge_group: {}", "  workflow_call: {}"),
-    )?;
+    let malformed_source =
+        source.replace("  merge_group:\n    types: [checks_requested]", "  workflow_call: {}");
+    ensure!(malformed_source != source, "missing-G mutation must change the actual source");
+    write_available_evaluator(fixture.path(), &malformed_source)?;
     let (malformed, stage) = guard_output(fixture.path())?;
     ensure!(!malformed.status.success(), "present malformed trusted contract must refuse");
     ensure!(stage.lines().last() == Some("failure_stage=trusted-workflow-contract"));

@@ -85,54 +85,14 @@ fn validate_workflow(source: &str) -> Result<()> {
         .get("on")
         .and_then(Value::as_mapping)
         .ok_or_else(|| anyhow!("the workflow must declare a mapping of events"))?;
-    let trigger = events
-        .get("pull_request")
-        .and_then(Value::as_mapping)
-        .ok_or_else(|| anyhow!("the workflow must have a structured pull_request trigger"))?;
-    let branches: BTreeSet<_> = trigger
-        .get("branches")
-        .and_then(Value::as_sequence)
-        .ok_or_else(|| anyhow!("pull_request must declare branches"))?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
     ensure!(
-        branches == BTreeSet::from(["main", "master"]),
-        "pull_request must target only main and master"
-    );
-    ensure!(
-        events.len() == 2
-            && events.contains_key("pull_request")
-            && events.contains_key("workflow_dispatch"),
-        "workflow must expose only pull_request and workflow_dispatch"
+        events.len() == 1 && events.contains_key("workflow_dispatch"),
+        "Windows proof requires explicit admission; ordinary publication must start no Actions"
     );
     ensure!(
         events.get("workflow_dispatch") == Some(&Value::Null),
         "workflow_dispatch must not declare inputs or payload"
     );
-    ensure!(
-        trigger.len() == 2 && trigger.get("types").is_none(),
-        "pull_request must not add extra activity types"
-    );
-    let paths: BTreeSet<_> = trigger
-        .get("paths")
-        .and_then(Value::as_sequence)
-        .ok_or_else(|| anyhow!("pull_request must declare paths"))?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    ensure!(
-        paths
-            == BTreeSet::from([
-                "Cargo.lock",
-                "Cargo.toml",
-                ".github/workflows/corpus-windows-reparse-proof.yml",
-                "crates/perl-corpus/**",
-                "xtask/src/publication_drift/**",
-            ]),
-        "pull_request paths must preserve the Windows proof trigger scope"
-    );
-    ensure!(events.get("pull_request_target").is_none(), "pull_request_target is not allowed");
 
     let permissions = workflow
         .get("permissions")
@@ -685,9 +645,12 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
             TOPOLOGY_SHELL_SOURCE_ANCHOR,
             "        shell: bash\n        if: ${{ false }}\n        run: |\n          set -euo pipefail\n\n          selected_tests=(",
         ),
-        ("branches: [main, master]", "branches: [feature/cache]"),
-        ("pull_request:", "pull_request_target:"),
-        ("    branches: [main, master]\n", "    branches: [main, master]\n    types: [opened]\n"),
+        (
+            "  workflow_dispatch:\n",
+            "  workflow_dispatch:\n  pull_request:\n    branches: [main, master]\n",
+        ),
+        ("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target: {}\n"),
+        ("  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_review: {}\n"),
         ("  workflow_dispatch:\n", "  workflow_dispatch:\n  push:\n"),
         ("  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 0 * * *'\n"),
         (

@@ -1,26 +1,7 @@
 name: Review Receipt Retirement
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'scripts/ci/check-pr-claim-currentness'
-      - 'scripts/reviews/claim-digest'
-      - 'scripts/reviews/claim_digest.py'
-      - 'tests/test_review_claim_currentness.py'
-      - 'tests/test_review_claim_fail_closed.py'
-      - 'tests/test_retired_review_receipt_commands.py'
-      - '.github/workflows/review-receipt-retirement.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/ci/check-pr-claim-currentness'
-      - 'scripts/reviews/claim-digest'
-      - 'scripts/reviews/claim_digest.py'
-      - 'tests/test_review_claim_currentness.py'
-      - 'tests/test_review_claim_fail_closed.py'
-      - 'tests/test_retired_review_receipt_commands.py'
-      - '.github/workflows/review-receipt-retirement.yml'
+  workflow_dispatch: {}
 
 permissions:
   contents: read

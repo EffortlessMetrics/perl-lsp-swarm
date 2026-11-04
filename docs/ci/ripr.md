@@ -28,9 +28,10 @@ static `ripr` sensor itself remains advisory (`policy/ub-review.toml`); a sensor
 availability failure is not treated as a clean result or as a receipt-integrity
 pass. Non-production-only static findings remain visible in the receipts but do
 not create a merge-blocking repair packet. Repo-wide RIPR+ total zero remains a burn-down target
-until the final enforcement slice. The workflow still runs for
-every PR when it is ready for review so docs-only, policy-only, workflow-only,
-and code PRs all carry current proof receipts.
+until the final enforcement slice. Authoring proof runs in-session. The
+native integration workflow qualifies the actual merge group, including
+docs-only, policy-only, workflow-only and code changes. Draft/Ready
+publication starts no Actions.
 
 ## PR integration comparison identity
 
@@ -130,16 +131,12 @@ never infer success from emptiness.
 
 ## When it runs
 
-- Every PR targeting `master` or `main`.
-- No path filter is applied: docs-only, policy-only, workflow-only, and code
-  PRs all run the RIPR proof workflow so every merge has current proof receipts.
-- Draft PRs are skipped while draft, then the explicit `ready_for_review`
-  trigger runs the workflow before the PR can merge.
-- Manual via `workflow_dispatch`.
-- Labels can still route deeper or more expensive evidence lanes elsewhere, but
-  this proof workflow is no longer label-gated.
+Authoring checks and repairs run in-session. Draft/Ready publication starts no Actions.
+The required integration workflow runs for the actual `merge_group` subject on
+`checks_requested`; an explicit diagnostic is a separately authorized action.
+No path filter is applied: docs-only, policy-only and workflow-only candidates
+still require applicable integration receipts. A skipped producer is not proof.
 
----
 
 ## Behavior
 

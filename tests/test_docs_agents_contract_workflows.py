@@ -654,23 +654,28 @@ def host_gate_errors(
 ) -> list[str]:
     errors: list[str] = []
     try:
-        pull_request = parse_event_filters(ci_workflow_text, "pull_request")
+        merge_group = parse_event_filters(ci_workflow_text, "merge_group")
     except AssertionError as error:
         return [str(error)]
-    if not pull_request.present:
+    if not merge_group.present:
         errors.append(
-            "host workflow `.github/workflows/ci.yml` must declare on.pull_request"
+            "host workflow `.github/workflows/ci.yml` must declare on.merge_group"
         )
-    elif not pull_request.unfiltered:
+    elif not merge_group.unfiltered:
         found: list[str] = []
-        if pull_request.has_paths_key:
-            found.append(f"paths={sorted(pull_request.paths)!r}")
-        if pull_request.has_paths_ignore_key:
-            found.append(f"paths-ignore={sorted(pull_request.paths_ignore)!r}")
+        if merge_group.has_paths_key:
+            found.append(f"paths={sorted(merge_group.paths)!r}")
+        if merge_group.has_paths_ignore_key:
+            found.append(f"paths-ignore={sorted(merge_group.paths_ignore)!r}")
         errors.append(
-            "host workflow `.github/workflows/ci.yml` on.pull_request must have "
+            "host workflow `.github/workflows/ci.yml` on.merge_group must have "
             f"no path filter; found {', '.join(found)}"
         )
+
+    for event in ("pull_request", "pull_request_target", "pull_request_review",
+                  "pull_request_review_comment", "issue_comment", "push"):
+        if parse_event_filters(ci_workflow_text, event).present:
+            errors.append(f"host workflow must not start ordinary event {event}")
 
     shard_gates = policy_shard_gates(ci_workflow_text)
     if gate_name not in shard_gates:
@@ -1451,11 +1456,11 @@ jobs:
 
 
 class HostGateTests(unittest.TestCase):
-    def test_missing_pull_request_event_on_host_is_caught(self) -> None:
+    def test_missing_merge_group_event_on_host_is_caught(self) -> None:
         ci = """\
 on:
   push:
-    branches: [main]
+    types: [checks_requested]
 jobs:
   merge-gate-shards:
     strategy:
@@ -1470,13 +1475,13 @@ jobs:
     command: python3 tests/test_docs_agents_contract_workflows.py
 """
         errors = host_gate_errors(ci, policy)
-        self.assertTrue(any("must declare on.pull_request" in error for error in errors), errors)
+        self.assertTrue(any("must declare on.merge_group" in error for error in errors), errors)
 
     def test_paths_ignore_on_host_is_caught(self) -> None:
         ci = """\
 on:
-  pull_request:
-    branches: [main]
+  merge_group:
+    types: [checks_requested]
     paths-ignore:
       - '.github/workflows/**'
 jobs:
@@ -1498,7 +1503,7 @@ jobs:
     def test_inline_mapping_path_filter_on_host_is_caught(self) -> None:
         ci = """\
 on:
-  pull_request: {paths: ['.github/workflows/ci.yml']}
+  merge_group: {paths: ['.github/workflows/ci.yml']}
 jobs:
   merge-gate-shards:
     strategy:
@@ -1518,8 +1523,8 @@ jobs:
     def test_path_filter_on_host_is_caught(self) -> None:
         ci = """\
 on:
-  pull_request:
-    branches: [main]
+  merge_group:
+    types: [checks_requested]
     paths:
       - '.github/workflows/ci.yml'
 jobs:
@@ -1541,8 +1546,8 @@ jobs:
     def test_advisory_gate_is_caught(self) -> None:
         ci = """\
 on:
-  pull_request:
-    branches: [main]
+  merge_group:
+    types: [checks_requested]
 jobs:
   merge-gate-shards:
     strategy:
@@ -1562,8 +1567,8 @@ jobs:
     def test_missing_shard_membership_is_caught(self) -> None:
         ci = """\
 on:
-  pull_request:
-    branches: [main]
+  merge_group:
+    types: [checks_requested]
 jobs:
   merge-gate-shards:
     strategy:
@@ -1583,8 +1588,8 @@ jobs:
     def test_wrong_command_is_caught(self) -> None:
         ci = """\
 on:
-  pull_request:
-    branches: [main]
+  merge_group:
+    types: [checks_requested]
 jobs:
   merge-gate-shards:
     strategy:
@@ -1604,8 +1609,8 @@ jobs:
     def test_well_formed_host_passes(self) -> None:
         ci = """\
 on:
-  pull_request:
-    branches: [main]
+  merge_group:
+    types: [checks_requested]
 jobs:
   merge-gate-shards:
     strategy:

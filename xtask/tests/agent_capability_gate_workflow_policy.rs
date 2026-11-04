@@ -76,13 +76,15 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         );
     }
 
+    let events = mapping_value(&workflow, "on")?
+        .as_mapping()
+        .ok_or_else(|| anyhow!("events mapping missing"))?;
+    ensure!(
+        events.len() == 1 && events.contains_key("merge_group"),
+        "capability proof must run only for actual G; authoring checks run in-session"
+    );
     for required in [
-        "pull_request:",
-        "'.claude/agents/**'",
-        "merge_group:",
-        "push:",
-        "      - main",
-        "      - master",
+        "merge_group:\n    types: [checks_requested]",
         "contents: read",
         "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
         "github.event.pull_request.head.repo.full_name != github.repository",

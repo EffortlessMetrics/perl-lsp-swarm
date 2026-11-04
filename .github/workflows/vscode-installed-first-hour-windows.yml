@@ -1,20 +1,7 @@
 name: VS Code Installed First-Hour Windows
 
 on:
-  pull_request:
-    # The installed-byte leaf stacks on #16981 until its observer lands.
-    # Remove this temporary base when #16991 retargets to main.
-    branches: [main, master, codex/6056-installed-identity]
-    paths:
-      - 'vscode-extension/**'
-      - 'crates/perl-lsp*/**'
-      - 'crates/perllsp/**'
-      - 'crates/perl-dap/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/vscode-installed-first-hour-windows.yml'
-      - 'scripts/ci/qualified_definition_protocol_probe.py'
-      - 'scripts/ci/test_qualified_definition_protocol_probe.py'
+  workflow_dispatch: {}
 
 concurrency:
   group: vscode-installed-first-hour-windows-${{ github.event.pull_request.number }}
