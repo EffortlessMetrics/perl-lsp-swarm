@@ -292,7 +292,7 @@ gate=(cargo xtask quality-gate --mode enforce-new-ripr
   --ripr-receipt target/receipts/quality/ripr-plus.json
   --ripr-pr-receipt target/ripr/pr/repo-exposure.json
   --review-receipt target/ripr/review/comments.json
-  --ripr-base "$base" --ripr-head HEAD
+  --ripr-base "$base" --ripr-head HEAD --ripr-pr-head "$pr_head"
   --receipt target/receipts/quality/quality-gate-ripr.json
   --summary target/receipts/quality/quality-gate-ripr.md)
 run "${gate[@]}"

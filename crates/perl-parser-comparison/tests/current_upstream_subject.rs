@@ -36,11 +36,11 @@ fn exact_subject_manifest_is_one_complete_authority() {
     assert_eq!(subject.upstream_tag(), "v2.0.0");
     assert_eq!(subject.upstream_commit(), "50904961d6a87c5191e611276aa2ecb9d66ca4ff");
     assert_eq!(subject.tree_sitter_runtime_version(), "0.26.13");
-    assert_eq!(subject.tree_sitter_language_version(), "0.1.8");
+    assert_eq!(subject.tree_sitter_language_version(), "0.1.9");
     assert_eq!(subject.upstream_rust_version(), "1.90");
     assert_eq!(
         subject.semantic_digest(),
-        "sha256:5a2130961782eb11e91aae5ef611a7df736632b9ba82a7c6bbb040b9a64fc995"
+        "sha256:04d53ad66db65863fd28f4f72d1dcb699a10cd43839c235e236f2b3d1b03d71e"
     );
     assert_eq!(
         subject.semantic_identity(),
