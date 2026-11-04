@@ -181,9 +181,9 @@ fn test_regex_code_block_scan_matches_both_openers() {
     // opener scan rather than a regex static, so the production seam is
     // `regex_code_block_matches`. The same falsifying inputs stay pinned: the
     // `(?{` and `(??{` openers both match, `(???{` does not.
-    assert!(!super::regex_code_block_matches("m/a(?{b<<'X'})c/").is_empty());
-    assert!(!super::regex_code_block_matches("m/a(??{b<<'X'})c/").is_empty());
-    assert!(super::regex_code_block_matches("m/a(???{b<<'X'})c/").is_empty());
+    assert!(!super::regex_code_block_matches("m/a(?{b<<'X'})c/", "m/a(?{b<<'X'})c/").is_empty());
+    assert!(!super::regex_code_block_matches("m/a(??{b<<'X'})c/", "m/a(??{b<<'X'})c/").is_empty());
+    assert!(super::regex_code_block_matches("m/a(???{b<<'X'})c/", "m/a(???{b<<'X'})c/").is_empty());
 }
 
 #[test]

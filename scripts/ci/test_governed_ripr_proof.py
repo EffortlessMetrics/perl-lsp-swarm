@@ -149,6 +149,8 @@ class GovernedRiprProof(unittest.TestCase):
                 self.assertEqual(call[call.index("--pr-head") + 1], self.head)
         gates = [call for call in calls if call[1] == "quality-gate"]
         self.assertEqual(len(gates), 2)
+        for call in gates:
+            self.assertEqual(call[call.index("--ripr-pr-head") + 1], self.head)
         self.assertIn("--check", gates[1])
         self.assertEqual(gates[0][gates[0].index("--mode") + 1], "enforce-new-ripr")
         impacted = [call for call in calls if call[1] == "impacted-evidence"]

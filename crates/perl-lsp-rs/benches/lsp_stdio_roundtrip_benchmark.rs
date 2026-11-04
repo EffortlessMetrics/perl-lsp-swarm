@@ -14,9 +14,11 @@
 //!    `textDocument/definition`, `workspace/symbol`, each sampled after a
 //!    warmup burst on a post-initialize/index session.
 //!
-//! Each lane reports p50/p95/p99 over raw wallclock samples and writes a
+//! Each lane reports p50/p95/p99 in whole microseconds over raw wallclock samples and writes a
 //! receipt to `.ci/metrics/lsp_roundtrip.json` (created relative to the
-//! workspace root). After the receipt pass, the same warm session is driven
+//! workspace root), with schema version 2 and `p50_us`/`p95_us`/`p99_us` fields.
+//! See `.ci/metrics/README.md` for historical version 1 compatibility.
+//! After the receipt pass, the same warm session is driven
 //! through criterion regression groups so steady-state round trips are
 //! tracked by the usual `target/criterion` history.
 //!
@@ -58,6 +60,11 @@
 // server's stdio transport, so the workspace print_stderr/print_stdout deny
 // does not apply the way it does to production code.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
+
+#[path = "support/roundtrip_receipt.rs"]
+mod roundtrip_receipt;
+
+use roundtrip_receipt::{build_receipt, duration_micros, format_lane_summary, summarise};
 
 use anyhow::{Context, Result, anyhow, bail};
 use criterion::Criterion;
@@ -191,7 +198,7 @@ fn measure_initialize(session: &RoundTripSession) -> Result<Vec<u64>> {
         let spawned =
             UxClient::spawn(&session.binary_path, &session.harness.workspace, &session.config)
                 .context("initialize lane: spawn + handshake failed")?;
-        samples.push(millis_since(start));
+        samples.push(duration_micros(start.elapsed()));
         client = Some(spawned);
     }
     drop(client);
@@ -222,7 +229,7 @@ fn measure_did_open_to_diagnostics(session: &RoundTripSession) -> Result<Vec<u64
                 })
             });
         match arrival {
-            Ok(()) => samples.push(millis_since(start)),
+            Ok(()) => samples.push(duration_micros(start.elapsed())),
             Err(end) => bail!(
                 "didOpen lane: no publishDiagnostics arrived for {relative_path}: {}",
                 end.describe()
@@ -242,55 +249,12 @@ fn timed_requests(lane: &'static str, mut request: impl FnMut() -> Result<()>) -
     for _ in 0..REQUEST_SAMPLES {
         let start = Instant::now();
         request().with_context(|| format!("{lane} lane: sampled request failed"))?;
-        samples.push(millis_since(start));
+        samples.push(duration_micros(start.elapsed()));
     }
     Ok(samples)
 }
 
 // ---- Receipt ---------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy)]
-struct LatencySummary {
-    p50_ms: u64,
-    p95_ms: u64,
-    p99_ms: u64,
-    samples: usize,
-}
-
-impl LatencySummary {
-    fn to_json(self) -> Value {
-        json!({
-            "p50_ms": self.p50_ms,
-            "p95_ms": self.p95_ms,
-            "p99_ms": self.p99_ms,
-            "samples": self.samples,
-        })
-    }
-}
-
-/// Percentile convention shared with `tests/real_project_latency.rs`.
-fn percentile(sorted: &[u64], pct: usize) -> u64 {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let idx = ((f64::from(pct as u8) / 100.0) * (sorted.len() - 1) as f64).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn summarise(mut samples: Vec<u64>) -> LatencySummary {
-    let count = samples.len();
-    samples.sort_unstable();
-    LatencySummary {
-        p50_ms: percentile(&samples, 50),
-        p95_ms: percentile(&samples, 95),
-        p99_ms: percentile(&samples, 99),
-        samples: count,
-    }
-}
-
-fn millis_since(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
 
 fn summary_to_value(samples: Result<Vec<u64>>, lane: &'static str) -> Result<Value> {
     Ok(summarise(samples.context(lane)?).to_json())
@@ -338,39 +302,29 @@ fn current_commit() -> String {
 
 /// Build and write `.ci/metrics/lsp_roundtrip.json`; returns the receipt path.
 fn write_receipt(session: &RoundTripSession, lanes: &[(&'static str, Value)]) -> Result<PathBuf> {
-    let mut lanes_map = serde_json::Map::new();
-    for (lane, summary) in lanes {
-        lanes_map.insert((*lane).to_string(), summary.clone());
-    }
-
-    let receipt = json!({
-        "schema_version": 1,
-        "kind": "lsp_stdio_roundtrip",
-        "measured_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "commit": current_commit(),
-        "corpus": {
+    let receipt = build_receipt(
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        current_commit(),
+        json!({
             "fixture": "mojolicious_skeleton",
             "entry_file": ENTRY_FILE,
             "file_count": session.file_count,
             "source_line_count": session.source_line_count,
-        },
-        "runtime": {
+        }),
+        json!({
             "binary": session.binary_path,
             "binary_profile": binary_profile_hint(&session.binary_path),
             "workspace_env": "PERL_LSP_WORKSPACE=1 (fixture_scenario_config)",
             "index_ready": session.index_ready,
-        },
-        "sampling": {
+        }),
+        json!({
             "request_samples_per_lane": REQUEST_SAMPLES,
             "request_warmup_per_lane": REQUEST_WARMUP,
             "initialize_samples": INIT_SAMPLES,
             "did_open_samples": DID_OPEN_SAMPLES,
-        },
-        "lanes": Value::Object(lanes_map),
-        "timing_policy": "client-side wallclock send→response over stdio on a warm session; \
-          advisory baseline only — no wallclock assertion runs in cargo test \
-          (ux_latency_raw_rpc.rs timing policy, #17159)",
-    });
+        }),
+        lanes,
+    );
 
     let output_path = bench_workspace_root().join(RECEIPT_PATH);
     if let Some(parent) = output_path.parent() {
@@ -397,16 +351,6 @@ fn bench_workspace_root() -> PathBuf {
     dir
 }
 
-fn print_lane_summary(lane: &'static str, summary: Value) {
-    println!(
-        "{lane:<26} p50={:>5}ms  p95={:>5}ms  p99={:>5}ms  samples={}",
-        summary["p50_ms"].as_u64().unwrap_or_default(),
-        summary["p95_ms"].as_u64().unwrap_or_default(),
-        summary["p99_ms"].as_u64().unwrap_or_default(),
-        summary["samples"].as_u64().unwrap_or_default(),
-    );
-}
-
 // ---- Criterion regression groups ---------------------------------------------------
 
 fn run_criterion_pass(session: &RoundTripSession) {
@@ -420,7 +364,7 @@ fn run_criterion_pass(session: &RoundTripSession) {
         b.iter(|| {
             let start = Instant::now();
             let outcome = session.harness.hover(ENTRY_FILE, HOVER_LINE, HOVER_COL);
-            let elapsed = millis_since(start);
+            let elapsed = start.elapsed();
             record_criterion_outcome("hover", &outcome.map(|_| ()));
             black_box(elapsed);
         })
@@ -452,7 +396,7 @@ fn run_criterion_pass(session: &RoundTripSession) {
                         Ok(())
                     }
                 });
-            let elapsed = millis_since(start);
+            let elapsed = start.elapsed();
             record_criterion_outcome("completion", &outcome);
             black_box(elapsed);
         })
@@ -462,7 +406,7 @@ fn run_criterion_pass(session: &RoundTripSession) {
         b.iter(|| {
             let start = Instant::now();
             let outcome = session.harness.definition(ENTRY_FILE, DEFINITION_LINE, DEFINITION_COL);
-            let elapsed = millis_since(start);
+            let elapsed = start.elapsed();
             record_criterion_outcome("definition", &outcome.map(|_| ()));
             black_box(elapsed);
         })
@@ -472,7 +416,7 @@ fn run_criterion_pass(session: &RoundTripSession) {
         b.iter(|| {
             let start = Instant::now();
             let outcome = session.harness.workspace_symbols(WORKSPACE_SYMBOL_QUERY);
-            let elapsed = millis_since(start);
+            let elapsed = start.elapsed();
             record_criterion_outcome("workspace_symbol", &outcome.map(|_| ()));
             black_box(elapsed);
         })
@@ -619,7 +563,7 @@ fn run() -> Result<()> {
 
     println!("lsp_stdio_roundtrip baseline (mojolicious_skeleton, warm session):");
     for (lane, summary) in &lanes {
-        print_lane_summary(lane, summary.clone());
+        println!("{}", format_lane_summary(lane, summary));
     }
     let receipt_path = write_receipt(&session, &lanes)?;
     eprintln!("receipt written to {}", receipt_path.display());

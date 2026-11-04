@@ -484,7 +484,9 @@ pub(crate) fn emit_changes_from_diff(
             "missing_discriminator": Value::Null,
             "provenance_refs": [],
         }));
-        for (pattern, boundary_kind) in dynamic_boundaries_in_lines(&hunk.lines) {
+        for (pattern, boundary_kind) in
+            dynamic_boundaries_in_lines(&hunk.lines, hunk.file_path.ends_with(".t"))
+        {
             limitations.push(json!({
                 "limitation_id": format!("diff-dynamic-boundary:{change_id}:{boundary_kind}"),
                 "kind": boundary_kind,
@@ -780,7 +782,7 @@ mod tests {
 @@ -5,3 +5,7 @@
  sub discount {
      my ($amount) = @_;
-+    eval { $amount };
++    eval $amount;
 +    our @ISA = ('Base');
 +    return shift->$method();
  }

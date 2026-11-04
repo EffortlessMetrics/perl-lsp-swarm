@@ -21,11 +21,14 @@ impl Checkpointable for PerlLexer<'_> {
             delimiter_stack,
             in_prototype,
             prototype_depth,
+            prototype_signature_seen,
             after_sub,
             after_arrow,
             hash_brace_depth,
             after_var_subscript,
             paren_depth,
+            print_list_parens,
+            pending_print_list_paren,
             current_pos,
             after_newline,
             pending_heredocs,
@@ -34,6 +37,7 @@ impl Checkpointable for PerlLexer<'_> {
             current_quote_op,
             qw_recovery_enabled,
             eof_emitted,
+            pod_cut_cache: _,
             scan_limit,
             logical_source,
             generation,
@@ -76,11 +80,14 @@ impl Checkpointable for PerlLexer<'_> {
             delimiter_stack: delimiter_stack.clone(),
             in_prototype: *in_prototype,
             prototype_depth: *prototype_depth,
+            prototype_signature_seen: *prototype_signature_seen,
             after_sub: *after_sub,
             after_arrow: *after_arrow,
             hash_brace_depth: *hash_brace_depth,
             after_var_subscript: *after_var_subscript,
             paren_depth: *paren_depth,
+            print_list_parens: print_list_parens.clone(),
+            pending_print_list_paren: *pending_print_list_paren,
             current_pos: *current_pos,
             after_newline: *after_newline,
             pending_heredocs: pending_heredocs
@@ -137,11 +144,14 @@ impl Checkpointable for PerlLexer<'_> {
         self.delimiter_stack.clone_from(&replay.delimiter_stack);
         self.in_prototype = replay.in_prototype;
         self.prototype_depth = replay.prototype_depth;
+        self.prototype_signature_seen = replay.prototype_signature_seen;
         self.after_sub = replay.after_sub;
         self.after_arrow = replay.after_arrow;
         self.hash_brace_depth = replay.hash_brace_depth;
         self.after_var_subscript = replay.after_var_subscript;
         self.paren_depth = replay.paren_depth;
+        self.print_list_parens = replay.print_list_parens.clone();
+        self.pending_print_list_paren = replay.pending_print_list_paren;
         self.current_pos = replay.current_pos;
         self.after_newline = replay.after_newline;
         self.pending_heredocs = replay
