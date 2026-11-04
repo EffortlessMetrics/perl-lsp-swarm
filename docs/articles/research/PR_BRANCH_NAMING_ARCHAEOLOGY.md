@@ -81,9 +81,9 @@ The result is a clear progression:
 
 ## Evidence Pointers
 
-- [docs/project/AGENTIC_DEVELOPMENT.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEVELOPMENT.md)
-- [docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [docs/articles/research/COPILOT_FLEET_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/COPILOT_FLEET_ARCHAEOLOGY.md)
-- [docs/articles/research/ERA5_MIXED_TOOL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA5_MIXED_TOOL_ARCHAEOLOGY.md)
-- [docs/articles/research/SWARM_SURFACE_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
-- [docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
+- [docs/project/AGENTIC_DEVELOPMENT.md](../../project/AGENTIC_DEVELOPMENT.md)
+- [docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [docs/articles/research/COPILOT_FLEET_ARCHAEOLOGY.md](COPILOT_FLEET_ARCHAEOLOGY.md)
+- [docs/articles/research/ERA5_MIXED_TOOL_ARCHAEOLOGY.md](ERA5_MIXED_TOOL_ARCHAEOLOGY.md)
+- [docs/articles/research/SWARM_SURFACE_EVOLUTION.md](SWARM_SURFACE_EVOLUTION.md)
+- [docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)

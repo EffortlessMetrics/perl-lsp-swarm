@@ -1,0 +1,9 @@
+project: product
+component: Parser
+kind: Fixed
+body: "Diagnostics adopted from fused typeglob sub-parses now report outer-source byte offsets for DoWhileTrailingBlock, CStyleForContinueBlock, QualifiedLoopControlLabel, and HeredocBudgetExhausted (previously they kept inner-source coordinates and could point into unrelated text, including the middle of a comment); the offset translation match is now exhaustive so future located variants must choose a translation deliberately."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18243"
+  Slug: fused-diagnostic-offsets
+  Breaking: "no"
