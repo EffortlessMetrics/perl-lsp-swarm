@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Treat a line-initial `=cut` outside POD as opening a POD block that runs to the next `=cut` or to EOF, matching perl. Such a file was previously reported as a syntax failure even though `perl -c` accepts it."
+time: 2026-10-29T00:00:00Z
+custom:
+  PR: "16607"
+  Slug: stray-cut-opens-pod
+  Breaking: "no"

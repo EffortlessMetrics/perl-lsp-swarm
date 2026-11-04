@@ -189,7 +189,7 @@ impl<'a> Parser<'a> {
                 stmt = self.parse_statement_modifier(stmt)?;
             }
             self.finish_statement_terminator(&stmt)?;
-            self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+            self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt)?;
             return Ok(stmt);
         }
 
@@ -550,7 +550,7 @@ impl<'a> Parser<'a> {
         self.finish_statement_terminator(&stmt)?;
 
         // Drain pending heredocs after statement completion (attach content to AST)
-        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt)?;
 
         Ok(stmt)
     }
@@ -922,24 +922,43 @@ impl<'a> Parser<'a> {
 
     /// Whether the subtree declares a heredoc.
     fn contains_heredoc(node: &Node) -> bool {
-        matches!(node.kind, NodeKind::Heredoc { .. })
-            || node.children().into_iter().any(Self::contains_heredoc)
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if matches!(node.kind, NodeKind::Heredoc { .. }) {
+                return true;
+            }
+            stack.extend(node.children());
+        }
+        false
     }
 
     /// Ordinary shift expressions can contain a quoted word immediately after
     /// `<<`, but that word is not a heredoc delimiter. Keep them out of the
     /// narrow leaked-heredoc recovery path.
     fn contains_left_shift(node: &Node) -> bool {
-        matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=")
-            || node.children().into_iter().any(Self::contains_left_shift)
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=") {
+                return true;
+            }
+            stack.extend(node.children());
+        }
+        false
     }
 
     fn contains_identifier_left_shift(node: &Node) -> bool {
-        matches!(
-            &node.kind,
-            NodeKind::Binary { op, left, .. }
-                if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
-        ) || node.children().into_iter().any(Self::contains_identifier_left_shift)
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if matches!(
+                &node.kind,
+                NodeKind::Binary { op, left, .. }
+                    if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
+            ) {
+                return true;
+            }
+            stack.extend(node.children());
+        }
+        false
     }
 
     fn can_arm_heredoc_recovery(node: &Node) -> bool {

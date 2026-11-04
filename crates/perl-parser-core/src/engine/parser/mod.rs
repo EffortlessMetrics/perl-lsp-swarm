@@ -57,7 +57,10 @@
 use crate::{
     ast::{GotoTargetForm, Node, NodeKind, SourceLocation},
     error::{ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind, RecoverySite},
-    heredoc_collector::{self, HeredocContent, PendingHeredoc, collect_at_declaration_offsets},
+    heredoc_collector::{
+        self, HeredocCollectInterrupt, HeredocContent, PendingHeredoc,
+        collect_at_declaration_offsets_with_probe,
+    },
     quote_parser,
     token_stream::{ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream},
 };
@@ -156,6 +159,10 @@ pub struct Parser<'a> {
     pending_heredocs: VecDeque<PendingHeredoc>,
     /// Custom attributes registered by Attribute::Handlers declarations in this file.
     custom_attribute_handlers: HashSet<String>,
+    /// Subroutine names declared with an empty `()` prototype in this file.
+    /// Used to keep `looks_like_bare_call` from swallowing a following
+    /// line as a nested `sprintf`/`join` argument (#2721 / review).
+    declared_nullary_subs: HashSet<String>,
     /// Whether `use Attribute::Handlers;` has been seen in this file.
     attribute_handlers_enabled: bool,
     /// Source bytes for heredoc content collection (shared with token stream)
@@ -250,6 +257,7 @@ impl<'a> Parser<'a> {
             in_sort_comparator: false,
             pending_heredocs: VecDeque::new(),
             custom_attribute_handlers: HashSet::new(),
+            declared_nullary_subs: HashSet::new(),
             attribute_handlers_enabled: false,
             src_bytes: source.as_bytes(),
             byte_cursor: 0,
@@ -309,6 +317,15 @@ impl<'a> Parser<'a> {
             ParserConfigIdentity::production_default(),
             Some(cancellation_flag),
         )
+    }
+
+    /// Like [`Self::new_with_cancellation`], but uses the supplied production config.
+    pub fn with_production_config_and_cancellation(
+        input: &'a str,
+        config: ParserConfigIdentity,
+        cancellation_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self::assemble(TokenStream::new(input), input, config, Some(cancellation_flag))
     }
 
     /// Create a parser from pre-lexed tokens, skipping the lexer pass.

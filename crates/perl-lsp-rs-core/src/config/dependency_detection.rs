@@ -1,5 +1,6 @@
 //! Marker-based Perl dependency-manager include-path detection.
 
+use std::io;
 use std::path::Path;
 
 /// Marker paths are defined once in `super::project_metadata` so watcher
@@ -12,6 +13,120 @@ use super::project_metadata::{
 /// ExtUtils::InstallPaths `local/` tree whose single include root is
 /// `local/lib/perl5` (#13642 plan S8 receipt §1/§3).
 const LOCAL_INSTALL_INCLUDE_PATH: &str = "local/lib/perl5";
+
+/// Outcome of a marker-based include-root decision (#15087).
+///
+/// `Detected` is a proven presence or absence. `Indeterminate` means at least
+/// one probe that can change the current root truth table failed with an
+/// error other than `NotFound`, so reconciliation must not retire prior
+/// detector-owned roots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DependencyIncludeDetection {
+    Detected(Vec<String>),
+    Indeterminate,
+}
+
+/// Three-valued marker observation: a filesystem that cannot answer is not
+/// treated as absence (`Path::is_file` collapses every `stat` error to
+/// `false`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerPresence {
+    Present,
+    Absent,
+    Unknown,
+}
+
+impl MarkerPresence {
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Absent, _) | (_, Self::Absent) => Self::Absent,
+            (Self::Present, Self::Present) => Self::Present,
+            (Self::Present, Self::Unknown)
+            | (Self::Unknown, Self::Present)
+            | (Self::Unknown, Self::Unknown) => Self::Unknown,
+        }
+    }
+
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Present, _) | (_, Self::Present) => Self::Present,
+            (Self::Absent, Self::Absent) => Self::Absent,
+            (Self::Absent, Self::Unknown)
+            | (Self::Unknown, Self::Absent)
+            | (Self::Unknown, Self::Unknown) => Self::Unknown,
+        }
+    }
+
+    fn not(self) -> Self {
+        match self {
+            Self::Present => Self::Absent,
+            Self::Absent => Self::Present,
+            Self::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// Classify a marker path without collapsing non-`NotFound` errors to absence.
+///
+/// `try_exists` distinguishes confirmed absence from an unreadable probe;
+/// `metadata` then decides file versus directory. A path that exists but is
+/// not a file is a real answer (`Absent`), matching the previous `is_file`
+/// contract for directories.
+fn probe_marker_file(path: &Path) -> MarkerPresence {
+    match path.try_exists() {
+        Ok(false) => return MarkerPresence::Absent,
+        Ok(true) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return MarkerPresence::Absent,
+        Err(_) => return MarkerPresence::Unknown,
+    }
+
+    match path.metadata() {
+        Ok(meta) if meta.is_file() => MarkerPresence::Present,
+        Ok(_) => MarkerPresence::Absent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => MarkerPresence::Absent,
+        Err(_) => MarkerPresence::Unknown,
+    }
+}
+
+fn resolve_detection(
+    declared: MarkerPresence,
+    snapshot_locked: MarkerPresence,
+    carton_locked: MarkerPresence,
+    carmel_dev_state: MarkerPresence,
+    carmel_rolled_out: MarkerPresence,
+) -> DependencyIncludeDetection {
+    // Current root truth table: admit `local/lib/perl5` iff declared &&
+    // (carton.lock || (cpanfile.snapshot && !Carmel-dev) || local/.carmel).
+    let carton_root = carton_locked.or(snapshot_locked.and(carmel_dev_state.not()));
+    match declared.and(carton_root.or(carmel_rolled_out)) {
+        MarkerPresence::Present => {
+            DependencyIncludeDetection::Detected(vec![LOCAL_INSTALL_INCLUDE_PATH.to_string()])
+        }
+        MarkerPresence::Absent => DependencyIncludeDetection::Detected(Vec::new()),
+        MarkerPresence::Unknown => DependencyIncludeDetection::Indeterminate,
+    }
+}
+
+/// Detect include-root contribution, preserving probe uncertainty (#15087).
+#[must_use]
+pub(crate) fn detect_dependency_include_paths_result(
+    workspace_root: &Path,
+    declaration_present: Option<bool>,
+) -> DependencyIncludeDetection {
+    let declared = match declaration_present {
+        Some(true) => MarkerPresence::Present,
+        Some(false) => MarkerPresence::Absent,
+        None => probe_marker_file(&workspace_root.join(CPANFILE_DECLARATION)),
+    };
+
+    resolve_detection(
+        declared,
+        probe_marker_file(&workspace_root.join(CPANFILE_SNAPSHOT)),
+        probe_marker_file(&workspace_root.join(CARTON_LOCK)),
+        probe_marker_file(&workspace_root.join(CARMEL_DEV_STATE)),
+        probe_marker_file(&workspace_root.join(CARMEL_ROLLOUT_SENTINEL)),
+    )
+}
 
 /// Detect include paths produced by Carton and Carmel in a workspace root.
 ///
@@ -35,6 +150,11 @@ const LOCAL_INSTALL_INCLUDE_PATH: &str = "local/lib/perl5";
 /// resource-scope validation conventions; a future metadata-derived absolute
 /// root must enter through an explicitly classified source instead
 /// (configuration observation train, #10817).
+///
+/// This public `Vec` surface maps an indeterminate probe decision to an empty
+/// list so the published signature stays unchanged. Production reconcile uses
+/// the crate-internal detection result and keeps prior detector-owned roots
+/// when the decision cannot be proven (#15087).
 #[must_use]
 pub fn detect_dependency_include_paths(workspace_root: &Path) -> Vec<String> {
     detect_dependency_include_paths_with_declaration(workspace_root, None)
@@ -48,39 +168,27 @@ pub fn detect_dependency_include_paths(workspace_root: &Path) -> Vec<String> {
 /// delete of the backing file. `declaration_present` carries that captured
 /// state; `None` falls back to the filesystem. Only the declaration gate is
 /// overridable — the install-root markers are genuine filesystem state and are
-/// always probed on disk.
+/// always probed on disk. A supplied `Some(...)` is never replaced by a disk
+/// probe of `cpanfile`.
 #[must_use]
 pub fn detect_dependency_include_paths_with_declaration(
     workspace_root: &Path,
     declaration_present: Option<bool>,
 ) -> Vec<String> {
-    let declared =
-        declaration_present.unwrap_or_else(|| workspace_root.join(CPANFILE_DECLARATION).is_file());
-    if !declared {
-        return Vec::new();
-    }
-
-    let snapshot_locked = workspace_root.join(CPANFILE_SNAPSHOT).is_file();
-    let carton_locked = workspace_root.join(CARTON_LOCK).is_file();
-    let carmel_dev_state = workspace_root.join(CARMEL_DEV_STATE).is_file();
-    let carmel_rolled_out = workspace_root.join(CARMEL_ROLLOUT_SENTINEL).is_file();
-
-    // A `cpanfile.snapshot` shares Carton's format with no producer field.
-    // The positive Carmel dev marker identifies the canonical Carmel shape;
-    // only an explicit Carton lock can establish a Carton root alongside it.
-    let carton_root = carton_locked || (snapshot_locked && !carmel_dev_state);
-
-    if carton_root || carmel_rolled_out {
-        vec![LOCAL_INSTALL_INCLUDE_PATH.to_string()]
-    } else {
-        Vec::new()
+    match detect_dependency_include_paths_result(workspace_root, declaration_present) {
+        DependencyIncludeDetection::Detected(paths) => paths,
+        DependencyIncludeDetection::Indeterminate => Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::detect_dependency_include_paths;
-    use super::{CARMEL_DEV_STATE, CARMEL_ROLLOUT_SENTINEL, LOCAL_INSTALL_INCLUDE_PATH};
+    use super::{
+        CARMEL_DEV_STATE, CARMEL_ROLLOUT_SENTINEL, DependencyIncludeDetection,
+        LOCAL_INSTALL_INCLUDE_PATH, MarkerPresence, detect_dependency_include_paths_result,
+        detect_dependency_include_paths_with_declaration, probe_marker_file, resolve_detection,
+    };
 
     #[test]
     fn detects_carton_from_lockfile() -> Result<(), Box<dyn std::error::Error>> {
@@ -291,6 +399,122 @@ mod tests {
                 "runtime-derived root must stay inside the workspace: {path}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn probe_classifies_not_found_and_non_file_as_absent() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let workspace = tempfile::tempdir()?;
+        assert_eq!(
+            probe_marker_file(&workspace.path().join("carton.lock")),
+            MarkerPresence::Absent
+        );
+
+        std::fs::create_dir_all(workspace.path().join("local"))?;
+        std::fs::create_dir(workspace.path().join(CARMEL_ROLLOUT_SENTINEL))?;
+        assert_eq!(
+            probe_marker_file(&workspace.path().join(CARMEL_ROLLOUT_SENTINEL)),
+            MarkerPresence::Absent,
+            "a directory standing where a marker file would go is a real absence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn supplied_declaration_authority_is_not_replaced_by_disk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        assert_eq!(
+            detect_dependency_include_paths_with_declaration(workspace.path(), Some(true)),
+            vec![LOCAL_INSTALL_INCLUDE_PATH],
+            "Some(true) must keep gating the Carton root even with no on-disk cpanfile"
+        );
+        assert!(
+            detect_dependency_include_paths_with_declaration(workspace.path(), Some(false))
+                .is_empty(),
+            "Some(false) must refuse the root even after a later disk cpanfile appears"
+        );
+
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        assert!(
+            detect_dependency_include_paths_with_declaration(workspace.path(), Some(false))
+                .is_empty(),
+            "a supplied declaration override is never replaced by a disk probe"
+        );
+        assert_eq!(
+            detect_dependency_include_paths_with_declaration(workspace.path(), Some(true)),
+            vec![LOCAL_INSTALL_INCLUDE_PATH]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decision_algebra_keeps_dominating_answers_and_flags_real_ambiguity() {
+        use MarkerPresence::{Absent, Present, Unknown};
+
+        assert_eq!(
+            resolve_detection(Present, Unknown, Present, Unknown, Unknown),
+            DependencyIncludeDetection::Detected(vec![LOCAL_INSTALL_INCLUDE_PATH.to_string()]),
+            "an explicit carton.lock establishes the root even if other probes are unknown"
+        );
+        assert_eq!(
+            resolve_detection(Present, Absent, Absent, Unknown, Present),
+            DependencyIncludeDetection::Detected(vec![LOCAL_INSTALL_INCLUDE_PATH.to_string()]),
+            "a present rollout sentinel establishes the same root"
+        );
+        assert_eq!(
+            resolve_detection(Present, Present, Absent, Unknown, Absent),
+            DependencyIncludeDetection::Indeterminate,
+            "snapshot plus unknown Carmel-dev is the Carton-versus-dev ambiguity"
+        );
+        assert_eq!(
+            resolve_detection(Present, Absent, Absent, Unknown, Absent),
+            DependencyIncludeDetection::Detected(Vec::new()),
+            "an unknown Carmel-dev marker cannot create a root by itself"
+        );
+        assert_eq!(
+            resolve_detection(Unknown, Absent, Absent, Absent, Absent),
+            DependencyIncludeDetection::Detected(Vec::new()),
+            "unknown declaration is irrelevant when no root-establishing marker is present"
+        );
+        assert_eq!(
+            resolve_detection(Unknown, Absent, Present, Absent, Absent),
+            DependencyIncludeDetection::Indeterminate,
+            "unknown declaration plus a present lock cannot prove presence or absence"
+        );
+    }
+
+    /// Unix-only: a path whose parent component is a regular file yields
+    /// `ENOTDIR`, which `std` does not map to `NotFound`. Windows reports the
+    /// same construction as `ERROR_PATH_NOT_FOUND` → `NotFound`, so it cannot
+    /// discriminate this classifier. Permission bits are also used below when
+    /// they actually constrain the runner; `ENOTDIR` remains the reliable
+    /// non-`NotFound` construction (#14812).
+    #[cfg(unix)]
+    #[test]
+    fn non_not_found_probe_error_is_unknown_not_absent() -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        let not_a_directory = workspace.path().join("regular-file");
+        std::fs::write(&not_a_directory, "")?;
+        assert_eq!(
+            probe_marker_file(&not_a_directory.join("cpanfile")),
+            MarkerPresence::Unknown,
+            "ENOTDIR must not collapse to absence"
+        );
+
+        assert_eq!(
+            detect_dependency_include_paths_result(&not_a_directory, None),
+            DependencyIncludeDetection::Indeterminate,
+            "all five probes unreadable can hide a present carton.lock"
+        );
+        assert_eq!(
+            detect_dependency_include_paths_result(&not_a_directory, Some(false)),
+            DependencyIncludeDetection::Detected(Vec::new()),
+            "Some(false) still proves absence even when disk probes cannot answer"
+        );
         Ok(())
     }
 }
