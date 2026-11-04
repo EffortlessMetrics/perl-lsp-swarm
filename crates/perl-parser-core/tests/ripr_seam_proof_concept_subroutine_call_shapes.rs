@@ -128,7 +128,7 @@ fn signature_owns_parameter_order_kinds_and_optional_default() -> Result<(), Str
     ));
     assert_eq!(source_text(source, required).as_deref(), Some("$required"));
 
-    let NodeKind::OptionalParameter { variable: optional, default_value } = &parameters[1].kind
+    let NodeKind::OptionalParameter { variable: optional, default_value, .. } = &parameters[1].kind
     else {
         return Err("optional parameter changed NodeKind".to_string());
     };

@@ -6,7 +6,7 @@
 use super::{
     Arc, AtomicBool, AtomicI32, AtomicU64, BufReader, ClientCapabilities, FeatureProfile, HashMap,
     HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
-    WorkspaceConfig, Write, io, notebook, outbound, refresh,
+    WorkspaceConfig, Write, exit_policy, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 
@@ -52,6 +52,8 @@ impl LspServer {
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
+            exit_policy: exit_policy::ExitPolicy::default(),
+            connection_exit: Arc::new(tokio::sync::Notify::new()),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
@@ -61,6 +63,7 @@ impl LspServer {
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
+            initial_root_input: Mutex::new(None),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
@@ -115,6 +118,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -130,6 +136,10 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
+            core_module_notice_shown: Arc::new(AtomicBool::new(false)),
+            module_ambiguity_notices: Arc::new(Default::default()),
+            #[cfg(test)]
+            module_ambiguity_probe_gate: Mutex::new(None),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
@@ -162,6 +172,20 @@ impl LspServer {
     #[cfg(feature = "incremental")]
     pub fn set_incremental_eager(&self, enabled: bool) {
         self.incremental_eager.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Scope the LSP `exit` notification to the sending connection
+    /// (#17331).
+    ///
+    /// Multi-session transports (socket mode) must keep the process — the
+    /// listener and every concurrent session — alive when one client follows
+    /// the spec's `shutdown` → `exit` teardown. With this policy the exit
+    /// handler settles this connection's outbound writer and then releases
+    /// only this connection's serve loop; stdio keeps the default
+    /// process-exit semantics because its single client owns the process.
+    pub fn exit_ends_connection(mut self) -> Self {
+        self.exit_policy = exit_policy::ExitPolicy::EndConnection;
+        self
     }
 
     /// Create a new LSP server with custom I/O (for testing)
@@ -249,6 +273,8 @@ impl LspServer {
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
+            exit_policy: exit_policy::ExitPolicy::default(),
+            connection_exit: Arc::new(tokio::sync::Notify::new()),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
@@ -258,6 +284,7 @@ impl LspServer {
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
+            initial_root_input: Mutex::new(None),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
@@ -312,6 +339,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -327,6 +357,10 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
+            core_module_notice_shown: Arc::new(AtomicBool::new(false)),
+            module_ambiguity_notices: Arc::new(Default::default()),
+            #[cfg(test)]
+            module_ambiguity_probe_gate: Mutex::new(None),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
@@ -387,6 +421,8 @@ impl LspServer {
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
+            exit_policy: exit_policy::ExitPolicy::default(),
+            connection_exit: Arc::new(tokio::sync::Notify::new()),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
@@ -396,6 +432,7 @@ impl LspServer {
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
+            initial_root_input: Mutex::new(None),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
@@ -450,6 +487,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -465,6 +505,10 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
+            core_module_notice_shown: Arc::new(AtomicBool::new(false)),
+            module_ambiguity_notices: Arc::new(Default::default()),
+            #[cfg(test)]
+            module_ambiguity_probe_gate: Mutex::new(None),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
@@ -507,6 +551,8 @@ impl LspServer {
 
 impl Drop for LspServer {
     fn drop(&mut self) {
+        self.runtime_services.settle_and_report_on_server_drop();
+
         let outbound = std::mem::replace(&mut self.outbound, outbound::closed_sender());
         drop(outbound);
 

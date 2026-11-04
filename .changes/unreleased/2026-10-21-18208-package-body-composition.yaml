@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Body HIR now preserves lexical reads after multiply labelled package statements and retains statements inside block-form packages, including nested foreach loops."
+time: 2026-10-21T00:00:00Z
+custom:
+  PR: "18208"
+  Slug: package-body-composition
+  Breaking: "no"

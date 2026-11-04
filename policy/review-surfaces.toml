@@ -374,7 +374,7 @@ required_evidence = "current_head_reviewer_packet"
 first_falsifier = "Ledger schema widens so prose comments satisfy fields meant to carry submitted-review evidence."
 enforcement_successor = "#11796"
 code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
-paths = ["docs/agents/pr-ledger.schema.json", "xtask/src/tasks/pr_ledger.rs"]
+paths = ["xtask/src/tasks/pr_ledger.rs", "xtask/src/tasks/agent_ledgers.rs"]
 
 [surface.repository_settings_management]
 family = "executable_policy_and_public_migration"

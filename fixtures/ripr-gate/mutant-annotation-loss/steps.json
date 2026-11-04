@@ -1,0 +1,30 @@
+{
+  "conclusion": "failure",
+  "steps": [
+    {
+      "name": "Set up job",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Generate review guidance",
+      "status": "completed",
+      "conclusion": "failure"
+    },
+    {
+      "name": "Generate impacted evidence",
+      "status": "skipped",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Enforce new RIPR gap quality gate",
+      "status": "skipped",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Complete job",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ]
+}

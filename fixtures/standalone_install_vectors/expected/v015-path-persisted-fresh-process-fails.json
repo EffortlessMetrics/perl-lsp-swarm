@@ -1,0 +1,160 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v015-path-persisted-fresh-process-fails",
+  "contract_generation": 1,
+  "route": "first_party_posix",
+  "mode": "release_archive",
+  "requested_product_unit": "server_only",
+  "effective_product_unit": "server_only",
+  "effective_path_policy": "persist",
+  "resolved_subject_digest": "sha256:01f1c36f6f620cb681a95692da60945bdd7294ebbd92a062c89e94e4f482ddfd",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "failed",
+      "reason_family": "health_check_failed"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:01f1c36f6f620cb681a95692da60945bdd7294ebbd92a062c89e94e4f482ddfd",
+      "terminal_result": "failed",
+      "reason_family": "health_check_failed"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:b5e0e263757af8a94f2e566d3088175b899f915e9a7821d653394499bd631fb0",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:e06c808f1147e17daa6c95b918cac3f0095d3ce4c74fe227b07cabacc207d5c0",
+      "predecessor_digests": [
+        "sha256:b5e0e263757af8a94f2e566d3088175b899f915e9a7821d653394499bd631fb0"
+      ],
+      "artifacts": [
+        "artifact-archive-v015"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "checksum_integrity",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:c5b2de49245eba4647efa56f292a70524214f5a13708bbebfbc38253bbf7ef7b",
+      "predecessor_digests": [
+        "sha256:e06c808f1147e17daa6c95b918cac3f0095d3ce4c74fe227b07cabacc207d5c0"
+      ],
+      "evidence": [
+        "evidence-checksum-v015"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "archive_manifest_and_staging",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:0f5a262fd9cc77a7426b48796433b2a467f560414cc85cb6a1b81510fe820644",
+      "predecessor_digests": [
+        "sha256:c5b2de49245eba4647efa56f292a70524214f5a13708bbebfbc38253bbf7ef7b"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "executable_observation",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:b666503f224f99cb86621b79b86dec3b043acc2571cb5f43ac7657735eab460f",
+      "predecessor_digests": [
+        "sha256:0f5a262fd9cc77a7426b48796433b2a467f560414cc85cb6a1b81510fe820644"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "promotion",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:4ec5e665a2a343876596420838917d844965b02166f4fd06f182820dc6d092a9",
+      "predecessor_digests": [
+        "sha256:b666503f224f99cb86621b79b86dec3b043acc2571cb5f43ac7657735eab460f"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "path_persistence",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:c2f2640a6099cedb945076bdda17b851a8b1a6b5974ca604c55f82d22ba5817f",
+      "predecessor_digests": [
+        "sha256:4ec5e665a2a343876596420838917d844965b02166f4fd06f182820dc6d092a9"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "fresh_process_observation",
+      "result": "failed",
+      "reason_family": "health_check_failed",
+      "receipt_digest": "sha256:1169e5aa9e23982e449818a81851d2d8817853457a47b99a00f4b3f60b20b222",
+      "predecessor_digests": []
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [
+    {
+      "level": "transport_artifacts",
+      "kind": "transport_artifacts"
+    },
+    {
+      "level": "staged",
+      "kind": "staged_archive"
+    },
+    {
+      "level": "promotion_reached",
+      "kind": "promoted"
+    },
+    {
+      "level": "path_persisted",
+      "kind": "path_persisted"
+    },
+    {
+      "level": "promotion_reached",
+      "kind": "rollback"
+    }
+  ],
+  "side_effect_ceiling": "path_persisted",
+  "claim_ceiling": "current_state_promotion",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "failed",
+    "stage_id": "fresh_process_observation",
+    "reason_family": "health_check_failed",
+    "action_class": "verify_environment_then_retry"
+  },
+  "redaction_disposition": "roles_only"
+}

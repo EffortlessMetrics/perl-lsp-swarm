@@ -12,6 +12,81 @@ use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn fallback_discovery_preserves_source_files_named_like_skipped_directories() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path();
+    for path in
+        ["bin/target", "bin/vendor", "bin/generated", "vendor/perl5/target", "vendor/target"]
+    {
+        create_file_with_content(root, path, "#!/usr/bin/perl\nprint 1;\n")?;
+    }
+    let config = DiscoveryConfig::new(Vec::new(), vec!["generated".into()]);
+    let result = discover_perl_files_with_config(root, &["vendor/perl5"], &config);
+    assert_eq!(result.method, DiscoveryMethod::Walk);
+    let expected: Vec<_> = ["bin/generated", "bin/target", "bin/vendor", "vendor/perl5/target"]
+        .into_iter()
+        .map(|path| root.join(path))
+        .collect();
+    assert_eq!(result.files, expected, "skip directory policy must not exclude source filenames");
+    Ok(())
+}
+
+#[test]
+fn explicit_include_roots_do_not_admit_skipped_ancestor_siblings() -> TestResult {
+    for use_git in [true, false] {
+        if use_git && !git_available() {
+            continue;
+        }
+        let tmp = TempDir::new()?;
+        let root = tmp.path().join("vendor");
+        fs::create_dir_all(&root)?;
+        let paths = [
+            "lib/App.pm",
+            "vendor/a/lib/Dep.pm",
+            "vendor/b/lib/Second.pm",
+            "vendor/a/lib/vendor/deep/Nested.pm",
+            "vendor/Stray.pm",
+            "vendor/a/Stray.pm",
+            "vendor/a/library/Prefix.pm",
+            "vendor/a/lib/target/Noise.pm",
+            "vendor/a/lib/vendor/Stray.pm",
+            "vendor/tools/Hidden.pm",
+            "generated/kept/Kept.pm",
+            "generated/Stray.pm",
+        ];
+        for path in paths {
+            create_file(&root, path)?;
+        }
+        if use_git {
+            run_git(&root, &["init", "-q"])?;
+            run_git(&root, &["add", "."])?;
+        }
+        let config = DiscoveryConfig::new(Vec::new(), vec!["generated".into()]);
+        let result = discover_perl_files_with_config(
+            &root,
+            &["vendor/a/lib", "vendor/b/lib", "vendor/a/lib/vendor/deep", "generated/kept"],
+            &config,
+        );
+        assert_eq!(
+            result.method,
+            if use_git { DiscoveryMethod::Git } else { DiscoveryMethod::Walk }
+        );
+        let expected: Vec<_> = [
+            "generated/kept/Kept.pm",
+            "lib/App.pm",
+            "vendor/a/lib/Dep.pm",
+            "vendor/a/lib/vendor/deep/Nested.pm",
+            "vendor/b/lib/Second.pm",
+        ]
+        .into_iter()
+        .map(|path| root.join(path))
+        .collect();
+        assert_eq!(result.files, expected, "include subtree scope, git={use_git}");
+    }
+    Ok(())
+}
+
 fn create_file(root: &Path, relative: &str) -> TestResult {
     create_file_with_content(root, relative, "# integration fixture\n")
 }

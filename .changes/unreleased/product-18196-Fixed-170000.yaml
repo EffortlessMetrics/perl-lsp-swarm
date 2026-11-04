@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Document symbols for framework packages (Moo, Moose, Moo::Role, Moose::Role, Role::Tiny, Class::Tiny) now select the declared package name instead of a substring inside the `package` keyword: when the compatibility extractor presents the package as Class or Role, the provider retries the canonical Package declaration record by exact name and span, preserving wire kinds and fail-closed anchor behavior."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18196"
+  Slug: framework-package-name-anchor
+  Breaking: "no"

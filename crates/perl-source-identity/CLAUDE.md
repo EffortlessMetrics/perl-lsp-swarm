@@ -28,7 +28,7 @@ Published to crates.io (`publish = true`); public API surface by design.
   type whose only constructor is fallible, so holding one *is* the proof that
   the canonical root-relative form holds. `LogicalSourceId::from_root_and_logical_path`
   takes it; `from_root_and_path` remains the unchecked primitive over material
-  a caller has already proven canonical (#15555).
+  a caller has already proven canonical.
 
 ## Does not own
 
@@ -45,8 +45,8 @@ It **validates** logical paths but still never **normalizes** them: no separator
 folding, no traversal resolution, no case folding, no Unicode normalization, no
 I/O, no CWD, no symlink resolution. Deciding which physical path a logical source
 resolves to, and under whose authority, belongs to the path-mechanics owners
-above this crate (#7621, #8185, #8198) and to the remaining authority-bound
-constructors in #7655. Percent-encoded material is well-formed here and passes;
+above this crate and to the remaining authority-bound
+path constructors. Percent-encoded material is well-formed here and passes;
 decoding is the caller's job.
 
 ## Invariants
@@ -54,7 +54,10 @@ decoding is the caller's job.
 - All durable IDs are domain-separated SHA-256: each type hashes under a
   unique domain tag via `DomainHasher`, so IDs of different kinds never
   collide even with identical material, and every field is length-prefixed so
-  field boundaries cannot shift (`["a", "bc"]` and `["ab", "c"]` differ).
+  field boundaries cannot shift (`["a", "bc"]` and `["ab", "c"]` differ) for
+  field sizes up to [`SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]. Oversize fields are
+  rejected fail-closed; use the `try_*` constructors when buffer size is not
+  known to fit the v1 bound.
 - One identity, one spelling: wire forms are `sha256:…`, `project:sha256:…`,
   `root:sha256:…`, `src:sha256:…` with exactly 64 lowercase hex digits;
   wrong prefixes and uppercase hex are rejected, not normalized, because

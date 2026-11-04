@@ -1055,11 +1055,13 @@ fn run_project_workload(
                 (rename_cursor, result, edits, readiness_state_for(initial_readiness))
             }
             "diagnostics_present_import" => {
-                let diagnostics =
-                    harness.wait_for_diagnostics(&project.active_file, Duration::from_secs(5));
+                let diagnostics = capture(perl_lsp_ux_tests::wait_with_subject(
+                    &format!("diagnostics for {}", &project.active_file),
+                    harness.wait_for_diagnostics(&project.active_file, Duration::from_secs(5)),
+                ));
                 (
                     CursorReceipt { line: 0, character: 0 },
-                    json!(diagnostics),
+                    diagnostics,
                     Value::Null,
                     readiness_state_for(initial_readiness),
                 )
@@ -1101,6 +1103,8 @@ fn run_project_workload(
             other => return Err(anyhow!("unhandled golden workload journey {other}")),
         };
         let request_latency_ms = request_started.elapsed().as_secs_f64() * 1000.0;
+        let diagnostics_wait_failed =
+            journey.id == "diagnostics_present_import" && response.get("_golden_error").is_some();
 
         let row = response_row(
             project,
@@ -1114,6 +1118,10 @@ fn run_project_workload(
         )?;
         let row = if journey.provider == "lifecycle" {
             apply_lifecycle_receipt(row)
+        } else if diagnostics_wait_failed {
+            // The wait error is already the row's blocker; a failed stream
+            // cannot provide a second explanation without losing this row.
+            row
         } else {
             let receipt_id = format!(
                 "golden_{project_name}_{journey_id}",
@@ -1416,11 +1424,34 @@ fn classify_error(response: &Value) -> String {
     let message_lower = message.to_ascii_lowercase();
     if message_lower.contains("request superseded") {
         "request_superseded".to_owned()
-    } else if message_lower.contains("timeout") || message_lower.contains("timed out") {
+    } else if message_lower.contains("timeout")
+        || message_lower.contains("timed out")
+        // WaitEnd::Deadline renders as "deadline expired after Nms ...", so a
+        // typed diagnostics wait deadline must not degrade to request_error.
+        || message_lower.contains("deadline expired")
+    {
         "timeout".to_owned()
     } else {
         "request_error".to_owned()
     }
+}
+
+#[test]
+fn classify_error_scores_typed_wait_deadline_as_timeout() {
+    let response = json!({
+        "_golden_error":
+            "wait for diagnostics for file:///golden.pl: deadline expired after 5000ms with the stream still live"
+    });
+    assert_eq!(classify_error(&response), "timeout");
+}
+
+#[test]
+fn classify_error_still_scores_transport_failure_as_request_error() {
+    let response = json!({
+        "_golden_error":
+            "wait for diagnostics for file:///golden.pl: server closed its output stream (orderly end of stream)"
+    });
+    assert_eq!(classify_error(&response), "request_error");
 }
 
 fn apply_lifecycle_receipt(mut row: WorkloadRow) -> WorkloadRow {

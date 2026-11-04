@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 
 use perl_ci_hygiene::walk_rs_files;
 
+use crate::test_scope::external_test_module_files;
 use crate::{first_cfg_test_line_number, read_lines};
 
 static PANIC_MACRO_RE: LazyLock<Result<Regex, regex::Error>> =
@@ -70,37 +71,6 @@ fn walk_complete_test_source_files(repo_root: &Path) -> Vec<PathBuf> {
             is_complete_test_source_file(path) && !is_excluded_integration_test_path(path)
         })
         .collect()
-}
-
-fn external_test_module_files(path: &Path, lines: &[String]) -> Vec<PathBuf> {
-    let Some(start_line) = first_cfg_test_line_number(path).ok().filter(|line| *line != usize::MAX)
-    else {
-        return Vec::new();
-    };
-
-    let mut files = Vec::new();
-    for line in lines.iter().skip(start_line.saturating_sub(1)) {
-        let Some(name) = line
-            .trim()
-            .strip_prefix("mod ")
-            .and_then(|name| name.strip_suffix(';'))
-            .map(str::trim)
-            .filter(|name| {
-                !name.is_empty() && name.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-            })
-        else {
-            continue;
-        };
-        let sibling = path.with_file_name(format!("{name}.rs"));
-        let nested = path.with_file_name(name).join("mod.rs");
-        if sibling.is_file() {
-            files.push(sibling);
-        }
-        if nested.is_file() {
-            files.push(nested);
-        }
-    }
-    files
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -80,14 +80,14 @@ All navigation features integrate with workspace indexing for cross-file resolut
 
 Lazy loading via `lsp.code_action_resolve`.
 
-### Refactoring Engine (`lsp.refactoring`)
+### Refactor Code Actions (`lsp.refactoring`)
 
-Dedicated Perl refactoring engine (264 tests):
-- Workspace-wide atomic symbol rename with rollback
-- Import optimization (analyze and rewrite `use`/`require` statements)
-- Code modernization (bareword filehandles, two-arg `open`, missing pragmas)
-- Extract module, move subroutine, inline variable, inline subroutine
-- Backup/rollback support via `RefactoringEngine`
+Perl refactor actions served through `textDocument/codeAction` by the
+`perl-lsp-rs-core` code-action refactors provider (`refactor`,
+`refactor.extract`, `refactor.rewrite` kinds). The filesystem-mutating
+refactoring engine (workspace-wide atomic rename with backup/rollback) was
+retired (#5231); no live provider performs backups, rollback, or multi-file
+transactions, and reusable live planning is owned by #8281.
 
 ### Rename (`lsp.rename`)
 
