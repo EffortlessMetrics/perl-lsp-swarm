@@ -52,6 +52,36 @@ pub(crate) struct EffectiveIncContext {
 }
 
 impl EffectiveIncContext {
+    /// Fingerprint for session-local negative module-resolution caching (#18776).
+    ///
+    /// Must change when any input to [`LspServer::effective_inc_context_for_doc`]
+    /// would change the ordered effective-root set or resolution budget.
+    pub(crate) fn negative_cache_fingerprint(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.root.hash(&mut hasher);
+        self.use_system_inc.hash(&mut hasher);
+        self.use_perl5lib.hash(&mut hasher);
+        self.resolution_timeout_ms.hash(&mut hasher);
+        if let Some(folder_uri) = &self.folder_uri {
+            folder_uri.hash(&mut hasher);
+        }
+        if let Some(doc_uri) = &self.doc_uri {
+            doc_uri.hash(&mut hasher);
+        }
+        self.system_inc_state.attempts_consumed.hash(&mut hasher);
+        format!("{:?}", self.system_inc_state.outcome).hash(&mut hasher);
+        for root in &self.effective_roots {
+            format!("{:?}", root.kind).hash(&mut hasher);
+            root.path.hash(&mut hasher);
+            root.precedence.hash(&mut hasher);
+            root.source.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     /// Build labeled search paths suitable for PL701 display.
     ///
     /// This is intentionally lazy so completion can consume the same

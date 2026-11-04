@@ -118,6 +118,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -336,6 +339,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -481,6 +487,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -542,6 +551,8 @@ impl LspServer {
 
 impl Drop for LspServer {
     fn drop(&mut self) {
+        self.runtime_services.settle_and_report_on_server_drop();
+
         let outbound = std::mem::replace(&mut self.outbound, outbound::closed_sender());
         drop(outbound);
 

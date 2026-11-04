@@ -832,8 +832,12 @@ fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn
         "public-api-pr is the hard ratchet and must propagate breakage"
     );
     assert!(
-        semver.contains("continue-on-error: true"),
-        "semver-pr stays advisory until #2266's confidence window closes"
+        !semver.contains("continue-on-error: true"),
+        "semver-pr must propagate detected breaks for a truthful conclusion (#17208); merge posture stays advisory via required=false"
+    );
+    assert!(
+        semver.contains("bash scripts/ci/semver_pr_check.sh"),
+        "semver-pr must delegate to the shared check script exercised by scripts/ci/test_semver_pr_check.py"
     );
     assert!(
         semver.contains("cargo-semver-checks --version 0.47.0 --locked"),

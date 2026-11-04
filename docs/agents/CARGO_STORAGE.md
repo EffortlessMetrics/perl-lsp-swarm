@@ -121,10 +121,12 @@ $env:RUSTUP_AUTO_INSTALL = '0'
 Selecting only `DEVPLANE` can still leave Cargo home or temporary files on an
 overfull system volume. Keep existing caches intact. Do not export target/build
 paths or enable compiler wrappers: the admitted route owns both private output
-paths. A copied `.cargo/config.local.toml` is not automatically loaded by Cargo's
-[configuration discovery](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure)
-and cannot configure Python's pre-admission resolver. The adjacent example no
-longer recommends shared output paths or sccache for this route.
+paths. Copy `.cargo/config.local.toml.example` to `.cargo/config.local.toml`
+(gitignored) for other machine-local knobs. `scripts/cargo-safe` and
+`scripts/cargo-admitted` pass `--config` when the file exists; for direct
+`cargo`, pass `--config .cargo/config.local.toml` explicitly (or use `CARGO_*`
+in the task shell). Admitted `--config` overrides still own target/build paths
+and jobs policy; do not put those keys in the local file.
 
 For missing hooks, use the existing lightweight installer owner (#17861), from
 the intended worktree with the repository-pinned native toolchain installed:
@@ -438,6 +440,19 @@ deadline/error retains the lease. There is no automatic broad /proc fallback;
 the separately selected proc-parent/pidfd profile above supplies discovery only.
 Missing
 capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
+deadline/error retains the lease. There is no broad /proc fallback. Missing
+`/proc/self/task/<native-tid>/children` can be a kernel capability boundary,
+not a wrong PID or namespace: Linux builds this entry only with
+[`CONFIG_PROC_CHILDREN`](https://github.com/torvalds/linux/blob/v6.18/fs/proc/Kconfig).
+The calling thread and its procfs task identity must be checked before drawing
+that conclusion. Known pidfds and an empty live-handle ledger do not replace
+the table: nonblocking exited-child waits return no identity for a running
+unknown adopted child. They must not promote missing discovery to ECHILD or
+authorize release. A staged consumer that requires this capability must refuse
+before launch when it is unavailable; a mount or alternate task path cannot
+restore an entry compiled out of the running kernel.
+
+Missing capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
 owner death and incomplete cancellation never become release authority.
 
 The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`
