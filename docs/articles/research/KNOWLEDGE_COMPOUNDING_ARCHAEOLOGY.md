@@ -44,20 +44,20 @@ survive the session and which should not.
 
 ## 2. `swarm-state` Splits Memory By Job
 
-[`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
+[`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md)
 defines the memory classes directly.
 
 Each file has a distinct job:
 
-- [swarm-queue.json](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/swarm-queue.json)
+- [swarm-queue.json](../../reference/archive/old-infrastructure/swarm-state/swarm-queue.json)
   — machine-facing overlap and ownership tracking
-- [completed-slices.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/completed-slices.md)
+- [completed-slices.md](../../reference/archive/old-infrastructure/swarm-state/completed-slices.md)
   — dedup and lifecycle ledger
-- [discovered-issues.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/discovered-issues.md)
+- [discovered-issues.md](../../reference/archive/old-infrastructure/swarm-state/discovered-issues.md)
   — out-of-scope leads noticed during other work
-- [known-pitfalls.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/known-pitfalls.md)
+- [known-pitfalls.md](../../reference/archive/old-infrastructure/swarm-state/known-pitfalls.md)
   — append-only reusable failure lessons
-- [findings.json](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/findings.json)
+- [findings.json](../../reference/archive/old-infrastructure/swarm-state/findings.json)
   — durable control-plane conclusions
 
 That is already more structured than a generic "memory" folder.
@@ -85,7 +85,7 @@ That creates a stricter conclusion layer:
 - required evidence pointers
 - follow-up guidance
 
-[`.claude/swarm-state/findings.schema.json`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/findings.schema.json)
+[`.claude/swarm-state/findings.schema.json`](../../reference/archive/old-infrastructure/swarm-state/findings.schema.json)
 shows that this is not free-form notes. It is machine-validated operational
 memory.
 
@@ -99,14 +99,14 @@ tool-friendly surface rather than leaving it in prose alone.
 The memory files are not passive archive material. The commands actively use
 them.
 
-[`.claude/commands/swarm-status.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm-status.md)
+[`.claude/commands/swarm-status.md`](../../handoff/swarm-pack/commands/swarm-status.md)
 surfaces:
 
 - in-progress slices from `completed-slices.md`
 - discovery counts from `discovered-issues.md`
 - tracked findings from `findings.json`
 
-[`.claude/commands/swarm.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm.md)
+[`.claude/commands/swarm.md`](../../handoff/swarm-pack/commands/swarm.md)
 tells scouts and builders to read:
 
 - `discovered-issues.md`
@@ -115,7 +115,7 @@ tells scouts and builders to read:
 
 before they spawn new work.
 
-[`.claude/commands/swarm-wind-down.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm-wind-down.md)
+[`.claude/commands/swarm-wind-down.md`](../../handoff/swarm-pack/commands/swarm-wind-down.md)
 then treats those same files as the preserved state needed for the next session.
 
 So the memory layer is not just recorded. It is operationally consumed.
@@ -126,7 +126,7 @@ So the memory layer is not just recorded. It is operationally consumed.
 
 The current swarm surface does not keep the memory model hidden in one command.
 
-[`.claude/skills/swarm/SKILL.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/skills/swarm/SKILL.md)
+[`.claude/skills/swarm/SKILL.md`](../../reference/archive/old-infrastructure/skills/swarm/SKILL.md)
 instructs coordinators to read the state files for dedup and trap avoidance.
 
 The skill also defines boundary types:
@@ -153,8 +153,8 @@ On `2026-03-19`, commit `344c6a591` adds tracked scout logs under
 
 The first preserved examples are:
 
-- [2026-03-19-v0.12.0-readiness.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md)
-- [2026-03-19-install-experience.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-install-experience.md)
+- [2026-03-19-v0.12.0-readiness.md](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-v0.12.0-readiness.md)
+- [2026-03-19-install-experience.md](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-install-experience.md)
 
 These files are different from `swarm-state`.
 
@@ -219,18 +219,18 @@ each output is, and storing it in the right layer for reuse.
 
 ## Evidence Pointers
 
-- [`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
-- [`.claude/swarm-state/swarm-queue.json`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/swarm-queue.json)
-- [`.claude/swarm-state/completed-slices.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/completed-slices.md)
-- [`.claude/swarm-state/discovered-issues.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/discovered-issues.md)
-- [`.claude/swarm-state/known-pitfalls.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/known-pitfalls.md)
-- [`.claude/swarm-state/findings.json`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/findings.json)
-- [`.claude/swarm-state/findings.schema.json`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/findings.schema.json)
-- [`.claude/commands/swarm.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm.md)
-- [`.claude/commands/swarm-status.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm-status.md)
-- [`.claude/commands/swarm-report.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm-report.md)
-- [`.claude/commands/swarm-wind-down.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm-wind-down.md)
-- [`.claude/skills/swarm/SKILL.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/skills/swarm/SKILL.md)
-- [`.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md)
-- [`.claude/logs/scouts/2026-03-19-install-experience.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-install-experience.md)
+- [`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md)
+- [`.claude/swarm-state/swarm-queue.json`](../../reference/archive/old-infrastructure/swarm-state/swarm-queue.json)
+- [`.claude/swarm-state/completed-slices.md`](../../reference/archive/old-infrastructure/swarm-state/completed-slices.md)
+- [`.claude/swarm-state/discovered-issues.md`](../../reference/archive/old-infrastructure/swarm-state/discovered-issues.md)
+- [`.claude/swarm-state/known-pitfalls.md`](../../reference/archive/old-infrastructure/swarm-state/known-pitfalls.md)
+- [`.claude/swarm-state/findings.json`](../../reference/archive/old-infrastructure/swarm-state/findings.json)
+- [`.claude/swarm-state/findings.schema.json`](../../reference/archive/old-infrastructure/swarm-state/findings.schema.json)
+- [`.claude/commands/swarm.md`](../../handoff/swarm-pack/commands/swarm.md)
+- [`.claude/commands/swarm-status.md`](../../handoff/swarm-pack/commands/swarm-status.md)
+- [`.claude/commands/swarm-report.md`](../../handoff/swarm-pack/commands/swarm-report.md)
+- [`.claude/commands/swarm-wind-down.md`](../../handoff/swarm-pack/commands/swarm-wind-down.md)
+- [`.claude/skills/swarm/SKILL.md`](../../reference/archive/old-infrastructure/skills/swarm/SKILL.md)
+- [`.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md`](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-v0.12.0-readiness.md)
+- [`.claude/logs/scouts/2026-03-19-install-experience.md`](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-install-experience.md)
 - commits `9cc2d3b9a`, `d9aab31bc`, `344c6a591`

@@ -67,9 +67,10 @@ fn scenario_15_workspace_symbol_multi_root_disambiguation() -> Result<(), String
     )
     .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
+    let ready = harness.wait_for_index_ready(Duration::from_secs(20));
     assert!(
-        harness.wait_for_index_ready(Duration::from_secs(20)),
-        "Expected initial workspace index to become ready before querying multi-root symbols"
+        ready.is_ok(),
+        "Expected initial workspace index to become ready before querying multi-root symbols: {ready:?}"
     );
 
     let deadline = Instant::now() + Duration::from_secs(20);

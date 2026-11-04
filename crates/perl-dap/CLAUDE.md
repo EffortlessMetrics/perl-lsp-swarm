@@ -100,7 +100,7 @@ backend flag, or handler presence may widen them:
 
 | Capability                    | Authority                       | Gate |
 |---|---|---|
-| `supportsEvaluateForHovers`   | `PURE_HOVER_INSPECTION_PROVEN`  | #9573 |
+| `supportsEvaluateForHovers`   | `PURE_HOVER_INSPECTION_PROVEN`  | repository proof record |
 
 `supportsEvaluateForHovers` promises a *pure inspection of the selected frame*.
 `handle_evaluate` runs a raw perl5db command against the debugger's **current**
@@ -116,7 +116,9 @@ pass their own advertised value, so promoting the native gate does not silently
 open an external-peer path that has no pure inspection of its own.
 
 If you are about to change one of these back to a catalog flag: don't. Land the
-named issue's re-enable gate first, then flip the one constant.
+re-enable gate recorded at
+`crates/perl-dap/tests/dap_hover_capability_fail_closed_9573.rs` first, then
+flip the one constant.
 
 ## Important Runtime Rules
 
@@ -144,7 +146,7 @@ cargo run -p xtask -- check-native-product-surface --strict
 cargo package -p perl-dap --allow-dirty --list
 ```
 
-For PLS comparison work, use the repository-only conformance owner under #7210.
+For PLS comparison work, use the repository-only conformance owner.
 Do not add a product Cargo feature or package source module to make a comparison
 convenient.
 

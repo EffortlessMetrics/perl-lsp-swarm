@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: Keep each workspace folder's Perl include paths separate during startup and live setting changes, while retaining include paths for standalone files.
+time: 2026-09-29T12:00:00Z
+custom:
+  PR: "16955"
+  Slug: folder-scoped-include-paths
+  Breaking: "no"

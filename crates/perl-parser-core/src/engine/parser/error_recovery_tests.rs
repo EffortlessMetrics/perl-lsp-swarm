@@ -1,6 +1,6 @@
 #![allow(clippy::print_stdout)] // test-only module: intentional AST diagnostics
 use super::*;
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_some};
 
 #[test]
 fn test_recovery_missing_expression() {
@@ -1843,4 +1843,113 @@ fn test_15750_preserves_unbraced_scalar_deref() {
             "expected `{src}` to parse as a variable / unbraced deref; sexp: {sexp}"
         );
     }
+}
+
+// =============================================================================
+// #16300: shape coverage for the proven orphaned else/elsif recovery arms
+// (control_flow.rs parse_orphaned_else / parse_orphaned_elsif). That the
+// inputs are accepted Perl is ground-truthed by the corpus/differential
+// suites against Strawberry perl 5.42 (`perl -c`); `perl -c` itself says
+// nothing about the internal AST, so the exact recovered shapes pinned below
+// are this parser's own recovery contract, which refactors must not change.
+// =============================================================================
+
+#[test]
+fn test_orphaned_else_records_diagnostic_and_synthetic_if() {
+    let code = "else { fallback(); }";
+    let mut parser = Parser::new(code);
+    let ast = must_some(parser.parse().ok());
+
+    // The recovery must record the orphaned-else diagnostic...
+    let errors = parser.errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| format!("{e:?}").contains("'else' without preceding 'if' or 'unless'")),
+        "expected orphaned-else diagnostic, got: {errors:?}"
+    );
+
+    // ...and wrap the block in a synthetic If so the body stays visible.
+    let NodeKind::Program { statements } = &ast.kind else {
+        unreachable!("Expected Program node, got {:?}", ast.kind);
+    };
+    assert_eq!(statements.len(), 1, "expected single recovered statement, got: {}", ast.to_sexp());
+    let NodeKind::If { condition, then_branch, elsif_branches, else_branch, keyword } =
+        &statements[0].kind
+    else {
+        unreachable!("Expected synthetic If for orphaned else, got {:?}", statements[0].kind);
+    };
+    // The synthetic condition is exactly the recovery's constant-true `1`.
+    let NodeKind::Number { value } = &condition.kind else {
+        unreachable!("expected synthetic numeric condition, got {:?}", condition.kind);
+    };
+    assert_eq!(value, "1", "synthetic true condition is the constant 1");
+    // The preserved block must keep its contents visible, not just exist.
+    let NodeKind::Block { statements: preserved } = &then_branch.kind else {
+        unreachable!("expected else block preserved as then_branch, got {:?}", then_branch.kind);
+    };
+    assert_eq!(preserved.len(), 1, "expected the fallback statement, got: {}", ast.to_sexp());
+    let NodeKind::ExpressionStatement { expression } = &preserved[0].kind else {
+        unreachable!("expected the fallback statement, got {:?}", preserved[0].kind);
+    };
+    let NodeKind::FunctionCall { name, .. } = &expression.kind else {
+        unreachable!("expected fallback() call preserved, got {:?}", expression.kind);
+    };
+    assert_eq!(name, "fallback", "the else body's call must survive recovery");
+    assert!(elsif_branches.is_empty(), "no elsif chain expected");
+    assert!(else_branch.is_none(), "no nested else expected");
+    assert!(keyword.is_none(), "no loop keyword expected");
+}
+
+#[test]
+fn test_orphaned_elsif_chain_recovers_condition_block_and_else() {
+    let code = "elsif ($flag) { work(); } else { last_resort(); }";
+    let mut parser = Parser::new(code);
+    let ast = must_some(parser.parse().ok());
+
+    let errors = parser.errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| format!("{e:?}").contains("'elsif' without preceding 'if' or 'unless'")),
+        "expected orphaned-elsif diagnostic, got: {errors:?}"
+    );
+
+    let NodeKind::Program { statements } = &ast.kind else {
+        unreachable!("Expected Program node, got {:?}", ast.kind);
+    };
+    assert_eq!(
+        statements.len(),
+        1,
+        "elsif clause and trailing else must form one recovered statement, got: {}",
+        ast.to_sexp()
+    );
+    let NodeKind::If { condition, then_branch, else_branch, .. } = &statements[0].kind else {
+        unreachable!("Expected recovered If for orphaned elsif, got {:?}", statements[0].kind);
+    };
+    // The elsif condition must survive as the recovered If's condition.
+    assert!(
+        !matches!(condition.kind, NodeKind::Number { .. }),
+        "expected real elsif condition, got synthetic constant {:?}",
+        condition.kind
+    );
+    assert!(
+        matches!(then_branch.kind, NodeKind::Block { .. }),
+        "expected elsif block preserved, got {:?}",
+        then_branch.kind
+    );
+    let Some(else_branch) = else_branch else {
+        unreachable!("expected trailing else folded into recovered chain, got: {}", ast.to_sexp());
+    };
+    let NodeKind::Block { statements: preserved } = &else_branch.kind else {
+        unreachable!("expected else block preserved, got {:?}", else_branch.kind);
+    };
+    assert_eq!(preserved.len(), 1, "expected the last_resort statement, got: {}", ast.to_sexp());
+    let NodeKind::ExpressionStatement { expression } = &preserved[0].kind else {
+        unreachable!("expected the last_resort statement, got {:?}", preserved[0].kind);
+    };
+    let NodeKind::FunctionCall { name, .. } = &expression.kind else {
+        unreachable!("expected last_resort() call preserved, got {:?}", expression.kind);
+    };
+    assert_eq!(name, "last_resort", "the trailing else body must survive recovery");
 }

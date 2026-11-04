@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Security
+body: "cargo-deny bans now fail closed if serde_yaml_ng or unsafe-libyaml appear outside the unpublished xtask path, complementing the RUSTSEC-2024-0449 advisory ignore until #17720 removes serde_yaml_ng."
+time: 2026-11-01T21:40:00Z
+custom:
+  PR: "17722"
+  Slug: deny-libyaml-shipped-crate-guard
+  Breaking: "no"

@@ -89,9 +89,9 @@ cargo install perllsp --locked
 The crates.io package `perl-lsp` is a different project; the package for this
 toolchain is `perllsp`.
 
-**macOS and Linux** — use a manual archive from
-[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
-the release closeout publishes an immutable installer ref and the reviewed
+**macOS and Linux** — use a [manual archive](docs/how-to/INSTALLATION.md#macos-and-linux-manual-archive)
+from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases)
+until the release closeout publishes an immutable installer ref and the reviewed
 SHA-256 digest of `scripts/install.sh`. The remote wrapper no longer executes
 installer logic selected from mutable `master`. Once a release packet supplies
 both values, the identity-bound bootstrap has this shape
@@ -130,10 +130,17 @@ be computed — prints a warning and continues without verification. Download
 it, inspect it, then run it from PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1 -OutFile install.ps1
 # Review install.ps1, then:
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+This fetches the exact audited revision pinned in the
+[installation guide](docs/how-to/INSTALLATION.md#published-powershell-script).
+Note that the `install.ps1` in a development checkout is the stricter
+revision: it fails closed on missing or malformed checksum evidence and
+promotes `perllsp.exe` and `perl-dap.exe` as one atomic product unit
+([details](docs/how-to/INSTALLATION.md#development-checkout-installer)).
 
 Windows 10 ARM64 and unsupported architectures must build from source. On
 x86_64 Windows the manual archive above remains available as an alternative to

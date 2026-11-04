@@ -9,7 +9,7 @@ use std::path::Path;
 
 #[derive(Serialize)]
 struct ProjectionBody<'a> {
-    schema: u32,
+    schema_version: &'static str,
     #[serde(rename = "static")]
     static_topology: &'a StaticTopology,
     observation: &'a Observation,
@@ -20,12 +20,21 @@ pub fn build_projection(root: &Path, observation_path: Option<&Path>) -> Result<
     let (static_topology, sources) = load_static_topology(root)?;
     let observation = load_observation(observation_path, &static_topology)?;
     let projection_digest = projection_digest(&static_topology, &observation, &sources)?;
-    Ok(Projection { schema: SCHEMA, static_topology, observation, sources, projection_digest })
+    Ok(Projection {
+        schema_version: SCHEMA.to_string(),
+        static_topology,
+        observation,
+        sources,
+        projection_digest,
+    })
 }
 
 pub fn validate_projection(root: &Path, projection: &Projection) -> Result<()> {
-    if projection.schema != SCHEMA {
-        bail!("unsupported contributor topology schema {}; expected {SCHEMA}", projection.schema);
+    if projection.schema_version != SCHEMA {
+        bail!(
+            "unsupported contributor topology schema_version {}; expected {SCHEMA}",
+            projection.schema_version
+        );
     }
     let (static_topology, sources) = load_static_topology(root)?;
     if projection.static_topology != static_topology {
@@ -83,7 +92,7 @@ fn projection_digest(
     observation: &Observation,
     sources: &BTreeMap<String, SourceDigest>,
 ) -> Result<String> {
-    let body = ProjectionBody { schema: SCHEMA, static_topology, observation, sources };
+    let body = ProjectionBody { schema_version: SCHEMA, static_topology, observation, sources };
     let bytes = serde_json::to_vec(&body)?;
     Ok(Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect())
 }

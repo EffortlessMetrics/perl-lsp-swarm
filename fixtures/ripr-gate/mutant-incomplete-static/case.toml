@@ -1,0 +1,8 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "Static dispositions from an incomplete run earn no credit; blocks unproven."
+ground_truth = "seam"
+inputs = ["ripr-plus.json", "repo-exposure.json", "comments.json"]
+base_case = "static-creditable"
+mutation = "guidance status incomplete with a producer timeout message"
+mutant_verdict = "kill"

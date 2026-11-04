@@ -16,7 +16,7 @@ schemes:
 - `generative` / `review` / `integrative`
 - `issue-to-draft` / `draft-to-pr` / `pr-to-merge`
 
-[`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
+[`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
 is explicit that the Generative Flow runs in `worktree-serial mode`, with one
 agent writing at a time. That sounds serial, but the surrounding architecture
 was already lane-based: separate generation, review, and integration phases,
@@ -53,7 +53,7 @@ immature.
 
 The next stage is the maintainer bridge era.
 
-[docs/project/JULES_BOT_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md)
+[docs/project/JULES_BOT_ANALYSIS.md](../../project/JULES_BOT_ANALYSIS.md)
 shows the pattern clearly: in the early Jules phase, the maintainer created
 `57` `maint/pr-*` bridging PRs, and those bridged PRs merged at a `92%` rate.
 The `maint/pr-*` naming is not cosmetic. It marks curated integration work
@@ -78,12 +78,12 @@ the current swarm could run it cleanly end to end.
 
 The modern swarm docs turn that old intuition into explicit policy.
 
-[.claude/skills/swarm/SKILL.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/skills/swarm/SKILL.md)
+[.claude/skills/swarm/SKILL.md](../../reference/archive/old-infrastructure/skills/swarm/SKILL.md)
 says every PR-shaped code change happens in its own worktree and that a fresh
 worker should be spawned whenever the objective, file surface, or verification
 loop changes materially.
 
-[.claude/commands/swarm.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm.md)
+[.claude/commands/swarm.md](../../handoff/swarm-pack/commands/swarm.md)
 goes further: builder workers run with `isolation: "worktree"`, reviewer
 workers stay one-PR-at-a-time, and the coordinator model explicitly treats the
 worktree as the write boundary.
@@ -141,9 +141,9 @@ the swarm's concurrency model.
 
 ## Evidence Pointers
 
-- [`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
-- [`.claude/skills/swarm/SKILL.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/skills/swarm/SKILL.md)
-- [`.claude/commands/swarm.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm.md)
-- [docs/project/JULES_BOT_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md)
-- [ERA5_MIXED_TOOL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA5_MIXED_TOOL_ARCHAEOLOGY.md)
+- [`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
+- [`.claude/skills/swarm/SKILL.md`](../../reference/archive/old-infrastructure/skills/swarm/SKILL.md)
+- [`.claude/commands/swarm.md`](../../handoff/swarm-pack/commands/swarm.md)
+- [docs/project/JULES_BOT_ANALYSIS.md](../../project/JULES_BOT_ANALYSIS.md)
+- [ERA5_MIXED_TOOL_ARCHAEOLOGY.md](ERA5_MIXED_TOOL_ARCHAEOLOGY.md)
 - `git log` merged PRs with `worktree-agent-*` head branches: `#1911`, `#1917`, `#1942`, `#1954`

@@ -271,6 +271,7 @@ fn named_parameter_node_is_not_emitted_as_ref() -> Result<()> {
     );
     let named_param = Node::new(
         NodeKind::NamedParameter {
+            default_operator_span: None,
             variable: Box::new(param_var),
             external_name: String::new(),
             default_operator: None,

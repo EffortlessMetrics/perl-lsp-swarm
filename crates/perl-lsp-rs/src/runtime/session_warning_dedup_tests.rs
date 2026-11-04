@@ -193,6 +193,37 @@ fn lifecycle_clear_releases_only_its_own_family() {
     );
 }
 
+/// #16550 review: the external-engine availability warning is once per
+/// session because the condition (engine missing on PATH) is environment
+/// state, not critic configuration. A critic-configuration transition clears
+/// only the `Critic` family; the availability identity must survive it.
+#[test]
+fn critic_configuration_clear_preserves_the_engine_availability_identity() {
+    let server = LspServer::new();
+    let availability =
+        SessionWarningIdentity::subjectless(SessionWarningCode::CriticExternalUnavailable);
+    note_critic(&server, profile_identity("/cfg/before-move"));
+    assert_eq!(
+        server
+            .session_warning_dedup
+            .note(SessionWarningFamily::CriticEngineAvailability, availability),
+        SessionWarningDecision::EmitFirst
+    );
+
+    // Critic configuration movement clears only the critic family.
+    server.session_warning_dedup.clear_family(SessionWarningFamily::Critic);
+
+    assert_eq!(server.session_warning_dedup_snapshot().critic.entries, 0);
+    assert_eq!(
+        server
+            .session_warning_dedup
+            .note(SessionWarningFamily::CriticEngineAvailability, availability),
+        SessionWarningDecision::Suppress,
+        "engine availability has not changed, so the once-per-session warning must stay suppressed"
+    );
+    assert_eq!(server.session_warning_dedup_snapshot().critic_engine_availability.entries, 1);
+}
+
 #[test]
 fn forget_releases_an_identity_so_a_failed_send_can_retry() {
     let server = LspServer::new();
@@ -485,5 +516,496 @@ fn adversarial_distinct_client_values_still_warn_but_never_grow_retention()
     // saturation never silently drops warnings.
     let texts = warning_texts(&output.messages()?);
     assert_eq!(texts.len(), rounds, "each distinct value must warn exactly once");
+    Ok(())
+}
+
+#[test]
+fn critic_fallback_warning_fires_once_across_two_requests() -> Result<(), Box<dyn std::error::Error>>
+{
+    use perl_lsp_rs_core::config::CriticEngine;
+
+    let (server, output) = server_with_output_capture();
+    // The #16550 fallback shape: the legacy engine was requested but the
+    // external binary was unavailable, so the command reported the built-in
+    // analyzer. Two such requests in one session must warn once.
+    let fallback_result =
+        json!({ "status": "success", "violationCount": 0, "analyzerUsed": "builtin" });
+
+    server.note_critic_command_fallback(&fallback_result, CriticEngine::Legacy);
+    server.note_critic_command_fallback(&fallback_result, CriticEngine::Legacy);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    // #16550 review: the availability identity lives in its own family so a
+    // critic-configuration transition's `clear_family(Critic)` cannot
+    // resurrect this once-per-session warning.
+    assert_eq!(
+        snapshot.critic_engine_availability.entries, 1,
+        "exactly one identity is retained, outside the resettable critic family"
+    );
+    assert_eq!(snapshot.critic_engine_availability.inserted, 1);
+    assert_eq!(snapshot.critic_engine_availability.suppressed, 1);
+    assert_eq!(snapshot.critic.entries, 0, "the critic family must stay untouched");
+
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(texts.len(), 1, "the fallback warning must fire once per session: {texts:?}");
+    assert!(
+        texts[0].contains("perlcritic not found on PATH")
+            && texts[0].contains("cpanm Perl::Critic"),
+        "the warning must name the condition and the install remedy: {}",
+        texts[0]
+    );
+    Ok(())
+}
+
+#[test]
+fn critic_fallback_warning_stays_silent_without_a_legacy_builtin_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_lsp_rs_core::config::CriticEngine;
+
+    let (server, output) = server_with_output_capture();
+    let builtin_result = json!({ "analyzerUsed": "builtin" });
+    let external_result = json!({ "analyzerUsed": "external" });
+
+    // Native/default engine: `builtin` is not even reachable today, and any
+    // builtin-shaped result is the engine itself — no fallback happened.
+    server.note_critic_command_fallback(&builtin_result, CriticEngine::Native);
+    // Legacy engine that actually ran the external analyzer: no fallback.
+    server.note_critic_command_fallback(&external_result, CriticEngine::Legacy);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.critic.entries, 0, "no fallback, no retained warning identity");
+
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert!(texts.is_empty(), "no warning may fire without the fallback fact: {texts:?}");
+    Ok(())
+}
+
+// -------------------------------------------------------------------------
+// Project-config family (#16548)
+//
+// A broken `.perl-lsp.toml` is a persistent condition for the whole session:
+// the folder is re-read on every `didOpen`, so an undeduped emitter repeats
+// the same popup. The property under test is the module's existing contract -
+// "repeated subjects warn once, genuinely different subjects still warn" -
+// applied to the family that was missing it.
+// -------------------------------------------------------------------------
+
+fn note_project_config(server: &LspServer, subject: &str) -> SessionWarningDecision {
+    server.session_warning_dedup.emit_project_config_warning(
+        SessionWarningCode::ProjectConfigInvalid,
+        subject,
+        || true,
+    )
+}
+
+#[test]
+fn a_repeated_broken_config_warns_once_per_session() {
+    let server = LspServer::new();
+
+    // Simulates the single-file emitter firing on every didOpen. The literal
+    // matches the private `PROJECT_CONFIG_SUBJECT` in `lifecycle::workspace`.
+    const SINGLE_FILE_SUBJECT: &str = "project-config";
+    let first = note_project_config(&server, SINGLE_FILE_SUBJECT);
+    let mut suppressed = 0;
+    for _ in 0..5 {
+        if note_project_config(&server, SINGLE_FILE_SUBJECT) == SessionWarningDecision::Suppress {
+            suppressed += 1;
+        }
+    }
+    assert_eq!(first, SessionWarningDecision::EmitFirst);
+    assert_eq!(suppressed, 5, "every repeat after the first must be suppressed");
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 1);
+    assert_eq!(snapshot.project_config.suppressed, 5);
+}
+
+#[test]
+fn two_different_broken_folders_never_cross_suppress() {
+    let server = LspServer::new();
+
+    // The control that keeps suppression from hiding a second real problem.
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::EmitFirst);
+    assert_eq!(note_project_config(&server, "folder-b"), SessionWarningDecision::EmitFirst);
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::Suppress);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2, "each distinct folder is retained once");
+    assert_eq!(snapshot.project_config.suppressed, 1);
+}
+
+#[test]
+fn a_different_parse_error_in_the_same_file_stays_suppressed() {
+    let server = LspServer::new();
+
+    // The error body is deliberately not part of the identity: the remedy is
+    // "fix the file and reload the window" either way, so a second parse error
+    // in an already-reported file is the same condition for the user.
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::EmitFirst);
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::Suppress);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.inserted, 1);
+    assert_eq!(snapshot.project_config.suppressed, 1);
+}
+
+#[test]
+fn project_config_saturation_still_emits() {
+    let server = LspServer::new();
+    for index in 0..PER_FAMILY_ENTRY_CAP {
+        assert_eq!(
+            note_project_config(&server, &format!("folder-{index}")),
+            SessionWarningDecision::EmitFirst
+        );
+    }
+    // One past the cap: still emitted, simply not retained.
+    assert_eq!(
+        note_project_config(&server, "one-past-the-cap"),
+        SessionWarningDecision::EmitWithoutRetaining
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, PER_FAMILY_ENTRY_CAP);
+    assert_eq!(snapshot.project_config.high_water_entries, PER_FAMILY_ENTRY_CAP);
+    assert_eq!(snapshot.project_config.emitted_without_retaining, 1);
+}
+
+// -------------------------------------------------------------------------
+// Project-config warning identity and delivery (PR #16566 review)
+//
+// The emitters key identities on the config file discovery selected and
+// distinguish load failures from invalid `[perl].version`, so a second
+// genuinely different problem must never be hidden behind the first one's
+// identity; and a warning whose delivery failed must stay eligible to re-fire
+// instead of being suppressed forever.
+// -------------------------------------------------------------------------
+
+fn emit_project_config(
+    server: &LspServer,
+    code: SessionWarningCode,
+    path: &str,
+    delivered: bool,
+) -> SessionWarningDecision {
+    server.session_warning_dedup.emit_project_config_warning(code, path, || delivered)
+}
+
+#[test]
+fn load_failure_and_invalid_version_in_one_file_are_distinct_identities() {
+    let server = LspServer::new();
+
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::EmitFirst
+    );
+    // The same file, the other warning kind: fixing the parse error and then
+    // tripping an invalid `[perl].version` must warn again, not be suppressed
+    // behind the load-failure identity.
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigVersionInvalid,
+            "t.toml",
+            true
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+    // And the kinds stay stable across repeats.
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::Suppress
+    );
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigVersionInvalid,
+            "t.toml",
+            true
+        ),
+        SessionWarningDecision::Suppress
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2, "one retained identity per kind");
+}
+
+#[test]
+fn a_failed_delivery_rolls_the_identity_back_for_retry() {
+    let server = LspServer::new();
+
+    // First occurrence attempts delivery; the (simulated) client never
+    // receives it.
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", false),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        server.session_warning_dedup_snapshot().project_config.entries,
+        0,
+        "a warning the client never received must not stay retained"
+    );
+
+    // The next occurrence therefore warns again instead of being suppressed
+    // forever, and a delivered warning is retained as usual.
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::Suppress
+    );
+}
+
+#[test]
+fn two_selected_config_paths_never_cross_suppress_through_the_emit_path() {
+    let server = LspServer::new();
+
+    // The emit path keys on the selected config path: two different broken
+    // files (e.g. two folders whose ancestor walk landed on different files)
+    // must each reach the client through the same code that dedups repeats.
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigInvalid,
+            "/a/.perl-lsp.toml",
+            true
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigInvalid,
+            "/b/.perl-lsp.toml",
+            true
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2);
+}
+
+// -------------------------------------------------------------------------
+// Client include-path family (#17164)
+//
+// One rejected `includePaths` entry is re-validated on every channel that
+// applies client settings (`didChangeConfiguration`, `initializationOptions`
+// replay, folder effective-config rebuild). The property under test is the
+// module's standing contract - "repeated subjects warn once, genuinely
+// different subjects still warn" - applied per entry plus bounded reason
+// kind, so the editor user sees one popup per distinct rejection, not one
+// per channel.
+// -------------------------------------------------------------------------
+
+use perl_lsp_rs_core::config::{RejectedClientIncludePath, RejectedClientIncludePathReason};
+
+fn rejected_entry(
+    entry: &str,
+    reason: RejectedClientIncludePathReason,
+) -> RejectedClientIncludePath {
+    RejectedClientIncludePath { entry: entry.to_string(), reason }
+}
+
+fn warn_rejected(server: &LspServer, rejected: &[RejectedClientIncludePath]) {
+    server.warn_rejected_client_include_paths(rejected);
+}
+
+#[test]
+fn repeated_rejected_include_path_warns_once_across_channels()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output) = server_with_output_capture();
+    let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+    // The same entry/reason pair as it would arrive through several
+    // validation channels in one session.
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(
+        texts.len(),
+        1,
+        "one rejected entry must surface once per session across channels: {texts:?}"
+    );
+    assert!(texts[0].contains(absolute), "the warning must name the rejected entry: {texts:?}");
+    assert!(
+        texts[0].contains("workspace-relative"),
+        "the warning must name the supported form: {texts:?}"
+    );
+    assert!(
+        !texts[0].contains("externalIncludePaths"),
+        "the warning must not advise the inert `externalIncludePaths` setting: {texts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn distinct_rejected_include_path_entries_and_reasons_still_warn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output) = server_with_output_capture();
+    let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+    // Same entry, different reason kind: the remedy differs, so it must warn.
+    warn_rejected(
+        &server,
+        &[rejected_entry(
+            absolute,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource::Unknown,
+            ),
+        )],
+    );
+    // Different entry, same reason kind: a second dropped root is a second
+    // actionable fact.
+    warn_rejected(
+        &server,
+        &[rejected_entry(
+            "no-such-lib",
+            RejectedClientIncludePathReason::EscapesWorkspace("parent does not exist".to_string()),
+        )],
+    );
+    // The first pair, repeated: still suppressed.
+    warn_rejected(&server, &[rejected_entry(absolute, RejectedClientIncludePathReason::Absolute)]);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    drop(server);
+    assert_eq!(
+        snapshot.client_include_path.entries, 3,
+        "one retained identity per entry/reason pair"
+    );
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(texts.len(), 3, "each distinct rejection must warn exactly once: {texts:?}");
+    Ok(())
+}
+
+#[test]
+fn failed_include_path_warning_delivery_rolls_back_for_retry() {
+    // A server whose output transport fails simulates a client that never
+    // received the notification: the identity must not stay retained, so a
+    // later occurrence can still warn (mirrors the project-config contract).
+    let server = LspServer::new();
+    let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+    server.session_warning_dedup.emit_client_include_path_warning(
+        absolute,
+        RejectedClientIncludePathReason::Absolute.dedup_key(),
+        || false,
+    );
+    assert_eq!(
+        server.session_warning_dedup_snapshot().client_include_path.entries,
+        0,
+        "an undelivered warning must not stay retained"
+    );
+
+    server.session_warning_dedup.emit_client_include_path_warning(
+        absolute,
+        RejectedClientIncludePathReason::Absolute.dedup_key(),
+        || true,
+    );
+    assert_eq!(
+        server.session_warning_dedup_snapshot().client_include_path.entries,
+        1,
+        "a delivered warning is retained"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Native-formatter ignored-options family (#18056)
+//
+// #18024 made ignored documented formatting keys visible in server logs;
+// most users never read logs. These tests prove the same notice reaches
+// the client as a `window/showMessage` warning: held back before
+// `initialized`, flushed by the real `initialized` dispatch, deduplicated
+// per key set, and silent under the external legacy engine.
+// -------------------------------------------------------------------------
+
+#[test]
+fn formatter_options_notice_waits_for_initialized_then_warns_once_per_key_set()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output) = server_with_output_capture();
+    server
+        .test_handle_initialize_dispatch(Some(json!({ "processId": 1, "rootUri": "file:///tmp", "workspaceFolders": [{ "uri": "file:///tmp", "name": "test" }], "capabilities": {} })))
+        .map_err(|e| format!("initialize failed: {e:?}"))?;
+
+    // Applied before `initialized` (as during `initialize`): the notice is
+    // recorded but must not be sent yet.
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "formatting": { "verticalAlignment": true } } }
+    })));
+    server.flush_client_notices();
+    assert_eq!(
+        server.config.lock().pending_client_notices_len(),
+        1,
+        "the notice must stay pending before initialized"
+    );
+    assert_eq!(server.session_warning_dedup_snapshot().formatter_options.entries, 0);
+
+    // The real `initialized` dispatch flushes the pending notice.
+    server.test_handle_initialized_dispatch()?;
+    assert_eq!(server.config.lock().pending_client_notices_len(), 0, "flush drains pending");
+    assert_eq!(server.session_warning_dedup_snapshot().formatter_options.entries, 1);
+
+    // Re-applying the same key set warns no second time this session.
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "formatting": { "verticalAlignment": true } } }
+    })));
+    server.flush_client_notices();
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.formatter_options.entries, 1, "repeat apply must not re-emit");
+    assert_eq!(snapshot.formatter_options.suppressed, 1);
+
+    // A different ignored key set is a genuinely different condition.
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "formatting": { "blockCommentIndentation": 2 } } }
+    })));
+    server.flush_client_notices();
+    assert_eq!(server.session_warning_dedup_snapshot().formatter_options.entries, 2);
+
+    // Outbound notifications settle when the server drops (the same
+    // capture pattern as the AI-backend test above).
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(texts.len(), 2, "exactly one warning per distinct key set: {texts:?}");
+    assert!(texts[0].contains("formatting.verticalAlignment"), "names the key: {}", texts[0]);
+    assert!(texts[0].contains("native formatter"), "names the cause: {}", texts[0]);
+    assert!(texts[1].contains("formatting.blockCommentIndentation"), "names the key: {}", texts[1]);
+    Ok(())
+}
+
+#[test]
+fn formatter_options_notice_is_silent_under_external_legacy_engine()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output) = server_with_output_capture();
+    server
+        .test_handle_initialize_dispatch(Some(json!({ "processId": 1, "rootUri": "file:///tmp", "workspaceFolders": [{ "uri": "file:///tmp", "name": "test" }], "capabilities": {} })))
+        .map_err(|e| format!("initialize failed: {e:?}"))?;
+    server.test_handle_initialized_dispatch()?;
+
+    // The keys have real effects under the external legacy formatter, so
+    // there is nothing to warn about. The LSP client-settings channel
+    // cannot select an external process (project-owned authority), so the
+    // engine is set through the trusted config path directly.
+    server.config.lock().formatting_engine =
+        perl_lsp_rs_core::config::FormatterMode::ExternalLegacy;
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "formatting": {
+            "verticalAlignment": true,
+            "blockCommentIndentation": 2
+        } } }
+    })));
+    server.flush_client_notices();
+
+    assert_eq!(server.session_warning_dedup_snapshot().formatter_options.entries, 0);
+    drop(server);
+    assert!(
+        warning_texts(&output.messages()?).is_empty(),
+        "external-legacy applies these keys; no warning expected"
+    );
     Ok(())
 }

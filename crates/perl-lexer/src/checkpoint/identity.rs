@@ -4,8 +4,12 @@
 //! behavior, not an ad-hoc hash of [`crate::LexerConfig`]. Source/content/
 //! generation types come from `perl-source-identity` (#4851). Exact
 //! `LocalSymbolTable` source binding remains #8812; this snapshot stores the
-//! declared name set so same-table restore can succeed and a different or
-//! absent table fails closed.
+//! declared name set and the nullary-prototype subset of it so same-table
+//! restore can succeed and a different or absent table fails closed. Nullary
+//! membership participates because it changes how a later `<<` tokenizes
+//! (#16165). Checkpoint identity is process-local — nothing serializes a
+//! checkpoint — so the policy-shape change cannot cross a version boundary;
+//! `CHECKPOINT_SCHEMA_VERSION` stays at 1.
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -44,6 +48,7 @@ pub struct LexerPolicyIdentity {
     qw_recovery_enabled: bool,
     emit_heredoc_body_tokens: bool,
     symbol_names: Option<BTreeSet<Box<str>>>,
+    nullary_symbol_names: Option<BTreeSet<Box<str>>>,
 }
 
 impl LexerPolicyIdentity {
@@ -60,6 +65,10 @@ impl LexerPolicyIdentity {
             qw_recovery_enabled,
             emit_heredoc_body_tokens,
             symbol_names: config.symbol_table.as_ref().map(LocalSymbolTable::identity_names),
+            nullary_symbol_names: config
+                .symbol_table
+                .as_ref()
+                .map(LocalSymbolTable::identity_nullary_names),
         }
     }
 

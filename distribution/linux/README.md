@@ -69,3 +69,12 @@ correct release archive for the requested architecture, and writes:
 - `target/linux-packages/pacman/PKGBUILD`
 
 Use `--arch aarch64` to render the arm64/aarch64 target set.
+
+The RPM scaffold repackages prebuilt release executables whose debuginfo is stripped
+by the release profile. It explicitly omits an empty debuginfo subpackage and checks
+both ELF inputs before RPM's normal post-install processing. Unexpected DWARF,
+STABS, debug indices, compressed or linked debug information is refused without
+modifying the input;
+such an archive needs a separate debug-preserving packaging path. Normal RPM
+stripping, build-ID handling, dependency generation and file validation remain active.
+This input contract does not establish Fedora acceptance or a published RPM channel.

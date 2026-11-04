@@ -2,11 +2,15 @@
 //!
 //! Handles workspace folders and root URI/path management.
 
+use super::super::session_warning_dedup::SessionWarningCode;
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType};
 use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter_cached};
-use perl_lsp_rs_core::config::WorkspaceConfig;
+use perl_lsp_rs_core::config::{
+    ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource, WorkspaceConfig,
+    WorkspaceConfigUpdateContext,
+};
 use perl_uri::uri_to_fs_path;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -14,6 +18,32 @@ use std::sync::Once;
 
 /// Fires at most once per LSP session, when Perl is not found anywhere.
 static PERL_NOT_FOUND_WARNED: Once = Once::new();
+
+/// Dedup subject fallback for a broken workspace `.perl-lsp.toml` whose file
+/// could not even be named by discovery.
+///
+/// Config warnings key on the selected config path (fingerprinted, never
+/// retained as raw text); this shared subject only covers the corner where no
+/// path exists to key on, degrading to one warning per session rather than a
+/// per-path identity (#16548, PR #16566 review).
+const PROJECT_CONFIG_SUBJECT: &str = "project-config";
+
+/// Outcome of single-file `.perl-lsp.toml` discovery.
+///
+/// `selected_config_path` is the file the ancestor walk actually chose — the
+/// dedup identity for warnings about that file — and is carried separately
+/// from `config` so a load failure still knows which file to name.
+struct SingleFileConfigDiscovery {
+    config: Result<Option<perl_lsp_rs_core::config::ProjectConfig>, String>,
+    selected_config_path: Option<std::path::PathBuf>,
+}
+
+impl SingleFileConfigDiscovery {
+    /// Discovery did not run (folder mode) or had no document to start from.
+    fn not_searched() -> Self {
+        Self { config: Ok(None), selected_config_path: None }
+    }
+}
 
 use crate::perl_remediation::PERL_REMEDIATION;
 
@@ -188,11 +218,14 @@ impl LspServer {
         // Discover before taking the workspace-folder lock because discovery
         // takes the documents lock. This keeps lock acquisition ordered as
         // documents -> workspace_folders for diagnostic/reload snapshots.
-        let single_file_config = if self.workspace_folders.lock().is_empty() {
+        let single_file_discovery = if self.workspace_folders.lock().is_empty() {
             self.discover_single_file_config()
         } else {
-            Ok(None)
+            SingleFileConfigDiscovery::not_searched()
         };
+        // Snapshot accumulated notification patches before locking folders.
+        // Rebuilding the project layer must not erase accepted client settings.
+        let client_settings = self.last_client_settings.lock().clone();
         let mut complete = true;
         let mut folders = self.workspace_folders.lock();
 
@@ -200,19 +233,43 @@ impl LspServer {
             // Single-file mode: try to discover .perl-lsp.toml from the
             // open document's directory. This is a common workflow — opening
             // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
-            let single_file_config = match single_file_config {
+            let SingleFileConfigDiscovery { config: discovered, selected_config_path } =
+                single_file_discovery;
+            let single_file_config = match discovered {
                 Ok(config) => config,
                 Err(msg) => {
                     complete = false;
                     tracing::warn!(message = %msg, "Single-file project config warning");
-                    if let Err(error) = self.show_message(
-                        MessageType::Warning,
-                        &format!(
-                            "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
-                        ),
-                    ) {
-                        tracing::warn!(%error, "Failed to send single-file config warning");
-                    }
+                    // Keyed on the config file discovery actually selected, so
+                    // a second broken file in another document's directory
+                    // still warns; the identity is rolled back when the client
+                    // never receives the message. Falls back to the shared
+                    // subject only when no file could be named at all.
+                    let identity_path = selected_config_path
+                        .as_deref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| PROJECT_CONFIG_SUBJECT.to_string());
+                    let _ = self.session_warning_dedup.emit_project_config_warning(
+                        SessionWarningCode::ProjectConfigInvalid,
+                        &identity_path,
+                        || {
+                            match self.show_message(
+                                MessageType::Warning,
+                                &format!(
+                                    "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
+                                ),
+                            ) {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        %error,
+                                        "Failed to send single-file config warning"
+                                    );
+                                    false
+                                }
+                            }
+                        },
+                    );
                     None
                 }
             };
@@ -221,7 +278,11 @@ impl LspServer {
                 if let Some(raw_version) = config.perl.version.as_deref()
                     && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
                 {
-                    self.emit_invalid_project_version_warning(raw_version, "single-file project");
+                    self.emit_invalid_project_version_warning(
+                        raw_version,
+                        "single-file project",
+                        selected_config_path.as_deref(),
+                    );
                 }
                 let mut server_config = self.config.lock();
                 config.apply_to_server_config(&mut server_config);
@@ -232,6 +293,7 @@ impl LspServer {
             self.replay_last_client_settings_on_server_config();
             #[cfg(not(target_arch = "wasm32"))]
             self.clear_critic_dedup_if_moved(&critic_snapshot_before);
+            self.flush_client_notices();
             return complete;
         }
 
@@ -263,6 +325,7 @@ impl LspServer {
                 let mut effective_config = WorkspaceConfig::default();
                 if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
                     let rejected = effective_config.update_from_value(init_opts);
+                    self.warn_rejected_client_include_paths(&rejected);
                     for entry in rejected {
                         tracing::warn!(
                             target: "perl_lsp::config",
@@ -297,6 +360,8 @@ impl LspServer {
                             self.emit_invalid_project_version_warning(
                                 raw_version,
                                 &format!("project folder {}", folder_path.display()),
+                                perl_lsp_rs_core::config::discover_project_config_path(&folder_path)
+                                    .as_deref(),
                             );
                         }
 
@@ -334,16 +399,67 @@ impl LspServer {
                              (Ctrl+Shift+P \u{2192} Developer: Reload Window) to apply your settings.",
                         );
                         tracing::warn!(message = %user_msg, "Project config warning");
-                        // Emit user-visible warning so devs can fix a broken .perl-lsp.toml
-                        if let Err(e) = self.notify(
-                            "window/showMessage",
-                            serde_json::json!({
-                                "type": 2, // Warning
-                                "message": user_msg
-                            }),
-                        ) {
-                            tracing::warn!(error = %e, "Failed to send showMessage warning");
-                        }
+                        // Emit user-visible warning so devs can fix a broken .perl-lsp.toml.
+                        // Deduped per **selected** config path, not the search
+                        // root or the folder display name: the folder is
+                        // re-read on every `didOpen`, and repeating an
+                        // identical popup trains the user to dismiss the one
+                        // message that matters (#16548), while two different
+                        // broken files — including two folders whose discovery
+                        // lands on different ancestor configs — must each
+                        // warn. Delivery failures roll the identity back so
+                        // the warning stays eligible to re-fire.
+                        let identity_path =
+                            perl_lsp_rs_core::config::discover_project_config_path(&folder_path)
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_else(|| folder.display_name().to_string());
+                        let _ = self.session_warning_dedup.emit_project_config_warning(
+                            SessionWarningCode::ProjectConfigInvalid,
+                            &identity_path,
+                            || {
+                                match self.notify(
+                                    "window/showMessage",
+                                    serde_json::json!({
+                                        "type": 2, // Warning
+                                        "message": user_msg
+                                    }),
+                                ) {
+                                    Ok(()) => true,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            error = %error,
+                                            "Failed to send showMessage warning"
+                                        );
+                                        false
+                                    }
+                                }
+                            },
+                        );
+                    }
+                }
+
+                // Match notification precedence: init options < TOML < client
+                // patches, including missing or malformed TOML replacements.
+                if let Some(settings) = client_settings.as_ref() {
+                    let rejected =
+                        folder.effective_workspace_config.update_from_value_with_context(
+                            settings,
+                            WorkspaceConfigUpdateContext {
+                                workspace_root: Some(&folder_path),
+                                external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                                    UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
+                                ),
+                            },
+                        );
+                    self.warn_rejected_client_include_paths(&rejected);
+                    for entry in rejected {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            folder_uri = %folder.uri,
+                            entry = %entry.entry,
+                            reason = %entry.render(),
+                            "rejected client includePaths entry"
+                        );
                     }
                 }
             }
@@ -389,6 +505,7 @@ impl LspServer {
         // the post-initialize lifecycle. During `initialize` only local project
         // and initialization-option state may be applied; server→client requests
         // are not legal until after InitializeResult has been returned (#7708).
+        self.flush_client_notices();
         complete
     }
 
@@ -426,22 +543,29 @@ impl LspServer {
 
     /// In single-file mode, try to discover `.perl-lsp.toml` from the
     /// directory of the first open document. (#UX15)
-    fn discover_single_file_config(
-        &self,
-    ) -> Result<Option<perl_lsp_rs_core::config::ProjectConfig>, String> {
+    ///
+    /// The outcome carries the config file discovery actually selected, not
+    /// just the parsed result: warnings about that file dedup on its path, and
+    /// a later selected document can legitimately resolve to a different
+    /// file, so a constant subject would suppress a genuinely different
+    /// broken config (PR #16566 review).
+    fn discover_single_file_config(&self) -> SingleFileConfigDiscovery {
         let documents = self.documents.lock();
         let Some(uri) = documents.keys().next().map(ToString::to_string) else {
-            return Ok(None);
+            return SingleFileConfigDiscovery::not_searched();
         };
         drop(documents);
 
         let Some(path) = super::super::source_path_from_uri(&uri) else {
-            return Ok(None);
+            return SingleFileConfigDiscovery::not_searched();
         };
         let Some(dir) = std::path::Path::new(&path).parent() else {
-            return Ok(None);
+            return SingleFileConfigDiscovery::not_searched();
         };
-        perl_lsp_rs_core::config::load_project_config(dir).map_err(|error| error.to_string())
+        let selected_config_path = perl_lsp_rs_core::config::discover_project_config_path(dir);
+        let config =
+            perl_lsp_rs_core::config::load_project_config(dir).map_err(|error| error.to_string());
+        SingleFileConfigDiscovery { config, selected_config_path }
     }
 
     /// Re-run single-file project discovery after a document install.
@@ -459,14 +583,37 @@ impl LspServer {
         }
     }
 
-    fn emit_invalid_project_version_warning(&self, raw_version: &str, authority: &str) {
+    fn emit_invalid_project_version_warning(
+        &self,
+        raw_version: &str,
+        authority: &str,
+        selected_config_path: Option<&std::path::Path>,
+    ) {
         let user_msg = format!(
             "Perl LSP: invalid [perl].version {raw_version:?} in {authority}; expected a major.minor target such as 5.20 or v5.20. The project fallback is disabled until it is corrected."
         );
         tracing::warn!(message = %user_msg, "Invalid project Perl version");
-        if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
-            tracing::warn!(%error, "Failed to send invalid project version warning");
-        }
+        // Same persistent condition as a broken config: re-reading the folder on
+        // every `didOpen` would repeat an identical popup. Keyed on the config
+        // file that named the offending version — the file discovery selected,
+        // which can live in an ancestor of the search root — and on a separate
+        // warning kind, so fixing one problem and tripping the other in the
+        // same file still warns (#16548, PR #16566 review). The human-facing
+        // authority string stays in the message body only.
+        let identity_path = selected_config_path
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| authority.to_string());
+        let _ = self.session_warning_dedup.emit_project_config_warning(
+            SessionWarningCode::ProjectConfigVersionInvalid,
+            &identity_path,
+            || match self.show_message(MessageType::Warning, &user_msg) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to send invalid project version warning");
+                    false
+                }
+            },
+        );
     }
 
     /// Emit a `window/showMessage` Warning describing the conflicting
@@ -486,8 +633,7 @@ impl LspServer {
             .join("; ");
         let user_msg = format!(
             "Perl LSP: multi-root workspace has conflicting .perl-lsp.toml settings across \
-             folders. The first folder wins for each key; others were ignored: {rendered}. \
-             See docs/reference/CONFIG.md (Multi-root workspaces) for details."
+             folders. The first folder wins for each key; others were ignored: {rendered}."
         );
         tracing::warn!(conflicts = %rendered, "Multi-root config conflict; first folder wins");
         if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
@@ -1036,6 +1182,85 @@ include_paths = ["other_lib"]
         assert!(folder_state.project_config.is_none());
         // Should have default include paths
         assert!(!folder_state.effective_workspace_config.include_paths.is_empty());
+    }
+
+    #[test]
+    fn project_config_reload_preserves_client_workspace_patches() -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("project");
+        let peer = temp.path().join("peer");
+        std::fs::create_dir_all(folder.join("client_lib"))?;
+        std::fs::create_dir_all(peer.join("client_lib"))?;
+        let config_path = folder.join(".perl-lsp.toml");
+        std::fs::write(&config_path, "[perl]\ninclude_paths = [\"project_lib\"]\n")?;
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        let peer_uri = url::Url::from_directory_path(&peer)
+            .map_err(|()| anyhow::anyhow!("failed to create peer URI"))?
+            .to_string();
+        *server.root_path.lock() = Some(folder.clone());
+        *server.initialization_options_perl_settings.lock() = Some(serde_json::json!({
+            "workspace": { "includePaths": ["init_lib"], "resolutionTimeout": 111 }
+        }));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri.clone())
+                .with_path(folder.clone()),
+        );
+        assert!(server.load_and_apply_project_config());
+        let doc_uri = format!("{folder_uri}main.pl");
+        assert_eq!(
+            server
+                .config_for_doc(&doc_uri)
+                .ok_or_else(|| anyhow::anyhow!("missing config"))?
+                .include_paths,
+            vec!["project_lib"],
+            "without a client override the TOML layer must win over initialization options",
+        );
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "includePaths": ["client_lib"] } } }
+        })));
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "resolutionTimeout": 321 } } }
+        })));
+        let accepted = server
+            .config_for_doc(&doc_uri)
+            .ok_or_else(|| anyhow::anyhow!("missing accepted client config"))?;
+        assert_eq!(accepted.include_paths, vec!["client_lib"]);
+        assert_eq!(accepted.resolution_timeout_ms, 321);
+        let assert_client_settings = || -> anyhow::Result<()> {
+            for (uri, path) in [(&folder_uri, &folder), (&peer_uri, &peer)] {
+                let document = format!("{uri}main.pl");
+                let config = server
+                    .config_for_doc(&document)
+                    .ok_or_else(|| anyhow::anyhow!("missing config for {uri}"))?;
+                assert_eq!(config.include_paths, vec!["client_lib"]);
+                assert_eq!(config.resolution_timeout_ms, 321);
+                assert!(server.include_paths_for_doc(&document).contains(&path.join("client_lib")));
+            }
+            Ok(())
+        };
+        assert!(!server.client_capabilities.lock().workspace_configuration_support);
+        server.handle_did_change_workspace_folders(Some(serde_json::json!({
+            "event": { "added": [{ "uri": peer_uri, "name": "peer" }], "removed": [] }
+        })))?;
+        assert_client_settings()?;
+        for (contents, complete) in [
+            (Some("[perl]\ninclude_paths = [\"project_lib\"]\n"), true),
+            (Some("[perl"), false),
+            (Some("[perl]\ninclude_paths = [\"recovered_lib\"]\n"), true),
+            (None, true),
+        ] {
+            if let Some(contents) = contents {
+                std::fs::write(&config_path, contents)?;
+            } else {
+                std::fs::remove_file(&config_path)?;
+            }
+            assert_eq!(server.load_and_apply_project_config(), complete);
+            assert_client_settings()?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -2424,10 +2649,9 @@ perlcritic_severity = 2
     fn malformed_batch_folder_generation_falls_back_to_lower_layers_not_previous_client_values()
     -> anyhow::Result<()> {
         // Folder effective configs are reassembled per generation
-        // (defaults < initializationOptions < project < current payload), so a
-        // wrong-typed or absent client field falls back to its LOWER LAYER value,
-        // never to the previous generation's accepted client value and never to a
-        // partial mix of the two consumer classes.
+        // (defaults < initializationOptions < project < accumulated client
+        // patches). An explicitly wrong-typed field falls back to its lower
+        // layer; an omitted field retains its earlier client patch (#17753).
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let uri = push_folder_with_project_config(&server, &temp, "zeta")?;
@@ -2464,9 +2688,8 @@ perlcritic_severity = 2
              not to the previous batch's good_lib"
         );
         assert!(
-            !state.effective_workspace_config.use_system_inc,
-            "absent-from-batch useSystemInc falls back to the default, \
-             not to the previous batch's true"
+            state.effective_workspace_config.use_system_inc,
+            "absent-from-batch useSystemInc retains the earlier client patch"
         );
         assert_eq!(
             state.effective_workspace_config.discovery_extra_extensions,

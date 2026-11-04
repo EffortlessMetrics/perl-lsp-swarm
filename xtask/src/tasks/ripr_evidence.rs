@@ -516,11 +516,7 @@ fn optional_sha_value(value: Option<&str>) -> Value {
 }
 
 fn repo_root() -> Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| eyre!("failed to resolve repository root from {}", manifest_dir.display()))
+    crate::utils::project_root()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1060,6 +1056,33 @@ struct RiprSuppressionRules {
     lifecycle: Vec<RiprSuppressionLifecycle>,
 }
 
+/// Classification values a suppression entry may select on.
+///
+/// `suppression_matches_finding` compares these, by exact canonicalized
+/// string, against a finding's `classification` (ripr 0.5.x) or `grip_class`
+/// (ripr 0.9.x+) field. The set is closed: it is exactly `ripr.toml`'s
+/// `[severity.findings]` vocabulary plus the `weakly_gripped` alias that
+/// [`canonical_suppression_classification`] folds onto `reachable_unrevealed`.
+/// Every other word in circulation — `kind` words such as `activation_unknown`
+/// (they name the seam's activation trace, and also appear in RIPR's
+/// human-readable annotation text) and diff-receipt gap kinds such as
+/// `call_deletion` — is never written into that field, so an entry listing one
+/// parses, loads, keeps suppressing the repo-wide seam receipt
+/// ([`suppression_matches_seam`] is path-only), and yet can never fire against
+/// the diff-scoped `ripr+ New Gap Gate`. That silent inertness is the recorded
+/// defect in issue #15519; loading now refuses such an entry, exactly like an
+/// invalid path glob.
+const SUPPRESSION_CLASSIFICATION_VOCABULARY: [&str; 8] = [
+    "exposed",
+    "weakly_exposed",
+    "reachable_unrevealed",
+    "no_static_path",
+    "infection_unknown",
+    "propagation_unknown",
+    "static_unknown",
+    "weakly_gripped",
+];
+
 fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressionRules> {
     let policy_path = if path.is_absolute() { path.to_path_buf() } else { repo.join(path) };
     let raw = fs::read_to_string(&policy_path)
@@ -1070,6 +1093,26 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
     let mut rules = RiprSuppressionRules::default();
     for suppression in policy.suppressions {
         rules.lifecycle.push(RiprSuppressionLifecycle::from_entry(&suppression));
+        let unknown_classifications: Vec<&str> = suppression
+            .classification
+            .iter()
+            .map(String::as_str)
+            .filter(|value| !SUPPRESSION_CLASSIFICATION_VOCABULARY.contains(value))
+            .collect();
+        if !unknown_classifications.is_empty() {
+            bail!(
+                "RIPR suppression {} lists classification value(s) [{}] that no finding \
+                 classification or grip_class can ever carry, leaving the entry inert against \
+                 the new-gap gate; allowed vocabulary: {}",
+                if suppression.id.trim().is_empty() {
+                    "<unnamed entry>"
+                } else {
+                    suppression.id.trim()
+                },
+                unknown_classifications.join(", "),
+                SUPPRESSION_CLASSIFICATION_VOCABULARY.join(", ")
+            );
+        }
         let paths =
             suppression.paths.iter().map(|path| normalize_path_text(path)).collect::<Vec<_>>();
         if !suppression.id.trim().is_empty()
@@ -1255,6 +1298,83 @@ fn require_freshness_handoff(repo: &Path) -> Result<()> {
     validate_freshness_handoff(&PathBuf::from(path), &token, repo)
 }
 
+/// Versioned PR integration-delta identity. Event provenance remains A/H;
+/// analysis compares the authenticated first parent P with evaluated E.
+/// Absence of explicit H preserves ordinary commit-range behavior.
+pub(crate) fn pr_comparison_subject(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    pr_head: Option<&str>,
+) -> Result<Option<Value>> {
+    let Some(pr_head) = pr_head else { return Ok(None) };
+    let event_base = revision_sha(repo, base)?;
+    let evaluated = revision_sha(repo, head)?;
+    let raw_head = revision_sha(repo, pr_head)?;
+    if pr_head != raw_head || revision_sha(repo, "HEAD")? != evaluated {
+        bail!("RIPR comparison NOT_PROVEN: exact raw H and evaluated checkout E are required");
+    }
+    if !run_git_output(repo, &["status", "--porcelain", "--untracked-files=all"])?.trim().is_empty()
+    {
+        bail!("RIPR comparison NOT_PROVEN: evaluated checkout has uncommitted source");
+    }
+    let header = run_git_output(repo, &["cat-file", "commit", &evaluated])?;
+    let parents = header
+        .split("\n\n")
+        .next()
+        .unwrap_or("")
+        .lines()
+        .filter_map(|line| line.strip_prefix("parent "))
+        .collect::<Vec<_>>();
+    if parents.len() != 2 || parents[1] != raw_head {
+        bail!(
+            "RIPR comparison NOT_PROVEN: evaluated integration must have exactly two parents and second parent H"
+        );
+    }
+    let comparison_base = revision_sha(repo, parents[0])?;
+    let ancestry = run_git_output(repo, &["merge-base", &event_base, &comparison_base])?;
+    if ancestry.trim() != event_base {
+        bail!("RIPR comparison NOT_PROVEN: event base is not an ancestor of integration parent P");
+    }
+    let tree = run_git_output(repo, &["rev-parse", &format!("{evaluated}^{{tree}}")])?;
+    Ok(Some(json!({"schema_version":"ripr-pr-comparison.v1", "event_base_sha":event_base,
+        "pr_head_sha":raw_head, "comparison_base_sha":comparison_base,
+        "evaluated_sha":evaluated, "evaluated_tree_sha":tree.trim()})))
+}
+
+pub(crate) fn validate_comparison_subject(packet: &Value, expected: Option<&Value>) -> Result<()> {
+    if packet.get("comparison_subject") != expected {
+        bail!("RIPR comparison subject is absent, stale or contradictory");
+    }
+    Ok(())
+}
+
+fn raw_check_digest(repo: &Path) -> Result<String> {
+    let mut input = fs::File::open(repo.join(PR_RAW_CHECK_JSON))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn evidence_diff(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    pr_head: Option<&str>,
+) -> Result<CommittedDiffReceipt> {
+    let subject = pr_comparison_subject(repo, base, head, pr_head)?;
+    let comparison_base =
+        subject.as_ref().and_then(|s| s["comparison_base_sha"].as_str()).unwrap_or(base);
+    resolve_committed_diff(repo, comparison_base, head)
+}
+
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // Invalidate before revision, diff, or producer work. Once clearing succeeds,
     // later failures cannot expose earlier copies to the always-run validator
@@ -1270,7 +1390,10 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    let diff_receipt =
+        evidence_diff(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
     // Stream raw check output straight into the artifact path without buffering it in memory
@@ -1312,7 +1435,17 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         attribution,
         production_surface.as_ref(),
     )?;
-    let packet = pr_evidence_packet_from_summary(
+    if pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?
+        != subject
+    {
+        bail!("RIPR comparison changed during analysis");
+    }
+    if let Some(subject) = subject.as_ref()
+        && ingestion.analysis_base.as_ref() != Some(&subject["comparison_base_sha"])
+    {
+        bail!("RIPR raw producer comparison base differs from authenticated P");
+    }
+    let mut packet = pr_evidence_packet_from_summary(
         options,
         &ingestion,
         &base_sha,
@@ -1324,6 +1457,10 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
             production_surface: production_surface.as_ref(),
         },
     );
+    if let Some(subject) = subject {
+        packet["comparison_subject"] = subject;
+        packet["analysis_sha256"] = json!(raw_check_digest(repo)?);
+    }
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
     write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
@@ -1342,7 +1479,10 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    let diff_receipt =
+        evidence_diff(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
     let changed_file_count = diff_receipt.entries.len();
     let committed_diff_text = fs::read_to_string(repo.join(PR_DIFF_RECEIPT))
         .with_context(|| format!("missing or unreadable {PR_DIFF_RECEIPT}"))?;
@@ -1355,6 +1495,12 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         .with_context(|| format!("missing or unreadable {PR_EVIDENCE_JSON}"))?;
     let packet: Value =
         serde_json::from_str(&text).with_context(|| format!("{PR_EVIDENCE_JSON} is invalid"))?;
+    validate_comparison_subject(&packet, subject.as_ref())?;
+    if subject.is_some()
+        && packet["analysis_sha256"].as_str() != Some(raw_check_digest(repo)?.as_str())
+    {
+        bail!("RIPR raw analysis differs from the current PR evidence");
+    }
     validate_pr_evidence_packet(
         &packet,
         options,
@@ -1379,16 +1525,28 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff = repo.join(PR_DIFF).display().to_string();
     let root = command_root_arg(repo, &options.root)?;
+    let mut args = vec![
+        "check".to_string(),
+        "--root".to_string(),
+        root,
+        "--diff".to_string(),
+        diff,
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    if let Some(subject) =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?
+    {
+        args.extend([
+            "--base".to_string(),
+            subject["comparison_base_sha"]
+                .as_str()
+                .ok_or_else(|| eyre!("missing comparison base"))?
+                .to_string(),
+        ]);
+    }
     run_ripr_streaming_to_file(
-        &[
-            "check".to_string(),
-            "--root".to_string(),
-            root,
-            "--diff".to_string(),
-            diff,
-            "--format".to_string(),
-            "json".to_string(),
-        ],
+        &args,
         &repo.join(PR_RAW_CHECK_JSON),
         &repo.join(RIPR_STDOUT_STAGING_DIR),
     )
@@ -2011,6 +2169,7 @@ fn wait_within_cap(
 /// blobs, which this does bound.
 #[derive(Debug)]
 struct RiprCheckIngestion {
+    analysis_base: Option<Value>,
     summary_counts: RiprPrSummaryCounts,
     /// Mirrors `check_value.get("summary").and_then(Value::as_object).is_some()`:
     /// a `summary` key that is not an object still counts as absent.
@@ -2042,6 +2201,7 @@ fn ripr_check_ingestion_from_file(
     validate_check_summary_counts(check_summary)?;
     validate_check_findings_array(payload.findings_is_array)?;
     Ok(RiprCheckIngestion {
+        analysis_base: payload.base,
         summary_counts: ripr_summary_counts_merge(
             ripr_summary_counts_seed(check_summary),
             buckets,
@@ -2545,15 +2705,31 @@ impl RiprFindingBuckets {
         // path matches a policy rule — skipping only path-unknown findings, not
         // classification-unknown ones.
         let Some(canonical) = canonical else {
+            // Known non-severe classes are intentionally absent from the three
+            // severe summary buckets.  They must remain visible in
+            // `suppressed_by_policy` / `outside_head_revision`, but cannot be
+            // subtracted from `severe_gaps` or a well-covered non-production
+            // finding could erase a real production gap.  Only a genuinely
+            // unknown class is safe to count as unclassified for that purpose.
+            let known_non_severe = matches!(
+                raw_class,
+                Some("exposed" | "static_unknown" | "infection_unknown" | "propagation_unknown")
+            );
             if suppression_matches_finding(suppressions, finding) {
                 suppressed.suppressed_by_policy += 1;
-                suppressed.suppressed_unclassified += 1;
+                if !known_non_severe {
+                    suppressed.suppressed_unclassified += 1;
+                }
             } else if outside {
                 outside_head.outside_head_revision += 1;
-                outside_head.outside_head_unclassified += 1;
+                if !known_non_severe {
+                    outside_head.outside_head_unclassified += 1;
+                }
             } else if non_production_kind.is_some() {
                 non_production.non_production_excluded += 1;
-                non_production.non_production_unclassified += 1;
+                if !known_non_severe {
+                    non_production.non_production_unclassified += 1;
+                }
             }
             return;
         };
@@ -4237,6 +4413,7 @@ fn pr_evidence_packet_with_count(
     pr_evidence_packet_from_summary(
         options,
         &RiprCheckIngestion {
+            analysis_base: check_value.get("base").cloned(),
             summary_counts: summary,
             check_summary_present: check_summary.is_some(),
         },
@@ -4575,6 +4752,7 @@ fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result
     if let Some(pr_head_sha) = &options.pr_head_sha {
         verify_revision(repo, pr_head_sha)?;
     }
+    pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
     let root = command_root_arg(repo, &options.root)?;
     if current_pr_evidence_has_no_severe_gaps(repo, options)? {
         write_clean_review_comments(repo, options, &root)?;
@@ -4610,27 +4788,52 @@ fn run_ripr_review_comments(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let out_arg = out.display().to_string();
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    let comparison_base =
+        subject.as_ref().and_then(|s| s["comparison_base_sha"].as_str()).unwrap_or(&options.base);
     run_ripr_with_timeout(
         &[
             "review-comments".to_string(),
             "--root".to_string(),
             root.to_string(),
             "--base".to_string(),
-            options.base.clone(),
+            comparison_base.to_string(),
             "--head".to_string(),
             options.head.clone(),
             "--out".to_string(),
             out_arg,
         ],
         options.timeout_seconds,
-    )
-    .map(|_| ())
+    )?;
+    let mut packet: Value = serde_json::from_str(&fs::read_to_string(&out)?)?;
+    if packet.get("base").and_then(Value::as_str) != Some(comparison_base)
+        || packet.get("head").and_then(Value::as_str) != Some(options.head.as_str())
+    {
+        bail!("RIPR guidance producer comparison differs from requested scope");
+    }
+    packet["base"] = json!(options.base);
+    write_text(&out, &format_json(&packet)?)
 }
 
 fn current_pr_evidence_has_no_severe_gaps(
     repo: &Path,
     options: &ReviewCommentsOptions,
 ) -> Result<bool> {
+    if options.pr_head_sha.is_some()
+        && check_pr_evidence(
+            repo,
+            &PrEvidenceOptions {
+                root: options.root.clone(),
+                base: options.base.clone(),
+                head: options.head.clone(),
+                pr_head_sha: options.pr_head_sha.clone(),
+            },
+        )
+        .is_err()
+    {
+        return Ok(false);
+    }
     let path = repo.join(PR_EVIDENCE_JSON);
     let Ok(text) = fs::read_to_string(&path) else {
         return Ok(false);
@@ -4652,6 +4855,11 @@ fn current_pr_evidence_has_no_severe_gaps(
     {
         return Ok(false);
     }
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    if validate_comparison_subject(&packet, subject.as_ref()).is_err() {
+        return Ok(false);
+    }
     Ok(packet.pointer("/summary/severe_gaps").and_then(Value::as_u64) == Some(0))
 }
 
@@ -4664,6 +4872,9 @@ fn validate_review_comments(
         .with_context(|| format!("missing or unreadable {REVIEW_COMMENTS_JSON}"))?;
     let packet: Value = serde_json::from_str(&text)
         .with_context(|| format!("{REVIEW_COMMENTS_JSON} is not valid JSON"))?;
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    validate_comparison_subject(&packet, subject.as_ref())?;
     let mut violations = Vec::new();
     expect_string(&packet, "schema_version", "0.1", &mut violations);
     expect_string(&packet, "tool", "ripr", &mut violations);
@@ -4721,6 +4932,11 @@ fn stamp_review_comments_receipt(repo: &Path, options: &ReviewCommentsOptions) -
     let Some(object) = packet.as_object_mut() else {
         bail!("{REVIEW_COMMENTS_JSON} is not a JSON object");
     };
+    if let Some(subject) =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?
+    {
+        object.insert("comparison_subject".to_string(), subject);
+    }
     object.insert("base_sha".to_string(), json!(revision_sha(repo, &options.base)?));
     object.insert("head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
     object.insert("pr_head_sha".to_string(), optional_sha_value(options.pr_head_sha.as_deref()));
@@ -4868,6 +5084,22 @@ fn fallback_guidance_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
 ) -> Result<Option<(Vec<Value>, usize)>> {
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    if subject.is_some()
+        && check_pr_evidence(
+            repo,
+            &PrEvidenceOptions {
+                root: options.root.clone(),
+                base: options.base.clone(),
+                head: options.head.clone(),
+                pr_head_sha: options.pr_head_sha.clone(),
+            },
+        )
+        .is_err()
+    {
+        return Ok(None);
+    }
     let Ok(suppressions) = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))
     else {
         return Ok(None);
@@ -4878,7 +5110,8 @@ fn fallback_guidance_comments(
     // fail-closed. The non-production filter (#12267 review repair) applies
     // here too, with the same precedence as the counted set, so truncated
     // fallback guidance cannot fill up with seams the count already dropped.
-    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head).ok();
+    let diff_receipt =
+        evidence_diff(repo, &options.base, &options.head, options.pr_head_sha.as_deref()).ok();
     let metadata = crate::tasks::ci_scope::load_metadata(repo).ok();
     let attribution = diff_receipt
         .as_ref()
@@ -4917,7 +5150,14 @@ fn fallback_guidance_comments(
         },
     );
     let Ok(payload) = payload else { return Ok(None) };
-    if payload.base.as_ref().and_then(Value::as_str) != Some(options.base.as_str()) {
+    if payload.base.as_ref().and_then(Value::as_str)
+        != Some(
+            subject
+                .as_ref()
+                .and_then(|s| s["comparison_base_sha"].as_str())
+                .unwrap_or(&options.base),
+        )
+    {
         return Ok(None);
     }
     // `finish` already returns the bounded, sorted, path/line-unique set; no
@@ -6038,6 +6278,8 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
 /// blocks on the write and can never exit. The timeout then becomes the only
 /// way out, which is how `ripr-review-comments` lanes burned tens of minutes
 /// before an external SIGTERM on diffs whose output exceeded the buffer.
+/// The sole production caller is RIPR review guidance; the heartbeat names that
+/// phase and reports process liveness only, never semantic completion progress.
 fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Result<String> {
     let stdout_file =
         tempfile::NamedTempFile::new().context("failed to create command stdout file")?;
@@ -6050,6 +6292,7 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
     let started = Instant::now();
+    let mut next_progress = Duration::ZERO;
     let status = loop {
         if let Some(status) = child.try_wait().with_context(|| format!("failed to poll {cmd}"))? {
             break status;
@@ -6063,6 +6306,11 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
                 String::from_utf8_lossy(&read_output_excerpt(&stdout_file)?).trim(),
                 String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
             );
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= next_progress {
+            write_timed_command_progress(child.id(), elapsed, &stdout_file, &stderr_file);
+            next_progress = elapsed.saturating_add(Duration::from_secs(30));
         }
         std::thread::sleep(Duration::from_millis(200));
     };
@@ -6081,6 +6329,76 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
         );
     }
     String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
+}
+
+/// Keep a long captured-output command observable without exposing its output or
+/// arguments. Best-effort diagnostics do not decide admission or change the
+/// configured timeout, cancellation, or exit-status policy. Linux memory fields are
+/// optional; other platforms still report elapsed time and captured byte counts.
+fn write_timed_command_progress(
+    child_id: u32,
+    elapsed: Duration,
+    stdout: &tempfile::NamedTempFile,
+    stderr: &tempfile::NamedTempFile,
+) {
+    let (process, host) = if cfg!(target_os = "linux") {
+        (
+            read_progress_proc_file(&format!("/proc/{child_id}/status")),
+            read_progress_proc_file("/proc/meminfo"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    let line = timed_command_progress_line(
+        child_id,
+        elapsed,
+        stdout.as_file().metadata().ok().map(|m| m.len()),
+        stderr.as_file().metadata().ok().map(|m| m.len()),
+        &process,
+        &host,
+    );
+    let _ = std::io::Write::write_all(&mut io::stderr(), line.as_bytes());
+}
+
+fn read_progress_proc_file(path: &str) -> String {
+    let mut text = String::new();
+    if let Ok(file) = fs::File::open(path) {
+        let _ = file.take(16 * 1024).read_to_string(&mut text);
+    }
+    text
+}
+
+fn proc_kib_field(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != key {
+            return None;
+        }
+        let value = fields.next()?.parse().ok()?;
+        (fields.next()? == "kB" && fields.next().is_none()).then_some(value)
+    })
+}
+
+fn timed_command_progress_line(
+    child_id: u32,
+    elapsed: Duration,
+    stdout_bytes: Option<u64>,
+    stderr_bytes: Option<u64>,
+    process: &str,
+    host: &str,
+) -> String {
+    let metric = |value: Option<u64>| {
+        value.map(|value| value.to_string()).unwrap_or_else(|| "unavailable".to_string())
+    };
+    format!(
+        "ripr_timed_command_progress phase=review_guidance pid={child_id} elapsed_ms={} stdout_bytes={} stderr_bytes={} child_rss_kib={} child_peak_rss_kib={} host_available_kib={}\n",
+        elapsed.as_millis(),
+        metric(stdout_bytes),
+        metric(stderr_bytes),
+        metric(proc_kib_field(process, "VmRSS:")),
+        metric(proc_kib_field(process, "VmHWM:")),
+        metric(proc_kib_field(host, "MemAvailable:")),
+    )
 }
 
 /// Reads the first `MAX_RIPR_STDERR_BYTES` of a captured stream file for a
@@ -6334,6 +6652,7 @@ mod tests {
     use super::*;
 
     use color_eyre::eyre::ContextCompat;
+    use perl_tdd_support::must_err_with;
 
     // ---------------------------------------------------------------------
     // #9113: RIPR 0.9.0 → 0.10.0 consumer migration.
@@ -6435,7 +6754,7 @@ mod tests {
         validate_check_summary_counts(summary)?;
         validate_check_findings_array(payload.findings_is_array)?;
         color_eyre::eyre::ensure!(findings.len() == 3, "scalar and null findings must survive");
-        let first = findings.get(0).context("first streamed finding")?;
+        let first = findings.first().context("first streamed finding")?;
         let second = findings.get(1).context("second streamed finding")?;
         let third = findings.get(2).context("third streamed finding")?;
         color_eyre::eyre::ensure!(second == &json!("scalar-finding"));
@@ -6595,15 +6914,12 @@ mod tests {
         // "0.10 does not move the number the required check acts on".
         let (old_counts, new_counts) = (counts_for(&old), counts_for(&new));
         color_eyre::eyre::ensure!(
-            ((
-                old_counts.weakly_exposed,
-                old_counts.reachable_unrevealed,
-                old_counts.no_static_path
-            )) == ((
-                new_counts.weakly_exposed,
-                new_counts.reachable_unrevealed,
-                new_counts.no_static_path
-            )),
+            (old_counts.weakly_exposed, old_counts.reachable_unrevealed, old_counts.no_static_path)
+                == (
+                    new_counts.weakly_exposed,
+                    new_counts.reachable_unrevealed,
+                    new_counts.no_static_path
+                ),
             "the reviewed bump must not change the actionable counts for identical input"
         );
         Ok(())
@@ -6857,9 +7173,8 @@ mod tests {
         for pattern in patterns {
             rules.display_patterns.push((*pattern).to_string());
             rules.path_patterns.push(Pattern::new(pattern).context("test glob must be valid")?);
-            // Empty = no classification filter, matching how the current matcher
-            // treats `policy/ripr-suppressions.toml` classification lists as
-            // documentary rather than selective.
+            // Empty = no classification filter: an entry without a
+            // `classification` key suppresses on path alone (#15519).
             rules.classification_patterns.push(Vec::new());
         }
         Ok(rules)
@@ -6922,6 +7237,143 @@ mod tests {
             (counts_for(&check).weakly_exposed) == (1),
             "proof predicate failed: {}",
             stringify!((counts_for(&check).weakly_exposed) == (1))
+        );
+        Ok(())
+    }
+
+    fn policy_with_classification(dir: &Path, classification: Option<&str>) -> Result<PathBuf> {
+        let policy_path = dir.join("suppressions.toml");
+        let classification_line =
+            classification.map(|values| format!("classification = {values}\n")).unwrap_or_default();
+        write_text(
+            &policy_path,
+            format!("[[suppress]]\nid = \"row\"\npaths = [\"src/**\"]\n{classification_line}")
+                .as_str(),
+        )?;
+        Ok(policy_path)
+    }
+
+    /// One ripr 0.5.x-shaped finding (`classification`) and one ripr 0.9.x-shaped
+    /// finding (`grip_class`), no `summary` object so the buckets are the totals.
+    fn mixed_shape_check() -> Result<Value> {
+        parse_check(
+            r#"{
+                "findings": [
+                    {
+                        "id": "probe:src_lib.rs:call_deletion:065a796b",
+                        "probe": {"file": "./src/lib.rs"},
+                        "classification": "weakly_exposed"
+                    },
+                    {
+                        "id": "seam:src_other.rs:call_effect:deadbeef",
+                        "seam": {"file": "./src/other.rs"},
+                        "grip_class": "weakly_gripped"
+                    }
+                ]
+            }"#,
+        )
+    }
+
+    #[test]
+    fn suppression_load_rejects_classifications_no_finding_can_carry() -> Result<()> {
+        // #15519: `activation_unknown` is a `kind` word, and diff-receipt gap
+        // kinds such as `call_deletion` are not finding classifications. An
+        // entry listing either used to parse, load, keep suppressing the
+        // repo-wide seam receipt (path-only matcher), and yet could never fire
+        // against the diff-scoped new-gap gate. The load must refuse it with
+        // the offending row and value named, exactly like a malformed glob.
+        let dir = tempfile::tempdir()?;
+        for (classification, offending) in [
+            ("[\"activation_unknown\"]", "activation_unknown"),
+            ("[\"weakly_exposed\", \"call_deletion\"]", "call_deletion"),
+        ] {
+            let policy_path = policy_with_classification(dir.path(), Some(classification))?;
+            let error = must_err_with(
+                read_ripr_suppression_rules(dir.path(), &policy_path),
+                "an unmatchable classification must fail the load",
+            );
+            let message = format!("{error:#}");
+            color_eyre::eyre::ensure!(
+                message.contains("row") && message.contains(offending),
+                "the refusal must name the offending row and value: {message}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checked_in_ripr_suppression_policy_loads_under_classification_vocabulary() -> Result<()> {
+        // Negative control for the #15519 ledger repair: the production ledger
+        // itself must load — every classification it lists is one a finding can
+        // actually carry — and still contribute path rules.
+        let repo =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().context("xtask crate has a parent")?;
+        let rules = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
+        color_eyre::eyre::ensure!(
+            !rules.path_patterns.is_empty(),
+            "the checked-in ledger must contribute path rules"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_classification_selects_only_values_a_finding_can_carry() -> Result<()> {
+        // The falsifier set from #15519: a listed real value filters to exactly
+        // the findings carrying it (both field spellings, across producer
+        // versions), `weakly_gripped` still selects through its
+        // `reachable_unrevealed` canonicalization, and omitting the key still
+        // suppresses on path alone. Without these controls a loader that
+        // dropped the classification filter entirely would be indistinguishable
+        // from a correct one.
+        let check = mixed_shape_check()?;
+        let dir = tempfile::tempdir()?;
+        let counts_for_policy = |classification: Option<&str>| -> Result<RiprPrSummaryCounts> {
+            let policy_path = policy_with_classification(dir.path(), classification)?;
+            let rules = read_ripr_suppression_rules(dir.path(), &policy_path)?;
+            Ok(counts_with(&check, &rules))
+        };
+
+        // No `classification` key: path-scoped, suppresses both findings.
+        let path_scoped = counts_for_policy(None)?;
+        color_eyre::eyre::ensure!(
+            (path_scoped.suppressed_by_policy) == (2),
+            "a keyless entry must suppress on path alone"
+        );
+
+        // A listed real value selects only the finding carrying it: the
+        // selected finding leaves its bucket (0), the survivor stays visible
+        // and blocking (1).
+        let exposed_only = counts_for_policy(Some("[\"weakly_exposed\"]"))?;
+        color_eyre::eyre::ensure!(
+            (exposed_only.suppressed_by_policy) == (1)
+                && (exposed_only.weakly_exposed) == (0)
+                && (exposed_only.reachable_unrevealed) == (1),
+            "weakly_exposed must select exactly the weakly_exposed finding: {exposed_only:?}"
+        );
+
+        // `weakly_gripped` canonicalizes to `reachable_unrevealed` on both
+        // sides of the comparison, in either spelling.
+        let gripped_by_canon = counts_for_policy(Some("[\"reachable_unrevealed\"]"))?;
+        color_eyre::eyre::ensure!(
+            (gripped_by_canon.suppressed_by_policy) == (1)
+                && (gripped_by_canon.reachable_unrevealed) == (0)
+                && (gripped_by_canon.weakly_exposed) == (1),
+            "reachable_unrevealed must select the weakly_gripped finding: {gripped_by_canon:?}"
+        );
+        let gripped_by_alias = counts_for_policy(Some("[\"weakly_gripped\"]"))?;
+        color_eyre::eyre::ensure!(
+            (gripped_by_alias.suppressed_by_policy) == (1),
+            "the weakly_gripped alias must keep selecting weakly_gripped findings"
+        );
+
+        // A real but absent value selects nothing: the finding stays visible
+        // and blocking rather than being silently suppressed.
+        let absent_value = counts_for_policy(Some("[\"no_static_path\"]"))?;
+        color_eyre::eyre::ensure!(
+            (absent_value.suppressed_by_policy) == (0)
+                && (absent_value.weakly_exposed) == (1)
+                && (absent_value.reachable_unrevealed) == (1),
+            "an unmatched classification must leave every finding visible: {absent_value:?}"
         );
         Ok(())
     }
@@ -10798,7 +11250,7 @@ paths = ["archive/["]
 
         assert_eq!(
             extents
-                .resolve("/home/runner/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
+                .resolve("/unavailable/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
             HeadPathState::Present(13)
         );
         assert_eq!(
@@ -11213,7 +11665,7 @@ paths = ["archive/["]
 
     fn attribution_for(metadata: &Value, changed: &[&str]) -> Result<AttributionScope> {
         let changed = changed.iter().map(|path| path.to_string()).collect::<Vec<_>>();
-        Ok(dependency_attribution_scope(metadata, &changed)?)
+        dependency_attribution_scope(metadata, &changed)
     }
 
     /// #6766 reproduction (#11690): a new module in a low-fan-in crate must not
@@ -12786,7 +13238,10 @@ paths = ["archive/["]
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         if !output.status.success() {
             bail!("git {:?} failed with status {}", args, output.status);
         }
@@ -12971,7 +13426,10 @@ esac
                 p.set_mode(0o755);
                 fs::set_permissions(&fail, p)?;
             }
-            let err = run_output(&fail.display().to_string(), &[]).unwrap_err();
+            let err = must_err_with(
+                run_output(&fail.display().to_string(), &[]),
+                "failing command must surface an error",
+            );
             let msg = format!("{err:#}");
             assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
             assert!(msg.contains("status"), "exit status must appear in error: {msg}");
@@ -13057,7 +13515,7 @@ esac
         let script = write_large_output_script(tmp.path(), TARGET_BYTES)?;
 
         let result =
-            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_mins(2))?;
 
         assert_eq!(
             result.len(),
@@ -13078,7 +13536,7 @@ esac
         let script = write_noisy_stderr_script(tmp.path(), 4 * MAX_RIPR_STDERR_BYTES)?;
 
         let result =
-            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_mins(2))?;
 
         assert_eq!(result.trim(), "ok", "stdout result must be captured verbatim");
         Ok(())
@@ -13097,13 +13555,66 @@ esac
                 p.set_mode(0o755);
                 fs::set_permissions(&fail, p)?;
             }
-            let err =
-                run_output_with_timeout(&fail.display().to_string(), &[], Duration::from_secs(60))
-                    .unwrap_err();
+            let err = must_err_with(
+                run_output_with_timeout(&fail.display().to_string(), &[], Duration::from_mins(1)),
+                "timed failing command must surface an error",
+            );
             let msg = format!("{err:#}");
             assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
             assert!(msg.contains("status"), "exit status must appear in error: {msg}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn timed_command_progress_reports_only_numeric_resource_fields() {
+        let line = timed_command_progress_line(
+            42,
+            Duration::from_secs(30),
+            Some(123),
+            Some(456),
+            "Name:\tprivate-payload\nVmRSS:\t1024 kB\nVmHWM:\t2048 kB\n",
+            "MemAvailable: 4096 kB\nOther: private-token\n",
+        );
+        assert_eq!(
+            line,
+            "ripr_timed_command_progress phase=review_guidance pid=42 elapsed_ms=30000 stdout_bytes=123 stderr_bytes=456 child_rss_kib=1024 child_peak_rss_kib=2048 host_available_kib=4096\n"
+        );
+    }
+
+    #[test]
+    fn timed_command_progress_marks_missing_measurements_unavailable() {
+        let line = timed_command_progress_line(7, Duration::ZERO, None, None, "", "");
+        assert_eq!(
+            line,
+            "ripr_timed_command_progress phase=review_guidance pid=7 elapsed_ms=0 stdout_bytes=unavailable stderr_bytes=unavailable child_rss_kib=unavailable child_peak_rss_kib=unavailable host_available_kib=unavailable\n"
+        );
+    }
+
+    #[test]
+    fn timed_command_progress_rejects_malformed_resource_values() {
+        for input in [
+            "VmRSS: -1 kB",
+            "VmRSS: 18446744073709551616 kB",
+            "VmRSS: 12 bytes",
+            "VmRSS: secret kB",
+            "VmRSS: 12 kB extra",
+            "VmRSSExtra: 12 kB",
+        ] {
+            assert_eq!(proc_kib_field(input, "VmRSS:"), None, "{input}");
+        }
+        assert_eq!(proc_kib_field("VmRSS: 0 kB", "VmRSS:"), Some(0));
+    }
+
+    #[test]
+    fn timed_command_progress_bounds_proc_reads_and_tolerates_absence() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("status");
+        fs::write(&path, format!("{}\nVmRSS: 42 kB\n", "x".repeat(16 * 1024)))?;
+        let text = read_progress_proc_file(&path.to_string_lossy());
+        assert_eq!(text.len(), 16 * 1024);
+        assert_eq!(proc_kib_field(&text, "VmRSS:"), None);
+        assert!(read_progress_proc_file(&dir.path().join("missing").to_string_lossy()).is_empty());
         Ok(())
     }
 
@@ -13410,7 +13921,7 @@ esac
     /// is deliberately not pointed at `/dev/null`: that path does not exist on
     /// Windows, and this crate's tests are in the Windows CI crate scope.
     fn ancestry_git(repository: &Path, arguments: &[&str]) -> Result<String> {
-        let output = Command::new("git")
+        let output = xtask::git_environment::isolate(Command::new("git"))
             .args([
                 "-c",
                 "commit.gpgsign=false",
@@ -13554,8 +14065,9 @@ esac
             },
             "findings": [
                 {
-                    // Unrecognized classification — not in any canonical match arm.
-                    "classification": "static_unknown",
+                    // Genuinely unknown classification — not in any canonical
+                    // match arm or known non-severe set.
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-dap/src/debug_adapter/variables.rs",
@@ -13563,8 +14075,8 @@ esac
                     }
                 },
                 {
-                    // Also unrecognized, path matches suppression.
-                    "classification": "infection_unknown",
+                    // Also genuinely unknown, path matches suppression.
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-dap/src/debug_adapter/variables.rs",
@@ -13635,7 +14147,7 @@ esac
             },
             "findings": [
                 {
-                    "classification": "static_unknown",
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-lsp-rs/src/some_new_file.rs",
@@ -13671,6 +14183,54 @@ esac
             Some(&json!(1)),
             "unsuppressed unrecognized-classification finding must produce severe_gaps > 0"
         );
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_known_non_severe_suppression_does_not_erase_severe_gaps() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let check_value = json!({
+            "summary": {
+                "weakly_exposed": 0,
+                "reachable_unrevealed": 1,
+                "no_static_path": 0
+            },
+            "findings": [{
+                "classification": "exposed",
+                "kind": "call_presence",
+                "seam": {
+                    "file": "crates/perl-dap/src/debug_adapter/variables.rs",
+                    "line": 584
+                }
+            }]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
+            gap_id_sets: Vec::new(),
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &options,
+            &["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
         assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
         Ok(())
     }
@@ -13974,7 +14534,7 @@ paths = ["archive/**"]
                 serde_json::from_str::<Value>(payload).is_err(),
                 "{name}: DOM oracle must reject this payload"
             );
-            let err = streamed.unwrap_err();
+            let err = must_err_with(streamed, "invalid streamed payload must fail ingestion");
             let message = format!("{err:#}");
             assert!(
                 message.contains("ripr check output was not valid JSON"),
@@ -14071,7 +14631,7 @@ paths = ["archive/**"]
 
     impl Read for PanickingStderrReader {
         fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-            panic!("injected stderr drain panic")
+            std::panic::resume_unwind(Box::new("injected stderr drain panic"))
         }
     }
 
@@ -14264,7 +14824,7 @@ paths = ["archive/**"]
             "RIPR workflow has no evidence upload paths"
         );
         color_eyre::eyre::ensure!(
-            upload_paths.iter().any(|path| *path == "target/ripr/pr/**"),
+            upload_paths.contains(&"target/ripr/pr/**"),
             "RIPR evidence uploads must retain target/ripr/pr/**: {upload_paths:?}"
         );
         for path in &upload_paths {
@@ -14357,7 +14917,10 @@ paths = ["archive/**"]
             pr_head_sha: None,
         };
 
-        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let err = must_err_with(
+            run_ripr_check(&repo, &options),
+            "failing ripr run must surface an error",
+        );
         let message = format!("{err:#}");
 
         assert!(message.contains("status"), "exit status must still appear: {message}");
@@ -14398,7 +14961,10 @@ paths = ["archive/**"]
             pr_head_sha: None,
         };
 
-        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let err = must_err_with(
+            run_ripr_check(&repo, &options),
+            "failing ripr run must surface an error",
+        );
         let message = format!("{err:#}");
         assert!(message.contains("status"), "exit status must appear: {message}");
         assert!(
@@ -14757,7 +15323,7 @@ paths = ["archive/**"]
             "refusal must name the override that raises the cap: {message}"
         );
         color_eyre::eyre::ensure!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < Duration::from_mins(1),
             "the producer was waited out instead of terminated at the cap"
         );
 
@@ -14807,7 +15373,7 @@ paths = ["archive/**"]
             "refusal must name the cap it enforced: {message}"
         );
         color_eyre::eyre::ensure!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < Duration::from_mins(1),
             "drain.join blocked on a descendant that still held stderr"
         );
         color_eyre::eyre::ensure!(
@@ -14852,7 +15418,7 @@ paths = ["archive/**"]
         run_ripr_check(&repo, &pr_evidence_options())?;
 
         color_eyre::eyre::ensure!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < Duration::from_mins(1),
             "the join hung on a descendant that outlived its producer"
         );
         assert_eq!(
@@ -14930,11 +15496,11 @@ paths = ["archive/**"]
     fn staged_payload_cap_default_sits_between_the_payloads_measured_on_12999() {
         const INGESTED_PAYLOAD_BYTES: u64 = 4_606_060_928;
         const LANE_KILLING_PAYLOAD_BYTES: u64 = 10_385_110_266;
-        assert!(
+        const _: () = assert!(
             MAX_RIPR_RAW_CHECK_BYTES > INGESTED_PAYLOAD_BYTES,
             "the default cap must not refuse a payload measured completing ingestion"
         );
-        assert!(
+        const _: () = assert!(
             MAX_RIPR_RAW_CHECK_BYTES < LANE_KILLING_PAYLOAD_BYTES,
             "the default cap must refuse the payload measured killing the lane"
         );

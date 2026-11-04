@@ -1,0 +1,5 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "Control: present receipts but unmeasured counts; fails unknown, never passes."
+ground_truth = "unprovable"
+inputs = ["ripr-plus.json", "repo-exposure.json", "comments.json"]

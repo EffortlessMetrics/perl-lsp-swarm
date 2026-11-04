@@ -22,10 +22,39 @@ pub use crate::features::flags::{AdvertisedFeatures, BuildFlags};
 /// Re-export `ServerCapabilities` from `lsp_types` for public access.
 pub use lsp_types::ServerCapabilities;
 
+/// Whether this exact build implements workspace-folder semantics (#8161).
+///
+/// This is the **single** authority for `workspace.workspaceFolders.supported`
+/// across every builder. It describes an implementation fact: the
+/// workspace-folder registry and the `workspace/didChangeWorkspaceFolders`
+/// dispatch route are compiled in unconditionally and no canonical feature id
+/// suppresses them.
+///
+/// It must never be derived from the client's advertised
+/// `workspace.workspaceFolders` bit or from the active folder count — those
+/// stay separate observations. If a profile ever owns a suppression, flip this
+/// through the canonical feature policy; both the runtime builder in
+/// `perl-lsp-rs` and the pure [`EffectiveLspSurface`] model read this constant,
+/// so the two surfaces cannot drift apart.
+///
+/// [`EffectiveLspSurface`]: crate::protocol::effective_surface::EffectiveLspSurface
+pub const SERVER_WORKSPACE_FOLDER_SUPPORT: bool = true;
+
+/// Whether the `workspace/didChangeWorkspaceFolders` dispatch route is
+/// available in this exact build (#8161).
+///
+/// The advertised `changeNotifications` capability must agree with this route:
+/// #8161 forbids advertising folder-change support whose runtime route is
+/// absent in that exact profile. Like [`SERVER_WORKSPACE_FOLDER_SUPPORT`], both
+/// the runtime builder and the pure final-surface model read this one constant.
+pub const WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE: bool = true;
+
 /// Canonical completion trigger characters advertised to LSP clients.
 ///
 /// LSP requires each trigger to be a single character. Multi-character Perl
-/// operators (`->`, `::`) are supported by advertising their component chars.
+/// operators (`->`, `::`) are supported by advertising their final chars.
+/// `-` is intentionally excluded: it is also subtraction and must not open
+/// suggestions before the user has typed the complete `->` operator.
 #[must_use]
 pub fn completion_trigger_characters() -> Vec<String> {
     vec![
@@ -33,7 +62,6 @@ pub fn completion_trigger_characters() -> Vec<String> {
         "@".to_string(),
         "%".to_string(),
         // Method and package separators.
-        "-".to_string(),
         ">".to_string(),
         ":".to_string(),
         // String concat operator — triggers completion for chained access. (UX_GAP_03)
@@ -447,12 +475,13 @@ mod tests {
         // `.` (string concat, UX_GAP_03) is included deliberately: it was
         // previously guarded only by the insta snapshot, so when the snapshot
         // went stale nothing asserted the trigger still existed.
-        for expected in ["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"] {
+        for expected in ["$", "@", "%", ">", ":", ".", "/", "\\", "\"", "'"] {
             assert!(
                 triggers.iter().any(|trigger| trigger == expected),
                 "missing completion trigger character: {expected}"
             );
         }
+        assert!(!triggers.iter().any(|trigger| trigger == "-"));
     }
 
     #[test]
@@ -552,6 +581,8 @@ mod tests {
             "quickfix",
             "refactor",
             "refactor.extract",
+            "refactor.extract.variable",
+            "refactor.extract.subroutine",
             "refactor.rewrite",
             "source.fixAll",
             "source.modernize",
@@ -796,13 +827,23 @@ mod tests {
     }
 
     /// Assert `workspaceSymbolProvider` is advertised with `resolveProvider: true`
-    /// when `workspace_symbol_resolve` is enabled.
+    /// when the workspace-symbol request and its resolve option are both enabled.
     ///
     /// The resolve variant is required for on-demand name resolution of
-    /// workspace symbols without serializing the full detail up-front.
+    /// workspace symbols without serializing the full detail up-front. The
+    /// resolve option cannot be advertised while the parent request is disabled
+    /// (`sections::apply_symbol_and_workspace_features`), so the fixture enables
+    /// both flags.
     #[test]
     fn workspace_symbol_provider_advertises_resolve_when_enabled() {
-        let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        // Resolve advertisement requires the parent workspace_symbol request:
+        // the guard withdraws resolve-only flags since #18315 (resolve options
+        // cannot advertise a disabled parent request).
+        let flags = BuildFlags {
+            workspace_symbol: true,
+            workspace_symbol_resolve: true,
+            ..BuildFlags::default()
+        };
         let caps = capabilities_for(flags);
 
         let value = caps.workspace_symbol_provider.as_ref();
@@ -822,6 +863,33 @@ mod tests {
             Some(true),
             "workspaceSymbolProvider.resolveProvider must be true when \
              workspace_symbol_resolve is enabled"
+        );
+
+        // Resolve without the parent request must stay fully withdrawn.
+        let resolve_only = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        assert!(
+            capabilities_for(resolve_only).workspace_symbol_provider.is_none(),
+            "workspace_symbol_resolve alone must not advertise the provider"
+        );
+    }
+
+    /// Assert `workspaceSymbolProvider` is absent when the parent workspace-symbol
+    /// request is disabled, even when the resolve option is enabled.
+    ///
+    /// Resolve options cannot advertise a disabled parent request. This is the
+    /// `(parent=false, resolve=true)` cell of the truth table proven in
+    /// `crates/perllsp/tests/ripr_seam_proof_capability_negotiation.rs`; it is
+    /// asserted here as well because that proof is an integration target, while
+    /// this module is exercised by the `--lib` gate.
+    #[test]
+    fn workspace_symbol_provider_absent_when_parent_disabled() {
+        let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        assert!(
+            caps.workspace_symbol_provider.is_none(),
+            "workspaceSymbolProvider must be absent when workspace_symbol is disabled, \
+             even if workspace_symbol_resolve is enabled"
         );
     }
 

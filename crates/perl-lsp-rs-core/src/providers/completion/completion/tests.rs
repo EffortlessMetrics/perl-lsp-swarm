@@ -14,6 +14,49 @@ struct CurrentDirGuard {
     previous: PathBuf,
 }
 
+#[test]
+fn test_variable_completion_mid_token_client_edits() -> Result<(), Box<dyn std::error::Error>> {
+    let mut failures = Vec::new();
+    for (before, typed, suffix, after, label) in [
+        ("my $count = 42; print ", "$co", "unt", ";", "$count"),
+        ("my @items = (); print ", "@it", "ems", ";", "@items"),
+        ("my @items = (); print ", "@it", "ems", "[0];", "@items"),
+        ("my $count = 42; print ", "$co", "unté_123", " + $count;", "$count"),
+        ("use utf8; my $count = 42; print ", "$co", "unt\u{301}_123", ";", "$count"),
+        ("my $count = 42; print ", "$co", "unt𐐀_123", ";", "$count"),
+        ("my $count = 42; print \"🦀 ", "$co", "unt", "\";", "$count"),
+        ("my $count = 42; print ", "$co", "", ";", "$count"),
+        ("my @items = (); print ", "@it", "", ";", "@items"),
+        ("my $count = 42; print \"🦀 ", "$co", "", "\";", "$count"),
+    ] {
+        let source = format!("{before}{typed}{suffix}{after}");
+        let position = before.len() + typed.len();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let provider = CompletionProvider::new(&ast);
+        let items = provider.get_completions(&source, position);
+        let item = items
+            .iter()
+            .find(|item| item.label == label)
+            .ok_or_else(|| format!("missing {label} for {source:?}"))?;
+        let (start, end) = item.text_edit_range.ok_or("missing variable edit")?;
+        let replacement = item.insert_text.as_deref().ok_or("missing replacement")?;
+        let mut applied = source.clone();
+        applied.replace_range(start..end, replacement);
+        let expected = format!("{before}{label}{after}");
+        if !suffix.is_empty() {
+            let mut cursor_only = source.clone();
+            cursor_only.replace_range(start..position, replacement);
+            assert_ne!(cursor_only, expected, "oracle must reject a cursor-only edit");
+        }
+        if applied != expected {
+            failures.push(format!("{source:?} at {position}: range={start}..{end}, applied={applied:?}, expected={expected:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "incorrect client applications:\n{}", failures.join("\n"));
+    Ok(())
+}
+
 impl CurrentDirGuard {
     fn change_to(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let previous = std::env::current_dir()?;
@@ -319,6 +362,185 @@ proc
 
     assert!(completions.iter().any(|c| c.label == "process_data"));
     assert!(completions.iter().any(|c| c.label == "process_items"));
+}
+
+/// Mid-token workspace-symbol completion must replace the whole token, so
+/// applying the edit does not duplicate the suffix after the cursor (#18123).
+#[test]
+fn test_workspace_symbol_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///workspace/MyUtils.pm")?,
+        "package MyUtils;\nuse Exporter 'import';\nour @EXPORT = qw(register);\nsub register { }\n1;\n"
+            .to_string(),
+    )?;
+    let code = "package MyUtils;\nregister;\n";
+    let cursor = code.find("register;").ok_or("call site missing")? + 3; // after `reg`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.insert_text.as_deref() == Some("register"))
+        .ok_or("register workspace completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "register", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(
+        applied, "package MyUtils;\nregister;\n",
+        "applied edit must not duplicate the suffix"
+    );
+
+    // End-of-token control: range still ends at the cursor.
+    let end_cursor = code.find("register;").ok_or("call site missing")? + "register".len();
+    let completions = provider.get_completions(code, end_cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.insert_text.as_deref() == Some("register"))
+        .ok_or("register completion missing at end of token")?;
+    assert_eq!(item.text_edit_range.map(|(_, e)| e), Some(end_cursor));
+    Ok(())
+}
+
+/// Mid-token method completion must replace the whole method token, so
+/// applying the edit does not duplicate the suffix after the cursor (#18123).
+#[test]
+fn test_workspace_method_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///workspace/TypedService.pm")?,
+        "package TypedService;\nsub register { }\n1;\n".to_string(),
+    )?;
+    let code = "package TypedService;\nmy $self = bless {}, 'TypedService';\n$self->register;\n";
+    let cursor = code.find("->register").ok_or("call site missing")? + 2 + 3; // after `reg`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "register")
+        .ok_or("register method completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "register", "edit must cover the whole method token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert!(
+        applied.contains("$self->register();") && !applied.contains("register()ister"),
+        "applied edit must not duplicate the suffix: {applied}"
+    );
+
+    // End-of-token control: range still ends at the cursor.
+    let end_cursor = code.find("->register").ok_or("call site missing")? + 2 + "register".len();
+    let completions = provider.get_completions(code, end_cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "register")
+        .ok_or("register method completion missing at end of token")?;
+    assert_eq!(item.text_edit_range.map(|(_, e)| e), Some(end_cursor));
+    Ok(())
+}
+
+/// Mid-token in-file method completion must replace the whole method token.
+/// The in-file producer (`add_method_completions`, sort tier `1_`) wins the
+/// label dedup over the workspace producer, so its range must also extend to
+/// `suffix_end`; otherwise applying it duplicates the suffix (#18123).
+#[test]
+fn test_in_file_method_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub register { }\nmy $self = bless {}, 'Foo';\n$self->register;\nmy $obj = bless {}, 'Foo';\n$obj->register;\n";
+    for receiver in ["$self->register", "$obj->register"] {
+        let cursor = code.find(receiver).ok_or("call site missing")?
+            + receiver.find("->").ok_or("arrow missing")?
+            + 2
+            + 3;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new(&ast);
+        let completions = provider.get_completions(code, cursor);
+        let item = completions
+            .iter()
+            .find(|c| c.label == "register")
+            .ok_or("register in-file method completion missing")?;
+        let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+        assert_eq!(
+            &code[start..end],
+            "register",
+            "edit must cover the whole method token for {receiver}"
+        );
+        let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+        let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+        assert!(
+            !applied.contains("register()ister"),
+            "applied edit must not duplicate the suffix for {receiver}: {applied}"
+        );
+    }
+    Ok(())
+}
+
+/// Mid-token in-file function completion must replace the whole token, for
+/// the same dedup reason as the method case (#18123).
+#[test]
+fn test_in_file_function_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub register { }\nregister;\n";
+    let cursor = code.rfind("register;").ok_or("call site missing")? + 3; // after `reg`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "register")
+        .ok_or("register in-file function completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "register", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(applied, "package Foo;\nsub register { }\nregister();\n");
+    Ok(())
+}
+
+#[test]
+fn word_suffix_end_covers_unicode_identifier_suffix() {
+    // Suffix scanning must match the Unicode prefix scan in `word_prefix`
+    // (`is_alphanumeric` + `_`): `é` is part of the token, so a cursor
+    // after `caf` in `café` must extend over the whole token.
+    let source = "caf\u{e9}";
+    assert_eq!(word_suffix_end(source, 3), source.len());
+    assert_eq!(word_suffix_end(source, source.len()), source.len());
+    assert_eq!(word_suffix_end(source, 0), source.len());
+    // The scan still stops at a non-identifier boundary.
+    let spaced = "caf\u{e9} rest";
+    assert_eq!(word_suffix_end(spaced, 3), "caf\u{e9}".len());
+}
+
+/// Mid-token in-file function completion for a Unicode name must replace
+/// the whole token; otherwise applying `café()` after `caf` leaves a
+/// stray `é` (#18123).
+#[test]
+fn test_in_file_function_completion_unicode_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "sub caf\u{e9} { }\ncaf\u{e9};\n";
+    let cursor = code.rfind("caf\u{e9};").ok_or("call site missing")? + 3; // after `caf`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "caf\u{e9}")
+        .ok_or("café in-file function completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "caf\u{e9}", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(applied, "sub caf\u{e9} { }\ncaf\u{e9}();\n");
+    Ok(())
 }
 
 #[test]
@@ -926,6 +1148,137 @@ Point->new(
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
 }
 
+/// A lone `-` that starts an operand must not be rewritten into an arrow
+/// prefix, while a `-` after a real (balanced-paren) receiver must keep
+/// routing to method completion.
+///
+/// Controlling issue: #15466.
+#[test]
+fn test_dash_trigger_ignores_lone_minus_but_keeps_call_chain_receiver()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `Point->new(-` — the minus opens an operand, not an arrow, so the dash
+    // trigger must answer with no completions at all. The cursor sits right
+    // after the `-` so the lone-dash branch actually runs, and the context
+    // prefix assert distinguishes that reject path from an arrow rewrite.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a lone minus inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the operand minus must keep the ordinary empty prefix, not an arrow rewrite"
+    );
+
+    // `$factory->build()-` — the `-` follows a balanced-paren call receiver,
+    // so it is the first char of `->` and the rewrite must survive: the scan
+    // keeps the `)` neighbor, the prefix carries the whole chain, and method
+    // completion — not the generic prefix dump — answers the request.
+    let code = r#"
+package MyService;
+sub process { }
+sub validate { }
+package MyFactory;
+sub build { }
+my $factory = MyFactory->create;
+$factory->build()-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = Arc::new(WorkspaceIndex::new());
+    // Canonical initial-name fixture seeding (#16449 burndown): index_file is
+    // a one-line forward to index_initial_file; this seeds initial on-disk
+    // state, so call the canonical API directly.
+    index.index_initial_file(
+        Url::parse("file:///workspace/MyFactory.pm")?,
+        "package MyFactory;\nsub build { }\n1;\n".to_string(),
+    )?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "$factory->build()->",
+        "a dash after a balanced-paren call receiver must keep the arrow rewrite"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "build"),
+        "a dash after a balanced-paren call receiver must still offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "arrayref" || item.label == "hashref"),
+        "the rewritten call-chain receiver must route to method completion, not the generic dump; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `1 -` — binary subtraction with no receiver: no method completions.
+    let code = "1 -";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.is_empty(),
+        "a subtraction minus must not offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `Point->new(foo-` — `method_receiver_start` stops at the open paren and
+    // hands back the lowercase bareword `foo`, but a bareword that can only be
+    // an operand head must not become a `foo->` receiver mid-argument. The
+    // ordinary (empty) prefix keeps the dash trigger silent.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(foo-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a bareword operand inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the bareword operand must keep the ordinary empty prefix, not `foo->`"
+    );
+    Ok(())
+}
+
 /// A named `:param(external_name)` is the keyword `new` actually accepts, so
 /// the completion must offer the explicit name instead of the field name.
 ///
@@ -1018,12 +1371,10 @@ fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
 /// it. This pins the reachable window that the quoting work depends on.
 ///
 /// Boundary, deliberately not asserted here: once the caret follows the `-`
-/// itself, `analyze_context` rewrites the prefix to `foo->` and answers the
-/// position as a method call, so no key survives the `field_name`
-/// `starts_with` filter. That rule is in `analyze_context` and predates this
-/// change; #15466 owns it, with the measured evidence that widening
-/// `object_pad_constructor_package` instead removes the method and variable
-/// completions that currently answer those carets.
+/// itself, the caret is a bareword operand head, not an arrow, so
+/// `analyze_context` keeps the ordinary prefix and the dash trigger answers
+/// with no completions at all — no key survives that caret either. #15466
+/// owns that boundary (the operand-shaped-receiver rule in `analyze_context`).
 ///
 /// Controlling issue: #13449.
 #[test]
@@ -3871,6 +4222,7 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         current_package: current_package.to_string(),
         prefix: prefix.to_string(),
         prefix_start: source_position.saturating_sub(prefix.len()),
+        suffix_end: source_position,
         cursor_scope_id: 0,
     }
 }
@@ -5553,19 +5905,60 @@ fn test_hash_key_completion_empty_prefix() {
 }
 
 #[test]
-fn test_hash_key_completion_does_not_fire_for_hashref_deref() {
-    // $ref->{ho<cursor> -- hashref deref, must NOT suggest hash keys
+fn test_hashref_key_role_does_not_fabricate_uncollectable_keys() {
+    // $ref->{ho<cursor> -- the hashref form is the same hash-key role (#5159),
+    // but `my $ref = {host => ...}` is not a shape collect_hash_keys_from_source
+    // can read (%var = (...) literals and $ref->{key} = assignments only), so
+    // no key may be fabricated for it.
     let code = "my $ref = {host => 'localhost'};\n$ref->{ho";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    // Must not return a Property-kinded "host" completion (hash key detection
-    // must bail when `->` precedes the `{`)
     assert!(
         !completions.iter().any(|c| c.label == "host" && c.kind == CompletionItemKind::Property),
         "hashref deref `$ref->{{ho` must not produce Property-kinded 'host' completion; got: {:?}",
         completions.iter().map(|c| (&c.label, &c.kind)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn hash_key_classifier_recognizes_the_hashref_form() {
+    // The variable scan must step over the `->` arrow; #5159 removed the
+    // bail-out, so `$ref->{` classifies exactly like `$ref{`.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{ho", 9),
+        Some(("ref".to_string(), "ho".to_string()))
+    );
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{", 7),
+        Some(("ref".to_string(), String::new()))
+    );
+    // The direct form is unchanged.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$hash{ap", 8),
+        Some(("hash".to_string(), "ap".to_string()))
+    );
+    // Double-sigil derefs stay refused.
+    assert_eq!(CompletionProvider::detect_hash_key_context("$$ref{ap", 8), None);
+}
+
+#[test]
+fn hash_key_classifier_refuses_a_brace_inside_comment_string_or_regex() {
+    // The finding shape: the only `{` before the cursor sits in an earlier
+    // comment line. The later line is ordinary code and must keep enrichment.
+    let comment = "# $hash{\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(comment, comment.len()), None);
+
+    // Same for a brace inside a string literal.
+    let string = "my $s = \"%hash{\";\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(string, string.len()), None);
+
+    // Live syntax one line above still classifies.
+    let live = "my %hash = (api => 1);\n$hash{ap";
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context(live, live.len()),
+        Some(("hash".to_string(), "ap".to_string()))
     );
 }
 
@@ -8948,10 +9341,9 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
 -> Result<(), Box<dyn std::error::Error>> {
     // Cursor in the MIDDLE of the method word (`pro|cess Child`): `indirect_word_end`
     // must scan forward from the cursor to the full word boundary to locate the
-    // `Child` receiver, so indirect routing still fires. The edit range uses the
-    // same insert semantics as every other completion provider — `(prefix_start,
-    // position)` — replacing the text before the cursor, identical to the arrow
-    // form (`$obj->pro|cess`). This is uniform server behavior, not indirect-specific.
+    // `Child` receiver, so indirect routing still fires. The edit range
+    // replaces the whole token, identical to the arrow form
+    // (`$obj->pro|cess`), so the suffix is not duplicated (#18123).
     let index = indirect_child_parent_index()?;
 
     let code = "process Child";
@@ -8967,13 +9359,12 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
         completions.iter().any(|c| c.label == "speak"),
         "mid-word indirect cursor should still route through to methods; got {labels:?}"
     );
-    // Edit range replaces only the pre-cursor prefix (`pro`), consistent with the
-    // arrow path and all providers — the trailing `cess` is left by design, not
-    // a defect introduced by indirect routing.
+    // Edit range replaces the whole token, so accepting the completion does
+    // not duplicate the trailing `cess` after the cursor (#18123).
     assert_eq!(
         run.text_edit_range,
-        Some((0, pos)),
-        "indirect method edit range must match the uniform (prefix_start, position) insert semantics"
+        Some((0, "process".len())),
+        "indirect method edit range must cover the whole token"
     );
     Ok(())
 }
@@ -9419,12 +9810,15 @@ fn test_ancestor_file_lexical_visible_in_nested_block() {
     );
 }
 
-/// `our` package globals keep their bounded always-visible behavior
-/// (declaration role distinct from lexicals), including after the cursor.
+/// `our` aliases follow the same declaration-order gate as lexicals: visible
+/// after the declaring statement, rejected before it. A previous version of
+/// this test used `rfind("$pk")`, which landed inside `our $pkg_after` and
+/// could not falsify after-cursor admission.
 #[test]
 fn test_our_package_global_keeps_bounded_visibility() {
-    let code = concat!("our $pkg_before;\n", "$pk\n", "our $pkg_after;\n");
-    let trigger = code.rfind("$pk").unwrap_or(0) + 3;
+    let code = concat!("our $pkg_before = 1;\n", "# cursor\n", "$pk\n", "our $pkg_after = 2;\n",);
+    let needle = "# cursor\n$pk";
+    let trigger = must_some(code.find(needle)) + needle.len();
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
@@ -9437,8 +9831,8 @@ fn test_our_package_global_keeps_bounded_visibility() {
         "our declared before cursor must stay visible; got {labels:?}"
     );
     assert!(
-        labels.iter().any(|l| l.contains("pkg_after")),
-        "our declared after cursor keeps package-global visibility (bounded behavior); got {labels:?}"
+        !labels.iter().any(|l| l.contains("pkg_after")),
+        "our declared after cursor must not be admitted; got {labels:?}"
     );
 }
 
@@ -9485,14 +9879,9 @@ fn test_signature_param_visible_in_body_only() {
 
 /// `for`/`foreach` iterator variables follow lexical admission rules.
 ///
-/// BOUNDED (#8941): the current SymbolTable does not represent bare
-/// `for my $x (...)` iterators at all — the analyzer's Foreach handler
-/// receives a VariableDeclaration node its recorder silently skips, so no
-/// symbol exists to admit or reject (producer gap transferred to #7423/
-/// #7424). Until canonical loop bindings land, this test pins that neither
-/// half fabricates candidates: nothing appears inside or after the loop,
-/// and admission of a *represented* loop lexical is covered by the
-/// predicate unit tests in lexical_visibility.
+/// The analyzer records `for my $x (...)` iterators as lexicals in the
+/// loop scope (#17297), so completion admission is exercised for real:
+/// the iterator is offered inside its loop and nowhere after it.
 #[test]
 fn test_foreach_iterator_scoped_to_loop() {
     let inside_code = concat!("for my $loop_item (1 .. 3) {\n", "    $loop\n", "}\n");
@@ -9505,15 +9894,13 @@ fn test_foreach_iterator_scoped_to_loop() {
 
     let labels = variable_labels(&completions);
     assert!(
-        !labels.iter().any(|l| l.contains("loop_item")),
-        "unrepresented iterators must not be fabricated; got {labels:?}"
+        labels.iter().any(|l| l.contains("loop_item")),
+        "represented loop iterator must be offered inside its loop; got {labels:?}"
     );
 
-    // The analyzer genuinely lacks the binding: confirm the producer gap
-    // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        !provider.symbol_table.symbols.contains_key("loop_item"),
-        "analyzer now records foreach iterators — revisit this seam for real admission coverage"
+        provider.symbol_table.symbols.contains_key("loop_item"),
+        "analyzer must record foreach iterators (#17297)"
     );
 
     let after_code = concat!("for my $loop_item (1 .. 3) {\n", "    1;\n", "}\n", "$loop\n");
@@ -9603,4 +9990,834 @@ fn test_incomplete_block_keeps_ancestor_and_excludes_closed_sibling() {
         !labels.iter().any(|l| l.contains("closed_block_only")),
         "ended sibling block must not reactivate during recovery; got {labels:?}"
     );
+}
+
+fn completions_after_needle(code: &str, needle: &str) -> Vec<CompletionItem> {
+    let trigger = must_some_with(code.find(needle), "fixture needle must exist") + needle.len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    provider.get_completions(code, trigger)
+}
+
+fn variable_labels_at(code: &str, needle: &str) -> Vec<String> {
+    variable_labels(&completions_after_needle(code, needle))
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Bare `$` must project currently visible scalars rather than an empty set
+/// or a prefix-stripped fall-through into workspace package names (#16860).
+#[test]
+fn test_bare_sigil_offers_local_scalar_not_workspace_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    // Canonical initial-name fixture seeding (#17043 burndown): index_file is
+    // a one-line forward to index_initial_file; this seeds initial on-disk
+    // state, so call the canonical API directly.
+    index.index_initial_file(
+        must(Url::parse("file:///lib/Animal.pm")),
+        "package Animal;\nsub speak { 1 }\n1;\n".to_string(),
+    )?;
+
+    let code = "my $count = 1;\n$";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+    assert!(labels.contains(&"$count"), "bare `$` must offer the in-scope lexical; got {labels:?}");
+    assert!(
+        !labels.iter().any(|l| *l == "Animal" || l.ends_with("::Animal")),
+        "bare `$` must not fall through to workspace package names; got {labels:?}"
+    );
+    Ok(())
+}
+
+/// `$`, `@`, and `%` isolate exact sigil class even when the local names collide.
+#[test]
+fn test_sigil_class_isolates_colliding_local_names() {
+    let code = concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "$slot\n");
+
+    let scalar = variable_labels_at(code, "\n$slot");
+    assert!(
+        scalar.iter().any(|l| *l == "$slot"),
+        "`$` must offer the scalar binding; got {scalar:?}"
+    );
+    assert!(
+        !scalar.iter().any(|l| *l == "@slot" || *l == "%slot"),
+        "`$` must not emit array/hash homonyms; got {scalar:?}"
+    );
+
+    let array_code =
+        concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "@slot\n");
+    let array = variable_labels_at(array_code, "\n@slot");
+    assert!(array.iter().any(|l| *l == "@slot"), "`@` must offer the array binding; got {array:?}");
+    assert!(
+        !array.iter().any(|l| *l == "$slot" || *l == "%slot"),
+        "`@` must not emit scalar/hash homonyms; got {array:?}"
+    );
+
+    let hash_code =
+        concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "%slot\n");
+    let hash = variable_labels_at(hash_code, "\n%slot");
+    assert!(hash.iter().any(|l| *l == "%slot"), "`%` must offer the hash binding; got {hash:?}");
+    assert!(
+        !hash.iter().any(|l| *l == "$slot" || *l == "@slot"),
+        "`%` must not emit scalar/array homonyms; got {hash:?}"
+    );
+}
+
+/// `state` follows lexical admission on the production sigil path, including
+/// sibling-callable exclusion.
+#[test]
+fn test_state_binding_visible_in_own_sub_only() {
+    let body = concat!("sub once {\n", "    state $once_val = 1;\n", "    $once\n", "}\n");
+    let labels = variable_labels_at(body, "    $once");
+    assert!(
+        labels.iter().any(|l| l.contains("once_val")),
+        "state binding must be visible in its declaring sub; got {labels:?}"
+    );
+
+    let sibling = concat!(
+        "sub once {\n",
+        "    state $once_val = 1;\n",
+        "}\n",
+        "sub other {\n",
+        "    $once\n",
+        "}\n"
+    );
+    let sibling_labels = variable_labels_at(sibling, "    $once");
+    assert!(
+        !sibling_labels.iter().any(|l| l.contains("once_val")),
+        "state binding must not leak into a sibling sub; got {sibling_labels:?}"
+    );
+}
+
+/// Signature parameter + inner `my` of the same name: the inner binding wins
+/// and the outer parameter is not emitted as a second exact local candidate.
+#[test]
+fn test_signature_param_shadowed_by_inner_lexical() {
+    let code = concat!(
+        "sub sized ($shadowed) {\n",
+        "    # inner documentation marker\n",
+        "    my $shadowed = 2;\n",
+        "    $shad\n",
+        "}\n"
+    );
+    let completions = completions_after_needle(code, "    $shad");
+    let items: Vec<&CompletionItem> =
+        completions.iter().filter(|c| c.label == "$shadowed").collect();
+    assert_eq!(
+        items.len(),
+        1,
+        "inner lexical must shadow the signature parameter; got {} items {items:?}",
+        items.len()
+    );
+    let doc = items[0].documentation.as_deref().unwrap_or("");
+    assert!(
+        doc.contains("inner documentation marker"),
+        "surviving $shadowed must be the inner lexical, got doc: {doc:?}"
+    );
+}
+
+/// Two package blocks in one file are distinct extents: a lexical declared in
+/// one package must not appear as the other package's exact local candidate.
+#[test]
+fn test_package_block_lexical_does_not_leak_to_sibling_package() {
+    let code = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "    $fi\n",
+        "}\n"
+    );
+    let labels = variable_labels_at(code, "    $fi");
+    assert!(
+        !labels.iter().any(|l| l.contains("first_only")),
+        "FirstPkg lexical must not be offered inside SecondPkg; got {labels:?}"
+    );
+
+    let own = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "    $se\n",
+        "}\n"
+    );
+    let own_labels = variable_labels_at(own, "    $se");
+    assert!(
+        own_labels.iter().any(|l| l.contains("second_only")),
+        "SecondPkg must still offer its own lexical; got {own_labels:?}"
+    );
+
+    let first_code = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "    $se\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "}\n"
+    );
+    let first_labels = variable_labels_at(first_code, "    $se");
+    assert!(
+        !first_labels.iter().any(|l| l.contains("second_only")),
+        "SecondPkg lexical must not be offered inside FirstPkg; got {first_labels:?}"
+    );
+}
+
+/// A later snapshot that removes a declaration must not keep offering it.
+/// This is provider-generation requery, not document close/reopen lifecycle.
+#[test]
+fn test_removed_lexical_is_absent_on_requery() {
+    let before = "my $gone_now = 1;\n# cursor\n$go";
+    let before_labels = variable_labels_at(before, "# cursor\n$go");
+    assert!(
+        before_labels.iter().any(|l| l.contains("gone_now")),
+        "control: the lexical must be offered before the edit; got {before_labels:?}"
+    );
+
+    let after = "my $stays = 1;\n# cursor\n$go";
+    let after_labels = variable_labels_at(after, "# cursor\n$go");
+    assert!(
+        !after_labels.iter().any(|l| l.contains("gone_now")),
+        "requery after removing the declaration must drop it; got {after_labels:?}"
+    );
+}
+
+/// Issue #17160 fixture: an indexed same-root sibling package must never be
+/// dressed up as an inherited ancestor. `Animal::Kennel` shares only the
+/// `Animal::` namespace root with the receiver's class — no `@ISA`, no
+/// `use parent`, no role either direction — so its subs must not appear as
+/// method candidates for an `Animal::Dog` receiver at any tier.
+#[test]
+fn same_root_sibling_package_members_never_appear_as_inherited_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal.pm")?,
+        "package Animal;\nuse strict; use warnings;\nsub new { 1 }\nsub name { 1 }\nsub speak { 1 }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Dog.pm")?,
+        "package Animal::Dog;\nuse strict; use warnings;\nuse parent -norequire, 'Animal';\nsub speak { 1 }\nsub fetch { 1 }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Kennel.pm")?,
+        "package Animal::Kennel;\nuse strict; use warnings;\nsub new { 1 }\nsub capacity { 1 }\nsub admit { 1 }\n1;\n".to_string(),
+    )?;
+
+    let code = "use strict; use warnings;\nuse Animal; use Animal::Dog;\nmy $dog = Animal::Dog->new(name => 'Rex');\n$dog->";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let leaked: Vec<_> = completions
+        .iter()
+        .filter(|item| {
+            item.label == "admit"
+                || item.label == "capacity"
+                || item.detail.as_deref().is_some_and(|detail| detail.contains("Animal::Kennel"))
+        })
+        .map(|item| (item.label.to_string(), item.detail.clone()))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "same-root sibling Animal::Kennel must not contribute inherited candidates: {leaked:?}"
+    );
+
+    // Over-suppression guard: the real inheritance edge must keep working.
+    for expected in ["fetch", "speak", "name"] {
+        assert!(
+            completions.iter().any(|item| item.label == expected),
+            "expected `{expected}` via the actual @ISA chain; got {:?}",
+            completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
+/// Issue #17161: the response promises `isIncomplete: false`, so the generic
+/// object-method catalog must respect the typed prefix like the static and
+/// instance API catalogs already do — `$dog->sp` must not return `AUTOLOAD`
+/// and friends, and the matching method must remain.
+#[test]
+fn generic_object_methods_respect_typed_method_prefix() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Dog.pm")?,
+        "package Animal::Dog;\nuse strict; use warnings;\nsub speak { 1 }\nsub fetch { 1 }\n1;\n"
+            .to_string(),
+    )?;
+
+    let code = "use strict; use warnings;\nuse Animal::Dog;\nmy $dog = Animal::Dog->new(name => 'Rex');\n$dog->sp";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let non_matching: Vec<_> = completions
+        .iter()
+        .filter(|item| !item.label.starts_with("sp"))
+        .map(|item| item.label.to_string())
+        .collect();
+    assert!(
+        non_matching.is_empty(),
+        "isIncomplete: false forbids candidates outside the typed prefix `sp`: {non_matching:?}"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "speak"),
+        "the matching method must remain; got {:?}",
+        completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Issue #17161 over-suppression guard: with no typed prefix the generic
+/// object-method catalog must still be offered.
+#[test]
+fn generic_object_methods_remain_available_without_typed_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "use strict; use warnings;\nmy $dog = Animal::Dog->new(name => 'Rex');\n$dog->";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    for generic in ["can", "isa", "new"] {
+        assert!(
+            completions.iter().any(|item| item.label == generic),
+            "generic `{generic}` must remain available with an empty prefix; got {:?}",
+            completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
+/// Issue #17162: after `Package::` the provider must offer package-level
+/// members of `Package` — never sub-local `my` lexicals (`Animal::$self` is
+/// never valid Perl) and never same-root sibling members (#17160) — plus the
+/// nested `Package::*` declarations ranked between own members and inherited
+/// members instead of only the name-only fallback tier.
+#[test]
+fn package_qualified_completion_offers_members_nested_packages_and_no_lexicals()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal.pm")?,
+        "package Animal;\nuse strict; use warnings;\nsub new { my ($class, %args) = @_; return bless {}, $class; }\nsub name { my ($self) = @_; return 'x'; }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Dog.pm")?,
+        "package Animal::Dog;\nuse strict; use warnings;\nsub fetch { 1 }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Kennel.pm")?,
+        "package Animal::Kennel;\nuse strict; use warnings;\nsub admit { 1 }\n1;\n".to_string(),
+    )?;
+
+    let code = "use strict; use warnings;\nuse Animal;\nmy $pkg = Animal::";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index.clone()));
+    let completions = provider.get_completions(code, code.len());
+
+    // A sigil-qualified request asks for a package variable: a package name
+    // must never answer it, even though the direct-member query carries the
+    // nested `Package` declarations.
+    let sigiled_code = "use strict; use warnings;\nuse Animal;\nmy $member = $Animal::";
+    let mut sigiled_parser = Parser::new(sigiled_code);
+    let sigiled_ast = must(sigiled_parser.parse());
+    let sigiled_provider = CompletionProvider::new_with_index(&sigiled_ast, Some(index.clone()));
+    let sigiled = sigiled_provider.get_completions(sigiled_code, sigiled_code.len());
+    let package_leak: Vec<_> = sigiled
+        .iter()
+        .filter(|item| item.kind == CompletionItemKind::Module)
+        .map(|item| item.label.to_string())
+        .collect();
+    assert!(
+        package_leak.is_empty(),
+        "sigiled request must not receive package-name candidates: {package_leak:?}"
+    );
+
+    let lexicals: Vec<_> = completions
+        .iter()
+        .filter(|item| {
+            item.kind == CompletionItemKind::Variable
+                || matches!(item.label.as_ref(), "$self" | "$class" | "%args")
+        })
+        .map(|item| (item.label.to_string(), item.kind))
+        .collect();
+    assert!(
+        lexicals.is_empty(),
+        "sub-local my lexicals must not be offered as package-qualified members: {lexicals:?}"
+    );
+
+    let foreign: Vec<_> = completions
+        .iter()
+        .filter(|item| {
+            item.label == "admit"
+                || item.label == "fetch"
+                || item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("from Animal::Kennel"))
+        })
+        .map(|item| (item.label.to_string(), item.detail.clone()))
+        .collect();
+    assert!(
+        foreign.is_empty(),
+        "same-root sibling members must not ride the inheritance walk: {foreign:?}"
+    );
+
+    // Nested packages arrive from this path itself, ranked between own
+    // members (tier 2) and inherited members (tier 3).
+    for nested in ["Animal::Dog", "Animal::Kennel"] {
+        let found = completions.iter().find(|item| item.label == nested);
+        let item = must_some_with(
+            found,
+            format!("nested package `{nested}` must be offered after `Animal::`"),
+        );
+        assert_eq!(item.kind, CompletionItemKind::Module, "nested package kind for {nested}");
+        let sort_text = item.sort_text.as_deref().unwrap_or("");
+        assert!(
+            sort_text.starts_with("2n_"),
+            "nested package `{nested}` must rank between own and inherited members; got {sort_text:?}"
+        );
+    }
+    assert!(
+        completions.iter().any(|item| item.label == "name"
+            && item.sort_text.as_deref().is_some_and(|sort| sort.starts_with("2_"))),
+        "own-package members keep tier 2"
+    );
+    Ok(())
+}
+
+// Whole-edit proof for the existing stacked18105/18108 completion claim.
+
+#[test]
+fn test_function_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    for call in ["proc|ess_data;", "process_data|;"] {
+        prove_mid_token_applied_edit(
+            &format!("sub process_data {{ 1 }}\n{call}\n"),
+            "process_data()",
+            "sub process_data { 1 }\nprocess_data();\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+#[test]
+fn test_builtin_keyword_package_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit("pri|nt;\n", "print ", "print ;\n", None)?;
+    prove_mid_token_applied_edit(
+        "whi|le;\n",
+        "while ($1) {\n    $0\n}",
+        "while ($1) {\n    $0\n};\n",
+        None,
+    )?;
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nsub barley { }\n1;\n".to_string(),
+    )?;
+    prove_mid_token_applied_edit("Foo::bar|ley;\n", "Foo::barley", "Foo::barley;\n", Some(index))
+}
+#[test]
+fn mid_token_qualified_local_function_suffix_applies_exactly()
+-> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "sub process_data { 1 }\nproc|ess_data::Tail;\n",
+        "process_data()",
+        "sub process_data { 1 }\nprocess_data();\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_ampersand_qualified_function_suffix_applies_exactly()
+-> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "sub process_data { 1 }\n&proc|ess_data::Tail;\n",
+        "process_data()",
+        "sub process_data { 1 }\nprocess_data();\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_qualified_constant_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "use constant PROCESS_DATA => 1;\nPROC|ESS_DATA::Tail;\n",
+        "PROCESS_DATA",
+        "use constant PROCESS_DATA => 1;\nPROCESS_DATA;\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_function_preserves_single_ternary_colon() -> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "sub process_data { 1 }\nmy $x = 1 ? proc|ess_data: 0;\n",
+        "process_data()",
+        "sub process_data { 1 }\nmy $x = 1 ? process_data(): 0;\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_core_member_preserves_qualified_insertion() -> Result<(), Box<dyn std::error::Error>> {
+    for call in ["Scalar::Util::bl|essed", "Scalar::Util::blessed|"] {
+        prove_mid_token_applied_edit(
+            &format!("use Scalar::Util ();\n{call};\n"),
+            "blessed",
+            "use Scalar::Util ();\nScalar::Util::blessed;\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_suffix_scan_preserves_identifier_and_separator_boundaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (marked, suffix) in [
+        ("proc|ess_data;", "ess_data"),
+        ("caf|é;", "é"),
+        ("proc|𐐀ess;", "𐐀ess"),
+        ("Foo::B|ar::Tail", "ar"),
+        ("print|;", ""),
+        ("print|\r\n", ""),
+        ("print|", ""),
+    ] {
+        let cursor = marked.find('|').ok_or("cursor marker missing")?;
+        let source = marked.replacen('|', "", 1);
+        if word_suffix_end(&source, cursor) != cursor + suffix.len() {
+            return Err(format!("segment boundary changed for {marked}").into());
+        }
+    }
+    Ok(())
+}
+
+fn prove_mid_token_applied_edit(
+    marked: &str,
+    insertion: &str,
+    expected: &str,
+    index: Option<Arc<WorkspaceIndex>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cursor = marked.find('|').ok_or("cursor marker missing")?;
+    let source = marked.replacen('|', "", 1);
+    let mut parser = Parser::new(&source);
+    let ast = parser.parse()?;
+    let provider = CompletionProvider::new_with_index(&ast, index);
+    let completions = provider.get_completions(&source, cursor);
+    let item = completions
+        .iter()
+        .find(|item| item.insert_text.as_deref() == Some(insertion) || item.label == insertion)
+        .ok_or_else(|| format!("completion {insertion:?} missing for {marked:?}"))?;
+    prove_mid_token_selected_edit(marked, &source, cursor, item, expected)
+}
+
+fn prove_mid_token_selected_edit(
+    marked: &str,
+    source: &str,
+    cursor: usize,
+    item: &CompletionItem,
+    expected: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (start, end) = item.text_edit_range.ok_or("edit range missing")?;
+    if !(start <= cursor && cursor <= end) {
+        return Err(format!("range must contain cursor: {marked}").into());
+    }
+    let inserted = item.insert_text.as_deref().unwrap_or(item.label.as_ref());
+    let applied = format!(
+        "{}{}{}",
+        source.get(..start).ok_or("invalid edit start")?,
+        inserted,
+        source.get(end..).ok_or("invalid edit end")?
+    );
+    if applied != expected {
+        return Err(format!(
+            "applied edit mismatch for {marked}: expected={expected:?}, actual={applied:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_function_unicode_suffix_and_crlf_apply_exactly()
+-> Result<(), Box<dyn std::error::Error>> {
+    for call in ["proc|λess_data;", "proc|𐐀ess_data;", "process_data|;"] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\nsub process_data {{ 1 }}\r\n{call}\r\n"),
+            "process_data()",
+            "# 😀\r\nsub process_data { 1 }\r\nprocess_data();\r\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_builtin_unicode_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    for token in ["pri|λnt", "pri|𐐀nt", "print|"] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\n{token};\r\n"),
+            "print ",
+            "# 😀\r\nprint ;\r\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_keyword_unicode_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    for token in ["whi|λle", "whi|𐐀le", "while|"] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\n{token};\r\n"),
+            "while ($1) {\n    $0\n}",
+            "# 😀\r\nwhile ($1) {\n    $0\n};\r\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_local_package_unicode_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>>
+{
+    for token in ["Foo::bar|λey", "Foo::bar|𐐀ey", "Foo::barley|"] {
+        prove_mid_token_applied_edit(
+            &format!("package Foo; sub barley {{ }}\npackage main;\n{token};\n"),
+            "Foo::barley",
+            "package Foo; sub barley { }\npackage main;\nFoo::barley;\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_workspace_package_unicode_suffix_preserves_separator()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nsub barley { }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Foo/Bar.pm")?,
+        "package Foo::Bar;\n1;\n".to_string(),
+    )?;
+    for (token, insertion, expected) in [
+        ("Foo::bar|λey", "Foo::barley", "Foo::barley"),
+        ("Foo::bar|𐐀ey", "Foo::barley", "Foo::barley"),
+        ("Foo::barley|", "Foo::barley", "Foo::barley"),
+        ("Foo::Ba|λr::Tail", "Foo::Bar", "Foo::Bar::Tail"),
+        ("Foo::Ba|𐐀r::Tail", "Foo::Bar", "Foo::Bar::Tail"),
+        ("Foo::Bar|::Tail", "Foo::Bar", "Foo::Bar::Tail"),
+    ] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\n{token};\r\n"),
+            insertion,
+            &format!("# 😀\r\n{expected};\r\n"),
+            Some(index.clone()),
+        )?;
+    }
+    Ok(())
+}
+
+fn mid_token_use_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Mojo/Pg.pm")?,
+        "package Mojo::Pg;\n1;\n".to_string(),
+    )?;
+    Ok(index)
+}
+
+fn mid_token_use_include_root(
+    with_module: bool,
+) -> Result<(TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let root = temp.path().join("lib");
+    fs::create_dir_all(root.join("Mojo"))?;
+    if with_module {
+        fs::write(root.join("Mojo").join("Pg.pm"), "package Mojo::Pg;\n1;\n")?;
+    }
+    Ok((temp, root))
+}
+
+fn mid_token_use_cache(
+    root: &std::path::Path,
+) -> Result<Arc<ModuleCompletionScanCache>, Box<dyn std::error::Error>> {
+    use crate::providers::completion::module_scan_cache::ScanCacheKey;
+    if root.join("Mojo").join("Pg.pm").exists() {
+        return Err("cache-only fixture must not have a discoverable module".into());
+    }
+    let cache = Arc::new(ModuleCompletionScanCache::with_ttl_ms(60_000));
+    let key = ScanCacheKey {
+        canonical_root: fs::canonicalize(root)?,
+        prefix_dir: std::path::PathBuf::from("Mojo"),
+        module_prefix: "Mojo::P".to_string(),
+    };
+    cache.insert(key.clone(), vec!["Mojo::Pg".to_string()]);
+    if !cache.get(&key).is_some_and(|names| names.iter().any(|name| name == "Mojo::Pg")) {
+        return Err("cache-only module precondition missing".into());
+    }
+    Ok(cache)
+}
+
+fn prove_mid_token_use_module_edit(
+    marked: &str,
+    expected: &str,
+    index: Option<Arc<WorkspaceIndex>>,
+    include_paths: Vec<std::path::PathBuf>,
+    cache: Option<Arc<ModuleCompletionScanCache>>,
+    expected_detail: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cursor = marked.find('|').ok_or("cursor marker missing")?;
+    let source = marked.replacen('|', "", 1);
+    let ast = Parser::new(&source).parse()?;
+    let mut provider = CompletionProvider::new_with_index_and_source_and_paths(
+        &ast,
+        &source,
+        index,
+        include_paths,
+        Vec::new(),
+        false,
+    );
+    if let Some(cache) = cache {
+        provider = provider.with_scan_cache(cache);
+    }
+    if !CompletionProvider::is_use_statement_context(&source, cursor)
+        || CompletionProvider::current_line_starts_in_string(&source, cursor)
+    {
+        return Err(format!("fixture did not select use/require dispatch: {marked}").into());
+    }
+    let completions = provider.get_completions(&source, cursor);
+    let item = completions
+        .iter()
+        .find(|item| item.label == "Mojo::Pg")
+        .ok_or_else(|| format!("use-module candidate missing for {marked}"))?;
+    if item.kind != CompletionItemKind::Module || item.detail.as_deref() != Some(expected_detail) {
+        return Err(format!("wrong module producer for {marked}: {:?}", item.detail).into());
+    }
+    prove_mid_token_selected_edit(marked, &source, cursor, item, expected)
+}
+
+#[test]
+fn mid_token_use_indexed_module_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    let index = mid_token_use_index()?;
+    for (marked, expected) in [
+        ("use Mojo::P|g;\n", "use Mojo::Pg;\n"),
+        ("use Mojo::P|λg qw(imported);\n", "use Mojo::Pg qw(imported);\n"),
+        ("# 😀\r\nuse Mojo::P|𐐀g qw(imported);\r\n", "# 😀\r\nuse Mojo::Pg qw(imported);\r\n"),
+        ("use Mojo::P|g::Tail qw(imported);\n", "use Mojo::Pg::Tail qw(imported);\n"),
+        ("require Mojo::P|g;\n", "require Mojo::Pg;\n"),
+    ] {
+        prove_mid_token_use_module_edit(
+            marked,
+            expected,
+            Some(index.clone()),
+            Vec::new(),
+            None,
+            "module",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_use_indexed_module_end_controls() -> Result<(), Box<dyn std::error::Error>> {
+    let index = mid_token_use_index()?;
+    for (marked, expected) in [
+        ("use Mojo::Pg| qw(imported);\n", "use Mojo::Pg qw(imported);\n"),
+        ("use Mojo::Pg|::Tail qw(imported);\n", "use Mojo::Pg::Tail qw(imported);\n"),
+    ] {
+        prove_mid_token_use_module_edit(
+            marked,
+            expected,
+            Some(index.clone()),
+            Vec::new(),
+            None,
+            "module",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_use_external_module_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temp, root) = mid_token_use_include_root(true)?;
+    for (marked, expected) in [
+        ("use Mojo::P|g qw(imported);\n", "use Mojo::Pg qw(imported);\n"),
+        ("# 😀\r\nuse Mojo::P|𐐀g qw(imported);\r\n", "# 😀\r\nuse Mojo::Pg qw(imported);\r\n"),
+        ("require Mojo::P|g;\n", "require Mojo::Pg;\n"),
+    ] {
+        prove_mid_token_use_module_edit(
+            marked,
+            expected,
+            None,
+            vec![root.clone()],
+            None,
+            "external module",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_use_external_module_end_control() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temp, root) = mid_token_use_include_root(true)?;
+    prove_mid_token_use_module_edit(
+        "use Mojo::Pg| qw(imported);\n",
+        "use Mojo::Pg qw(imported);\n",
+        None,
+        vec![root],
+        None,
+        "external module",
+    )
+}
+
+#[test]
+fn mid_token_use_cached_module_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temp, root) = mid_token_use_include_root(false)?;
+    let cache = mid_token_use_cache(&root)?;
+    for (marked, expected) in [
+        ("use Mojo::P|g qw(imported);\n", "use Mojo::Pg qw(imported);\n"),
+        ("use Mojo::P|λg::Tail qw(imported);\n", "use Mojo::Pg::Tail qw(imported);\n"),
+    ] {
+        prove_mid_token_use_module_edit(
+            marked,
+            expected,
+            None,
+            vec![root.clone()],
+            Some(cache.clone()),
+            "external module",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_use_cached_module_end_control() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temp, root) = mid_token_use_include_root(false)?;
+    let cache = mid_token_use_cache(&root)?;
+    prove_mid_token_use_module_edit(
+        "use Mojo::P| qw(imported);\n",
+        "use Mojo::Pg qw(imported);\n",
+        None,
+        vec![root],
+        Some(cache),
+        "external module",
+    )
 }
