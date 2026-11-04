@@ -1,4 +1,4 @@
-"""Exercise the unapplied queue perimeter through the native workflow catalog.
+"""Guard installed queue roots and retain the historical rollback rehearsal.
 
 This is source rehearsal. Neither patch application nor source metadata admits
 product execution or satisfies a native required context.
@@ -40,33 +40,53 @@ def git(root, *args):
 
 
 @contextmanager
-def staged_tree():
+def preimage_tree():
+    """Reconstruct the historical source only inside a disposable Git fixture.
+
+    ROOT is the installed postimage. Copy both sides of additions/deletions,
+    reverse the retained patch, then commit that historical baseline. No test
+    changes the owning checkout or mistakes retired roots for current policy.
+    """
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        changed_paths = [line.removeprefix('--- a/') for line in PATCH.read_text().splitlines()
-                         if line.startswith('--- a/')]
+        changed_paths = [line[6:] for line in PATCH.read_text().splitlines()
+                         if line.startswith(('--- a/', '+++ b/'))]
         paths = {*catalog.read_workflow_catalog(ROOT), POLICY, *changed_paths}
         for name in sorted(paths):
+            if not (ROOT / name).is_file():
+                continue  # Historical deletions are reconstructed by reverse apply.
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
         git(root, 'init', '-q', '--template=')
+        git(root, 'apply', '--reverse', '--check', str(PATCH))
+        git(root, 'apply', '--reverse', str(PATCH))
         git(root, 'add', '.')
         git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-            'commit', '-qm', 'source rehearsal')
+            'commit', '-qm', 'historical cutover preimage')
+        yield root
+
+
+@contextmanager
+def staged_tree():
+    with preimage_tree() as root:
         git(root, 'apply', '--check', str(PATCH))
         git(root, 'apply', str(PATCH))
         yield root
 
 
 class StagedTriggerCutoverTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.preimage = cls.enterClassContext(preimage_tree())
+
     def assert_closed(self, root):
         findings = catalog.development_source_findings(
             catalog.read_workflow_catalog(root), post_landing_sources=POST_LANDING)
         self.assertEqual(findings, [])
 
     def test_whole_catalog_closes_development_roots_and_retains_actual_groups(self):
-        before = catalog.read_workflow_catalog(ROOT)
+        before = catalog.read_workflow_catalog(self.preimage)
         self.assertTrue(catalog.development_source_findings(before, post_landing_sources=POST_LANDING))
         with staged_tree() as root:
             after = catalog.read_workflow_catalog(root)
@@ -74,7 +94,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             self.assert_closed(root)
             for path, original in before.items():
                 if path == RETIRED:
-                    self.assertEqual((ROOT / path).read_bytes(), (root / ARCHIVED).read_bytes())
+                    self.assertEqual((self.preimage / path).read_bytes(), (root / ARCHIVED).read_bytes())
                     continue
                 changed = after[path]
                 self.assertEqual('merge_group' in original.events or path == '.github/workflows/pr-title-check.yml',
@@ -83,7 +103,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     self.assertEqual(changed.merge_group_types, ('checks_requested',), path)
                 if path == '.github/workflows/ci.yml':
                     self.assertEqual(set(original.jobs) | {'integration-required'}, set(changed.jobs), path)
-                    left = yaml.load((ROOT / path).read_text(), Loader=yaml.BaseLoader)['jobs']
+                    left = yaml.load((self.preimage / path).read_text(), Loader=yaml.BaseLoader)['jobs']
                     right = yaml.load((root / path).read_text(), Loader=yaml.BaseLoader)['jobs']
                     del right['integration-required']
                     right['check-all-targets']['name'] = left['check-all-targets']['name']
@@ -92,7 +112,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     self.assertEqual(original.jobs.keys(), changed.jobs.keys(), path)
                 if path not in (*GENERATORS, '.github/workflows/ci.yml', '.github/workflows/em-ci-routed-rust.yml',
                                 '.github/workflows/pr-title-check.yml'):
-                    original_body = (ROOT / path).read_text().split('jobs:\n', 1)[1]
+                    original_body = (self.preimage / path).read_text().split('jobs:\n', 1)[1]
                     projected_body = (root / path).read_text().split('jobs:\n', 1)[1]
                     if path == '.github/workflows/gate-enforcement-contract.yml':
                         # The real integration-source validator must enforce the
@@ -133,7 +153,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 self.assert_closed(root)
 
     def test_separate_schedules_releases_cache_and_post_landing_purposes_survive(self):
-        before = catalog.read_workflow_catalog(ROOT)
+        before = catalog.read_workflow_catalog(self.preimage)
         with staged_tree() as root:
             after = catalog.read_workflow_catalog(root)
             for path, workflow in before.items():
@@ -157,7 +177,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             self.assertNotIn(RETIRED, after)
 
     def test_policy_changes_only_event_projection_preserves_all_five_producers(self):
-        before = tomllib.loads((ROOT / POLICY).read_text())
+        before = tomllib.loads((self.preimage / POLICY).read_text())
         with staged_tree() as root:
             after = tomllib.loads((root / POLICY).read_text())
             workflows = catalog.read_workflow_catalog(root)
@@ -213,6 +233,19 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             self.assertEqual((entry['workflow'], entry['job']), producer)
             self.assertIn(entry['job'], workflows[entry['workflow']].jobs)
         self.assertEqual(workflows[PROTECTED['validate-title'][0]].events, frozenset({'merge_group'}))
+
+    def test_actual_installed_catalog_and_policy_match_the_closed_postimage(self):
+        # This unconditional assertion is the installed-generation owner. A full
+        # reversion to the old preimage cannot become a passing rehearsal mode.
+        self.assert_closed(ROOT)
+        actual = catalog.read_workflow_catalog(ROOT)
+        with staged_tree() as projected:
+            self.assertEqual(set(actual), set(catalog.read_workflow_catalog(projected)))
+            for path in (*actual, POLICY, ARCHIVED):
+                self.assertEqual((ROOT / path).read_bytes(), (projected / path).read_bytes(), path)
+        for name, (path, job) in PROTECTED.items():
+            self.assertIn('merge_group', actual[path].events, name)
+            self.assertIn(job, actual[path].jobs, name)
 
     def test_projected_contract_passes_source_only_and_keeps_native_ceiling(self):
         with staged_tree() as root:
@@ -286,8 +319,11 @@ class StagedIntegrationFanInTests(unittest.TestCase):
         })
         self.assertEqual(sum(job.get('name') == self.job['name'] for job in self.ci['jobs'].values()), 1)
         self.assertEqual(self.ci['jobs']['check-all-targets']['name'], 'Compile All Targets execution')
-        self.assertIn('merge-gate-shards', self.ci['jobs']['merge-gate']['needs'])
-        self.assertIn('ux-tests', self.ci['jobs']['merge-gate']['needs'])
+        self.assertEqual(self.ci['jobs']['merge-gate']['needs'], [
+            'draft-pr-check', 'preflight-latest-check', 'conflict-markers',
+            'check-all-targets', 'ux-tests', 'merge-gate-shards'])
+        self.assertEqual([shard['name'] for shard in self.ci['jobs']['merge-gate-shards']['strategy']['matrix']['include']],
+                         ['meta', 'foundation', 'parser_stack', 'analysis', 'lsp', 'support', 'corpus', 'policy'])
 
     def test_any_missing_skipped_failed_or_cancelled_dependency_is_not_green(self):
         self.assertEqual(self.run_finalizer().returncode, 0)
@@ -322,7 +358,8 @@ class StagedIntegrationFanInTests(unittest.TestCase):
             self.assertNotEqual(observed.returncode, 0)
             self.assertIn('Merge-group Rust Small route skipped: NOT_PROVEN', observed.stdout)
             # Unmodified production preimage really passed this same missing proof.
-            before = yaml.load((ROOT / '.github/workflows/em-ci-routed-rust.yml').read_text(), Loader=yaml.BaseLoader)
+            with preimage_tree() as historical:
+                before = yaml.load((historical / '.github/workflows/em-ci-routed-rust.yml').read_text(), Loader=yaml.BaseLoader)
             old_step = next(step for step in before['jobs']['rust-small-result']['steps']
                             if step.get('name') == 'Evaluate routed result')
             old = subprocess.run(['bash', '--noprofile', '--norc', '-c', old_step['run']],

@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 import yaml
-from scripts.ci.test_staged_qualification_workflow_cutover import ROOT, staged_tree
+from scripts.ci.test_staged_qualification_workflow_cutover import ROOT, preimage_tree, staged_tree
 
 WORKFLOWS = ('post-merge-status.yml', 'aggregate-ci-lane-history.yml')
 STUB = '''#!/usr/bin/env python3
@@ -123,9 +123,16 @@ class GeneratedPublicationTests(unittest.TestCase):
             self.assertIn("steps.create-pr.outputs.pull-request-number != '0'", condition)
         self.assertIn("steps.freshness.outputs.publish == 'true'",
                       readback_step(self.root / '.github/workflows/post-merge-status.yml')['if'])
-        for workflow in WORKFLOWS:
-            self.assertTrue(any('gh workflow run' in step.get('run', '')
-                                for step in steps(ROOT / '.github/workflows' / workflow)))
+        with preimage_tree() as historical:
+            for workflow in WORKFLOWS:
+                self.assertTrue(any('gh workflow run' in step.get('run', '')
+                                    for step in steps(historical / '.github/workflows' / workflow)))
+                # The actual installed generator has the same bounded readback,
+                # with no dependency on replaying development workflows.
+                installed = ROOT / '.github/workflows' / workflow
+                self.assertEqual(readback_step(installed), readback_step(self.root / '.github/workflows' / workflow))
+                self.assertTrue(all('gh workflow run' not in step.get('run', '')
+                                    and '/dispatches' not in step.get('run', '') for step in steps(installed)))
 
 
 if __name__ == '__main__':

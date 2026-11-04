@@ -1,8 +1,9 @@
 # Current titles for a proved native merge group
 
 `scripts/ci/native_queue_title.py` and `scripts/ci/pr_title_validator.js` supply the
-actual-G source for the existing `validate-title` context. The installation remains
-staged in `.ci/staged/17903-root-triggers.patch`. Ordinary PR/metadata/manual roots
+actual-G source for the existing `validate-title` context. This source candidate
+contains the applied cutover; `.ci/staged/17903-root-triggers.patch` remains its
+historical rollback fixture. Ordinary PR/metadata/manual roots
 are removed from this workflow; its only entry is native `merge_group.checks_requested`.
 
 The source is built and tested, but **not activated**. The checked-in

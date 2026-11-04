@@ -109,11 +109,13 @@ class CutoverDocumentationTests(unittest.TestCase):
 
     def test_current_perimeter_and_required_fanin_keep_missing_native_joins_explicit(self):
         source = text(RUNBOOK)
-        for current in ('## Staged queue perimeter and required integration fan-in',
+        for current in ('## Applied source perimeter and required integration fan-in',
                         '`ci.yml:integration-required`', '--no-development-events',
                         '.ci/retired-workflows/main-history-event.yml',
-                        'zero-run status `NOT_PROVEN`', 'complete G membership'):
+                        'zero-run status `NOT_PROVEN`', 'complete G membership',
+                        '**applied in this source candidate**', 'Runtime activation remains'):
             self.assertIn(current, source)
+        self.assertNotIn('replacement is still **unapplied**', source)
         self.assertNotIn('Do not apply `.ci/staged/17903-root-triggers.patch` as the selected queue migration:', source)
 
     def test_agent_entrypoints_and_finishing_routes_follow_authorized_native_queue(self):

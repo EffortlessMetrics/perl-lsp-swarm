@@ -16,8 +16,9 @@ to run a pre-queue hosted rehearsal. The historical implementation is described
 in [qualification-workflow-composition.md](qualification-workflow-composition.md).
 The former `.ci/staged/17903-root-triggers.patch` removed `merge_group` and retained
 metadata dispatch. It has been replaced by the queue perimeter and same-run fan-in
-described below. The replacement is still **unapplied**: a passing source rehearsal
-does not establish an operated H publisher, observed complete G membership, compatible live
+described below. The replacement is **applied in this source candidate**; the patch
+remains its historical preimage/rollback fixture. Runtime activation remains
+**NOT_PROVEN**. This candidate does not establish an operated H publisher, observed complete G membership, compatible live
 enforcement, first-installation route or protected landing.
 
 ## Accepted lifecycle
@@ -55,7 +56,7 @@ Use existing producers and source owners. The whole Contabo migration, a new
 controller, another lifecycle database, a universal agent cap, or another broad
 review campaign is not a prerequisite when existing qualified components suffice.
 
-## Staged queue perimeter and required integration fan-in
+## Applied source perimeter and required integration fan-in
 
 `.ci/staged/17903-root-triggers.patch` projects the whole native workflow catalog,
 including metadata and review wrappers. It removes direct PR, PR-target, review,
@@ -80,7 +81,7 @@ qualification `NOT_PROVEN`. Existing content, freshness and stale-proposal contr
 remain. Publication is followed by in-session proof/review and separately authorized
 native enqueue, not a hidden workflow fan-out.
 
-The staged `ci.yml:integration-required` job retains the protected name
+The candidate `ci.yml:integration-required` job retains the protected name
 `Compile All Targets (bit-rot guard)` and Actions App binding. It requires success from
 both the original compile job and the existing fail-closed `merge-gate` aggregate.
 Native `needs` binds those results to this workflow run/attempt; there is no cross-run
@@ -108,9 +109,12 @@ generation. It preserves proof commands, permission boundaries, cache-writer
 authority, receipt identity and failure propagation while rejecting restored ordinary
 event roots. The actual G source validator invokes `--no-development-events` with
 only the named Pages publication exception. Run the affected native contracts on the
-installed tree before activation. The staged fixture is a preimage rehearsal, not a test
-to keep applying after its patch has been installed. Reconcile or retire that fixture
-in the installation transaction. PR-payload-dependent standalone bodies preserved as
+installed tree before activation. The installed-generation contract tests the actual
+closed catalog and all five G producers. It reconstructs the historical preimage only
+inside a disposable fixture, then applies/reverses the retained patch to verify rollback
+and the original failure controls. It never applies that patch to the owning checkout.
+Generated publication tests likewise compare historical dispatch with the installed
+bounded readback. PR-payload-dependent standalone bodies preserved as
 explicit source are not newly qualified manual or G producers. Every uniquely required
 proposition still needs its in-session or selected-G owner. Indirect completion and
 dispatch provenance, H publication, complete G membership, actual required checks and
@@ -126,7 +130,7 @@ classic-protection read remains unknown, not absence. A previously supplied
 administrative observation retains its timestamp and scope; it is not perpetually
 current merely because another executor cannot reproduce it.
 
-| Protected context | Staged producer and remaining proof boundary |
+| Protected context | Candidate producer and remaining proof boundary |
 | --- | --- |
 | `Compile All Targets (bit-rot guard)` | `ci.yml:integration-required` joins unchanged `check-all-targets` execution and the existing `merge-gate` selected integration aggregate in one run/attempt. Native execution remains unobserved. |
 | `Conflict marker check` | `ci.yml:conflict-markers`, retained on actual G. Applicability and execution must be observed on the canary. |
