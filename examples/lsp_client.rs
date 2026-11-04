@@ -8,7 +8,7 @@ fn main() -> io::Result<()> {
     println!("Starting Perl Language Server...");
     
     // Start the LSP server
-    let mut child = Command::new("perl-lsp")
+    let mut child = Command::new("perllsp")
         .arg("--stdio")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

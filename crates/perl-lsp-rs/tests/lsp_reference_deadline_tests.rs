@@ -43,7 +43,7 @@ fn deadline_exhaustion_is_request_failed_with_or_without_partial_result_token() 
         for wrapped in [false, true] {
             // A positive baseline makes every initialization-options form prove
             // that it actually applied zero, instead of inheriting a prior case.
-            set_process_reference_deadline(Duration::from_secs(60))?;
+            set_process_reference_deadline(Duration::from_mins(1))?;
             let mut harness = LspHarness::new();
             let limits = json!({"limits": {"referenceSearchDeadlineMs": 0}});
             let options = if wrapped { json!({"perl": limits}) } else { limits };
@@ -109,7 +109,7 @@ fn complete_search_is_nonempty_location_array_with_or_without_partial_result_tok
         )?;
         assert_eq!(
             perl_lsp_rs_core::runtime::limits::reference_search_deadline(),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             "each complete control must apply the generous deadline"
         );
         harness.open_document(uri, doc)?;

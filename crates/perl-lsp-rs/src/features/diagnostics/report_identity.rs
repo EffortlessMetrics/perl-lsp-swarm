@@ -58,7 +58,12 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 // Version 2 (#7024) introduced canonical regex diagnostic behavior.
 const RULE_CATALOG_SCHEMA_VERSION: u32 = 3;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
-const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
+// Bumped to 2 by #17241: the pull projection now collapses native/built-in
+// overlap pairs and attaches critic codeDescription links, so a client holding
+// a pre-change ID must not be told `unchanged` and keep uncollapsed rows. Old
+// IDs degrade safely: they no longer match the composed identity, so the
+// report is resent in full.
+const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 2;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
 
 /// Behavior-bearing negotiated wire-projection state.
@@ -602,47 +607,11 @@ mod tests {
     }
 
     #[test]
-    fn pragma_migration_invalidates_pre_merge_catalog_reports()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use crate::features::diagnostics::PullDiagnosticsProvider;
-        use lsp_types::DocumentDiagnosticReport;
-        let context = context_with(Some(ROOT_A));
-        let script_uri = URI_A.replace("lib/Mod.pm", "script.pl");
-        let source = "print \"hello\\n\";\n";
-        let subject =
-            pull_report_subject(&script_uri, source, None, &context).expect("complete subject");
-        let prior = subject.compose_with_catalog_version(2).expect("old catalog report identity");
-        let current = subject.compose().expect("current catalog report identity");
-        assert_ne!(prior, current, "behavior-changing producer migration must invalidate old IDs");
-        let provider = PullDiagnosticsProvider::new();
-        let uri = script_uri.parse().expect("fixture URI");
-        let report = provider.get_document_diagnostics_with_context(
-            &uri,
-            source,
-            Some(prior.into_string()),
-            &context,
-            None,
-        );
-        let DocumentDiagnosticReport::Full(full) = report else {
-            return Err("pre-migration result ID must never retain the old duplicate report".into());
-        };
-        assert_eq!(full.full_document_diagnostic_report.items.len(), 2);
-        let new_id = full.full_document_diagnostic_report.result_id.expect("current reusable ID");
-        assert_eq!(new_id, current.as_str());
-        assert!(
-            matches!(
-                provider.get_document_diagnostics_with_context(
-                    &uri,
-                    source,
-                    Some(new_id),
-                    &context,
-                    None
-                ),
-                DocumentDiagnosticReport::Unchanged(_)
-            ),
-            "the same current subject remains reusable"
-        );
-        Ok(())
+    fn projection_wire_pin_covers_collapse_and_code_description() {
+        // #17241 changed the pull projection (overlap collapse plus critic
+        // codeDescription) without touching the items hash, so the pin is the
+        // only thing that stops a pre-change ID from answering `unchanged`.
+        assert_eq!(PROJECTION_WIRE_SCHEMA_VERSION, 2);
     }
 
     #[test]
@@ -756,7 +725,8 @@ mod tests {
 
         // Accepted snapshot movement is load-bearing.
         let mut context = baseline_context.clone();
-        let moved_config = ServerConfig { perlcritic_severity: 4, ..ServerConfig::default() };
+        let mut moved_config = ServerConfig::default();
+        moved_config.perlcritic_severity = 4;
         context.accepted_critic_snapshot =
             AcceptedCriticSnapshot::capture(&moved_config, Some(ROOT_A));
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());

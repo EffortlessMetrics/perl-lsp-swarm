@@ -1,5 +1,9 @@
 # The Best Perl LSP: Comprehensive Vision Document
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md); current product status: [Current product status](CURRENT_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 **Research Completed**: 2026-03-19
 **Vision Scope**: v0.12.0 (now) → v1.0.0 (production leadership)
 **Benchmark**: rust-analyzer, typescript-language-server, gopls

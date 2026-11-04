@@ -1,0 +1,12 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: >-
+  When perl-lsp.serverPath names a missing path, the extension shows a once-per-session
+  warning that names the actual fallback source (downloaded, bundled, or PATH), or
+  says when no fallback is available. The warning links to the serverPath setting.
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16535"
+  Slug: vscode-serverPath-fallback-warning
+  Breaking: "no"

@@ -68,8 +68,23 @@ pub(crate) enum SessionWarningFamily {
     Critic,
     /// Invalid enum values from editor-provided settings.
     ClientSetting,
+    /// Rejected client `includePaths` entries (subject: the entry plus the
+    /// bounded reason kind, fingerprinted). The same rejected entry is
+    /// re-validated on several channels (`didChangeConfiguration`,
+    /// `initializationOptions` replay, folder effective-config rebuild), so
+    /// without a family the user would see one popup per channel per
+    /// notification (#17164).
+    ClientIncludePath,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// External `perlcritic` engine availability (#16550 review). Never
+    /// cleared by critic-configuration transitions: the subject is the
+    /// environment's engine availability for the session, not a critic
+    /// setting, so `clear_family(Critic)` does not touch it.
+    CriticEngineAvailability,
+    /// Documented formatting options the native formatter cannot honor
+    /// (subject: the ignored key set, fingerprinted).
+    FormatterOptions,
     /// A workspace `.perl-lsp.toml` could not be loaded or applied
     /// (subject: the offending config path, fingerprinted).
     ///
@@ -90,9 +105,20 @@ pub(crate) enum SessionWarningCode {
     /// Invalid enum value in an editor-provided setting
     /// (subject: setting tag + value type + normalized value fingerprint).
     ClientSettingInvalidValue,
+    /// A client-supplied `includePaths` entry was rejected
+    /// (subject: the entry plus the bounded reason kind, fingerprinted).
+    ClientIncludePathRejected,
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// The explicitly configured external `perlcritic` engine could not run
+    /// because the binary is unavailable, so the built-in fallback analyzer
+    /// ran instead (#16550; no variable subject — the condition is
+    /// environment-global for the session).
+    CriticExternalUnavailable,
+    /// Documented formatting options have no native-engine equivalent
+    /// (subject: the ignored key set, fingerprinted).
+    NativeFormatterOptionsIgnored,
     /// A workspace `.perl-lsp.toml` failed to load or apply
     /// (subject: the offending config path fingerprint).
     ///
@@ -260,7 +286,7 @@ impl FamilyStore {
     }
 }
 
-/// Session-scoped warning-dedup store for the three governed families.
+/// Session-scoped warning-dedup store for the governed families.
 ///
 /// Presentation/operational state only (#9769): classification
 /// `provider_or_presentation`, semantic authority none, persistence never.
@@ -269,7 +295,10 @@ pub(crate) struct SessionWarningDedupStore {
     #[cfg(not(target_arch = "wasm32"))]
     critic: FamilyStore,
     client_setting: FamilyStore,
+    client_include_path: FamilyStore,
     ai_backend: FamilyStore,
+    critic_engine_availability: FamilyStore,
+    formatter_options: FamilyStore,
     #[cfg(not(target_arch = "wasm32"))]
     project_config: FamilyStore,
 }
@@ -280,7 +309,10 @@ impl SessionWarningDedupStore {
             #[cfg(not(target_arch = "wasm32"))]
             SessionWarningFamily::Critic => &self.critic,
             SessionWarningFamily::ClientSetting => &self.client_setting,
+            SessionWarningFamily::ClientIncludePath => &self.client_include_path,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            SessionWarningFamily::CriticEngineAvailability => &self.critic_engine_availability,
+            SessionWarningFamily::FormatterOptions => &self.formatter_options,
             #[cfg(not(target_arch = "wasm32"))]
             SessionWarningFamily::ProjectConfig => &self.project_config,
         }
@@ -336,6 +368,29 @@ impl SessionWarningDedupStore {
         self.family(family).clear_for_lifecycle();
     }
 
+    /// Decide, emit, and roll back on failed delivery for one
+    /// native-formatter ignored-options warning (#18056).
+    ///
+    /// Suppression is keyed on the notice text (which names the ignored
+    /// key set), fingerprinted: the same key set warns once per session
+    /// across client-settings, `.perl-lsp.toml`, and discovered-profile
+    /// applies, while a different key set still warns.
+    pub(crate) fn emit_formatter_options_warning(
+        &self,
+        notice: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        self.emit_once_with(
+            SessionWarningFamily::FormatterOptions,
+            SessionWarningIdentity::fingerprinted(
+                SessionWarningCode::NativeFormatterOptionsIgnored,
+                SessionWarningSubjectTag::None,
+                notice,
+            ),
+            emit,
+        )
+    }
+
     /// Consult the store for an invalid editor-provided setting value.
     ///
     /// Unknown setting names (no bounded tag) follow the bounded
@@ -361,6 +416,45 @@ impl SessionWarningDedupStore {
                 tag,
                 &subject,
             ),
+        )
+    }
+
+    /// Decide, emit, and roll back on failed delivery for one rejected
+    /// client `includePaths` entry warning (#17164).
+    ///
+    /// The same rejected entry is re-validated on every channel that applies
+    /// client settings (`didChangeConfiguration`, `initializationOptions`
+    /// replay, folder effective-config rebuild), so suppression is keyed on
+    /// the **entry plus the bounded reason kind** (`reason_key`, from
+    /// [`perl_lsp_rs_core::config::RejectedClientIncludePathReason::dedup_key`]),
+    /// fingerprinted: one rejected entry warns once per session across all
+    /// channels, while a different entry — or the same entry rejected for a
+    /// different reason kind — still warns. Detail payloads (workspace-escape
+    /// details, unauthorized source labels) are excluded from the identity by
+    /// the caller's key, and only the deterministic fingerprint of the subject
+    /// is retained.
+    ///
+    /// Delivery failures roll the retention back via [`Self::emit_once_with`]:
+    /// a warning the client never received must be eligible to re-fire on the
+    /// next occurrence.
+    pub(crate) fn emit_client_include_path_warning(
+        &self,
+        entry: &str,
+        reason_key: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        let mut subject = String::with_capacity(entry.len() + reason_key.len() + 1);
+        subject.push_str(entry);
+        subject.push('\u{0}');
+        subject.push_str(reason_key);
+        self.emit_once_with(
+            SessionWarningFamily::ClientIncludePath,
+            SessionWarningIdentity::fingerprinted(
+                SessionWarningCode::ClientIncludePathRejected,
+                SessionWarningSubjectTag::None,
+                &subject,
+            ),
+            emit,
         )
     }
 
@@ -435,8 +529,14 @@ pub struct SessionWarningDedupSnapshot {
     pub critic: SessionWarningFamilyCounters,
     /// Client-setting family counters.
     pub client_setting: SessionWarningFamilyCounters,
+    /// Rejected client include-path entry family counters.
+    pub client_include_path: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Critic engine-availability family counters (#16550 review).
+    pub critic_engine_availability: SessionWarningFamilyCounters,
+    /// Native-formatter ignored-options family counters.
+    pub formatter_options: SessionWarningFamilyCounters,
     /// Project-config family counters (absent on WASM targets, where the
     /// project-config loaders do not exist).
     #[cfg(not(target_arch = "wasm32"))]
@@ -451,7 +551,10 @@ impl SessionWarningDedupStore {
             #[cfg(not(target_arch = "wasm32"))]
             critic: self.critic.counters(),
             client_setting: self.client_setting.counters(),
+            client_include_path: self.client_include_path.counters(),
             ai_backend: self.ai_backend.counters(),
+            critic_engine_availability: self.critic_engine_availability.counters(),
+            formatter_options: self.formatter_options.counters(),
             #[cfg(not(target_arch = "wasm32"))]
             project_config: self.project_config.counters(),
         }
@@ -463,5 +566,31 @@ impl super::LspServer {
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn session_warning_dedup_snapshot(&self) -> SessionWarningDedupSnapshot {
         self.session_warning_dedup.snapshot()
+    }
+
+    /// Forward configuration notices recorded during config application
+    /// (native-formatter ignored options, #18056) to the client as
+    /// deduplicated `window/showMessage` warnings.
+    ///
+    /// Before `initialized`, notices stay pending in the config so the
+    /// `initialized` handler can flush them once the client is ready;
+    /// notifications must not be sent earlier.
+    pub(crate) fn flush_client_notices(&self) {
+        if !self.initialized.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let notices = self.config.lock().take_client_notices();
+        for notice in notices {
+            let _ =
+                self.session_warning_dedup.emit_formatter_options_warning(&notice, || {
+                    match self.show_message(super::window::MessageType::Warning, &notice) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::warn!(%error, "Failed to send formatter options warning");
+                            false
+                        }
+                    }
+                });
+        }
     }
 }
