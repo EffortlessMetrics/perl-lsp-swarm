@@ -841,3 +841,23 @@ fn pod_after_blank_line_reads_only_the_immediately_previous_line() {
         assert_eq!(lexer.pod_after_blank_line(), expected, "{source:?}");
     }
 }
+
+#[test]
+fn unclosed_m_after_string_is_an_unclosed_error_token() -> TestResult {
+    // The lexer is already correct for #16608 class (2); this pins that the
+    // recovery belongs in the parser, not in a lexer change.
+    let source = "my @x = @{['a'm]};";
+    let mut lexer = PerlLexer::new(source);
+    let mut found = None;
+    while let Some(token) = lexer.next_token() {
+        if matches!(&token.token_type, TokenType::Error(message) if message.as_ref() == "unclosed m delimiter ']'")
+        {
+            found = Some(token.text.clone());
+        }
+    }
+    let text = found.ok_or("expected unclosed m error token")?;
+    if text.as_ref() != "m]};" {
+        return Err(format!("unclosed m token text mismatch: {text}").into());
+    }
+    Ok(())
+}

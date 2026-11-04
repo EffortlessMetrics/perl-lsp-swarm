@@ -157,6 +157,11 @@ pub struct Parser<'a> {
     in_sort_comparator: bool,
     /// FIFO queue of pending heredoc declarations awaiting content collection
     pending_heredocs: VecDeque<PendingHeredoc>,
+    /// Closers inferred for an unterminated quote-like token whose real
+    /// closer still follows a later statement. The statement-list loops
+    /// consume a matching token as this already-reported closer instead of
+    /// emitting a stray-closer cascade for it.
+    deferred_orphan_closers: Vec<TokenKind>,
     /// Custom attributes registered by Attribute::Handlers declarations in this file.
     custom_attribute_handlers: HashSet<String>,
     /// Subroutine names declared with an empty `()` prototype in this file.
@@ -256,6 +261,7 @@ impl<'a> Parser<'a> {
             at_stmt_start: true,
             in_sort_comparator: false,
             pending_heredocs: VecDeque::new(),
+            deferred_orphan_closers: Vec::new(),
             custom_attribute_handlers: HashSet::new(),
             declared_nullary_subs: HashSet::new(),
             attribute_handlers_enabled: false,

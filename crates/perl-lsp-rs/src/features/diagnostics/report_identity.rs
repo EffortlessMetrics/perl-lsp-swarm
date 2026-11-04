@@ -59,7 +59,9 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 // subjects, so without this bump a client holding a pre-change ID could be told
 // `unchanged` and keep diagnostics that predate every one of those. The cost is one
 // `full` report per document after upgrade, which is what the pin is for.
-const RULE_CATALOG_SCHEMA_VERSION: u32 = 2;
+// Bumped to 3 by #16608: PL1008 (`RegexUnterminatedQuoteLike`) is a new
+// identity for unterminated quote-like operators.
+const RULE_CATALOG_SCHEMA_VERSION: u32 = 3;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 // Bumped to 2 by #17241: the pull projection now collapses native/built-in
 // overlap pairs and attaches critic codeDescription links, so a client holding
