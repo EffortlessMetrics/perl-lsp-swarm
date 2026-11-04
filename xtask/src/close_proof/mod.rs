@@ -3,17 +3,17 @@
 //! Defines and validates the versioned machine-readable representation of the
 //! proposition an issue owns:
 //!
-//! - `issue_contract.v1` ([`contract::IssueContract`]) — issue kind, required
+//! - `issue_contract.v1` ([`contract::IssueContract`]) - issue kind, required
 //!   proof level, allowed close modes, stable denominator rows, negative
 //!   controls, mandatory children, transfer policy, and current identity.
 //! - `issue_close_proof.v1` ([`packet::ClosePacket`] and
-//!   [`packet::validate_packet_against_contract`]) — requested close mode,
+//!   [`packet::validate_packet_against_contract`]) - requested close mode,
 //!   contract binding, claims, row/control/child dispositions, and independent
 //!   PR-scope versus issue-close verdicts.
 //!
 //! This layer is representation-only: it validates documents and their
 //! referential integrity. It does not decide whether a requested close mode is
-//! semantically satisfied — CP03 (#10382) owns that evaluation — and it does
+//! semantically satisfied - CP03 (#10382) owns that evaluation - and it does
 //! not inspect live GitHub state, PR bodies, or closing keywords.
 //!
 //! The immutable regression corpus under `.ci/close-proof-contract/`
@@ -22,21 +22,27 @@
 //! canonical re-serialization; repository history remains the final arbiter
 //! for reviewed mutation.
 //!
-//! Serde strictness note: top-level documents reject unknown fields; payload
-//! variants inside internally tagged enums (`disposition`, `state`) cannot use
-//! `deny_unknown_fields`, so unknown keys inside variant payloads are ignored
-//! by serde, and serde_json resolves duplicate JSON object keys last-wins.
-//! Downstream evaluators must not treat that silence as authority.
+//! Public document parsers reject duplicate decoded JSON object keys before
+//! typed map conversion. Documents and tagged variant payloads reject unknown
+//! fields, including unit states. Strict wire decoding establishes an
+//! unambiguous representation, never independent completion evidence.
+//!
+//! The additive `issue_contract_identity.v1` and `issue_close_proof_binding.v1`
+//! envelopes retain strict v1 documents and bind full declared policy material.
+//! Their successful comparison remains representation-only: current sources,
+//! ruling/adoption authority, evidence admission and verdict derivation require
+//! independent owners. Legacy documents are never automatically upgraded.
 
 pub mod contract;
 pub mod corpus;
 pub mod model;
 pub mod packet;
+mod wire;
 
 #[cfg(test)]
 mod tests;
 
-pub use contract::{IssueContract, compute_denominator_digest};
+pub use contract::{ContractIdentityEnvelope, IssueContract, compute_denominator_digest};
 pub use corpus::{
     CORPUS_MANIFEST_SCHEMA_V1, CorpusManifest, FIXTURE_SCHEMA_V1, FixtureCase, FixtureDocument,
     FixtureProvenance, ManifestEntry, load_corpus_manifest, verify_corpus,
@@ -51,7 +57,12 @@ pub use model::{
     NegativeControlRow, PacketBinding, PrScopeOutcome, ProofLevel, RowDispositionValue,
     RulingIdentity, TransferPolicy,
 };
+pub use model::{
+    CONTRACT_IDENTITY_SCHEMA_V1, ChildRelationDeclaration, ContractIdentityContext,
+    FULL_PACKET_BINDING_SCHEMA_V1, FullBoundPacket, RulingDeclaration, SourceIdentity,
+};
 pub use packet::validate_packet_against_contract;
+pub use packet::{FullBindingMatch, validate_packet_full_binding};
 
 /// Validation failures are classified so callers can distinguish mis-typed
 /// documents from semantic integrity violations and stale bindings.

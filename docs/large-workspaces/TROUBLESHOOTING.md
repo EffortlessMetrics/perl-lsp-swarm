@@ -41,9 +41,9 @@ first branching point in every large-workspace investigation.
 
 | Cause | How to confirm | Fix |
 |-------|----------------|-----|
-| `max_files` limit hit | `reason: ResourceLimit(Files)` | Raise `maxIndexedFiles` or add `.lspignore` |
-| `max_total_symbols` limit hit | `reason: ResourceLimit(Symbols)` | Raise `maxTotalSymbols` |
-| Scan timeout | `reason: Timeout` | Raise `workspaceScanDeadlineMs` |
+| `max_files` limit hit | `reason: ResourceLimit(Files)` | Open a narrower workspace folder containing the project area you need (the internal index limit is not client-configurable via `perl.limits`) |
+| `max_total_symbols` limit hit | `reason: ResourceLimit(Symbols)` | Open a narrower workspace folder containing the project area you need (the internal index limit is not client-configurable via `perl.limits`) |
+| Scan timeout | `reason: Timeout` | Open a narrower workspace folder containing the project area you need |
 | IO error | `reason: IoError` | Check disk health; check NFS mount |
 | Parse storm | `reason: ParseStorm` | Reduce concurrent editors; check for watch loops |
 
@@ -77,11 +77,25 @@ Compare against the expected baseline from `TESTING_GUIDE.md`.
    Migrate the workspace to a local disk or ramdisk for development.
 
 2. **Deep directory tree with many non-Perl files**: The scanner visits
-   every directory. Exclude heavy directories:
+   every directory except the canonical noise directories it always skips:
+   `.git`, `.hg`, `.svn`, `target`, `node_modules`, `.cache`, `blib`,
+   `local`, `vendor`, and `.perl-lsp`. Adding any of those to a skip list
+   changes nothing. If they are already excluded and startup is still slow,
+   the editor is most likely indexing a broader directory than the project:
+   open a narrower workspace folder containing the project area you need.
+   To skip an *additional* directory name, list it in
+   `perl.workspace.discoverySkippedDirs`:
 
    ```json
-   { "perl": { "workspace": { "excludePatterns": ["node_modules", ".git", "vendor"] } } }
+   { "perl": { "workspace": { "discoverySkippedDirs": ["generated"] } } }
    ```
+
+   Values are exact directory names compared against each path component —
+   not globs, regular expressions, or path fragments — so `build` skips a
+   `build/` directory but not `build-out/`. An `includePaths` entry can
+   permit discovery inside a skipped directory when the files are included
+   in Git's file listing, or when discovery uses its filesystem walk fallback.
+   Untracked files ignored by Git remain absent from Git's listing.
 
 3. **Very large individual files**: A single 50 000-line Perl script can
    take hundreds of milliseconds to parse. Confirm with:
@@ -90,8 +104,8 @@ Compare against the expected baseline from `TESTING_GUIDE.md`.
    wc -l lib/**/*.pm | sort -rn | head -10
    ```
 
-   Break up files larger than ~5 000 lines into modules, or add them to
-   the exclude list.
+   Break up files larger than ~5 000 lines into modules. There is no
+   per-file exclusion list for workspace discovery.
 
 ---
 
@@ -150,10 +164,10 @@ fast but response times climb over a long session.
 
 - **Short term**: Restart the LSP server. This flushes all caches and
   returns to baseline memory.
-- **Medium term**: Raise `astCacheMaxEntries` if hit rate is low:
+- **Medium term**: Raise the AST cache memory budget (`astCacheMaxMemoryBytes`) if hit rate is low:
 
   ```json
-  { "perl": { "limits": { "astCacheMaxEntries": 5000 } } }
+  { "perl": { "limits": { "astCacheMaxMemoryBytes": 268435456 } } }
   ```
 
 - **Long term**: If restart frequency is high (more than once per day),
@@ -220,8 +234,8 @@ to prevent concurrent writes. If you see it, check:
 
 ### Remediation
 
-Restart the LSP server. If corruption recurs after restart, reduce
-`maxIndexedFiles` and report with a minimal reproduction.
+Restart the LSP server. If corruption recurs after restart, open a narrower
+workspace folder and report the issue with a minimal reproduction.
 
 ---
 

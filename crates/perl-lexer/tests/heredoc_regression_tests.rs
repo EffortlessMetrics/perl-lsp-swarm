@@ -87,6 +87,82 @@ fn lexer_handles_malformed_heredoc_gracefully() {
 }
 
 #[test]
+fn print_list_nested_parens_do_not_disable_later_heredocs() {
+    // #16163 review: a nested `)` inside the print list pops only the paren
+    // it closes, so the second filehandle-slot heredoc still opens.
+    let source = "print($fh <<'A', (1), <<'B');\nA\nB\n";
+    let mut lx = PerlLexer::new(source);
+    let tokens = lx.collect_tokens();
+    let heredocs =
+        tokens.iter().filter(|t| matches!(t.token_type, TokenType::HeredocStart)).count();
+    assert_eq!(heredocs, 2, "both slot heredocs must open: {tokens:?}");
+}
+
+#[test]
+fn print_list_binary_operator_ends_the_filehandle_slot() {
+    // #16365: `print($x + $y << 'END')` is a Perl syntax error (left shift),
+    // so a binary operator between the first term and `<<` must end the
+    // filehandle slot; the following lines are not heredoc body.
+    let source = "print($x + $y << 'END');\nbody\nEND\n";
+    let mut lx = PerlLexer::new(source);
+    let tokens = lx.collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "a shift after a compound expression must not open a heredoc: {tokens:?}"
+    );
+}
+
+#[test]
+fn print_list_comma_ends_the_filehandle_slot() {
+    // #16163 review: after the top-level comma the filehandle slot is over,
+    // so `<<` following a completed term is a left shift, not a heredoc.
+    let source = "print($fh, $y << 2);\n";
+    let mut lx = PerlLexer::new(source);
+    let tokens = lx.collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "a post-comma shift must not open a heredoc: {tokens:?}"
+    );
+}
+
+#[test]
+fn peeking_the_print_paren_keeps_the_slot_live() {
+    // #16163 review: peek_token must restore the print-list fields, so a
+    // peek at the `(` after `print` cannot consume the pending marker.
+    let source = "print($fh <<'END');\nEND\n";
+    let mut lx = PerlLexer::new(source);
+    let first = lx.next_token();
+    assert!(first.as_ref().is_some_and(|t| t.text.as_ref() == "print"), "expected the print token");
+    let peeked = lx.peek_token();
+    assert!(peeked.as_ref().is_some_and(|t| t.text.as_ref() == "("), "expected ( after print");
+    let tokens = lx.collect_tokens();
+    assert!(
+        tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "peeking the print paren must not disable the slot heredoc"
+    );
+}
+
+#[test]
+fn reset_inside_print_call_clears_the_slot() {
+    // #16163 review: reset must clear the print-list opener stack, so a
+    // stale slot cannot turn later shifts into heredocs.
+    let mut lx = PerlLexer::new("print($fh ");
+    while let Some(token) = lx.next_token() {
+        if token.text.as_ref() == "(" {
+            break;
+        }
+    }
+    lx.reset();
+    let mut lx = lx;
+    lx = PerlLexer::new("my $x = (1 << 2);\n");
+    let tokens = lx.collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "a reset must not leak a print slot into later shifts: {tokens:?}"
+    );
+}
+
+#[test]
 fn lexer_rejects_unterminated_backtick_heredoc_label() {
     let input = "<<`EOF\rprint 1;\r";
     let mut lx = PerlLexer::new(input);
@@ -241,6 +317,46 @@ fn nullary_prototype_declared_after_the_call_still_blocks_heredoc() {
     assert!(
         !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
         "later nullary declaration must still block the heredoc: {source:?}"
+    );
+}
+
+#[test]
+fn ampersand_call_bypasses_nullary_prototype_so_marker_is_heredoc() {
+    // Oracle-pinned fixture (#16445, perl 5.42 + lexer `preceding_bareword`):
+    // `&foo` bypasses the empty prototype, so `<<END` is a heredoc and the
+    // body declaration is consumed. Do not "fix" the lexer onto the 5.38.2
+    // shift reading to match a scanner that still consults the prototype.
+    let source = "sub foo () { 1 }\nmy $x = &foo <<END;\nsub phantom { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("foo"), "declaration lost: {source:?}");
+    assert!(table.is_nullary_sub("foo"), "nullary prototype not captured: {source:?}");
+    assert!(
+        !table.is_known_sub("phantom"),
+        "ampersand call failed to consume the heredoc: {source:?}"
+    );
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "lexer must keep HeredocStart for &foo <<END; do not regress onto the shift reading: {source:?}"
+    );
+}
+
+#[test]
+fn parenthesized_ampersand_call_keeps_the_shift_reading() {
+    // Lexer `try_heredoc` rejects a heredoc after a completed term inside
+    // parentheses. The scanner must not consume `sub visible` as body prose.
+    let source = "sub foo () { 1 }\nmy $x = (&foo <<END);\nsub visible { }\nEND\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("visible"), "parenthesized shift hid live code: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "lexer must keep the parenthesized shift reading for (&foo <<END): {source:?}"
     );
 }
 

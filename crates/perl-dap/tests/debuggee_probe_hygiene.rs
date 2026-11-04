@@ -83,6 +83,10 @@ fn compile_probe_control(directory: &Path, label: &str, body: &str) -> io::Resul
 
 #[test]
 #[cfg_attr(windows, allow(unreachable_code))]
+#[cfg_attr(
+    windows,
+    expect(clippy::print_stderr, reason = "Windows-only SKIP diagnostic in an integration test")
+)]
 fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
     macro_rules! require {
         ($condition:expr, $($arg:tt)+) => {
@@ -168,7 +172,16 @@ fn main() {
     let timeout = compile_probe_control(
         controls.path(),
         "probe_timeout",
-        "fn main() { std::thread::sleep(std::time::Duration::from_secs(60)); }\n",
+        r#"
+fn main() {
+    // Capability precondition (`-e require 'perl5db.pl'`) must exit fast;
+    // the pipe probe itself arrives as `-d -- <script>` (#17393).
+    if std::env::args().nth(1).as_deref() == Some("-e") {
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_secs(60));
+}
+"#,
     )?;
     let hanging = compile_probe_control(
         controls.path(),
@@ -177,6 +190,11 @@ fn main() {
 use std::{env, fs, process::Command, thread, time::Duration};
 
 fn main() {
+    // Capability precondition (`-e require 'perl5db.pl'`) must exit fast;
+    // the pipe probe itself arrives as `-d -- <script>` (#17393).
+    if env::args().nth(1).as_deref() == Some("-e") {
+        return;
+    }
     if env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE").is_none()
         && let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE")
     {
@@ -212,6 +230,11 @@ fn main() {
 use std::{env, fs, process::Command};
 
 fn main() {
+    // Capability precondition (`-e require 'perl5db.pl'`) must exit fast;
+    // the pipe probe itself arrives as `-d -- <script>` (#17393).
+    if env::args().nth(1).as_deref() == Some("-e") {
+        return;
+    }
     if env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE").is_none()
         && let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE")
     {
@@ -464,8 +487,15 @@ fn main() {
         Ok(_) => return Err(io::Error::other("termination-command failure was accepted")),
         Err(error) => error,
     };
+    // Unix terminates the owned process GROUP, Windows the owned process: the
+    // same explicit owned-termination failure carries platform wording
+    // ("injected owned process-group termination failure" vs "injected owned
+    // process termination failure"). This test skips on Windows, so Linux
+    // always sees the group wording; accept both so the matrix also holds if
+    // the Windows skip is ever lifted (#17393).
     require!(
-        termination_error.contains("owned process termination failure"),
+        termination_error.contains("owned process termination failure")
+            || termination_error.contains("owned process-group termination failure"),
         "owned termination failure must be explicit: {termination_error}"
     );
     require!(
@@ -812,6 +842,7 @@ fn wait_for_process_start(pid: u32, timeout: Duration) -> io::Result<()> {
 /// the regression is intentionally skipped: the discipline is exactly the
 /// tighter bound we want the production assertion to keep.
 #[test]
+#[expect(clippy::print_stderr, reason = "SKIP diagnostic outside Windows in an integration test")]
 fn pid_publication_helpers_hold_past_configured_timeout_on_windows_hosts() -> io::Result<()> {
     if !cfg!(windows) {
         eprintln!(

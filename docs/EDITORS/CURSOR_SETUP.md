@@ -126,7 +126,7 @@ Try LSP-backed navigation:
 To restart the server without restarting Cursor:
 
 1. Press `Ctrl+Shift+P` (Cmd+Shift+P on macOS).
-2. Run **Perl: Restart Language Server**.
+2. Run **Restart Perl Language Server**.
 
 ## Troubleshooting
 

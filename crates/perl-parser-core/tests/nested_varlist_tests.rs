@@ -61,9 +61,11 @@ fn test_nested_varlist_array_in_nested() {
 fn test_nested_varlist_comma_in_string() {
     // PARSER-1: Literal/comment blindness
     // A comma inside a string literal must NOT be treated as a list separator.
-    // This must parse cleanly (the string is transparent to the parser).
+    // The string remains one slot (no "expected comma" split), but a string is
+    // not a legal `my` list item — real `perl -c` reports
+    // `Can't declare constant item in "my"` (#16732).
     let source = r#"my ($a, ("string with, comma")) = (1, "x");"#;
-    assert_clean_parse(source);
+    assert_has_error(source, "constant item");
 }
 
 #[test]

@@ -13,6 +13,11 @@
 //! - role/delegation/modifier boundary shapes observed separately from exact symbols
 //! - stale/fresh query behavior after editing an open document
 
+#![expect(
+    clippy::print_stderr,
+    reason = "policy:allow-ux-scenario43-receipt-16953: structured reports must remain visible when a scenario assertion fails"
+)]
+
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::missing_binary_skip;
@@ -516,37 +521,19 @@ fn scenario_43_modern_oo_workspace_symbol_noise_receipt() {
 
             for probe in &probes {
                 recorder.mark_request_start(probe.name);
-                let report = run_probe(&harness, probe)?;
+                let report = run_probe(&harness, probe).with_context(|| {
+                    format!("workspace-symbol probe {} for query {:?}", probe.name, probe.query)
+                })?;
                 if report.first_count > 0 {
                     recorder.mark_first_useful_result(probe.name);
                 }
-                eprintln!(
-                    "workspace_symbol_probe={} query={} count={} useful_hits={:?} top_noise={} unrelated={} generated_live_hits={:?} generated_no_source_live_hits={:?} generated_labels={:?}",
-                    report.name,
-                    report.query,
-                    report.first_count,
-                    report.useful_hits,
-                    report.top_n_noise_count,
-                    report.unrelated_hit_count,
-                    report.generated_candidate_live_hits,
-                    report.generated_no_source_live_hits,
-                    report.generated_label_hits
-                );
                 reports.push(report);
             }
 
             recorder.mark_request_start("freshness_after_edit");
-            let freshness = freshness_report(&harness, &fixture)?;
+            let freshness = freshness_report(&harness, &fixture)
+                .context("workspace-symbol freshness query after editing the Modern OO fixture")?;
             recorder.mark_first_useful_result("freshness_after_edit");
-            eprintln!(
-                "workspace_symbol_freshness file={} query={} stale_absent={} fresh_present={} stale_hits={:?} fresh_hits={:?}",
-                freshness.file,
-                freshness.query,
-                freshness.stale_symbol_absent,
-                freshness.fresh_symbol_present,
-                freshness.stale_hits_after_edit,
-                freshness.fresh_hits_after_edit
-            );
 
             let categories = reports.iter().map(|report| report.category).collect::<BTreeSet<_>>();
             let live_symbol_total: usize = reports.iter().map(|report| report.first_count).sum();

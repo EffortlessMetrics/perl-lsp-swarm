@@ -395,9 +395,7 @@ fn definition_long_fqn_receipts_respect_prefix_refusal() -> Result<(), Box<dyn s
         .test_definition_runtime_quality_receipt(Some(params_at(66)))?
         .ok_or("missing final-component runtime receipt")?;
     assert!(
-        final_runtime
-            .get("source_backed_receipt")
-            .is_some_and(|receipt| !receipt.is_null()),
+        final_runtime.get("source_backed_receipt").is_some_and(|receipt| !receipt.is_null()),
         "final callable must produce source-backed comparison: {final_runtime}"
     );
 

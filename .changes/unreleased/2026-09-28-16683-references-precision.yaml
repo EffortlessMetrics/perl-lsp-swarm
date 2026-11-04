@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "textDocument/references no longer counts hash-key literals (fat-comma keys and `{name}` subscripts) as subroutine-name hits, keeps qualified `Pkg::name` calls, interpolated variables in double quotes, block bare calls, and braced array/hash dereferences on their intended query kind, emits sigil-inclusive variable ranges, and collapses identical (uri, range) locations before the result cap."
+time: 2026-09-28T13:45:00Z
+custom:
+  PR: "16683"
+  Slug: references-precision-16638
+  Breaking: "no"

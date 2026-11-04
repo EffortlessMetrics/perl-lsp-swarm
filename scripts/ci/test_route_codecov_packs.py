@@ -4,6 +4,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
+import tempfile
+from unittest.mock import patch
 from pathlib import Path
 import tomllib
 import unittest
@@ -18,6 +23,84 @@ SPEC.loader.exec_module(router)
 
 
 class RouteCodecovPacksTests(unittest.TestCase):
+    def test_policy_only_lcov_sources_report_routing_bug_in_receipt_and_summary(self) -> None:
+        for path in [
+            "xtask/src/tasks/ci_route.rs",
+            "xtask/src/bin/product-topology.rs",
+            "xtask/src/tasks/inline_completion_quality.rs",
+        ]:
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as directory:
+                receipt = Path(directory) / "route.json"
+                summary = Path(directory) / "route.md"
+                with patch.object(router, "changed_files", return_value=[path]), patch(
+                    "sys.argv", [str(SCRIPT_PATH), "--base", "origin/main", "--head", "HEAD", "--receipt", str(receipt), "--summary", str(summary)]
+                ):
+                    self.assertEqual(0, router.main())
+                route = json.loads(receipt.read_text())
+                self.assertEqual("routing_bug", route["routing_classification"])
+                self.assertEqual([], route["coverage_proof_packs"])
+                self.assertIn("routing_bug", summary.read_text())
+                self.assertNotIn("skipped-by-policy", summary.read_text())
+                self.assertNotIn(router.NON_LCOV_SKIP_REASON, route["skipped_by_policy"].values())
+
+    def test_manifest_non_lcov_source_skip_reasons_name_the_pack_policy(self) -> None:
+        packs = tomllib.loads((router.REPO_ROOT / ".ci/coverage-packs.toml").read_text())["pack"]
+        source_pack_ids = set()
+        for pack in packs:
+            if router.is_lcov_pack(pack):
+                continue
+            for path in pack["files"]:
+                if router.is_lcov_source_path(path):
+                    source_pack_ids.add(pack["id"])
+                    self.assertEqual(router.LCOV_DISABLED_SKIP_REASON, router.non_lcov_skip_reason(pack, [path]))
+                    self.assertNotIn("non-LCOV CI policy/routing surface", router.non_lcov_skip_reason(pack, [path]))
+        self.assertEqual({"patch-coverage-ci-route", "patch-coverage-xtask-product-topology", "patch-coverage-xtask-inline-quality"}, source_pack_ids)
+
+    def test_skip_reason_considers_only_source_matched_by_that_pack(self) -> None:
+        pack = {"id": "ci-route", "lcov": False, "files": [
+            "scripts/ci/route-codecov-packs.py", "xtask/src/tasks/ci_route.rs",
+        ]}
+        self.assertEqual(router.NON_LCOV_SKIP_REASON, router.non_lcov_skip_reason(
+            pack, ["scripts/ci/route-codecov-packs.py", "crates/perl-parser/src/lib.rs"]
+        ))
+        self.assertEqual(router.LCOV_DISABLED_SKIP_REASON, router.non_lcov_skip_reason(
+            pack, ["scripts/ci/route-codecov-packs.py", "xtask/src/tasks/ci_route.rs"]
+        ))
+
+    def test_nightly_no_pack_receipt_preserves_routing_bug(self) -> None:
+        workflow = (router.REPO_ROOT / ".github/workflows/ci-nightly.yml").read_text()
+        start = workflow.index("      - name: Emit skipped coverage proof receipt")
+        end = workflow.index("\n      - name: Append coverage proof summary", start)
+        run_lines = workflow[start:end].splitlines()
+        run_start = next(i for i, line in enumerate(run_lines) if line.strip() == "run: |") + 1
+        script = "\n".join(line[10:] for line in run_lines[run_start:] if line.strip())
+        for classification, decision in [("routing_bug", "routing_bug"), ("routing_skip", "skipped-by-policy")]:
+            with self.subTest(classification=classification), tempfile.TemporaryDirectory() as directory:
+                receipts = Path(directory) / "target/receipts/quality"
+                receipts.mkdir(parents=True)
+                (receipts / "ci-route.json").write_text(json.dumps({
+                    "coverage_proof_packs": [], "routing_classification": classification,
+                }))
+                subprocess.run(["bash", "-eu", "-c", script], cwd=directory, check=True,
+                               env={**os.environ, "GITHUB_OUTPUT": str(Path(directory) / "output")})
+                receipt = json.loads((receipts / "quality-gate-coverage.json").read_text())
+                self.assertEqual(decision, receipt["decision"])
+                self.assertIn(decision, (receipts / "quality-gate-coverage.md").read_text())
+
+    def test_routing_classification_controls(self) -> None:
+        packs = tomllib.loads((router.REPO_ROOT / ".ci/coverage-packs.toml").read_text())["pack"]
+        for paths, expected in [
+            (["docs/README.md"], "routing_skip"),
+            (["xtask/tests/ci_route_cli.rs"], "routing_skip"),
+            (["scripts/ci/route-codecov-packs.py"], "routing_skip"),
+            (["crates/perl-parser/src/lib.rs"], "routed"),
+            (["xtask/src/tasks/ci_route.rs", "xtask/src/tasks/gates.rs"], "routed"),
+            (["xtask/src/tasks/ci_route.rs", "docs/README.md"], "routing_bug"),
+        ]:
+            with self.subTest(paths=paths):
+                selected = router.selected_packs(packs, paths)
+                self.assertEqual(expected, router.routing_classification(selected, paths))
+
     def test_both_ripr_badge_python_paths_select_the_focused_non_lcov_pack(self) -> None:
         manifest = tomllib.loads(
             (Path(__file__).parents[2] / ".ci/coverage-packs.toml").read_text(

@@ -82,6 +82,72 @@ fn qw_scanner_uses_recovery_only_when_the_closer_is_missing() -> TestResult {
 }
 
 #[test]
+fn quote_operator_word_opens_m_only_with_a_real_delimiter() -> TestResult {
+    // Call-observation for `quote_operator_word_opens_here` / `op == "m"`:
+    // depth 0 always opens; inside a subscript `m` opens only for a delimiter
+    // (`$h->{scalar m/foo/}`), not for a bare-key terminator (`$h{m}`, `$h{m;}`).
+    let depth_zero = PerlLexer::new("m/foo/");
+    if !depth_zero.quote_operator_word_opens_here("m") {
+        return Err("statement-level m// must still open at hash_brace_depth 0".into());
+    }
+
+    let mut bare_key = PerlLexer::new("}");
+    bare_key.hash_brace_depth = 1;
+    if bare_key.quote_operator_word_opens_here("m") {
+        return Err("`$h{{m}}` key boundary must not open m//".into());
+    }
+    if !bare_key.hash_subscript_bare_key_boundary('}') {
+        return Err("`}}` must be a hash-subscript bare-key boundary".into());
+    }
+    if bare_key.hash_subscript_allows_match_operator() {
+        return Err("key-boundary `}}` must not allow a subscript match operator".into());
+    }
+
+    let mut missing_closer = PerlLexer::new(";");
+    missing_closer.hash_brace_depth = 1;
+    if missing_closer.quote_operator_word_opens_here("m") {
+        return Err("`$h->{{a}}{{m;` must keep `m` as a key so recovery can insert `}}`".into());
+    }
+
+    let mut computed = PerlLexer::new("/foo/");
+    computed.hash_brace_depth = 1;
+    if !computed.quote_operator_word_opens_here("m") {
+        return Err("computed-key `m/foo/` inside a subscript must open as a match".into());
+    }
+    if !computed.hash_subscript_allows_match_operator() {
+        return Err("`/` is not a bare-key boundary; match must be allowed".into());
+    }
+    if computed.quote_operator_word_opens_here("s") {
+        return Err("s/// stays on the dedicated identifier path, not this m-arm".into());
+    }
+
+    let mut q_family = PerlLexer::new("}");
+    q_family.hash_brace_depth = 1;
+    if !q_family.quote_operator_word_opens_here("qw") {
+        return Err("q-family operators still open inside subscripts (`@h{{qw/a b/}}`)".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn left_brace_opens_hash_subscript_requires_var_or_arrow() -> TestResult {
+    let mut lexer = PerlLexer::new("{");
+    if lexer.left_brace_opens_hash_subscript() {
+        return Err("bare `{{` is a block opener, not a hash subscript".into());
+    }
+    lexer.after_var_subscript = true;
+    if !lexer.left_brace_opens_hash_subscript() {
+        return Err("`$h{{` must open a hash subscript".into());
+    }
+    lexer.after_var_subscript = false;
+    lexer.after_arrow = true;
+    if !lexer.left_brace_opens_hash_subscript() {
+        return Err("`->{{` must open a hash subscript".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn qw_parser_tokenizes_closed_pair_with_escaped_delimiter() -> TestResult {
     let input = r"my @words = qw(foo\) bar);";
     let mut lexer = PerlLexer::new(input);
@@ -588,4 +654,190 @@ fn budget_limit_mirrors_in_contract_tests_stay_pinned() -> TestResult {
         "update the mirrored MAX_HEREDOC_BYTES in tests/budget_recovery_contract.rs in the same change"
     );
     Ok(())
+}
+
+/// Lexer with the cursor on the first line-start `=` that follows `prefix`.
+fn lexer_at_equals(source: &str) -> PerlLexer<'_> {
+    let at = source.find("\n=").map_or(0, |i| i + 1);
+    assert!(at > 0, "fixture has no line-start `=`: {source:?}");
+    let mut lexer = PerlLexer::new(source);
+    lexer.position = at;
+    lexer
+}
+
+#[test]
+fn pod_after_blank_line_observes_blank_whitespace_and_code_lines() {
+    for (source, expected) in [
+        ("sub a {}\n\n=construct x\n=cut\n", true),
+        ("sub a {}\n \t\n=construct x\n=cut\n", true),
+        ("sub a {}\r\n\r\n=construct x\r\n=cut\r\n", true),
+        ("sub a {}\n=construct x\n=cut\n", false),
+        ("my $x\n=construct x\n=cut\n", false),
+    ] {
+        let lexer = lexer_at_equals(source);
+        assert_eq!(lexer.pod_after_blank_line(), expected, "{source:?}");
+    }
+    let mut at_start = PerlLexer::new("=construct x\n=cut\n");
+    at_start.position = 0;
+    assert!(at_start.pod_after_blank_line(), "start of input counts as blank");
+}
+
+#[test]
+fn pod_after_statement_end_observes_last_significant_byte() {
+    for (source, expected) in [
+        ("sub a { 1 }\nuse x;\n=construct x\n=cut\n", true),
+        ("sub a {\n=construct x\n=cut\n", true),
+        ("my $x = 1; # trailing\n=construct x\n=cut\n", true),
+        ("my $x # note;\n=construct x\n=cut\n", false),
+        ("my $x # {\n=construct x\n=cut\n", false),
+        ("my $x# note;\n=construct x\n=cut\n", false),
+        ("my $x;# note\n=construct x\n=cut\n", true),
+        ("print $#{\n=construct x\n=cut\n", true),
+        ("my $x =\n=construct x\n=cut\n", false),
+        ("foo(\n=construct x\n=cut\n", false),
+        ("$h{a}\n=construct x\n=cut\n", false),
+        ("my $x = 'a' # see foo;\n=construct x\n=cut\n", false),
+        ("$a / $b # x;\n=construct x\n=cut\n", false),
+        ("# only a comment;\n=construct x\n=cut\n", true),
+    ] {
+        let lexer = lexer_at_equals(source);
+        assert_eq!(lexer.pod_after_statement_end(), expected, "{source:?}");
+    }
+}
+
+#[test]
+fn may_open_quote_like_observes_quotes_slashes_and_operator_words() {
+    for (prefix, expected) in [
+        ("my $x = 'a' ", true),
+        ("my $x = \"a\" ", true),
+        ("print `ls` ", true),
+        ("$a / $b ", true),
+        ("my $x = q{a} ", true),
+        ("my @w = qw(a b) ", true),
+        ("$s =~ s|a|b| ", true),
+        ("$s =~ tr/a/b/ ", true),
+        ("my $x = 1; ", false),
+        ("my $query = 1; ", false),
+        ("$m, ", false),
+        ("sub y ", false),
+        ("# text ", false),
+    ] {
+        assert_eq!(PerlLexer::may_open_quote_like(prefix.as_bytes()), expected, "{prefix:?}");
+    }
+}
+
+#[test]
+fn pod_has_later_cut_observes_presence_absence_and_memo_reuse() {
+    let mut lexer = lexer_at_equals("sub a {}\n\n=construct x\nbody\n=cut\nsub b {}\n");
+    assert!(lexer.pod_has_later_cut(), "later line-start =cut");
+    assert!(lexer.pod_cut_cache.is_some(), "result memoized");
+    assert!(lexer.pod_has_later_cut(), "memoized answer is stable");
+
+    let mut none = lexer_at_equals("sub a {}\n\n=construct x\nbody\nsub b {}\n");
+    assert!(!none.pod_has_later_cut(), "no line-start =cut");
+    assert!(!none.pod_has_later_cut(), "memoized absence is stable");
+
+    let mut inline = lexer_at_equals("sub a {}\n\n=construct x\n  =cut\nx =cut\n");
+    assert!(!inline.pod_has_later_cut(), "indented or mid-line =cut is not a terminator");
+
+    // A memo computed past the cursor must not be reused for an earlier cursor.
+    let source = "x\n=a\n=cut\ny\n=cut\n";
+    let mut moved = PerlLexer::new(source);
+    moved.position = source.rfind("\n=cut").map_or(0, |i| i + 1);
+    assert!(moved.pod_has_later_cut());
+    moved.position = source.find("\n=a").map_or(0, |i| i + 1);
+    assert!(moved.pod_has_later_cut(), "earlier cursor still sees the first =cut");
+}
+
+#[test]
+fn new_lexer_starts_with_no_pod_cut_memo() {
+    let lexer = PerlLexer::new("sub a {}\n\n=construct x\nbody\n=cut\n");
+    assert_eq!(lexer.pod_cut_cache, None, "a fresh lexer has not scanned for =cut");
+}
+
+#[test]
+fn checkpoint_restore_does_not_replay_pod_cut_memo() {
+    use crate::checkpoint::Checkpointable;
+    let source = "sub a {}\n\n=construct x\nbody\n=cut\nsub b {}\n";
+    let mut lexer = lexer_at_equals(source);
+    let before = lexer.checkpoint();
+    assert!(lexer.pod_has_later_cut());
+    assert!(lexer.pod_cut_cache.is_some(), "memo filled after checkpoint");
+
+    let after = lexer.checkpoint();
+    assert_eq!(before.position(), after.position(), "memo is not part of replay position");
+    assert!(lexer.restore(&before).is_ok(), "restore to the pre-memo checkpoint");
+    assert_eq!(lexer.position, before.position());
+    // The memo is a pure cache: it stays valid or is recomputed, and the answer is identical.
+    assert!(lexer.pod_has_later_cut(), "answer after restore matches answer before");
+}
+
+#[test]
+fn skip_whitespace_consumes_each_known_pod_command_through_cut() {
+    for cmd in ["=pod", "=head1", "=over", "=item", "=back", "=begin", "=end", "=for", "=encoding"]
+    {
+        let source = format!("1;\n{cmd} text\nbody\n=cut\nrest");
+        let mut lexer = lexer_at_equals(&source);
+        lexer.skip_whitespace_and_comments();
+        assert_eq!(lexer.position, source.len() - "rest".len(), "{cmd}");
+
+        // Known commands do not need a later `=cut`; they run to end of input.
+        let open = format!("1;\n{cmd} text\nbody\n");
+        let mut lexer = lexer_at_equals(&open);
+        lexer.skip_whitespace_and_comments();
+        assert_eq!(lexer.position, open.len(), "{cmd} without =cut");
+    }
+}
+
+#[test]
+fn skip_whitespace_opens_pod_at_a_stray_cut_with_statement_start_context() {
+    // `perl -c` accepts `1;\n\n=cut\nrest`: a line-initial `=cut` outside POD opens a
+    // POD block that runs to the next `=cut`, or to EOF when there is none.
+    let opens = "1;\n\n=cut\nrest";
+    let mut lexer = lexer_at_equals(opens);
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, opens.len(), "a stray =cut opens POD to EOF");
+
+    // A `=cut` that continues an expression stays code: perl parses `my $x = 1\n=cut`
+    // as an assignment continuation, not as a directive.
+    let continuation = "my $x = 1\n=cut\nrest";
+    let mut lexer = lexer_at_equals(continuation);
+    let at = lexer.position;
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, at, "no blank line or statement end keeps it code");
+}
+
+#[test]
+fn skip_whitespace_opens_generic_pod_only_with_context_and_later_cut() {
+    let opens = "1;\n\n=construct x\nbody\n=cut\nrest";
+    let mut lexer = lexer_at_equals(opens);
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, opens.len() - "rest".len());
+
+    let no_cut = "1;\n\n=construct x\nbody\nrest";
+    let mut lexer = lexer_at_equals(no_cut);
+    let at = lexer.position;
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, at, "no later =cut keeps it code");
+
+    let continuation = "my $x\n=construct x\n=cut\nrest";
+    let mut lexer = lexer_at_equals(continuation);
+    let at = lexer.position;
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, at, "no blank line or statement end keeps it code");
+}
+
+#[test]
+fn pod_after_blank_line_reads_only_the_immediately_previous_line() {
+    for (source, expected) in [
+        ("a\n\n=construct x\n=cut\n", true),
+        ("a\n\nb\n=construct x\n=cut\n", false),
+        ("a\r\n\r\n=construct x\r\n=cut\r\n", true),
+        ("a\r\n\r\nb\r\n=construct x\r\n=cut\r\n", false),
+        ("a\n \t\n=construct x\n=cut\n", true),
+        ("a\n b \n=construct x\n=cut\n", false),
+    ] {
+        let lexer = lexer_at_equals(source);
+        assert_eq!(lexer.pod_after_blank_line(), expected, "{source:?}");
+    }
 }
