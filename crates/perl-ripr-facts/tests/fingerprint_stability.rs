@@ -12,7 +12,7 @@ use perl_tdd_support::{must, must_with};
 const FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance";
 const STABILITY_BUILDS: usize = 20;
 
-const APP_PM: &str = "use strict;\nuse warnings;\n\npackage App;\n\nsub discount {\n    my ($amount) = @_;\n    if ($amount > 100) {\n        return $amount * 0.9;\n    }\n    return $amount;\n}\n\nsub risky {\n    eval { die \"boom\" };\n    return 1;\n}\n\n1;\n";
+const APP_PM: &str = "use strict;\nuse warnings;\n\npackage App;\n\nsub discount {\n    my ($amount) = @_;\n    if ($amount > 100) {\n        return $amount * 0.9;\n    }\n    return $amount;\n}\n\nsub risky {\n    eval \"die 'boom'\";\n    return 1;\n}\n\n1;\n";
 
 const APP_T: &str = "use strict;\nuse warnings;\nuse Test::More;\n\nuse App;\n\nis(App::discount(50), 50, 'no discount under threshold');\nok(App::risky(), 'risky returns true');\n\ndone_testing;\n";
 

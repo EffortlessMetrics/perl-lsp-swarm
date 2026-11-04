@@ -872,7 +872,11 @@ impl<'a> PerlLexer<'a> {
                     // where a statement is expected; after a term, `\n=shift;` is an
                     // assignment continuation. Pod::Weaver-style commands follow a blank
                     // line, so a blank line also counts as statement-start context.
-                    // `=cut` only ends an active POD block; a stray one never opens POD.
+                    // A line-initial `=cut` outside POD opens a POD block that runs to the
+                    // NEXT `=cut`, or to EOF when there is none. perl accepts a file whose
+                    // first POD directive is `=cut`, so the block that `=cut` opens must not
+                    // be dropped. It still needs statement-start context: a `=cut` that
+                    // continues an expression is code, not a directive.
                     let known = [
                         &b"=pod"[..],
                         b"=head",
@@ -886,21 +890,28 @@ impl<'a> PerlLexer<'a> {
                     ]
                     .iter()
                     .any(|c| remaining.starts_with(c));
+                    let cut_opens_pod = Self::is_cut_directive(remaining)
+                        && (self.pod_after_blank_line() || self.pod_after_statement_end());
                     let generic_pod = !known
-                        && !remaining.starts_with(b"=cut")
+                        && !Self::is_cut_directive(remaining)
                         && remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
                         && (self.pod_after_blank_line() || self.pod_after_statement_end())
                         && self.pod_has_later_cut();
-                    if known || generic_pod {
-                        // Scan forward for \n=cut (end of POD block)
-                        let search_start = self.position;
-                        let mut found_cut = false;
+                    if known || generic_pod || cut_opens_pod {
                         let bytes = self.input_bytes;
+                        // Scan forward for \n=cut (end of POD block). A `=cut` that OPENED
+                        // the block does not close it: the block runs to the NEXT `=cut`.
+                        let search_start = if cut_opens_pod {
+                            Self::line_start_after(bytes, self.position)
+                        } else {
+                            self.position
+                        };
+                        let mut found_cut = false;
                         let mut i = search_start;
                         while i < bytes.len() {
                             // Look for =cut at the start of a line
                             if (i == 0 || matches!(bytes[i - 1], b'\n' | b'\r'))
-                                && bytes[i..].starts_with(b"=cut")
+                                && Self::is_cut_directive(&bytes[i..])
                             {
                                 i += 4; // Skip "=cut"
                                 // Skip rest of the =cut line
@@ -4684,11 +4695,40 @@ impl<'a> PerlLexer<'a> {
 mod checkpoint_impl;
 
 #[cfg(test)]
+mod pod_cut_tests;
+#[cfg(test)]
 mod test_format_debug;
 #[cfg(test)]
 mod tests;
 
 impl PerlLexer<'_> {
+    /// True when `bytes` starts with a `=cut` POD directive.
+    ///
+    /// The directive word is `cut`, so the byte after it must not be able to continue
+    /// a word: `=cut` and `=cut;` are directives, while `=cutlery` is a different POD
+    /// command that neither opens nor closes a block.
+    fn is_cut_directive(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"=cut")
+            && bytes.get(4).is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_')
+    }
+
+    /// The offset just past the end of the line that contains `position`.
+    fn line_start_after(bytes: &[u8], position: usize) -> usize {
+        let mut index = position;
+        while index < bytes.len() && bytes[index] != b'\n' && bytes[index] != b'\r' {
+            index += 1;
+        }
+        if index < bytes.len() && bytes[index] == b'\r' {
+            index += 1;
+            if index < bytes.len() && bytes[index] == b'\n' {
+                index += 1;
+            }
+        } else if index < bytes.len() && bytes[index] == b'\n' {
+            index += 1;
+        }
+        index
+    }
+
     /// True at the start of input or when the previous physical line is blank
     /// (empty or whitespace-only).
     fn pod_after_blank_line(&self) -> bool {

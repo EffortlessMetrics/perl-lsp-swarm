@@ -28,6 +28,7 @@ on:
       - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
       - 'xtask/tests/shift_left_publication_contract.rs'
+      - 'xtask/tests/verify_live_ci_currentness_contract.rs'
       - 'policy/skill-provider-parity.toml'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
       - '.github/workflows/agent-flow-control-plane.yml'
@@ -55,6 +56,7 @@ on:
       - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
       - 'xtask/tests/shift_left_publication_contract.rs'
+      - 'xtask/tests/verify_live_ci_currentness_contract.rs'
       - 'policy/skill-provider-parity.toml'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
       - '.github/workflows/agent-flow-control-plane.yml'
@@ -107,3 +109,6 @@ jobs:
 
       - name: Check PR convergence contract
         run: cargo test -p xtask --test pr_convergence_contract --locked
+
+      - name: Check verify-live-ci currentness contract
+        run: cargo test -p xtask --test verify_live_ci_currentness_contract --locked

@@ -1513,6 +1513,7 @@ ci-policy:
     @python3 scripts/ci/test_validate_cargo_feature_roles.py
     @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
     @python3 scripts/ci/test_public_api_filter.py
+    @python3 scripts/ci/test_semver_pr_check.py
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
@@ -1976,12 +1977,14 @@ bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
 
-# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing)
+# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing,
+# #18427 rustc-probe fallback).
 bench-runner-test:
     @echo "🧪 Running benchmark runner harness tests..."
     @bash -n benchmarks/scripts/run-benchmarks.sh
     bash benchmarks/scripts/test_run_benchmarks_parse.sh
     bash benchmarks/scripts/test_run_benchmarks_failure.sh
+    bash benchmarks/scripts/test_run_benchmarks_rustc_probe.sh
 
 
 # Run all performance benchmarks and save baseline for 0.12.0
@@ -1992,7 +1995,7 @@ perf-baseline:
     cargo bench -p perl-lsp-completion --bench completion_benchmark --locked
     cargo bench -p perl-lsp-navigation --bench navigation_benchmark --locked
     cargo bench -p perl-workspace --features workspace --bench workspace_index_benchmark --locked
-    cargo bench -p perl-lsp-rs --bench rope_performance_benchmark --locked
+    cargo bench -p perl-lsp-rs --features benchmarks --bench rope_performance_benchmark --locked
     cargo bench -p perl-lsp-tooling --bench cache_benchmark --locked
     @echo "Baseline complete. See docs/project/PERFORMANCE_BASELINES.md"
 
@@ -2460,6 +2463,10 @@ _api-ratchet-crates:
 # Revisit the Arc rule because a matched delimiter may begin a nested Arc;
 # every replacement removes one relocated path, so the loop terminates.
 #
+# Fold the remaining rcs-module siblings from rust-lang/rust#163331 (#17121).
+# Baselines keep alloc::rc::Rc, alloc::sync::Weak, and alloc::rc::Weak; same
+# delimiter whitelist and loop shape as the Arc rule above.
+#
 # Usage: just _public-api-filter <raw-file> <filtered-file>
 [private]
 _public-api-filter raw out:
@@ -2484,6 +2491,15 @@ _public-api-filter raw out:
             -e ':arc_alias' \
             -e 's#(^|[ <([&,=?])alloc::rcs::arc::Arc(<|::|[][ >(),&;=?]|$)#\1alloc::sync::Arc\2#g' \
             -e 't arc_alias' \
+            -e ':rc_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::rc::Rc(<|::|[][ >(),&;=?]|$)#\1alloc::rc::Rc\2#g' \
+            -e 't rc_alias' \
+            -e ':arc_weak_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::arc::Weak(<|::|[][ >(),&;=?]|$)#\1alloc::sync::Weak\2#g' \
+            -e 't arc_weak_alias' \
+            -e ':rc_weak_alias' \
+            -e 's#(^|[ <([&,=?])alloc::rcs::rc::Weak(<|::|[][ >(),&;=?]|$)#\1alloc::rc::Weak\2#g' \
+            -e 't rc_weak_alias' \
         | awk -f scripts/ci/public_api_filter.awk \
         > "{{out}}" || true
 

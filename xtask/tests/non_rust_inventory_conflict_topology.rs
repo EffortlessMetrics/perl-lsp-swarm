@@ -43,7 +43,10 @@ fn run(command: &mut Command, label: &str) -> Result<Output> {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Output> {
-    run(Command::new("git").current_dir(repo).args(args), &format!("git {}", args.join(" ")))
+    run(
+        xtask::git_environment::isolate(Command::new("git")).current_dir(repo).args(args),
+        &format!("git {}", args.join(" ")),
+    )
 }
 
 fn extract_pre_commit_hook(source: &str) -> Result<&str> {
@@ -149,7 +152,7 @@ esac
         "independent candidates acquired the shared inventory write: candidate-a={a_paths:?}, candidate-b={b_paths:?}"
     );
 
-    let merge = Command::new("git")
+    let merge = xtask::git_environment::isolate(Command::new("git"))
         .current_dir(repo)
         .args(["merge-tree", "--write-tree", "candidate-a", "candidate-b"])
         .output()

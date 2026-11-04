@@ -188,7 +188,27 @@ impl WriterCompletion {
         // so `failed` must never be observable before the outcome it
         // promises. The `Release` store below and the snapshot's `Acquire`
         // load give that snapshot its happens-before edge.
-        *self.outcome.lock() = Some(outcome);
+        let mut slot = self.outcome.lock();
+        let store = match slot.as_ref() {
+            // First causal I/O failure is sticky (#8088 / #8402).
+            Some(existing) if existing.is_io_failure() => false,
+            // A settled normal close must not be rewritten by a duplicate
+            // terminal transition.
+            Some(_) if !outcome.is_io_failure() => false,
+            None => {
+                *slot = Some(outcome);
+                true
+            }
+            Some(_) => {
+                // A later sink I/O failure still dominates normal close.
+                *slot = Some(outcome);
+                true
+            }
+        };
+        if !store {
+            return;
+        }
+        drop(slot);
         if io_failure {
             self.failed.store(true, Ordering::Release);
             self.failure_notify.notify_waiters();
@@ -1349,6 +1369,32 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn writer_completion_rejects_duplicate_terminal_publish() {
+        let completion = Arc::new(WriterCompletion::default());
+        let first = WriterTerminalOutcome::WriteFailed {
+            kind: io::ErrorKind::ConnectionAborted,
+            queued: 2,
+            batch_messages: 1,
+            batch_bytes: 16,
+        };
+        completion.publish(first.clone());
+        completion.publish(WriterTerminalOutcome::NormalClose);
+        completion.publish(WriterTerminalOutcome::FlushFailed {
+            kind: io::ErrorKind::BrokenPipe,
+            queued: 0,
+            batch_messages: 1,
+            batch_bytes: 8,
+        });
+
+        let retained = completion.outcome.lock().clone();
+        assert_eq!(
+            retained,
+            Some(first),
+            "duplicate terminal publish must not overwrite the first causal I/O failure"
+        );
+    }
+
     /// #8402: a forced `write_all` failure must surface as the typed
     /// `WriteFailed` first cause with bounded context, never as the channel's
     /// `BrokenPipe`, and later producer observations (which only ever see the
@@ -1419,7 +1465,7 @@ pub(crate) mod tests {
         }));
         sender.send_notification("window/logMessage", json!({"failure": true}))?;
 
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(1), sender.response_failure_notified())
                 .await
@@ -1454,7 +1500,7 @@ pub(crate) mod tests {
             "an unsettled writer must snapshot as None (admission-path shape)"
         );
 
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(2), sender.response_failure_notified())
                 .await
@@ -1698,7 +1744,7 @@ pub(crate) mod tests {
 
         // The failure is sticky, so a waiter created after the failed send is
         // still woken. This is the ingress escape from a full response queue.
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_millis(100), sender.response_failure_notified())
                 .await
@@ -1720,7 +1766,7 @@ pub(crate) mod tests {
             return Err(format!("expected WouldBlock, got {error}").into());
         }
 
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         let timed_out = runtime.block_on(async {
             tokio::time::timeout(Duration::from_millis(25), sender.response_failure_notified())
                 .await
@@ -1785,14 +1831,18 @@ pub(crate) mod tests {
     /// Verify that OutboundSender also satisfies the OutboundSink trait,
     /// so production code and test code share the same interface (#5015 PR-2).
     #[test]
-    fn outbound_sender_satisfies_sink_trait() {
+    fn outbound_sender_satisfies_sink_trait() -> Result<(), Box<dyn Error>> {
         fn accept_sink(sink: &dyn OutboundSink) -> io::Result<()> {
             sink.send_notification("test/method", json!({}))
         }
 
-        let (sender, _handle) = spawn_writer(Box::new(std::io::sink()));
+        let (sender, handle) = spawn_writer(Box::new(std::io::sink()));
         // This compiles only if OutboundSender implements OutboundSink.
-        accept_sink(&sender).unwrap();
+        let send_result = accept_sink(&sender);
+        let _ = sender.close_and_wait(Duration::from_secs(1));
+        handle.join().map_err(|_| "writer thread panicked")?;
+        send_result?;
+        Ok(())
     }
 
     /// #8896 §3: the outbound seam refuses to emit frames whose method is
