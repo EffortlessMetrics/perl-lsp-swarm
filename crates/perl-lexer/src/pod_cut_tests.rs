@@ -208,6 +208,20 @@ fn peek_token_does_not_duplicate_the_stray_cut_record() -> TestResult {
 this is not valid perl @@@ ###
 ";
     let mut lexer = PerlLexer::new(source);
+    // Consume through the `;` first so the peek actually crosses the stray
+    // `=cut` — a peek over `use` alone would pass vacuously (#19051 review).
+    while let Some(token) = lexer.next_token() {
+        if token.text.to_string() == ";" {
+            break;
+        }
+    }
+    require(
+        lexer.stray_cut_opens().is_empty(),
+        format!(
+            "fixture invariant: the =cut has not been passed yet, got {:?}",
+            lexer.stray_cut_opens()
+        ),
+    );
     let _ = lexer.peek_token();
     require(
         lexer.stray_cut_opens().is_empty(),
