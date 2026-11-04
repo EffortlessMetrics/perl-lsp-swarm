@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Preserve a final bare carriage return in UTF-16 source positions so ranges ending at the end of a file include that character, while retaining CRLF handling.
+time: 2026-10-11T01:46:13Z
+custom:
+  PR: "17564"
+  Slug: terminal-bare-cr-utf16
+  Breaking: "no"

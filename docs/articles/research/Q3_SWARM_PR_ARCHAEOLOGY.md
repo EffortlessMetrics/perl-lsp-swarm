@@ -15,7 +15,7 @@ By late September 2025, the shape changes. The history becomes explicitly PR-hea
 
 ## 1. The Q3 Swarm Was Already Encoded In `agents4`
 
-The canonical Q3 swarm survives in [`.claude/agents4/`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/).
+The canonical Q3 swarm survives in [`.claude/agents4/`](../../reference/archive/agents-history/agents4/).
 
 The directory is split into three operational lanes:
 
@@ -25,9 +25,9 @@ The directory is split into three operational lanes:
 
 The top-level flow files make the sequencing explicit:
 
-- [`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
-- [`.claude/agents4/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/draft-to-pr.md)
-- [`.claude/agents4/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/pr-to-merge.md)
+- [`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
+- [`.claude/agents4/draft-to-pr.md`](../../reference/archive/agents-history/agents4/draft-to-pr.md)
+- [`.claude/agents4/pr-to-merge.md`](../../reference/archive/agents-history/agents4/pr-to-merge.md)
 
 That is the key historical clue. The Q3 swarm was not just "more agents." It was a three-phase PR pipeline:
 
@@ -132,10 +132,10 @@ That is why Q3 is the canonical swarm era in this repository's archaeology.
 
 Files:
 
-- [`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
-- [`.claude/agents4/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/draft-to-pr.md)
-- [`.claude/agents4/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/pr-to-merge.md)
-- [`.claude/agents4/`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/)
+- [`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
+- [`.claude/agents4/draft-to-pr.md`](../../reference/archive/agents-history/agents4/draft-to-pr.md)
+- [`.claude/agents4/pr-to-merge.md`](../../reference/archive/agents-history/agents4/pr-to-merge.md)
+- [`.claude/agents4/`](../../reference/archive/agents-history/agents4/)
 
 Historical markers:
 

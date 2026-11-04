@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(value["engine"], "native");
         assert_eq!(value["profile"], "strict");
         assert_eq!(value["files_checked"], 1);
-        assert_eq!(value["rules_run"], 28);
+        assert_eq!(value["rules_run"], 31);
         assert_eq!(value["findings_count"], 1);
         assert_eq!(value["fixable_findings_count"], 1);
         assert_eq!(value["findings_by_rule"]["native.variables.unused_lexical"], 1);
@@ -451,7 +451,7 @@ mod tests {
         let value: Value = serde_json::from_str(&fs::read_to_string(receipt)?)?;
         assert_eq!(value["files_checked"], 12);
         assert_eq!(value["files_with_parse_errors"], 0);
-        assert_eq!(value["rules_run"], 28);
+        assert_eq!(value["rules_run"], 31);
         assert_eq!(value["findings_count"], 0);
         assert_eq!(value["suppressed_findings_count"], 0);
         assert_eq!(value["fixable_findings_count"], 0);

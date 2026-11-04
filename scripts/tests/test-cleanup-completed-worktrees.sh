@@ -16,6 +16,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The suite is hermetic: an inherited GIT_DIR, GIT_WORK_TREE, or GIT_INDEX_FILE
+# would point every real-git fixture command — and the script under test — at a
+# caller's repository instead of the disposable fixture. Drop them up front so
+# fixture creation, the negative-control prune, and both sweep invocations
+# select repositories by path alone.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 pass() {
   printf 'PASS %s\n' "$1"
   PASS=$((PASS + 1))
@@ -537,13 +544,126 @@ test_squash_merged_branch_without_remote_is_removed() {
   local case_dir output
   case_dir="$(new_case squash-merged)"
   write_worktree_list "$case_dir" "feature/squash-merged"
-  printf '[{"number":99}]\n' > "${case_dir}/merged-pr"
+  printf '[{"number":99,"headRefOid":"abc123"}]\n' > "${case_dir}/merged-pr"
 
   output="$(run_cleanup_dry_run "$case_dir")"
 
   assert_contains "squash-merged branch is marked landed" "$output" "landed"
   assert_contains "squash-merged branch action is REMOVE" "$output" "REMOVE"
   assert_no_destructive_commands "dry-run does not remove squash-merged worktrees" "$case_dir"
+}
+
+# Regression test for #17404: `landed` matches by branch NAME, so a reused or
+# locally-advanced branch can match a stale merged PR while HEAD still carries
+# commits that exist nowhere else. Unpushed commits must veto removal before
+# the landed verdict is acted on.
+test_reused_branch_name_with_unpushed_commits_keeps_tree() {
+  local case_dir output worktree_path
+  case_dir="$(new_case reused-unpushed)"
+  write_worktree_list "$case_dir" "fix/reused"
+  worktree_path="${case_dir}/repo/.claude/worktrees/fix-reused"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "reused branch name with unpushed commits reports unpushed count" "$output" "unpushed:2"
+  assert_contains "reused branch name with unpushed commits is kept" "$output" "KEEP"
+  assert_not_contains "reused branch name with unpushed commits is not judged landed" "$output" "landed"
+  assert_no_destructive_commands "reused branch dry-run removes nothing" "$case_dir"
+  if [[ -d "$worktree_path" ]]; then
+    pass "reused branch worktree directory still exists"
+  else
+    fail "reused branch worktree directory still exists"
+  fi
+
+  # The mutating sweep must veto removal the same way: no worktree remove and
+  # no branch deletion may even be attempted.
+  case_dir="$(new_case reused-unpushed-real)"
+  write_worktree_list "$case_dir" "fix/reused"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_contains "mutating sweep keeps the reused branch with unpushed commits" "$output" "unpushed:2"
+  assert_contains "mutating sweep keeps the reused branch action KEEP" "$output" "KEEP"
+  assert_no_destructive_commands "mutating sweep attempts no removal for unpushed commits" "$case_dir"
+  assert_not_contains "mutating sweep issues no worktree remove" \
+    "$(cat "${case_dir}/git.log")" "worktree remove"
+}
+
+# A merged-PR name match without a tip match proves nothing: the branch name
+# may be reused while HEAD carries new commits, and with no remote-tracking
+# ref there is no ahead count to veto with. The verdict must be KEEP, never
+# landed REMOVE.
+test_stale_pr_name_without_tip_match_keeps_tree() {
+  local case_dir output worktree_path
+  case_dir="$(new_case stale-tip-no-remote)"
+  write_worktree_list "$case_dir" "fix/reused"
+  worktree_path="${case_dir}/repo/.claude/worktrees/fix-reused"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_not_contains "stale tip without remote is not judged landed" "$output" "landed"
+  assert_contains "stale tip without remote is kept" "$output" "KEEP"
+  assert_no_destructive_commands "stale-tip dry-run removes nothing" "$case_dir"
+  if [[ -d "$worktree_path" ]]; then
+    pass "stale-tip worktree directory still exists"
+  else
+    fail "stale-tip worktree directory still exists"
+  fi
+
+  case_dir="$(new_case stale-tip-no-remote-real)"
+  write_worktree_list "$case_dir" "fix/reused"
+  printf '[{"number":42,"headRefOid":"stale-tip-not-abc123"}]\n' > "${case_dir}/merged-pr"
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_not_contains "mutating sweep does not judge a stale tip landed" "$output" "landed"
+  assert_contains "mutating sweep keeps the stale-tip branch" "$output" "KEEP"
+  assert_no_destructive_commands "mutating sweep attempts no removal for a stale tip" "$case_dir"
+  assert_not_contains "mutating sweep issues no worktree remove for a stale tip" \
+    "$(cat "${case_dir}/git.log")" "worktree remove"
+}
+
+# Proven ancestry in the base settles the worktree even when the feature ref
+# is stale: the ahead count must not veto proof that HEAD is already in the
+# base.
+test_ancestry_with_stale_feature_ref_still_removes() {
+  local case_dir output
+  case_dir="$(new_case ancestry-stale-ref)"
+  write_worktree_list "$case_dir" "feature/stale-ref"
+  printf 'abc123\n' > "${case_dir}/merged-heads"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf '2\n' > "${case_dir}/ahead-count"
+
+  output="$(run_cleanup_dry_run "$case_dir")"
+
+  assert_contains "ancestry-proven branch is marked landed despite stale ref" "$output" "landed"
+  assert_contains "ancestry-proven branch action is REMOVE" "$output" "REMOVE"
+  assert_not_contains "stale ref does not misreport unpushed" "$output" "unpushed"
+  assert_no_destructive_commands "dry-run does not remove ancestry-proven worktrees" "$case_dir"
+}
+
+# rev-list is purely local, so a failed fetch must not zero the ahead count:
+# last-known unpushed commits still veto removal.
+test_fetch_failure_with_ahead_count_keeps_tree() {
+  local case_dir output
+  case_dir="$(new_case fetch-fail-ahead)"
+  write_worktree_list "$case_dir" "feature/fetch-fail-ahead"
+  printf '1\n' > "${case_dir}/remote-branch"
+  printf 'fetch-fail\n' > "${case_dir}/fetch-fail"
+  printf '3\n' > "${case_dir}/ahead-count"
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_contains "fetch failure with ahead count reports unpushed" "$output" "unpushed:3"
+  assert_contains "fetch failure with ahead count action is KEEP" "$output" "KEEP"
+  assert_no_destructive_commands "fetch failure with ahead count removes nothing" "$case_dir"
 }
 
 # The NOT_PROVEN downgrade guards a fetch that was attempted and failed, leaving
@@ -760,7 +880,9 @@ test_real_repository_dry_run_writes_nothing() {
     mkdir -p sub
     printf 'content\n' > sub/file.txt
     git add .
-    git commit -qm init
+    # Disposable commit: host hooks and signing configuration must not be able
+    # to fail fixture setup.
+    git -c commit.gpgsign=false commit --no-verify -qm init
     git worktree add -q ../wt-live -b live
     # A past mtime, not `touch`: a just-touched file is "racily clean" and git
     # deliberately declines to cache its stat data, so the write never fires and
@@ -772,7 +894,12 @@ test_real_repository_dry_run_writes_nothing() {
   }
 
   before="$(real_git_snapshot "${root}/repo")"
-  ( cd "${root}/repo" && CLEANUP_BASE_BRANCH=main bash "$IMPL" --dry-run ) >/dev/null 2>&1 || true
+  local output
+  if ! output="$( cd "${root}/repo" && CLEANUP_BASE_BRANCH=main bash "$IMPL" --dry-run 2>&1 )"; then
+    fail "$label (script failed)"
+    printf '%s\n' "$output"
+    return 0
+  fi
   after="$(real_git_snapshot "${root}/repo")"
 
   if [[ "$before" == "$after" ]]; then
@@ -780,6 +907,125 @@ test_real_repository_dry_run_writes_nothing() {
   else
     fail "$label"
     diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true
+  fi
+}
+
+# A missing checkout can still exist at a path this OS cannot resolve. Use real
+# Git administrative records: the old unconditional prune erased such records
+# before the script could report them. Both fixtures are disposable. The
+# optional second argument shortens gc.worktreePruneExpire; only the negative
+# control passes it (see test_unreachable_real_registration_survives_both_modes).
+new_unreachable_real_worktree() {
+  local root="$1" prune_expire="${2:-}"
+  mkdir -p "$root" || return 1
+  git init -q -b main "${root}/repo" || return 1
+  git init -q --bare "${root}/origin.git" || return 1
+  git -C "${root}/repo" config user.email cleanup-test@example.invalid || return 1
+  git -C "${root}/repo" config user.name "cleanup test" || return 1
+  # The real-mode sweep fetches, and that fetch can trigger Git auto-maintenance
+  # whose worktree prune honors gc.worktreePruneExpire (fetch.autoGc=false does
+  # not suppress it). Pin maintenance off so the verdict depends on the script
+  # under test, not on the host's inherited gc or maintenance configuration.
+  git -C "${root}/repo" config maintenance.auto false || return 1
+  if [[ -n "$prune_expire" ]]; then
+    # Only the negative control shortens the prune expiry: its bare
+    # `git worktree prune` must remove a fresh registration to mirror the
+    # pre-fix primitive. In the retention fixture this config would let the
+    # sweep's own fetch-driven auto-maintenance erase the registration before
+    # the sweep lists it (observed on Git for Windows).
+    git -C "${root}/repo" config gc.worktreePruneExpire "$prune_expire" || return 1
+  fi
+  printf 'preserved\n' > "${root}/repo/file.txt" || return 1
+  git -C "${root}/repo" add file.txt || return 1
+  # Disposable commit and push: host hooks and signing configuration (e.g.
+  # commit.gpgSign=true with no noninteractive signer) must not be able to fail
+  # fixture setup.
+  git -C "${root}/repo" -c commit.gpgsign=false commit --no-verify -qm init || return 1
+  git -C "${root}/repo" remote add origin "${root}/origin.git" || return 1
+  git -C "${root}/repo" push -q --no-verify -u origin main || return 1
+  git -C "${root}/repo" worktree add -q "${root}/wt-live" -b fixture || return 1
+  mv "${root}/wt-live" "${root}/wt-preserved" || return 1
+}
+
+real_worktree_registered() {
+  local repo="$1"
+  git --no-optional-locks -C "$repo" worktree list --porcelain |
+    grep -qF 'branch refs/heads/fixture'
+}
+
+# Match the literal porcelain attribute, not its explanation: Git marks the
+# explanation for translation (worktree.c), so matching the English text would
+# fail the fixture check on a translated locale.
+real_worktree_prunable() {
+  git --no-optional-locks -C "$1" worktree list --porcelain |
+    grep -qE '^prunable([[:space:]]|$)'
+}
+
+real_worktree_admin_snapshot() {
+  find "$1/.git/worktrees" -type f -exec sha256sum {} \; | sort
+}
+
+test_unreachable_real_registration_survives_both_modes() {
+  local root="${TMPDIR_BASE}/unreachable-real" old="${TMPDIR_BASE}/prune-control"
+  local output before after admin_before source_before
+  if ! new_unreachable_real_worktree "$root" ||
+     ! new_unreachable_real_worktree "$old" now; then
+    fail "disposable unreachable-worktree fixtures initialize"
+    return 0
+  fi
+  if real_worktree_registered "${root}/repo" &&
+     real_worktree_registered "${old}/repo" &&
+     real_worktree_prunable "${root}/repo" &&
+     real_worktree_prunable "${old}/repo" &&
+     [[ -f "${root}/wt-preserved/file.txt" ]]; then
+    pass "unreachable fixture starts registered with source preserved"
+  else
+    fail "unreachable fixture starts registered with source preserved"
+    return 0
+  fi
+
+  # Negative control: the pre-fix primitive really loses the administrative
+  # entry in this fixture. The fixture's prune-expiry config makes this the
+  # same bare command used by the unsafe older checkout's --dry-run.
+  git -C "${old}/repo" worktree prune
+  if ! real_worktree_registered "${old}/repo" &&
+     [[ -f "${old}/wt-preserved/file.txt" ]]; then
+    pass "old global prune loses registration while source survives"
+  else
+    fail "old global prune loses registration while source survives"
+  fi
+
+  before="$(real_git_snapshot "${root}/repo")"
+  source_before="$(sha256sum "${root}/wt-preserved/file.txt")"
+  if output="$(cd "${root}/repo" && bash "$IMPL" --dry-run 2>&1)"; then
+    pass "real unreachable dry run exits successfully"
+  else
+    fail "real unreachable dry run exits successfully"
+    printf '%s\n' "$output"
+  fi
+  assert_contains "real unreachable dry run reports review" "$output" "REVIEW"
+  after="$(real_git_snapshot "${root}/repo")"
+  if [[ "$before" == "$after" ]] && real_worktree_registered "${root}/repo" &&
+     [[ "$source_before" == "$(sha256sum "${root}/wt-preserved/file.txt")" ]]; then
+    pass "real unreachable dry run retains byte-identical registration and source"
+  else
+    fail "real unreachable dry run retains byte-identical registration and source"
+  fi
+
+  admin_before="$(real_worktree_admin_snapshot "${root}/repo")"
+  if output="$(cd "${root}/repo" && bash "$IMPL" 2>&1)"; then
+    pass "real unreachable cleanup exits successfully"
+  else
+    fail "real unreachable cleanup exits successfully"
+    printf '%s\n' "$output"
+  fi
+  assert_contains "real unreachable cleanup reports review" "$output" "REVIEW"
+  if real_worktree_registered "${root}/repo" &&
+     [[ "$admin_before" == "$(real_worktree_admin_snapshot "${root}/repo")" ]] &&
+     [[ "$source_before" == "$(sha256sum "${root}/wt-preserved/file.txt")" ]]; then
+    pass "real unreachable cleanup keeps registration and source byte-identical"
+  else
+    fail "real unreachable cleanup keeps registration and source byte-identical"
   fi
 }
 
@@ -821,6 +1067,10 @@ test_branch_without_remote_is_kept
 test_managed_owner_keeps_pushed_worktree
 test_json_escapes_special_characters
 test_squash_merged_branch_without_remote_is_removed
+test_reused_branch_name_with_unpushed_commits_keeps_tree
+test_stale_pr_name_without_tip_match_keeps_tree
+test_ancestry_with_stale_feature_ref_still_removes
+test_fetch_failure_with_ahead_count_keeps_tree
 test_fetch_failure_keeps_ambiguous_remote_branch
 test_dry_run_performs_no_mutating_git_commands
 test_real_run_fetches_without_global_prune
@@ -832,6 +1082,7 @@ test_dry_run_message_claims_only_what_it_proves
 test_successful_sweeps_exit_zero
 test_json_projection_carries_the_inspection_axes
 test_real_repository_dry_run_writes_nothing
+test_unreachable_real_registration_survives_both_modes
 
 TOTAL=$((PASS + FAIL))
 echo ""

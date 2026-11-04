@@ -45,14 +45,14 @@ preserved operating surface from the period itself.
 
 `agents4` does not treat the swarm as one flat loop.
 
-[`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
+[`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
 defines Generative as the first phase, explicitly feeding Review.
 
-[`.claude/agents4/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/draft-to-pr.md)
+[`.claude/agents4/draft-to-pr.md`](../../reference/archive/agents-history/agents4/draft-to-pr.md)
 defines Review as inheriting Generative baselines and promoting work toward
 Integrative.
 
-[`.claude/agents4/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/pr-to-merge.md)
+[`.claude/agents4/pr-to-merge.md`](../../reference/archive/agents-history/agents4/pr-to-merge.md)
 defines Integrative as the final production-readiness layer before merge.
 
 The three phases are not rhetorical. They change what counts as proof:
@@ -104,7 +104,7 @@ Its commands and evidence formats are tailored to this repo:
 
 The generative customizer makes the intent even clearer:
 
-[`.claude/agents4/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/agent-customizer-generative.md)
+[`.claude/agents4/agent-customizer-generative.md`](../../reference/archive/agents-history/agents4/agent-customizer-generative.md)
 targets Perl LSP's GitHub-native Issue to PR Ledger workflow and parser
 validation patterns, not a generic software project.
 
@@ -184,9 +184,9 @@ just a historical curiosity.
 
 ## Evidence Pointers
 
-- [`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
-- [`.claude/agents4/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/draft-to-pr.md)
-- [`.claude/agents4/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/pr-to-merge.md)
-- [`.claude/agents4/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/agent-customizer-generative.md)
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
+- [`.claude/agents4/draft-to-pr.md`](../../reference/archive/agents-history/agents4/draft-to-pr.md)
+- [`.claude/agents4/pr-to-merge.md`](../../reference/archive/agents-history/agents4/pr-to-merge.md)
+- [`.claude/agents4/agent-customizer-generative.md`](../../reference/archive/agents-history/agents4/agent-customizer-generative.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
 - commit `104bdc17e`

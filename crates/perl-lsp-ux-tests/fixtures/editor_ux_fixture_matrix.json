@@ -24,7 +24,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -75,7 +75,7 @@
       "ci_tier": "pr",
       "component": "infra",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -125,7 +125,7 @@
       "ci_tier": "pr",
       "component": "infra",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -255,7 +255,7 @@
       "ci_tier": "pr",
       "component": "goto_definition",
       "instrumentation": {
-        "run_receipt": true,
+        "run_receipt": false,
         "first_useful_result": true,
         "protocol_goldens": true
       },
@@ -522,7 +522,7 @@
       "ci_tier": "pr",
       "component": "workspace_symbols",
       "instrumentation": {
-        "run_receipt": true,
+        "run_receipt": false,
         "first_useful_result": true,
         "protocol_goldens": false
       },
@@ -551,7 +551,7 @@
       "ci_tier": "pr",
       "component": "code_lens",
       "instrumentation": {
-        "run_receipt": true,
+        "run_receipt": false,
         "first_useful_result": true,
         "protocol_goldens": false
       },
@@ -579,7 +579,7 @@
       "ci_tier": "pr",
       "component": "hover",
       "instrumentation": {
-        "run_receipt": true,
+        "run_receipt": false,
         "first_useful_result": true,
         "protocol_goldens": false
       },
@@ -765,6 +765,8 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
+        "run_receipt": false,
+        "first_useful_result": true,
         "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": true
@@ -1678,7 +1680,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": true,
+        "run_receipt": false,
         "first_useful_result": true,
         "protocol_goldens": false
       },
@@ -1790,7 +1792,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1819,7 +1821,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1848,7 +1850,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1876,7 +1878,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1931,7 +1933,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1960,7 +1962,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -1988,7 +1990,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -2016,7 +2018,7 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -2131,7 +2133,7 @@
       "ci_tier": "pr",
       "component": "goto_definition",
       "instrumentation": {
-        "run_receipt": true,
+        "run_receipt": false,
         "first_useful_result": true,
         "protocol_goldens": false
       },

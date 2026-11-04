@@ -314,5 +314,49 @@ class CliFailClosedTests(unittest.TestCase):
             self.assertEqual(strict.returncode, 0, strict.stderr)
 
 
+class CategorizeBenchmarkTests(unittest.TestCase):
+    """Pin categorize_benchmark's join-critical branches (#17380 review).
+
+    A miscategorized benchmark silently falls into the baseline-less
+    "other" bucket (or the wrong category), so its row reports MISSING
+    and regressions never reach alerts. Each branch below once dropped a
+    compared benchmark.
+    """
+
+    def test_document_insertions_siblings_both_join_lsp(self) -> None:
+        self.assertEqual(
+            extract_criterion.categorize_benchmark(
+                "document_insertions", "rope_insertion"
+            ),
+            "lsp",
+        )
+        self.assertEqual(
+            extract_criterion.categorize_benchmark(
+                "document_insertions", "string_insertion"
+            ),
+            "lsp",
+        )
+
+    def test_rope_name_match_still_joins_lsp_outside_group(self) -> None:
+        self.assertEqual(
+            extract_criterion.categorize_benchmark("other", "rope_insertion"),
+            "lsp",
+        )
+
+    def test_direct_scope_analysis_stays_parser(self) -> None:
+        self.assertEqual(
+            extract_criterion.categorize_benchmark("other", "scope_analysis"),
+            "parser",
+        )
+
+    def test_scope_siblings_stay_scope(self) -> None:
+        for name in ("scope_analysis_many_vars", "scope_analysis_strict_barewords"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    extract_criterion.categorize_benchmark("scope_benchmark", name),
+                    "scope",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

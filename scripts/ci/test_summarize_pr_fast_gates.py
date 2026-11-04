@@ -16,6 +16,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -125,6 +127,63 @@ class ReceiptProblemTests(unittest.TestCase):
 
         self.assertEqual(annotations_of(output), [])
         self.assertIn("::warning title=pr-fast receipt::receipt unreadable", output)
+
+    def test_malformed_receipts_warn_through_the_workflow_cli(self) -> None:
+        cases = {
+            "invalid UTF-8": (b"\xff", "utf-8"),
+            "array envelope": (b"[]", "receipt must be a JSON object"),
+            "null envelope": (b"null", "receipt must be a JSON object"),
+            "missing gates": (b"{}", "gates must be an array"),
+            "null gates": (b'{"gates":null}', "gates must be an array"),
+            "object gates": (b'{"gates":{}}', "gates must be an array"),
+            "string gates": (b'{"gates":""}', "gates must be an array"),
+            "non-object row": (b'{"gates":[7]}', "gates[0] must be a JSON object"),
+            "surrogate gate name": (
+                b'{"gates":[{"gate_name":"\\ud800","status":"fail","exit_code":1}]}',
+                "gates[0].gate_name must contain valid UTF-8",
+            ),
+            "non-object later row": (
+                b'{"gates":[{"gate_name":"fmt","status":"pass","exit_code":0},null]}',
+                "gates[1] must be a JSON object",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "receipt.json"
+            for label, (payload, cause) in cases.items():
+                with self.subTest(label=label):
+                    summary = Path(directory) / f"{label}.md"
+                    self.assertFalse(summary.exists())
+                    receipt.write_bytes(payload)
+                    # Match the workflow entry point, including its summary env var.
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(SCRIPT), "--receipt", str(receipt)],
+                        env={**os.environ, "GITHUB_STEP_SUMMARY": str(summary)},
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertIn(
+                        "::warning title=pr-fast receipt::receipt unreadable",
+                        result.stdout,
+                    )
+                    self.assertIn(cause, result.stdout)
+                    self.assertTrue(summary.is_file(), f"{label}: summary was not created")
+                    written = summary.read_text(encoding="utf-8")
+                    self.assertIn(cause, written)
+                    self.assertNotIn("Non-success gates: none recorded.", written)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertEqual([], annotations_of(result.stdout))
+
+    def test_valid_empty_gates_remain_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = write_receipt(directory, [])
+            rendered, failing, problem = summarizer.summarize(receipt)
+
+        self.assertIsNone(problem)
+        self.assertEqual([], failing)
+        self.assertIn("Non-success gates: none recorded.", rendered)
 
 
 class EscapingTests(unittest.TestCase):
@@ -287,6 +346,35 @@ class AnnotationCapTests(unittest.TestCase):
 
 
 class SummaryFileTests(unittest.TestCase):
+    def test_workflow_cli_preserves_failure_timeout_and_skip_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = write_receipt(directory, [
+                {"gate_name": "failed", "status": "fail", "exit_code": 37},
+                {"gate_name": "slow", "status": "timeout", "exit_code": 124},
+                {"gate_name": "unrun", "status": "skip", "exit_code": None},
+            ])
+            summary = Path(directory) / "summary.md"
+            result = subprocess.run(
+                [sys.executable, "-B", str(SCRIPT), "--receipt", str(receipt)],
+                env={**os.environ, "GITHUB_STEP_SUMMARY": str(summary)},
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            written = summary.read_text(encoding="utf-8")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("| `failed` | `fail` | `37` |", written)
+        self.assertIn("| `slow` | `timeout` | `124` |", written)
+        self.assertIn("| `unrun` | `skip` | `None` |", written)
+        published = annotations_of(result.stdout)
+        self.assertEqual(2, len(published))
+        self.assertIn("status fail, exit 37", published[0])
+        self.assertIn("status timeout, exit 124", published[1])
+        self.assertNotIn("unrun", "\n".join(published))
+        self.assertNotIn("::warning ", result.stdout)
+
     def test_main_writes_the_summary_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             receipt = write_receipt(
