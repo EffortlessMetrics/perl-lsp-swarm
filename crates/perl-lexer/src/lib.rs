@@ -205,7 +205,7 @@ pub use checkpoint::{
 };
 pub use config::LexerConfig;
 pub use error::{LexerError, Result};
-pub use lexer::PerlLexer;
+pub use lexer::{PerlLexer, StrayCutOpen};
 pub use limits::MAX_REGEX_PARSE_STEPS;
 pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
@@ -694,6 +694,10 @@ impl<'a> PerlLexer<'a> {
         let saved_line_start_offset = self.line_start_offset;
         let saved_current_quote_op = self.current_quote_op.clone();
         let saved_eof_emitted = self.eof_emitted;
+        // The peeked `next_token` may cross a stray `=cut` and record it; the
+        // consuming `next_token` must be the one that reports it, so rewind
+        // the record with the rest of the state (#19051 review).
+        let saved_stray_cut_len = self.stray_cut_opens.len();
 
         let token = self.next_token();
 
@@ -716,6 +720,7 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = saved_line_start_offset;
         self.current_quote_op = saved_current_quote_op;
         self.eof_emitted = saved_eof_emitted;
+        self.stray_cut_opens.truncate(saved_stray_cut_len);
 
         token
     }
@@ -733,6 +738,18 @@ impl<'a> PerlLexer<'a> {
             tokens.push(token);
         }
         tokens
+    }
+
+    /// The stray `=cut` directives this lexer has passed so far, in source
+    /// order (#18771).
+    ///
+    /// A stray `=cut` is a line-initial `=cut` that opened a POD block because
+    /// no POD was already open. The block itself is skipped silently — no
+    /// `Pod` token marks it — so this record is the only way to learn which
+    /// text the lexer treated as documentation instead of code. Complete once
+    /// the lexer has been driven to EOF.
+    pub fn stray_cut_opens(&self) -> &[StrayCutOpen] {
+        &self.stray_cut_opens
     }
 
     /// Reset the lexer to the beginning of the input.
@@ -759,6 +776,9 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = 0;
         self.current_quote_op = None;
         self.eof_emitted = false;
+        // Re-lexing the same source must not append a second copy of the
+        // record (#19051 review).
+        self.stray_cut_opens.clear();
     }
 
     /// Switch the lexer into format-body parsing mode.
@@ -899,6 +919,12 @@ impl<'a> PerlLexer<'a> {
                         && self.pod_has_later_cut();
                     if known || generic_pod || cut_opens_pod {
                         let bytes = self.input_bytes;
+                        // Record the amputation decision before the scan moves the
+                        // cursor (#18771): a stray `=cut` (one that opened POD with
+                        // no POD already open) silently removes the following text
+                        // from every downstream model, so the offset is the only
+                        // durable witness a diagnostic can point at.
+                        let stray_cut_offset = cut_opens_pod.then_some(self.position);
                         // Scan forward for \n=cut (end of POD block). A `=cut` that OPENED
                         // the block does not close it: the block runs to the NEXT `=cut`.
                         let search_start = if cut_opens_pod {
@@ -936,6 +962,10 @@ impl<'a> PerlLexer<'a> {
                         if !found_cut {
                             // POD extends to end of file
                             self.position = bytes.len();
+                        }
+                        if let Some(cut_offset) = stray_cut_offset {
+                            self.stray_cut_opens
+                                .push(StrayCutOpen { cut_offset, runs_to_eof: !found_cut });
                         }
                         continue;
                     }

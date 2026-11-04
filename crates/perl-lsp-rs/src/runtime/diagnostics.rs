@@ -7546,4 +7546,136 @@ unambiguous_builtin_alias_code("native.testing.require_use_strict")
         assert_eq!(markup_diag["range"], string_diag["range"]);
         assert_eq!(markup_diag["code"], "native.testing.require_use_strict");
     }
+
+    // ── #18771 end-to-end: undefined methods and stray =cut reach the wire ──
+
+    /// The Fixer-persona repro, over the real push path: a typo'd method call
+    /// on a constructor-inferred receiver publishes exactly one PL306, the
+    /// correctly-spelled sibling publishes none, and the stray-`=cut` file
+    /// publishes PL412 on the `=cut` line.
+    #[test]
+    fn issue_18771_fixer_fixtures_reach_the_push_path() -> Result<(), Box<dyn std::error::Error>> {
+        let typo_source = r#"package Inventory;
+sub new { bless {}, shift }
+sub find_sku { my ($self, $sku) = @_; return $sku; }
+sub demo {
+    my $inv = Inventory->new;
+    $inv->find_skku('GIZMO-B');
+}
+"#;
+        let control_source = typo_source.replace("find_skku", "find_sku");
+        let stray_cut_source = "use strict;
+sub before { 1 };
+=cut
+sub after { 2 }
+";
+
+        let (typo_server, typo_buf) = make_server_with_capture();
+        let typo_uri = "file:///issue_18771_typo.pl";
+        typo_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": typo_uri, "languageId": "perl", "version": 1, "text": typo_source}
+        })))?;
+        typo_server.publish_diagnostics(typo_uri);
+        drop(typo_server);
+        let typo_text = String::from_utf8(typo_buf.lock().clone())?;
+        let typo_frame = latest_published_diagnostics(&typo_text, typo_uri)
+            .ok_or("typo fixture must publish diagnostics")?;
+        let typo_items = serde_json::from_str::<Value>(typo_frame)?["params"]["diagnostics"]
+            .as_array()
+            .ok_or("typo frame must carry a diagnostics array")?
+            .clone();
+        let pl306_items: Vec<&Value> =
+            typo_items.iter().filter(|item| item["code"].as_str() == Some("PL306")).collect();
+        assert_eq!(
+            pl306_items.len(),
+            1,
+            "the typo must publish exactly one PL306; got {typo_items:?}"
+        );
+        assert_eq!(pl306_items[0]["severity"], 2, "PL306 must publish as Warning (2)");
+        assert!(
+            pl306_items[0]["message"].as_str().is_some_and(|m| m.contains("find_skku")),
+            "the warning must name the typo: {}",
+            pl306_items[0]["message"]
+        );
+
+        let (control_server, control_buf) = make_server_with_capture();
+        let control_uri = "file:///issue_18771_control.pl";
+        control_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": control_uri, "languageId": "perl", "version": 1, "text": control_source}
+        })))?;
+        control_server.publish_diagnostics(control_uri);
+        drop(control_server);
+        let control_text = String::from_utf8(control_buf.lock().clone())?;
+        let control_frame = latest_published_diagnostics(&control_text, control_uri)
+            .ok_or("control fixture must publish diagnostics")?;
+        assert!(
+            !control_frame.contains("PL306"),
+            "the correctly-spelled call must not publish PL306: {control_frame}"
+        );
+
+        let (cut_server, cut_buf) = make_server_with_capture();
+        let cut_uri = "file:///issue_18771_stray_cut.pl";
+        cut_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": cut_uri, "languageId": "perl", "version": 1, "text": stray_cut_source}
+        })))?;
+        cut_server.publish_diagnostics(cut_uri);
+        drop(cut_server);
+        let cut_text = String::from_utf8(cut_buf.lock().clone())?;
+        let cut_frame = latest_published_diagnostics(&cut_text, cut_uri)
+            .ok_or("stray-cut fixture must publish diagnostics")?;
+        let cut_items = serde_json::from_str::<Value>(cut_frame)?["params"]["diagnostics"]
+            .as_array()
+            .ok_or("cut frame must carry a diagnostics array")?
+            .clone();
+        let pl412_items: Vec<&Value> =
+            cut_items.iter().filter(|item| item["code"].as_str() == Some("PL412")).collect();
+        assert_eq!(
+            pl412_items.len(),
+            1,
+            "the lone =cut must publish exactly one PL412; got {cut_items:?}"
+        );
+        // The stray `=cut` is on line 3 (1-based); the published range start
+        // character must fall on that line.
+        let cut_line =
+            pl412_items[0]["range"]["start"]["line"].as_u64().ok_or("PL412 must carry a line")?;
+        assert_eq!(cut_line, 2, "PL412 must land on the =cut line (0-based): {pl412_items:?}");
+        Ok(())
+    }
+
+    /// SyntaxOnly mode (latency-harness path) must stay lint-free: no PL306
+    /// and no PL412 may appear even for the #18771 fixtures.
+    #[test]
+    fn issue_18771_lints_stay_out_of_syntax_only_mode() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let (server, buf) = make_server_with_capture_and_tuning(tuning);
+        let typo_uri = "file:///issue_18771_syntax_only_typo.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": typo_uri, "languageId": "perl", "version": 1,
+                "text": "package Inventory;
+sub new { bless {}, shift }
+sub find_sku { }
+sub demo { my $inv = Inventory->new; $inv->find_skku('x'); }
+"}
+        })))?;
+        let cut_uri = "file:///issue_18771_syntax_only_cut.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": cut_uri, "languageId": "perl", "version": 1,
+                "text": "use strict;
+sub before { 1 };
+=cut
+sub after { 2 }
+"}
+        })))?;
+        server.publish_diagnostics(typo_uri);
+        server.publish_diagnostics(cut_uri);
+        drop(server);
+        let text = String::from_utf8(buf.lock().clone())?;
+        assert!(
+            !text.contains("PL306"),
+            "SyntaxOnly must not run the undefined-method lint: {text:?}"
+        );
+        assert!(!text.contains("PL412"), "SyntaxOnly must not run the stray-cut lint: {text:?}");
+        Ok(())
+    }
 }
