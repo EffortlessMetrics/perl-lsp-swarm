@@ -26,15 +26,15 @@ describe('feature activation deferral experiment env', () => {
   });
 
   test('returns empty set unless the experiment flag is armed', () => {
-    process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'mcp';
+    process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'providers';
     expect(parseDeferredActivationDomains()).toEqual(new Set());
   });
 
   test('parses deferred domains when the experiment flag is armed', () => {
     process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT = '1';
-    process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'mcp, onboarding';
-    expect(parseDeferredActivationDomains()).toEqual(new Set(['mcp', 'onboarding']));
-    expect(isActivationDomainDeferred('mcp')).toBe(true);
+    process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'providers, onboarding';
+    expect(parseDeferredActivationDomains()).toEqual(new Set(['providers', 'onboarding']));
+    expect(isActivationDomainDeferred('providers')).toBe(true);
     expect(isActivationDomainDeferred('providers')).toBe(false);
   });
 

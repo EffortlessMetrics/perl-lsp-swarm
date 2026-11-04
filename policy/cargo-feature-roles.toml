@@ -162,6 +162,14 @@ note = "Consumed through #[cfg_attr(not(feature = \"slow_tests\"), ignore)]."
 
 [[feature]]
 crate = "perl-lsp-rs"
+name = "benchmarks"
+role = "build_composition"
+owner = "#17964"
+consumers = ["composition", "required_features"]
+note = "Opt-in Criterion dependency for the two explicit benchmark targets; excluded from default focused test builds."
+
+[[feature]]
+crate = "perl-lsp-rs"
 name = "constant-advanced"
 role = "aspirational_milestone"
 owner = "#8409"
