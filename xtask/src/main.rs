@@ -2308,6 +2308,9 @@ enum Commands {
     /// is wired into `just pr-fast` and `just ci-gate`.
     PublishManifestCheck,
 
+    /// Fail fast when workspace manifests and `Cargo.lock` disagree (#13411).
+    CargoLockCoherence,
+
     /// Sweep system Perl corpus for parser error rates
     ParserCorpusSweep {
         /// Comma-separated corpus root directories
@@ -7044,6 +7047,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PublishClosure { crate_name } => publish_closure::run(crate_name),
         Commands::PublishedCrateCount => count_ratchet::run(),
         Commands::PublishManifestCheck => publish_manifest_check::run(),
+        Commands::CargoLockCoherence => tasks::cargo_lock_coherence::run_cli(),
         Commands::SmokeTestRelease { version } => publish::smoke_test_release(version),
         Commands::PublishReceipts { date } => publish_receipts::run(date),
         Commands::ParserCorpusSweep {

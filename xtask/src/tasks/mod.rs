@@ -21,6 +21,7 @@ pub mod bump_version;
 pub mod candidate_security_contract;
 pub mod cargo_failure_blocks;
 pub mod cargo_failure_digest;
+pub mod cargo_lock_coherence;
 pub mod change_set;
 pub mod changelog;
 pub mod check;

@@ -45,6 +45,7 @@ SCHEMA_VERSION = "gate_lane_mapping.v1"
 GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # pr_fast gates roll up under pr_smoke
     "fmt": {"lanes": ["pr_smoke"]},
+    "cargo_lock_coherence": {"lanes": ["pr_smoke"]},
     "check_conflict_markers": {"lanes": ["conflict_markers"]},
     "release_history": {"lanes": ["pr_smoke"]},
     "readme_heading_check": {"lanes": ["pr_smoke"]},
@@ -167,6 +168,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "changie_fragment_staged": {"lanes": ["commit_checks"]},
     "rustfmt_staged": {"lanes": ["commit_checks"]},
     "from_raw_staged": {"lanes": ["commit_checks"]},
+    "cargo_lock_coherence_staged": {"lanes": ["commit_checks"]},
 
     # release-adjacent gates
     "adr_link_check": {"lanes": ["docs_gate"]},
