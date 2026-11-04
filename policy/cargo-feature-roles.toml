@@ -472,7 +472,7 @@ role = "experimental_opt_in"
 owner = "#8409"
 consumers = []
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
-note = "Declared with no cfg consumer; modernization entry points live outside this flag today."
+note = "Declared with no edges and no cfg consumer; modernization API is always compiled after Wave 4 absorption (#4543)."
 
 [[feature]]
 crate = "perl-parser"

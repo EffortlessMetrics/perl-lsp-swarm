@@ -4,10 +4,7 @@
 //! indexed in checked-in harness fixtures rather than inferred from Linux-only
 //! semantic tests.
 
-use perl_core_harness::invocation_trace::{
-    TestInitClass,
-    model::EffectiveInvocationField,
-};
+use perl_core_harness::invocation_trace::{TestInitClass, model::EffectiveInvocationField};
 use perl_core_harness::target_contracts::model::{
     TARGET_MATRIX_PART_SCHEMA_VERSION, TargetDisposition, TargetMatrixPart,
 };

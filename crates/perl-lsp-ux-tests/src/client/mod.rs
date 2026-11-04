@@ -146,6 +146,47 @@ pub struct CapabilityViolation {
     pub capability: String,
 }
 
+/// The conservative default-client policy selected for one server request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefaultServerRequestPolicy {
+    /// A permitted request was acknowledged with the protocol-valid success shape.
+    Acknowledged,
+    /// A permitted request was answered without simulating an edit, navigation, or prompt choice.
+    ConservativeRefusal,
+    /// The scenario did not advertise the capability required for this method.
+    CapabilityRefused,
+    /// The request payload failed dynamic-registration validation.
+    InvalidParams,
+    /// The method is outside the bounded default-client inventory.
+    UnsupportedMethod,
+}
+
+/// Whether the exact default response envelope reached the shared stdin writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefaultServerRequestDelivery {
+    /// The response frame was written and flushed successfully.
+    Sent,
+    /// The write or flush failed before the transport loop recorded a transport failure.
+    Failed(String),
+}
+
+/// One default-mode server request exchange observed at the real write boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObservedDefaultServerRequest {
+    /// Exact JSON-RPC request id supplied by the server.
+    pub id: Value,
+    /// Server method that was classified.
+    pub method: String,
+    /// Request parameters, or null when omitted.
+    pub params: Value,
+    /// The conservative policy branch selected before writing the response.
+    pub policy: DefaultServerRequestPolicy,
+    /// Exact JSON-RPC response envelope passed to the framing writer.
+    pub response: Value,
+    /// Terminal disposition of that write attempt.
+    pub delivery: DefaultServerRequestDelivery,
+}
+
 /// A lightweight LSP client that speaks directly to a spawned perl-lsp process.
 pub struct UxClient {
     child: Mutex<Child>,
@@ -157,6 +198,8 @@ pub struct UxClient {
     inbox: Inbox,
     /// Append-only server-request evidence, independent of drainable events.
     server_requests: Arc<Mutex<Vec<Value>>>,
+    /// Default-mode request/response exchanges observed at the write boundary.
+    server_request_exchanges: Arc<Mutex<Vec<ObservedDefaultServerRequest>>>,
     /// Capability-gating violations observed on server requests.
     capability_violations: Arc<Mutex<Vec<CapabilityViolation>>>,
     /// Stderr lines captured from the server process.
@@ -229,6 +272,8 @@ impl UxClient {
         // writer handle is shared with that thread rather than owned alone.
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let server_requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let server_request_exchanges: Arc<Mutex<Vec<ObservedDefaultServerRequest>>> =
+            Arc::new(Mutex::new(Vec::new()));
         let capability_violations: Arc<Mutex<Vec<CapabilityViolation>>> =
             Arc::new(Mutex::new(Vec::new()));
         // One response authority per request: when a script is installed it
@@ -254,6 +299,7 @@ impl UxClient {
         let reader_inbox = inbox.clone();
         let stdin_for_reader = Arc::clone(&stdin);
         let server_requests_for_reader = Arc::clone(&server_requests);
+        let server_request_exchanges_for_reader = Arc::clone(&server_request_exchanges);
         let capability_violations_for_reader = Arc::clone(&capability_violations);
         let answering_capabilities_for_reader = answering_capabilities.clone();
         let _stdout_thread = std::thread::Builder::new()
@@ -274,6 +320,7 @@ impl UxClient {
                         &stdin_writer,
                         &reader_inbox,
                         &server_requests_for_reader,
+                        &server_request_exchanges_for_reader,
                         &capability_violations_for_reader,
                         answering_capabilities_for_reader.as_ref(),
                         observer.as_ref(),
@@ -315,6 +362,7 @@ impl UxClient {
             initialize_result: Value::Null,
             inbox,
             server_requests,
+            server_request_exchanges,
             capability_violations,
             stderr_lines,
             script,
@@ -522,6 +570,12 @@ impl UxClient {
     /// response, allowing scenarios to assert method, id, and params together.
     pub fn peek_server_requests(&self) -> Vec<Value> {
         self.server_requests.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Clone default-mode server request exchanges, including selected policy,
+    /// exact response envelopes, and write disposition.
+    pub fn peek_server_request_exchanges(&self) -> Vec<ObservedDefaultServerRequest> {
+        self.server_request_exchanges.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Clone capability violations observed by the transport loop.
@@ -994,6 +1048,7 @@ fn read_and_route<R, W>(
     stdin: &Mutex<W>,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
+    server_request_exchanges: &Mutex<Vec<ObservedDefaultServerRequest>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
     capabilities: Option<&Value>,
     observer: Option<&ServerRequestObserver>,
@@ -1012,6 +1067,7 @@ where
         stdin,
         inbox,
         server_requests,
+        server_request_exchanges,
         capability_violations,
         capabilities,
         observer,
@@ -1027,6 +1083,7 @@ fn route_message<W>(
     stdin: &Mutex<W>,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
+    server_request_exchanges: &Mutex<Vec<ObservedDefaultServerRequest>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
     capabilities: Option<&Value>,
     observer: Option<&ServerRequestObserver>,
@@ -1051,7 +1108,7 @@ where
             .push(message.clone());
         if let Some(decision) = capabilities.and_then(|caps| server_request_decision(message, caps))
         {
-            if let Some(violation) = decision.capability_violation {
+            if let Some(violation) = decision.capability_violation.clone() {
                 capability_violations
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1060,8 +1117,24 @@ where
             let method =
                 message.get("method").and_then(Value::as_str).unwrap_or("<missing>").to_owned();
             let id = message.get("id").cloned().unwrap_or(Value::Null);
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
             let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            write_framed_to(&mut *stdin, &decision.response).map_err(|error| {
+            let write_result = write_framed_to(&mut *stdin, &decision.response);
+            let delivery = match &write_result {
+                Ok(()) => DefaultServerRequestDelivery::Sent,
+                Err(error) => DefaultServerRequestDelivery::Failed(format!("{error:#}")),
+            };
+            server_request_exchanges.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(
+                ObservedDefaultServerRequest {
+                    id: id.clone(),
+                    method: method.clone(),
+                    params,
+                    policy: decision.policy,
+                    response: decision.response.clone(),
+                    delivery,
+                },
+            );
+            write_result.map_err(|error| {
                 format!("failed to answer server request method={method} id={id}: {error:#}")
             })?;
         }
@@ -1134,6 +1207,16 @@ fn is_server_request(message: &Value) -> bool {
 struct ServerRequestDecision {
     response: Value,
     capability_violation: Option<CapabilityViolation>,
+    policy: DefaultServerRequestPolicy,
+}
+
+fn conservative_refusal_policy(method: &str) -> DefaultServerRequestPolicy {
+    match method {
+        "workspace/applyEdit" | "window/showDocument" | "window/showMessageRequest" => {
+            DefaultServerRequestPolicy::ConservativeRefusal
+        }
+        _ => DefaultServerRequestPolicy::Acknowledged,
+    }
 }
 
 fn server_request_decision(message: &Value, capabilities: &Value) -> Option<ServerRequestDecision> {
@@ -1218,6 +1301,7 @@ fn server_request_decision(message: &Value, capabilities: &Value) -> Option<Serv
                     }
                 }),
                 capability_violation: None,
+                policy: DefaultServerRequestPolicy::UnsupportedMethod,
             });
         }
     };
@@ -1229,6 +1313,7 @@ fn server_request_decision(message: &Value, capabilities: &Value) -> Option<Serv
             "result": result
         }),
         capability_violation: None,
+        policy: conservative_refusal_policy(method),
     })
 }
 
@@ -1253,6 +1338,7 @@ fn capability_violation(message: &Value, method: &str, capability: &str) -> Serv
             method: method.to_owned(),
             capability: capability.to_owned(),
         }),
+        policy: DefaultServerRequestPolicy::CapabilityRefused,
     }
 }
 
@@ -1267,6 +1353,7 @@ fn invalid_params(message: &Value, method: &str, reason: &str) -> ServerRequestD
             }
         }),
         capability_violation: None,
+        policy: DefaultServerRequestPolicy::InvalidParams,
     }
 }
 
@@ -1874,7 +1961,8 @@ mod shutdown_response_tests {
 #[cfg(test)]
 mod server_request_tests {
     use super::{
-        CapabilityViolation, FrameRead, Inbox, ServerRequestDecision, build_client_capabilities,
+        CapabilityViolation, DefaultServerRequestDelivery, DefaultServerRequestPolicy, FrameRead,
+        Inbox, ObservedDefaultServerRequest, ServerRequestDecision, build_client_capabilities,
         is_server_request, read_one_frame, route_message, server_request_decision,
         server_request_response, write_framed_to,
     };
@@ -1935,6 +2023,7 @@ mod server_request_tests {
         let stdin = Arc::new(Mutex::new(Vec::new()));
         let inbox = Inbox::new();
         let server_requests = Mutex::new(Vec::new());
+        let server_request_exchanges = Mutex::new(Vec::new());
         let violations = Mutex::new(Vec::new());
         let capabilities = capabilities_with(json!({
             "workspace": { "configuration": true }
@@ -1947,6 +2036,7 @@ mod server_request_tests {
                 &stdin,
                 &inbox,
                 &server_requests,
+                &server_request_exchanges,
                 &violations,
                 Some(&capabilities),
                 None,
@@ -1968,6 +2058,7 @@ mod server_request_tests {
             observed == vec![server_request.clone()],
             "the request must remain observable as an event: {observed:?}"
         );
+        let request_params = server_request["params"].clone();
         let recorded = server_requests.lock().unwrap_or_else(|e| e.into_inner()).clone();
         anyhow::ensure!(
             recorded == vec![server_request],
@@ -1983,6 +2074,19 @@ mod server_request_tests {
             violations.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
             "an admitted request must not record a violation"
         );
+        let exchanges = server_request_exchanges.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        anyhow::ensure!(
+            exchanges
+                == vec![ObservedDefaultServerRequest {
+                    id: json!("server-17"),
+                    method: "workspace/configuration".to_owned(),
+                    params: request_params,
+                    policy: DefaultServerRequestPolicy::Acknowledged,
+                    response: client_response.clone(),
+                    delivery: DefaultServerRequestDelivery::Sent,
+                }],
+            "the default exchange must record policy, response, and delivery: {exchanges:?}"
+        );
         Ok(())
     }
 
@@ -1997,6 +2101,7 @@ mod server_request_tests {
         let stdin = Arc::new(Mutex::new(BrokenWriter));
         let inbox = Inbox::new();
         let server_requests = Mutex::new(Vec::new());
+        let server_request_exchanges = Mutex::new(Vec::new());
         let violations = Mutex::new(Vec::new());
         let capabilities = capabilities_with(json!({
             "window": { "workDoneProgress": true }
@@ -2007,6 +2112,7 @@ mod server_request_tests {
             &stdin,
             &inbox,
             &server_requests,
+            &server_request_exchanges,
             &violations,
             Some(&capabilities),
             None,
@@ -2022,6 +2128,20 @@ mod server_request_tests {
             !server_requests.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
             "the request evidence must survive the failed answer"
         );
+        let exchanges = server_request_exchanges.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        anyhow::ensure!(
+            exchanges.len() == 1 && exchanges[0].method == "window/workDoneProgress/create",
+            "a failed write must retain one attempted exchange: {exchanges:?}"
+        );
+        match &exchanges[0].delivery {
+            DefaultServerRequestDelivery::Failed(reason) => {
+                anyhow::ensure!(
+                    reason.contains("synthetic broken pipe"),
+                    "failed delivery must name the write error: {reason}"
+                );
+            }
+            other => return Err(anyhow!("expected failed delivery, got {other:?}")),
+        }
         Ok(())
     }
 
@@ -2208,7 +2328,11 @@ mod server_request_tests {
             &request,
             &build_client_capabilities(&ScenarioConfig::default()),
         )
-        .unwrap_or(ServerRequestDecision { response: Value::Null, capability_violation: None });
+        .unwrap_or(ServerRequestDecision {
+            response: Value::Null,
+            capability_violation: None,
+            policy: DefaultServerRequestPolicy::UnsupportedMethod,
+        });
 
         assert_eq!(decision.response["id"], 14);
         assert_eq!(decision.response["error"]["code"], -32601);
@@ -2225,6 +2349,40 @@ mod server_request_tests {
                 capability: "workspace.semanticTokens.refreshSupport".to_owned(),
             })
         );
+        assert_eq!(decision.policy, DefaultServerRequestPolicy::CapabilityRefused);
+    }
+
+    #[test]
+    fn capability_refusal_exchange_records_exact_error_envelope() -> Result<()> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "workspace/textDocumentContent/refresh",
+            "params": {}
+        });
+        let stdin = Arc::new(Mutex::new(Vec::new()));
+        let inbox = Inbox::new();
+        let server_requests = Mutex::new(Vec::new());
+        let server_request_exchanges = Mutex::new(Vec::new());
+        let violations = Mutex::new(Vec::new());
+        route_message(
+            &request,
+            &stdin,
+            &inbox,
+            &server_requests,
+            &server_request_exchanges,
+            &violations,
+            Some(&build_client_capabilities(&ScenarioConfig::default())),
+            None,
+        )
+        .map_err(|error| anyhow!("{error}"))?;
+        let exchanges = server_request_exchanges.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        anyhow::ensure!(exchanges.len() == 1, "expected one exchange, got {exchanges:?}");
+        assert_eq!(exchanges[0].id, json!(41));
+        assert_eq!(exchanges[0].policy, DefaultServerRequestPolicy::CapabilityRefused);
+        assert_eq!(exchanges[0].response["error"]["code"], -32601);
+        assert_eq!(exchanges[0].delivery, DefaultServerRequestDelivery::Sent);
+        Ok(())
     }
 
     #[test]
