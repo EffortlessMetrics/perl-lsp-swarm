@@ -1792,6 +1792,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::Backslash
                     | TokenKind::Semicolon
                     | TokenKind::BitwiseAnd
+                    | TokenKind::And
                     | TokenKind::SubSigil
                     | TokenKind::GlobSigil
                     | TokenKind::Plus
@@ -1888,9 +1889,31 @@ impl<'a> Parser<'a> {
 
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
-            if token.kind() == TokenKind::RightParen {
-                inner_end = token.start();
-                break;
+
+            match token.kind() {
+                TokenKind::RightParen => {
+                    // End of prototype
+                    break;
+                }
+                TokenKind::ScalarSigil => prototype.push('$'),
+                TokenKind::ArraySigil => prototype.push('@'),
+                TokenKind::HashSigil => prototype.push('%'),
+                TokenKind::GlobSigil | TokenKind::Star => prototype.push('*'),
+                TokenKind::SubSigil | TokenKind::BitwiseAnd => prototype.push('&'),
+                // Perl's lexer merges adjacent `&` into `And`; in prototype context that is two
+                // code-ref slots (e.g. Test::LectroTest::Property's `(&&@)`).
+                TokenKind::And => prototype.push_str("&&"),
+                TokenKind::Semicolon => prototype.push(';'),
+                TokenKind::Backslash => prototype.push('\\'),
+                // `+` means "scalar or array/hash ref" (perlsub prototype character).
+                // `++` is the Increment token produced when two `+` chars appear together.
+                TokenKind::Plus => prototype.push('+'),
+                TokenKind::Increment => prototype.push_str("++"),
+                _ => {
+                    // For any other token, just add its text
+                    // This handles cases where sigils might be parsed differently
+                    prototype.push_str(&token.text);
+                }
             }
             token_fallback.push_str(token.text.as_ref());
             inner_end = token.end();

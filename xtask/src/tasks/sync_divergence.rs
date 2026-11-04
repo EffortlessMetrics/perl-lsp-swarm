@@ -27,6 +27,15 @@ const PRODUCT_PATH_SEGMENTS: [&str; 9] =
 /// standard Perl test file extension.
 const PRODUCT_PATH_EXTENSIONS: [&str; 8] = ["rs", "c", "h", "hpp", "cpp", "pm", "pl", "t"];
 
+/// Named public admission controls; `release_lineage_only` may never cover them.
+/// Keep aligned with `CONTROL_PATHS` in `scripts/source_reconciliation.py`.
+const PUBLIC_ADMISSION_CONTROL_PATHS: [&str; 4] = [
+    "scripts/publication_sync_check.py",
+    "scripts/tests/test-publication-sync-contract.py",
+    "schemas/publication_sync.v2.schema.json",
+    ".github/workflows/publication-sync-contract.yml",
+];
+
 const LEDGER_SCHEMA_VERSION: u32 = 2;
 const RECEIPT_SCHEMA_VERSION: u32 = 2;
 
@@ -555,10 +564,15 @@ fn validate_entry(
         }
         "release_lineage_only" => {
             if let Some(path) =
-                entry.changed_paths.iter().find(|path| is_product_or_test_path(path))
+                entry.changed_paths.iter().find(|path| is_ineligible_for_release_lineage_only(path))
             {
+                let reason = if is_public_admission_control_path(path) {
+                    "public admission control"
+                } else {
+                    "product or test"
+                };
                 errors.push(format!(
-                    "commit {} classified `release_lineage_only` covers product or test path `{path}`; lineage-only cannot exclude runtime, product, or test work",
+                    "commit {} classified `release_lineage_only` covers {reason} path `{path}`; lineage-only cannot exclude runtime, product, test, or public admission control work",
                     entry.commit
                 ));
             }
@@ -666,6 +680,15 @@ fn is_product_or_test_path(path: &str) -> bool {
         }
         None => false,
     }
+}
+
+fn is_public_admission_control_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    PUBLIC_ADMISSION_CONTROL_PATHS.contains(&normalized.as_str())
+}
+
+fn is_ineligible_for_release_lineage_only(path: &str) -> bool {
+    is_product_or_test_path(path) || is_public_admission_control_path(path)
 }
 
 /// Canonical digest over the target-unique non-merge population; the ledger
@@ -1116,7 +1139,7 @@ mod tests {
         use std::io::Write;
         let mut seen = std::collections::HashMap::new();
         for index in 0..100_000u32 {
-            let mut child = Command::new("git")
+            let mut child = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(path)
                 .args(["hash-object", "-w", "--stdin"])
                 .stdin(std::process::Stdio::piped())
@@ -1335,6 +1358,24 @@ mod tests {
         ] {
             assert!(!is_product_or_test_path(path), "`{path}` must not count as product/test work");
         }
+    }
+
+    #[test]
+    fn public_admission_control_paths_are_ineligible_for_release_lineage_only() {
+        for path in PUBLIC_ADMISSION_CONTROL_PATHS {
+            assert!(
+                is_public_admission_control_path(path),
+                "`{path}` must count as a public admission control"
+            );
+            assert!(
+                is_ineligible_for_release_lineage_only(path),
+                "`{path}` must be ineligible for `release_lineage_only`"
+            );
+        }
+        assert!(
+            !is_public_admission_control_path(".github/workflows/release.yml"),
+            "ordinary workflow bumps remain lineage-eligible on the native guard"
+        );
     }
 
     /// A fully classified ledger passes and the receipt records the derived
@@ -2082,6 +2123,49 @@ mod tests {
         Ok(())
     }
 
+    /// Lineage-only classification cannot cover named public admission controls.
+    #[test]
+    fn lineage_only_over_public_admission_control_fails() -> Result<()> {
+        let fixture = diverged_fixture_with_public_admission_control_commit()?;
+        let path = fixture.directory.path();
+        let control_tip = rev_parse(path, "main")?;
+        fs::write(
+            path.join("ledger.json"),
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "source": "{}",
+  "boundary": "{}",
+  "target": "{}",
+  "population_digest": "{}",
+  "entries": [
+    {{"commit": "{}", "subject": "release r0", "disposition": "release_lineage_only", "changed_paths": ["r0.txt"], "evidence": ["release-lineage receipt"]}},
+    {{"commit": "{}", "subject": "release r2", "disposition": "port_to_swarm", "source_commit": "{}", "changed_paths": ["r2.txt"], "evidence": ["ported"]}},
+    {{"commit": "{}", "subject": "publication sync contract", "disposition": "release_lineage_only", "changed_paths": ["scripts/publication_sync_check.py"], "evidence": ["claiming lineage"]}}
+  ]
+}}"#,
+                fixture.swarm_tip,
+                fixture.base,
+                control_tip,
+                fixture_digest_at(&fixture, &control_tip)?,
+                fixture.floor_tip,
+                fixture.release_tip,
+                fixture.swarm_tip,
+                control_tip,
+            ),
+        )?;
+        run_check_expect_error_at(&fixture, path, &control_tip)?;
+        let receipt = receipt_value(path)?;
+        let joined = receipt_error_text(&receipt);
+        assert!(
+            joined.contains(
+                "covers public admission control path `scripts/publication_sync_check.py`"
+            ),
+            "{joined}"
+        );
+        Ok(())
+    }
+
     /// A hand-written terminal row with empty changed_paths cannot borrow the
     /// early-return in the diff-tree comparison to also skip the product/test
     /// guard: an undeclared footprint fails closed.
@@ -2512,12 +2596,25 @@ mod tests {
         Ok(fixture)
     }
 
+    fn diverged_fixture_with_public_admission_control_commit() -> Result<DivergedFixture> {
+        let fixture = diverged_fixture()?;
+        let path = fixture.directory.path();
+        run_git_fixture(path, &["checkout", "--quiet", "main"])?;
+        commit_file(
+            path,
+            "scripts/publication_sync_check.py",
+            "print('contract')\n",
+            "publication sync contract",
+        )?;
+        Ok(fixture)
+    }
+
     fn resolved(source: String, boundary: String, target: String) -> ResolvedShas {
         ResolvedShas { source, boundary, target }
     }
 
     fn run_git_fixture(directory: &Path, args: &[&str]) -> Result<()> {
-        let mut command = Command::new("git");
+        let mut command = xtask::git_environment::isolate(Command::new("git"));
         command.current_dir(directory).args(args);
         let output = command.output()?;
         if output.status.success() {
@@ -2536,7 +2633,7 @@ mod tests {
     }
 
     fn rev_parse(directory: &Path, reference: &str) -> Result<String> {
-        let mut command = Command::new("git");
+        let mut command = xtask::git_environment::isolate(Command::new("git"));
         command.current_dir(directory).args(["rev-parse", reference]);
         let output = command.output()?;
         if !output.status.success() {

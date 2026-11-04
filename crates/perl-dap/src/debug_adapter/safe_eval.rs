@@ -436,6 +436,24 @@ mod tests {
     }
 
     #[test]
+    fn safe_eval_admits_keys_values_and_still_refuses_each() {
+        // #18436 item 2: keys/values are read-only hash snapshots. The iterator
+        // reset they cause is accepted; `each` still advances the iterator.
+        for expr in ["keys %h", "values %$ref", "scalar keys %h"] {
+            let err = validate_safe_expression(expr);
+            assert!(err.is_none(), "unexpected block for {expr:?}: {err:?}");
+        }
+        assert!(
+            validate_safe_expression("each %h").is_some(),
+            "each advances the iterator and must remain denied"
+        );
+        assert!(
+            validate_safe_expression("keys %h; system('true')").is_some(),
+            "compound expressions must still refuse remaining dangerous ops"
+        );
+    }
+
+    #[test]
     fn safe_eval_blocks_extended_ops_v2() {
         // Verify the even more extended deny-list works (glob, readline, IPC, etc.)
         let blocked = [

@@ -15,7 +15,7 @@ use perl_tdd_support::{must, must_some, must_some_with, must_with};
 use std::collections::HashSet;
 
 const BOUNDARY_PM: &str =
-    "package Risky;\nsub run {\n    my $code = shift;\n    eval { $code->() };\n}\n1;\n";
+    "package Risky;\nsub run {\n    my $code = shift;\n    eval $code;\n}\n1;\n";
 
 const EV_T: &str = "use Test::More;\nok(1, 'smoke');\ndone_testing();\n";
 

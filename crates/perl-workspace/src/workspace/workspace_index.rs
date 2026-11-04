@@ -108,7 +108,7 @@ use crate::workspace_symbol_query::{
     legacy_index_match_rank, match_searchable_key,
 };
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
-use perl_symbol::surface::decl::extract_symbol_decls;
+use perl_symbol::surface::decl::{SymbolDecl, extract_symbol_decls};
 use perl_symbol::surface::facts::{symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts};
 // Only used by `build_canonical_fact_shard_for_ast`, which is now
 // `#[cfg(test)]`-gated (shadow/parity-harness-only as of the 1711-B cutover).
@@ -3730,35 +3730,27 @@ impl WorkspaceIndex {
     /// **Production canonical builder for the unified reference traversal
     /// (perl-lsp-swarm#1711-B cutover).** Identical to
     /// [`Self::build_canonical_fact_shard_for_ast`] except it takes an
-    /// ALREADY-COMPUTED `refs: &[SymbolRef]` instead of calling
-    /// `extract_symbol_refs(ast)` itself -- this is what lets
-    /// `FileExtractionBundle::build_unified` feed it the `Vec<SymbolRef>`
-    /// produced by `IndexVisitor::visit_unified`'s single traversal, instead
-    /// of running a second, independent `extract_symbol_refs` walk. Every
-    /// other extractor call (`extract_symbol_decls` for declarations,
-    /// eval-sub, generated-member) is UNCHANGED and unaffected -- only the
-    /// reference walk is unified (see the #1711 feasibility comment for why
-    /// declarations are a separable follow-up). Called by
-    /// `index_file_with_generation` via `FileExtractionBundle::build_unified`;
-    /// `build_canonical_fact_shard_for_ast` above remains live only for the
-    /// `extraction_bundle_shadow_compare` parity harness's `build_direct`
-    /// reference path, not for production.
+    /// ALREADY-COMPUTED `decls: &[SymbolDecl]` and `refs: &[SymbolRef]`
+    /// instead of calling `extract_symbol_decls` / `extract_symbol_refs(ast)`
+    /// itself -- this is what lets `FileExtractionBundle::build_unified`
+    /// feed it the inventory and reference vector produced by one production
+    /// pass each. Every other extractor call (eval-sub, generated-member) is
+    /// unchanged. Called by `index_file_with_generation` via
+    /// `FileExtractionBundle::build_unified`; `build_canonical_fact_shard_for_ast`
+    /// above remains live only for the `extraction_bundle_shadow_compare`
+    /// parity harness's `build_direct` reference path, not for production.
     fn build_canonical_fact_shard_from_symbol_refs(
         uri: &str,
         content_hash: u64,
         ast: &Node,
+        decls: &[SymbolDecl],
         refs: &[perl_symbol::surface::r#ref::SymbolRef],
         inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
         source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
-        #[cfg(test)]
-        let decl_start = Instant::now();
-        let decls = extract_symbol_decls(ast, None);
-        #[cfg(test)]
-        reindex_metrics::record_decl_extract(decl_start.elapsed());
-        let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
+        let decl_facts = symbol_decls_to_semantic_facts(decls, file_id);
 
         // Own declarations rank above inherited aliases (#812: own overrides
         // rank above inherited methods): the declaration map wins the lookup
@@ -5400,16 +5392,17 @@ impl WorkspaceIndex {
 ///
 /// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
 /// |---|---|---|
-/// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by `IndexVisitor::project_symbol_declarations`, which calls `extract_symbol_decls(ast, Some("main"))` | [`EntityFact`] + [`AnchorFact`] via `extract_symbol_decls(ast, None)` -> `symbol_decls_to_semantic_facts` |
+/// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by projecting the shared `extract_symbol_decls(ast, initial_package_for_uri(uri))` inventory via `IndexVisitor::project_precomputed_symbol_declarations` | [`EntityFact`] + [`AnchorFact`] via the same shared inventory -> `symbol_decls_to_semantic_facts` |
 /// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,MethodCall,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
 /// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
 ///
-/// Declaration extraction is intentionally still NOT unified (`extract_symbol_decls`
-/// is called once per projection, in both `build()` and `build_unified()`) --
-/// a separable follow-up tracked on #1711 (see the feasibility comment, item
-/// 3). Only the reference walk is unified by this cutover.
+/// Declaration extraction is unified on module/template URIs (`*.pm`, etc.)
+/// where [`initial_package_for_uri`] is `None`: `build_unified` runs one
+/// `extract_symbol_decls` pass for both legacy and canonical projections
+/// (perl-lsp-swarm#4047). Script URIs still run a second canonical `None`-seed
+/// pass until source-backed references can consume the shared inventory.
 pub(crate) struct FileExtractionBundle {
     /// The legacy `IndexVisitor` projection, produced by one `visit()` call.
     pub(crate) legacy_index: FileIndex,
@@ -5472,22 +5465,14 @@ impl FileExtractionBundle {
         Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
     }
 
-    /// **Production extraction path (perl-lsp-swarm#1711-B cutover).** The
-    /// REAL unified traversal: runs ONE reference walk
-    /// (`IndexVisitor::visit_unified`) that produces BOTH the legacy
-    /// [`FileIndex`] reference/dependency projection AND the canonical
-    /// `Vec<SymbolRef>` projection, then feeds that single `Vec<SymbolRef>`
-    /// into `WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs`
-    /// instead of calling `extract_symbol_refs(ast)` a second time. This is
-    /// what eliminates one of the two full-AST reference walks
-    /// `index_file_with_generation` used to run.
-    ///
-    /// Declaration extraction is UNCHANGED: `extract_symbol_decls` is still
-    /// called twice (once per projection, with the existing
-    /// `Some("main")`/`None` package-context seeds) -- unifying declarations
-    /// is a separable follow-up (see the #1711 feasibility comment, item 3).
-    /// Import/use-lib extraction projects HIR compile-environment facts
-    /// (`#16823`) rather than classifying flattened `Use.args`.
+    /// **Production extraction path (perl-lsp-swarm#1711-B reference cutover;
+    /// perl-lsp-swarm#4047 declaration cutover).** Runs ONE reference walk
+    /// (`IndexVisitor::visit_unified`) and ONE declaration inventory
+    /// (`extract_symbol_decls(ast, initial_package_for_uri(uri))`), feeding both the legacy
+    /// [`FileIndex`] declaration projection and the canonical
+    /// [`FileFactShard`] from the shared `Vec<SymbolDecl>`. Import/use-lib
+    /// extraction projects HIR compile-environment facts (`#16823`) rather
+    /// than classifying flattened `Use.args`.
     ///
     /// Uses [`Node::for_each_child`] as the unified walk's recursion
     /// fallback (see `IndexVisitor::walk_unified`'s doc comment), which
@@ -5518,9 +5503,30 @@ impl FileExtractionBundle {
         };
         let mut symbol_refs = Vec::new();
         let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
+        let initial_package = initial_package_for_uri(uri_str);
+        let package_seed = initial_package.as_deref();
+        #[cfg(test)]
+        let decl_start = Instant::now();
+        let legacy_decls = extract_symbol_decls(ast, package_seed);
+        #[cfg(test)]
+        reindex_metrics::record_decl_extract(decl_start.elapsed());
+        let canonical_decls_storage;
+        let canonical_decls: &[SymbolDecl] = if initial_package.is_some() {
+            // Script/extensionless URIs seed legacy with implicit `main`; canonical
+            // facts remain on the `None` inventory until a follow-up retires this
+            // second pass without breaking source-backed references (#4047).
+            #[cfg(test)]
+            let decl_start = Instant::now();
+            canonical_decls_storage = extract_symbol_decls(ast, None);
+            #[cfg(test)]
+            reindex_metrics::record_decl_extract(decl_start.elapsed());
+            &canonical_decls_storage
+        } else {
+            &legacy_decls
+        };
         #[cfg(test)]
         let visit_start = Instant::now();
-        visitor.visit_unified(ast, &mut file_index, &mut symbol_refs);
+        visitor.visit_unified(ast, &legacy_decls, &mut file_index, &mut symbol_refs);
         #[cfg(test)]
         reindex_metrics::record_visit(visit_start.elapsed());
 
@@ -5528,6 +5534,7 @@ impl FileExtractionBundle {
             uri_str,
             content_hash,
             ast,
+            canonical_decls,
             &symbol_refs,
             inherited_method_aliases,
             doc.text(),
@@ -5605,6 +5612,109 @@ fn package_edges_from_stash_graph(
         .collect()
 }
 
+/// Anchor span for expression-form `eval` / `do` dynamic boundaries.
+///
+/// String-literal bodies cover the literal (runtime-evaluated code). Other
+/// operands (for example `eval $expr`, `do $file`) cover only the keyword so
+/// undeclared-variable suppression stays position-scoped on the operand.
+fn eval_do_expression_boundary_anchor_span(node: &Node) -> Option<(usize, usize)> {
+    let (keyword_len, block) = match &node.kind {
+        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            (4, block.as_ref())
+        }
+        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            (2, block.as_ref())
+        }
+        _ => return None,
+    };
+    let node_start = node.location.start;
+    if matches!(block.kind, NodeKind::String { .. }) {
+        Some((block.location.start, block.location.end))
+    } else {
+        Some((node_start, node_start + keyword_len))
+    }
+}
+
+fn collect_expression_form_eval_do_boundaries(
+    node: &Node,
+    uri: &str,
+    file_id: FileId,
+    anchors: &mut Vec<AnchorFact>,
+    occurrences: &mut Vec<OccurrenceFact>,
+) {
+    match &node.kind {
+        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
+                push_hir_dynamic_boundary_occurrence(
+                    uri,
+                    file_id,
+                    start,
+                    end,
+                    1,
+                    anchors,
+                    occurrences,
+                );
+            }
+        }
+        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
+                push_hir_dynamic_boundary_occurrence(
+                    uri,
+                    file_id,
+                    start,
+                    end,
+                    2,
+                    anchors,
+                    occurrences,
+                );
+            }
+        }
+        _ => {}
+    }
+    node.for_each_child(|child| {
+        collect_expression_form_eval_do_boundaries(child, uri, file_id, anchors, occurrences);
+    });
+}
+
+fn push_hir_dynamic_boundary_occurrence(
+    uri: &str,
+    file_id: FileId,
+    span_start: usize,
+    span_end: usize,
+    boundary_kind_tag: u8,
+    anchors: &mut Vec<AnchorFact>,
+    occurrences: &mut Vec<OccurrenceFact>,
+) {
+    let mut anchor_hasher = DefaultHasher::new();
+    uri.hash(&mut anchor_hasher);
+    span_start.hash(&mut anchor_hasher);
+    span_end.hash(&mut anchor_hasher);
+    boundary_kind_tag.hash(&mut anchor_hasher);
+    let anchor_id = AnchorId(anchor_hasher.finish());
+    let mut occurrence_hasher = DefaultHasher::new();
+    anchor_id.hash(&mut occurrence_hasher);
+    1u8.hash(&mut occurrence_hasher);
+    let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+    anchors.push(AnchorFact {
+        id: anchor_id,
+        file_id,
+        span_start_byte: span_start.min(u32::MAX as usize) as u32,
+        span_end_byte: span_end.min(u32::MAX as usize) as u32,
+        scope_id: None,
+        provenance: Provenance::DynamicBoundary,
+        confidence: Confidence::Low,
+    });
+    occurrences.push(OccurrenceFact {
+        id: occurrence_id,
+        kind: OccurrenceKind::DynamicBoundary,
+        entity_id: None,
+        anchor_id,
+        scope_id: None,
+        provenance: Provenance::DynamicBoundary,
+        confidence: Confidence::Low,
+    });
+}
+
 fn dynamic_isa_facts(
     uri: &str,
     ast: &Node,
@@ -5616,35 +5726,17 @@ fn dynamic_isa_facts(
     for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
         boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
     }) {
-        let mut anchor_hasher = DefaultHasher::new();
-        uri.hash(&mut anchor_hasher);
-        boundary.range.start.hash(&mut anchor_hasher);
-        boundary.range.end.hash(&mut anchor_hasher);
-        boundary.kind.hash(&mut anchor_hasher);
-        let anchor_id = AnchorId(anchor_hasher.finish());
-        let mut occurrence_hasher = DefaultHasher::new();
-        anchor_id.hash(&mut occurrence_hasher);
-        1u8.hash(&mut occurrence_hasher);
-        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
-        anchors.push(AnchorFact {
-            id: anchor_id,
+        push_hir_dynamic_boundary_occurrence(
+            uri,
             file_id,
-            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
-            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
-            scope_id: None,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-        });
-        occurrences.push(OccurrenceFact {
-            id: occurrence_id,
-            kind: OccurrenceKind::DynamicBoundary,
-            entity_id: None,
-            anchor_id,
-            scope_id: None,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-        });
+            boundary.range.start,
+            boundary.range.end,
+            0,
+            &mut anchors,
+            &mut occurrences,
+        );
     }
+    collect_expression_form_eval_do_boundaries(ast, uri, file_id, &mut anchors, &mut occurrences);
     (anchors, occurrences)
 }
 
@@ -5705,7 +5797,16 @@ impl IndexVisitor {
     }
 
     fn project_symbol_declarations(&self, node: &Node, file_index: &mut FileIndex) {
-        for decl in extract_symbol_decls(node, self.current_package.as_deref()) {
+        let decls = extract_symbol_decls(node, self.current_package.as_deref());
+        self.project_precomputed_symbol_declarations(&decls, file_index);
+    }
+
+    fn project_precomputed_symbol_declarations(
+        &self,
+        decls: &[SymbolDecl],
+        file_index: &mut FileIndex,
+    ) {
+        for decl in decls {
             let definition_package = decl.container.clone();
             let (start, end) = match decl.kind {
                 SymbolKind::Variable(_) => match decl.anchor_span {
@@ -5729,14 +5830,14 @@ impl IndexVisitor {
             // they participate in the package namespace.
             let qualified_name = match &decl.declarator {
                 Some(d) if d == "my" || d == "state" => None,
-                _ => (!decl.qualified_name.is_empty()).then_some(decl.qualified_name),
+                _ => (!decl.qualified_name.is_empty()).then_some(decl.qualified_name.clone()),
             };
 
             // Top-level package declarations have no containing package; suppress the
             // spurious "main" container that comes from the walker's initial context.
             let container_name = match decl.kind {
                 SymbolKind::Package => None,
-                _ => decl.container,
+                _ => decl.container.clone(),
             };
 
             // Lexical declarators (my/state) produce scope-local variables that cannot be
@@ -6354,11 +6455,10 @@ impl IndexVisitor {
     /// projection (the input `symbol_refs_to_semantic_facts` expects) from
     /// ONE recursive descent -- replacing what production used to run as
     /// TWO separate full-AST walks (`IndexVisitor::visit` +
-    /// `extract_symbol_refs`). Declaration
-    /// extraction is UNCHANGED and NOT unified here (`project_symbol_declarations`
-    /// still calls `extract_symbol_decls(ast, Some("main"))` exactly as
-    /// `visit()` does today) -- see the #1711 feasibility comment, item 3,
-    /// a separable follow-up.
+    /// `extract_symbol_refs`). Declaration symbols are projected from the
+    /// shared declaration inventory passed in by
+    /// `FileExtractionBundle::build_unified` (perl-lsp-swarm#4047) rather
+    /// than re-running `extract_symbol_decls` here.
     ///
     /// Uses [`Node::for_each_child`] as its recursion fallback (the
     /// complete, compiler-exhaustive dispatcher) instead of
@@ -6379,10 +6479,11 @@ impl IndexVisitor {
     fn visit_unified(
         &mut self,
         node: &Node,
+        shared_decls: &[SymbolDecl],
         file_index: &mut FileIndex,
         symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
     ) {
-        self.project_symbol_declarations(node, file_index);
+        self.project_precomputed_symbol_declarations(shared_decls, file_index);
         self.walk_unified(node, file_index, symbol_refs);
     }
 
@@ -7006,7 +7107,7 @@ fn initial_package_for_uri(uri: &str) -> Option<String> {
     let path = file_path.as_deref().unwrap_or_else(|| Path::new(parsed_uri.path()));
     let extension = path.extension().and_then(|extension| extension.to_str());
     if extension.is_some_and(|extension| {
-        ["pm", "ep", "tt", "tt2", "mason"]
+        ["pm", "pod", "ep", "tt", "tt2", "mason"]
             .iter()
             .any(|excluded| extension.eq_ignore_ascii_case(excluded))
     }) {
@@ -7964,6 +8065,52 @@ mod tests {
         anyhow::ensure!(
             symbols.iter().any(|symbol| symbol.qualified_name.as_deref() == Some("main::helper")),
             "scripts must retain their implicit main namespace: {symbols:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_pod_documentation_has_no_main_package() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///doc/Module.pod";
+        let pod_only = "=head1 NAME\n\nModule - docs\n\n=cut\n\nsub helper { 1 }\n";
+        anyhow::ensure!(
+            super::initial_package_for_uri(uri).is_none(),
+            "POD files must not receive an implicit package seed"
+        );
+        index
+            .index_initial_file(Url::parse(uri)?, pod_only.to_string())
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.qualified_name.as_deref() != Some("main::helper")),
+            "POD files must not qualify declarations with main: {symbols:?}"
+        );
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.name != "main"),
+            "POD documentation must not synthesize a main package: {symbols:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_test_file_keeps_main_namespace() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///t/basic.t";
+        index
+            .index_initial_file(
+                Url::parse(uri)?,
+                "use Test::More; sub test_something { 1 }".to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.qualified_name.as_deref() == Some("main::test_something")),
+            "test scripts must retain implicit main for subs: {symbols:?}"
         );
         Ok(())
     }
@@ -15022,21 +15169,9 @@ mod extraction_bundle_shadow_compare {
     }
 
     /// **1711-B phase 2: canonical-side parity for the REAL unified
-    /// traversal.** Asserts the unified walk's canonical `FileFactShard`
-    /// (built from `IndexVisitor::visit_unified`'s `Vec<SymbolRef>`, via
-    /// `build_canonical_fact_shard_from_symbol_refs`) is BYTE-FOR-BYTE
-    /// IDENTICAL to production's own canonical output
-    /// (`build_canonical_fact_shard_for_ast`, via `extract_symbol_refs`).
-    ///
-    /// This MUST hold with zero deltas everywhere, including fixtures that
-    /// exercise the coverage-delta constructs (block-form packages/classes,
-    /// Typeglob, Goto, regex-binds, etc.) -- canonical's `extract_symbol_refs`
-    /// already reaches all of those today via its own complete
-    /// `Node::for_each_child`-based fallback (verified empirically; see
-    /// `docs/reference/1711-B-coverage-delta.md`). Only the LEGACY
-    /// `FileIndex` projection gains new coverage under unification (see
-    /// `assert_unified_legacy_is_superset` below) -- canonical does not
-    /// change at all.
+    /// traversal.** Canonical declaration facts on script URIs still use
+    /// the `None` inventory (see `FileExtractionBundle::build_unified`);
+    /// module URIs share one pass. Reference coverage remains unchanged.
     fn assert_unified_canonical_parity(label: &str, uri: &str, text: &str) {
         let mut parser = Parser::new(text);
         let ast = match parser.parse() {
@@ -15104,6 +15239,30 @@ mod extraction_bundle_shadow_compare {
         }
     }
 
+    /// **#4047 declaration-inventory cutover:** for URIs whose legacy package
+    /// seed matches the unified shared inventory (`initial_package_for_uri`),
+    /// the production path must emit the same legacy `WorkspaceSymbol` list
+    /// as the old dual-walk path.
+    fn assert_unified_legacy_symbols_exact_for_shared_seed_uri(label: &str, uri: &str, text: &str) {
+        let mut parser = Parser::new(text);
+        let ast = match parser.parse() {
+            Ok(ast) => ast,
+            Err(e) => {
+                eprintln!("skip {label} ({uri}): parse error: {e}");
+                return;
+            }
+        };
+
+        let direct = build_direct(uri, text, &ast);
+        let unified = build_bundle_unified(uri, text, &ast);
+
+        assert_eq!(
+            direct.file_index.symbols, unified.legacy_index.symbols,
+            "{label}: unified legacy WorkspaceSymbol list diverged on a shared-seed URI \
+             ({uri}) after unifying the declaration inventory (#4047)"
+        );
+    }
+
     // ── Targeted edge cases ──────────────────────────────────────────────
 
     #[test]
@@ -15144,6 +15303,24 @@ mod extraction_bundle_shadow_compare {
         assert_parity("declaration", uri, text);
         assert_unified_canonical_parity("declaration", uri, text);
         assert_unified_legacy_is_superset("declaration", uri, text);
+    }
+
+    #[test]
+    fn unified_shared_declaration_inventory_on_module_uri() {
+        let text = "package Foo;\nour $count = 0;\nmy $local = 1;\nsub bar { my ($x, $y) = @_; return $x + $y; }\n1;\n";
+        let uri = "file:///lib/Foo.pm";
+        assert_unified_canonical_parity("4047_module_decl", uri, text);
+        assert_unified_legacy_symbols_exact_for_shared_seed_uri("4047_module_decl", uri, text);
+
+        let mut parser = Parser::new(text);
+        let ast = must(parser.parse());
+        reindex_metrics::start();
+        let _bundle = build_bundle_unified(uri, text, &ast);
+        let metrics = reindex_metrics::take();
+        assert_eq!(
+            metrics.decl_extract_calls, 1,
+            "shared-seed module URI must run exactly one declaration extract in build_unified (#4047)"
+        );
     }
 
     #[test]

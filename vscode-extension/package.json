@@ -625,16 +625,16 @@
             "default": false,
             "scope": "machine",
             "order": 10,
-            "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
-            "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+            "description": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the AI completion reference.",
+            "markdownDescription": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
           },
           "perl-lsp.aiCompletion.streaming.enabled": {
             "type": "boolean",
             "default": true,
             "scope": "machine",
             "order": 20,
-            "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
-            "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+            "description": "Client preference for progressive inline-completion display. Requires aiCompletion.enabled. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build.",
+            "markdownDescription": "Client preference for progressive inline-completion display. Requires `aiCompletion.enabled`. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
           }
         }
       },
@@ -1348,8 +1348,8 @@
           },
           {
             "id": "verify-perl",
-            "title": "Verify Your Perl Installation",
-            "description": "Run [Perl: Run Health Check](command:perl-lsp.runHealthCheck) to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
+            "title": "Check Optional Perl Runtime",
+            "description": "The core language server works without Perl. [Run Health Check](command:perl-lsp.runHealthCheck) checks for optional Perl to run tests. Debugging requires Perl 5.10+. Native formatting and critic are built in; perltidy and perlcritic are optional external-compatibility tools.",
             "media": {
               "image": "media/walkthrough/verify-perl.svg",
               "altText": "Verify Perl"
@@ -1442,7 +1442,9 @@
     "test:ci": "npm run compile:test && npm run test:receipt-summary && node scripts/run-jest.js --ci --coverage --verbose",
     "test:grammar": "vscode-tmgrammar-snap --config package.json \"test/grammar/fixtures/*.pl\"",
     "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
-    "test:receipt-summary": "node --test --test-concurrency=1 scripts/assemble-installed-acceptance.test.js scripts/summarize-vscode-receipts.test.js scripts/sample-local-vsix-smoke.test.js scripts/run-local-vsix-smoke.test.js scripts/check-vsix-inventory.test.js scripts/package-command.test.js scripts/check-vsix-prebuilt-payload.test.js scripts/check-publisher-tools.test.js scripts/vscode-toolchain-workflows.test.js scripts/check-source-map.test.js scripts/check-typescript-authority.test.js scripts/governed-tsc.test.js scripts/checked-command-contract.test.js scripts/reporter.test.js scripts/build-script.test.js scripts/dev-supervisor.test.js scripts/dev-launch-contract.test.js scripts/typescript-watch-lifecycle.test.js scripts/js-yaml-security.test.js",
+    "test:receipt-summary": "node --test --test-concurrency=1 scripts/assemble-installed-acceptance.test.js scripts/summarize-vscode-receipts.test.js scripts/compare-activation-deferral.test.js scripts/sample-local-vsix-smoke.test.js scripts/run-local-vsix-smoke.test.js scripts/check-vsix-inventory.test.js scripts/package-command.test.js scripts/check-vsix-prebuilt-payload.test.js scripts/check-publisher-tools.test.js scripts/vscode-toolchain-workflows.test.js scripts/check-source-map.test.js scripts/check-typescript-authority.test.js scripts/governed-tsc.test.js scripts/checked-command-contract.test.js scripts/reporter.test.js scripts/build-script.test.js scripts/dev-supervisor.test.js scripts/dev-launch-contract.test.js scripts/typescript-watch-lifecycle.test.js scripts/js-yaml-security.test.js",
+    "compare:activation-deferral": "node scripts/compare-activation-deferral.js",
+    "sample:activation-deferral:local": "node scripts/run-activation-deferral-comparison.js",
     "check:package-inventory": "node scripts/check-vsix-inventory.js",
     "check:source-map": "node scripts/check-source-map.js",
     "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
@@ -1454,14 +1456,14 @@
     "bundle-lsp": "node ./scripts/bundle-lsp.js",
     "check:publisher-tools": "node scripts/check-publisher-tools.js",
     "package": "node scripts/package-vsix.js",
-    "publish": "npm exec --offline --no -- @vscode/vsce publish",
+    "publish": "node ./scripts/refuse-local-publication.cjs",
     "verify:marketplace": "npm run bundle-lsp && npm run package",
-    "publish:openvsx": "npm exec --offline --no -- ovsx publish",
+    "publish:openvsx": "node ./scripts/refuse-local-publication.cjs",
     "check:openvsx": "npm exec --offline --no -- ovsx --version"
   },
   "dependencies": {
     "tar": "^7.5.22",
-    "vscode-languageclient": "^10.1.1",
+    "vscode-languageclient": "^10.1.2",
     "yauzl": "^3.4.0"
   },
   "overrides": {
@@ -1491,16 +1493,16 @@
     "@types/yauzl": "^3.4.0",
     "@types/vscode": "~1.125.0",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "3.9.2",
+    "@vscode/vsce": "4.0.0",
     "ajv": "^8.20.0",
     "jest": "^30.5.2",
     "jszip": "^3.10.2",
     "mocha": "^12.0.3",
-    "ovsx": "1.1.1",
+    "ovsx": "1.3.0",
     "oxfmt": "0.73.0",
     "oxlint": "1.88.0",
     "oxlint-tsgolint": "7.0.2004",
-    "rolldown": "1.2.13",
+    "rolldown": "1.2.14",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

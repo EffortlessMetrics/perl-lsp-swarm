@@ -474,7 +474,11 @@ fn init_subject_checkout(dir: &Path, blob_manifest: &mut VimLspSubjectManifest) 
     fs::create_dir_all(dir.join("plugin"))?;
     fs::write(dir.join("plugin/lsp.vim"), "\" pinned plugin entry\n")?;
     let run = |args: &[&str]| -> Result<String> {
-        let output = Command::new("git").arg("-C").arg(dir).args(args).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()?;
         ensure!(output.status.success(), "git {} failed in fixture", args.join(" "));
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     };
