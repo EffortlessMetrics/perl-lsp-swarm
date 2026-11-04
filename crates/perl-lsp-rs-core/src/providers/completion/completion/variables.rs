@@ -68,9 +68,25 @@ pub fn add_variable_completions(
     context: &CompletionContext,
     kind: SymbolKind,
     symbol_table: &SymbolTable,
+    source: &str,
 ) {
     let sigil = kind.sigil().unwrap_or("");
     let prefix_without_sigil = context.prefix.trim_start_matches(sigil);
+    // Accepting a name in the middle of a variable replaces the remaining
+    // identifier too. Keep punctuation and adjacent expressions outside the edit,
+    // and leave the non-sigil inventory's insertion geometry unchanged.
+    let edit_end = if context.prefix.starts_with(['$', '@', '%']) {
+        context.position
+            + source
+                .get(context.position..)
+                .unwrap_or_default()
+                .chars()
+                .take_while(|ch| perl_lexer::is_perl_identifier_continue(*ch))
+                .map(char::len_utf8)
+                .sum::<usize>()
+    } else {
+        context.position
+    };
 
     for (name, symbols) in &symbol_table.symbols {
         if !name.starts_with(prefix_without_sigil) {
@@ -92,15 +108,9 @@ pub fn add_variable_completions(
                 format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name)
                     .trim()
                     .to_string();
-            completions.push(variable_item(
-                context,
-                symbol_table,
-                symbol,
-                name,
-                sigil,
-                '1',
-                detail,
-            ));
+            let mut item = variable_item(context, symbol_table, symbol, name, sigil, '1', detail);
+            item.text_edit_range = Some((context.prefix_start, edit_end));
+            completions.push(item);
         }
     }
 }

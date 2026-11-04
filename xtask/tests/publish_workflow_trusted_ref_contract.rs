@@ -18,8 +18,9 @@
 //! 2. a run is approved only when the dispatch-selected subject equals one of
 //!    those anchors; anything else fails closed before any credential-bearing
 //!    job is scheduled;
-//! 3. every job that mounts `secrets.*` depends on the gate and proves
-//!    subject provenance before its first secret, in one of two forms:
+//! 3. every job that mounts `secrets.*` (including job-level `env`,
+//!    `container`, `services`, or `with`) depends on the gate and proves
+//!    subject provenance before any secret is exposed, in one of two forms:
 //!    either it checks out only the approved subject
 //!    (`needs.resolve-trusted-anchor.outputs.approved_sha`, with
 //!    `persist-credentials: false` retained), or — for artifact-publisher
@@ -96,8 +97,9 @@ fn docker_publish_credentials_are_bound_to_trusted_anchors() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Clauses 1–3: gate exists and stays credentialess; every `secrets.*`
-/// consumer depends on the gate and touches secrets only after checking out
-/// exactly the approved subject.
+/// consumer (step or job-level surface) depends on the gate and touches
+/// secrets only after checking out exactly the approved subject or verifying
+/// a gate-bound artifact digest.
 fn validate_anchor_contract(workflow: &Value) -> Result<()> {
     let jobs = mapping_value(workflow, "jobs")?;
     let gate = mapping_value(jobs, GATE_JOB)
@@ -241,17 +243,15 @@ fn validate_anchor_contract(workflow: &Value) -> Result<()> {
             })?
         };
 
-        let secrets_idx = steps
-            .iter()
-            .position(|step| {
-                let mut hit = String::new();
-                collect_matches(step, "secrets.", &mut hit);
-                !hit.is_empty()
-            })
-            .ok_or_else(|| anyhow!("job `{name}` references secrets outside any step"))?;
+        let secrets_idx = first_secret_exposure_step_index(job)?.ok_or_else(|| {
+            anyhow!(
+                "job `{name}` references secrets but none were found in steps or job-level surfaces"
+            )
+        })?;
         ensure!(
             provenance_idx < secrets_idx,
-            "job `{name}` must prove provenance before its first step touches a secret"
+            "job `{name}` must prove provenance before any secret use (steps or job-level \
+             env/container/services/with)"
         );
     }
     Ok(())
@@ -574,10 +574,7 @@ fn credential_step_ahead_of_pinned_checkout_fails_closed() -> Result<()> {
     let (head, rest) = FIXTURE_YAML.split_at(checkout_at);
     let (checkout_step, secret_steps) = rest.split_at(login_at - checkout_at);
     let message = rejection_of(&format!("{head}{secret_steps}{checkout_step}"))?;
-    ensure!(
-        message.contains("before its first step touches a secret"),
-        "unexpected rejection: {message}"
-    );
+    ensure!(message.contains("before any secret use"), "unexpected rejection: {message}");
     Ok(())
 }
 
@@ -600,10 +597,7 @@ fn wrapperless_secret_use_before_checkout_fails_closed() -> Result<()> {
         "fixture drifted: wrapper strip failed"
     );
     let message = rejection_of(&swapped_without_wrapper)?;
-    ensure!(
-        message.contains("before its first step touches a secret"),
-        "unexpected rejection: {message}"
-    );
+    ensure!(message.contains("before any secret use"), "unexpected rejection: {message}");
     Ok(())
 }
 
@@ -642,9 +636,71 @@ fn credentialed_job_without_gate_dependency_fails_closed() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn job_level_env_secret_before_pinned_checkout_fails_closed() -> Result<()> {
+    let checkout_at =
+        FIXTURE_YAML.find("      - name: Checkout").ok_or_else(|| anyhow!("fixture drifted"))?;
+    let job_env = "    env:\n      REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n";
+    let insert_at = FIXTURE_YAML[..checkout_at]
+        .rfind("    steps:\n")
+        .ok_or_else(|| anyhow!("fixture drifted"))?;
+    let mutated =
+        format!("{}{}{}", &FIXTURE_YAML[..insert_at], job_env, &FIXTURE_YAML[insert_at..]);
+    let message = rejection_of(&mutated)?;
+    ensure!(message.contains("before any secret use"), "unexpected rejection: {message}");
+    Ok(())
+}
+
+#[test]
+fn step_level_secret_after_provenance_stays_accepted() -> Result<()> {
+    validate_anchor_contract(&parse_fixture(FIXTURE_YAML)?)
+}
+
+#[test]
+fn echo_only_digest_marker_does_not_satisfy_provenance() -> Result<()> {
+    let real_run = "        run: |\n          set -euo pipefail\n          actual=\"$(sha256sum artifact/img.oci.tar | awk '{print $1}')\"\n          test \"$actual\" = \"$RUNTIME_SHA256\"";
+    let decoy_run = "        run: echo \"artifact digest verified before login\"";
+    assert!(ARTIFACT_FIXTURE_YAML.contains(real_run), "fixture drifted");
+    let mutated = ARTIFACT_FIXTURE_YAML.replace(real_run, decoy_run);
+    let message = rejection_of(&mutated)?;
+    ensure!(
+        message.contains("proves provenance neither by a pinned checkout"),
+        "unexpected rejection: {message}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Shared YAML traversal helpers
 // ---------------------------------------------------------------------------
+
+/// Job-level surfaces that expose `${{ secrets.* }}` (or bare `secrets.`) to
+/// every step, including steps that run before provenance.
+const JOB_LEVEL_SECRET_KEYS: &[&str] = &["env", "container", "services", "with"];
+
+fn job_level_references_secrets(job: &Value) -> bool {
+    let mut hit = String::new();
+    for key in JOB_LEVEL_SECRET_KEYS {
+        if let Ok(surface) = mapping_value(job, key) {
+            collect_matches(surface, "secrets.", &mut hit);
+        }
+    }
+    !hit.is_empty()
+}
+
+/// Index of the first step that can mount a secret, or `0` when job-level
+/// surfaces already expose secrets to every step.
+fn first_secret_exposure_step_index(job: &Value) -> Result<Option<usize>> {
+    if job_level_references_secrets(job) {
+        return Ok(Some(0));
+    }
+    let steps = steps_of(job)?;
+    Ok(steps.iter().position(|step| {
+        let mut hit = String::new();
+        collect_matches(step, "secrets.", &mut hit);
+        !hit.is_empty()
+    }))
+}
 
 fn read_workflow(name: &str) -> Result<(String, Value)> {
     let path = repo_root()?.join(".github/workflows").join(name);

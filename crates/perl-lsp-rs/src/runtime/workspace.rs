@@ -2068,6 +2068,8 @@ impl LspServer {
 
                     self.evict_deleted_file_state(&uri);
 
+                    self.invalidate_module_resolution_negative_cache_for_uri(&uri);
+
                     tracing::debug!(uri, "Removed deleted file from index");
 
                     #[cfg(feature = "workspace")]
@@ -2150,7 +2152,7 @@ impl LspServer {
     /// open consumers would keep stale findings after a dependency delete,
     /// restore, or edit. Ask it to re-pull instead, mirroring the
     /// include-path seam.
-    fn refresh_diagnostics_after_watched_change(&self) {
+    pub(crate) fn refresh_diagnostics_after_watched_change(&self) {
         if self.client_supports_pull_diags.load(Ordering::Relaxed) {
             if let Err(error) = self.request_diagnostic_refresh() {
                 tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
@@ -2225,6 +2227,7 @@ impl LspServer {
                 );
             }
         }
+        self.clear_module_resolution_negative_cache();
     }
 
     /// Discovery admission policy for a filesystem path (#14186).    ///
@@ -2273,6 +2276,7 @@ impl LspServer {
     /// a genuinely closed file, which the next watcher event or scan
     /// recovers.
     fn process_file_watcher_uri_immediate(&self, uri: &str) {
+        self.invalidate_module_resolution_negative_cache_for_uri(uri);
         if self.document_is_open(uri) {
             self.record_backing_file_transition(uri, BackingFileTransition::Changed);
             tracing::debug!(
@@ -2559,10 +2563,12 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
 
                 metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
@@ -2579,6 +2585,7 @@ impl LspServer {
                 // event or scan recovers.
                 if self.document_is_open(uri) {
                     self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+                    self.invalidate_module_resolution_negative_cache_for_uri(uri);
                     tracing::debug!(
                         uri,
                         "Explicit create for open document — buffer remains \
@@ -2596,8 +2603,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file creations
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!("Failed to refresh client after file creations: {}", e);
+            }
+
+            // Each usable event invalidates consumer diagnostics. The pull
+            // request must not be lost in the controller's leading-edge debounce.
+            if processed_any {
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 
@@ -2618,6 +2631,7 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(old_uri) = file["oldUri"].as_str() else {
                     continue;
@@ -2625,6 +2639,10 @@ impl LspServer {
                 let Some(new_uri) = file["newUri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
+
+                self.invalidate_module_resolution_negative_cache_for_uri(old_uri);
+                self.invalidate_module_resolution_negative_cache_for_uri(new_uri);
 
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
@@ -2740,8 +2758,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file renames
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after file renames");
+            }
+
+            // Pair push republish with a capability-aware pull refresh for
+            // every usable event, including successive operations (#18116).
+            if processed_any {
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 
@@ -2762,6 +2786,8 @@ impl LspServer {
                 tracing::debug!("Ignoring empty workspace folder change notification");
                 return Ok(());
             }
+
+            self.clear_module_resolution_negative_cache();
 
             let _indexing_transition = self.indexing_transition_lock.lock();
 

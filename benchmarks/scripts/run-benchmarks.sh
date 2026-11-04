@@ -65,7 +65,7 @@ cd "$REPO_ROOT"
 # Get environment info
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GIT_DIRTY=$(git diff --quiet 2>/dev/null && echo "false" || echo "true")
-RUST_VERSION=$(rustc --version | cut -d' ' -f2)
+RUST_VERSION=$(rustc --version 2>/dev/null | cut -d' ' -f2 || echo "unknown")
 OS_NAME=$(uname -s)
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 

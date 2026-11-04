@@ -10,8 +10,15 @@ type ConfigurationHandler = (
   next: (...args: unknown[]) => unknown,
 ) => Promise<unknown[]>;
 
+type RegistrationParams = { registrations: Array<{ id: string; method: string }> };
+type RegistrationHandler = (
+  params: RegistrationParams,
+  next: (params: RegistrationParams) => Promise<void>,
+) => Promise<void>;
+
 type CapturedOptions = {
   middleware?: {
+    handleRegisterCapability?: RegistrationHandler;
     workspace?: {
       configuration?: ConfigurationHandler;
     };
@@ -39,11 +46,16 @@ jest.mock('vscode-languageclient/node', () => ({
       return Promise.resolve();
     }
   },
+  CancellationToken: { None: { isCancellationRequested: false } },
   Trace: { Off: 'off', Messages: 'messages', Verbose: 'verbose' },
   TransportKind: { stdio: 0 },
 }));
 
-import { createLanguageClient } from '../extension';
+import {
+  createLanguageClient,
+  _setExtensionContextForTest,
+  _setLanguageClientLifecycleForTest,
+} from '../extension';
 
 /**
  * Install a `perl-lsp` reader whose values genuinely differ per folder.
@@ -204,5 +216,113 @@ describe('configuration transport wiring (#14447)', () => {
     expect(
       await handler!({ items: [{ scopeUri: FOLDER_A, section: 'perl' }] }, undefined, jest.fn()),
     ).toEqual([{ workspace: { includePaths: ['a/new-lib'] } }]);
+  });
+});
+
+describe('AI dynamic registration wiring', () => {
+  const params = {
+    registrations: [{ id: 'inline-test', method: 'textDocument/inlineCompletion' }],
+  };
+  const lifecycleFor = (liveClient: ReturnType<typeof createLanguageClient>, state = 'running') =>
+    ({ client: liveClient, snapshot: { state } }) as Parameters<
+      typeof _setLanguageClientLifecycleForTest
+    >[0];
+
+  function setup() {
+    installScopedConfiguration({ '': {} });
+    const workspaceState = { get: jest.fn(() => false), update: jest.fn(async () => undefined) };
+    _setExtensionContextForTest({ workspaceState } as unknown as vscode.ExtensionContext);
+    const liveClient = createLanguageClient('/usr/local/bin/perllsp');
+    let registered = false;
+    Object.assign(liveClient, {
+      initializeResult: { capabilities: { experimental: { perlAiCompletionActivation: true } } },
+      getFeature: () => ({ getState: () => ({ kind: 'document', registrations: registered }) }),
+    });
+    _setLanguageClientLifecycleForTest(lifecycleFor(liveClient));
+    return {
+      liveClient,
+      workspaceState,
+      register: () => {
+        registered = true;
+      },
+      handler: captured.options!.middleware!.handleRegisterCapability!,
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+  });
+  afterEach(() => {
+    _setLanguageClientLifecycleForTest(undefined);
+  });
+
+  test('awaits actual registration, then prompts without holding the response open', async () => {
+    const { handler, workspaceState, register } = setup();
+    let finish!: () => void;
+    const next = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            register();
+            resolve();
+          };
+        }),
+    );
+    const request = handler(params, next);
+    expect(workspaceState.update).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    // A pending human response must not delay the protocol response.
+    (vscode.window.showInformationMessage as jest.Mock).mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    finish();
+    await request;
+    expect(next).toHaveBeenCalledWith(
+      params,
+      expect.objectContaining({ isCancellationRequested: false }),
+    );
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('failed registration propagates and cannot offer the journey', async () => {
+    const { handler, workspaceState } = setup();
+    await expect(
+      handler(params, async () => {
+        throw new Error('registration failed');
+      }),
+    ).rejects.toThrow('registration failed');
+    expect(workspaceState.update).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('a replaced client cannot prompt after its registration finishes', async () => {
+    const { handler, register } = setup();
+    await handler(params, async () => {
+      register();
+      _setLanguageClientLifecycleForTest(
+        lifecycleFor(createLanguageClient('/replacement/perllsp')),
+      );
+    });
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test.each(['starting', 'stopping'])('does not prompt during %s', async (state) => {
+    const { handler, liveClient, register } = setup();
+    _setLanguageClientLifecycleForTest(lifecycleFor(liveClient, state));
+    await handler(params, async () => {
+      register();
+    });
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('unrelated registration does not trigger the journey', async () => {
+    const { handler, register } = setup();
+    register();
+    await handler(
+      { registrations: [{ id: 'hover-test', method: 'textDocument/hover' }] },
+      async () => undefined,
+    );
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 });

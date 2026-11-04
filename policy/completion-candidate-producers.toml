@@ -29,13 +29,14 @@
 #   the issue that changes that.
 #
 # On `source_completeness = legacy_unreported` almost everywhere
-#   One producer already reports whether it finished: `htmx::complete_header_names`
-#   distinguishes "not my context" from "mine, and empty". Every other row is
-#   `legacy_unreported`, and the one exception is discarded by the facade above
-#   it, so no request outcome preserves the signal. Until that changes a
-#   `Complete` completion outcome is not earned by any request, because an
-#   empty result is indistinguishable from a producer that gave up. The gap is
-#   propagation, not capability — which is what #10230 consumes.
+#   Two htmx producers already report whether they finished:
+#   `htmx::complete_header_names` and `htmx::complete_attribute_names`
+#   distinguish "not my context" from "mine, and empty". Every other row is
+#   `legacy_unreported`, and both exceptions lose the signal at the request
+#   router or file-path facade, so no request outcome preserves it. Until that
+#   changes a `Complete` completion outcome is not earned by any request,
+#   because an empty result is indistinguishable from a producer that gave up.
+#   The gap is propagation, not capability — which is what #10230 consumes.
 #
 # On the Dancer2 row
 #   `add_dancer2_keyword_completions` is reached by `handle_completion_cancellable`
@@ -168,7 +169,37 @@ outcome_owner = "#10230"
 # now require both current and latest snapshots absent. All 42 scan files,
 # 59 producers, routes, finalizer seams, classifications and migration owners
 # retain their prior ceilings. Digest recomputed over the merged tree.
-source_digest = "sha256:ad97f1b1a8aa4d66f3635c42e899c39c8fddbbb080a775b89d5aeccaeb401fcc"
+# Re-audit 2026-10-22 (#18114, including the useful #18107 proof): #18265
+# changed suffix ranges in twelve scanned files after #18261's valid anchor.
+# Those edits change range bounds/context plumbing, not append channels,
+# producer identities, entry routes, delegations, or finalization. This feature
+# extends the four package ranges and qualifies the existing core-member
+# insertion. The indexed and external/cache use-module item ranges also use
+# the segment suffix; their scan, containment and cancellation rules are unchanged.
+# Its function-specific context adapter consumes paired namespace
+# suffixes only on the two existing function routes; it returns a context, not
+# candidates. The shared segment scanner still stops at ::. Tests are excluded
+# by the existing test-surface rule. The same 42 files and 59 producer rows keep
+# their existing identity/evidence/completeness ceilings and migration owners.
+# Digest re-anchored 2026-10-29 over the tree merged with main: main's #16853
+# reopened-class-model edits in `completion/workspace.rs` and the #18338 policy
+# convergence share the scanned surface; producer rows are unchanged.
+# Re-anchored 2026-10-30 (#18445): #17936's parsed-variable completion-suffix
+# change touched the scanned `completion/variables.rs` and
+# `completion/request/dispatch.rs`; the existing producer rows, their
+# identity/evidence/completeness ceilings and migration owners are unchanged.
+# Re-anchored 2026-11-02 (#18731): clippy-only edits in scanned
+# `completion/import_map.rs` after #18684; producer rows unchanged.
+# Re-anchor 2026-11-02 (#18936): #18828 (#18760) narrowed
+# `is_in_regex_flags` so method-arrow suffixes after a closed angle-delimited
+# m<>/qr<> literal do not route into the regex-flag branch, and runtime
+# `add_runtime_workspace_completions` requires a string prefix (not merely a
+# subsequence match) for Package/Class/Role symbols from `find_symbols`. Scan
+# roots: lexical_context.rs, request/context.rs (tests only), and
+# runtime/language/completion.rs; 41 files, producer population unchanged,
+# entry routes and finalizer untouched. This is a source re-audit, not a claim
+# that completion behavior is unchanged.
+source_digest = "sha256:393918b93e6d55430a241d2663ed91d5b72ee4e35019cb08424232aa69943a7d"
 
 [[delegations]]
 module = "dancer2"
@@ -229,7 +260,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "direct_call"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11009"
-limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
+limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed. Package, Class, and Role hits from `find_symbols` must match the typed prefix as a string prefix (or qualified prefix), not merely as a subsequence (#18828)."
 note = "Enriches the pool with workspace-indexed symbols under the routing policy."
 
 [[producers]]
@@ -475,7 +506,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11002"
 limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
-note = "Subroutines declared in the current document."
+note = "Subroutines and constants declared in the current document; the two function dispatch routes replace qualified suffixes when inserting a complete bare local name."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::keywords::add_keyword_completions"
@@ -526,7 +557,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11015"
 limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
-note = "Core module name catalogue."
+note = "Core module member catalogue; fully qualified insertion matches the qualified prefix range, with a segment-bounded suffix."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::packages::add_local_package_completions"
@@ -543,7 +574,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11002"
 limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
-note = "Packages declared in the current document."
+note = "Source-backed package members in the current document; fully qualified insertion replaces through the current segment suffix and preserves a following namespace segment."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::packages::add_package_completions"
@@ -560,7 +591,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11015"
 limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
-note = "Package member candidates for a qualified prefix."
+note = "Package member and nested-package candidates for a qualified prefix; suffix ranges preserve a following namespace separator."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_completions"
@@ -627,8 +658,25 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
-limitations = "This seam finalizes early on two of its three exit paths: both the regex-flag branch and the plain in-regex branch call the shared deduplicate-and-sort and return, after which the runtime finalizes the page again. Candidates on either branch are therefore sorted twice and capped once downstream. Only the sigil-prefixed branch, which returns empty, is exempt. Collapsing the duplicate finalization is #10229's."
+limitations = "This seam finalizes early on two of its three exit paths: both the regex-flag branch and the plain in-regex branch call the shared deduplicate-and-sort and return, after which the runtime finalizes the page again. Candidates on either branch are therefore sorted twice and capped once downstream. Only the sigil-prefixed branch, which returns empty, is exempt. Collapsing the duplicate finalization is #10229's. The regex-flag branch is gated by `is_in_regex_flags`, which now rejects method-arrow suffixes left after a closed angle-delimited m<>/qr<> literal (#18828)."
 note = "Regex-context routing, with an early finalization on two branches that the shared route does not expect."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::context::try_complete_htmx_attributes"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#14116"
+limitations = "Early-return router: delegates to `htmx::complete_attribute_names`, applies Perl lexical guards and suffix-aware edit ranges, and returns before the shared runtime finalizer. Completeness reporting from the producer is not preserved on the wire (#10230)."
+note = "Admitted markup attribute-name router for htmx completion."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_dispatch"
@@ -935,7 +983,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11015"
 limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
-note = "Module name candidates in a `use`/`require` context, served from the scan cache."
+note = "Module name candidates in a `use`/`require` context, indexed or external/cached; current segment suffix ranges preserve subsequent namespace segments and whitespace-separated arguments."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_use_qw_import_completions"
@@ -1138,7 +1186,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
-limitations = "The one producer that already reports completeness, and the report is discarded one hop later: `None` means the prefix is not htmx-shaped and another provider owns it, while `Some([])` means htmx owns the context and has no candidate. The `completion::completion::file_path` facade collapses both into a plain vector, so nothing reaches #10230. Do not read this row as evidence that a Complete outcome is earned."
+limitations = "Reports completeness, but the file-path facade collapses `None` vs `Some([])` into a plain vector, so nothing reaches #10230. Do not read this row as evidence that a Complete outcome is earned."
 note = "Canonical htmx request and response header names inside a string literal."
 
 [[producers]]
@@ -1150,14 +1198,13 @@ identity = "legacy_label_compatibility"
 insertion_plan = "legacy_compatibility"
 evidence = "static_server_metadata"
 rank = "compatibility_with_exit"
-source_completeness = "legacy_unreported"
+source_completeness = "complete_or_empty"
 finalizer_route = "compatibility_adapter_before_shared_finalizer"
-reach_evidence = "unreachable"
-reached_by = []
-migration_owner = "#15014"
-unreachable_reason = "Completes htmx attribute names in markup. Only the module's own tests call it; the Perl completion route reaches `complete_header_names` and nothing else in this module. Recorded because it sits beside a producer that is reached, which is where an attribute-completion fix would wrongly land."
-limitations = "Unreached from `textDocument/completion`. Nothing about live htmx attribute behavior can be read from this row."
-note = "htmx markup attribute-name catalogue, not wired into Perl completion."
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#14116"
+limitations = "Returns `None` outside admitted markup attribute-name slots and `Some([])` once an `hx-on:<event>` suffix is typed; the request router returns that vector directly without reaching #10230 completeness reporting."
+note = "Canonical htmx attribute names in admitted template markup."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion_item::finalize_completion_candidates"
