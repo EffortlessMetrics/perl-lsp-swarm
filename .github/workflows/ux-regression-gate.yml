@@ -169,6 +169,8 @@ jobs:
           import os
           from pathlib import Path
 
+          UX_REGRESSION_RECEIPT_SCHEMA_VERSION = 2
+
           receipt_path = Path("target/receipts/ux-regression.json")
           instrumentation_path = Path("target/receipts/ux-regression.instrumentation.exit")
           if not instrumentation_path.is_file() or instrumentation_path.is_symlink():
@@ -178,6 +180,10 @@ jobs:
           if not receipt_path.is_file() or receipt_path.is_symlink():
               raise SystemExit("UX receipt is missing or not a regular file")
           receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          if receipt.get("schema_version") != UX_REGRESSION_RECEIPT_SCHEMA_VERSION:
+              raise SystemExit(
+                  f"unsupported UX regression schema: {receipt.get('schema_version')!r}"
+              )
           if receipt.get("sha") != os.environ["TESTED_SHA"]:
               raise SystemExit(
                   f"UX receipt subject {receipt.get('sha')!r} does not match "
@@ -248,6 +254,8 @@ jobs:
           from pathlib import Path
           import re
 
+          UX_REGRESSION_RECEIPT_SCHEMA_VERSION = 2
+
           summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
           tested_sha = os.environ["TESTED_SHA"]
           harness_available = os.environ.get("HARNESS_AVAILABLE") == "true"
@@ -307,41 +315,51 @@ jobs:
               if receipt_path.exists():
                   try:
                       receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                  except (OSError, ValueError):
-                      receipt = None
-                  if isinstance(receipt, dict):
-                      # A passing run asserts no failure, so its receipt's class
-                      # and route are only the neutral `unknown`/`triage`
-                      # (#16287). Omitting both lines keeps a green summary from
-                      # advertising a failure remedy.
-                      show_failure_fields = receipt.get("result") != "pass"
-                      lines += [
-                          "",
-                          "### Structured evidence",
-                          "",
-                      ]
-                      if show_failure_fields:
-                          lines.append(
-                              f"- Failure class: `{receipt.get('failure_class') or 'n/a'}`"
-                          )
-                      lines += [
-                          f"- First failing test: `{receipt.get('first_failing_test') or 'n/a'}`",
-                          f"- Panic location: `{receipt.get('panic_location') or 'n/a'}`",
-                          f"- Repro: `{receipt.get('canonical_repro') or receipt.get('friendly_repro') or 'just ux-tests'}`",
-                      ]
-                      if show_failure_fields:
-                          lines.append(f"- Route: `{receipt.get('route') or 'triage'}`")
-                      # `failure_class` is read from the whole log; the per-test
-                      # discrimination that separates a spent budget from a
-                      # rejected observation travels in `human_summary` (#16103).
-                      # This surface printed the class alone, so a failure here
-                      # showed the guess without the reading beside it, while the
-                      # same receipt read correctly in ci.yml. Two printers of one
-                      # field is exactly how that divergence happens, which is why
-                      # `both_ux_summaries_print_the_receipts_human_summary` now
-                      # pins both.
-                      if receipt.get("human_summary"):
-                          lines.append(f"- Summary: {receipt.get('human_summary')}")
+                  except (OSError, ValueError) as error:
+                      raise SystemExit(
+                          f"UX regression receipt is not valid JSON: {error}"
+                      ) from error
+                  if not isinstance(receipt, dict):
+                      raise SystemExit(
+                          "UX regression receipt must be a JSON object, "
+                          f"got {type(receipt).__name__}"
+                      )
+                  if receipt.get("schema_version") != UX_REGRESSION_RECEIPT_SCHEMA_VERSION:
+                      raise SystemExit(
+                          f"unsupported UX regression schema: {receipt.get('schema_version')!r}"
+                      )
+                  # A passing run asserts no failure, so its receipt's class
+                  # and route are only the neutral `unknown`/`triage`
+                  # (#16287). Omitting both lines keeps a green summary from
+                  # advertising a failure remedy.
+                  show_failure_fields = receipt.get("result") != "pass"
+                  lines += [
+                      "",
+                      "### Structured evidence",
+                      "",
+                  ]
+                  if show_failure_fields:
+                      lines.append(
+                          f"- Failure class: `{receipt.get('failure_class') or 'n/a'}`"
+                      )
+                  lines += [
+                      f"- First failing test: `{receipt.get('first_failing_test') or 'n/a'}`",
+                      f"- Panic location: `{receipt.get('panic_location') or 'n/a'}`",
+                      f"- Repro: `{receipt.get('canonical_repro') or receipt.get('friendly_repro') or 'just ux-tests'}`",
+                  ]
+                  if show_failure_fields:
+                      lines.append(f"- Route: `{receipt.get('route') or 'triage'}`")
+                  # `failure_class` is read from the whole log; the per-test
+                  # discrimination that separates a spent budget from a
+                  # rejected observation travels in `human_summary` (#16103).
+                  # This surface printed the class alone, so a failure here
+                  # showed the guess without the reading beside it, while the
+                  # same receipt read correctly in ci.yml. Two printers of one
+                  # field is exactly how that divergence happens, which is why
+                  # `both_ux_summaries_print_the_receipts_human_summary` now
+                  # pins both.
+                  if receipt.get("human_summary"):
+                      lines.append(f"- Summary: {receipt.get('human_summary')}")
 
           rendered = "\n".join(lines) + "\n"
           summary.write_text(rendered, encoding="utf-8")

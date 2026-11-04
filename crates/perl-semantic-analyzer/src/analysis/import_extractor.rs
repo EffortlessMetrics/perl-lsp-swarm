@@ -1,87 +1,89 @@
 //! Import specification extractor for `use` and `require` statements.
 //!
-//! Walks the AST to extract [`ImportSpec`] entries from Perl `use` and `require`
-//! statements, classifying each import site by its syntactic shape
-//! ([`ImportKind`]) and symbol selection policy ([`ImportSymbols`]).
+//! Directive `use` / `require` meaning comes from
+//! [`perl_parser_core::hir::CompileEnvironment::import_specs`]. This module
+//! does not reclassify flattened `Use.args`. It only overlays patterns the
+//! current HIR projection does not emit: `require Module; Module->import(...)`
+//! pairing and standalone `ClassName->import(@names)`.
 //!
 //! # Supported Patterns
 //!
-//! | Perl source                              | `ImportKind`          | `ImportSymbols`              |
-//! |------------------------------------------|-----------------------|------------------------------|
-//! | `use Module qw(a b)`                     | `UseExplicitList`     | `Explicit(["a", "b"])`       |
-//! | `use Module ()`                          | `UseEmpty`            | `None`                       |
-//! | `use Module ':tag'`                      | `UseTag`              | `Tags(["tag"])`              |
-//! | `use Module` (bare)                      | `Use`                 | `Default`                    |
-//! | `use constant { FOO => 1 }`              | `UseConstant`         | `Explicit(["FOO"])`          |
-//! | `use constant PI => 3.14`                | `UseConstant`         | `Explicit(["PI"])`           |
-//! | `require Module`                         | `Require`             | `Default`                    |
-//! | `require Module; Module->import(...)`    | `RequireThenImport`   | `Explicit([...])` / `Default`|
-//! | `require $var`                           | `DynamicRequire`      | `Dynamic`                    |
-
+//! | Perl source                              | `ImportKind`          | `ImportSymbols`              | Source  |
+//! |------------------------------------------|-----------------------|------------------------------|---------|
+//! | `use Module qw(a b)`                     | `UseExplicitList`     | `Explicit(["a", "b"])`       | HIR     |
+//! | `use Module ()`                          | `UseEmpty`            | `None`                       | HIR     |
+//! | `use Module ':tag'`                      | `UseTag`              | `Tags(["tag"])`              | HIR     |
+//! | `use Module` (bare)                      | `Use`                 | `Default`                    | HIR     |
+//! | `use constant { FOO => 1 }`              | `UseConstant`         | `Explicit(["FOO"])`          | HIR     |
+//! | `use constant PI => 3.14`                | `UseConstant`         | `Explicit(["PI"])`           | HIR     |
+//! | `require Module`                         | `Require`             | `Default`                    | HIR     |
+//! | `require Module; Module->import(...)`    | `RequireThenImport`   | `Explicit([...])` / `Default`| overlay |
+//! | `require $var`                           | `DynamicRequire`      | `Dynamic`                    | HIR     |
+//! | `Foo->import(@names)` (standalone)       | `ManualImport`        | `Dynamic`                    | overlay |
 use crate::ast::{Node, NodeKind};
-use perl_parser_core::hir::arguments_outside_configuration_hashes;
+use perl_parser_core::hir::{HirFile, lower_ast};
 use perl_semantic_facts::{
     AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance,
 };
 
-/// Extractor that walks an AST to produce [`ImportSpec`] entries for each
-/// `use` and `require` statement found.
+/// Extractor that projects HIR import facts and overlays non-directive import
+/// patterns into [`ImportSpec`] entries.
 pub struct ImportExtractor;
 
 impl ImportExtractor {
-    /// Walk the entire AST and return one [`ImportSpec`] per `use` or
-    /// `require` statement.
+    /// Project canonical HIR import facts, then overlay patterns HIR does not emit.
     ///
     /// Each spec carries the supplied `file_id` and an `anchor_id` derived from
     /// the statement's byte-offset span.
     pub fn extract(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
-        let mut specs = Vec::new();
-        Self::walk(ast, file_id, &mut specs);
-        specs
+        Self::extract_from_hir(&lower_ast(ast), ast, file_id)
     }
 
-    // ── AST walker ──────────────────────────────────────────────────────
+    /// Project [`HirFile::compile_environment`] import facts for `file_id`.
+    ///
+    /// Callers that already lowered HIR should use this entry so analyzer
+    /// specs come from the same compile-environment projection rather than a
+    /// second argument classifier.
+    pub fn extract_from_hir(hir: &HirFile, ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
+        let mut out = hir.compile_environment.import_specs(file_id);
+        Self::overlay_non_directive_imports(ast, file_id, &mut out);
+        out
+    }
 
-    fn walk(node: &Node, file_id: FileId, out: &mut Vec<ImportSpec>) {
-        // Handle `use` statements directly.
-        if let NodeKind::Use { module, args, .. } = &node.kind
-            && let Some(spec) = Self::classify_use(module, args, file_id, node)
+    // ── Overlay for patterns current HIR import_specs do not emit ────────
+
+    fn overlay_non_directive_imports(node: &Node, file_id: FileId, out: &mut Vec<ImportSpec>) {
+        let mut consumed_import_spans = std::collections::HashSet::new();
+        Self::overlay_non_directive_imports_inner(node, file_id, out, &mut consumed_import_spans);
+    }
+
+    fn overlay_non_directive_imports_inner(
+        node: &Node,
+        file_id: FileId,
+        out: &mut Vec<ImportSpec>,
+        consumed_import_spans: &mut std::collections::HashSet<u32>,
+    ) {
+        if let Some(spec) = Self::try_classify_standalone_class_import(node, file_id)
+            && !Self::already_has_span(out, spec.span_start_byte)
+            && spec.span_start_byte.is_none_or(|span| !consumed_import_spans.contains(&span))
         {
             out.push(spec);
         }
 
-        // Detect standalone `ClassName->import(...)` method calls where
-        // `ClassName` is a static identifier (not a variable).
-        //
-        // These are NOT preceded by a `require` statement. The exported
-        // symbol list is often dynamic (e.g. `Foo->import(@names)`), so
-        // we emit `ImportSymbols::Dynamic` conservatively.
-        //
-        // This covers Case 3 in the PR-B spec: a static class name with
-        // dynamic arguments signals that some set of symbols is imported
-        // from `Foo`, but the exact names are not statically known.
-        if let Some(spec) = Self::try_classify_standalone_class_import(node, file_id) {
-            out.push(spec);
-        }
-
-        // For statement-list containers (Program, Block, Package), scan
-        // consecutive statements to detect `require Module; Module->import(...)`
-        // pairs and standalone `require` statements.
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                Self::walk_statements(statements, file_id, out);
-            }
-            NodeKind::Package { block: Some(block), .. } => {
-                if let NodeKind::Block { statements } = &block.kind {
-                    Self::walk_statements(statements, file_id, out);
-                }
+                Self::overlay_require_then_import(statements, file_id, out, consumed_import_spans);
             }
             _ => {}
         }
 
         for child in node.children() {
-            Self::walk(child, file_id, out);
+            Self::overlay_non_directive_imports_inner(child, file_id, out, consumed_import_spans);
         }
+    }
+
+    fn already_has_span(specs: &[ImportSpec], span_start_byte: Option<u32>) -> bool {
+        specs.iter().any(|spec| spec.span_start_byte == span_start_byte)
     }
 
     /// Detect a standalone `ClassName->import(...)` call where `ClassName`
@@ -90,14 +92,17 @@ impl ImportExtractor {
     /// Returns `None` when:
     /// - The node is not a `MethodCall`.
     /// - The method name is not `"import"`.
-    /// - The object is a variable (those are covered by `walk_statements`).
+    /// - The object is a variable.
     /// - The argument list is entirely static (fully explicit symbols) — those
-    ///   are already captured by `walk_statements` when preceded by `require`.
+    ///   are already captured by [`Self::overlay_require_then_import`] when
+    ///   preceded by `require`.
     ///
     /// Returns an `ImportSpec` with `ImportSymbols::Dynamic` when the
     /// argument list contains any dynamic argument (e.g. `@names`, `$names`).
     /// Returns `None` when all arguments are static strings or `qw(...)` lists
-    /// (those produce `Explicit` specs through `walk_statements`).
+    /// (those produce `Explicit` specs through require-then-import pairing).
+    /// Import calls already consumed by a neighboring `require` pair are
+    /// suppressed by span, even when their arguments are dynamic.
     fn try_classify_standalone_class_import(node: &Node, file_id: FileId) -> Option<ImportSpec> {
         let (object, method, args) = match &node.kind {
             NodeKind::MethodCall { object, method, args } => (object, method, args),
@@ -140,18 +145,18 @@ impl ImportExtractor {
         })
     }
 
-    /// Scan a list of sibling statements for `require` patterns.
+    /// Overlay `require Module; Module->import(...)` onto HIR Require rows.
     ///
-    /// Detects:
-    /// - `require Module; Module->import(...)` → `RequireThenImport`
-    /// - `require Module` (standalone) → `Require`
-    /// - `require $var` → `DynamicRequire`
-    ///
-    /// Statements that are part of a `require + import` pair are recorded
-    /// once (not duplicated by the per-node walk).
-    fn walk_statements(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpec>) {
-        // Track which statement indices have been consumed as part of a
-        // require-then-import pair so the per-node walk does not re-emit them.
+    /// Standalone `require` and `require $var` stay as HIR facts. This only
+    /// promotes a paired import call and updates the matching HIR Require row
+    /// in place (including path-like quoted requires) so pairing does not
+    /// leave a duplicate Require row.
+    fn overlay_require_then_import(
+        statements: &[Node],
+        file_id: FileId,
+        out: &mut Vec<ImportSpec>,
+        consumed_import_spans: &mut std::collections::HashSet<u32>,
+    ) {
         let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
         for (i, stmt) in statements.iter().enumerate() {
@@ -159,85 +164,73 @@ impl ImportExtractor {
                 continue;
             }
 
-            // Unwrap ExpressionStatement to get the inner expression.
             let expr = Self::unwrap_expression_statement(stmt);
 
-            // Check for `require <something>`.
             let (require_node, require_args) = match &expr.kind {
                 NodeKind::FunctionCall { name, args } if name == "require" => (stmt, args),
                 _ => continue,
             };
 
-            // Dynamic require: `require $var`
             if Self::is_dynamic_require(require_args) {
-                out.push(Self::make_dynamic_require(file_id, require_node));
                 consumed.insert(i);
                 continue;
             }
 
-            // Static require: extract module name.
             let module_name = match Self::extract_require_module_name(require_args) {
                 Some(name) => name,
                 None => continue,
             };
 
-            // Look ahead for `Module->import(...)` in the next statement.
-            let import_spec = if let Some(next_stmt) = statements.get(i + 1) {
+            let import_spec = statements.get(i + 1).and_then(|next_stmt| {
                 let next_expr = Self::unwrap_expression_statement(next_stmt);
                 Self::try_match_import_call(next_expr, &module_name)
-            } else {
-                None
-            };
+            });
 
             if let Some((symbols, import_node)) = import_spec {
-                // `require Module; Module->import(...)` → RequireThenImport
-                //
-                // Use the require statement's anchor for the spec.
-                // Choose provenance based on whether the import argument list
-                // is entirely composed of literal strings/qw() words:
-                // - All static (Explicit/Tags/Mixed/Default/None) → LiteralRequireImport
-                //   (guarantees the full symbol set is statically known)
-                // - Dynamic → ExactAst (conservative; symbol set not fully known)
+                let require_span = Self::some_span_start(require_node);
+                let expr_span = Self::some_span_start(expr);
+                let confidence = Self::confidence_for_symbols(&symbols);
                 let provenance = if matches!(symbols, ImportSymbols::Dynamic) {
                     Provenance::ExactAst
                 } else {
                     Provenance::LiteralRequireImport
                 };
-                let anchor_id = Self::anchor_from_node(require_node);
-                let confidence = Self::confidence_for_symbols(&symbols);
-                out.push(ImportSpec {
-                    module: module_name,
-                    kind: ImportKind::RequireThenImport,
-                    symbols,
-                    provenance,
-                    confidence,
-                    file_id: Some(file_id),
-                    anchor_id: Some(anchor_id),
-                    scope_id: None,
-                    span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
-                });
+                if let Some(existing) = out.iter_mut().find(|spec| {
+                    (spec.span_start_byte == require_span || spec.span_start_byte == expr_span)
+                        && matches!(spec.kind, ImportKind::Require | ImportKind::RequireThenImport)
+                }) {
+                    existing.kind = ImportKind::RequireThenImport;
+                    existing.module = module_name;
+                    existing.symbols = symbols;
+                    existing.confidence = confidence;
+                    existing.provenance = provenance;
+                } else {
+                    let anchor_id = Self::anchor_from_node(require_node);
+                    out.push(ImportSpec {
+                        module: module_name,
+                        kind: ImportKind::RequireThenImport,
+                        symbols,
+                        provenance,
+                        confidence,
+                        file_id: Some(file_id),
+                        anchor_id: Some(anchor_id),
+                        scope_id: None,
+                        span_start_byte: require_span,
+                    });
+                }
+                if let Some(span) = Self::some_span_start(import_node) {
+                    consumed_import_spans.insert(span);
+                }
                 consumed.insert(i);
                 consumed.insert(i + 1);
-                // Also record the import call node index so the per-node
-                // walk does not process it.
-                let _ = import_node;
             } else {
-                // Standalone `require Module` → Require
-                let anchor_id = Self::anchor_from_node(require_node);
-                out.push(ImportSpec {
-                    module: module_name,
-                    kind: ImportKind::Require,
-                    symbols: ImportSymbols::Default,
-                    provenance: Provenance::ExactAst,
-                    confidence: Confidence::High,
-                    file_id: Some(file_id),
-                    anchor_id: Some(anchor_id),
-                    scope_id: None,
-                    span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
-                });
                 consumed.insert(i);
             }
         }
+    }
+
+    fn some_span_start(node: &Node) -> Option<u32> {
+        Some(node.location.start.min(u32::MAX as usize) as u32)
     }
 
     // ── Require helpers ────────────────────────────────────────────────
@@ -276,28 +269,6 @@ impl ImportExtractor {
                 Some(module)
             }
             _ => None,
-        }
-    }
-
-    /// Build an [`ImportSpec`] for `require $var` (dynamic require).
-    ///
-    /// Uses `Provenance::DynamicBoundary + Confidence::Low` because the module
-    /// identity is not statically known — only the pattern is known. This
-    /// provenance marks the import site for the diagnostics suppressor so that
-    /// symbols "plausibly imported" via dynamic require are not flagged as
-    /// undefined.
-    fn make_dynamic_require(file_id: FileId, node: &Node) -> ImportSpec {
-        let anchor_id = Self::anchor_from_node(node);
-        ImportSpec {
-            module: String::new(),
-            kind: ImportKind::DynamicRequire,
-            symbols: ImportSymbols::Dynamic,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-            file_id: Some(file_id),
-            anchor_id: Some(anchor_id),
-            scope_id: None,
-            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
         }
     }
 
@@ -424,237 +395,6 @@ impl ImportExtractor {
         if matches!(symbols, ImportSymbols::Dynamic) { Confidence::Low } else { Confidence::High }
     }
 
-    // ── Classification ──────────────────────────────────────────────────
-
-    /// Classify a single `use` statement into an [`ImportSpec`].
-    ///
-    /// Returns `None` for version pragmas (`use 5.036;`, `use v5.38;`) and
-    /// other non-module-import statements that should not produce import facts.
-    fn classify_use(
-        module: &str,
-        args: &[String],
-        file_id: FileId,
-        node: &Node,
-    ) -> Option<ImportSpec> {
-        // Skip version pragmas — they are not module imports.
-        if Self::is_version_pragma(module) {
-            return None;
-        }
-
-        let anchor_id = Self::anchor_from_node(node);
-
-        // `use constant` is a special pragma that defines constants.
-        if module == "constant" {
-            return Some(Self::classify_use_constant(args, file_id, anchor_id));
-        }
-
-        // Classify by argument shape.
-        let (kind, symbols) = Self::classify_args(args, module, node);
-
-        Some(ImportSpec {
-            module: module.to_string(),
-            kind,
-            symbols,
-            provenance: Provenance::ExactAst,
-            confidence: Confidence::High,
-            file_id: Some(file_id),
-            anchor_id: Some(anchor_id),
-            scope_id: None,
-            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
-        })
-    }
-
-    /// Classify the argument list of a non-constant `use` statement.
-    fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, ImportSymbols) {
-        if args.is_empty() {
-            // Distinguish `use Module;` from `use Module ()`.
-            //
-            // The parser produces empty args for both forms. We use a span-length
-            // heuristic: `use Module;` occupies `"use " + module + ";"` bytes,
-            // while `use Module ()` is longer due to the parentheses.
-            let bare_len = "use ".len() + module.len() + 1; // +1 for ';'
-            let span_len = node.location.end.saturating_sub(node.location.start);
-            if span_len > bare_len {
-                // The source text is longer than a bare `use Module;`, so there
-                // were likely empty parentheses.
-                return (ImportKind::UseEmpty, ImportSymbols::None);
-            }
-            // `use Module;` — bare import, triggers default @EXPORT.
-            return (ImportKind::Use, ImportSymbols::Default);
-        }
-
-        // Collect explicit names, tags, and detect qw() forms.
-        let mut explicit_names: Vec<String> = Vec::new();
-        let mut tags: Vec<String> = Vec::new();
-        let requested = arguments_outside_configuration_hashes(args);
-
-        for trimmed in &requested {
-            let trimmed = *trimmed;
-
-            // qw(...) form: "qw(a b c)"
-            if let Some(inner) = Self::parse_qw_content(trimmed) {
-                let words: Vec<String> = inner.split_whitespace().map(|w| w.to_string()).collect();
-                for word in words {
-                    if let Some(tag) = word.strip_prefix(':') {
-                        tags.push(tag.to_string());
-                    } else {
-                        explicit_names.push(word);
-                    }
-                }
-                continue;
-            }
-
-            // Tag argument: ':tag' or ":tag" (with or without quotes)
-            let unquoted = Self::unquote(trimmed);
-            if let Some(tag) = unquoted.strip_prefix(':') {
-                tags.push(tag.to_string());
-                continue;
-            }
-
-            // Skip fat-arrow values and punctuation that are part of overload-style
-            // key-value pairs (e.g. `use overload '""' => \&stringify`).
-            if trimmed == "=>" || trimmed == "," || trimmed == "\\" {
-                continue;
-            }
-
-            // Regular symbol name.
-            if Self::looks_like_symbol_name(trimmed) {
-                explicit_names.push(Self::unquote(trimmed).to_string());
-            }
-        }
-
-        // Empty parens: `use Module ()`
-        if explicit_names.is_empty() && tags.is_empty() && !args.is_empty() {
-            // The parser consumed `()` but produced no meaningful args.
-            // However, args may contain punctuation tokens from complex use statements.
-            // If all args are non-symbol tokens, treat as empty import. Only
-            // arguments outside a configuration hash count: a configuration-only
-            // `use` requests nothing and must not fall through to a default import.
-            let has_any_symbol = requested
-                .iter()
-                .any(|t| Self::looks_like_symbol_name(t) || Self::parse_qw_content(t).is_some());
-            if !has_any_symbol {
-                return (ImportKind::UseEmpty, ImportSymbols::None);
-            }
-        }
-
-        // Tags only.
-        if !tags.is_empty() && explicit_names.is_empty() {
-            return (ImportKind::UseTag, ImportSymbols::Tags(tags));
-        }
-
-        // Mixed tags and names.
-        if !tags.is_empty() && !explicit_names.is_empty() {
-            return (
-                ImportKind::UseExplicitList,
-                ImportSymbols::Mixed { tags, names: explicit_names },
-            );
-        }
-
-        // Explicit symbol list.
-        if !explicit_names.is_empty() {
-            return (ImportKind::UseExplicitList, ImportSymbols::Explicit(explicit_names));
-        }
-
-        // Fallback: bare use with unrecognised args.
-        (ImportKind::Use, ImportSymbols::Default)
-    }
-
-    /// Classify `use constant` statements.
-    fn classify_use_constant(args: &[String], file_id: FileId, anchor_id: AnchorId) -> ImportSpec {
-        let mut constant_names: Vec<String> = Vec::new();
-
-        if args.is_empty() {
-            // `use constant;` — degenerate, no constants defined.
-            return ImportSpec {
-                module: "constant".to_string(),
-                kind: ImportKind::UseConstant,
-                symbols: ImportSymbols::None,
-                provenance: Provenance::ExactAst,
-                confidence: Confidence::High,
-                file_id: Some(file_id),
-                anchor_id: Some(anchor_id),
-                scope_id: None,
-                span_start_byte: None, // position not needed for UseConstant
-            };
-        }
-
-        // Hash-ref form: `use constant { FOO => 1, BAR => 2 }`
-        // Args look like: ["{", "FOO", "=>", "1", "BAR", "=>", "2", "}"]
-        let starts_hash_form = args.first().map(|a| a.as_str()) == Some("{")
-            || args.first().map(|a| a.as_str()) == Some("+{")
-            || (args.first().map(|a| a.as_str()) == Some("+")
-                && args.get(1).map(|a| a.as_str()) == Some("{"));
-        if starts_hash_form {
-            let mut i = 0;
-            while i < args.len() {
-                let token = args[i].trim();
-                if Self::is_constant_hash_punctuation(token) {
-                    i += 1;
-                    continue;
-                }
-                if i + 1 < args.len()
-                    && args[i + 1].trim() == "=>"
-                    && let Some(name) = Self::constant_name_candidate(token)
-                {
-                    constant_names.push(name);
-                    i += 2;
-                    let mut nesting = 0usize;
-                    while i < args.len() {
-                        let value_token = args[i].trim();
-                        if nesting == 0 && (value_token == "," || value_token == "}") {
-                            break;
-                        }
-                        match value_token {
-                            "{" | "[" | "(" => nesting += 1,
-                            "}" | "]" | ")" if nesting > 0 => nesting -= 1,
-                            "}" if nesting == 0 => break,
-                            _ => {}
-                        }
-                        i += 1;
-                    }
-                } else {
-                    i += 1;
-                }
-            }
-        }
-        // qw() form: `use constant qw(ONE TWO THREE)`
-        else if let Some(inner) = args.first().and_then(|a| Self::parse_qw_content(a.trim())) {
-            let words: Vec<String> = inner.split_whitespace().map(|w| w.to_string()).collect();
-            constant_names.extend(words);
-        }
-        // Scalar form: `use constant PI => 3.14`
-        // Args look like: ["PI", "3.14"] or ["PI", "=>", "3.14"]
-        else if let Some(name) = args.first() {
-            let trimmed = name.trim();
-            if let Some(name) = Self::constant_name_candidate(trimmed) {
-                constant_names.push(name);
-            }
-        }
-
-        // Deduplicate while preserving order.
-        let mut seen = std::collections::HashSet::new();
-        constant_names.retain(|n| seen.insert(n.clone()));
-
-        let symbols = if constant_names.is_empty() {
-            ImportSymbols::None
-        } else {
-            ImportSymbols::Explicit(constant_names)
-        };
-
-        ImportSpec {
-            module: "constant".to_string(),
-            kind: ImportKind::UseConstant,
-            symbols,
-            provenance: Provenance::ExactAst,
-            confidence: Confidence::High,
-            file_id: Some(file_id),
-            anchor_id: Some(anchor_id),
-            scope_id: None,
-            span_start_byte: None, // position not needed for UseConstant
-        }
-    }
-
     // ── Helpers ─────────────────────────────────────────────────────────
 
     /// Derive an [`AnchorId`] from a node's byte-offset span.
@@ -662,22 +402,6 @@ impl ImportExtractor {
         // Use the start byte offset as a deterministic anchor ID.
         // This is unique per use-statement within a file.
         AnchorId(node.location.start as u64)
-    }
-
-    /// Check whether a module string is a version pragma (e.g. `5.036`, `v5.38`).
-    fn is_version_pragma(module: &str) -> bool {
-        // Numeric version: 5.036, 5.10
-        if module.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return true;
-        }
-        // v-string: v5.38, v5.12.0
-        if module.starts_with('v')
-            && module.len() > 1
-            && module[1..].chars().all(|c| c.is_ascii_digit() || c == '.')
-        {
-            return true;
-        }
-        false
     }
 
     /// Extract the inner content of a `qw<delim>...</delim>` string.
@@ -699,58 +423,6 @@ impl ImportExtractor {
     fn parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> Option<&'a str> {
         perl_parser_core::parse_quote_operator_content(s, operator)
     }
-
-    /// Remove surrounding single or double quotes from a string.
-    fn unquote(s: &str) -> &str {
-        if ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
-            && s.len() >= 2
-        {
-            return &s[1..s.len() - 1];
-        }
-        s
-    }
-
-    /// Heuristic: does this string look like a Perl symbol name?
-    fn looks_like_symbol_name(s: &str) -> bool {
-        let s = Self::unquote(s);
-        if s.is_empty() {
-            return false;
-        }
-        // Tags start with ':'
-        if s.starts_with(':') {
-            return true;
-        }
-        // Sigiled variables: $foo, @bar, %baz, &sub, *glob
-        if s.starts_with('$')
-            || s.starts_with('@')
-            || s.starts_with('%')
-            || s.starts_with('&')
-            || s.starts_with('*')
-        {
-            return true;
-        }
-        // Bare word: starts with letter or underscore
-        s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-    }
-
-    /// Heuristic: does this string look like a constant name?
-    ///
-    /// Constants are typically UPPER_CASE identifiers.
-    fn looks_like_constant_name(s: &str) -> bool {
-        if s.is_empty() {
-            return false;
-        }
-        s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-    }
-
-    fn constant_name_candidate(s: &str) -> Option<String> {
-        let name = Self::unquote(s.trim());
-        Self::looks_like_constant_name(name).then(|| name.to_string())
-    }
-
-    fn is_constant_hash_punctuation(s: &str) -> bool {
-        matches!(s, "+" | "+{" | "{" | "}" | "=>" | ",")
-    }
 }
 
 #[cfg(test)]
@@ -766,6 +438,18 @@ mod tests {
             Err(_) => return Vec::new(),
         };
         ImportExtractor::extract(&ast, FileId(1))
+    }
+
+    fn hir_constant_symbols(code: &str) -> Result<ImportSymbols, String> {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().map_err(|error| format!("fixture must parse: {error:?}"))?;
+        let hir = perl_parser_core::hir::lower_ast(&ast);
+        let specs = hir.compile_environment.import_specs(FileId(1));
+        specs
+            .into_iter()
+            .find(|spec| spec.module == "constant")
+            .map(|spec| spec.symbols)
+            .ok_or_else(|| "HIR produced no constant ImportSpec".to_string())
     }
 
     // ── use Module qw(a b) → UseExplicitList ────────────────────────────
@@ -806,10 +490,9 @@ mod tests {
 
     // ── use Module () → UseEmpty ────────────────────────────────────────
     //
-    // NOTE: The current parser represents both `use Module;` and `use Module ()`
-    // with empty args. We detect empty-parens by checking for an AST node whose
-    // source text contains `()`. When the parser cannot distinguish the two
-    // forms, both are classified as bare `Use`/`Default`.
+    // HIR `classify_import_args` distinguishes `use Module;` from `use Module ()`
+    // when both flatten to empty args, using the same span-length heuristic
+    // previously owned by this extractor.
 
     #[test]
     fn test_use_empty_parens() -> Result<(), String> {
@@ -817,9 +500,6 @@ mod tests {
         let spec = specs.first().ok_or("expected at least one ImportSpec")?;
 
         assert_eq!(spec.module, "POSIX");
-        // The parser produces empty args for both `use POSIX;` and `use POSIX ()`.
-        // We detect the empty-parens form by inspecting the source span length
-        // relative to the module name length.
         assert_eq!(spec.kind, ImportKind::UseEmpty);
         assert_eq!(spec.symbols, ImportSymbols::None);
         Ok(())
@@ -947,32 +627,33 @@ mod tests {
 
     #[test]
     fn test_use_constant_plus_hash_ref() -> Result<(), String> {
-        let specs = parse_and_extract("use constant +{ FOO => 1, BAR => 2 };");
+        let source = "use constant +{ FOO => 1, BAR => 2 };";
+        let specs = parse_and_extract(source);
         let spec = specs.first().ok_or("expected at least one ImportSpec")?;
 
         assert_eq!(spec.module, "constant");
         assert_eq!(spec.kind, ImportKind::UseConstant);
-        if let ImportSymbols::Explicit(names) = &spec.symbols {
-            assert!(names.contains(&"FOO".to_string()), "missing 'FOO' in {names:?}");
-            assert!(names.contains(&"BAR".to_string()), "missing 'BAR' in {names:?}");
-        } else {
-            return Err(format!("expected Explicit, got {:?}", spec.symbols));
-        }
+        assert_eq!(
+            spec.symbols,
+            hir_constant_symbols(source)?,
+            "plus-hash constant form must follow HIR, not a local argument classifier"
+        );
         Ok(())
     }
 
     #[test]
-    fn test_use_constant_hash_ref_ignores_nested_fat_comma_values() -> Result<(), String> {
-        let specs = parse_and_extract("use constant { FOO => { nested => 1 }, BAR => 2 };");
+    fn test_use_constant_hash_ref_nested_fat_comma_agrees_with_hir() -> Result<(), String> {
+        let source = "use constant { FOO => { nested => 1 }, BAR => 2 };";
+        let specs = parse_and_extract(source);
         let spec = specs.first().ok_or("expected at least one ImportSpec")?;
 
         assert_eq!(spec.module, "constant");
         assert_eq!(spec.kind, ImportKind::UseConstant);
-        if let ImportSymbols::Explicit(names) = &spec.symbols {
-            assert_eq!(names, &vec!["FOO".to_string(), "BAR".to_string()]);
-        } else {
-            return Err(format!("expected Explicit, got {:?}", spec.symbols));
-        }
+        assert_eq!(
+            spec.symbols,
+            hir_constant_symbols(source)?,
+            "nested constant values must follow HIR, not a local nested-hash skipper"
+        );
         Ok(())
     }
 
@@ -1199,6 +880,15 @@ Foo::Bar->import(@names);
         assert_eq!(spec.kind, ImportKind::RequireThenImport);
         assert_eq!(spec.symbols, ImportSymbols::Dynamic);
         assert_eq!(spec.confidence, Confidence::Low);
+        assert_eq!(
+            specs.iter().filter(|row| row.module == "Foo::Bar").count(),
+            1,
+            "paired dynamic import must not emit a second ManualImport row: {specs:?}"
+        );
+        assert!(
+            specs.iter().all(|row| row.kind != ImportKind::ManualImport),
+            "import call consumed by require pairing must not also overlay ManualImport: {specs:?}"
+        );
         Ok(())
     }
 
@@ -1271,13 +961,15 @@ require $dynamic;
     #[test]
     fn test_require_string_path() -> Result<(), String> {
         let specs = parse_and_extract(r#"require "Foo/Bar.pm";"#);
-        let spec = specs
-            .iter()
-            .find(|s| s.module == "Foo::Bar")
-            .ok_or("expected ImportSpec for Foo::Bar")?;
+        assert_eq!(specs.len(), 1, "standalone quoted require must keep one HIR row: {specs:?}");
+        let spec = specs.first().ok_or("expected ImportSpec for quoted require")?;
 
         assert_eq!(spec.kind, ImportKind::Require);
         assert_eq!(spec.symbols, ImportSymbols::Default);
+        assert_ne!(
+            spec.module, "Foo::Bar",
+            "standalone quoted require must keep HIR path identity, not a reconstructed module name"
+        );
         Ok(())
     }
 

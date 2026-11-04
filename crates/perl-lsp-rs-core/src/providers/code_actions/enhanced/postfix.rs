@@ -45,23 +45,34 @@ pub fn convert_to_postfix(node: &Node, source: &str) -> Option<CodeAction> {
 mod tests {
     use super::*;
     use perl_parser_core::{Parser, SourceLocation};
-    use perl_tdd_support::{must, must_some};
+    use perl_test_must::{must_some, must_some_with, must_with};
 
     fn if_node_from_source(source: &str) -> Node {
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let ast = must_with(parser.parse(), "fixture must parse");
         match &ast.kind {
-            NodeKind::Program { statements } => must_some(statements.first()).clone(),
-            other => panic!("expected program, got {other:?}"),
+            NodeKind::Program { statements } => {
+                must_some_with(statements.first(), "fixture must have a top-level statement")
+                    .clone()
+            }
+            other => must_with(
+                Result::<Node, &str>::Err("expected program root"),
+                format!("expected program, got {other:?}"),
+            ),
         }
     }
 
     fn set_first_statement_location(node: &mut Node, location: SourceLocation) {
         let NodeKind::If { then_branch, .. } = &mut node.kind else {
-            panic!("fixture must parse as If");
+            must_with(Result::<(), &str>::Err("expected If"), "fixture must parse as If");
+            return;
         };
         let NodeKind::Block { statements } = &mut then_branch.kind else {
-            panic!("fixture must have block then-branch");
+            must_with(
+                Result::<(), &str>::Err("expected block then-branch"),
+                "fixture must have block then-branch",
+            );
+            return;
         };
         assert_eq!(statements.len(), 1, "fixture must be a single-statement if body");
         statements[0].location = location;
@@ -69,7 +80,8 @@ mod tests {
 
     fn set_condition_location(node: &mut Node, location: SourceLocation) {
         let NodeKind::If { condition, .. } = &mut node.kind else {
-            panic!("fixture must parse as If");
+            must_with(Result::<(), &str>::Err("expected If"), "fixture must parse as If");
+            return;
         };
         condition.location = location;
     }
@@ -89,14 +101,17 @@ mod tests {
         let node = if_node_from_source(parsed_source);
         let stale_source = "if ($x) { print";
         let stmt_end = match &node.kind {
-            NodeKind::If { then_branch, .. } => {
-                if let NodeKind::Block { statements } = &then_branch.kind {
-                    statements[0].location.end
-                } else {
-                    panic!("expected block");
-                }
-            }
-            _ => panic!("expected if"),
+            NodeKind::If { then_branch, .. } => match &then_branch.kind {
+                NodeKind::Block { statements } => statements[0].location.end,
+                other => must_with(
+                    Result::<usize, &str>::Err("expected block"),
+                    format!("expected block then-branch, got {other:?}"),
+                ),
+            },
+            other => must_with(
+                Result::<usize, &str>::Err("expected if"),
+                format!("expected if node, got {other:?}"),
+            ),
         };
         assert!(
             stmt_end > stale_source.len(),
