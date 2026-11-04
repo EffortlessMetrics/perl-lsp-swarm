@@ -5,7 +5,7 @@
 //! `targeted_checks::run` (#3985 Slice 2 repointed all three onto
 //! [`resolve_change_set`] — see the falsifiable parity corpus in this
 //! module's test suite, `tests::test_parity_*` (doc-only, single-crate,
-//! multi-crate, mixed, ci-config, a deletion, a rename), which pins that
+//! multi-crate, mixed, ci-config, a deletion), which pins that
 //! the repoint is zero-behavior-change on real diff fixtures).
 //!
 //! #3985 Slice 3A exposes this resolver to `hooks/pre-push` through the
@@ -305,7 +305,7 @@ fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec
     }
 
     let three_dot = format!("{base}...{head}");
-    let output = cmd("git", &["diff", "--name-only", "-z", &three_dot])
+    let output = cmd("git", &["diff", "--no-renames", "--name-only", "-z", &three_dot])
         .dir(root)
         .stdout_capture()
         .stderr_capture()
@@ -325,7 +325,7 @@ fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec
 /// the three-dot-failure fallback for [`DiffMode::MergeBaseThreeDot`].
 fn direct_diff_paths(base: &str, head: &str, root: &Path) -> Result<Vec<String>> {
     let two_dot = format!("{base}..{head}");
-    let output = cmd("git", &["diff", "--name-only", "-z", &two_dot])
+    let output = cmd("git", &["diff", "--no-renames", "--name-only", "-z", &two_dot])
         .dir(root)
         .stdout_capture()
         .stderr_capture()
@@ -704,7 +704,7 @@ mod tests {
     // resolver produces the IDENTICAL resolved base ref, base SHA, and
     // changed-path set as those frozen pre-repoint chains, across real
     // diff shapes (doc-only, single-crate, multi-crate, mixed, ci-config,
-    // a deletion, a rename) — falsifying "the repoint is zero-behavior-
+    // a deletion) — falsifying "the repoint is zero-behavior-
     // change" rather than assuming it.
     //
     // Mutation-checked (verified red, then reverted, before landing):
@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parity_rename_is_visible() -> Result<()> {
+    fn test_rename_retains_both_paths_for_scope() -> Result<()> {
         let tmp = tempfile::tempdir().context("failed to create tempdir")?;
         let repo = init_repo_with_origin_main(tmp.path())?;
         commit_file(
@@ -947,6 +947,22 @@ mod tests {
             &["mv", "crates/perl-parser/src/old_name.rs", "crates/perl-parser/src/new_name.rs"],
         )?;
         run_git(&repo, &["commit", "-q", "-m", "rename module"])?;
-        assert_parity_with_pre_repoint_logic("rename", &repo)
+        // This intentionally strengthens the old destination-only rename
+        // contract; the frozen pre-repoint oracle above remains unchanged.
+        for mode in [DiffMode::MergeBaseThreeDot, DiffMode::DirectTwoDot] {
+            let resolved = resolve_change_set_with_mode(
+                ArtifactIdentity::CommitRange {
+                    base: "origin/main".to_string(),
+                    head: "HEAD".to_string(),
+                },
+                &repo,
+                mode,
+            )?;
+            assert_eq!(
+                resolved.changed_paths,
+                vec!["crates/perl-parser/src/new_name.rs", "crates/perl-parser/src/old_name.rs",]
+            );
+        }
+        Ok(())
     }
 }

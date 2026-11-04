@@ -16,6 +16,9 @@
             "include": "#numbers"
         },
         {
+            "include": "#subroutine-declaration"
+        },
+        {
             "include": "#variables"
         },
         {
@@ -189,6 +192,118 @@
                 }
             ]
         },
+        "subroutine-declaration": {
+            "name": "meta.declaration.subroutine.perl",
+            "begin": "(?<!->)(?<!\\{)\\b(sub)\\b(?!\\s*(?:=>|\\}))",
+            "beginCaptures": {
+                "1": {
+                    "name": "keyword.other.perl"
+                }
+            },
+            "end": "(?=[{;])",
+            "patterns": [
+                {
+                    "include": "#comments"
+                },
+                {
+                    "name": "variable.parameter.prototype.perl",
+                    "match": "\\(\\s*(?:(?:[\\$@%_&+\\-\\*\\\\;]|\\[[\\$@%&*\\s]+\\])\\s*)*\\)"
+                },
+                {
+                    "include": "#subroutine-signature"
+                },
+                {
+                    "begin": "(?<!:)(:)(?!:)\\s*([A-Za-z_]\\w*)\\s*(\\()",
+                    "beginCaptures": {
+                        "1": {
+                            "name": "entity.other.attribute-name.perl"
+                        },
+                        "2": {
+                            "name": "entity.other.attribute-name.perl"
+                        }
+                    },
+                    "end": "\\)",
+                    "patterns": [
+                        {
+                            "include": "#comments"
+                        },
+                        {
+                            "include": "#strings"
+                        },
+                        {
+                            "include": "#subroutine-attribute-argument"
+                        }
+                    ]
+                },
+                {
+                    "match": "(?<!:)(:)(?!:)\\s*([A-Za-z_]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "entity.other.attribute-name.perl"
+                        },
+                        "2": {
+                            "name": "entity.other.attribute-name.perl"
+                        }
+                    }
+                },
+                {
+                    "include": "#variables"
+                },
+                {
+                    "include": "#numbers"
+                }
+            ]
+        },
+        "subroutine-attribute-argument": {
+            "begin": "\\(",
+            "end": "\\)",
+            "patterns": [
+                {
+                    "include": "#subroutine-attribute-argument"
+                },
+                {
+                    "include": "#comments"
+                },
+                {
+                    "include": "#strings"
+                }
+            ]
+        },
+        "subroutine-signature": {
+            "begin": "\\(",
+            "end": "\\)",
+            "patterns": [
+                {
+                    "include": "#subroutine-signature"
+                },
+                {
+                    "include": "#comments"
+                },
+                {
+                    "name": "string.regexp.perl",
+                    "begin": "(?<=[=,\\(\\[\\{\\?:!~|&>])\\s*(/)(?![/*+{}?])",
+                    "end": "/[cgimosxpodualn]*",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "include": "#regex"
+                },
+                {
+                    "include": "#strings"
+                },
+                {
+                    "include": "#variables"
+                },
+                {
+                    "include": "#numbers"
+                }
+            ]
+        },
         "variables": {
             "patterns": [
                 {
@@ -306,8 +421,136 @@
                 },
                 {
                     "name": "string.regexp.perl",
+                    "begin": "\\b(m|qr)\\s*(\\()",
+                    "end": "\\)[cgimosxpodualn]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.perl",
+                    "begin": "\\b(m|qr)\\s*(\\{)",
+                    "end": "\\}[cgimosxpodualn]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.perl",
+                    "begin": "\\b(m|qr)\\s*(\\[)",
+                    "end": "\\][cgimosxpodualn]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.perl",
+                    "begin": "\\b(m|qr)\\s*(<)",
+                    "end": ">[cgimosxpodualn]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.perl",
                     "begin": "\\b(m|qr)\\s*([^\\s\\w])",
                     "end": "\\2[cgimosxpodualn]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "\\b(s|tr|y)\\s*(\\()",
+                    "end": "\\)[cgimosxpodualner]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "\\b(s|tr|y)\\s*(\\{)",
+                    "end": "\\}[cgimosxpodualner]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "\\b(s|tr|y)\\s*(\\[)",
+                    "end": "\\][cgimosxpodualner]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "\\b(s|tr|y)\\s*(<)",
+                    "end": ">[cgimosxpodualner]*",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"

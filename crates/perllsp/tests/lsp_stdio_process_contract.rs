@@ -1303,3 +1303,74 @@ fn definition_on_callable_retains_exact_location() -> Result<()> {
     );
     shutdown_and_exit(&mut client, json!("shutdown-definition-location"))
 }
+
+/// Role document symbols retain Interface while Class and Module keep their kinds.
+#[test]
+fn role_document_symbol_protocol_mapping_over_stdio() -> Result<()> {
+    fn find_namespace(symbols: &[Value]) -> Option<&Value> {
+        for symbol in symbols {
+            if symbol.get("name").and_then(Value::as_str) == Some("age") {
+                return Some(symbol);
+            }
+            if let Some(found) = symbol
+                .get("children")
+                .and_then(Value::as_array)
+                .and_then(|children| find_namespace(children))
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-role-symbols"))?;
+    for (case, (module, kind)) in [
+        ("Moo::Role", 11),
+        ("Moose::Role", 11),
+        ("Role::Tiny", 11),
+        ("Moo", 5),
+        ("Moose", 5),
+        ("Class::Tiny", 5),
+        ("strict", 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let uri = format!("file:///workspace/role-symbol-{case}.pm");
+        let source = format!("package age {{ use {module}; sub helper {{ 1 }} }}");
+        client.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}}),
+        )?;
+        let id = json!(format!("role-document-{case}"));
+        let response = client.request(
+            id.clone(),
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+            timeout(),
+        )?;
+        assert_response_id(&response, &id)?;
+        ensure!(response.get("error").is_none(), "document error for {module}: {response}");
+        let symbols = response
+            .get("result")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("document result for {module}: {response}"))?;
+        let namespace = find_namespace(symbols)
+            .ok_or_else(|| anyhow::anyhow!("missing namespace for {module}: {response}"))?;
+        ensure!(
+            namespace.get("kind") == Some(&json!(kind)),
+            "document kind for {module}: {response}"
+        );
+        ensure!(
+            namespace.pointer("/selectionRange/start") == Some(&json!({"line": 0, "character": 8})),
+            "name start for {module}: {response}"
+        );
+        ensure!(
+            namespace.pointer("/selectionRange/end") == Some(&json!({"line": 0, "character": 11})),
+            "name end for {module}: {response}"
+        );
+    }
+    shutdown_and_exit(&mut client, json!("shutdown-role-symbols"))
+}

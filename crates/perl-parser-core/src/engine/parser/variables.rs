@@ -2157,7 +2157,46 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
                 },
             }
         }
-        other => other,
+        ParseError::DoWhileTrailingBlock { location } => {
+            ParseError::DoWhileTrailingBlock { location: location.saturating_add(offset) }
+        }
+        ParseError::CStyleForContinueBlock { location } => {
+            ParseError::CStyleForContinueBlock { location: location.saturating_add(offset) }
+        }
+        ParseError::QualifiedLoopControlLabel { location } => {
+            ParseError::QualifiedLoopControlLabel { location: location.saturating_add(offset) }
+        }
+        ParseError::CatchVariableRedeclaration { keyword, range } => {
+            ParseError::CatchVariableRedeclaration {
+                keyword,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
+        }
+        ParseError::HeredocBudgetExhausted { limit, usage, location } => {
+            // `limit`/`usage` are charged byte counts, not source offsets.
+            ParseError::HeredocBudgetExhausted {
+                limit,
+                usage,
+                location: location.saturating_add(offset),
+            }
+        }
+        // No source location to translate. This list is deliberately
+        // exhaustive: a future located variant must choose its translation
+        // here instead of silently keeping inner-source coordinates.
+        other @ (ParseError::UnexpectedEof
+        | ParseError::LexerError { .. }
+        | ParseError::RecursionLimit
+        | ParseError::RecursionDepthExhausted { .. }
+        | ParseError::CoreBudgetExhausted { .. }
+        | ParseError::InvalidNumber { .. }
+        | ParseError::InvalidString
+        | ParseError::UnclosedDelimiter { .. }
+        | ParseError::InvalidRegex { .. }
+        | ParseError::NestingTooDeep { .. }
+        | ParseError::Cancelled) => other,
     }
 }
 
@@ -2315,6 +2354,68 @@ mod inline_expression_tests {
     fn propagated_syntax_error_is_offset() {
         let error = offset_parse_error(ParseError::syntax("bad", 3), 17);
         assert_eq!(error.location(), Some(20));
+    }
+
+    #[test]
+    fn typed_loop_and_budget_failures_are_offset() {
+        // #18210: these four located variants used to fall through the
+        // wildcard and keep inner-source coordinates.
+        let cases = [
+            (ParseError::DoWhileTrailingBlock { location: 5 }, 22),
+            (ParseError::CStyleForContinueBlock { location: 5 }, 22),
+            (ParseError::QualifiedLoopControlLabel { location: 5 }, 22),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(offset_parse_error(error, 17).location(), Some(expected));
+        }
+        // Budget payloads are counts, not offsets: only location moves.
+        let shifted = offset_parse_error(
+            ParseError::HeredocBudgetExhausted { limit: 100, usage: 100, location: 5 },
+            17,
+        );
+        assert!(matches!(
+            shifted,
+            ParseError::HeredocBudgetExhausted { limit: 100, usage: 100, location: 22 }
+        ));
+        // Repeated fused nesting composes one translation per adoption.
+        let once = offset_parse_error(ParseError::QualifiedLoopControlLabel { location: 5 }, 2);
+        assert_eq!(offset_parse_error(once, 21).location(), Some(28));
+    }
+
+    #[test]
+    fn fused_qualified_label_reports_outer_byte() -> Result<(), Box<dyn std::error::Error>> {
+        // #18210: `# 💖\nmy $value = *{last FOO::BAR};` — the inner parse
+        // sees `last FOO::BAR` at offset 21; FOO::BAR starts at byte 26 of
+        // the outer source, not byte 5 (inside the line-1 comment).
+        let source = "# 💖\nmy $value = *{last FOO::BAR};";
+        assert_eq!(source.find("FOO::BAR"), Some(26));
+        // The outer parse surfaces the adopted failure as its own error:
+        // its location must be the outer byte, not the inner offset.
+        let mut parser = Parser::new(source);
+        match parser.parse() {
+            Err(error) => {
+                assert_eq!(error.location(), Some(26), "outer error must point at FOO::BAR")
+            }
+            Ok(_) => {
+                let locations: Vec<usize> =
+                    parser.errors().iter().filter_map(|e| e.location()).collect();
+                assert!(locations.contains(&26), "outer diagnostics lack byte 26: {locations:?}");
+            }
+        }
+        // The adoption seam itself must also carry outer coordinates.
+        match parse_inline_expression(
+            "last FOO::BAR",
+            21,
+            ParserConfigIdentity::production_default(),
+        ) {
+            Err(failure) if failure.error.location() == Some(26) => Ok(()),
+            Err(failure) => Err(format!(
+                "expected outer byte 26 at the adoption seam, got {:?}",
+                failure.error.location()
+            )
+            .into()),
+            Ok(_) => Err("expected the qualified label to be rejected".into()),
+        }
     }
 
     #[test]

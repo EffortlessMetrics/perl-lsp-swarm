@@ -1268,8 +1268,9 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
     let mut argv: Vec<String> = vec![compare_py.to_string_lossy().to_string()];
     argv.extend_from_slice(args);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    command_status_strict(repo_root, "python3", &refs, &[])?;
-    Ok(0)
+    // A comparator refusal or regression is an ordinary child outcome. Preserve
+    // its diagnostic and status rather than turning it into an eyre report.
+    command_status(repo_root, "python3", &refs, &[])
 }
 
 fn cmd_simple_lsp_test(repo_root: &Path) -> Result<i32> {

@@ -773,7 +773,8 @@ impl LspServer {
             return false;
         };
 
-        // A `package Foo;` / `package Foo { ... }` declaration name. The cursor
+        // A `package Foo;` / `package Foo { ... }` / `class Foo { ... }`
+        // declaration name. The cursor
         // classifier below does not resolve a declaration name to a symbol, so
         // this reads the declaration's own `name_span`, which the AST carries
         // precisely for cursor-accurate LSP navigation.
@@ -805,7 +806,13 @@ impl LspServer {
         )
     }
 
-    /// True when `offset` falls inside the name of a `package` declaration.
+    /// True when `offset` falls inside the name of a `package` or `class`
+    /// declaration.
+    ///
+    /// A native `class Foo { ... }` name is a package name for rename
+    /// purposes: class rename is no more implemented than package rename,
+    /// so it must refuse at `prepareRename` exactly as `package Foo;` does
+    /// instead of offering a rename box that `rename` then answers `null`.
     ///
     /// Descends only into subtrees that actually span `offset`, matching
     /// `current_package_at` and `find_node_at_offset`. Without that bound this
@@ -816,6 +823,12 @@ impl LspServer {
             return false;
         }
         if let perl_parser_core::NodeKind::Package { name_span, .. } = &ast.kind
+            && name_span.start <= offset
+            && offset <= name_span.end
+        {
+            return true;
+        }
+        if let perl_parser_core::NodeKind::Class { name_span: Some(name_span), .. } = &ast.kind
             && name_span.start <= offset
             && offset <= name_span.end
         {

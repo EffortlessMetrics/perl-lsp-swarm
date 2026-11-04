@@ -173,6 +173,7 @@ run_criterion_bench() {
         # a stale name. Lines with colons (Benchmarking/time/thrpt/change)
         # are never pending-name candidates.
         local pending_name=""
+        local parsed_count=0
         while IFS= read -r line; do
             if [[ $line =~ time:[[:space:]]+\[([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)[[:space:]]+([0-9.]+)[[:space:]]+(ns|us|µs|ms|s)\] ]]; then
                 # Capture the triple first: the inline-name test below
@@ -200,6 +201,7 @@ run_criterion_bench() {
                 local high_ns
                 high_ns=$(to_nanoseconds "$high" "$high_unit") || continue
 
+                parsed_count=$((parsed_count + 1))
                 echo "      \"$bench_name\": {"
                 echo "        \"mean_ns\": $mean_ns,"
                 echo "        \"low_ns\": $low_ns,"
@@ -213,6 +215,12 @@ run_criterion_bench() {
                 pending_name=""
             fi
         done < "$temp_output"
+        if [[ "$parsed_count" -eq 0 ]]; then
+            echo "      \"_status\": \"failed\","
+            echo "      \"_error\": \"cargo bench -p $crate --bench $bench exited 0 but produced no parsed timing results\","
+            FAILED_CATEGORIES="${FAILED_CATEGORIES:+$FAILED_CATEGORIES }$category"
+            log "FAILED $crate::$bench exited 0 but produced no parsed timing results"
+        fi
     else
         # Cargo failed (wrong toolchain, compile break, missing target):
         # mark the category explicitly instead of rendering a silent empty

@@ -486,7 +486,10 @@ fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> R
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).context("reading archive entry")?;
         anyhow::ensure!(extracted < EXTRACTION_MAX_ENTRIES, "archive exceeds the entry cap");
-        let raw_name = entry.name().to_string();
+        let raw_name = entry
+            .name()
+            .with_context(|| format!("decoding archive entry name at index {index}"))?
+            .into_owned();
         let normalized = raw_name.replace('\\', "/");
         anyhow::ensure!(
             !normalized.contains('\0') && !normalized.contains(".."),

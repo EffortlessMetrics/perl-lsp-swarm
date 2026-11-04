@@ -18,6 +18,7 @@ mod tasks;
 #[cfg(test)]
 mod test_support;
 mod types;
+use tasks::cargo_failure_digest;
 #[cfg(feature = "legacy")]
 use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
@@ -917,6 +918,23 @@ enum Commands {
         check: bool,
     },
 
+    /// Render each non-success gate's failing tests, panic location and repro
+    /// command from a merge-gate shard summary and its per-gate logs.
+    GateFailureDigest {
+        /// Shard summary written by scripts/ci/run_gate_shard.py.
+        #[arg(long)]
+        summary: PathBuf,
+        /// Directory holding <gate>.log for each executed gate.
+        #[arg(long, default_value = "target/receipts/logs")]
+        logs: PathBuf,
+        /// Markdown destination; replaced, never appended to.
+        #[arg(long, default_value = "target/receipts/gate-failure-digest.md")]
+        out: PathBuf,
+        /// Also print the digest to stdout.
+        #[arg(long)]
+        print: bool,
+    },
+
     /// Report the RIPR suppression ledger's own lifecycle dates against today.
     ///
     /// Advisory: writes an artifact and always exits 0 on a readable ledger.
@@ -1718,6 +1736,40 @@ enum Commands {
         /// Receipt JSON retained for clean and blocking verdicts.
         #[arg(long, default_value = "target/receipts/publication-drift.json")]
         out: PathBuf,
+    },
+
+    /// Observe LIVE GitHub release-control enforcement, read-only (#9403).
+    ///
+    /// Distinguishes source policy from what GitHub's branch protection,
+    /// rulesets, environments, and release posture actually enforce right
+    /// now. Fails closed to `NOT_PROVEN` on anything it cannot conclusively
+    /// establish; never infers an unobserved half. Issues only `gh api` GET
+    /// reads — nothing here mutates a live setting.
+    #[command(name = "release-live-controls")]
+    ReleaseLiveControls {
+        /// Repository root used to resolve `policy/product-identity.toml`.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Explicit `owner/name` repositories, overriding the
+        /// product-identity defaults. May be repeated.
+        #[arg(long = "repository")]
+        repositories: Vec<String>,
+
+        /// Branch to observe. Explicit `--repository` targets default to
+        /// `main`; without an explicit repository, each configured subject
+        /// uses its contributor-topology branch (the development default or
+        /// the publication branch), which may differ per subject.
+        #[arg(long)]
+        branch: Option<String>,
+
+        /// Write the complete receipt as pretty JSON to this path.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Emit the receipt as JSON to stdout instead of a human summary.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Enforce source-authority and instruction/data boundaries for the Zed
@@ -6227,6 +6279,14 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
             ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
         }
+        Commands::GateFailureDigest { summary, logs, out, print } => {
+            cargo_failure_digest::run(cargo_failure_digest::GateFailureDigestConfig {
+                summary,
+                logs,
+                out,
+                print,
+            })
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }
@@ -6238,7 +6298,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             benchmarks::run_benchmarks(output, quick, category)
         }
         Commands::BenchCompare { fail_on_regression } => {
-            benchmarks::compare_benchmarks(fail_on_regression)
+            let code = benchmarks::compare_benchmarks(fail_on_regression)?;
+            if code != 0 {
+                // The comparator already explained an input refusal or verdict.
+                // This CLI boundary propagates its status without an eyre
+                // backtrace; launch failures still use the normal error path.
+                std::process::exit(code);
+            }
+            Ok(())
         }
         Commands::BenchFormat { receipt, markdown } => {
             benchmarks::format_benchmarks(receipt, markdown)
@@ -6705,6 +6772,27 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckVersionSync => check_version_sync::run(),
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
+        Commands::ReleaseLiveControls { repo_root, repositories, branch, out, json } => {
+            // `.` means the workspace root, not the shell's cwd: the observer
+            // reads `policy/product-identity.toml` relative to it.
+            let repo_root = if repo_root.as_os_str() == "." {
+                utils::project_root().map_err(|error| eyre!(error.to_string()))?
+            } else {
+                repo_root
+            };
+            let verdict =
+                xtask::release_live_controls::run(xtask::release_live_controls::ObserveOptions {
+                    repo_root,
+                    repositories,
+                    branch,
+                    out,
+                    json,
+                })?;
+            if verdict == xtask::release_live_controls::Verdict::NotProven {
+                std::process::exit(xtask::release_live_controls::NOT_PROVEN_EXIT_CODE);
+            }
+            Ok(())
         }
         Commands::ZedTrain { command } => match command {
             ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {

@@ -387,7 +387,17 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             break;
         }
 
-        let ends_with_bare_slash = scan_code_line(
+        // While the guard is armed, a code line ending in a bare `/` is the
+        // close of the possible body it was guarding, not a fresh undecided
+        // opener: it must not re-arm the guard, or the genuine POD opener
+        // after a closed multiline bare regex would be refused (#17441).
+        // Bare slashes on the line toggle the open/closed state seeded
+        // from the armed state, so the guard survives the line exactly
+        // when an even number of code-state bare slashes leaves the
+        // trailing slash as a fresh opener: closer + opener stays armed,
+        // while closer + a complete regex (`closer /.../`) disarms.
+        let was_armed = state.possible_bare_regex_body;
+        let scan = scan_code_line(
             input,
             line_start,
             line,
@@ -396,8 +406,10 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             &mut nullaries,
             hints,
         );
-        state.possible_bare_regex_body =
-            ends_with_bare_slash && state.quote == QuoteState::Code && state.quote_like.is_none();
+        state.possible_bare_regex_body = scan.trailing_bare_slash
+            && (!was_armed || scan.bare_slashes.is_multiple_of(2))
+            && state.quote == QuoteState::Code
+            && state.quote_like.is_none();
         line_start = next_line_start;
     }
 
@@ -418,15 +430,25 @@ fn is_nullary_word(word: &str, nullaries: &HashSet<Box<str>>, hints: &Declaratio
     nullaries.contains(word) || hints.nullaries.contains(word)
 }
 
+/// Outcome of scanning one code line for the bare-regex POD guard.
+struct LineScan {
+    /// Whether the last code character is a bare `/`.
+    trailing_bare_slash: bool,
+    /// How many bare `/` characters appeared in code state on the line.
+    bare_slashes: usize,
+}
+
 /// Scan one line in code state and report whether its last code character is
-/// a bare `/`.
+/// a bare `/`, plus how many bare slashes the line contains.
 ///
 /// The report arms the caller's one-line `possible_bare_regex_body` guard, so
 /// it is `true` only for a `/` consumed as code — a closing quote-like
 /// delimiter (`m/foo/`) or a `/` inside a literal body never arms it — and
 /// horizontal whitespace after the slash keeps it armed so `my $x = / # delim`
 /// still reports the opener. A `#` ends the scan but preserves the report:
-/// code before a comment can end with a bare `/`.
+/// code before a comment can end with a bare `/`. The count lets the caller
+/// tell a body-closing slash from a fresh opener that follows it on the
+/// same line.
 fn scan_code_line(
     input: &str,
     line_start: usize,
@@ -435,9 +457,10 @@ fn scan_code_line(
     known_subs: &mut HashSet<Box<str>>,
     nullaries: &mut HashSet<Box<str>>,
     hints: &Declarations,
-) -> bool {
+) -> LineScan {
     let mut offset = 0usize;
     let mut trailing_bare_slash = false;
+    let mut bare_slashes = 0usize;
 
     while offset < line.len() {
         if state.quote_like.is_some() {
@@ -453,7 +476,7 @@ fn scan_code_line(
         if state.awaiting_sub_name {
             offset = skip_horizontal_whitespace(line, offset);
             if offset >= line.len() || line[offset..].starts_with('#') {
-                return false;
+                return LineScan { trailing_bare_slash: false, bare_slashes };
             }
 
             if let Some((name, end)) = parse_qualified_name(line, offset) {
@@ -471,11 +494,11 @@ fn scan_code_line(
         }
 
         let Some(ch) = line[offset..].chars().next() else {
-            return false;
+            return LineScan { trailing_bare_slash: false, bare_slashes };
         };
 
         if ch == '#' {
-            return trailing_bare_slash;
+            return LineScan { trailing_bare_slash, bare_slashes };
         }
 
         if let Some(end) = start_quote_like(input, line_start, line, offset, state) {
@@ -540,14 +563,17 @@ fn scan_code_line(
             // The picture body starts on the next line; nothing after the `=`
             // on this line is code.
             state.in_format = true;
-            return false;
+            return LineScan { trailing_bare_slash: false, bare_slashes };
         }
 
+        if ch == '/' {
+            bare_slashes += 1;
+        }
         trailing_bare_slash = ch == '/' || (trailing_bare_slash && matches!(ch, ' ' | '\t'));
         offset += ch.len_utf8();
     }
 
-    trailing_bare_slash
+    LineScan { trailing_bare_slash, bare_slashes }
 }
 
 fn scan_quoted_character(line: &str, offset: usize, state: &mut ScanState) -> usize {
@@ -1367,6 +1393,58 @@ mod tests {
             &["real"],
             &[],
         );
+    }
+
+    #[test]
+    fn regex_closing_line_does_not_rearm_the_pod_guard() {
+        // #17441: the line that closes a multiline bare regex also ends in
+        // a bare `/`, but it is the close of the possible body, not a fresh
+        // undecided opener. It must not re-arm the guard: the genuine
+        // `=pod` after it opens POD, so `fake` stays off the table and its
+        // later slash keeps the undeclared-name division path. (Custom
+        // assertions: the fixture contains a genuine RegexMatch token, so
+        // the shared helper's stream-wide no-regex check cannot apply; the
+        // slash checks are scoped to the appended site.)
+        let source = "my $r = /\nfoo/\n=pod\nsub fake { }\n=cut\nfake / 2;\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("fake"), "leaked unknown sub \"fake\" from {source:?}");
+
+        let with_slash = format!("{source}fake /x/;\n");
+        let tokens = tokens_with_table(&with_slash, LocalSymbolTable::scan_subs(&with_slash));
+        let site = source.len();
+        assert!(
+            tokens.iter().any(|t| t.start >= site && matches!(t.token_type, TokenType::Division)),
+            "fake lost the division path at its slash site; tokens: {tokens:?}"
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| t.start >= site && matches!(t.token_type, TokenType::RegexMatch)),
+            "fake took the regex path at its slash site; tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_opener_after_closer_keeps_the_pod_guard() {
+        // A line that closes the guarded body and then opens a fresh bare
+        // regex ending in `/` re-arms the guard: the POD-shaped first body
+        // line of the second pattern is pattern text, not POD, so `real`
+        // after the second pattern stays on the table.
+        let source = "my $a = /\nfoo/; my $b = /\n=pod\n/;\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(table.is_known_sub("real"), "`real` missing from {source:?}");
+    }
+
+    #[test]
+    fn complete_regex_after_closer_disarms_the_pod_guard() {
+        // A line that closes the guarded body and then contains a complete
+        // bare regex ends in a closer, not an opener (three bare slashes):
+        // the guard disarms, so the genuine `=pod` after it opens POD and
+        // `fake` stays off the table.
+        let source = "my $a = /\nfoo/ . /bar/\n=pod\nsub fake { }\n=cut\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("fake"), "leaked unknown sub \"fake\" from {source:?}");
+        assert!(table.is_known_sub("real"), "`real` missing from {source:?}");
     }
 
     #[test]

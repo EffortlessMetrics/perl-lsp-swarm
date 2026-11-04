@@ -412,7 +412,8 @@ fn conflict_markers_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<Com
 // 3. Staged executable-bit policy (the R1 chmod defect class)
 // =============================================================================
 
-const EXECUTABLE_ALLOWLIST_PATHS: &[&str] = &["hooks/pre-push", ".ci/hooks/pre-commit"];
+const EXECUTABLE_ALLOWLIST_PATHS: &[&str] =
+    &["hooks/pre-push", ".ci/hooks/pre-commit", "benchmarks/scripts/compare.py"];
 const EXECUTABLE_ALLOWLIST_SUFFIXES: &[&str] = &[".sh"];
 const EXECUTABLE_ALLOWLIST_PREFIXES: &[&str] = &[".ci/scripts/", "scripts/"];
 
@@ -543,6 +544,9 @@ fn staged_config_syntax_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
 // 5. Forbidden absolute / machine-specific paths
 // =============================================================================
 
+#[path = "commit_checks_path_fixtures.rs"]
+mod path_fixtures;
+
 const FORBIDDEN_PATH_SCAN_EXCLUDE_PREFIXES: &[&str] = &["docs/"];
 const FORBIDDEN_PATH_SCAN_EXCLUDE_SUFFIXES: &[&str] = &[".md"];
 // `(?i)`: case-insensitive over the whole alternation (issue #4031 item 2) —
@@ -583,10 +587,28 @@ fn evaluate_forbidden_paths<'a>(
         if is_forbidden_path_scan_excluded(path) {
             continue;
         }
-        for (idx, line) in text.lines().enumerate() {
-            if let Some(m) = re.find(line) {
-                affected.push(format!("{path}:{}: {}", idx + 1, m.as_str()));
+        let fixtures = path_fixtures::fixture_spans(path, text);
+        let mut masked = text.as_bytes().to_vec();
+        for span in fixtures {
+            if let Some(bytes) = masked.get_mut(span) {
+                for byte in bytes {
+                    if *byte != b'\n' {
+                        *byte = b' ';
+                    }
+                }
             }
+        }
+        // An encoding failure retains the original scan rather than hiding data.
+        let scan_text = std::str::from_utf8(&masked).unwrap_or(text);
+        let mut offset = 0;
+        for (idx, line) in scan_text.split_inclusive('\n').enumerate() {
+            for m in re.find_iter(line) {
+                let start = offset + m.start();
+                let end = offset + m.end();
+                let original = text.get(start..end).unwrap_or(m.as_str());
+                affected.push(format!("{path}:{}: {}", idx + 1, original));
+            }
+            offset += line.len();
         }
     }
     affected
@@ -617,7 +639,7 @@ fn forbidden_machine_paths_at(root: &Path, tree_oid: Option<&str>) -> Result<Com
         check: "forbidden_machine_paths".to_string(),
         posture: Posture::Blocked,
         result: format!(
-            "{} staged line(s) contain a machine-specific absolute path",
+            "{} staged occurrence(s) contain a machine-specific absolute path",
             affected.len()
         ),
         why: "an absolute path tied to one machine/user (a Windows user profile, a POSIX home \
@@ -1184,19 +1206,22 @@ mod tests {
     #[test]
     fn forbidden_paths_flags_machine_specific_absolute_paths() -> Result<()> {
         let re = Regex::new(FORBIDDEN_PATH_PATTERN).context("valid regex")?;
-        let files = vec![
-            ("crates/foo/src/lib.rs", "windows path: C:\\Users\\steven\\scratch\\file.rs"),
-            ("crates/foo/src/lib.rs", "posix path: /home/agent/work/file.rs"),
-            ("crates/foo/src/lib.rs", "relative path: crates/foo/src/lib.rs"),
-            // Issue #4031 item 2: lowercase drive/segment.
-            ("crates/foo/src/lib.rs", "lowercase: c:\\users\\steven\\scratch\\file.rs"),
-            // Forward-slash separator (mixed-tooling checkouts stage
-            // these too).
-            ("crates/foo/src/lib.rs", "forward slash: C:/Users/steven/scratch/file.rs"),
-            // A username containing a space — common on Windows.
-            ("crates/foo/src/lib.rs", "spaced: C:\\Users\\John Doe\\scratch\\file.rs"),
-        ];
-        let affected = evaluate_forbidden_paths(&re, files.into_iter());
+        let affected = evaluate_forbidden_paths(
+            &re,
+            [
+                ("crates/foo/src/lib.rs", "windows path: C:\\Users\\steven\\scratch\\file.rs"),
+                ("crates/foo/src/lib.rs", "posix path: /home/agent/work/file.rs"),
+                ("crates/foo/src/lib.rs", "relative path: crates/foo/src/lib.rs"),
+                // Issue #4031 item 2: lowercase drive/segment.
+                ("crates/foo/src/lib.rs", "lowercase: c:\\users\\steven\\scratch\\file.rs"),
+                // Forward-slash separator (mixed-tooling checkouts stage
+                // these too).
+                ("crates/foo/src/lib.rs", "forward slash: C:/Users/steven/scratch/file.rs"),
+                // A username containing a space — common on Windows.
+                ("crates/foo/src/lib.rs", "spaced: C:\\Users\\John Doe\\scratch\\file.rs"),
+            ]
+            .into_iter(),
+        );
         assert_eq!(
             affected.len(),
             5,

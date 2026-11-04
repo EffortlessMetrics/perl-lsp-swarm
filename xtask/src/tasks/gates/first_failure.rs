@@ -1,10 +1,19 @@
 use super::FirstFailure;
+use crate::tasks::cargo_failure_blocks::failure_blocks;
 
 /// Parse the first failing test name, panic site, and message from `cargo test` stdout.
 ///
 /// Returns `None` only if the output contains no recognisable failure markers (e.g. a
 /// pure compilation error with no test output). All three sub-fields (`test`, `site`,
 /// `message`) are individually optional because any one may be absent in edge cases.
+///
+/// # Association guarantee
+///
+/// When `test` and `site`/`message` are both present they describe the **same**
+/// test: the panic is read only from that test's own captured-output block.
+/// Consumers render the three together, so this is the property that makes
+/// that rendering true rather than merely plausible. A name whose panic cannot
+/// be located inside its own block comes back with `site` and `message` unset.
 ///
 /// # Patterns detected
 ///
@@ -47,19 +56,32 @@ pub fn parse_first_failure(output: &str, exit_code: i32) -> Option<FirstFailure>
         }
     }
 
-    for (idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if let Some(panic_pos) = trimmed.find("panicked at ") {
-            let rest = &trimmed[panic_pos + "panicked at ".len()..];
-
-            site = parse_panic_site_new_style(rest).or_else(|| parse_panic_site_old_style(rest));
-            message = lines[idx + 1..]
-                .iter()
-                .find(|l| !l.trim().is_empty())
-                .map(|l| l.trim().to_string());
-
-            break;
+    // A panic is evidence about the test whose captured output contains it.
+    // Scanning the whole log instead finds the first panic from ANY test: one
+    // test returning `Err` followed by a different test panicking yields the
+    // first test's name beside the second test's location and message, and
+    // nothing downstream can tell that the three fields describe two different
+    // tests. So the search is confined to the recovered test's own block, and a
+    // name with no readable block is reported alone rather than furnished with
+    // another test's evidence.
+    //
+    // The block boundary comes from `cargo_failure_blocks`, which already owns
+    // that read for the digest and UX receipts. A third splitter here would be
+    // the drift that module exists to prevent; the site and message *shape*
+    // stays local, because this receipt's `file:line` differs from the
+    // `file:line:col` those consumers publish.
+    //
+    // With no name recovered there is nothing to misattribute to, so a panic
+    // found anywhere is still reported — unattributed, which is what it is.
+    if let Some(name) = test_name.as_deref() {
+        if let Some((_, block)) =
+            failure_blocks(output).into_iter().find(|(owner, _)| owner == name)
+        {
+            let block_lines: Vec<&str> = block.lines().collect();
+            (site, message) = first_panic(&block_lines);
         }
+    } else {
+        (site, message) = first_panic(&lines);
     }
 
     if test_name.is_some() || site.is_some() {
@@ -67,6 +89,28 @@ pub fn parse_first_failure(output: &str, exit_code: i32) -> Option<FirstFailure>
     } else {
         None
     }
+}
+
+/// The first `panicked at` site and message within `lines`, if any.
+///
+/// The message is the first non-empty line after the panic line, bounded by
+/// the slice: a panic at the end of one test's block must not take the next
+/// block's first line as its message.
+fn first_panic(lines: &[&str]) -> (Option<String>, Option<String>) {
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(panic_pos) = trimmed.find("panicked at ") {
+            let rest = &trimmed[panic_pos + "panicked at ".len()..];
+            let site =
+                parse_panic_site_new_style(rest).or_else(|| parse_panic_site_old_style(rest));
+            let message = lines[idx + 1..]
+                .iter()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string());
+            return (site, message);
+        }
+    }
+    (None, None)
 }
 
 fn parse_panic_site_new_style(rest: &str) -> Option<String> {

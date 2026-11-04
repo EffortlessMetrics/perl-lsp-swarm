@@ -734,9 +734,11 @@ def read_budget_file(filename, scope, env):
 
 
 def check_capacity(paths, env, budget=None):
+    ceiling = None
     if budget is not None:
         report = dict(budget)
         policy = report["policy"]
+        ceiling = report.get("max_used_pct")
         required = report["reserve_bytes"] + report["expected_total_growth_bytes"]
     else:
         policy = env.get("CARGO_STORAGE_POLICY", "percent")
@@ -792,15 +794,31 @@ def check_capacity(paths, env, budget=None):
         row = {"path": str(path), "observed_ancestor": str(ancestor),
                "free_bytes": usage.free, "required_free_bytes": required,
                "headroom_bytes": usage.free - required}
-        if usage.free < required or (policy == "percent" and
-                (usage.total - usage.free) * 100 / usage.total >= ceiling):
-            row["shortfall_bytes"] = max(0, required - usage.free)
-            row["used_pct"] = (usage.total - usage.free) * 100 / usage.total
+        used_pct = (usage.total - usage.free) * 100 / usage.total
+        if usage.free < required:
+            row["shortfall_bytes"] = required - usage.free
+            row["used_pct"] = used_pct
             raise Denied("insufficient disk headroom at " + str(path)
                          + " free_bytes=" + str(usage.free)
                          + " required_free_bytes=" + str(required)
                          + " shortfall_bytes=" + str(row["shortfall_bytes"])
                          + " used_pct=" + str(row["used_pct"]), row)
+        if policy == "percent" and ceiling is not None and used_pct >= ceiling:
+            required_free_for_pct = usage.total * (100 - ceiling) / 100
+            # Admission requires used_pct strictly below the ceiling, so the
+            # smallest passing free target is one byte past the threshold.
+            additional_free_needed = math.floor(required_free_for_pct) + 1 - usage.free
+            row["used_pct"] = used_pct
+            row["max_used_pct"] = ceiling
+            row["required_free_bytes_for_pct"] = required_free_for_pct
+            row["pct_shortfall_bytes"] = additional_free_needed
+            row["additional_free_bytes_needed"] = additional_free_needed
+            raise Denied("volume used percentage at or above MAX_USED_PCT at " + str(path)
+                         + " free_bytes=" + str(usage.free)
+                         + " used_pct=" + str(used_pct)
+                         + " max_used_pct=" + str(ceiling)
+                         + " required_free_bytes_for_pct=" + str(required_free_for_pct)
+                         + " additional_free_bytes_needed=" + str(additional_free_needed), row)
         observations.append(row)
     report["destinations"] = observations
     return report
