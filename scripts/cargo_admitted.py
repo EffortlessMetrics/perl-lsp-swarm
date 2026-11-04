@@ -30,6 +30,8 @@ def local_config_cli_args(worktree):
     if path.is_file():
         return ["--config", str(path)]
     return []
+class CapacityRefused(Denied):
+    """Observed disk headroom is insufficient for the selected policy."""
 
 
 def native_path(value):
@@ -829,6 +831,15 @@ def check_capacity(paths, env, budget=None):
                          + " max_used_pct=" + str(ceiling)
                          + " required_free_bytes_for_pct=" + str(required_free_for_pct)
                          + " additional_free_bytes_needed=" + str(additional_free_needed), row)
+        if usage.free < required or (policy == "percent" and
+                (usage.total - usage.free) * 100 / usage.total >= ceiling):
+            row["shortfall_bytes"] = max(0, required - usage.free)
+            row["used_pct"] = (usage.total - usage.free) * 100 / usage.total
+            raise CapacityRefused("insufficient disk headroom at " + str(path)
+                                  + " free_bytes=" + str(usage.free)
+                                  + " required_free_bytes=" + str(required)
+                                  + " shortfall_bytes=" + str(row["shortfall_bytes"])
+                                  + " used_pct=" + str(row["used_pct"]), row)
         observations.append(row)
     report["destinations"] = observations
     return report
@@ -1105,6 +1116,11 @@ def main(args=None):
         return result
     except (Denied, OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print("cargo-admitted: DENY: " + str(error), file=sys.stderr)
+        if isinstance(error, CapacityRefused) and not preflight:
+            print("cargo-admitted: next: run scripts/cargo-admitted --preflight with the "
+                  "same admission options and exact Cargo arguments to inspect request scope "
+                  "and private output roots (read-only; no capacity reservation).",
+                  file=sys.stderr, flush=True)
         if preflight:
             print("cargo-admitted preflight: " + json.dumps({
                 "verdict": "DENY", "scope": scope, "lease_acquired": False,

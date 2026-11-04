@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -28,6 +29,18 @@ from parser_facade_inventory import (
 )
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
+
+
+def fixture_feature_closure(features: dict[str, list[str]], root: str) -> set[str]:
+    seen: set[str] = set()
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(entry for entry in features.get(current, []) if entry in features)
+    return seen
 
 
 class ParserFacadeAuthorityTests(unittest.TestCase):
@@ -391,6 +404,13 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
                 "(source_only or dependencies_and_source outside default_features)"
             )
         return sorted(candidates, key=lambda row: row["name"])[0]
+
+    def test_fixture_default_closure_excludes_transitive_and_cyclic_features(self) -> None:
+        features = {"default": ["outer"], "outer": ["inner"],
+                    "inner": ["outer", "dep:external"], "other": []}
+        self.assertEqual(fixture_feature_closure(features, "default"),
+                         {"default", "outer", "inner"})
+        self.assertNotIn("other", fixture_feature_closure(features, "default"))
 
     # --- dependency universe -------------------------------------------------
 

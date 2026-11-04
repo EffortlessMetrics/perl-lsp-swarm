@@ -859,6 +859,7 @@ function serverAdvertisesAiActivation(client: AiCompletionClient): boolean {
 export async function suggestAiCompletionIfSupported(
   context: vscode.ExtensionContext,
   client: AiCompletionClient | undefined,
+  warn: (message: string) => void = () => {},
 ): Promise<void> {
   if (!client) {
     return;
@@ -898,6 +899,11 @@ export async function suggestAiCompletionIfSupported(
     } catch {
       // A failed receipt can allow a later re-offer, but must not discard the
       // choice the user has already made in this prompt.
+      warn(
+        `Perl LSP: could not persist AI completion prompt receipt: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
 
     if (choice === 'Enable') {

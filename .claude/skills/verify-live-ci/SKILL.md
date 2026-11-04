@@ -153,13 +153,17 @@ the established candidate writer alone performs it.
 5. **Material base movement changed a merge-tree subject and the old attempt cannot
    answer it.** Prefer an admissible exact-subject dispatch that can satisfy the missing
    required context, with the same read-back as action 3.
-6. **No admissible exact-subject route can evaluate the required changed merge tree.**
-   Return terminal `NOT_PROVEN` with the missing producer, subject, capability or
-   reporting identity. Do not create an empty commit or push to summon qualification.
-   Ordinary pushes communicate development; they are not a qualification button.
+6. **No admissible exact-subject route can evaluate the required changed merge tree and
+   the currentness contract's narrow fresh-trigger exception applies.** Authorize one
+   verified-clean empty commit through the established candidate writer. The writer
+   proves no file or mode change, pushes the expected branch, and returns the new head.
+   Re-read the PR head before waiting for the resulting required run. This is not a
+   retry-to-green mechanism and this skill does not mutate the branch directly.
 7. **No action can be proven admissible or persisted.** Return terminal `NOT_PROVEN`
    with the missing policy, subject, capability, reporting identity, or read-back. Do not
-   guess by pushing or call an unobserved action in flight.
+   guess by pushing or call an unobserved action in flight. If the fresh-trigger
+   mechanic is unavailable or its new-subject relationship cannot be proven, remain
+   `NOT_PROVEN` rather than inventing a clean or current result.
 
 ### Remote-action persistence law
 
@@ -177,6 +181,44 @@ expected PR/head or merge subject
 If read-back fails, is contradictory, or names another subject, preserve the action
 failure or return `NOT_PROVEN`. Do not take a second status-production action from the
 same snapshot; re-read only after the named wake event.
+
+## Currentness and fresh-trigger decision
+
+Classify the current snapshot before selecting a status-production action. Provider
+mechanics may differ; the result class and next route must not.
+
+```text
+existing evidence still current for the required subject
+→ use it; no retrigger or mutation
+
+required check pending for the current subject
+→ observe once; return PR_IN_FLIGHT; do not poll or mutate
+
+required check failed for the current subject
+→ classify product/test/integration/instrument cause; a fresh trigger is not a retry-to-green
+
+unrelated or behind-only main movement, conflict-free
+→ no candidate mutation, rebase, or trigger
+
+material merge-tree/base subject changed
++ supported rerun or exact-subject dispatch evaluates the new subject
+→ prefer that non-mutating mechanism; bind evidence to the new subject
+
+material merge-tree/base subject changed
++ policy requires a fresh result
++ ordinary rerun would replay the stale snapshot
++ no admissible exact-subject dispatch
++ provider can bind the sanctioned writer-owned fresh trigger to the new subject
++ effective repository policy admits the writer-owned fresh trigger
+→ one bounded fresh trigger (`ci: re-request fresh merge-tree checks`); at most one per observed material base movement; re-read before PR_IN_FLIGHT
+
+material merge-tree subject changed
++ mechanic unavailable, repository policy forbids the fresh trigger, or trigger/new-subject relationship unproven
+→ NOT_PROVEN; do not invent equivalence or a clean/current result
+```
+
+This is not admission, queue custody, or a second lifecycle. Ordinary pushes remain
+development communication, not a qualification button.
 
 ## Terminal inspection and ownership
 
@@ -213,13 +255,21 @@ evidence rule:
   integration fact. Request a job rerun where appropriate without mutating the branch.
   Never rebase, push an empty commit, or replay unrelated CI merely to manufacture a
   current status;
-- a rerun of a merge-tree-evaluated check replays its original merge snapshot. After
-  material base movement, request an admissible explicit producer for the changed
-  subject. If that producer is unavailable, no admissible exact-subject producer means
-  `NOT_PROVEN`; preserve the named capability blocker. Historical empty-commit
-  workarounds do not authorize push-triggered qualification under the current contract.
-  Query main's own head check-runs when evidence suggests a base-owned failure before
-  repairing branch-locally.
+- a rerun of a merge-tree-evaluated check replays its original merge snapshot: after
+  material base movement (release bumps, fmt/clippy sweeps landing on main), prefer an
+  admissible exact-subject producer for the changed subject. When that producer cannot
+  evaluate the new tree, a fresh trigger (empty-commit head bump, e.g.
+  `ci: re-request fresh merge-tree checks`) re-evaluates the current tree and is the
+  honest action; the bound is at most one fresh trigger per observed material base
+  movement — never per wait cycle — and the established candidate writer owns the
+  action. If the mechanic is unavailable, repository policy forbids the fresh
+  trigger, or the trigger cannot be bound to the new
+  subject, no admissible exact-subject producer means `NOT_PROVEN`; preserve the named
+  capability blocker. The empty-commit ban covers manufacturing a current status on an
+  unchanged subject, not re-evaluating a changed merge tree (#12174, #12251, #12256,
+  #12258 each unblocked only through the fresh trigger). Query main's own head
+  check-runs when evidence suggests a base-owned failure before repairing
+  branch-locally.
 
 
 Classify failures as candidate-owned, base-owned, integration interaction,

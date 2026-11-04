@@ -2564,13 +2564,11 @@ export class BinaryDownloader {
       }
     })();
     const prompt =
-      actions.length > 0
-        ? show(notification.summary, ...actions)
-        : show(notification.summary);
+      actions.length > 0 ? show(notification.summary, ...actions) : show(notification.summary);
     void prompt.then((choice) => {
-        if (choice === 'View Logs') {
-          this.outputChannel.show();
-        }
+      if (choice === 'View Logs') {
+        this.outputChannel.show();
+      }
       if (choice === 'Reload Window') {
         void vscode.commands.executeCommand('workbench.action.reloadWindow');
       }
