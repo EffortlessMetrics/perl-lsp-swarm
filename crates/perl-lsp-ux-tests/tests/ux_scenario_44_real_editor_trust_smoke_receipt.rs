@@ -308,7 +308,10 @@ fn scenario_44_real_editor_trust_smoke_receipt() {
             });
 
             recorder.mark_request_start("diagnostics_workspace_present_imports");
-            let diagnostics = harness.wait_for_diagnostics(APP_PATH, Duration::from_secs(5));
+            let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+                &format!("diagnostics for {}", APP_PATH),
+                harness.wait_for_diagnostics(APP_PATH, Duration::from_secs(5)),
+            )?;
             let pl701_present = has_pl701(&diagnostics);
             reports.push(TrustSurfaceReport {
                 surface: "diagnostics",

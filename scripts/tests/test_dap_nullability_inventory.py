@@ -244,6 +244,32 @@ def test_duplicate_wire_names_fail_the_build_and_lose_owner():
     assert "ambiguous" in row.get("reason", ""), row
 
 
+def test_required_nullable_cannot_skip_when_none():
+    """Falsifier #6737: required-nullable fields must not omit on None."""
+    definition = {
+        "properties": {
+            "maybeNull": {"type": ["string", "null"]},
+        },
+        "required": ["maybeNull"],
+    }
+    rust = {
+        "UnderTest": {
+            "rename_all": "camelCase",
+            "fields": {
+                "maybe_null": {
+                    "rust_type": "Option<String>",
+                    "optional": True,
+                    "skips_when_none": True,
+                    "has_default": False,
+                    "wire_name": "maybeNull",
+                },
+            },
+        }
+    }
+    _rows, errors = mod.build_rows({"definitions": {"UnderTest": definition}}, rust)
+    assert any("required-nullable" in error and "skip_serializing_if" in error for error in errors), errors
+
+
 if __name__ == "__main__":
     # The dap-protocol-authority workflow invokes this file directly with
     # python3; a bare exit would silently skip every falsifier.

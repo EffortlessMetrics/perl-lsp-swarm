@@ -73,11 +73,20 @@ pub(crate) struct ReplayState {
     pub(crate) delimiter_stack: Vec<char>,
     pub(crate) in_prototype: bool,
     pub(crate) prototype_depth: usize,
+    pub(crate) prototype_signature_seen: bool,
     pub(crate) after_sub: bool,
     pub(crate) after_arrow: bool,
     pub(crate) hash_brace_depth: usize,
     pub(crate) after_var_subscript: bool,
     pub(crate) paren_depth: usize,
+    /// Depth of currently-open parens opened by `print` invoked as a list
+    /// operator with parens (see `PerlLexer::print_list_paren_depth`).
+    /// Tracked alongside `paren_depth` because checkpoint restore needs to
+    /// reproduce the lexer's decision boundary for `<<` (#16163).
+    pub(crate) print_list_parens: Vec<(usize, bool, bool)>,
+    /// `print` keyword/identifier at term position followed by `(`; consumed
+    /// by the next `(` handler. See `PerlLexer::pending_print_list_paren`.
+    pub(crate) pending_print_list_paren: bool,
     pub(crate) current_pos: Position,
     pub(crate) after_newline: bool,
     pub(crate) pending_heredocs: Vec<PendingHeredocCheckpoint>,
@@ -308,6 +317,7 @@ impl LexerCheckpoint {
             delimiter_stack_changed: self.replay.delimiter_stack != other.replay.delimiter_stack,
             prototype_state_changed: self.replay.in_prototype != other.replay.in_prototype
                 || self.replay.prototype_depth != other.replay.prototype_depth
+                || self.replay.prototype_signature_seen != other.replay.prototype_signature_seen
                 || self.replay.after_sub != other.replay.after_sub
                 || self.replay.after_arrow != other.replay.after_arrow
                 || self.replay.hash_brace_depth != other.replay.hash_brace_depth
@@ -626,11 +636,14 @@ mod tests {
             delimiter_stack: Vec::new(),
             in_prototype: false,
             prototype_depth: 0,
+            prototype_signature_seen: false,
             after_sub: false,
             after_arrow: false,
             hash_brace_depth: 0,
             after_var_subscript: false,
             paren_depth: 0,
+            print_list_parens: Vec::new(),
+            pending_print_list_paren: false,
             current_pos: Position::start(),
             after_newline: false,
             pending_heredocs: Vec::new(),

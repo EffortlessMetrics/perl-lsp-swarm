@@ -6,6 +6,7 @@
 //! belong to #9205) and does not change any runtime behavior.
 
 mod derive;
+mod gate_control;
 mod model;
 mod overrides;
 mod render;

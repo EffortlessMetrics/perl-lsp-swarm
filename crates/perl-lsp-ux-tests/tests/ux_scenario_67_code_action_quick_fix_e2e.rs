@@ -145,8 +145,10 @@ fn scenario_67_code_action_quick_fix_e2e_receipt() {
             harness.open_file(FIXTURE_PATH, FIXTURE_SOURCE)?;
 
             recorder.mark_request_start("published_diagnostics");
-            let diagnostics =
-                harness.wait_for_latest_diagnostics(FIXTURE_PATH, Duration::from_secs(5));
+            let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+                &format!("diagnostics for {}", FIXTURE_PATH),
+                harness.wait_for_latest_diagnostics(FIXTURE_PATH, Duration::from_secs(5)),
+            )?;
             if !diagnostics.is_empty() {
                 recorder.mark_first_useful_result("published_diagnostics");
             }

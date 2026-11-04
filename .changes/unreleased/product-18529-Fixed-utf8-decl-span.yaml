@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Shrink Find References declaration spans from UTF-8 line bytes instead of LSP columns so a non-ASCII prefix cannot panic or shift the name token.
+time: 2026-10-31T12:00:00Z
+custom:
+  PR: "18529"
+  Slug: utf8-decl-span
+  Breaking: "no"

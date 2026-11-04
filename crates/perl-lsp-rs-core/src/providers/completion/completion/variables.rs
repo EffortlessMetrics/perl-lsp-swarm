@@ -14,6 +14,50 @@ use super::{context::CompletionContext, items::CompletionItem, items::InsertText
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 use std::borrow::Cow;
 
+fn admitted_symbols<'a>(
+    symbol_table: &'a SymbolTable,
+    cursor_scope_id: ScopeId,
+    cursor_position: usize,
+    symbols: impl IntoIterator<Item = &'a Symbol>,
+) -> Vec<&'a Symbol> {
+    let admitted: Vec<&Symbol> = symbols
+        .into_iter()
+        .filter(|symbol| admit(symbol_table, cursor_scope_id, cursor_position, symbol).is_visible())
+        .collect();
+    select_exact_identities(symbol_table, admitted)
+}
+
+fn variable_item(
+    context: &CompletionContext,
+    symbol_table: &SymbolTable,
+    symbol: &Symbol,
+    name: &str,
+    sigil: &str,
+    sort_tier: char,
+    detail: String,
+) -> CompletionItem {
+    let insert_text = format!("{sigil}{name}");
+    let scope_sort_key =
+        compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
+    CompletionItem {
+        label: Cow::Owned(insert_text.clone()),
+        kind: super::items::CompletionItemKind::Variable,
+        detail: Some(Cow::Owned(detail)),
+        documentation: symbol.documentation.clone().map(Cow::Owned),
+        insert_text: Some(Cow::Owned(insert_text.clone())),
+        sort_text: Some(Cow::Owned(format!("{sort_tier}{scope_sort_key}_{name}"))),
+        // Include the sigil in filter_text so strict-filtering clients match
+        // when the user types the sigil prefix (e.g. `$c` matching `$count`).
+        // (#5050 item 4)
+        filter_text: Some(Cow::Owned(insert_text)),
+        additional_edits: vec![],
+        text_edit_range: Some((context.prefix_start, context.suffix_end)),
+        commit_characters: None,
+        insert_text_format: InsertTextFormat::PlainText,
+        label_details: None,
+    }
+}
+
 /// Add variable completions with scope-distance ranking.
 ///
 /// Variables from the immediate scope rank highest, then parent scopes,
@@ -24,9 +68,25 @@ pub fn add_variable_completions(
     context: &CompletionContext,
     kind: SymbolKind,
     symbol_table: &SymbolTable,
+    source: &str,
 ) {
     let sigil = kind.sigil().unwrap_or("");
     let prefix_without_sigil = context.prefix.trim_start_matches(sigil);
+    // Accepting a name in the middle of a variable replaces the remaining
+    // identifier too. Keep punctuation and adjacent expressions outside the edit,
+    // and leave the non-sigil inventory's insertion geometry unchanged.
+    let edit_end = if context.prefix.starts_with(['$', '@', '%']) {
+        context.position
+            + source
+                .get(context.position..)
+                .unwrap_or_default()
+                .chars()
+                .take_while(|ch| perl_lexer::is_perl_identifier_continue(*ch))
+                .map(char::len_utf8)
+                .sum::<usize>()
+    } else {
+        context.position
+    };
 
     for (name, symbols) in &symbol_table.symbols {
         if !name.starts_with(prefix_without_sigil) {
@@ -46,6 +106,13 @@ pub fn add_variable_completions(
         let selected = select_exact_identities(symbol_table, admitted);
 
         for symbol in selected {
+            let detail =
+                format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name)
+                    .trim()
+                    .to_string();
+            let mut item = variable_item(context, symbol_table, symbol, name, sigil, '1', detail);
+            item.text_edit_range = Some((context.prefix_start, edit_end));
+            completions.push(item);
             let insert_text = format!("{}{}", sigil, name);
 
             let scope_sort_key =
@@ -172,7 +239,7 @@ pub fn add_special_variables(
                 sort_text: Some(Cow::Owned(format!("0_{}", var))), // Special vars have highest priority
                 filter_text: Some(Cow::Owned(var.to_string())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
