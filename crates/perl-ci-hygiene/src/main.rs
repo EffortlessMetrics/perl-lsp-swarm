@@ -49,6 +49,7 @@ use crate::process::{
     command_with_output, command_with_output_all, command_with_output_allow_empty_match,
     command_with_output_allow_failure,
 };
+use crate::test_scope::{cfg_test_spans, line_is_test_scope};
 
 const RED: &str = "\x1b[0;31m";
 const GREEN: &str = "\x1b[0;32m";
@@ -1271,8 +1272,9 @@ fn cmd_compare_benchmarks(repo_root: &Path, args: &[String]) -> Result<i32> {
     let mut argv: Vec<String> = vec![compare_py.to_string_lossy().to_string()];
     argv.extend_from_slice(args);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    command_status_strict(repo_root, "python3", &refs, &[])?;
-    Ok(0)
+    // A comparator refusal or regression is an ordinary child outcome. Preserve
+    // its diagnostic and status rather than turning it into an eyre report.
+    command_status(repo_root, "python3", &refs, &[])
 }
 
 fn cmd_simple_lsp_test(repo_root: &Path) -> Result<i32> {
@@ -1617,9 +1619,15 @@ fn find_repo_root() -> Result<PathBuf> {
     }
 }
 
+/// Repository-relative path text for hygiene findings, logs, and receipts.
+///
+/// Always uses `/` separators so rendered evidence is identical across hosts.
+/// Callers must keep using `Path`/`PathBuf` for filesystem operations; this
+/// string is display-only and must not be parsed back into a path identity.
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .map_or_else(|_| path.display().to_string(), |relative| relative.display().to_string())
+        .replace('\\', "/")
 }
 
 fn path_has_component(path: &Path, target: &str) -> bool {
@@ -1644,17 +1652,21 @@ fn walk_rust_sources(root: &Path) -> Vec<PathBuf> {
     walk_rs_files(root).into_iter().filter(|path| !is_excluded_test_path(path)).collect()
 }
 
-fn count_pattern_before_cfg_test(
+fn count_pattern_outside_test_scope(
     path: &Path,
     pattern: &Regex,
     exclude_self_context: bool,
 ) -> Result<Vec<(usize, String)>> {
     let mut out = Vec::new();
     let lines = read_lines(path)?;
-    let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
+    // Scoped to the inline test modules rather than truncated at the first gate:
+    // a production match after `mod tests { … }` was previously never seen
+    // (#16523). The panic-inventory sweep keeps the start-line reader, because
+    // there over-inclusion is the safe direction.
+    let test_spans = cfg_test_spans(&lines);
     for (index, line) in lines.iter().enumerate() {
         let line_number = index + 1;
-        if line_number >= test_start {
+        if line_is_test_scope(&test_spans, line_number) {
             continue;
         }
         if pattern.is_match(line) {
@@ -2395,10 +2407,10 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     for path in sources.iter() {
         let rel = display_path(repo_root, path);
         let lines = read_lines(path)?;
-        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
+        let test_spans = cfg_test_spans(&lines);
         for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
-            if line_no >= test_start {
+            if line_is_test_scope(&test_spans, line_no) {
                 continue;
             }
             if comment_re.is_match(line) {
@@ -2505,7 +2517,7 @@ fn run_module_ratchet(
     }
     let mut offenders = Vec::new();
     for path in walk_rs_files(dir) {
-        for (line_no, text) in count_pattern_before_cfg_test(&path, pattern, false)? {
+        for (line_no, text) in count_pattern_outside_test_scope(&path, pattern, false)? {
             offenders.push(format!("{}:{line_no}:{text}", display_path(repo_root, &path)));
         }
     }
@@ -2649,10 +2661,10 @@ pub(crate) fn scan_prod_unwraps_and_panics(repo_root: &Path) -> Result<ProdUnwra
     for path in sources.iter() {
         let rel = display_path(repo_root, path);
         let lines = read_lines(path)?;
-        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
+        let test_spans = cfg_test_spans(&lines);
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
-            if line_no >= test_start {
+            if line_is_test_scope(&test_spans, line_no) {
                 continue;
             }
             if !comment_re.is_match(line)
@@ -3118,6 +3130,20 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 mod tests {
     use super::*;
     use color_eyre::eyre::ensure;
+
+    #[test]
+    fn display_path_repository_relative_text_uses_forward_slashes() {
+        let root = PathBuf::from("/repo");
+        let file = root.join("crates/nested/deep/lib.rs");
+        assert_eq!(display_path(&root, &file), "crates/nested/deep/lib.rs");
+    }
+
+    #[test]
+    fn display_path_normalizes_separator_characters_on_prefix_failure_fallback() {
+        let root = PathBuf::from("/repo");
+        let path = PathBuf::from("line\\with\\backslash.rs");
+        assert_eq!(display_path(&root, &path), "line/with/backslash.rs");
+    }
 
     #[test]
     fn cargo_wrapper_keeps_cargo_args_before_test_harness_separator() {

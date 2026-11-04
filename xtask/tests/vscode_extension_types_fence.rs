@@ -16,7 +16,7 @@
 //! Both halves of that decision are enforced here:
 //!
 //! 1. the manifest must keep `@types/vscode` on the `engines.vscode` floor
-//!    (major.minor equality), and
+//!    (an exact or tilde stable version on the same major.minor API line), and
 //! 2. dependabot must be unable to raise `@types/vscode` standalone, so the
 //!    fence cannot silently reopen through an automated bump.
 //!
@@ -45,26 +45,89 @@ fn read_package_json() -> Result<Value> {
     serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// Extract the major.minor floor of an npm range such as `^1.125.0`,
-/// `~1.125.0`, or `1.125.0`.
-///
-/// Unknown or exotic range shapes fail closed instead of guessing, so a
-/// rewritten fence cannot slip through as a false green.
-fn range_floor_major_minor(range: &str) -> Result<(u64, u64)> {
-    let trimmed = range.trim();
-    let numeric = trimmed
-        .strip_prefix('^')
-        .or_else(|| trimmed.strip_prefix('~'))
-        .or_else(|| trimmed.strip_prefix(">="))
-        .unwrap_or(trimmed);
-    let mut parts = numeric.split('.');
-    let major = parts.next().ok_or_else(|| anyhow!("range `{range}` has no major component"))?;
-    let minor = parts.next().ok_or_else(|| anyhow!("range `{range}` has no minor component"))?;
-    let major: u64 =
-        major.parse().with_context(|| format!("range `{range}` major is not numeric"))?;
-    let minor: u64 =
-        minor.parse().with_context(|| format!("range `{range}` minor is not numeric"))?;
-    Ok((major, minor))
+/// Only complete stable versions are admitted. Parsing every component avoids
+/// accepting malformed suffixes or extra comparators as a valid floor.
+fn stable_version(version: &str) -> Result<(u64, u64, u64)> {
+    let parts = version.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        bail!("`{version}` must be a complete stable major.minor.patch version");
+    }
+    let component = |part: &str| -> Result<u64> {
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            bail!("`{version}` must contain canonical numeric version components");
+        }
+        let value: u64 =
+            part.parse().with_context(|| format!("version component in `{version}` overflows"))?;
+        // node-semver rejects components beyond Number.MAX_SAFE_INTEGER.
+        if value > 9_007_199_254_740_991 {
+            bail!("version component in `{version}` exceeds npm's safe integer limit");
+        }
+        Ok(value)
+    };
+    Ok((component(parts[0])?, component(parts[1])?, component(parts[2])?))
+}
+
+/// This deliberately admits the repository's stable exact/tilde types pins,
+/// not a general npm range grammar. npm `~M.m.p` permits patches below the next
+/// minor; `^M.m.p` (for M > 0) and `>=M.m.p` can select newer API lines even
+/// when their lower floor matches. Unsupported forms fail closed.
+fn validate_types_range(engines: &str, types: &str) -> Result<()> {
+    let engines = engines.trim();
+    let host = stable_version(
+        engines
+            .strip_prefix('^')
+            .or_else(|| engines.strip_prefix('~'))
+            .or_else(|| engines.strip_prefix(">="))
+            .unwrap_or(engines),
+    )?;
+    let types = types.trim();
+    let api = stable_version(types.strip_prefix('~').unwrap_or(types))?;
+    if (api.0, api.1) != (host.0, host.1) {
+        bail!("{TYPES_DEP} `{types}` must stay on engines.vscode `{engines}` API line");
+    }
+    Ok(())
+}
+
+#[test]
+fn compatibility_range_controls() -> Result<()> {
+    // Patch updates within the configured API line remain legitimate. A
+    // coordinated floor change also works, without hard-coding 1.125.
+    for (host, types) in [
+        ("^1.125.0", "~1.125.0"),
+        ("^1.125.0", "~1.125.7"),
+        ("^1.125.0", "1.125.7"),
+        ("^1.134.0", "~1.134.0"),
+        ("^0.3.0", "~0.3.4"),
+    ] {
+        validate_types_range(host, types)?;
+    }
+    for types in [
+        "~1.134.0",
+        "~1.124.0",
+        "~2.125.0", // wrong API lines
+        ">=1.125.0",
+        "^1.125.0", // matching floor, unsafe upper range
+        ">=1.125.0 <2.0.0",
+        "1.125.0 || 1.134.0", // wider compound ranges
+        "~1.125",
+        "1.125.0.1",
+        "~1.125.garbage",
+        "~1.125.0-beta.1",
+        "~01.125.0",
+        "~1.125.9007199254740992",
+        "~1.125.0 <2.0.0",
+        "*",
+        "",
+    ] {
+        assert!(validate_types_range("^1.125.0", types).is_err(), "accepted `{types}`");
+    }
+    for host in ["^1.125", "^1.125.bad", "^1.125.0 || ^2.0.0"] {
+        assert!(validate_types_range(host, "~1.125.0").is_err(), "accepted host `{host}`");
+    }
+    Ok(())
 }
 
 fn manifest_engines_floor() -> Result<String> {
@@ -96,18 +159,13 @@ fn manifest_types_range() -> Result<String> {
 fn types_stay_on_the_engines_floor() -> Result<()> {
     let engines = manifest_engines_floor()?;
     let types = manifest_types_range()?;
-    let engines_floor = range_floor_major_minor(&engines)
-        .with_context(|| format!("parsing engines.vscode range `{engines}`"))?;
-    let types_floor = range_floor_major_minor(&types)
-        .with_context(|| format!("parsing {TYPES_DEP} range `{types}`"))?;
-    if types_floor != engines_floor {
-        bail!(
-            "{TYPES_DEP} `{types}` floats above the engines.vscode floor `{engines}`: \
-             the types pin is the compile-time compatibility fence for the minimum \
-             supported host. Raise types only in the same change that deliberately \
-             moves engines.vscode and the minimum-host support contract (#13358)."
-        );
-    }
+    validate_types_range(&engines, &types).with_context(|| {
+        format!(
+            "{TYPES_DEP} `{types}` must be an exact or tilde stable version on the \
+             engines.vscode `{engines}` API line. Raise types only with the \
+             minimum-host support contract (#13358)."
+        )
+    })?;
     Ok(())
 }
 

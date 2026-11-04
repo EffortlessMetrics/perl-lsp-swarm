@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "scope": "new exclusive Linux subreaper fixture only; no independent consumers",
+  "native_host": "5b4b67c9a262",
+  "fixtures": [
+    {
+      "label": "lint-failure",
+      "product_exit": 101,
+      "source_sha256": "e8a347af31783fcf99b238c88a9e5866b4efbfa1a2e634d8bd7766df1fbcc0ae",
+      "owner_sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51",
+      "process_group": 7870,
+      "group_absent": true,
+      "lease_identity": [
+        27,
+        1082005
+      ],
+      "marker": "/workspace/clippy-qualification/clippy-native-mblaqdyv/devplane/5b4b67c9a262-linux-37472a3bc854ffef/cargo-active/owner-90ffadbd93d24816adcd4e91023bd93c",
+      "root_owned_no_independent_consumers": true,
+      "lease_disposition": "released by original owner after kernel ECHILD proof and matching identity",
+      "kernel_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/clippy-qualification/clippy-native-mblaqdyv/devplane/5b4b67c9a262-linux-37472a3bc854ffef/cargo-active",
+        "lease_identity": [
+          27,
+          1082005
+        ],
+        "lease_marker": "/workspace/clippy-qualification/clippy-native-mblaqdyv/devplane/5b4b67c9a262-linux-37472a3bc854ffef/cargo-active/owner-90ffadbd93d24816adcd4e91023bd93c",
+        "lease_released": true
+      },
+      "full_receipt_sha256": "9a192bc730456ff5df70bfc6a4b3f7b9f3b66bee12b9acb73fb4eba5ff0a7fbc",
+      "full_receipt_path": "/workspace/clippy-qualification/clippy-native-mblaqdyv/lint-failure-receipt.json",
+      "budget_reserve_bytes": 4294967296,
+      "budget_expected_growth_bytes": 2147483648
+    },
+    {
+      "label": "clean",
+      "product_exit": 0,
+      "source_sha256": "5b93b3b568accde9e671b4d8eb33b4c2e5b7c607045de23fa090f4683962cd76",
+      "owner_sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51",
+      "process_group": 7902,
+      "group_absent": true,
+      "lease_identity": [
+        27,
+        1082041
+      ],
+      "marker": "/workspace/clippy-qualification/clippy-native-mblaqdyv/devplane/5b4b67c9a262-linux-37472a3bc854ffef/cargo-active/owner-62ccd7c96cb84b0e865fdbe537b228b6",
+      "root_owned_no_independent_consumers": true,
+      "lease_disposition": "released by original owner after kernel ECHILD proof and matching identity",
+      "kernel_settlement": {
+        "tree_settled": true,
+        "proof": "kernel ECHILD (__WALL)",
+        "cancelled": false,
+        "termination_requested": false,
+        "reaped_descendants": [],
+        "owned_child_table_available": false,
+        "errors": [],
+        "pending_bound_pids": [],
+        "reason": "all owned descendants reaped",
+        "lease": "/workspace/clippy-qualification/clippy-native-mblaqdyv/devplane/5b4b67c9a262-linux-37472a3bc854ffef/cargo-active",
+        "lease_identity": [
+          27,
+          1082041
+        ],
+        "lease_marker": "/workspace/clippy-qualification/clippy-native-mblaqdyv/devplane/5b4b67c9a262-linux-37472a3bc854ffef/cargo-active/owner-62ccd7c96cb84b0e865fdbe537b228b6",
+        "lease_released": true
+      },
+      "full_receipt_sha256": "e1f05376a65aa1d30571c5a77918f7ed8fa1920c6f8c7edea6121a6b4504f805",
+      "full_receipt_path": "/workspace/clippy-qualification/clippy-native-mblaqdyv/clean-receipt.json",
+      "budget_reserve_bytes": 4294967296,
+      "budget_expected_growth_bytes": 2147483648
+    }
+  ],
+  "suite": {
+    "tests": 101,
+    "passed": 100,
+    "skipped": 1,
+    "seconds": 3.622,
+    "skipped_reason": "separate opt-in offline Cargo A/B/A storage build"
+  },
+  "review": {
+    "prerequisite": "CANDIDATE_READY",
+    "authority": "CANDIDATE_READY",
+    "owner_sha256": "7a1f25478287fc0c06b3885a035ed6afe9f973b5699bf82894794bcf96954d51"
+  },
+  "old_consumer": {
+    "source_sha": "1b03b05a6991207b7d866716c2edc5f9a8da5b9c",
+    "disposition": "retained and unproven; not launched within this subreaper scope"
+  }
+}

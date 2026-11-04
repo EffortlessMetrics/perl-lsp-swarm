@@ -32,19 +32,19 @@ The repo already splits those responsibilities cleanly.
 
 Use these pairings:
 
-- [`DEVELOPMENT_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/DEVELOPMENT_ARCHAEOLOGY.md) for scale, crate growth, parser lineage, and agent counts
-- [`ERA_TIMELINE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md) for the five-era sequence and velocity changes
-- [`Q3_SWARM_TALK_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_TALK_ARCHAEOLOGY.md) for the theory of trusted change, receipts, and flows
-- [`CONTROL_PLANE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md) for `.claude` / `.jules` lineage and current surfaces
-- [`WORKTREE_PARALLELISM_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/WORKTREE_PARALLELISM_ARCHAEOLOGY.md) for the move from lane ideas to worktree execution
+- [`DEVELOPMENT_ARCHAEOLOGY.md`](DEVELOPMENT_ARCHAEOLOGY.md) for scale, crate growth, parser lineage, and agent counts
+- [`ERA_TIMELINE.md`](ERA_TIMELINE.md) for the five-era sequence and velocity changes
+- [`Q3_SWARM_TALK_ARCHAEOLOGY.md`](Q3_SWARM_TALK_ARCHAEOLOGY.md) for the theory of trusted change, receipts, and flows
+- [`CONTROL_PLANE_ARCHAEOLOGY.md`](CONTROL_PLANE_ARCHAEOLOGY.md) for `.claude` / `.jules` lineage and current surfaces
+- [`WORKTREE_PARALLELISM_ARCHAEOLOGY.md`](WORKTREE_PARALLELISM_ARCHAEOLOGY.md) for the move from lane ideas to worktree execution
 
 The concrete evidence chain for a claim like “the repo became PR-shaped before
 it became fully industrialized” is:
 
-1. [`Q3_SWARM_PR_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md) for the late-September PR-heavy shift
-2. [`REVIEW_LABEL_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md) for the label state machine
-3. [`MERGECODE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MERGECODE_ARCHAEOLOGY.md) for the earlier `issue-to-draft` / `draft-to-pr` / `pr-to-merge` doctrine layer
-4. [`MERGE_DISCIPLINE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MERGE_DISCIPLINE_ARCHAEOLOGY.md) for later control-plane hardening
+1. [`Q3_SWARM_PR_ARCHAEOLOGY.md`](Q3_SWARM_PR_ARCHAEOLOGY.md) for the late-September PR-heavy shift
+2. [`REVIEW_LABEL_ARCHAEOLOGY.md`](REVIEW_LABEL_ARCHAEOLOGY.md) for the label state machine
+3. [`MERGECODE_ARCHAEOLOGY.md`](MERGECODE_ARCHAEOLOGY.md) for the earlier `issue-to-draft` / `draft-to-pr` / `pr-to-merge` doctrine layer
+4. [`MERGE_DISCIPLINE_ARCHAEOLOGY.md`](MERGE_DISCIPLINE_ARCHAEOLOGY.md) for later control-plane hardening
 
 That gives the claim a timeline, a control surface, and a workflow shape.
 
@@ -63,7 +63,7 @@ The best recurring evidence chains are:
 
 Those chains support different article claims:
 
-- “parser fixes are family trees, not isolated patches” is backed by [`ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md)
+- “parser fixes are family trees, not isolated patches” is backed by [`ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md`](ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md)
 - “scouts need concrete failing snippets, not just bucket counts” is backed by the `#1700` learning issue
 - “corpus ratchets become launch evidence” is backed by `#1889 -> #2039 -> #2195`
 
@@ -85,15 +85,15 @@ The strongest chain for receipt/trust claims is not just a PR body. It is:
 1. PR `#209` as the original receipt-heavy scar story
 2. PR `#274` as the template normalization step
 3. issue `#210` as the governance request
-4. [`.ci/receipt.schema.json`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.ci/receipt.schema.json) as the machine-readable contract
-5. [`xtask/src/tasks/gates.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/gates.rs) as the typed runner
-6. [`scripts/run-gates.sh`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/scripts/run-gates.sh) as the older shell bridge
-7. [`docs/forensics/prompts/measurement-auditor.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/forensics/prompts/measurement-auditor.md) as the audit surface
+4. [`.ci/receipt.schema.json`](../../../.ci/receipt.schema.json) as the machine-readable contract
+5. [`xtask/src/tasks/gates.rs`](../../../xtask/src/tasks/gates.rs) as the typed runner
+6. [`scripts/run-gates.sh`](../../../scripts/run-gates.sh) as the older shell bridge
+7. [`docs/forensics/prompts/measurement-auditor.md`](../../forensics/prompts/measurement-auditor.md) as the audit surface
 
 The claim chain this supports is:
 
-- “receipts are not vibes” -> [`AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md)
-- “receipts can still lie” -> [`RECEIPTS_LIE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md)
+- “receipts are not vibes” -> [`AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md)
+- “receipts can still lie” -> [`RECEIPTS_LIE_ARCHAEOLOGY.md`](RECEIPTS_LIE_ARCHAEOLOGY.md)
 - “proof moved from narrative to contract” -> `#209` + `#274` + `#210` + schema/runner
 
 If an article makes a trust claim, it should cite at least one of those
@@ -111,9 +111,9 @@ The repo has two naming schemes for the same Q3 three-phase swarm:
 
 The evidence chain for that claim is:
 
-1. [`Q3_SWARM_PR_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-2. [`REVIEW_LABEL_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
-3. [`CONTROL_PLANE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
+1. [`Q3_SWARM_PR_ARCHAEOLOGY.md`](Q3_SWARM_PR_ARCHAEOLOGY.md)
+2. [`REVIEW_LABEL_ARCHAEOLOGY.md`](REVIEW_LABEL_ARCHAEOLOGY.md)
+3. [`CONTROL_PLANE_ARCHAEOLOGY.md`](CONTROL_PLANE_ARCHAEOLOGY.md)
 
 That matters because launch prose can easily collapse the two naming schemes
 into one. The repo history says they are the same three phases, just named
@@ -128,15 +128,15 @@ overstate readiness or installation clarity if those claims are left as prose.
 
 Use the current repo docs as the actual source chain:
 
-- [`CURRENT_STATUS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md) for evidence-backed readiness claims
-- [`ROADMAP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/ROADMAP.md) for what is targeted vs shipped
-- [`INSTALLATION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/how-to/INSTALLATION.md) and [`EDITOR_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/how-to/EDITOR_SETUP.md) for user-facing install/setup flow
-- [`docs/EDITORS/NEOVIM_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/EDITORS/NEOVIM_SETUP.md) and [`docs/EDITORS/HELIX_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/EDITORS/HELIX_SETUP.md) for editor-specific deep dives
+- [`CURRENT_STATUS.md`](../../project/CURRENT_STATUS.md) for evidence-backed readiness claims
+- [`ROADMAP.md`](../../project/ROADMAP.md) for what is targeted vs shipped
+- [`INSTALLATION.md`](../../how-to/INSTALLATION.md) and [`EDITOR_SETUP.md`](../../how-to/EDITOR_SETUP.md) for user-facing install/setup flow
+- [`docs/EDITORS/NEOVIM_SETUP.md`](../../EDITORS/NEOVIM_SETUP.md) and [`docs/EDITORS/HELIX_SETUP.md`](../../EDITORS/HELIX_SETUP.md) for editor-specific deep dives
 
 For launch articles, the rule is:
 
-- readiness claims belong in [`CURRENT_STATUS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
-- planning claims belong in [`ROADMAP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/ROADMAP.md)
+- readiness claims belong in [`CURRENT_STATUS.md`](../../project/CURRENT_STATUS.md)
+- planning claims belong in [`ROADMAP.md`](../../project/ROADMAP.md)
 - article claims about install or first-run behavior need direct file/doc evidence, not just a scout summary
 
 That keeps the article series from turning current product posture into historical
@@ -160,10 +160,10 @@ chain that another maintainer can follow back to the archive.
 
 ## Evidence Pointers
 
-- [`DEVELOPMENT_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/DEVELOPMENT_ARCHAEOLOGY.md)
-- [`ERA_TIMELINE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md)
-- [`Q3_SWARM_TALK_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_TALK_ARCHAEOLOGY.md)
-- [`RECEIPT_SURFACE_EVOLUTION_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/RECEIPT_SURFACE_EVOLUTION_ARCHAEOLOGY.md)
-- [`ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md)
-- [`TRUSTED_CHANGE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md)
-- [`CURRENT_STATUS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
+- [`DEVELOPMENT_ARCHAEOLOGY.md`](DEVELOPMENT_ARCHAEOLOGY.md)
+- [`ERA_TIMELINE.md`](ERA_TIMELINE.md)
+- [`Q3_SWARM_TALK_ARCHAEOLOGY.md`](Q3_SWARM_TALK_ARCHAEOLOGY.md)
+- [`RECEIPT_SURFACE_EVOLUTION_ARCHAEOLOGY.md`](RECEIPT_SURFACE_EVOLUTION_ARCHAEOLOGY.md)
+- [`ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md`](ISSUE_FAMILY_GENEALOGY_ARCHAEOLOGY.md)
+- [`TRUSTED_CHANGE_ARCHAEOLOGY.md`](TRUSTED_CHANGE_ARCHAEOLOGY.md)
+- [`CURRENT_STATUS.md`](../../project/CURRENT_STATUS.md)

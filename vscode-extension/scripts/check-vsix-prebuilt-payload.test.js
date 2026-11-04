@@ -101,6 +101,7 @@ async function runTests() {
         data.payloadRaw ?? JSON.stringify(data.payload),
       );
       zip.file('extension.vsixmanifest', data.xml);
+      zip.file('[Content_Types].xml', '<Types/>');
       if (native) {
         zip.file('extension/bin/linux-x64/perllsp', data.serverBytes);
         zip.file('extension/bin/linux-x64/perl-dap', data.dapBytes);
@@ -114,6 +115,37 @@ async function runTests() {
     await write();
     return { root, archive, topologyBytes: bytes, digest: sha256(fs.readFileSync(archive)) };
   }
+
+  await test('mapped RC rejects additional root and non-extension metadata members', async () => {
+    for (const member of ['unexpected.bin', 'outside/extra.bin']) {
+      const fixture = await mappedFixture();
+      try {
+        const zip = await JSZip.loadAsync(fs.readFileSync(fixture.archive));
+        zip.file(member, 'unexpected');
+        const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+        fs.writeFileSync(fixture.archive, bytes);
+        await assert.rejects(
+          verifyMappedRc(fixture.archive, fixture.topologyBytes, sha256(bytes)),
+          /unsupported root metadata members/,
+        );
+      } finally {
+        fs.rmSync(fixture.root, { recursive: true, force: true });
+      }
+    }
+    const fixture = await mappedFixture();
+    try {
+      const zip = await JSZip.loadAsync(fs.readFileSync(fixture.archive));
+      zip.remove('[Content_Types].xml');
+      const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+      fs.writeFileSync(fixture.archive, bytes);
+      await assert.rejects(
+        verifyMappedRc(fixture.archive, fixture.topologyBytes, sha256(bytes)),
+        /metadata is missing/,
+      );
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
 
   await test('mapped RC validates actual metadata and preserves every exact subject', async () => {
     const bundled = await mappedFixture(() => {}, true);
