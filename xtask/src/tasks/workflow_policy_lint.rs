@@ -1537,6 +1537,115 @@ fn map_contains_secrets(value: &Value) -> bool {
     }
 }
 
+fn strip_github_actions_expression(expression: &str) -> Option<&str> {
+    let trimmed = expression.trim();
+    trimmed.strip_prefix("${{").and_then(|inner| inner.strip_suffix("}}")).map(str::trim)
+}
+
+fn parse_quoted_actions_string(token: &str) -> Option<&str> {
+    let token = token.trim();
+    if token.len() < 2 {
+        return None;
+    }
+    let bytes = token.as_bytes();
+    let quote = bytes[0];
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    if bytes.last().copied()? != quote {
+        return None;
+    }
+    Some(&token[1..token.len() - 1])
+}
+
+fn parse_github_field_string_equality(term: &str, field: &str) -> Option<(bool, String)> {
+    let normalized: String = term.chars().filter(|ch| !ch.is_whitespace()).collect();
+    for (operator, equals) in [("==", true), ("!=", false)] {
+        let prefix = format!("{field}{operator}");
+        let Some(literal) = normalized.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some(value) = parse_quoted_actions_string(literal) else {
+            continue;
+        };
+        return Some((equals, value.to_string()));
+    }
+    None
+}
+
+fn evaluate_cancel_in_progress_expression(
+    expression: &str,
+    event_name: &str,
+    event_action: &str,
+) -> Option<bool> {
+    let Some(expression) = strip_outer_parentheses(expression) else {
+        return None;
+    };
+    let trimmed = expression.trim();
+    if trimmed == "true" {
+        return Some(true);
+    }
+    if trimmed == "false" {
+        return Some(false);
+    }
+
+    if let Some((equals, value)) = parse_github_field_string_equality(trimmed, "github.event_name")
+    {
+        return Some(if equals { event_name == value } else { event_name != value });
+    }
+    if let Some((equals, value)) =
+        parse_github_field_string_equality(trimmed, "github.event.action")
+    {
+        return Some(if equals { event_action == value } else { event_action != value });
+    }
+
+    if let Some(terms) = split_top_level(expression, "&&") {
+        let mut result = true;
+        for term in terms {
+            result &= evaluate_cancel_in_progress_expression(term, event_name, event_action)?;
+        }
+        return Some(result);
+    }
+
+    if let Some(terms) = split_top_level(expression, "||") {
+        let mut result = false;
+        for term in terms {
+            result |= evaluate_cancel_in_progress_expression(term, event_name, event_action)?;
+        }
+        return Some(result);
+    }
+
+    None
+}
+
+fn cancel_in_progress_blankets_truth_runs(value: &Value) -> bool {
+    if let Some(enabled) = value.as_bool() {
+        return enabled;
+    }
+
+    let Some(text) = value.as_str() else {
+        return true;
+    };
+
+    match text.trim() {
+        "true" => return true,
+        "false" => return false,
+        _ => {}
+    }
+
+    let Some(expression) = strip_github_actions_expression(text) else {
+        return true;
+    };
+
+    let push = evaluate_cancel_in_progress_expression(expression, "push", "");
+    let merge_group = evaluate_cancel_in_progress_expression(expression, "merge_group", "");
+    match (push, merge_group) {
+        (Some(false), Some(false)) => false,
+        (Some(true), _) | (_, Some(true)) => true,
+        _ => true,
+    }
+}
+
 fn blanket_cancel_in_progress(workflow: &Value) -> bool {
     let trigger_names = triggers(workflow);
     let has_truth_runs = trigger_names.iter().any(|trigger| trigger == "merge_group")
@@ -1569,9 +1678,11 @@ fn blanket_cancel_in_progress(workflow: &Value) -> bool {
         return false;
     };
 
-    map.get(Value::String("cancel-in-progress".to_string()))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    let Some(cancel) = map.get(Value::String("cancel-in-progress".to_string())) else {
+        return false;
+    };
+
+    cancel_in_progress_blankets_truth_runs(cancel)
 }
 
 fn pull_request_has_label_triggers(workflow: &Value) -> bool {
@@ -3341,6 +3452,92 @@ mod tests {
         let mut issues = Vec::new();
         lint_workflow_file(&path, true, &mut issues)?;
         assert!(issues.iter().all(|issue| issue.code != "LABEL_EVENT_CANCELS_PR_RUN"));
+        Ok(())
+    }
+
+    fn lint_blanket_cancel_candidate(content: &str) -> Result<Vec<LintIssue>> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("candidate.yml");
+        fs::write(&path, content)?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, false, &mut issues)?;
+        Ok(issues)
+    }
+
+    fn has_blanket_cancel_finding(issues: &[LintIssue]) -> bool {
+        issues.iter().any(|issue| issue.code == "BLANKET_CANCEL_IN_PROGRESS")
+    }
+
+    #[test]
+    fn blanket_cancel_in_progress_quoted_true_on_push_main_errors() -> Result<()> {
+        let issues = lint_blanket_cancel_candidate(
+            "on:\n  push:\n    branches: [main]\nconcurrency:\n  group: proof\n  cancel-in-progress: \"true\"\n",
+        )?;
+        assert!(
+            has_blanket_cancel_finding(&issues),
+            "quoted true must not pass on push/main: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn blanket_cancel_in_progress_unsafe_expressions_on_push_main_errors() -> Result<()> {
+        for cancel in ["${{ true }}", "${{ github.event_name == 'push' }}"] {
+            let issues = lint_blanket_cancel_candidate(&format!(
+                "on:\n  push:\n    branches: [main]\nconcurrency:\n  group: proof\n  cancel-in-progress: {cancel}\n"
+            ))?;
+            assert!(
+                has_blanket_cancel_finding(&issues),
+                "unsafe cancel expression must fail: {cancel}: {issues:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn blanket_cancel_in_progress_ci_synchronize_gate_on_push_main_passes() -> Result<()> {
+        let issues = lint_blanket_cancel_candidate(
+            "on:\n  push:\n    branches: [main]\nconcurrency:\n  group: proof\n  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}\n",
+        )?;
+        assert!(
+            !has_blanket_cancel_finding(&issues),
+            "ci.yml-style PR synchronize gate must pass: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn blanket_cancel_in_progress_pull_request_gate_on_merge_group_passes() -> Result<()> {
+        let issues = lint_blanket_cancel_candidate(
+            "on:\n  merge_group: {}\nconcurrency:\n  group: proof\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+        )?;
+        assert!(
+            !has_blanket_cancel_finding(&issues),
+            "pull_request-only gate must pass on merge_group: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shipped_workflows_blanket_cancel_expression_forms_are_recognized() -> Result<()> {
+        let workflows_dir = project_root()?.join(".github").join("workflows");
+        let mut issues = Vec::new();
+        for entry in fs::read_dir(&workflows_dir)? {
+            let path = entry?.path();
+            let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if ext != "yml" && ext != "yaml" {
+                continue;
+            }
+            lint_workflow_file(&path, false, &mut issues)?;
+        }
+        let blanket: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "BLANKET_CANCEL_IN_PROGRESS").collect();
+        assert!(
+            blanket.is_empty(),
+            "unexpected BLANKET_CANCEL_IN_PROGRESS on shipped workflows: {blanket:#?}"
+        );
         Ok(())
     }
 

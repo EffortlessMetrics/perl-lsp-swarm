@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "textDocument/foldingRange heredoc folds now cover the entire body: the last body line no longer stays unfolded for bodies of 3+ lines (2-line bodies were already correct), and the terminator line remains visible, matching the block-fold convention."
+time: 2026-10-04T00:00:00Z
+custom:
+  PR: "17316"
+  Slug: heredoc-fold-end-line-17299
+  Breaking: "no"

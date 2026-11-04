@@ -27,6 +27,7 @@ use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
 use perl_lsp_rs_core::providers::dancer2::Dancer2CompletionCandidate;
+use perl_lsp_rs_core::providers::htmx::htmx_attribute_name_completion_admitted;
 use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -1048,6 +1049,7 @@ impl LspServer {
             });
         if is_method_completion
             || CompletionProvider::detect_hash_key_context(doc_text, offset).is_some()
+            || htmx_attribute_name_completion_admitted(doc_text, offset)
         {
             return;
         }
@@ -1185,6 +1187,17 @@ impl LspServer {
                             | crate::workspace_index::SymbolKind::Class
                             | crate::workspace_index::SymbolKind::Role
                     );
+                    // `find_symbols` admits subsequence matches. Completion's
+                    // typed prefix must not: `Thing0` is a subsequence of
+                    // `Thing10` but not a string prefix (#18760). Variables
+                    // keep the looser matcher (`token` → `$api_token`).
+                    if is_module_kind
+                        && !prefix.is_empty()
+                        && !symbol.name.starts_with(&prefix)
+                        && !Self::workspace_symbol_qualified_name(&symbol).starts_with(&prefix)
+                    {
+                        continue;
+                    }
                     if is_use_module_context
                         && is_module_kind
                         && let Some(ctx) = inc_ctx
@@ -6076,5 +6089,54 @@ our $single_root_var;
 
         assert_eq!(insert_text.as_deref(), Some("$Secrets::api_token"));
         assert!(text_edit_range.is_some());
+    }
+
+    /// Package completion must not admit subsequence-only hits: `Thing0` is a
+    /// string prefix of `Thing01` but only a subsequence of `Thing10` (#18760).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn runtime_workspace_package_prefix_excludes_subsequence_numeric_hits() {
+        use crate::runtime::routing::IndexAccessMode;
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_workspace::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        server
+            .workspace_folders
+            .lock()
+            .push(WorkspaceFolderState::new("file:///project".to_string()));
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        for name in ["Thing01", "Thing09", "Thing10", "Thing20"] {
+            let uri = format!("file:///project/lib/BigApp/Gen/{name}.pm");
+            let source = format!("package BigApp::Gen::{name};\n1;\n");
+            let _ = coordinator.index().index_initial_file_str(&uri, &source);
+        }
+        coordinator.transition_to_ready(4, 4);
+
+        let doc_uri = "file:///project/bin/app.pl";
+        let doc_text = "my $class = BigApp::Gen::Thing0";
+        let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            &inc_context,
+            &IndexAccessMode::Full(&coordinator),
+            None,
+        );
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+        assert!(
+            labels
+                .iter()
+                .any(|label| *label == "BigApp::Gen::Thing01" || label.ends_with("Thing01")),
+            "true prefix Thing01 must remain; got {labels:?}"
+        );
+        for bogus in ["Thing10", "Thing20"] {
+            assert!(
+                !labels.iter().any(|label| label.contains(bogus)),
+                "subsequence package {bogus} must not appear for prefix Thing0; got {labels:?}"
+            );
+        }
     }
 }
