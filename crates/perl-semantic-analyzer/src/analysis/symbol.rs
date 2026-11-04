@@ -885,11 +885,14 @@ impl SymbolExtractor {
             }
 
             NodeKind::Foreach { variable, list, body, continue_block: _ } => {
-                self.table.push_scope(ScopeKind::Block, node.location);
-
-                // The loop variable is implicitly declared
-                self.handle_variable_declaration("my", variable, &[], variable.location, None);
+                // The list is evaluated in the enclosing scope: visit it
+                // before opening the loop scope so its references keep
+                // binding outer variables (`for my $x ($x)` — the list
+                // `$x` is the outer lexical, matching the scope
+                // analyzer's visibility ordering in scope_constructs.rs).
                 self.visit_node(list);
+                self.table.push_scope(ScopeKind::Block, node.location);
+                self.declare_foreach_iterator(variable);
                 self.visit_node(body);
 
                 self.table.pop_scope();
@@ -3191,6 +3194,42 @@ impl SymbolExtractor {
     }
 
     /// Handle variable declaration
+    /// Declare a `foreach` loop iterator in the current (loop) scope.
+    ///
+    /// The parser wraps an explicit declarator (`for my $item (...)`) in a
+    /// `VariableDeclaration` node; unwrap it so the lexical is actually
+    /// indexed (#17297) — passing the wrapper to
+    /// `handle_variable_declaration` silently recorded nothing.
+    fn declare_foreach_iterator(&mut self, variable: &Node) {
+        match &variable.kind {
+            NodeKind::VariableDeclaration { declarator, variable: inner, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                self.handle_variable_declaration(
+                    declarator,
+                    inner,
+                    attributes,
+                    inner.location,
+                    doc,
+                );
+            }
+            NodeKind::VariableListDeclaration { declarator, variables, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                for var in variables {
+                    self.handle_variable_declaration(
+                        declarator,
+                        var,
+                        attributes,
+                        var.location,
+                        doc.clone(),
+                    );
+                }
+            }
+            _ => {
+                self.handle_variable_declaration("my", variable, &[], variable.location, None);
+            }
+        }
+    }
+
     fn handle_variable_declaration(
         &mut self,
         declarator: &str,
@@ -3798,6 +3837,24 @@ mod tests {
             vec!["name".to_string(), "age".to_string()],
             "the normalized qw(...) form keeps working"
         );
+    }
+
+    /// Issue #18029 cross-seam probe: the inverted-slice inputs that panicked
+    /// `arg_contains_exporter` (see export_analyzer.rs) must not panic this
+    /// seam either. This seam's `start < end` guard compares same-frame
+    /// absolute offsets: for an ASCII delimiter the slice starts one byte
+    /// later, and a multi-byte self-delimited `qw` cannot overlap itself in
+    /// UTF-8, so the guard already implies `start + open.len_utf8() <= end`.
+    /// Unterminated or degenerate args fall back to the whole-arg name.
+    #[test]
+    fn class_tiny_qw_issue_18029_inverted_slice_inputs_do_not_panic() {
+        assert_eq!(expand_class_tiny_arg_to_names("qw\u{2022}"), vec!["qw\u{2022}".to_string()]);
+        assert_eq!(expand_class_tiny_arg_to_names("qw/"), vec!["qw/".to_string()]);
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw\u{ab}Exporter\u{bb}"),
+            vec!["qw\u{ab}Exporter\u{bb}".to_string()]
+        );
+        assert_eq!(expand_class_tiny_arg_to_names("qw x"), vec!["qw x".to_string()]);
     }
 
     /// DESTROY/AUTOLOAD are interpreter special-method hooks (perlobj), not

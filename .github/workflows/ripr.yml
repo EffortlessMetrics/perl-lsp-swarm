@@ -521,6 +521,7 @@ jobs:
                 --review-receipt target/ripr/review/comments.json \
                 --ripr-base "$RIPR_BASE_SHA" \
                 --ripr-head "$RIPR_EVALUATED_SHA" \
+                --ripr-pr-head "$PR_HEAD_SHA" \
                 --receipt target/receipts/quality/quality-gate-ripr.json \
                 --summary target/receipts/quality/quality-gate-ripr.md
               cargo xtask quality-gate \
@@ -530,6 +531,7 @@ jobs:
                 --review-receipt target/ripr/review/comments.json \
                 --ripr-base "$RIPR_BASE_SHA" \
                 --ripr-head "$RIPR_EVALUATED_SHA" \
+                --ripr-pr-head "$PR_HEAD_SHA" \
                 --receipt target/receipts/quality/quality-gate-ripr.json \
                 --summary target/receipts/quality/quality-gate-ripr.md \
                 --check
@@ -960,6 +962,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md
           cargo xtask quality-gate \
@@ -969,6 +972,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md \
             --check
@@ -1297,6 +1301,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md
           cargo xtask quality-gate \
@@ -1306,6 +1311,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md \
             --check
@@ -1999,6 +2005,13 @@ jobs:
                   break
                 fi
               done
+              # #17450: the hosted UI often shows only an early build prefix.
+              # Persist the API-retrieved tail before the temp file is removed.
+              if [ "$fetched" = "true" ] && [ -f scripts/ci/preserve-lane-log-tail.sh ]; then
+                if ! bash scripts/ci/preserve-lane-log-tail.sh "$lane_log" ripr-lane-log-tail.txt; then
+                  echo "::warning::lane log tail for ${lane_name} (job ${lane_job_id}) was not preserved; lane classification continues"
+                fi
+              fi
               if [ "$fetched" != "true" ]; then
                 # Retrieval failure is not evidence of an eviction. Preserve
                 # the fail-closed class so ripr-infra-retry cannot arm, but
@@ -2133,6 +2146,17 @@ jobs:
               echo "RIPR_GATE_VERDICT=configured-timeout-no-proof"
               write_gate_classification "configured-timeout-no-proof" "configured hosted lane exceeded 135 minutes, proven by current job annotation"
               echo "::error::ripr lane ${lane_name} (job ${lane_job_id}) exceeded its configured 135-minute limit. No proof exists for ${GITHUB_SHA}; this is not a RIPR gap or an infra auto-retry. Investigate the bounded lane before a manual rerun."
+              {
+                echo "- classification: \`configured-timeout-no-proof\`"
+                echo "- lane: \`${lane_name}\` (job \`${lane_job_id:-unknown}\`)"
+                echo "- head: \`${GITHUB_SHA}\`"
+                echo "- evidence: \`${lane_evidence_source}\`"
+                if [ -f ripr-lane-log-tail.txt ]; then
+                  echo "- lane log tail: workflow artifact \`ripr-lane-log-tail\` (last 4 MiB of the retrieved lane log)"
+                else
+                  echo "- lane log tail: unavailable (lane log was not retrievable before the gate deadline)"
+                fi
+              } >> "$GITHUB_STEP_SUMMARY"
             elif [ "$lane_class" = "cancelled-no-verdict" ]; then
               echo "RIPR_GATE_VERDICT=cancelled-no-verdict"
               write_gate_classification "cancelled-no-verdict" "cancellation cause unproved on current lane attempt"
@@ -2192,4 +2216,16 @@ jobs:
           name: ripr-gate-classification
           path: ripr-gate-classification.env
           retention-days: 1
+          if-no-files-found: ignore
+
+      # #17450: when the hosted lane hits its configured timeout, the UI log is
+      # often truncated to compile/setup output; the artifact keeps the tail the
+      # gate already retrieved for classification.
+      - name: Upload lane log tail
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-lane-log-tail
+          path: ripr-lane-log-tail.txt
+          retention-days: 7
           if-no-files-found: ignore

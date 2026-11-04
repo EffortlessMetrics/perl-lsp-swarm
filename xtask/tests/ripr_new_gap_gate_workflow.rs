@@ -252,7 +252,7 @@ fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
 
 fn fallback_quality_gate_command(check: bool) -> String {
     let command = format!(
-        "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base {FALLBACK_BASE} --ripr-head {FALLBACK_EVALUATED} --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md"
+        "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base {FALLBACK_BASE} --ripr-head {FALLBACK_EVALUATED} --ripr-pr-head {FALLBACK_RAW_HEAD} --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md"
     );
     if check { format!("{command} --check") } else { command.to_owned() }
 }
@@ -1039,13 +1039,14 @@ ripr() {
           [ "$9" = "--review-receipt" ] && [ "${10}" = "target/ripr/review/comments.json" ] || return 1
           [ "${11}" = "--ripr-base" ] && [ "${12}" = "$FAKE_BASE" ] || return 1
           [ "${13}" = "--ripr-head" ] && [ "${14}" = "$FAKE_HEAD" ] || return 1
-          [ "${15}" = "--receipt" ] && [ "${16}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
-          [ "${17}" = "--summary" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
-          if [ "$#" -eq 19 ]; then [ "${19}" = "--check" ] || return 1; elif [ "$#" -ne 18 ]; then return 1; fi
+          [ "${15}" = "--ripr-pr-head" ] && [ "${16}" = "$FAKE_PR_HEAD_SHA" ] || return 1
+          [ "${17}" = "--receipt" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
+          [ "${19}" = "--summary" ] && [ "${20}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
+          if [ "$#" -eq 21 ]; then [ "${21}" = "--check" ] || return 1; elif [ "$#" -ne 20 ]; then return 1; fi
           mkdir -p target/receipts/quality
           decision=pass
           if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then decision=fail; fi
-          if [ "$#" -eq 18 ]; then
+          if [ "$#" -eq 20 ]; then
             printf '{"schema_version":1,"kind":"quality_gate","mode":"enforce-new-ripr","decision":"%s","head":"%s"}\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.json
             printf 'decision: %s\nhead: %s\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.md
           else
@@ -2084,7 +2085,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && evaluate_step.contains("run_attempt=${GITHUB_RUN_ATTEMPT}")
             && evaluate_step.contains("lane_job_id=${lane_job_id:-unknown}")
             && evaluate_step.contains("write_gate_classification \"configured-timeout-no-proof\"")
-            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\""),
+            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\"")
+            && evaluate_step
+                .contains("preserve-lane-log-tail.sh \"$lane_log\" ripr-lane-log-tail.txt",)
+            && evaluate_step.contains("lane log tail for ${lane_name}")
+            && evaluate_step.contains("workflow artifact \\`ripr-lane-log-tail\\`"),
         "the ripr gate must emit every classified lane verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
@@ -2094,6 +2099,15 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && upload_step.contains("name: ripr-gate-classification")
             && upload_step.contains("if-no-files-found: ignore"),
         "the upload must keep tolerating the rare exits that precede any lane classification"
+    );
+    let lane_tail_upload = workflow_step(&gate, "Upload lane log tail")
+        .ok_or_else(|| anyhow!("missing lane log tail upload"))?;
+    assert!(
+        lane_tail_upload.contains("if: failure()")
+            && lane_tail_upload.contains("name: ripr-lane-log-tail")
+            && lane_tail_upload.contains("path: ripr-lane-log-tail.txt")
+            && lane_tail_upload.contains("if-no-files-found: ignore"),
+        "configured-timeout diagnosis must preserve the retrieved lane log tail (#17450)"
     );
 
     // The retry workflow fires on completed failing ripr runs only.

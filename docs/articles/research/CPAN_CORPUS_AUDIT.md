@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-19
 **Scope:** Tree-sitter Perl LSP project
-**Working Directory:** `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/`
+**Working Directory:** repository root (`.`)
 
 ---
 
@@ -238,7 +238,7 @@ Error distribution (top buckets):
 
 **Steps:**
 ```bash
-cd /home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs
+# Run from the repository root.
 cargo xtask cpan-corpus fetch-list        # Refresh top-1000 (2026-03-17 is 2 days old)
 cargo xtask cpan-corpus install           # Install all 1000 distributions
 just cpan-corpus-ratchet                  # Auto-add all clean modules to manifest
@@ -480,7 +480,7 @@ Modify `parser_corpus_sweep.rs` to scan multiple library paths:
 ```rust
 // Example: include /opt/perl/lib/perl5 in addition to system paths
 let corpus_roots = vec![
-    "/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/target/cpan-corpus/lib/perl5",
+    "target/cpan-corpus/lib/perl5",
     "/opt/local/perl/lib/perl5",  // Optional additional corpus
 ];
 ```
@@ -535,7 +535,7 @@ let corpus_roots = vec![
 ## Appendix: File Locations
 
 ```
-Project root:                       /home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/
+Project root:                       .
 
 Key infrastructure:
   - xtask/src/tasks/cpan_corpus.rs                 (fetch-list, install, ratchet)
