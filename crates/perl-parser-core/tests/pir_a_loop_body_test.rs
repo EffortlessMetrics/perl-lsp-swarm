@@ -15,7 +15,7 @@ use std::error::Error;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_parser_core::pir::{
-    PirAnchorKind, PirContext, PirEdgeKind, PirGraph, PirId, PirNode, PirOperation,
+    PirAnchorKind, PirContext, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirNode, PirOperation,
     lower_hir_bodies,
 };
 
@@ -99,17 +99,30 @@ fn pir_a_until_emits_one_loop_node() -> TestResult {
     Ok(())
 }
 
-/// A C-style `for` lowers to one Loop node whose condition links to a read.
+/// A C-style `for` lowers to one Loop node. The v0 condition link is the last
+/// node lowered from the condition: since `#17538` the trailing `10` operand
+/// is an exact leaf, so the link points at the `10` literal rather than at
+/// nothing. The comparison itself stays unmodeled (pre-existing imprecision);
+/// the read of `i` must still be present in the graph.
 #[test]
 fn pir_a_c_style_for_emits_loop_with_condition() -> TestResult {
     let graph = parse_and_lower("for (my $i = 0; $i < 10; $i++) { my $x = 1; }");
     let node = single_loop(&graph)?;
-    let cond_id = loop_condition(node)?.ok_or("C-style for condition `$i < 10` links to a read")?;
+    let cond_id =
+        loop_condition(node)?.ok_or("C-style for condition `$i < 10` must link to a node")?;
     let cond_node = graph.node(cond_id).ok_or("condition link must resolve")?;
     assert!(
-        is_read_of(cond_node, "i"),
-        "condition link must point at a read of `i`, got {:?}",
+        matches!(
+            &cond_node.operation,
+            PirOperation::Literal { kind: PirLiteralKind::Number, value: Some(payload), .. }
+                if payload == "10"
+        ),
+        "condition link must point at the trailing `10` leaf, got {:?}",
         cond_node.operation
+    );
+    assert!(
+        graph.nodes.iter().any(|n| is_read_of(n, "i")),
+        "condition operand `i` must still lower to a reachable read"
     );
     Ok(())
 }

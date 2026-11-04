@@ -4,8 +4,9 @@ use std::io::Write;
 mod common;
 #[allow(unused_imports)]
 use common::{
-    initialize_lsp, read_response, read_response_timeout, send_notification, send_request,
-    short_timeout, start_lsp_server,
+    assert_server_responsive, drain_short_timeout, initialize_lsp, read_response,
+    read_response_timeout, send_notification, send_request, send_request_no_wait, short_timeout,
+    start_lsp_server,
 };
 
 // Comprehensive protocol violation tests
@@ -71,12 +72,12 @@ fn test_wrong_jsonrpc_version() {
 }
 
 #[test]
-fn test_notification_with_id() {
+fn test_notification_with_id() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
     initialize_lsp(&server);
 
     // Notifications should not have an id field
-    send_request(
+    send_request_no_wait(
         &server,
         json!({
             "jsonrpc": "2.0",
@@ -86,15 +87,20 @@ fn test_notification_with_id() {
         }),
     );
 
-    // Server should handle gracefully
+    if let Some(response) = read_response_timeout(&server, short_timeout()) {
+        require_error_response(&response, "notification with id")?;
+    } else {
+        assert_server_responsive(&server, true)?;
+    }
+    Ok(())
 }
 
 #[test]
-fn test_request_without_id() {
+fn test_request_without_id() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
 
     // Requests must have an id field
-    send_request(
+    send_request_no_wait(
         &server,
         json!({
             "jsonrpc": "2.0",
@@ -106,7 +112,12 @@ fn test_request_without_id() {
         }),
     );
 
-    // Server should treat as notification
+    if let Some(response) = read_response_timeout(&server, short_timeout()) {
+        require_error_response(&response, "request without id")?;
+    } else {
+        assert_server_responsive(&server, false)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "strict-jsonrpc")]
@@ -392,9 +403,16 @@ fn test_circular_json_reference() -> Result<(), Box<dyn std::error::Error>> {
         }
     }"#;
 
-    send_request(&server, serde_json::from_str(circular_json)?);
+    send_request_no_wait(&server, serde_json::from_str(circular_json)?);
 
-    // Should handle without stack overflow
+    if let Some(response) = read_response_timeout(&server, short_timeout()) {
+        assert_eq!(
+            response.get("jsonrpc").and_then(|v| v.as_str()),
+            Some("2.0"),
+            "expected JSON-RPC 2.0 traffic after payload, got: {response:?}"
+        );
+    }
+    assert_server_responsive(&server, true)?;
     Ok(())
 }
 
@@ -539,7 +557,7 @@ fn test_float_positions() {
 }
 
 #[test]
-fn test_invalid_uri_schemes() {
+fn test_invalid_uri_schemes() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
     initialize_lsp(&server);
 
@@ -570,18 +588,20 @@ fn test_invalid_uri_schemes() {
                 }
             }),
         );
-
-        // Should handle invalid URIs gracefully
     }
+
+    drain_short_timeout(&server);
+    assert_server_responsive(&server, true)?;
+    Ok(())
 }
 
 #[test]
-fn test_response_without_request() {
+fn test_response_without_request() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
     initialize_lsp(&server);
 
     // Send a response without a corresponding request
-    send_request(
+    send_request_no_wait(
         &server,
         json!({
             "jsonrpc": "2.0",
@@ -590,7 +610,12 @@ fn test_response_without_request() {
         }),
     );
 
-    // Server should ignore or handle gracefully
+    if let Some(response) = read_response_timeout(&server, short_timeout()) {
+        require_error_response(&response, "response without request")?;
+    } else {
+        assert_server_responsive(&server, true)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "strict-jsonrpc")]
@@ -659,11 +684,11 @@ fn test_mixed_protocol_versions() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_method_result_and_error() {
+fn test_method_result_and_error() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
 
     // Response with both result and error (invalid)
-    send_request(
+    send_request_no_wait(
         &server,
         json!({
             "jsonrpc": "2.0",
@@ -673,5 +698,10 @@ fn test_method_result_and_error() {
         }),
     );
 
-    // Server should handle this protocol violation
+    if let Some(response) = read_response_timeout(&server, short_timeout()) {
+        require_error_response(&response, "result and error together")?;
+    } else {
+        assert_server_responsive(&server, false)?;
+    }
+    Ok(())
 }

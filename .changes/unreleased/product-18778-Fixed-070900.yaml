@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Route `scripts/xtask-quiet.sh` through `scripts/cargo-admitted` so the quiet xtask helper no longer performs a raw, unadmitted `cargo build`, and locate the binary from the admitted resource descriptor instead of unadmitted cargo metadata.
+time: 2026-11-02T07:09:00Z
+custom:
+  PR: "18778"
+  Slug: xtask-quiet-admitted-build
+  Breaking: "no"

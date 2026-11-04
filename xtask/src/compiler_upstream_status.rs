@@ -595,10 +595,7 @@ fn validate_witness(
     upstream: &UpstreamCaseRef,
     witness: &WitnessRecord,
 ) {
-    v.reject_unless(
-        is_identifier_charset(&witness.identity),
-        format!("row `{row_id}` witness identity has invalid charset"),
-    );
+    v.scan_identity("witness.identity", &witness.identity);
     v.scan_text_value("witness.minimizes_case_path", &witness.minimizes_case_path);
     v.reject_unless(
         is_relative_normalized_path(&witness.minimizes_case_path),
@@ -631,10 +628,7 @@ fn validate_owner(v: &mut Violations, owner: &OwnerRecord) {
 }
 
 fn validate_upstream_ref(v: &mut Violations, upstream: &UpstreamCaseRef) {
-    v.reject_unless(
-        is_identifier_charset(&upstream.snapshot_ref),
-        "upstream snapshot_ref has invalid charset".to_string(),
-    );
+    v.scan_identity("upstream.snapshot_ref", &upstream.snapshot_ref);
     v.reject_unless(
         is_relative_normalized_path(&upstream.case_path),
         "upstream case_path must be a normalized relative path without '..'".to_string(),
@@ -682,7 +676,7 @@ fn validate_history(
     for (field, link) in links {
         if let Some(id) = link {
             v.reject_unless(id != row_id, format!("{field} references its own row"));
-            v.reject_unless(is_identifier_charset(id), format!("{field} has invalid charset"));
+            v.scan_identity(field, id);
             if field == "history.successor_row_id" {
                 v.reject_unless(
                     row_ids.contains(id.as_str()),
@@ -719,10 +713,7 @@ fn validate_performance(
             "performance eligibility without an evidence identity".to_string(),
         );
         if let Some(evidence) = &performance.evidence_identity {
-            v.reject_unless(
-                is_identifier_charset(evidence),
-                "performance evidence identity has invalid charset".to_string(),
-            );
+            v.scan_identity("performance.evidence_identity", evidence);
         }
     } else {
         v.reject_unless(

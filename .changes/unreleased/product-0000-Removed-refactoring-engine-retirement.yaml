@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Removed
+body: "The absorbed filesystem-mutating `perl_parser::refactor::refactoring` module (`RefactoringEngine`, `RefactoringConfig`, `RefactoringOperation`, `RefactoringResult`, `RefactoringScope`, `RefactoringType`, `ModernizationPattern`, `BackupInfo`) is retired (#5231). It reread files from disk, created backups, applied multi-file work sequentially, and could report success while suppressing writes — none of which matches live editor authority. Live refactor behavior is unchanged and stays owned by its operation-specific providers: `textDocument/rename`, the refactor/refactor.extract/refactor.rewrite code actions (`perl-lsp-rs-core` code_actions::refactors), modernization, import optimization, and workspace refactor/rename modules. `PerlModernizer::modernize_file` drops its unused engine-typed `patterns` parameter. The `lsp.refactoring` feature row now names the live code-action owner instead of the engine; a future reusable pure planner is owned by #8281."
+time: 2026-08-29T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: refactoring-engine-retirement-5231
+  Breaking: "yes"

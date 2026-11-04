@@ -2,7 +2,7 @@ use super::resolve_command_invocation;
 use super::validation::validate_command_input;
 use crate::{SubprocessError, SubprocessOutput};
 use std::io::Write;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 pub(super) fn run_os_command(
@@ -22,12 +22,11 @@ fn spawn_child(
     args: &[&str],
     stdin: Option<&[u8]>,
 ) -> Result<Child, SubprocessError> {
-    // Fail closed: if the program cannot be resolved to a safe absolute path
-    // (Windows CWD-planting RCE defense), error out rather than spawning a bare
-    // name that CreateProcess would resolve against the current directory.
-    let (resolved_program, resolved_args) = resolve_command_invocation(program, args)?;
-    let mut cmd = Command::new(&resolved_program);
-    cmd.args(resolved_args.iter().map(String::as_str));
+    // Fail closed: resolve_command_invocation errors out when the program cannot
+    // be resolved to a safe absolute path (Windows CWD-planting RCE defense) and
+    // returns the fully composed Command — including the raw (un-MSVC-escaped)
+    // cmd.exe /C payload for .bat/.cmd wrappers (#17371).
+    let mut cmd = resolve_command_invocation(program, args)?;
     if stdin.is_some() {
         cmd.stdin(Stdio::piped());
     } else {

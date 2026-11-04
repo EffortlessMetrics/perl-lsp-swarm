@@ -400,6 +400,14 @@ validate_release_version_spec() {
 }
 
 resolve_version() {
+    # Source-latest is a crates.io subject, not a GitHub release. Its version
+    # is bound by verify_source_install_identity after Cargo stages the binary.
+    if [ "$INSTALL_MODE" = "source" ] && [ "$VERSION" = "latest" ]; then
+        TAG=""
+        VERSION_NUM=""
+        return 0
+    fi
+
     if [ "$VERSION" = "latest" ]; then
         info "fetching latest release..."
         local _api_url="https://api.github.com/repos/${REPO}/releases/latest"
@@ -1195,9 +1203,8 @@ verify_source_install_identity() {
         latest|"")
             info "resolved registry subject: ${BIN_NAME} ${_resolved_ver}"
             # Rebind VERSION_NUM to the verified staged identity: the
-            # completion line reports VERSION_NUM, and resolve_version filled
-            # it from the GitHub release, which can name a different subject
-            # than the crates.io build that was actually staged.
+            # completion line reports VERSION_NUM, so only the crates.io
+            # binary that was actually staged can supply this identity.
             VERSION_NUM="$_resolved_ver"
             ;;
         *)
