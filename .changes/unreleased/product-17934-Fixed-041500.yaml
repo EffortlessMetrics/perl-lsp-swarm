@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Malformed legacy test commands now identify the missing or non-string first argument and show a corrected request instead of claiming request parameters are absent."
+time: 2026-10-14T04:15:00Z
+custom:
+  PR: "17934"
+  Slug: legacy-test-command-argument-guidance
+  Breaking: "no"

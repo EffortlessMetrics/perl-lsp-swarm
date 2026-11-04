@@ -199,11 +199,13 @@ fn add_known_core_module_completions(
                 member_name,
                 summary,
             ))),
-            insert_text: Some(Cow::Owned((*member_name).to_string())),
+            // The range starts before the package qualifier, matching the
+            // other package producers' fully qualified insertion contract.
+            insert_text: Some(Cow::Owned(format!("{package_name}::{member_name}"))),
             sort_text: Some(Cow::Owned(format!("2_{member_name}"))),
             filter_text: Some(Cow::Owned((*member_name).to_string())),
             additional_edits: vec![],
-            text_edit_range: Some((context.prefix_start, context.position)),
+            text_edit_range: Some((context.prefix_start, context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -312,7 +314,7 @@ fn add_local_package_completions(
             sort_text: Some(Cow::Owned(format!("0_{}", symbol.name))),
             filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits: vec![],
-            text_edit_range: Some((context.prefix_start, context.position)),
+            text_edit_range: Some((context.prefix_start, context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -361,10 +363,17 @@ pub fn add_package_completions(
 
         // Phase 2: collect direct (own-package) non-callable members — Constants,
         // Variables, and Exports — that are not traversed by the BFS above.
-        // Using `get_package_members` for the own package only preserves the
-        // pre-existing behavior for these kinds; we intentionally do NOT inherit
-        // constants/variables through @ISA (that would be surprising UX).
-        let direct_members = index.get_package_members(&package_name);
+        // Direct membership only (#17160): a same-root descendant namespace is
+        // not this package, so its members must not be offered here. Sub-local
+        // `my`/`state` lexicals are skipped outright (#17162): they have no
+        // package-qualified name, so `Animal::$self` is never valid Perl.
+        // We intentionally do NOT inherit constants/variables through @ISA
+        // (that would be surprising UX).
+        let direct_members: Vec<WorkspaceSymbol> = index
+            .get_direct_package_members(&package_name)
+            .into_iter()
+            .filter(|symbol| !symbol.is_lexical)
+            .collect();
 
         let all_members = method_members.into_iter().chain(direct_members);
 
@@ -375,6 +384,44 @@ pub fn add_package_completions(
                 }
                 WsSymbolKind::Variable(_) => CompletionItemKind::Variable,
                 WsSymbolKind::Constant => CompletionItemKind::Constant,
+                // Nested packages (`Animal::` very often continues to
+                // `Animal::Dog`) rank at tier `2n` — after own-package
+                // members (`2_`), before inherited members (`3_`) — instead
+                // of relying on the name-only runtime fallback tier (#17162).
+                // Label, filter text, and insertion carry the full nested
+                // name so the completed text stays valid regardless of how
+                // the client applies the prefix edit range. Sigil-qualified
+                // requests (`$Animal::`) ask for a package variable, so a
+                // package name must never answer them: skip before the
+                // push rather than relying on the sigil guard below.
+                WsSymbolKind::Package => {
+                    let nested_prefix = format!("{package_name}::");
+                    if requested_sigil.is_none()
+                        && let Some(bare_name) = symbol.name.strip_prefix(&nested_prefix)
+                        && !bare_name.is_empty()
+                        && bare_name.starts_with(member_prefix)
+                        && seen_labels.insert(symbol.name.clone())
+                    {
+                        completions.push(CompletionItem {
+                            label: Cow::Owned(symbol.name.clone()),
+                            kind: CompletionItemKind::Module,
+                            detail: Some(Cow::Owned(format!("nested package of {package_name}"))),
+                            documentation: Some(Cow::Owned(format!(
+                                "Nested package `{}` declared in the workspace.",
+                                symbol.name
+                            ))),
+                            insert_text: Some(Cow::Owned(symbol.name.clone())),
+                            sort_text: Some(Cow::Owned(format!("2n_{bare_name}"))),
+                            filter_text: Some(Cow::Owned(symbol.name.clone())),
+                            additional_edits: vec![],
+                            text_edit_range: Some((context.prefix_start, context.suffix_end)),
+                            commit_characters: None,
+                            insert_text_format: InsertTextFormat::PlainText,
+                            label_details: None,
+                        });
+                    }
+                    continue;
+                }
                 _ => continue,
             };
             if requested_sigil.is_some() && symbol_sigil(&symbol) != requested_sigil {
@@ -407,7 +454,7 @@ pub fn add_package_completions(
                     // The insertion is fully qualified, so it remains valid
                     // without an import. Import edits are withdrawn (#11158).
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,

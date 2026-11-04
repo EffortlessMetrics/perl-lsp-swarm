@@ -55,19 +55,30 @@ fn command_by_id<'a>(actions: &'a [Value], command_id: &str) -> TestResult<&'a V
         .ok_or_else(|| format!("missing command {command_id} in {actions:?}").into())
 }
 
+/// Commands a code action may offer on the wire, mirroring the unit-level
+/// contract in `code_actions.rs` (#17304): server-registered
+/// `workspace/executeCommand` identifiers, plus the extension-executed
+/// `perl-lsp.explainDiagnostic`.
+fn executable_code_action_commands() -> std::collections::BTreeSet<String> {
+    let mut executable: std::collections::BTreeSet<String> =
+        perl_lsp_rs_core::protocol::capabilities::get_supported_commands().into_iter().collect();
+    executable.insert("perl-lsp.explainDiagnostic".to_string());
+    executable
+}
+
 #[test]
-fn generate_test_command_includes_lsp_318_tooltip() -> TestResult {
+fn offered_code_action_commands_are_executable_and_carry_tooltips() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
     harness.open(
-        "file:///generate-test.pl",
+        "file:///executable-commands.pl",
         "sub calculate {\n    my ($a, $b) = @_;\n    return $a + $b;\n}\n",
     )?;
 
     let actions = harness.request(
         "textDocument/codeAction",
         json!({
-            "textDocument": { "uri": "file:///generate-test.pl" },
+            "textDocument": { "uri": "file:///executable-commands.pl" },
             "range": {
                 "start": { "line": 0, "character": 0 },
                 "end": { "line": 3, "character": 1 }
@@ -76,22 +87,29 @@ fn generate_test_command_includes_lsp_318_tooltip() -> TestResult {
         }),
     )?;
     let actions = actions.as_array().ok_or("code action result must be an array")?;
-    let command = command_by_id(actions, "perl.generateTest")?;
+    let executable = executable_code_action_commands();
 
-    assert_eq!(command.get("title").and_then(Value::as_str), Some("Generate test"));
-    assert_eq!(command.get("command").and_then(Value::as_str), Some("perl.generateTest"));
-    assert_eq!(
-        command.get("tooltip").and_then(Value::as_str),
-        Some("Insert a Test::More skeleton for this subroutine")
-    );
-    assert_eq!(command.pointer("/arguments/0/name").and_then(Value::as_str), Some("calculate"));
-    assert!(
-        command
-            .pointer("/arguments/0/test")
-            .and_then(Value::as_str)
-            .is_some_and(|test| test.contains("calculate")),
-        "generate-test arguments must keep the subroutine skeleton: {command}"
-    );
+    for action in actions {
+        let Some(command) = action.get("command") else {
+            continue;
+        };
+        let Some(id) = command.get("command").and_then(Value::as_str) else {
+            continue;
+        };
+        let title = action.get("title").and_then(Value::as_str).unwrap_or("<untitled>");
+        assert!(
+            executable.contains(id),
+            "code action {title:?} offers command {id:?} that no component registers; \
+             executing it fails with -32601 Unknown command (#17304): {command}"
+        );
+    }
+    // #17304: the executor-less commands stay off the wire on every branch.
+    for dead in ["perl.generateTest", "perl.addDebugPrint", "perl.convertToMyDeclarations"] {
+        assert!(
+            command_by_id(actions, dead).is_err(),
+            "{dead} is registered nowhere and must not be offered"
+        );
+    }
     assert_command_objects_carry_tooltip(&Value::Array(actions.clone()))?;
     Ok(())
 }

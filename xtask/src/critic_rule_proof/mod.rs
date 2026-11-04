@@ -1,5 +1,5 @@
 //! Versioned native critic rule-proof manifest, checker, and status (#6973).
-//! Checker residuals beyond the four-rule pilot: #14560.
+//! Checker residuals beyond the sixteen-rule cohort: #14560.
 
 mod digest;
 mod error;

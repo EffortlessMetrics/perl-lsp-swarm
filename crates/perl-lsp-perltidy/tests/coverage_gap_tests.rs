@@ -429,8 +429,9 @@ fn builtin_formatter_default_indent_when_indent_columns_none() {
 // ── NativeFormatter — literal preserve regions ───────────────────────────────
 
 #[test]
-fn native_formatter_refuses_format_declaration_start() {
-    // "format NAME =" at start of line triggers format body detection.
+fn native_formatter_preserves_format_declaration_start() {
+    // #17708: "format NAME =" bodies are preserved byte-exact instead of
+    // refusing the whole document.
     let formatter = NativeFormatter::new();
     let source = "format REPORT =\n@<<<\n$name\n.\n";
     let config = FormatConfig::default();
@@ -438,51 +439,54 @@ fn native_formatter_refuses_format_declaration_start() {
     let result = formatter.format_document(source, &config);
 
     assert!(!result.changed);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("format body"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_pod_head2_and_other_pod_markers() {
+fn native_formatter_preserves_pod_head2_and_other_pod_markers() {
     // =head2 is a valid POD start marker.
     let formatter = NativeFormatter::new();
     let source = "=head2 SYNOPSIS\n\nSome text.\n\n=cut\n\nmy $x = 1;\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
-    assert!(result.diagnostics[0].message.contains("POD"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_pod_encoding_marker() {
+fn native_formatter_preserves_pod_encoding_marker() {
     let formatter = NativeFormatter::new();
     let source = "=encoding utf-8\n\n=cut\n\nmy $x = 1;\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert!(result.diagnostics[0].message.contains("POD"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_indented_heredoc() {
+fn native_formatter_preserves_indented_heredoc() {
     // <<~ is the indented heredoc introduced in Perl 5.26.
     let formatter = NativeFormatter::new();
     let source = "print <<~END;\n  body\nEND\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert!(result.diagnostics[0].message.contains("heredoc"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
-fn native_formatter_refuses_double_quoted_heredoc_marker() {
+fn native_formatter_preserves_double_quoted_heredoc_marker() {
     let formatter = NativeFormatter::new();
     let source = "print <<\"HEREDOC\";\nbody\nHEREDOC\n";
     let result = formatter.format_document(source, &FormatConfig::default());
 
     assert!(!result.changed);
-    assert!(result.diagnostics[0].message.contains("heredoc"));
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.is_empty());
 }
 
 // ── NativeFormatter — format_range parse gate ────────────────────────────────
