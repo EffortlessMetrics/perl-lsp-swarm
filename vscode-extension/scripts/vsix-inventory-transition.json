@@ -2,8 +2,8 @@
   "schema_version": 1,
   "owner_issue": 7119,
   "reason": "Remove generic MCP passthrough module, manifest contributions, and inert setting; rebundle extension.js and package.json.",
-  "base_baseline_file_sha256": "76ced040e30a4f70d0d55448beceec25475d3c399a06f661c613756ebb8ce4db",
-  "candidate_baseline_file_sha256": "cc4584ed6067ee9a5a1a1dc3e30cf08ded371f1dfeeb957116b5f3224b52fee2",
-  "base_inventory_sha256": "ba88ea223cd3cee7f5d0ee1d02d246cb805732b19079f4bd99228c257e01e296",
-  "candidate_inventory_sha256": "90182e0fe508fa1e5a47c1ef936a979d324fbd3a6ff4ebfdf299463e27b88114"
+  "base_baseline_file_sha256": "0633a7e9aa1ea0246ab5ad17079bbf5df52fa8c7c4813dd53b65bdd56ca2d833",
+  "candidate_baseline_file_sha256": "292d722be60c88ef570ed1ab0ff04a3693b2429e5a888b10aac84009f0bba53d",
+  "base_inventory_sha256": "86e984708b37c1da15009138adc353afc1a437324ea12308b978960679213a60",
+  "candidate_inventory_sha256": "7d2af3584b62f7648c64abde174d11b61b2298660813892177ef38d45a0bc6b8"
 }

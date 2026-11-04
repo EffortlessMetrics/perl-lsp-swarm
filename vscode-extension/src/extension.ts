@@ -158,6 +158,7 @@ import {
   FeatureActivationMetrics,
   type FeatureActivationMetricsSnapshot,
 } from './featureActivationMetrics';
+import { measureOrDeferFeature } from './featureActivationRegistration';
 import { registerWorkspaceConfigurationEvents } from './extensionWorkspaceEvents';
 import { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
 export { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
@@ -887,6 +888,14 @@ export async function copyProviderDecisionReceiptCommand(
   return copyProviderDecisionReceipt(activeClient, providerOverride, diagnosticCommandOptions());
 }
 
+/**
+ * Passive workspace file creation must not insert boilerplate (#14451).
+ * Explicit create/scaffold commands own starter content.
+ */
+export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
+  return;
+}
+
 export async function activate(context: vscode.ExtensionContext) {
   const activation = new ExtensionActivationOwner(context, (message) => {
     outputChannel?.error(message);
@@ -1285,7 +1294,12 @@ async function runExtensionActivation(
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
-            ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
+            ...(widget?.fileCount === undefined
+              ? {}
+              : {
+                  fileCount: widget.fileCount,
+                  fileCountLowerBound: widget.fileCountLowerBound,
+                }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
             ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
             ...(widget?.experienceDetail ? { lifecycleDetail: widget.experienceDetail } : {}),
@@ -1353,11 +1367,12 @@ async function runExtensionActivation(
   });
   activation.ownDisposables('commands', 'mandatory_for_activation', diagnosticCommandDisposables);
 
-  const whatsNewManager = featureActivationMetrics.measure(
+  const whatsNewManager = measureOrDeferFeature(
+    featureActivationMetrics,
     'whats_new',
     true,
     () => new WhatsNewManager(context, outputChannel),
-  );
+  )!;
   const onboardingCommandDisposables = registerOnboardingCommandGroup({
     showWhatsNew: async () => {
       featureActivationMetrics.markFirstUse('whats_new');
@@ -1452,57 +1467,61 @@ async function runExtensionActivation(
   });
   activation.own('workspace_listeners', 'mandatory_for_activation', formatOnSaveDisposable);
 
-  const configurationWatcher = featureActivationMetrics.measure('configuration', true, () =>
-    registerWorkspaceConfigurationEvents({
-      // Registered legacy keys were removed and drive no subsystem, so no
-      // configuration class classifies them; they are observed unclassified
-      // (#14966) instead of through a second host listener.
-      onAnyConfigurationChanged: (event) => {
-        if (legacyMigrationSurface) {
-          refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
-        }
-      },
-      onLiveConfigurationChanged: async (event) => {
-        if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
-          const newTrace = getTraceLevel();
-          await client.setTrace(newTrace);
-          outputChannel.info(`Trace level changed to: ${newTrace}`);
-        }
+  const configurationWatcher = measureOrDeferFeature(
+    featureActivationMetrics,
+    'configuration',
+    true,
+    () =>
+      registerWorkspaceConfigurationEvents({
+        // Registered legacy keys were removed and drive no subsystem, so no
+        // configuration class classifies them; they are observed unclassified
+        // (#14966) instead of through a second host listener.
+        onAnyConfigurationChanged: (event) => {
+          if (legacyMigrationSurface) {
+            refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
+          }
+        },
+        onLiveConfigurationChanged: async (event) => {
+          if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
+            const newTrace = getTraceLevel();
+            await client.setTrace(newTrace);
+            outputChannel.info(`Trace level changed to: ${newTrace}`);
+          }
 
-        if (event.affectsConfiguration('perl-lsp.includePaths')) {
-          await rerunIncludePathGuidance(context);
-        }
+          if (event.affectsConfiguration('perl-lsp.includePaths')) {
+            await rerunIncludePathGuidance(context);
+          }
 
-        await syncLiveLanguageClientConfiguration(client, event);
+          await syncLiveLanguageClientConfiguration(client, event);
 
-        // Advisory coexistence findings re-evaluate when an owned input
-        // changes; every collected input is classified live, so this block is
-        // reachable for all of them. Dedupe keeps this silent unless the
-        // finding set changed (#7214 clear/restore semantics).
-        if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
-          await runCoexistenceAdvisory(context);
-        }
-      },
-      onReconstructConfigurationChanged: async (event) => {
-        if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
-          await refreshTestAdapter();
-        }
+          // Advisory coexistence findings re-evaluate when an owned input
+          // changes; every collected input is classified live, so this block is
+          // reachable for all of them. Dedupe keeps this silent unless the
+          // finding set changed (#7214 clear/restore semantics).
+          if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
+            await runCoexistenceAdvisory(context);
+          }
+        },
+        onReconstructConfigurationChanged: async (event) => {
+          if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
+            await refreshTestAdapter();
+          }
 
-        if (
-          event.affectsConfiguration('perl-lsp.aiCompletion.enabled') ||
-          event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
-        ) {
-          refreshStreamingController(client);
-          await syncUserAiCompletionConfiguration(client);
-        }
-      },
-      onRestartRequired: () => promptForClientRefresh(context),
-      onError: (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        outputChannel.error(`[configuration] change handling failed: ${message}`);
-      },
-    }),
-  );
+          if (
+            event.affectsConfiguration('perl-lsp.aiCompletion.enabled') ||
+            event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
+          ) {
+            refreshStreamingController(client);
+            await syncUserAiCompletionConfiguration(client);
+          }
+        },
+        onRestartRequired: () => promptForClientRefresh(context),
+        onError: (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          outputChannel.error(`[configuration] change handling failed: ${message}`);
+        },
+      }),
+  )!;
   activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
 
   // Registered after the configuration watcher so the existing workspace_listeners
@@ -1524,23 +1543,29 @@ async function runExtensionActivation(
   // it pushes during activation join the attempt, while lazily created
   // resources (a POD preview webview panel's onDidDispose hook) fall through
   // to ordinary host disposal after the attempt closed (#7854).
-  const providerDisposables = featureActivationMetrics.measure('providers', true, () => [
-    ...registerDocumentFeatureGroup({
-      extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
-      registerGherkinProviders,
-      registerGherkinStepDefinitionSupport,
-      registerPodPreview,
-    }),
-  ]);
+  const providerDisposables = measureOrDeferFeature(
+    featureActivationMetrics,
+    'providers',
+    true,
+    () => [
+      ...registerDocumentFeatureGroup({
+        extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
+        registerGherkinProviders,
+        registerGherkinStepDefinitionSupport,
+        registerPodPreview,
+      }),
+    ],
+  )!;
   activation.ownDisposables('document_providers', 'optional_degradable', providerDisposables);
 
   languageClientStartupMetrics.markMilestone('commands_registered');
 
   // Initialize debug adapter. The debugger owns its registrations through the
   // scoped facade context, which routes them into the attempt (#7854).
-  featureActivationMetrics.measure('debugger', true, () =>
-    activateDebugger(activation.scopedContext('debugger', 'mandatory_for_activation')),
-  );
+  measureOrDeferFeature(featureActivationMetrics, 'debugger', true, () => {
+    activateDebugger(activation.scopedContext('debugger', 'mandatory_for_activation'));
+    return undefined;
+  });
 
   if (
     context.extensionMode === vscode.ExtensionMode.Test &&
@@ -1906,12 +1931,13 @@ function runActivationHousekeeping(
   whatsNewManager: WhatsNewManager,
 ): void {
   // First-run onboarding: show welcome notification once per installation.
-  const onboarding = featureActivationMetrics.measure(
+  const onboarding = measureOrDeferFeature(
+    featureActivationMetrics,
     'onboarding',
     false,
     () => new OnboardingManager(context, outputChannel),
   );
-  if (onboarding.shouldShowWelcome()) {
+  if (onboarding?.shouldShowWelcome()) {
     featureActivationMetrics.markFirstUse('onboarding');
     // Fire-and-forget; failures must not block extension startup.
     onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
