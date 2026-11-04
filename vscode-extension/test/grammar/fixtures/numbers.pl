@@ -19,3 +19,7 @@ my $key = $h{v5};
 my $method = $obj->v5;
 sub bare_block {v5}
 my %pair = (v65.66 => 1);
+my $dotted_key = $h{v65.66};
+my $spaced_key = $h{ v5};
+my %nl = (v5
+=> 1);

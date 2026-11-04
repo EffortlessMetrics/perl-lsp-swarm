@@ -851,6 +851,8 @@ fn vstring_autoquoted_brace_gate_discriminates_every_byte_class_before_the_brace
     let cases = [
         // `$`-sigiled name before `{`: the name walk stops at the sigil.
         ("$h{v5}", 3, 5, true),
+        // Dotted candidate in a hash subscript stays a v-string.
+        ("$h{v65.66}", 3, 9, false),
         // Underscore boundary of the identifier-arm guard: name `h_`.
         ("$h_{v5}", 4, 6, true),
         // Multi-character name with several walk iterations, `@` sigil.

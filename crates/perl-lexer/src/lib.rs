@@ -2111,7 +2111,9 @@ impl<'a> PerlLexer<'a> {
         }
         // Hash key: `{` directly after a sigiled variable, a closing
         // subscript, or a dereference arrow (not after a bare block opener).
-        if before >= 1 && bytes[before - 1] == b'{' {
+        // A dotted candidate stays a v-string here too (`$h{v65.66}` is
+        // chr(65).chr(66), not the autoquoted string "v65.66").
+        if before >= 1 && bytes[before - 1] == b'{' && !bytes[start..end].contains(&b'.') {
             let mut inner = before - 1;
             while inner > 0 && (bytes[inner - 1] == b' ' || bytes[inner - 1] == b'\t') {
                 inner -= 1;
