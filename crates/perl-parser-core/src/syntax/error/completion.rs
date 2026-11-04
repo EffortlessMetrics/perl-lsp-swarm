@@ -418,6 +418,15 @@ fn budget_from_cause(cause: ParseStopCause) -> ParseCompletion {
             stage: ParseCompletionStage::Unspecified,
             range: None,
         },
+        // The angle term refused the buffered contextual operation and demands a
+        // live-lexer rebuild (FC-ANGLE-FALLBACK, #16224): the buffered stream
+        // cannot satisfy the ordinary completion contract, so the bounded
+        // classification is catastrophic with the unrecoverable-failure cause;
+        // no partial tree is retained on this path.
+        ParseStopCause::AngleContextFallback { .. } => ParseCompletion::Catastrophic {
+            cause: ParseCatastrophicCause::UnrecoverableParserOrLexerFailure,
+            safe_partial: false,
+        },
         ParseStopCause::Cancelled
         | ParseStopCause::CatastrophicTermination
         | ParseStopCause::FutureTypedTerminal => ParseCompletion::Catastrophic {
