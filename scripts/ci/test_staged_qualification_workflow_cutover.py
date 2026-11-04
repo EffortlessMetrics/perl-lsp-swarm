@@ -77,7 +77,8 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     self.assertEqual((ROOT / path).read_bytes(), (root / ARCHIVED).read_bytes())
                     continue
                 changed = after[path]
-                self.assertEqual('merge_group' in original.events, 'merge_group' in changed.events, path)
+                self.assertEqual('merge_group' in original.events or path == '.github/workflows/pr-title-check.yml',
+                                 'merge_group' in changed.events, path)
                 if 'merge_group' in changed.events:
                     self.assertEqual(changed.merge_group_types, ('checks_requested',), path)
                 if path == '.github/workflows/ci.yml':
@@ -89,7 +90,8 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     self.assertEqual(left, right)
                 else:
                     self.assertEqual(original.jobs.keys(), changed.jobs.keys(), path)
-                if path not in (*GENERATORS, '.github/workflows/ci.yml', '.github/workflows/em-ci-routed-rust.yml'):
+                if path not in (*GENERATORS, '.github/workflows/ci.yml', '.github/workflows/em-ci-routed-rust.yml',
+                                '.github/workflows/pr-title-check.yml'):
                     original_body = (ROOT / path).read_text().split('jobs:\n', 1)[1]
                     projected_body = (root / path).read_text().split('jobs:\n', 1)[1]
                     if path == '.github/workflows/gate-enforcement-contract.yml':
@@ -99,6 +101,10 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                                      '--post-landing-source .github/workflows/docs-deploy.yml'):
                             self.assertEqual(projected_body.count(flag), 1)
                             projected_body = projected_body.replace(f'            {flag} \\\n', '')
+                        for owner in ('test_native_queue_title.py', 'test_pr_title_validator.py'):
+                            entry = f'            scripts/ci/{owner} \\\n'
+                            self.assertEqual(projected_body.count(entry), 1)
+                            projected_body = projected_body.replace(entry, '')
                     self.assertEqual(original_body, projected_body, path)
 
     def test_rollback_restores_every_changed_byte(self):
@@ -134,6 +140,10 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 if path == RETIRED:
                     continue
                 retained = workflow.events - catalog.DEVELOPMENT_EVENTS - {'push'}
+                if path == '.github/workflows/pr-title-check.yml':
+                    # The unqualified manual PR-association fallback is retired.
+                    # Its exact original rule body remains a golden fixture.
+                    retained -= {'workflow_dispatch'}
                 self.assertTrue(retained <= after[path].events, path)
             for path in POST_LANDING:
                 self.assertIn('push', after[path].events, path)
@@ -153,7 +163,16 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             workflows = catalog.read_workflow_catalog(root)
         self.assertEqual(before.keys(), after.keys())
         for key in before:
-            if key != 'checks':
+            if key == 'check':
+                for left, right in zip(before[key], after[key]):
+                    if left['name'] != 'validate-title':
+                        self.assertEqual(left, right)
+                        continue
+                    self.assertEqual(left['required'], right['required'])
+                    self.assertNotIn('merge-group-trigger', [x['clause'] for x in right['exemption']])
+                    self.assertIn('every proved actual-G member', next(x['reason'] for x in right['exemption']
+                                                                      if x['clause'] == 'pull-request-trigger'))
+            elif key != 'checks':
                 self.assertEqual(before[key], after[key])
         self.assertEqual(len(before['checks']), len(after['checks']))
         for left, right in zip(before['checks'], after['checks']):
@@ -167,6 +186,11 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 expected['applicability'] = 'always-or-scoped-noop'
                 expected['reason'] = right['reason']
                 self.assertIn('Every selected shard and UX obligation', right['reason'])
+            if left['name'] == 'validate-title':
+                expected['events'] = ['merge_group']
+                expected['reason'] = right['reason']
+                self.assertIn('complete current native G prefix', right['reason'])
+                self.assertIn('explicit activation', right['reason'])
             if left['name'] in {'Public API Surface (facade PR)',
                                 'Semver Compatibility (facade PR)'}:
                 # #2266/#17208 already exempt these advisory jobs from protected
@@ -188,8 +212,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             entry = next(check for check in after['checks'] if check['name'] == name)
             self.assertEqual((entry['workflow'], entry['job']), producer)
             self.assertIn(entry['job'], workflows[entry['workflow']].jobs)
-        # The patch must not pretend title has a G-membership producer yet.
-        self.assertNotIn('merge_group', workflows[PROTECTED['validate-title'][0]].events)
+        self.assertEqual(workflows[PROTECTED['validate-title'][0]].events, frozenset({'merge_group'}))
 
     def test_projected_contract_passes_source_only_and_keeps_native_ceiling(self):
         with staged_tree() as root:
@@ -204,7 +227,31 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             findings = catalog.qualification_source_findings(
                 catalog.read_workflow_catalog(root), sorted({path for path, _ in PROTECTED.values()}),
                 entry_event='merge_group')
+            # The older dispatch/queue diagnostic still calls out mixed explicit
+            # deep/release roots and completion provenance. Do not erase those
+            # findings to claim native acceptance; title's source join is closed.
             self.assertTrue(findings)
+            self.assertFalse(any(item.subject == PROTECTED['validate-title'][0] for item in findings))
+
+    def test_title_leaf_has_only_native_G_reads_and_protected_source_custody(self):
+        with staged_tree() as root:
+            workflow = yaml.load((root / '.github/workflows/pr-title-check.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(workflow['on'], {'merge_group': {'types': ['checks_requested']}})
+        self.assertTrue(workflow['permissions'])
+        self.assertEqual(set(workflow['permissions'].values()), {'read'})
+        job = workflow['jobs']['validate-title']
+        steps = job['steps']
+        self.assertEqual(steps[0]['with']['ref'], '${{ github.event.merge_group.base_sha }}')
+        self.assertEqual(steps[0]['with']['persist-credentials'], 'false')
+        self.assertEqual(steps[0]['with']['path'], 'trusted-title-source')
+        self.assertIn('native_queue_title.py observe', steps[1]['run'])
+        self.assertIn('pr_title_validator.js', steps[2]['with']['script'])
+        self.assertIn('validateMembers({github, core, context}, receipt)', steps[2]['with']['script'])
+        self.assertIn('native_queue_title.py recheck', steps[-1]['run'])
+        self.assertTrue(all('if' not in step and 'continue-on-error' not in step for step in steps))
+        source = (ROOT / 'scripts/ci/pr_title_validator.js').read_text()
+        self.assertNotIn('context.payload.pull_request', source)
+        self.assertNotIn('pulls[0]', source)
 
     def test_actual_adapter_still_refuses_product_admission_before_dispatch(self):
         api = adapter_fixture.GitHub()

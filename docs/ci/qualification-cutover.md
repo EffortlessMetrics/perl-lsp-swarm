@@ -17,7 +17,7 @@ in [qualification-workflow-composition.md](qualification-workflow-composition.md
 The former `.ci/staged/17903-root-triggers.patch` removed `merge_group` and retained
 metadata dispatch. It has been replaced by the queue perimeter and same-run fan-in
 described below. The replacement is still **unapplied**: a passing source rehearsal
-does not establish the missing H publisher, complete G membership, compatible live
+does not establish an operated H publisher, observed complete G membership, compatible live
 enforcement, first-installation route or protected landing.
 
 ## Accepted lifecycle
@@ -130,7 +130,7 @@ current merely because another executor cannot reproduce it.
 | --- | --- |
 | `Compile All Targets (bit-rot guard)` | `ci.yml:integration-required` joins unchanged `check-all-targets` execution and the existing `merge-gate` selected integration aggregate in one run/attempt. Native execution remains unobserved. |
 | `Conflict marker check` | `ci.yml:conflict-markers`, retained on actual G. Applicability and execution must be observed on the canary. |
-| `validate-title` | `pr-title-check.yml:validate-title` remains a preserved producer, but has no qualified actual-G complete-member acquirer. #18255 remains a blocker; manual/association data is not an equivalence. |
+| `validate-title` | `pr-title-check.yml:validate-title` now has a read-only native G producer: complete ordered prefix, App-authenticated H intake, protected B source, isolated Git composition, current per-member title rules and final readback. Its App policy remains disabled pending real publisher binding/native canary; see [native title proof](native-queue-title.md). |
 | `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result`, with actual-G skipped-route refusal. Preserve route execution and canonical receipt semantics; native producer/attempt acceptance remains unobserved. |
 | `ripr+ New Gap Gate` | `ripr.yml:ripr`, retained actual-G route and separately purposed cache seed. Native exact-subject execution and truthful no-gap/failure accounting remain to be observed. |
 
@@ -185,8 +185,9 @@ requires a truthful selected-G producer and inclusion in the protected aggregate
 The former routine main-push API replay under #16815 is retired with the other
 ordinary main validation roots.
 
-- #18255 supplies truthful metadata proof or an explicitly qualified admission
-  equivalence. Association, a queue-ref regex, a live queue prefix, or maximum
+- #18255 now has source for truthful per-member G title proof. Activation still
+  requires the installed trusted H intake publisher and actual native B/G/member
+  acceptance. Association, a queue-ref regex, a live queue prefix alone, or maximum
   merge count one does not establish complete event-time G membership.
 - #10063/#18269 enforce every selected candidate/G obligation independently of
   main's colour. Main-red refusal alone cannot supply that gate.

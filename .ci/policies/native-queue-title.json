@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "base_branch": "main",
+  "publisher_app_id": null,
+  "publisher_check_name": null,
+  "workflow_path": ".github/workflows/pr-title-check.yml",
+  "producer_closure": {
+    ".github": "tree",
+    ".ci/policies/native-queue-title.json": "blob",
+    "scripts/ci/native_queue.py": "blob",
+    "scripts/ci/native_queue_title.py": "blob",
+    "scripts/ci/pr_title_validator.js": "blob"
+  }
+}

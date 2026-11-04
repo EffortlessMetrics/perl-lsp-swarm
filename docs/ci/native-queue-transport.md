@@ -16,6 +16,10 @@ same-repository head. They distinguish absent custody, an armed future auto-merg
 actual native entry, closed PR, and observed merge. Queue entry head/base OIDs
 remain separate from H and may be absent before construction. This observation
 does not enumerate a merge group's complete membership or qualify its tree.
+The same fixed-read transport now also exposes `observe_group(repository, branch)`
+for the [actual-G title leaf](native-queue-title.md). That separate verifier joins
+complete native membership, App-authenticated retained intake and isolated tree
+composition; it grants no additional enqueue or publication authority to this adapter.
 
 `Adapter.enqueue(authorize=...)` requires an explicit trusted in-process authority
 callback returning literal `True`. The caller must freshly establish the existing

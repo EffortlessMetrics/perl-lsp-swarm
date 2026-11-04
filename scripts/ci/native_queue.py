@@ -38,6 +38,27 @@ OBSERVE = """query NativeQueue($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }"""
+OBSERVE_GROUP = """query NativeQueueGroup($owner: String!, $name: String!, $branch: String!) {
+  repository(owner: $owner, name: $name) {
+    id nameWithOwner
+    mergeQueue(branch: $branch) {
+      id entries(first: 100) {
+        totalCount pageInfo { hasNextPage }
+        nodes {
+          id position state baseCommit { oid } headCommit { oid }
+          pullRequest {
+            id number state isDraft headRefOid baseRefName title
+            author { login } headRepository { id nameWithOwner }
+            labels(first: 100) { totalCount pageInfo { hasNextPage } nodes { name } }
+            mergeQueueEntry {
+              id position baseCommit { oid } headCommit { oid } mergeQueue { id }
+            }
+          }
+        }
+      }
+    }
+  }
+}"""
 ENQUEUE = """mutation NativeEnqueue($input: EnqueuePullRequestInput!) {
   enqueuePullRequest(input: $input) { mergeQueueEntry { id } }
 }"""
@@ -90,7 +111,7 @@ class GitHub:
     """Use existing gh auth; only a fixed read query and immediate enqueue exist."""
 
     def _graphql(self, query: str, variables: dict) -> dict:
-        require(query in (OBSERVE, ENQUEUE), "operation outside native queue transport")
+        require(query in (OBSERVE, OBSERVE_GROUP, ENQUEUE), "operation outside native queue transport")
         unavailable = ("native enqueue outcome unconfirmed; use read-only recovery"
                        if query == ENQUEUE else "native queue observation unavailable")
         try:
@@ -125,6 +146,13 @@ class GitHub:
     def observe(self, subject: Subject) -> dict:
         owner, name = subject.repository.split("/")
         return self._graphql(OBSERVE, {"owner": owner, "name": name, "number": subject.pr})
+
+    def observe_group(self, repository: str, branch: str) -> dict:
+        """Read the complete bounded native queue; no PR/ref-number inference."""
+        require(REPOSITORY.fullmatch(repository) is not None and node(branch),
+                "invalid queue observation scope")
+        owner, name = repository.split("/")
+        return self._graphql(OBSERVE_GROUP, {"owner": owner, "name": name, "branch": branch})
 
     def enqueue(self, pr_id: str, head: str) -> str:
         require(node(pr_id) and oid(head), "invalid immediate enqueue subject")

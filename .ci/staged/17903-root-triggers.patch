@@ -1,6 +1,31 @@
 --- a/.ci/policies/required-checks.toml
 +++ b/.ci/policies/required-checks.toml
-@@ -116,7 +116,7 @@
+@@ -48,21 +48,12 @@
+ required = true
+ contract_role = "required-workflow-shape"
+ 
+-  # A metadata-only check. It reads the PR title through the API and never
+-  # checks out or executes candidate contents, which is what lets it run on
+-  # `pull_request_target` with write permission without crossing the trust
+-  # boundary. The contract's remaining clauses assume a workflow that builds
+-  # the candidate; they are the wrong requirements here rather than unmet ones.
++  # The actual-G leaf reads complete native membership and authenticated H
++  # intake, executes only protected B source and never receives write authority.
+   [[check.exemption]]
+   clause = "pull-request-trigger"
+   status = "accepted"
+-  reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
+-  tracking = "16164"
+-
+-  [[check.exemption]]
+-  clause = "merge-group-trigger"
+-  status = "accepted"
+-  reason = "A merge queue entry has no PR title to validate; the title was already validated on the PR."
++  reason = "Ordinary development Actions are prohibited. Current titles are validated for every proved actual-G member; trusted owning-session publication retains label/comment housekeeping (#17903/#18255)."
+   tracking = "16164"
+ 
+   [[check.exemption]]
+@@ -116,7 +107,7 @@
  workflow = ".github/workflows/non-rust-policy.yml"
  job = "exact-tree"
  workflow_result = "propagate"
@@ -9,7 +34,7 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -129,7 +129,7 @@
+@@ -129,7 +120,7 @@
  workflow = ".github/workflows/em-ci-routed-rust.yml"
  job = "rust-small-result"
  workflow_result = "propagate"
@@ -18,7 +43,7 @@
  required = true
  policy_role = "required"
  applicability = "always-or-scoped-noop"
-@@ -143,7 +143,7 @@
+@@ -143,7 +134,7 @@
  workflow = ".github/workflows/ripr.yml"
  job = "ripr"
  workflow_result = "propagate"
@@ -27,7 +52,7 @@
  required = true
  policy_role = "required"
  applicability = "always-or-scoped-noop"
-@@ -155,15 +155,15 @@
+@@ -155,15 +146,15 @@
  name = "Compile All Targets (bit-rot guard)"
  producer = "repository-job"
  workflow = ".github/workflows/ci.yml"
@@ -52,7 +77,7 @@
  
  [[checks]]
  name = "Conflict marker check"
-@@ -171,7 +171,7 @@
+@@ -171,7 +162,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "conflict-markers"
  workflow_result = "propagate"
@@ -61,16 +86,28 @@
  required = true
  policy_role = "required"
  applicability = "conditional"
-@@ -185,7 +185,7 @@
+@@ -185,13 +176,13 @@
  workflow = ".github/workflows/pr-title-check.yml"
  job = "validate-title"
  workflow_result = "propagate"
 -events = ["pull_request_target", "workflow_dispatch"]
-+events = ["workflow_dispatch"]
- required = true
- policy_role = "required"
- applicability = "always-or-scoped-noop"
-@@ -199,7 +199,7 @@
+-required = true
+-policy_role = "required"
+-applicability = "always-or-scoped-noop"
+-enforcement = "github-ruleset"
+-ruleset_integration_id = 15368
+-reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
++events = ["merge_group"]
++required = true
++policy_role = "required"
++applicability = "always-or-scoped-noop"
++enforcement = "github-ruleset"
++ruleset_integration_id = 15368
++reason = "The existing Actions-bound validate-title context now proves the complete current native G prefix, every App-authenticated H-to-entry intake, ordered B/H tree equivalence and current per-member title semantics from protected B. No PR association or queued-ref number supplies membership. Publisher binding and effective protection still require explicit activation (#18255/#17903)."
+ 
+ [[checks]]
+ name = "Rust formatting"
+@@ -199,7 +190,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "rust-formatting"
  workflow_result = "propagate"
@@ -79,7 +116,7 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -235,7 +235,7 @@
+@@ -235,7 +226,7 @@
  workflow = ".github/workflows/tokmd.yml"
  job = "analyze"
  workflow_result = "propagate"
@@ -88,7 +125,7 @@
  required = false
  policy_role = "advisory"
  applicability = "conditional"
-@@ -248,7 +248,7 @@
+@@ -248,7 +239,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "pr-smoke"
  workflow_result = "continue"
@@ -97,7 +134,7 @@
  required = false
  policy_role = "advisory"
  applicability = "conditional"
-@@ -261,7 +261,7 @@
+@@ -261,7 +252,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "ux-tests"
  workflow_result = "propagate"
@@ -106,7 +143,7 @@
  required = false
  policy_role = "advisory"
  applicability = "conditional"
-@@ -274,7 +274,7 @@
+@@ -274,7 +265,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "merge-gate"
  workflow_result = "propagate"
@@ -115,7 +152,7 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -300,7 +300,7 @@
+@@ -300,7 +291,7 @@
  workflow = ".github/workflows/semantic-close-containment.yml"
  job = "containment"
  workflow_result = "propagate"
@@ -124,7 +161,7 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -313,7 +313,7 @@
+@@ -313,7 +304,7 @@
  workflow = ".github/workflows/authority-transfer-review.yml"
  job = "authority-transfer-review"
  workflow_result = "propagate"
@@ -133,7 +170,7 @@
  required = false
  policy_role = "advisory"
  applicability = "always-or-scoped-noop"
-@@ -326,12 +326,12 @@
+@@ -326,12 +317,12 @@
  workflow = ".github/workflows/ci.yml"
  job = "public-api-pr"
  workflow_result = "propagate"
@@ -152,7 +189,7 @@
  
  [[checks]]
  name = "Semver Compatibility (facade PR)"
-@@ -339,9 +339,9 @@
+@@ -339,9 +330,9 @@
  workflow = ".github/workflows/ci.yml"
  job = "semver-pr"
  workflow_result = "propagate"
@@ -1582,7 +1619,16 @@
  concurrency:
 --- a/.github/workflows/gate-enforcement-contract.yml
 +++ b/.github/workflows/gate-enforcement-contract.yml
-@@ -39,6 +39,8 @@
+@@ -32,6 +32,8 @@
+             scripts/ci/test_queue_qualification_source.py \
+             scripts/ci/test_qualification_cutover_docs.py \
+             scripts/ci/test_native_queue.py \
++            scripts/ci/test_native_queue_title.py \
++            scripts/ci/test_pr_title_validator.py \
+             scripts/ci/test_reconcile_github_enforcement_snapshot.py \
+             scripts/ci/test_observe_github_enforcement.py \
+             scripts/ci/test_check_release_required_ci.py \
+@@ -39,6 +41,8 @@
            test_status=$?
            python3 scripts/ci/validate_gate_enforcement_contract.py \
              --root . \
@@ -2438,15 +2484,254 @@
    group: pr-plan-${{ github.event.pull_request.number }}
 --- a/.github/workflows/pr-title-check.yml
 +++ b/.github/workflows/pr-title-check.yml
-@@ -1,8 +1,6 @@
+@@ -1,210 +1,50 @@
  name: PR Title Check
  
  on:
 -  pull_request_target:
 -    types: [opened, edited, reopened, synchronize]
-   workflow_dispatch: {}
+-  workflow_dispatch: {}
++  merge_group:
++    types: [checks_requested]
  
++# The native group job has no publication, issue, label or PR write authority.
  permissions:
+-  pull-requests: write
+-  checks: write
++  contents: read
++  actions: read
++  checks: read
++  pull-requests: read
++  issues: read
+ 
+ jobs:
+   validate-title:
+-    # This metadata-only pull_request_target check must remain available even
+-    # when the optional self-hosted nano pool is offline. It never checks out
+-    # or executes candidate contents, so a hosted runner preserves the trust
+-    # boundary while making the required context live.
+     runs-on: ubuntu-24.04
+-    timeout-minutes: 5
++    timeout-minutes: 10
+     steps:
+-      - name: Check PR title
++      - name: Load immutable protected title evaluator
++        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          ref: ${{ github.event.merge_group.base_sha }}
++          path: trusted-title-source
++          persist-credentials: false
++          fetch-depth: 1
++      - name: Prove current complete native G title subject
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: >-
++          python3 trusted-title-source/scripts/ci/native_queue_title.py observe
++          --receipt "$RUNNER_TEMP/native-queue-title.json"
++      - name: Validate every proved constituent title without writes
+         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+         with:
+           script: |
+-            const actor = context.actor;
+-            let pr = context.payload.pull_request;
+-            if (!pr) {
+-              // workflow_dispatch mode (post-merge-status raises this check on
+-              // its generated branch, since GITHUB_TOKEN PRs fire no
+-              // pull_request_target events): resolve the open PR from the
+-              // dispatched ref instead of the absent payload.
+-              const branch = context.ref.replace('refs/heads/', '');
+-              const { data: pulls } = await github.rest.pulls.list({
+-                owner: context.repo.owner,
+-                repo: context.repo.repo,
+-                head: `${context.repo.owner}:${branch}`,
+-                state: 'open',
+-              });
+-              if (pulls.length === 0) {
+-                core.info(`No open PR found for ${branch}; nothing to validate.`);
+-                return;
+-              }
+-              pr = pulls[0];
+-            }
+-            const title = pr.title;
+-            const login = pr.user.login;
+-
+-            if (actor === 'dependabot[bot]' || login.includes('dependabot')) {
+-              core.info('Exempt: dependabot PR');
+-              return;
+-            }
+-
+-            const labels = pr.labels.map(l => l.name);
+-            if (labels.includes('skip-title-check')) {
+-              core.info('Exempt: skip-title-check label present');
+-              return;
+-            }
+-
+-            if (/^v?\d+\.\d+\.\d+$/.test(title.trim())) {
+-              core.info('Exempt: release stamp title');
+-              return;
+-            }
+-
+-            const BOT_MARKER = '<!-- pr-title-check-bot -->';
+-            const issueGuidance = [
+-              'For Codex or other agent-authored PRs: prefer filing the plan as a GitHub issue first, then reference it in the title (e.g. `(#1234)`).',
+-              '',
+-              'The issue should preserve the plan context: problem, scope, constraints, files or surfaces, validation, and explicit non-goals.',
+-              '',
+-              'If you genuinely cannot determine the issue number, use the placeholder `(#0000)` — do NOT guess a real issue number, because a wrong-but-real reference silently pollutes an unrelated issue. `(#0000)` passes this check (non-blocking) but flags the PR with `needs-issue-link`; a real issue must be linked before merge.',
+-              '',
+-              '`skip-title-check` is reserved for maintainer-owned exceptions.',
+-            ].join('\n');
+-            const upsertTitleCheckComment = async (commentBody) => {
+-              // Deduplicate: find and update existing bot comment instead of posting a new one.
+-              const { data: comments } = await github.rest.issues.listComments({
+-                owner: context.repo.owner,
+-                repo: context.repo.repo,
+-                issue_number: pr.number,
+-              });
+-
+-              const existing = comments.find(c =>
+-                c.user.type === 'Bot' && c.body && c.body.includes(BOT_MARKER)
+-              );
+-
+-              if (existing) {
+-                await github.rest.issues.updateComment({
+-                  owner: context.repo.owner,
+-                  repo: context.repo.repo,
+-                  comment_id: existing.id,
+-                  body: commentBody,
+-                });
+-                core.info('Updated existing bot comment.');
+-              } else {
+-                await github.rest.issues.createComment({
+-                  owner: context.repo.owner,
+-                  repo: context.repo.repo,
+-                  issue_number: pr.number,
+-                  body: commentBody,
+-                });
+-                core.info('Posted new bot comment.');
+-              }
+-            };
+-            const issueMatches = [...title.matchAll(/\B#(\d+)\b/g)];
+-
+-            if (issueMatches.length === 0) {
+-              core.setFailed(
+-                `PR title must reference an issue (e.g. "feat: add thing (#42)"). ` +
+-                `Codex/agent PRs should file the plan as an issue first. Got: "${title}"`
+-              );
+-
+-              const commentBody = [
+-                '## \u26a0\ufe0f PR Title Check Failed',
+-                '',
+-                BOT_MARKER,
+-                '',
+-                'This PR\'s title does not include an **issue reference** (`#<number>` outside of version strings).',
+-                '',
+-                '**Expected format:** `type: description (#1234)`',
+-                '',
+-                issueGuidance,
+-                '',
+-                `Current title: \`${title}\``,
+-              ].join('\n');
+-
+-              await upsertTitleCheckComment(commentBody);
+-              return;
+-            }
+-
+-            // Zero-valued references (#0 / #0000) are the sanctioned placeholder
+-            // for "issue number not yet known" (issue #724). They are NON-BLOCKING:
+-            // the check passes, but the PR is flagged with `needs-issue-link` and a
+-            // real issue must be linked before merge (ops is the backstop). This
+-            // removes any incentive to guess a real issue number \u2014 a wrong-but-real
+-            // reference silently pollutes an unrelated issue's thread.
+-            const nonZeroMatch = issueMatches.find((match) => parseInt(match[1], 10) !== 0);
+-            const zeroIssueMatch = issueMatches.find((match) => parseInt(match[1], 10) === 0);
+-
+-            if (!nonZeroMatch && zeroIssueMatch) {
+-              core.info(
+-                `Placeholder issue reference "${zeroIssueMatch[0]}" accepted (non-blocking). ` +
+-                `Flagging needs-issue-link.`
+-              );
+-              const commentBody = [
+-                '## \u2139\ufe0f PR Title \u2014 placeholder issue reference',
+-                '',
+-                BOT_MARKER,
+-                '',
+-                `This PR title uses the placeholder issue reference \`${zeroIssueMatch[0]}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
+-                '',
+-                'If you know the issue, update the title to reference it, e.g. `(#1234)`. Never guess a real issue number.',
+-                '',
+-                issueGuidance,
+-                '',
+-                `Current title: \`${title}\``,
+-              ].join('\n');
+-
+-              await upsertTitleCheckComment(commentBody);
+-              try {
+-                await github.rest.issues.addLabels({
+-                  owner: context.repo.owner,
+-                  repo: context.repo.repo,
+-                  issue_number: pr.number,
+-                  labels: ['needs-issue-link'],
+-                });
+-              } catch (e) {
+-                core.warning(`Could not add needs-issue-link label: ${e.message}`);
+-              }
+-              core.info('PR title passes validation (placeholder reference).');
+-              return;
+-            }
+-
+-            // Validate the first real (non-placeholder) issue reference.
+-            const issueNumber = parseInt(nonZeroMatch[1], 10);
+-            try {
+-              await github.rest.issues.get({
+-                owner: context.repo.owner,
+-                repo: context.repo.repo,
+-                issue_number: issueNumber,
+-              });
+-              core.info(`Referenced issue #${issueNumber} exists.`);
+-            } catch (e) {
+-              core.warning(
+-                `Referenced issue #${issueNumber} was not found. Please verify the issue number.`
+-              );
+-              // Don't fail the check for this — it may be a private/internal reference
+-            }
+-
+-            // Self-clearing needs-issue-link: this check re-runs on `edited` and
+-            // `synchronize`, so once a PR's title carries a real (non-placeholder)
+-            // issue reference, drop the label instead of leaving it for a manual
+-            // clear at merge time. Per #3356: the title was fixed (a real issue
+-            // ref added, this check went green) but `needs-issue-link` survived
+-            // and blocked an ops merge under the "no needs-* label may merge"
+-            // doctrine — the label-writer never reconciled its own label.
+-            if (labels.includes('needs-issue-link')) {
+-              try {
+-                await github.rest.issues.removeLabel({
+-                  owner: context.repo.owner,
+-                  repo: context.repo.repo,
+-                  issue_number: pr.number,
+-                  name: 'needs-issue-link',
+-                });
+-                core.info(`Removed needs-issue-link: title now references real issue #${issueNumber}.`);
+-              } catch (e) {
+-                core.warning(`Could not remove needs-issue-link label: ${e.message}`);
+-              }
+-            }
+-
+-            core.info('PR title passes validation.');
++            const fs = require('node:fs');
++            const path = require('node:path');
++            const source = path.join(process.env.GITHUB_WORKSPACE, 'trusted-title-source');
++            const {validateMembers} = require(path.join(source, 'scripts/ci/pr_title_validator.js'));
++            const receiptPath = path.join(process.env.RUNNER_TEMP, 'native-queue-title.json');
++            const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
++            const results = await validateMembers({github, core, context}, receipt);
++            fs.writeFileSync(receiptPath + '.titles.json', JSON.stringify(results));
++      - name: Recheck exact G membership, intake and current title metadata
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: >-
++          python3 trusted-title-source/scripts/ci/native_queue_title.py recheck
++          --receipt "$RUNNER_TEMP/native-queue-title.json"
 --- a/.github/workflows/publish-dry-run.yml
 +++ b/.github/workflows/publish-dry-run.yml
 @@ -13,19 +13,6 @@
