@@ -33,11 +33,10 @@ use super::gates::GATES_RECEIPT_SCHEMA_VERSION;
 /// to be rejected at load time (#15337).
 const SUPPORTED_SCHEMA_VERSION: &str = GATES_RECEIPT_SCHEMA_VERSION;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Receipt {
-    /// Schema version emitted by `gates.rs`; used to detect incompatible receipt shapes.
-    #[serde(default)]
-    schema_version: Option<String>,
+    /// Schema version emitted by `gates.rs`; required so absent fields fail closed (#15330).
+    schema_version: String,
     #[serde(default)]
     gates: Vec<GateResult>,
 }
@@ -220,12 +219,8 @@ fn load_receipt(path: &Path) -> std::result::Result<Receipt, ReceiptLoadError> {
     })?;
     let receipt: Receipt = serde_json::from_str(&raw)
         .map_err(|e| ReceiptLoadError::Malformed(format!("parsing {}: {e}", path.display())))?;
-    // Validate schema version when present; an absent field is treated as compatible
-    // (older receipts without the field are still readable).
-    if let Some(ref ver) = receipt.schema_version
-        && ver != SUPPORTED_SCHEMA_VERSION
-    {
-        return Err(ReceiptLoadError::UnsupportedSchema(ver.clone()));
+    if receipt.schema_version != SUPPORTED_SCHEMA_VERSION {
+        return Err(ReceiptLoadError::UnsupportedSchema(receipt.schema_version));
     }
     Ok(receipt)
 }
@@ -466,7 +461,7 @@ mod tests {
     }
 
     fn make_receipt(gates: Vec<GateResult>) -> Receipt {
-        Receipt { gates, ..Receipt::default() }
+        Receipt { schema_version: SUPPORTED_SCHEMA_VERSION.to_string(), gates }
     }
 
     // ── resolve_receipt_path ─────────────────────────────────────────────────
@@ -516,15 +511,17 @@ mod tests {
     }
 
     #[test]
-    fn load_receipt_absent_schema_version_is_accepted() {
+    fn load_receipt_absent_schema_version_is_rejected() {
         use std::fs;
         use tempfile::TempDir;
         let tmp = must_with(TempDir::new(), "tempdir");
         let path = tmp.path().join("receipt.json");
-        // Older receipts without schema_version must still parse successfully.
         must_with(fs::write(&path, br#"{"gates":[]}"#), "write");
         let result = load_receipt(&path);
-        assert!(result.is_ok());
+        assert!(
+            matches!(result, Err(ReceiptLoadError::Malformed(_))),
+            "missing schema_version must be rejected, got {result:?}"
+        );
     }
 
     /// Producer/consumer roundtrip — `#15337`.
@@ -668,8 +665,7 @@ mod tests {
         let loaded =
             must_with(load_receipt(&path), "consumer accepts the producer's emitted envelope");
         assert_eq!(
-            loaded.schema_version.as_deref(),
-            Some(GATES_RECEIPT_SCHEMA_VERSION),
+            loaded.schema_version, GATES_RECEIPT_SCHEMA_VERSION,
             "schema_version must survive the consumer parse path unchanged"
         );
         assert_eq!(

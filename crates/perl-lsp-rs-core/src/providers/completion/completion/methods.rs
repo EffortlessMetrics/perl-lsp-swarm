@@ -1240,6 +1240,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("1_{}", name))),
                 filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 text_edit_range: Some(method_text_edit_range),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
@@ -1295,6 +1296,7 @@ pub fn add_method_completions(
                 sort_text: Some(Cow::Owned(format!("2_{}", method))),
                 filter_text: Some(Cow::Owned(method.to_string())),
                 additional_edits: vec![],
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 text_edit_range: Some(method_text_edit_range),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
@@ -1323,6 +1325,10 @@ pub fn add_method_completions(
                     sort_text: Some(Cow::Owned(format!("9_{}", method))), // Lower priority
                     filter_text: Some(Cow::Owned(method.to_string())),
                     additional_edits: vec![],
+                    text_edit_range: Some((
+                        context.method_text_edit_start(source),
+                        context.suffix_end,
+                    )),
                     text_edit_range: Some(method_text_edit_range),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,

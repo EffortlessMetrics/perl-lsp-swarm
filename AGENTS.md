@@ -158,18 +158,16 @@ Keep claim frames and wake events in runtime memory only. Reconstruct them from 
 PRs, reviews, checks, merges, and repository artifacts after replacement. Do not poll
 unchanged remote state.
 
-A remote wait releases root attention. An exact wake event records the material
-condition that would justify reconstructing the claim later; it is not an instruction
-to keep the current root session alive until that condition changes. Do not create a
-timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the
-same remote condition. In a multi-claim goal, release unnecessary live contexts and
-immediately advance another phase-eligible actionable claim. If no remaining
-required claim is actionable because each waits on a real external blocker or
-accountable owner decision, return `EXTERNAL_BLOCKER` with each claim's condition and
-wake event named, and let the bounded engineering session end rather than preserving
-the root as a watcher.
-Scheduled monitoring is a different user goal, not a continuation mechanism for
-ordinary engineering work.
+For the selected candidate, retain the same useful owning lead through an ordinary
+in-window qualification wait, actual result inspection, separate final current-repo
+judgment, authorized protected merge and landing read-back (#3390). Use supported
+waits/events or bounded checks; do not create a polling child or scheduled monitor.
+Release unnecessary child contexts. A real interruption, unusual capacity delay or
+exhausted window gets an exact resumable handoff. When all remaining work has real
+external blockers, return those blockers and their wake events instead of maintaining
+an idle watcher. Read `docs/agents/DEVELOPMENT_METHOD.md` for desired/staged/live
+qualification boundaries; existing automatic triggers remain live until coordinated
+cutover. Never invent the missing request command or arm routine auto-merge/queue.
 
 ## Useful GitHub handoffs
 
@@ -308,6 +306,10 @@ cargo fmt -p <package> -- --check
 cargo clippy -p <package> --all-targets --locked -- -D warnings
 cargo test -p <package> --all-targets --locked
 just pr-fast
+# Quiet xtask dispatch for agent queries: skips cargo's ~200KB cached-warning
+# replay on stderr (#17240). Fresh build errors still surface; xtask
+# stdout/stderr pass through untouched.
+bash scripts/xtask-quiet.sh ci doctor --help
 ```
 
 Choose the smallest command that can falsify the claim. Current GitHub protection

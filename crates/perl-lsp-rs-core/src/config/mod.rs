@@ -29,6 +29,7 @@ pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
 pub use critic_state::{AcceptedCriticSnapshot, EffectiveCriticState, EffectiveNativeCriticConfig};
+use dependency_detection::{DependencyIncludeDetection, detect_dependency_include_paths_result};
 pub use dependency_detection::{
     detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
 };
@@ -133,6 +134,13 @@ pub struct ServerConfig {
 
     /// Formatter engine used for LSP formatting requests.
     pub formatting_engine: FormatterMode,
+
+    /// Client-visible notices recorded during configuration application
+    /// (e.g. documented formatting keys the native engine cannot honor).
+    /// The runtime drains these after each apply and forwards them to the
+    /// client; never serialized into config payloads.
+    #[serde(default, skip)]
+    pub(crate) pending_client_notices: Vec<String>,
 
     /// Whether to format on save (willSaveWaitUntil). Default `true` for
     /// backward compatibility. When `false`, manual formatting via
@@ -428,11 +436,47 @@ impl Default for ServerConfig {
             perltidy_extra_args: Vec::new(),
             perltidy_timeout_secs: 10,
             ai_completion: AiCompletionConfig::default(),
+            pending_client_notices: Vec::new(),
         }
     }
 }
 
 impl ServerConfig {
+    /// Warn once per apply when explicitly configured formatting options
+    /// have no native-engine equivalent, so a documented key never drops
+    /// silently on the default path (#18023). These options apply only to
+    /// the external legacy formatter.
+    pub(crate) fn warn_unsupported_native_format_options(&mut self, keys: &[&str]) {
+        if keys.is_empty() || self.formatting_engine != FormatterMode::Native {
+            return;
+        }
+        tracing::warn!(
+            target: "perl_lsp::config",
+            settings = %keys.join(", "),
+            "formatting options have no effect with the native formatter and will be ignored; \
+             they apply only to the external legacy formatter",
+        );
+        // Also record a client-visible notice (#18056): most users never
+        // read server logs, and silently-ignored settings were the original
+        // #18023 complaint. The runtime drains and dedups these.
+        self.pending_client_notices.push(format!(
+            "Perl LSP: formatting options have no effect with the native formatter and will be \
+             ignored: {}. They apply only to the external legacy formatter \
+             (set formatting.engine to \"external-legacy\" to use them).",
+            keys.join(", ")
+        ));
+    }
+
+    /// Drain client-visible notices recorded since the last drain.
+    pub fn take_client_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_client_notices)
+    }
+
+    /// Number of client-visible notices currently pending a drain.
+    pub fn pending_client_notices_len(&self) -> usize {
+        self.pending_client_notices.len()
+    }
+
     /// Update configuration from LSP settings
     pub fn update_from_value(&mut self, settings: &serde_json::Value) {
         if let Some(inlay) = settings.get("inlayHints") {
@@ -537,6 +581,14 @@ impl ServerConfig {
             if let Some(timeout) = formatting.get("timeoutSecs").and_then(as_config_u64) {
                 self.perltidy_timeout_secs = timeout;
             }
+            let mut unsupported: Vec<&str> = Vec::new();
+            if formatting.get("verticalAlignment").is_some() {
+                unsupported.push("formatting.verticalAlignment");
+            }
+            if formatting.get("blockCommentIndentation").is_some() {
+                unsupported.push("formatting.blockCommentIndentation");
+            }
+            self.warn_unsupported_native_format_options(&unsupported);
         }
 
         if let Some(ai) = settings.get("aiCompletion") {
@@ -1792,6 +1844,11 @@ impl WorkspaceConfig {
     /// include root behind. Ownership is tracked in
     /// [`Self::detected_dependency_include_paths`], so a path the user
     /// configured is never removed even when the detector also reports it.
+    ///
+    /// A marker probe that fails with an error other than `NotFound` is not
+    /// absence (#15087). When that uncertainty can change the current root
+    /// decision, reconciliation keeps both the prior detector-owned include
+    /// paths and their ownership records until a later determinate refresh.
     pub fn refresh_dependency_include_paths(&mut self, workspace_root: &Path) {
         self.refresh_dependency_include_paths_with_declaration(workspace_root, None);
     }
@@ -1808,7 +1865,10 @@ impl WorkspaceConfig {
         declaration_present: Option<bool>,
     ) {
         let detected =
-            detect_dependency_include_paths_with_declaration(workspace_root, declaration_present);
+            match detect_dependency_include_paths_result(workspace_root, declaration_present) {
+                DependencyIncludeDetection::Indeterminate => return,
+                DependencyIncludeDetection::Detected(paths) => paths,
+            };
         let detected_normalized: Vec<String> =
             detected.iter().filter_map(|path| normalize_include_path(path)).collect();
 
@@ -2767,6 +2827,12 @@ impl ServerConfig {
         if let Some(value) = options.perltidy_add_trailing_commas {
             self.perltidy_add_trailing_commas = Some(value);
         }
+        // #18023: options classified external-only in a discovered
+        // `.perltidyrc` profile have no native equivalent; name them instead
+        // of dropping them silently when the native engine is in force.
+        let external_only: Vec<&str> =
+            options.external_only_options.iter().map(String::as_str).collect();
+        self.warn_unsupported_native_format_options(&external_only);
     }
 }
 
@@ -2882,6 +2948,17 @@ impl ProjectConfig {
         if let Some(timeout) = self.formatting.perltidy_timeout_secs {
             config.perltidy_timeout_secs = timeout;
         }
+        let mut unsupported: Vec<&str> = Vec::new();
+        if self.formatting.perltidy_vertical_alignment.is_some() {
+            unsupported.push("formatting.perltidy_vertical_alignment");
+        }
+        if self.formatting.perltidy_block_comment_indentation.is_some() {
+            unsupported.push("formatting.perltidy_block_comment_indentation");
+        }
+        if !self.formatting.perltidy_extra_args.is_empty() {
+            unsupported.push("formatting.perltidy_extra_args");
+        }
+        config.warn_unsupported_native_format_options(&unsupported);
     }
 
     /// Apply project config to `WorkspaceConfig` as the base layer.
@@ -4789,6 +4866,96 @@ profile = "recommended"
         assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
     }
 
+    /// #18023: keys with no native-engine equivalent must warn instead of
+    /// dropping silently when a client sets them explicitly.
+    #[test]
+    fn json_native_unsupported_format_options_warn() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "verticalAlignment": false, "blockCommentIndentation": 2 }
+            }));
+        });
+        assert_warned_contains(
+            &captured,
+            &[
+                "formatting.verticalAlignment",
+                "formatting.blockCommentIndentation",
+                "native formatter",
+            ],
+        );
+    }
+
+    /// #18023: the same keys are live for the external legacy engine, so
+    /// selecting it must not produce the native-only warning.
+    #[test]
+    fn json_external_legacy_unsupported_format_options_do_not_warn() {
+        // The client channel cannot select the external engine (that is a
+        // .perl-lsp.toml decision), so preset it as the TOML layer would.
+        let mut config =
+            ServerConfig { formatting_engine: FormatterMode::ExternalLegacy, ..Default::default() };
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "verticalAlignment": false }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("no effect with the native formatter"),
+            "external legacy selection must not warn; captured:\n{combined}"
+        );
+    }
+
+    /// #18023: the project-file channel warns with TOML key names, and an
+    /// unset project config stays silent.
+    #[test]
+    fn project_native_unsupported_format_options_warn_and_unset_stays_silent() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.formatting.perltidy_vertical_alignment = Some(true);
+        project.formatting.perltidy_extra_args = vec!["--no-check-syntax".to_string()];
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_warned_contains(
+            &captured,
+            &[
+                "formatting.perltidy_vertical_alignment",
+                "formatting.perltidy_extra_args",
+                "native formatter",
+            ],
+        );
+
+        let mut config = ServerConfig::default();
+        let project = ProjectConfig::default();
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("no effect with the native formatter"),
+            "unset keys must not warn; captured:\n{combined}"
+        );
+    }
+
+    /// #18023: external-only options in a discovered `.perltidyrc` profile
+    /// warn by name under the native engine and stay silent under external.
+    #[test]
+    fn discovered_profile_external_only_options_warn_native_only() {
+        let suggestion =
+            crate::tooling::native_compat::classify_perltidy_profile("-ci=4\n").suggested_config;
+        assert_eq!(suggestion.external_only_options, vec!["-ci".to_string()]);
+
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| config.apply_perltidy_native_options(&suggestion));
+        assert_warned_contains(&captured, &["-ci", "native formatter"]);
+
+        let mut config =
+            ServerConfig { formatting_engine: FormatterMode::ExternalLegacy, ..Default::default() };
+        let captured = capture_warnings(|| config.apply_perltidy_native_options(&suggestion));
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("no effect with the native formatter"),
+            "external legacy must not warn for external-only options; captured:\n{combined}"
+        );
+    }
+
     #[test]
     fn client_invalid_enum_inspection_covers_all_user_visible_engine_settings() {
         let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
@@ -5087,6 +5254,134 @@ profile = "recommended"
         explicit.refresh_dependency_include_paths(workspace.path());
         if !explicit.include_paths.contains(&"local/lib/perl5".to_string()) {
             return Err("explicit user root was removed during marker reconciliation".into());
+        }
+        Ok(())
+    }
+
+    fn detector_owned_config(
+        workspace: &std::path::Path,
+    ) -> Result<WorkspaceConfig, Box<dyn std::error::Error>> {
+        let mut config = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        config.refresh_dependency_include_paths(workspace);
+        Ok(config)
+    }
+
+    fn detected_local_root() -> Result<String, Box<dyn std::error::Error>> {
+        normalize_include_path("local/lib/perl5")
+            .ok_or_else(|| "detected root should normalize".into())
+    }
+
+    /// A parent directory that cannot be searched (`EACCES`) must not retire
+    /// detector-owned roots. Permission bits do not constrain a `root`
+    /// runner, so this test falls back to the Unix `ENOTDIR` construction
+    /// from #14812 when `chmod 0o000` still lets `stat` succeed.
+    #[cfg(unix)]
+    #[test]
+    fn permission_denied_parent_keeps_detector_owned_roots() -> TestResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = detector_owned_config(workspace.path())?;
+        let detected_root = detected_local_root()?;
+        if !config.include_paths.contains(&"local/lib/perl5".to_string())
+            || !config.detected_dependency_include_paths.contains(&detected_root)
+        {
+            return Err("detector did not own local/lib/perl5 at baseline".into());
+        }
+
+        let original = std::fs::metadata(workspace.path())?.permissions();
+        struct RestorePermissions<'a> {
+            path: &'a std::path::Path,
+            mode: u32,
+        }
+        impl Drop for RestorePermissions<'_> {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(self.path, std::fs::Permissions::from_mode(self.mode));
+            }
+        }
+        let _restore = RestorePermissions { path: workspace.path(), mode: original.mode() };
+        std::fs::set_permissions(workspace.path(), std::fs::Permissions::from_mode(0o000))?;
+
+        let probe = workspace.path().join("cpanfile").metadata();
+        let blocked_parent =
+            probe.as_ref().err().is_some_and(|error| error.kind() != std::io::ErrorKind::NotFound);
+
+        let decoy = tempfile::tempdir()?;
+        let not_a_directory = decoy.path().join("regular-file");
+        std::fs::write(&not_a_directory, "")?;
+        let refresh_root =
+            if blocked_parent { workspace.path() } else { not_a_directory.as_path() };
+
+        config.refresh_dependency_include_paths(refresh_root);
+        if !config.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("a non-NotFound marker probe retired the include root".into());
+        }
+        if !config.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("a non-NotFound marker probe dropped detector ownership".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn genuine_not_found_still_retires_detector_owned_roots() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = detector_owned_config(workspace.path())?;
+        let detected_root = detected_local_root()?;
+        if !config.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("detector did not own local/lib/perl5 at baseline".into());
+        }
+
+        std::fs::remove_file(workspace.path().join("carton.lock"))?;
+        std::fs::remove_file(workspace.path().join("cpanfile"))?;
+        config.refresh_dependency_include_paths(workspace.path());
+        if config.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("a genuine NotFound must still retire the detected include root".into());
+        }
+        if !config.detected_dependency_include_paths.is_empty() {
+            return Err("a genuine NotFound must drop detector ownership".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_aware_declaration_override_is_not_replaced_by_disk() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        config.refresh_dependency_include_paths_with_declaration(workspace.path(), Some(true));
+        let detected_root = detected_local_root()?;
+        if !config.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("Some(true) should establish the Carton root".into());
+        }
+
+        std::fs::remove_file(workspace.path().join("cpanfile"))?;
+        config.refresh_dependency_include_paths_with_declaration(workspace.path(), Some(true));
+        if !config.include_paths.contains(&"local/lib/perl5".to_string())
+            || !config.detected_dependency_include_paths.contains(&detected_root)
+        {
+            return Err(
+                "Some(true) must keep the root after the on-disk cpanfile is deleted".into()
+            );
+        }
+
+        config.refresh_dependency_include_paths_with_declaration(workspace.path(), None);
+        if config.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("None must follow disk and retire once the closed cpanfile is gone".into());
         }
         Ok(())
     }
