@@ -1,0 +1,206 @@
+# Hosted no-publish readiness rehearsal matrix (#16788).
+#
+# Manual-only. Not a required PR gate, not a scheduled spend, and not a
+# publisher. Workflow YAML invokes `cargo run --locked -p xtask -- readiness-rehearsal`
+# and does not encode product-stage verdicts, package/VSIX/archive semantics, or
+# publication.
+#
+# Product rehearsal stages remain #16785/#16786/#16787. Until those producers
+# supply a #16785 receipt, each row is `not_proven` and fan-in stays non-green.
+
+name: Hosted readiness rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      rehearsal_receipt_path:
+        description: 'Optional workspace-relative #16785 receipt consumed by every row (leave empty for not_proven until sibling producers land)'
+        required: false
+        type: string
+        default: ''
+
+concurrency:
+  group: readiness-rehearsal-hosted-${{ github.repository }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  plan:
+    name: Admit hosted matrix
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Emit admitted matrix
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD="$(git rev-parse HEAD)"
+          if [ "$HEAD" != "$GITHUB_SHA" ]; then
+            echo "checkout $HEAD is not the dispatched commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-plan \
+            --out target/readiness/hosted/plan.json \
+            --summary target/readiness/hosted/plan.md \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-plan
+          path: |
+            target/readiness/hosted/plan.json
+            target/readiness/hosted/plan.md
+          if-no-files-found: error
+          retention-days: 14
+
+  rehearse:
+    name: Rehearse ${{ matrix.subject }}
+    needs: plan
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Bind hosted row
+        id: row
+        shell: bash
+        env:
+          REHEARSAL_RECEIPT_PATH: ${{ inputs.rehearsal_receipt_path }}
+          MATRIX_SUBJECT: ${{ matrix.subject }}
+        run: |
+          set -euo pipefail
+          HEAD="$(git rev-parse HEAD)"
+          if [ "$HEAD" != "$GITHUB_SHA" ]; then
+            echo "checkout $HEAD is not the dispatched commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+          OUT="target/readiness/hosted/row"
+          mkdir -p "$OUT"
+          extra=()
+          if [ -n "${REHEARSAL_RECEIPT_PATH}" ]; then
+            extra+=(--rehearsal-receipt "${REHEARSAL_RECEIPT_PATH}")
+          fi
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-row \
+            --head "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --matrix-subject "$MATRIX_SUBJECT" \
+            --out "$OUT" \
+            "${extra[@]}"
+
+      - name: Upload row receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.subject }}
+          path: target/readiness/hosted/row/row.json
+          if-no-files-found: error
+          retention-days: 14
+
+  fanin:
+    name: Fan-in hosted rehearsal
+    needs: [plan, rehearse]
+    if: always() && needs.plan.result == 'success' && github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Admit hosted matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD="$(git rev-parse HEAD)"
+          if [ "$HEAD" != "$GITHUB_SHA" ]; then
+            echo "checkout $HEAD is not the dispatched commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-plan \
+            --out target/readiness/hosted/plan.json \
+            --summary target/readiness/hosted/plan.md
+
+      - name: Download row receipts
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: target/readiness/hosted/inbox
+          merge-multiple: false
+
+      - name: Fan-in exact producers
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-fanin \
+            --plan target/readiness/hosted/plan.json \
+            --rows-dir target/readiness/hosted/inbox \
+            --head "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --out target/readiness/hosted/fanin.json \
+            --summary target/readiness/hosted/fanin.md
+          status=$?
+          set -e
+          if [ -f target/readiness/hosted/fanin.md ]; then
+            cat target/readiness/hosted/fanin.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Upload fan-in
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-fanin
+          path: |
+            target/readiness/hosted/fanin.json
+            target/readiness/hosted/fanin.md
+          if-no-files-found: error
+          retention-days: 14

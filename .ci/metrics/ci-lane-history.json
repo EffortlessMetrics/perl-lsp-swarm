@@ -4,7 +4,7 @@
   "content_digest": "e420c927a96950a160070c31c12d2b40c8638814239ab42070e567ba1d0bb951",
   "window_days": 14,
   "min_samples_for_learned": 5,
-  "lane_count": 26,
+  "lane_count": 27,
   "lanes": {
     "check_all_targets": {
       "samples": 0,
@@ -105,6 +105,11 @@
     "real_repo_latency": {
       "samples": 0,
       "static_floor": 30.0,
+      "learned": false
+    },
+    "readiness_rehearsal_hosted": {
+      "samples": 0,
+      "static_floor": 35.0,
       "learned": false
     },
     "release_check": {
