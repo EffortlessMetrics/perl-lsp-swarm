@@ -81,7 +81,6 @@ import {
   runTestAtCursorCommand,
   runTestsCommand,
 } from './testCommands';
-import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
 import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
@@ -1046,14 +1045,6 @@ async function runExtensionActivation(
   const aliasLanguageDisposable = registerPerlAliasLanguageConfiguration(context.extensionPath);
   if (aliasLanguageDisposable) {
     activation.own('base', 'optional_degradable', aliasLanguageDisposable);
-  }
-  // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
-  // longer activation-critical: it registers nothing and returns no disposable.
-  const mcpDisposable = measureOrDeferFeature(featureActivationMetrics, 'mcp', false, () =>
-    registerMcpSupport(outputChannel),
-  );
-  if (mcpDisposable) {
-    activation.own('support', 'optional_degradable', mcpDisposable);
   }
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
