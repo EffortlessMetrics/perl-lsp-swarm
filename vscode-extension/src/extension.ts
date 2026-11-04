@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { execFile } from 'child_process';
 import {
+  CancellationToken,
   CloseAction,
   ErrorAction,
   State as LanguageClientState,
@@ -158,6 +159,7 @@ import {
   FeatureActivationMetrics,
   type FeatureActivationMetricsSnapshot,
 } from './featureActivationMetrics';
+import { measureOrDeferFeature } from './featureActivationRegistration';
 import { registerWorkspaceConfigurationEvents } from './extensionWorkspaceEvents';
 import { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
 export { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
@@ -213,6 +215,10 @@ let currentServerPath: string | null = null;
 // does not exist, so the "not found" error can name the broken setting instead
 // of failing silently.
 let configuredServerPathMissing: string | null = null;
+// Session guard for the serverPath-fallback warning (#16535): the silent
+// configuration-to-auto-download swap must be surfaced once, not on every
+// restart or configuration change within the same session.
+let serverPathMissingWarningShown = false;
 // Why the configured path was rejected ("does not exist", "is not a file",
 // "is not executable"); paired with configuredServerPathMissing.
 let configuredServerPathProblemDetail: string | null = null;
@@ -677,6 +683,10 @@ export function _restartServerForTest(context: vscode.ExtensionContext): Promise
   return restartServer(context);
 }
 
+/** Test the settings prompt through its production recovery action. @internal */
+export function _promptForClientRefreshForTest(context: vscode.ExtensionContext): Promise<void> {
+  return promptForClientRefresh(context);
+}
 export async function syncPerlCriticConfiguration(
   activeClient: Pick<LanguageClient, 'sendNotification'> | undefined = client,
   documentUri?: vscode.Uri,
@@ -879,6 +889,14 @@ export async function copyProviderDecisionReceiptCommand(
   return copyProviderDecisionReceipt(activeClient, providerOverride, diagnosticCommandOptions());
 }
 
+/**
+ * Passive workspace file creation must not insert boilerplate (#14451).
+ * Explicit create/scaffold commands own starter content.
+ */
+export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
+  return;
+}
+
 export async function activate(context: vscode.ExtensionContext) {
   const activation = new ExtensionActivationOwner(context, (message) => {
     outputChannel?.error(message);
@@ -1031,7 +1049,7 @@ async function runExtensionActivation(
   }
   // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
   // longer activation-critical: it registers nothing and returns no disposable.
-  const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
+  const mcpDisposable = measureOrDeferFeature(featureActivationMetrics, 'mcp', false, () =>
     registerMcpSupport(outputChannel),
   );
   if (mcpDisposable) {
@@ -1285,7 +1303,12 @@ async function runExtensionActivation(
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
-            ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
+            ...(widget?.fileCount === undefined
+              ? {}
+              : {
+                  fileCount: widget.fileCount,
+                  fileCountLowerBound: widget.fileCountLowerBound,
+                }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
             ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
             ...(widget?.experienceDetail ? { lifecycleDetail: widget.experienceDetail } : {}),
@@ -1353,11 +1376,12 @@ async function runExtensionActivation(
   });
   activation.ownDisposables('commands', 'mandatory_for_activation', diagnosticCommandDisposables);
 
-  const whatsNewManager = featureActivationMetrics.measure(
+  const whatsNewManager = measureOrDeferFeature(
+    featureActivationMetrics,
     'whats_new',
     true,
     () => new WhatsNewManager(context, outputChannel),
-  );
+  )!;
   const onboardingCommandDisposables = registerOnboardingCommandGroup({
     showWhatsNew: async () => {
       featureActivationMetrics.markFirstUse('whats_new');
@@ -1452,57 +1476,61 @@ async function runExtensionActivation(
   });
   activation.own('workspace_listeners', 'mandatory_for_activation', formatOnSaveDisposable);
 
-  const configurationWatcher = featureActivationMetrics.measure('configuration', true, () =>
-    registerWorkspaceConfigurationEvents({
-      // Registered legacy keys were removed and drive no subsystem, so no
-      // configuration class classifies them; they are observed unclassified
-      // (#14966) instead of through a second host listener.
-      onAnyConfigurationChanged: (event) => {
-        if (legacyMigrationSurface) {
-          refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
-        }
-      },
-      onLiveConfigurationChanged: async (event) => {
-        if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
-          const newTrace = getTraceLevel();
-          await client.setTrace(newTrace);
-          outputChannel.info(`Trace level changed to: ${newTrace}`);
-        }
+  const configurationWatcher = measureOrDeferFeature(
+    featureActivationMetrics,
+    'configuration',
+    true,
+    () =>
+      registerWorkspaceConfigurationEvents({
+        // Registered legacy keys were removed and drive no subsystem, so no
+        // configuration class classifies them; they are observed unclassified
+        // (#14966) instead of through a second host listener.
+        onAnyConfigurationChanged: (event) => {
+          if (legacyMigrationSurface) {
+            refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
+          }
+        },
+        onLiveConfigurationChanged: async (event) => {
+          if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
+            const newTrace = getTraceLevel();
+            await client.setTrace(newTrace);
+            outputChannel.info(`Trace level changed to: ${newTrace}`);
+          }
 
-        if (event.affectsConfiguration('perl-lsp.includePaths')) {
-          await rerunIncludePathGuidance(context);
-        }
+          if (event.affectsConfiguration('perl-lsp.includePaths')) {
+            await rerunIncludePathGuidance(context);
+          }
 
-        await syncLiveLanguageClientConfiguration(client, event);
+          await syncLiveLanguageClientConfiguration(client, event);
 
-        // Advisory coexistence findings re-evaluate when an owned input
-        // changes; every collected input is classified live, so this block is
-        // reachable for all of them. Dedupe keeps this silent unless the
-        // finding set changed (#7214 clear/restore semantics).
-        if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
-          await runCoexistenceAdvisory(context);
-        }
-      },
-      onReconstructConfigurationChanged: async (event) => {
-        if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
-          await refreshTestAdapter(context);
-        }
+          // Advisory coexistence findings re-evaluate when an owned input
+          // changes; every collected input is classified live, so this block is
+          // reachable for all of them. Dedupe keeps this silent unless the
+          // finding set changed (#7214 clear/restore semantics).
+          if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
+            await runCoexistenceAdvisory(context);
+          }
+        },
+        onReconstructConfigurationChanged: async (event) => {
+          if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
+            await refreshTestAdapter();
+          }
 
-        if (
-          event.affectsConfiguration('perl-lsp.aiCompletion.enabled') ||
-          event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
-        ) {
-          refreshStreamingController(client);
-          await syncUserAiCompletionConfiguration(client);
-        }
-      },
-      onRestartRequired: () => promptForClientRefresh(context),
-      onError: (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        outputChannel.error(`[configuration] change handling failed: ${message}`);
-      },
-    }),
-  );
+          if (
+            event.affectsConfiguration('perl-lsp.aiCompletion.enabled') ||
+            event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
+          ) {
+            refreshStreamingController(client);
+            await syncUserAiCompletionConfiguration(client);
+          }
+        },
+        onRestartRequired: () => promptForClientRefresh(context),
+        onError: (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          outputChannel.error(`[configuration] change handling failed: ${message}`);
+        },
+      }),
+  )!;
   activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
 
   // Registered after the configuration watcher so the existing workspace_listeners
@@ -1520,32 +1548,33 @@ async function runExtensionActivation(
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
 
-  const arrowCompletionWatcher = vscode.workspace.onDidChangeTextDocument((event) => {
-    maybeNudgeArrowCompletion(event);
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', arrowCompletionWatcher);
-
   // The document feature group receives a scoped facade context: registrations
   // it pushes during activation join the attempt, while lazily created
   // resources (a POD preview webview panel's onDidDispose hook) fall through
   // to ordinary host disposal after the attempt closed (#7854).
-  const providerDisposables = featureActivationMetrics.measure('providers', true, () => [
-    ...registerDocumentFeatureGroup({
-      extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
-      registerGherkinProviders,
-      registerGherkinStepDefinitionSupport,
-      registerPodPreview,
-    }),
-  ]);
+  const providerDisposables = measureOrDeferFeature(
+    featureActivationMetrics,
+    'providers',
+    true,
+    () => [
+      ...registerDocumentFeatureGroup({
+        extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
+        registerGherkinProviders,
+        registerGherkinStepDefinitionSupport,
+        registerPodPreview,
+      }),
+    ],
+  )!;
   activation.ownDisposables('document_providers', 'optional_degradable', providerDisposables);
 
   languageClientStartupMetrics.markMilestone('commands_registered');
 
   // Initialize debug adapter. The debugger owns its registrations through the
   // scoped facade context, which routes them into the attempt (#7854).
-  featureActivationMetrics.measure('debugger', true, () =>
-    activateDebugger(activation.scopedContext('debugger', 'mandatory_for_activation')),
-  );
+  measureOrDeferFeature(featureActivationMetrics, 'debugger', true, () => {
+    activateDebugger(activation.scopedContext('debugger', 'mandatory_for_activation'));
+    return undefined;
+  });
 
   if (
     context.extensionMode === vscode.ExtensionMode.Test &&
@@ -1911,12 +1940,13 @@ function runActivationHousekeeping(
   whatsNewManager: WhatsNewManager,
 ): void {
   // First-run onboarding: show welcome notification once per installation.
-  const onboarding = featureActivationMetrics.measure(
+  const onboarding = measureOrDeferFeature(
+    featureActivationMetrics,
     'onboarding',
     false,
     () => new OnboardingManager(context, outputChannel),
   );
-  if (onboarding.shouldShowWelcome()) {
+  if (onboarding?.shouldShowWelcome()) {
     featureActivationMetrics.markFirstUse('onboarding');
     // Fire-and-forget; failures must not block extension startup.
     onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
@@ -1995,9 +2025,7 @@ export function resolveConfiguredServerPath(
 /// fails at spawn with a misleading permission diagnosis (#18118).
 export type ConfiguredServerPathProblem = 'missing' | 'not-a-file' | 'not-executable';
 
-export function configuredServerPathProblem(
-  userPath: string,
-): ConfiguredServerPathProblem | null {
+export function configuredServerPathProblem(userPath: string): ConfiguredServerPathProblem | null {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(userPath);
@@ -2042,6 +2070,49 @@ export function rejectConfiguredServerPath(
       `Falling back to PATH/bundled binary (or auto-download).`,
   );
   return userPath;
+}
+
+/**
+ * Surface the silent configured-serverPath fallback as a visible, once-per-
+ * session warning (#16535).
+ *
+ * `diagnoseConfiguredServerPath` records the broken setting, but an
+ * output-channel line is invisible to a user whose governed `serverPath`
+ * (network share, mounted drive) quietly swaps to an auto-downloaded public
+ * binary. The warning names the path and opens the owning setting; the
+ * session guard keeps restarts and configuration changes from repeating it.
+ */
+export function warnConfiguredServerPathMissing(
+  userPath: string,
+  source: BinaryResolutionSource,
+): void {
+  if (serverPathMissingWarningShown) {
+    return;
+  }
+  serverPathMissingWarningShown = source !== 'unavailable';
+  const fallback =
+    source === 'downloaded'
+      ? 'using the auto-downloaded binary instead.'
+      : source === 'bundled'
+        ? 'using the bundled binary instead.'
+        : source === 'path'
+          ? 'using a binary from PATH instead.'
+          : 'no fallback binary is available.';
+  void vscode.window
+    .showWarningMessage(
+      `perl-lsp.serverPath "${userPath}" does not exist; ${fallback}`,
+      'Check serverPath Setting',
+    )
+    .then((choice) => {
+      if (choice === 'Check serverPath Setting') {
+        void vscode.commands.executeCommand('workbench.action.openSettings', 'perl-lsp.serverPath');
+      }
+    });
+}
+
+/** Reset the once-per-session guard so a test can observe the first warning. */
+export function _resetServerPathMissingWarningForTest(): void {
+  serverPathMissingWarningShown = false;
 }
 
 async function getServerPath(
@@ -2180,6 +2251,9 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.beginBinaryResolution();
       try {
         const resolution = await getServerPath(context);
+        if (configuredServerPathMissing) {
+          warnConfiguredServerPathMissing(configuredServerPathMissing, resolution.source);
+        }
         languageClientStartupMetrics.finishBinaryResolution(
           resolution.path ? 'ok' : 'unavailable',
           resolution.source,
@@ -2249,6 +2323,11 @@ function createLanguageClientLifecycle(
         // signal, so only it may start the stable-run grace window and reset
         // the automatic-restart budget after a genuinely healthy replacement.
         crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
+        // Check after finalization so a dynamic registration received during
+        // its awaits is not lost between the startup check and running state.
+        void suggestAiCompletionIfSupported(context, client).catch((err: unknown) => {
+          outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
+        });
       }
       // Only `resolving` needs an explicit projection: onStateChange maps it to
       // generic Starting, and every other lifecycle state is already owned by
@@ -2288,7 +2367,7 @@ function clientStateForLifecycle(state: LifecycleState): ClientState {
 }
 
 async function finalizeStartedLanguageClient(
-  context: vscode.ExtensionContext,
+  _context: vscode.ExtensionContext,
   startedClient: LanguageClient,
   generation: number,
 ): Promise<void> {
@@ -2336,14 +2415,7 @@ async function finalizeStartedLanguageClient(
   healthWidget?.setName(serverInfo?.name);
   healthWidget?.setVersion(serverInfo?.version);
 
-  // Offer AI inline completion once if the server advertises support (#1634).
-  // Fire-and-forget; failures must not block lifecycle finalization.
-  suggestAiCompletionIfSupported(context, startedClient).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    outputChannel.error(`[ai-completion] Error suggesting AI completion: ${msg}`);
-  });
-
-  await refreshTestAdapter(context);
+  await refreshTestAdapter();
   assertCurrent();
   refreshStreamingController(startedClient);
   try {
@@ -2439,7 +2511,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
     void (async () => {
       // Probe the binary to get an actionable OS-level diagnosis (#3280).
       // If the probe result is Unknown (binary gave no useful output), fall
-      // back to the health check (#3312) which can detect missing Perl etc.
+      // back to the health check (#3312) for binary or diagnostic evidence.
       // lastStartupDiagnosis is updated so that serverNotRunningMessage() in
       // command handlers surfaces the specific root cause rather than a generic prompt.
       const probeResult = await probeStartupFailure(failedServerPath);
@@ -2539,6 +2611,22 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      handleRegisterCapability: async (params, next) => {
+        await next(params, CancellationToken.None);
+        // Recheck only after registration succeeds. Startup finalization covers
+        // registrations received before this client reaches the running state.
+        if (
+          params.registrations.some((entry) => entry.method === 'textDocument/inlineCompletion') &&
+          languageClientLifecycle?.client === lc &&
+          languageClientLifecycle.snapshot.state === 'running' &&
+          extensionContext
+        ) {
+          // A user-facing prompt must not hold the registration response open.
+          void suggestAiCompletionIfSupported(extensionContext, lc).catch((err: unknown) => {
+            outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
+          });
+        }
+      },
       // The server pulls `section: "perl"` once unscoped and once per workspace
       // folder. Without this adapter the language client would resolve those
       // against the `perl.*` namespace, which this extension does not
@@ -3061,19 +3149,6 @@ export function presentLspProviderError(
   };
 }
 
-export function shouldNudgeArrowCompletion(linePrefix: string): boolean {
-  if (!linePrefix.endsWith('-')) {
-    return false;
-  }
-
-  const beforeDash = linePrefix.slice(0, -1);
-  if (beforeDash.length === 0 || /\s$/.test(beforeDash) || beforeDash.endsWith(':')) {
-    return false;
-  }
-
-  return /(?:\$[\w:]+|[@%][\w:]+|[A-Z]\w*)$/.test(beforeDash);
-}
-
 /** Map an observed formatting result to the canonical provider presentation. */
 export function presentFormattingProviderOutcome(
   editCount: number,
@@ -3115,38 +3190,6 @@ export function presentFormattingProviderError(
     action: 'Check the formatter configuration or run the Health Check.',
     reasonCode: range ? 'range_formatting_error' : 'formatting_error',
   };
-}
-
-export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent): void {
-  const editor = vscode.window.activeTextEditor;
-  if (
-    !editor ||
-    event.document !== editor.document ||
-    !isPerlLanguageId(event.document.languageId)
-  ) {
-    return;
-  }
-
-  if (event.contentChanges.length !== 1) {
-    return;
-  }
-
-  const change = event.contentChanges[0];
-  if (!change) {
-    return;
-  }
-
-  if (change.rangeLength !== 0 || change.text !== '-') {
-    return;
-  }
-
-  const lineText = event.document.lineAt(change.range.start.line).text;
-  const linePrefix = lineText.slice(0, change.range.start.character + change.text.length);
-  if (!shouldNudgeArrowCompletion(linePrefix)) {
-    return;
-  }
-
-  void vscode.commands.executeCommand('editor.action.triggerSuggest');
 }
 
 /**
@@ -3415,7 +3458,7 @@ async function formatDocumentOnSave(document: vscode.TextDocument): Promise<vsco
   return edits ?? [];
 }
 
-async function refreshTestAdapter(context: vscode.ExtensionContext) {
+async function refreshTestAdapter() {
   if (testAdapter) {
     testAdapter.dispose();
     testAdapter = undefined;
@@ -3428,7 +3471,6 @@ async function refreshTestAdapter(context: vscode.ExtensionContext) {
   }
 
   testAdapter = new PerlTestAdapter();
-  context.subscriptions.push(testAdapter);
   outputChannel.info('Perl test integration enabled.');
 }
 
@@ -4000,7 +4042,7 @@ async function promptForClientRefresh(context: vscode.ExtensionContext) {
   );
 
   if (choice === 'Restart Now') {
-    await restartServer(context);
+    await restartServerFromExplicitRecovery(context);
   }
 }
 

@@ -387,7 +387,17 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             break;
         }
 
-        let ends_with_bare_slash = scan_code_line(
+        // While the guard is armed, a code line ending in a bare `/` is the
+        // close of the possible body it was guarding, not a fresh undecided
+        // opener: it must not re-arm the guard, or the genuine POD opener
+        // after a closed multiline bare regex would be refused (#17441).
+        // Bare slashes on the line toggle the open/closed state seeded
+        // from the armed state, so the guard survives the line exactly
+        // when an even number of code-state bare slashes leaves the
+        // trailing slash as a fresh opener: closer + opener stays armed,
+        // while closer + a complete regex (`closer /.../`) disarms.
+        let was_armed = state.possible_bare_regex_body;
+        let scan = scan_code_line(
             input,
             line_start,
             line,
@@ -396,8 +406,10 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             &mut nullaries,
             hints,
         );
-        state.possible_bare_regex_body =
-            ends_with_bare_slash && state.quote == QuoteState::Code && state.quote_like.is_none();
+        state.possible_bare_regex_body = scan.trailing_bare_slash
+            && (!was_armed || scan.bare_slashes.is_multiple_of(2))
+            && state.quote == QuoteState::Code
+            && state.quote_like.is_none();
         line_start = next_line_start;
     }
 
@@ -418,15 +430,25 @@ fn is_nullary_word(word: &str, nullaries: &HashSet<Box<str>>, hints: &Declaratio
     nullaries.contains(word) || hints.nullaries.contains(word)
 }
 
+/// Outcome of scanning one code line for the bare-regex POD guard.
+struct LineScan {
+    /// Whether the last code character is a bare `/`.
+    trailing_bare_slash: bool,
+    /// How many bare `/` characters appeared in code state on the line.
+    bare_slashes: usize,
+}
+
 /// Scan one line in code state and report whether its last code character is
-/// a bare `/`.
+/// a bare `/`, plus how many bare slashes the line contains.
 ///
 /// The report arms the caller's one-line `possible_bare_regex_body` guard, so
 /// it is `true` only for a `/` consumed as code — a closing quote-like
 /// delimiter (`m/foo/`) or a `/` inside a literal body never arms it — and
 /// horizontal whitespace after the slash keeps it armed so `my $x = / # delim`
 /// still reports the opener. A `#` ends the scan but preserves the report:
-/// code before a comment can end with a bare `/`.
+/// code before a comment can end with a bare `/`. The count lets the caller
+/// tell a body-closing slash from a fresh opener that follows it on the
+/// same line.
 fn scan_code_line(
     input: &str,
     line_start: usize,
@@ -435,9 +457,10 @@ fn scan_code_line(
     known_subs: &mut HashSet<Box<str>>,
     nullaries: &mut HashSet<Box<str>>,
     hints: &Declarations,
-) -> bool {
+) -> LineScan {
     let mut offset = 0usize;
     let mut trailing_bare_slash = false;
+    let mut bare_slashes = 0usize;
 
     while offset < line.len() {
         if state.quote_like.is_some() {
@@ -453,7 +476,7 @@ fn scan_code_line(
         if state.awaiting_sub_name {
             offset = skip_horizontal_whitespace(line, offset);
             if offset >= line.len() || line[offset..].starts_with('#') {
-                return false;
+                return LineScan { trailing_bare_slash: false, bare_slashes };
             }
 
             if let Some((name, end)) = parse_qualified_name(line, offset) {
@@ -471,11 +494,11 @@ fn scan_code_line(
         }
 
         let Some(ch) = line[offset..].chars().next() else {
-            return false;
+            return LineScan { trailing_bare_slash: false, bare_slashes };
         };
 
         if ch == '#' {
-            return trailing_bare_slash;
+            return LineScan { trailing_bare_slash, bare_slashes };
         }
 
         if let Some(end) = start_quote_like(input, line_start, line, offset, state) {
@@ -512,7 +535,7 @@ fn scan_code_line(
         {
             Some(offset)
         } else {
-            print_scalar_filehandle_heredoc_start(line, offset)
+            print_scalar_filehandle_heredoc_start(input, line_start, line, offset)
         };
         if let Some(start) = heredoc_start
             && let Some((pending, end)) = parse_heredoc_opener(line, start)
@@ -540,14 +563,17 @@ fn scan_code_line(
             // The picture body starts on the next line; nothing after the `=`
             // on this line is code.
             state.in_format = true;
-            return false;
+            return LineScan { trailing_bare_slash: false, bare_slashes };
         }
 
+        if ch == '/' {
+            bare_slashes += 1;
+        }
         trailing_bare_slash = ch == '/' || (trailing_bare_slash && matches!(ch, ' ' | '\t'));
         offset += ch.len_utf8();
     }
 
-    trailing_bare_slash
+    LineScan { trailing_bare_slash, bare_slashes }
 }
 
 fn scan_quoted_character(line: &str, offset: usize, state: &mut ScanState) -> usize {
@@ -974,14 +1000,35 @@ fn prefix_has_unmatched_open_paren(prefix: &str) -> bool {
 /// Start at `print` in code, rather than searching a prefix containing prose.
 /// Bareword handles are deliberately excluded: even STDERR can name a constant
 /// or imported callable, which requires semantic authority this scan lacks.
-fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usize> {
+///
+/// The parenthesized `print($handle LIST)` form is recognized as the list-
+/// operator variant (#16163). When `print` is immediately followed by `(`, the
+/// scan advances past the open paren and looks for the same `$scalar` then
+/// `<<` opener shape inside the parens. Method (`->print(...)`) and function
+/// (`&print(...)`) calls remain excluded because the prefix guard below
+/// catches both `->` and `&` directly preceding the call.
+fn print_scalar_filehandle_heredoc_start(
+    input: &str,
+    line_start: usize,
+    line: &str,
+    start: usize,
+) -> Option<usize> {
     let after_print = line[start..].strip_prefix("print")?;
-    if !after_print.starts_with([' ', '\t']) {
+    let parenthesized = after_print.starts_with('(');
+    if !parenthesized && !after_print.starts_with([' ', '\t']) {
         return None;
     }
     let before = &line[..start];
-    if before.trim_end_matches([' ', '\t']).ends_with("->")
-        || before.chars().next_back().is_some_and(|ch| {
+    let before_trimmed = before.trim_end_matches([' ', '\t']);
+    // Exclude method calls (`$obj->print`) and function calls (`&print`,
+    // `& print`). The trimmed prefix must end with `->`, or its last
+    // significant byte must be `&` (or another callable-word character that
+    // would make `print` a method/function target rather than a list operator).
+    // `print` must also not be embedded inside a larger identifier or sigiled
+    // expression — `is_perl_identifier_continue` and the sigil set cover the
+    // remaining false positives.
+    if before_trimmed.ends_with("->")
+        || before_trimmed.chars().next_back().is_some_and(|ch| {
             is_perl_identifier_continue(ch)
                 || matches!(ch, '$' | '@' | '%' | '&' | '*' | ':' | '\'')
         })
@@ -989,11 +1036,68 @@ fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usi
         return None;
     }
 
-    let offset = skip_horizontal_whitespace(line, start + "print".len());
+    // `print` may also appear at the start of the current line because the
+    // `->` or `&` prefix lives on the previous line. Scan backward through
+    // the input to find the last non-whitespace byte before this line; if it
+    // is `>` (the tail of `->`) or `&`, treat `print` as a method/function
+    // call rather than a list operator (#16163 acceptance, opposite forms).
+    if start == 0 && line_start > 0 && previous_line_ends_with_arrow_or_ampersand(input, line_start)
+    {
+        return None;
+    }
+
+    let mut offset = skip_horizontal_whitespace(line, start + "print".len());
+    if parenthesized {
+        // Skip exactly one `(`; nested openers stay open across the heredoc
+        // body via the existing pending-heredocs machinery.
+        offset = line[offset..].strip_prefix('(').map(|_| offset + 1)?;
+        offset = skip_horizontal_whitespace(line, offset);
+    }
     line[offset..].strip_prefix('$')?;
     let (_, end) = parse_qualified_name(line, offset + 1)?;
     let opener = skip_horizontal_whitespace(line, end);
     line[opener..].starts_with("<<").then_some(opener)
+}
+
+/// Scan the input source to determine whether the meaningful tail of the
+/// previous line (excluding trailing whitespace, line terminators, and
+/// `#`-introduced comments) ends with `>` (as part of `->`) or `&`.
+/// Used by `print_scalar_filehandle_heredoc_start` to reject method/function
+/// calls whose prefix spans a line break (#16163).
+fn previous_line_ends_with_arrow_or_ampersand(input: &str, line_start: usize) -> bool {
+    if line_start == 0 || line_start > input.len() || !input.is_char_boundary(line_start) {
+        return false;
+    }
+    // Walk backwards over whole physical lines so CRLF terminators (a bare-CR
+    // stop must not end the backward search before the LF it pairs with),
+    // blank separator lines, and comment-only lines are all skipped: the call
+    // prefix lives on the nearest non-blank code line (#16163 review).
+    let mut end = line_start;
+    loop {
+        let before = &input[..end];
+        let trimmed_end = before.trim_end_matches(['\r', '\n']);
+        if trimmed_end.is_empty() {
+            return false;
+        }
+        let line_start_idx = match trimmed_end.rfind(['\r', '\n']) {
+            Some(idx) => idx + 1,
+            None => 0,
+        };
+        let line = &trimmed_end[line_start_idx..];
+        // Strip a trailing `#` comment conservatively, then trailing blanks.
+        let code_part = match line.find('#') {
+            Some(idx) => &line[..idx],
+            None => line,
+        };
+        let trimmed = code_part.trim_end_matches([' ', '\t']);
+        if trimmed.is_empty() {
+            end = line_start_idx;
+            continue;
+        }
+        // A method arrow or a sigil continues the call onto the next line; a
+        // bare `>` (comparison / open angle) does not (#16163 review).
+        return trimmed.ends_with("->") || trimmed.ends_with('&');
+    }
 }
 
 /// Return `true` when a `sub` declaration carries an empty prototype at `end`.
@@ -1082,6 +1186,58 @@ fn parse_quoted_heredoc_label(line: &str, start: usize, quote: char) -> Option<(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn prev_line_call_prefix_survives_crlf_blank_and_comment_lines() {
+        // #16163 review: CRLF terminators, blank separator lines, and
+        // comment-only lines must not hide the call prefix.
+        let crlf = "obj->\r\nprint($fh <<E);\n";
+        let Some(line_start) = crlf.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&crlf, line_start));
+
+        let blank = "obj->
+
+print($fh <<E);
+";
+        let Some(line_start) = blank.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&blank, line_start));
+
+        let commented = "obj-> # chain
+print($fh <<E);
+";
+        let Some(line_start) = commented.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&commented, line_start));
+
+        let amp = "&
+print($fh <<E);
+";
+        let Some(line_start) = amp.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&amp, line_start));
+    }
+
+    #[test]
+    fn prev_line_bare_gt_is_not_a_call_prefix() {
+        // #16163 review: a bare `>` (comparison / open angle) does not make
+        // the next line's `print` a method target; only `->` and `&` do.
+        let source = "if ($a >
+print($fh <<E);
+";
+        let Some(line_start) = source.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(!previous_line_ends_with_arrow_or_ampersand(&source, line_start));
+        assert!(!previous_line_ends_with_arrow_or_ampersand("", 0));
+    }
+
     use super::LocalSymbolTable;
     use crate::{LexerConfig, PerlLexer, TokenType};
 
@@ -1367,6 +1523,58 @@ mod tests {
             &["real"],
             &[],
         );
+    }
+
+    #[test]
+    fn regex_closing_line_does_not_rearm_the_pod_guard() {
+        // #17441: the line that closes a multiline bare regex also ends in
+        // a bare `/`, but it is the close of the possible body, not a fresh
+        // undecided opener. It must not re-arm the guard: the genuine
+        // `=pod` after it opens POD, so `fake` stays off the table and its
+        // later slash keeps the undeclared-name division path. (Custom
+        // assertions: the fixture contains a genuine RegexMatch token, so
+        // the shared helper's stream-wide no-regex check cannot apply; the
+        // slash checks are scoped to the appended site.)
+        let source = "my $r = /\nfoo/\n=pod\nsub fake { }\n=cut\nfake / 2;\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("fake"), "leaked unknown sub \"fake\" from {source:?}");
+
+        let with_slash = format!("{source}fake /x/;\n");
+        let tokens = tokens_with_table(&with_slash, LocalSymbolTable::scan_subs(&with_slash));
+        let site = source.len();
+        assert!(
+            tokens.iter().any(|t| t.start >= site && matches!(t.token_type, TokenType::Division)),
+            "fake lost the division path at its slash site; tokens: {tokens:?}"
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| t.start >= site && matches!(t.token_type, TokenType::RegexMatch)),
+            "fake took the regex path at its slash site; tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_opener_after_closer_keeps_the_pod_guard() {
+        // A line that closes the guarded body and then opens a fresh bare
+        // regex ending in `/` re-arms the guard: the POD-shaped first body
+        // line of the second pattern is pattern text, not POD, so `real`
+        // after the second pattern stays on the table.
+        let source = "my $a = /\nfoo/; my $b = /\n=pod\n/;\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(table.is_known_sub("real"), "`real` missing from {source:?}");
+    }
+
+    #[test]
+    fn complete_regex_after_closer_disarms_the_pod_guard() {
+        // A line that closes the guarded body and then contains a complete
+        // bare regex ends in a closer, not an opener (three bare slashes):
+        // the guard disarms, so the genuine `=pod` after it opens POD and
+        // `fake` stays off the table.
+        let source = "my $a = /\nfoo/ . /bar/\n=pod\nsub fake { }\n=cut\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("fake"), "leaked unknown sub \"fake\" from {source:?}");
+        assert!(table.is_known_sub("real"), "`real` missing from {source:?}");
     }
 
     #[test]
@@ -1954,6 +2162,27 @@ mod tests {
                 "my $x = {prefix}print($fh <<'END');\nsub real {{ }}\nEND\n; sub after {{ }}\n"
             );
             assert_membership_and_slash(&source, &["real", "after"], &[]);
+        }
+    }
+
+    // Issue #16163: parenthesized `print($fh <<'END')` is a heredoc opener.
+    // Subsequent declarations survive the body, intermediate `sub fake` lines
+    // are absorbed into the body, and the public slash path keeps both shapes
+    // aligned (subsequent sub gets the regex term, body names stay on the
+    // division side).
+    #[test]
+    fn parenthesized_print_scalar_filehandle_heredocs_exclude_prose() {
+        for head in [
+            "print($fh",
+            "print($Pkg::fh",
+            "use constant STDERR => 4;\nprint($fh",
+            "use Fcntl qw(O_RDONLY);\nprint($fh",
+        ] {
+            for prose in ["=head1 NAME", "format STDOUT =", "ordinary text"] {
+                let source =
+                    format!("{head} <<'END');\n{prose}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
+                assert_membership_and_slash(&source, &["real"], &["fake"]);
+            }
         }
     }
 

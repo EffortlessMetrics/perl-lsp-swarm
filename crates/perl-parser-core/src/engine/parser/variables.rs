@@ -1792,6 +1792,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::Backslash
                     | TokenKind::Semicolon
                     | TokenKind::BitwiseAnd
+                    | TokenKind::And
                     | TokenKind::SubSigil
                     | TokenKind::GlobSigil
                     | TokenKind::Plus
@@ -1892,6 +1893,9 @@ impl<'a> Parser<'a> {
                 TokenKind::HashSigil => prototype.push('%'),
                 TokenKind::GlobSigil | TokenKind::Star => prototype.push('*'),
                 TokenKind::SubSigil | TokenKind::BitwiseAnd => prototype.push('&'),
+                // Perl's lexer merges adjacent `&` into `And`; in prototype context that is two
+                // code-ref slots (e.g. Test::LectroTest::Property's `(&&@)`).
+                TokenKind::And => prototype.push_str("&&"),
                 TokenKind::Semicolon => prototype.push(';'),
                 TokenKind::Backslash => prototype.push('\\'),
                 // `+` means "scalar or array/hash ref" (perlsub prototype character).
@@ -2165,6 +2169,15 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
         }
         ParseError::QualifiedLoopControlLabel { location } => {
             ParseError::QualifiedLoopControlLabel { location: location.saturating_add(offset) }
+        }
+        ParseError::CatchVariableRedeclaration { keyword, range } => {
+            ParseError::CatchVariableRedeclaration {
+                keyword,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
         }
         ParseError::HeredocBudgetExhausted { limit, usage, location } => {
             // `limit`/`usage` are charged byte counts, not source offsets.

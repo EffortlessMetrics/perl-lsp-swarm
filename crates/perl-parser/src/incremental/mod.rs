@@ -29,8 +29,8 @@ pub use geometry_attachment::{
 pub use lex::MAX_STORED_LEX_CHECKPOINTS;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
 pub use snapshot::{
-    ParseGeneration, ParseSnapshot, ParseSnapshotStrategy, ParseSnapshotValidationError,
-    ParseTerminalDisposition,
+    ParseGeneration, ParseOperationFailure, ParseSnapshot, ParseSnapshotConstructionError,
+    ParseSnapshotStrategy, ParseSnapshotValidationError, ParseTerminalDisposition,
 };
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;

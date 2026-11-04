@@ -53,11 +53,20 @@ pub(crate) struct WorkspacePackage {
     pub(crate) edition: String,
 }
 
-/// First line of every drift report [`format_failure_report`] builds in
+/// First line of every *pure* drift report [`format_failure_report`] builds in
 /// `--check` mode. Shared with `ci_doctor` so the doctor can classify a
 /// captured `fmt --check` error as real drift versus an instrument failure
-/// without re-parsing English prose.
+/// without re-parsing English prose. Mixed drift-plus-instrument reports use
+/// [`CHECK_MIXED_REPORT_PREFIX`] instead; that prefix must not start with this
+/// one, or `ci_doctor` would classify mixed failures as drift-only (#17436).
 pub(crate) const CHECK_DRIFT_REPORT_PREFIX: &str = "cargo fmt --check found unformatted files in";
+
+/// First line of every mixed drift-plus-instrument report
+/// [`format_failure_report`] builds in `--check` mode. Shared with `ci_doctor`
+/// as `FmtFailureKind::Mixed`. Must not be a prefix of, or prefixed by,
+/// [`CHECK_DRIFT_REPORT_PREFIX`].
+pub(crate) const CHECK_MIXED_REPORT_PREFIX: &str =
+    "cargo fmt --check found mixed formatting drift and formatter failures";
 
 /// One crate's failure record collected during the per-crate iteration.
 ///
@@ -493,16 +502,27 @@ fn extract_diff_path(rest: &str) -> &str {
 /// Cargo.toml" message that masked per-PR drift as a master cascade.
 ///
 /// The header only claims "unformatted files" when at least one file is
-/// actually named. A crate whose batches all exited non-zero without diff
+/// actually named, and the crate count in that claim is the number of crates
+/// that named files — not `failures.len()`, which also includes instrument
+/// failures (#17436). A crate whose batches all exited non-zero without diff
 /// output is a rustfmt instrument failure (parse error, unreadable config);
 /// labelling it drift — the historical behavior — sent operators to
-/// `cargo xtask fmt`, which fails identically (#17166).
+/// `cargo xtask fmt`, which fails identically (#17166). When named-file drift
+/// and a rustfmt instrument failure co-occur, the mixed marker is used so
+/// `ci_doctor` does not give drift-only advice.
 fn format_failure_report(check: bool, failures: &[CrateFailure]) -> String {
-    let named_files: usize = failures.iter().map(|failure| failure.unformatted_files.len()).sum();
+    let drift_crates =
+        failures.iter().filter(|failure| !failure.unformatted_files.is_empty()).count();
+    let instrument_crates = failures.iter().filter(|failure| failure.rustfmt_error).count();
     let mut report = String::new();
     let header = if check {
-        if named_files > 0 {
-            format!("{CHECK_DRIFT_REPORT_PREFIX} {} crate(s):", failures.len())
+        if drift_crates > 0 && instrument_crates > 0 {
+            format!(
+                "{} — {} crate(s) with named files, {} crate(s) with formatter failure (not formatting drift):",
+                CHECK_MIXED_REPORT_PREFIX, drift_crates, instrument_crates,
+            )
+        } else if drift_crates > 0 {
+            format!("{CHECK_DRIFT_REPORT_PREFIX} {drift_crates} crate(s):")
         } else {
             format!(
                 "cargo fmt --check failed without naming unformatted files in {} crate(s) — \
@@ -1121,9 +1141,9 @@ fn dedup_preserve_order(paths: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchRunResult, CHECK_DRIFT_REPORT_PREFIX, CargoMetadata, CargoPackage, CargoTarget,
-        CrateFailure, FORMATTER_SPAWN_BUDGET, PackageFormatterPlan, StagedFormatAction,
-        WorkspacePackage, classify_staged_paths, collect_package_format_roots,
+        BatchRunResult, CHECK_DRIFT_REPORT_PREFIX, CHECK_MIXED_REPORT_PREFIX, CargoMetadata,
+        CargoPackage, CargoTarget, CrateFailure, FORMATTER_SPAWN_BUDGET, PackageFormatterPlan,
+        StagedFormatAction, WorkspacePackage, classify_staged_paths, collect_package_format_roots,
         collect_workspace_manifest_paths, execute_package_plan_with, format_failure_report,
         is_rewritable_staged_file, parse_unformatted_files, plan_workspace_format,
     };
@@ -1613,7 +1633,8 @@ mod tests {
     #[test]
     fn check_drift_report_prefix_matches_the_drift_header() {
         // ci_doctor classifies a captured fmt error by this prefix; the two
-        // must not drift apart silently.
+        // must not drift apart silently. Pure drift must not use the mixed
+        // marker (#17436).
         let failures = vec![CrateFailure {
             manifest_path: "crates/foo/Cargo.toml".to_string(),
             unformatted_files: vec!["crates/foo/src/lib.rs".to_string()],
@@ -1622,6 +1643,15 @@ mod tests {
         }];
         let report = format_failure_report(true, &failures);
         assert!(report.starts_with(CHECK_DRIFT_REPORT_PREFIX), "{report}");
+        assert!(!report.starts_with(CHECK_MIXED_REPORT_PREFIX), "{report}");
+        assert!(
+            !CHECK_MIXED_REPORT_PREFIX.starts_with(CHECK_DRIFT_REPORT_PREFIX),
+            "mixed prefix must not classify as drift-only"
+        );
+        assert!(
+            !CHECK_DRIFT_REPORT_PREFIX.starts_with(CHECK_MIXED_REPORT_PREFIX),
+            "drift prefix must not classify as mixed"
+        );
     }
 
     fn rust_target(src_path: &str, edition: &str) -> CargoTarget {
@@ -1791,9 +1821,46 @@ mod tests {
         assert_eq!(failure.unformatted_files, vec!["drift.rs".to_string()]);
         assert!(failure.rustfmt_error);
         let report = format_failure_report(true, std::slice::from_ref(&failure));
-        assert!(report.starts_with(CHECK_DRIFT_REPORT_PREFIX), "{report}");
+        // Mixed named-file + rustfmt_error is not drift-only: ci_doctor
+        // classifies by prefix, and a CHECK_DRIFT_REPORT_PREFIX header would
+        // still advise only `cargo xtask fmt` (#17436).
+        assert!(report.starts_with(CHECK_MIXED_REPORT_PREFIX), "{report}");
+        assert!(!report.starts_with(CHECK_DRIFT_REPORT_PREFIX), "{report}");
         assert!(report.contains("without naming files"), "{report}");
         assert!(report.contains("drift.rs"), "{report}");
+        assert!(report.contains("1 crate(s) with named files"), "{report}");
+        assert!(report.contains("1 crate(s) with formatter failure"), "{report}");
+    }
+
+    #[test]
+    fn format_failure_report_does_not_count_instrument_only_crates_as_drift() {
+        // Cross-crate mixed: crate A names files, crate B is rustfmt_error
+        // with none. The header must not say "unformatted files in 2 crate(s)"
+        // — B named zero files (#17436).
+        let failures = vec![
+            CrateFailure {
+                manifest_path: "crates/foo/Cargo.toml".to_string(),
+                unformatted_files: vec!["crates/foo/src/lib.rs".to_string()],
+                spawn_error: None,
+                rustfmt_error: false,
+            },
+            CrateFailure {
+                manifest_path: "crates/bar/Cargo.toml".to_string(),
+                unformatted_files: Vec::new(),
+                spawn_error: None,
+                rustfmt_error: true,
+            },
+        ];
+        let report = format_failure_report(true, &failures);
+        assert!(report.starts_with(CHECK_MIXED_REPORT_PREFIX), "{report}");
+        assert!(!report.starts_with(CHECK_DRIFT_REPORT_PREFIX), "{report}");
+        assert!(!report.contains("unformatted files in 2 crate(s)"), "{report}");
+        assert!(report.contains("1 crate(s) with named files"), "{report}");
+        assert!(report.contains("1 crate(s) with formatter failure"), "{report}");
+        assert!(report.contains("crates/foo/Cargo.toml"), "{report}");
+        assert!(report.contains("crates/foo/src/lib.rs"), "{report}");
+        assert!(report.contains("crates/bar/Cargo.toml"), "{report}");
+        assert!(report.contains("without naming files"), "{report}");
     }
 
     #[test]
