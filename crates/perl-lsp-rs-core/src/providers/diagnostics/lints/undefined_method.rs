@@ -47,24 +47,28 @@ struct ClassInfo {
     framework: Framework,
 }
 
-struct WalkState<'a> {
+struct WalkState<'a, 'b> {
     package: String,
     locals: HashMap<String, String>,
     classes: &'a HashMap<String, ClassInfo>,
     source: &'a str,
-    type_environment: Option<&'a TypeInferenceEngine>,
-    known_package: &'a dyn Fn(&str) -> Option<bool>,
-    method_candidates: &'a dyn Fn(&str, &str) -> Vec<DefinitionCandidate>,
+    /// Lazily materialized type environment: the deferred pass is expensive,
+    /// and only receiver-fact fallbacks ever read it, so the accessor runs at
+    /// most once per evaluation and only when a call site needs it (#19051
+    /// review).
+    type_environment: &'b (dyn Fn() -> Option<&'b TypeInferenceEngine> + 'b),
+    known_package: &'b (dyn Fn(&str) -> Option<bool> + 'b),
+    method_candidates: &'b (dyn Fn(&str, &str) -> Vec<DefinitionCandidate> + 'b),
 }
 
 /// Warn when a method call is absent from the receiver class's known method
 /// table (in-file tables first, then the workspace index).
-pub fn check_undefined_methods(
-    root: &Node,
-    source: &str,
-    type_environment: Option<&TypeInferenceEngine>,
-    known_package: &dyn Fn(&str) -> Option<bool>,
-    method_candidates: &dyn Fn(&str, &str) -> Vec<DefinitionCandidate>,
+pub fn check_undefined_methods<'a, 'b>(
+    root: &'a Node,
+    source: &'a str,
+    type_environment: &'b (dyn Fn() -> Option<&'b TypeInferenceEngine> + 'b),
+    known_package: &'b (dyn Fn(&str) -> Option<bool> + 'b),
+    method_candidates: &'b (dyn Fn(&str, &str) -> Vec<DefinitionCandidate> + 'b),
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let raw_models = ClassModelBuilder::new().build(root);
@@ -234,7 +238,7 @@ fn provided_method_names(model: &ClassModel) -> HashSet<String> {
     names
 }
 
-fn visit(node: &Node, state: &mut WalkState<'_>, diagnostics: &mut Vec<Diagnostic>) {
+fn visit(node: &Node, state: &mut WalkState<'_, '_>, diagnostics: &mut Vec<Diagnostic>) {
     match &node.kind {
         NodeKind::Package { name, block: Some(block), .. } => {
             let previous_package = std::mem::replace(&mut state.package, name.clone());
@@ -293,7 +297,7 @@ fn visit(node: &Node, state: &mut WalkState<'_>, diagnostics: &mut Vec<Diagnosti
     }
 }
 
-fn record_constructor(lhs: &Node, rhs: &Node, state: &mut WalkState<'_>) {
+fn record_constructor(lhs: &Node, rhs: &Node, state: &mut WalkState<'_, '_>) {
     let Some(variable) = scalar_name(lhs) else {
         return;
     };
@@ -335,7 +339,7 @@ fn maybe_warn_undefined_method(
     call: &Node,
     object: &Node,
     method: &str,
-    state: &WalkState<'_>,
+    state: &WalkState<'_, '_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if !is_static_method_name(method) {
@@ -403,7 +407,7 @@ fn is_static_method_name(method: &str) -> bool {
     }
 }
 
-fn infer_receiver_package(object: &Node, state: &WalkState<'_>) -> Option<String> {
+fn infer_receiver_package(object: &Node, state: &WalkState<'_, '_>) -> Option<String> {
     match &object.kind {
         NodeKind::Identifier { name } if !name.is_empty() => Some(name.clone()),
         NodeKind::String { value, .. } => {
@@ -425,8 +429,8 @@ fn infer_receiver_package(object: &Node, state: &WalkState<'_>) -> Option<String
 /// fallback, no dynamic boundary. Medium-confidence receivers (array index,
 /// dynamic hash key) and union receivers stay silent — diagnostics must not
 /// be braver than completion.
-fn receiver_fact_package(call: &Node, state: &WalkState<'_>) -> Option<String> {
-    let type_environment = state.type_environment?;
+fn receiver_fact_package(call: &Node, state: &WalkState<'_, '_>) -> Option<String> {
+    let type_environment = (state.type_environment)()?;
     let fact = receiver_fact_for_method_call(
         call,
         ReceiverFactContext::new(Some(type_environment.environment())).with_source(state.source),

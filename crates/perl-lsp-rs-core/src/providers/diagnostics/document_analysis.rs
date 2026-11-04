@@ -68,6 +68,7 @@ pub struct DocumentDiagnosticAnalysis {
     scope_issues: OnceLock<Vec<ScopeIssue>>,
     symbol_table: OnceLock<SymbolTable>,
     type_environment: TypeEnvironmentPass,
+    stray_cut_opens: OnceLock<Vec<(usize, bool)>>,
 }
 
 /// Deferred [`TypeInferenceEngine`] pass wrapper.
@@ -125,6 +126,7 @@ impl DocumentDiagnosticAnalysis {
             scope_issues: OnceLock::new(),
             symbol_table: OnceLock::new(),
             type_environment: TypeEnvironmentPass::default(),
+            stray_cut_opens: OnceLock::new(),
         }
     }
 
@@ -225,6 +227,18 @@ impl DocumentDiagnosticAnalysis {
     #[must_use]
     pub fn type_environment(&self) -> &TypeInferenceEngine {
         self.type_environment.get_or_init(&self.ast)
+    }
+
+    /// The stray-`=cut` record for this analysis's source (#18771): each
+    /// `(cut_offset, runs_to_eof)` pair the lexer's own skip decision
+    /// produced, in source order.
+    ///
+    /// Lexes the source with a fresh [`perl_lexer::PerlLexer`] on first call
+    /// and caches the result, so the PL412 lint's cost is per accepted
+    /// generation rather than per diagnostics evaluation (#19051 review).
+    #[must_use]
+    pub fn stray_cut_opens(&self) -> &[(usize, bool)] {
+        self.stray_cut_opens.get_or_init(|| perl_lexer::find_stray_cut_opens_lexed(&self.source))
     }
 
     /// Proof-only: whether this analysis's pragma timeline has been
@@ -423,6 +437,10 @@ mod tests {
             analysis.type_environment.0.get().is_none(),
             "construction must not run type inference"
         );
+        assert!(
+            analysis.stray_cut_opens.get().is_none(),
+            "construction must not lex for stray cuts"
+        );
     }
 
     /// #7286: reading the two facts native critic composition consumes must
@@ -451,6 +469,11 @@ mod tests {
             analysis.type_environment.0.get().is_none(),
             "a consumer that reads only the pragma map and scope issues must not pay for \
              type inference either"
+        );
+        assert!(
+            analysis.stray_cut_opens.get().is_none(),
+            "a consumer that reads only the pragma map and scope issues must not pay for \
+             the stray-cut lex either"
         );
     }
 
@@ -664,6 +687,10 @@ mod tests {
             analysis.type_environment.0.get().is_none(),
             "no type-inference pass may run for this evaluation"
         );
+        // The PL412 stray-cut lint deliberately runs OUTSIDE the #5089 gate
+        // (diagnostics.rs), so a blocking-error evaluation MAY materialize
+        // that one source-only pass; the gated pragma/scope/symbol/type
+        // passes above must stay cold.
     }
 
     /// #7286 hard contract at the fact level: each pass runs at most once,
@@ -681,6 +708,7 @@ mod tests {
         assert!(std::ptr::eq(analysis.scope_issues(), analysis.scope_issues()));
         assert!(std::ptr::eq(analysis.symbol_table(), analysis.symbol_table()));
         assert!(std::ptr::eq(analysis.type_environment(), analysis.type_environment()));
+        assert!(std::ptr::eq(analysis.stray_cut_opens(), analysis.stray_cut_opens()));
 
         assert!(
             !analysis.pragma_map().is_empty(),

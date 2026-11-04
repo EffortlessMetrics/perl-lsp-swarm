@@ -846,14 +846,18 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
 
         // `method_candidates` consults the fact shards even for packages with
         // no graph node, so a shard entity of this package also counts as
-        // "known". Probe the same entity kinds that search uses.
+        // "known". Mirror the shard search's own name semantics
+        // (`find_method_entities` / `enumerate_package_methods`): the entity
+        // is either the package itself, or a *direct* member — a name under
+        // `{package}::` with no deeper qualification, since `Foo::Bar::baz`
+        // belongs to `Foo::Bar`, not to `Foo` (#19051 review).
         let prefix = format!("{package}::");
-        for shard in self.fact_shards.values() {
-            for entity in &shard.entities {
-                if entity.canonical_name == package || entity.canonical_name.starts_with(&prefix) {
-                    return Some(true);
-                }
-            }
+        let known_in_shards = self.fact_shards.values().flat_map(|s| s.entities.iter()).any(|e| {
+            e.canonical_name == package
+                || e.canonical_name.strip_prefix(&prefix).is_some_and(|rest| !rest.contains("::"))
+        });
+        if known_in_shards {
+            return Some(true);
         }
 
         Some(false)
@@ -2810,6 +2814,65 @@ mod tests {
         );
 
         assert_eq!(queries.known_package("Orphan"), Some(true));
+        Ok(())
+    }
+
+    /// A deeper-qualified entity belongs to its own package, not to the
+    /// parent prefix: `Foo::Bar::baz` makes `Foo::Bar` known, not `Foo`
+    /// (#19051 review).
+    #[test]
+    fn known_package_false_for_parent_of_nested_entity() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let shard = make_shard(
+            "file:///lib/Nested.pm",
+            file_id,
+            vec![AnchorFact {
+                id: AnchorId(40),
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: EntityId(400),
+                kind: EntityKind::Method,
+                canonical_name: "Foo::Bar::baz".to_string(),
+                anchor_id: Some(AnchorId(40)),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+
+        let mut pkg_graph = PackageGraphIndex::new();
+        pkg_graph.add_edges(
+            "file:///lib/Other.pm",
+            FileId(2),
+            vec![PackageEdge::new(
+                "Other".to_string(),
+                "Base".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(2)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &ref_index, &ie_index, &shards, &pkg_graph,
+        );
+
+        assert_eq!(queries.known_package("Foo"), Some(false), "Foo::Bar::baz is not a Foo member");
+        assert_eq!(queries.known_package("Foo::Bar"), Some(true));
         Ok(())
     }
 

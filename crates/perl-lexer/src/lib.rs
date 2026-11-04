@@ -694,6 +694,10 @@ impl<'a> PerlLexer<'a> {
         let saved_line_start_offset = self.line_start_offset;
         let saved_current_quote_op = self.current_quote_op.clone();
         let saved_eof_emitted = self.eof_emitted;
+        // The peeked `next_token` may cross a stray `=cut` and record it; the
+        // consuming `next_token` must be the one that reports it, so rewind
+        // the record with the rest of the state (#19051 review).
+        let saved_stray_cut_len = self.stray_cut_opens.len();
 
         let token = self.next_token();
 
@@ -716,6 +720,7 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = saved_line_start_offset;
         self.current_quote_op = saved_current_quote_op;
         self.eof_emitted = saved_eof_emitted;
+        self.stray_cut_opens.truncate(saved_stray_cut_len);
 
         token
     }
@@ -771,6 +776,9 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = 0;
         self.current_quote_op = None;
         self.eof_emitted = false;
+        // Re-lexing the same source must not append a second copy of the
+        // record (#19051 review).
+        self.stray_cut_opens.clear();
     }
 
     /// Switch the lexer into format-body parsing mode.

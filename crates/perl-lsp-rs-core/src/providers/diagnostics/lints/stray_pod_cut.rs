@@ -18,9 +18,29 @@ use perl_lexer::find_stray_cut_opens_lexed;
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 
 /// Warn when a line-initial `=cut` opens POD because no opener preceded it.
-pub fn check_stray_pod_cut(source: &str, diagnostics: &mut Vec<Diagnostic>) {
-    for (cut_offset, runs_to_eof) in find_stray_cut_opens_lexed(source) {
-        emit_stray_cut(source, cut_offset, runs_to_eof, diagnostics);
+///
+/// `generation_stray_cuts` is the generation-owned record from
+/// [`crate::providers::diagnostics::DocumentDiagnosticAnalysis::stray_cut_opens`]
+/// when the caller holds one bound to this exact source; `None` lexes the
+/// source directly. Either way the events are the lexer's own amputation
+/// decision, so the two paths emit identical diagnostics — the cache only
+/// moves the lexing cost from every diagnostics evaluation to once per
+/// accepted generation (#19051 review).
+pub fn check_stray_pod_cut(
+    source: &str,
+    generation_stray_cuts: Option<&[(usize, bool)]>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let direct: Vec<(usize, bool)>;
+    let events: &[(usize, bool)] = match generation_stray_cuts {
+        Some(cached) => cached,
+        None => {
+            direct = find_stray_cut_opens_lexed(source);
+            &direct
+        }
+    };
+    for (cut_offset, runs_to_eof) in events {
+        emit_stray_cut(source, *cut_offset, *runs_to_eof, diagnostics);
     }
 }
 
@@ -71,7 +91,7 @@ mod tests {
 
     fn findings(source: &str) -> Vec<(usize, usize, String)> {
         let mut diagnostics = Vec::new();
-        check_stray_pod_cut(source, &mut diagnostics);
+        check_stray_pod_cut(source, None, &mut diagnostics);
         diagnostics.into_iter().map(|d: Diagnostic| (d.range.0, d.range.1, d.message)).collect()
     }
 
@@ -198,5 +218,29 @@ mod tests {
     #[test]
     fn file_leading_cut_warns() {
         assert_eq!(findings("=cut\nsub hidden { 1 }\n").len(), 1);
+    }
+
+    /// A generation-owned cache must produce byte-identical findings to the
+    /// direct lex path (#19051 review).
+    #[test]
+    fn cached_generation_events_match_direct_lexing() {
+        use perl_lexer::find_stray_cut_opens_lexed;
+        for source in [
+            "use strict;\nsub before { 1 };\n=cut\nsub after { 2 }\n",
+            "use strict;\n=cut\nhidden\n=cut\nmy $x = 1;\n",
+            "my $text = <<'END';\n=cut\nEND\nprint $text;\n",
+            "my $s = \"first\n=cut\nlast\";\n",
+        ] {
+            let mut direct = Vec::new();
+            check_stray_pod_cut(source, None, &mut direct);
+            let cached_slice = find_stray_cut_opens_lexed(source);
+            let mut cached = Vec::new();
+            check_stray_pod_cut(source, Some(&cached_slice), &mut cached);
+            assert_eq!(
+                direct.iter().map(|d| (d.range, &d.message)).collect::<Vec<_>>(),
+                cached.iter().map(|d| (d.range, &d.message)).collect::<Vec<_>>(),
+                "cached and direct paths must agree for {source:?}"
+            );
+        }
     }
 }

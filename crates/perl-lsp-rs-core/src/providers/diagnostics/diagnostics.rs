@@ -685,8 +685,13 @@ impl DiagnosticsProvider {
         // PL412 is a source-text scan of POD directives, not an AST lint.
         // A stray `=cut` is visible in the bytes even when it amputates the
         // rest of the file and leaves blocking parse errors; the #5089 gate
-        // would hide the one finding that explains the amputation.
-        check_stray_pod_cut(source, &mut diagnostics);
+        // would hide the one finding that explains the amputation. The
+        // generation-owned record (bound to this exact source) moves the lex
+        // cost to once per accepted generation (#19051 review); without a
+        // matching analysis the lint lexes directly and emits the same events.
+        let generation_stray_cuts =
+            analysis.filter(|a| a.matches_source(source)).map(|a| a.stray_cut_opens());
+        check_stray_pod_cut(source, generation_stray_cuts, &mut diagnostics);
 
         // Skip lint/scope analysis when there are blocking parse errors —
         // the salvaged AST is unreliable and produces cascading false
@@ -790,11 +795,13 @@ impl DiagnosticsProvider {
             // `method_candidates` MRO table hover/definition and completion
             // use, gated by `known_package` so an unindexed package's empty
             // result stays silent. Receiver inference shares completion's
-            // exact-fact gate through the deferred type pass.
+            // exact-fact gate through the deferred type pass, materialized
+            // lazily and only when a receiver-fact fallback is reached (#19051
+            // review).
             check_undefined_methods(
                 ast,
                 source,
-                Some(analysis.type_environment()),
+                &|| Some(analysis.type_environment()),
                 &|package| semantic_queries.known_package(package),
                 &|package, method| semantic_queries.method_candidates(package, method),
                 &mut diagnostics,

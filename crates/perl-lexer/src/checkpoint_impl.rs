@@ -177,6 +177,13 @@ impl Checkpointable for PerlLexer<'_> {
         });
         self.eof_emitted = replay.eof_emitted;
         self.scan_limit = None;
+        // The record accumulates as the lexer passes each directive. Resuming
+        // from `replay.position` will re-traverse any directive at or beyond
+        // it and re-record those, so drop the not-yet-owned tail to keep the
+        // post-restore record duplicate-free (#19051 review). Entries before
+        // the restored position came from already-consumed tokens and stay.
+        let restore_position = replay.position;
+        self.stray_cut_opens.retain(|event| event.cut_offset < restore_position);
         if matches!(replay.context, CheckpointContext::Format { .. }) {
             self.mode = LexerMode::InFormatBody;
         }

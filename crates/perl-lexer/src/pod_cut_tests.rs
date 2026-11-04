@@ -198,6 +198,60 @@ fn stray_cut_record_marks_runs_to_eof() -> TestResult {
     Ok(())
 }
 
+/// Peeking must not duplicate the record: the peeked `next_token` records the
+/// stray `=cut`, the rewind drops that entry, and the consuming `next_token`
+/// records it exactly once (#19051 review).
+#[test]
+fn peek_token_does_not_duplicate_the_stray_cut_record() -> TestResult {
+    let source = "use strict;
+=cut
+this is not valid perl @@@ ###
+";
+    let mut lexer = PerlLexer::new(source);
+    let _ = lexer.peek_token();
+    require(
+        lexer.stray_cut_opens().is_empty(),
+        format!("a peek must not leave a record behind, got {:?}", lexer.stray_cut_opens()),
+    );
+    let _ = lexer.collect_tokens();
+    let events: Vec<(usize, bool)> =
+        lexer.stray_cut_opens().iter().map(|e| (e.cut_offset, e.runs_to_eof)).collect();
+    require(
+        events == vec![(12, true)],
+        format!("exactly one record must survive a peek-then-consume, got {events:?}"),
+    );
+    Ok(())
+}
+
+/// `reset` starts a fresh lex over the same source, so the record must not
+/// accumulate a second copy (#19051 review).
+#[test]
+fn reset_clears_the_stray_cut_record() -> TestResult {
+    let source = "use strict;
+=cut
+this is not valid perl @@@ ###
+";
+    let mut lexer = PerlLexer::new(source);
+    let _ = lexer.collect_tokens();
+    require(
+        lexer.stray_cut_opens().len() == 1,
+        format!("the first pass must record the stray cut, got {:?}", lexer.stray_cut_opens()),
+    );
+    lexer.reset();
+    require(
+        lexer.stray_cut_opens().is_empty(),
+        format!("reset must clear the record, got {:?}", lexer.stray_cut_opens()),
+    );
+    let _ = lexer.collect_tokens();
+    let events: Vec<(usize, bool)> =
+        lexer.stray_cut_opens().iter().map(|e| (e.cut_offset, e.runs_to_eof)).collect();
+    require(
+        events == vec![(12, true)],
+        format!("the re-lex must not duplicate the record, got {events:?}"),
+    );
+    Ok(())
+}
+
 /// A `=cut` that closes a `=pod`-opened block is not a stray cut and must not
 /// appear in the record.
 #[test]
