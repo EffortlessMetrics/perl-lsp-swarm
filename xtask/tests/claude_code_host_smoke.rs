@@ -490,9 +490,7 @@ fn conflicting_plugin_paths(
 
 fn git_head(root: &Path) -> Result<String> {
     let output = run_output(
-        xtask::git_environment::isolate(Command::new("git"))
-            .args(["rev-parse", "HEAD"])
-            .current_dir(root),
+        Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root),
         "git rev-parse HEAD",
     )?;
     let sha = String::from_utf8(output.stdout)?.trim().to_string();
@@ -528,7 +526,7 @@ fn prove_build_revision(version: &str, root: &Path, candidate_sha: &str) -> Resu
         }
         "Git tag" => {
             let tagged = run_output(
-                xtask::git_environment::isolate(Command::new("git"))
+                Command::new("git")
                     .args(["rev-parse", &format!("{revision}^{{commit}}")])
                     .current_dir(root),
                 "git rev-parse perllsp tag",

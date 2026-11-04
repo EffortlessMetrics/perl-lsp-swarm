@@ -112,16 +112,11 @@ echo "=== Validating Token Resolution ==="
 
 # Check for any unresolved tokens in rendered output
 if command -v rg &> /dev/null; then
-  if rg -n '\{\{[^}]+\}\}' "${TMP_DIR}"; then
+  if rg -n '{{[^}]+}}' "${TMP_DIR}" 2>/dev/null | grep .; then
     echo ""
     echo "ERROR: Unresolved tokens remain in rendered docs"
     exit 1
   else
-    validation_status=$?
-    if [ "${validation_status}" -ne 1 ]; then
-      echo "ERROR: Token validation failed (status ${validation_status})" >&2
-      exit "${validation_status}"
-    fi
     echo "✓ All tokens resolved successfully"
   fi
 else

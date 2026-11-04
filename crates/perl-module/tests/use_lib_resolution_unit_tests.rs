@@ -8,63 +8,6 @@ use perl_module::{
 };
 
 #[test]
-fn relative_use_lib_parent_traversal_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
-    let temp = tempfile::tempdir()?;
-    let workspace = temp.path().join("workspace");
-    std::fs::create_dir_all(&workspace)?;
-
-    let resolved = resolve_use_lib_paths(
-        &[UseLibPath { path: "../outside".to_string(), from_findbin: false }],
-        &workspace,
-        None,
-    );
-
-    assert!(resolved.is_empty(), "relative workspace-root use lib traversal should be dropped");
-    Ok(())
-}
-
-#[test]
-fn relative_use_lib_in_bound_parent_segment_is_normalized() -> Result<(), Box<dyn std::error::Error>>
-{
-    let temp = tempfile::tempdir()?;
-    let workspace = temp.path().join("workspace");
-    let vendor = workspace.join("vendor");
-    std::fs::create_dir_all(vendor)?;
-
-    let resolved = resolve_use_lib_paths(
-        &[UseLibPath { path: "lib/../vendor".to_string(), from_findbin: false }],
-        &workspace,
-        None,
-    );
-
-    assert_eq!(resolved, vec!["lib/../vendor".to_string()]);
-    Ok(())
-}
-
-#[test]
-fn relative_use_lib_cannot_reenter_workspace_via_parent_prefix()
--> Result<(), Box<dyn std::error::Error>> {
-    let temp = tempfile::tempdir()?;
-    let workspace = temp.path().join("workspace");
-    std::fs::create_dir_all(workspace.join("vendor"))?;
-
-    let workspace_name = workspace
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("workspace path must have a UTF-8 final component")?;
-    let escape_and_reenter = format!("../{workspace_name}/vendor");
-
-    let resolved = resolve_use_lib_paths(
-        &[UseLibPath { path: escape_and_reenter, from_findbin: false }],
-        &workspace,
-        None,
-    );
-
-    assert!(resolved.is_empty(), "parent-prefix re-entry into the workspace must be rejected");
-    Ok(())
-}
-
-#[test]
 fn findbin_parent_traversal_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let workspace = temp.path().join("workspace");

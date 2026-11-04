@@ -19,7 +19,6 @@
 
 repo_root := justfile_directory() / ".."
 security_scan_script := repo_root / "scripts/security_scan.sh"
-cargo_deny_check_script := repo_root / "scripts/ci/run-cargo-deny-check.sh"
 
 # Comprehensive security scan: every requested scanner runs independently even
 # when an earlier one fails; missing tools are `unavailable`, not pass.
@@ -54,7 +53,7 @@ security-audit-strict:
 security-deny:
     @echo "Running cargo-deny policy checks..."
     @if command -v cargo-deny >/dev/null 2>&1; then \
-        bash "{{cargo_deny_check_script}}"; \
+        cargo deny --locked check advisories licenses bans sources; \
     else \
         echo "UNAVAILABLE: cargo-deny not installed (fail-closed; install: cargo install cargo-deny --locked)"; \
         exit 3; \

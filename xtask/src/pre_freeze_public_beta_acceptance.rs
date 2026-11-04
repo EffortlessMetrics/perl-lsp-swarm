@@ -1,7 +1,6 @@
 //! Consistency checks for explicitly supplied pre-freeze v2 evidence.
 //!
 //! This module never authenticates receipts or qualifies installed execution.
-pub mod first_hour_profile;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

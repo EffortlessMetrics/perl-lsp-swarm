@@ -1,4 +1,0 @@
-{
-  "staged_path": "lib/Shop.pm",
-  "expected_owner": {"kind": "package", "qualified_name": "Shop"}
-}

@@ -74,37 +74,3 @@ A future runtime-deferral PR must select one candidate seam and provide:
 
 Until that proof exists, all current static imports remain intentional and no
 optional-feature deferral is part of the extension runtime contract.
-
-## Controlled comparison harness (#4262)
-
-The repository now ships a smoke-only deferral seam for matched same-host
-experiments:
-
-```text
-PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT=1
-PERL_LSP_ACTIVATION_DEFER_DOMAINS=mcp
-```
-
-When armed, domains listed in `PERL_LSP_ACTIVATION_DEFER_DOMAINS` skip
-registration/construction during activation and record
-`registration_status: deferred` in `feature_activation_metrics.v1`.
-Activation-critical domains ignore deferral requests even when listed.
-When the experiment flags are unset, production activation leaves runtime
-behavior unchanged.
-
-Run the paired experiment from `vscode-extension/` after staging the current-source
-server variables required by `npm run test:published:local`:
-
-```bash
-# Baseline must not inherit experiment flags from the shell; the runner clears them.
-npm run sample:activation-deferral:local
-```
-
-The command repeats the normal and deferred arms (three samples by default),
-writes roll-ups via `summarize-vscode-receipts.js`, and emits
-`feature_activation_deferral_comparison.v1` with a keep/defer recommendation.
-The comparison uses an immaterial activation delta floor for decisioning only;
-it does not promote a performance budget.
-
-Record the resulting comparison JSON and update this decision once the
-distribution is stable on a same-host current-source host.

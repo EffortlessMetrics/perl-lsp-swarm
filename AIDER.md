@@ -35,7 +35,7 @@ Run at minimum for the crate you changed:
 ```bash
 cargo test -p <crate>
 cargo check --all-targets -p <crate>
-cargo fmt -p <crate> -- --check
+cargo xtask fmt
 cargo clippy -p <crate>
 just pr-fast
 ```

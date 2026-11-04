@@ -14,58 +14,16 @@ type RefactoringAction = {
   readonly kind?: string;
   readonly edit?: unknown;
   readonly command?: unknown;
-  readonly disabled?: unknown;
 };
 
 type CodeActionResult = RefactoringAction[] | null;
-
-const VARIABLE_KIND = 'refactor.extract.variable';
-const SUBROUTINE_KIND = 'refactor.extract.subroutine';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function requestedAction(actions: CodeActionResult, kind: string): RefactoringAction | undefined {
-  if (!Array.isArray(actions)) {
-    return undefined;
-  }
-  return actions.find((action) => {
-    if (
-      !isRecord(action) ||
-      typeof action.title !== 'string' ||
-      action.kind !== kind ||
-      'disabled' in action
-    ) {
-      return false;
-    }
-    const edit = action.edit;
-    const command = action.command;
-    const validEdit =
-      isRecord(edit) &&
-      ((isRecord(edit.changes) &&
-        Object.values(edit.changes).every(Array.isArray) &&
-        Object.values(edit.changes).some((edits) => Array.isArray(edits) && edits.length > 0)) ||
-        (Array.isArray(edit.documentChanges) && edit.documentChanges.length > 0));
-    const validCommand =
-      isRecord(command) &&
-      typeof command.command === 'string' &&
-      command.command.length > 0 &&
-      (!('arguments' in command) || Array.isArray(command.arguments));
-    return (
-      (edit === undefined || validEdit) &&
-      (command === undefined || validCommand) &&
-      (validEdit || validCommand)
-    );
-  });
-}
 
 export interface RefactoringCommandDependencies {
   readonly activeClient?: RefactoringClient | undefined;
   readonly serverNotRunningMessage: () => string;
 }
 
-function selectionParams(editor: vscode.TextEditor, kind: string) {
+function selectionParams(editor: vscode.TextEditor) {
   const range = editor.selection;
   return {
     textDocument: { uri: editor.document.uri.toString() },
@@ -73,7 +31,7 @@ function selectionParams(editor: vscode.TextEditor, kind: string) {
       start: { line: range.start.line, character: range.start.character },
       end: { line: range.end.line, character: range.end.character },
     },
-    context: { diagnostics: [], only: [kind], triggerKind: 2 },
+    context: { diagnostics: [], only: ['refactor.extract'], triggerKind: 2 },
   };
 }
 
@@ -83,18 +41,13 @@ async function applyAction(
   unavailableMessage: string,
 ): Promise<void> {
   if (action.edit) {
-    try {
-      const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(
-        action.edit as Parameters<typeof client.protocol2CodeConverter.asWorkspaceEdit>[0],
-      );
-      if (!workspaceEdit || !(await vscode.workspace.applyEdit(workspaceEdit))) {
-        vscode.window.showInformationMessage(unavailableMessage);
-        return;
-      }
-    } catch {
-      vscode.window.showInformationMessage(unavailableMessage);
-      return;
+    const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(
+      action.edit as Parameters<typeof client.protocol2CodeConverter.asWorkspaceEdit>[0],
+    );
+    if (workspaceEdit) {
+      await vscode.workspace.applyEdit(workspaceEdit);
     }
+    return;
   }
 
   if (action.command) {
@@ -103,9 +56,7 @@ async function applyAction(
     return;
   }
 
-  if (!action.edit) {
-    vscode.window.showInformationMessage(unavailableMessage);
-  }
+  vscode.window.showInformationMessage(unavailableMessage);
 }
 
 /** Request and apply the server's extract-variable code action. */
@@ -129,16 +80,10 @@ export async function extractVariableCommand(
     return;
   }
 
-  let actions: CodeActionResult;
-  try {
-    actions = await client.sendRequest<CodeActionResult>(
-      'textDocument/codeAction',
-      selectionParams(editor, VARIABLE_KIND),
-    );
-  } catch (error) {
-    vscode.window.showErrorMessage(`Extract Variable request failed: ${String(error)}`);
-    return;
-  }
+  const actions = await client.sendRequest<CodeActionResult>(
+    'textDocument/codeAction',
+    selectionParams(editor),
+  );
   if (!actions || actions.length === 0) {
     vscode.window.showInformationMessage(
       'No extract actions available for the selected expression',
@@ -146,7 +91,8 @@ export async function extractVariableCommand(
     return;
   }
 
-  const action = requestedAction(actions, VARIABLE_KIND);
+  const action =
+    actions.find((candidate) => candidate.title.toLowerCase().includes('variable')) ?? actions[0];
   if (!action) {
     vscode.window.showInformationMessage(
       'No extract variable action is available for the current selection',
@@ -180,22 +126,20 @@ export async function extractMethodCommand(
     return;
   }
 
-  let actions: CodeActionResult;
-  try {
-    actions = await client.sendRequest<CodeActionResult>(
-      'textDocument/codeAction',
-      selectionParams(editor, SUBROUTINE_KIND),
-    );
-  } catch (error) {
-    vscode.window.showErrorMessage(`Extract Method request failed: ${String(error)}`);
-    return;
-  }
+  const actions = await client.sendRequest<CodeActionResult>(
+    'textDocument/codeAction',
+    selectionParams(editor),
+  );
   if (!actions || actions.length === 0) {
     vscode.window.showInformationMessage('No extract actions available for the selected code');
     return;
   }
 
-  const action = requestedAction(actions, SUBROUTINE_KIND);
+  const action =
+    actions.find((candidate) => {
+      const title = candidate.title.toLowerCase();
+      return title.includes('subroutine') || title.includes('method') || title.includes('function');
+    }) ?? actions.at(-1);
   if (!action) {
     vscode.window.showInformationMessage(
       'No extract method action is available for the current selection',

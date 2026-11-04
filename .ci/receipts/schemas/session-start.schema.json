@@ -28,8 +28,7 @@
   ],
   "properties": {
     "schema_version": {
-      "type": "string",
-      "const": "session_start.v1"
+      "const": 1
     },
     "kind": {
       "const": "session_start"

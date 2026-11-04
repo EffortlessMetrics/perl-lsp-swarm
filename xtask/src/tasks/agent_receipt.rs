@@ -1,6 +1,6 @@
 use crate::tasks::agent_lease::{AgentLease, read_lease};
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -123,7 +123,6 @@ fn validate_against_lease(receipt: &AgentLeaseReceipt, lease: &AgentLease) -> Re
 mod tests {
     use super::*;
     use chrono::Duration;
-    use color_eyre::eyre::ensure;
     use serde_json::json;
 
     #[test]

@@ -6,10 +6,10 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `86df1fb90b81464dc69e269b771246f2b3daa611e2a5cfff5cd5774bf9701c2e`
+- Authority digest: `cca7b8e1036783d597b8697da85ebdb74ea6577951dcd2081eb725eaf56dd003`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
-- Public re-exports: 130
+- Public re-exports: 138
 - Cargo features: 27
 - Declared dependencies: 30
 - Production-context dependencies: 19
@@ -25,11 +25,11 @@ A declared feature is a production boundary when it selects dependencies, gates
 a test profile, and a feature that gates nothing is taxonomy. Neither may be
 presented as an architectural boundary.
 
-Production boundaries (9): `anyhow`, `cli`, `default`, `incremental`, `lsp-compat`, `lsp-types`, `perl-line-index`, `tracing`, `workspace`.
+Production boundaries (11): `anyhow`, `cli`, `default`, `incremental`, `lsp-compat`, `lsp-types`, `modernize`, `perl-line-index`, `tracing`, `workspace`, `workspace_refactor`.
 
 Test profiles (9): `constant-advanced`, `crash-repros`, `doc-coverage`, `error-classifier-v2`, `package-qualified`, `parser-extras`, `qw-variants`, `semantic-phase2`, `slow_tests`.
 
-Taxonomy only, isolating nothing (9): `experimental-features`, `expose_lsp_test_api`, `lsp-advanced`, `lsp-ga-lock`, `modernize`, `substitution-advanced`, `test-performance`, `utf16-complete`, `workspace_refactor`.
+Taxonomy only, isolating nothing (7): `experimental-features`, `expose_lsp_test_api`, `lsp-advanced`, `lsp-ga-lock`, `substitution-advanced`, `test-performance`, `utf16-complete`.
 
 ## Dependency direction
 

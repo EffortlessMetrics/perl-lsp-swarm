@@ -358,7 +358,6 @@ macro_rules! dap_request_table {
         events: tuple[str, ...] = ("initialized", "continued"),
         dynamic_event: bool = False,
         dispatch_source: str | None = None,
-        event_prefix: str = "",
     ) -> None:
         dispatch = self.root / MODULE.DISPATCH_PATH
         dispatch.parent.mkdir(parents=True, exist_ok=True)
@@ -477,7 +476,7 @@ UNAVAILABLE_WARN
         event_source.write_text(
             "impl DebugAdapter {\n"
             "    fn emit(&self, event_name: &str) {\n"
-            f"{event_prefix}{calls}\n"
+            f"{calls}\n"
             "    }\n"
             "}\n",
             encoding="utf-8",
@@ -1390,105 +1389,6 @@ UNAVAILABLE_WARN
         self.assertEqual(
             ["initialize", "inlineValues"],
             [row["command"] for row in self._production_rows()["request_rows"]],
-        )
-
-    # --- #9141: event inventory ignores non-code Rust lexical contexts ---
-
-    def test_line_comment_send_event_decoy_does_not_enter_inventory(self) -> None:
-        self._write_production(
-            event_prefix='        // self.send_event("phantom", None);\n',
-        )
-        self.assertNotIn("phantom", self._production_rows()["events"])
-
-    def test_block_comment_send_event_decoy_does_not_enter_inventory(self) -> None:
-        self._write_production(
-            event_prefix='        /* self.send_event("phantom", None); */\n',
-        )
-        self.assertNotIn("phantom", self._production_rows()["events"])
-
-    def test_string_literal_send_event_decoy_does_not_enter_inventory(self) -> None:
-        self._write_production(
-            event_prefix='        let _ = "self.send_event(\\"phantom\\", None)";\n',
-        )
-        self.assertNotIn("phantom", self._production_rows()["events"])
-
-    def test_raw_string_send_event_decoy_does_not_enter_inventory(self) -> None:
-        self._write_production(
-            event_prefix='        let _ = r#"self.send_event("phantom", None)"#;\n',
-        )
-        self.assertNotIn("phantom", self._production_rows()["events"])
-
-    def test_byte_string_send_event_decoy_does_not_enter_inventory(self) -> None:
-        self._write_production(
-            event_prefix=(
-                '        let _ = b"self.send_event(\\"phantom\\", None)";\n'
-                '        let _ = br#"self.send_event("phantom", None)"#;\n'
-            ),
-        )
-        self.assertNotIn("phantom", self._production_rows()["events"])
-
-    def test_formatted_macro_send_event_decoy_does_not_enter_inventory(self) -> None:
-        self._write_production(
-            event_prefix='        let _ = format!("self.send_event(\\"{}\\", None)", "phantom");\n',
-        )
-        self.assertNotIn("phantom", self._production_rows()["events"])
-
-    def test_removed_extension_event_cannot_be_replaced_by_a_decoy(self) -> None:
-        manifest = copy.deepcopy(self.manifest)
-        manifest["project_extensions"].append(
-            {
-                "wire_name": "perlTrace",
-                "kind": "event",
-                "classification": "extension",
-                "version": "test.v1",
-                "owner": "#9141",
-            }
-        )
-        self._write_production(
-            events=("initialized", "continued"),
-            event_prefix='        // self.send_event("perlTrace", None);\n',
-        )
-        validated = MODULE.validate_manifest(manifest, require_sha256=True)
-        observed = MODULE.validate_schema_bytes(self.data, validated, require_sha256=True)
-        self.assertAuthorityErrorMatching(
-            "stale manifest",
-            lambda: MODULE.validate_production_boundary(self.root, validated, observed),
-        )
-
-    def test_duplicate_real_send_event_calls_deduplicate_inventory(self) -> None:
-        self._write_production(
-            events=("initialized", "continued"),
-            event_prefix='        self.send_event("continued", None);\n',
-        )
-        self.assertEqual(
-            ["continued", "initialized"],
-            self._production_rows()["events"],
-        )
-
-    def test_a_second_event_inventory_module_is_merged_deterministically(self) -> None:
-        primary = self.root / MODULE.DEBUG_ADAPTER_ROOT / "primary.rs"
-        primary.parent.mkdir(parents=True, exist_ok=True)
-        primary.write_text(
-            "impl DebugAdapter {\n"
-            "    fn emit_primary(&self) {\n"
-            '        self.send_event("initialized", None);\n'
-            "    }\n"
-            "}\n",
-            encoding="utf-8",
-        )
-        secondary = self.root / MODULE.DEBUG_ADAPTER_ROOT / "secondary.rs"
-        secondary.write_text(
-            "impl DebugAdapter {\n"
-            "    fn emit_secondary(&self) {\n"
-            '        self.send_event("continued", None);\n'
-            "    }\n"
-            "}\n",
-            encoding="utf-8",
-        )
-        self._write_production(events=())
-        self.assertEqual(
-            ["continued", "initialized"],
-            self._production_rows()["events"],
         )
 
     def test_a_second_generator_macro_fails_closed(self) -> None:

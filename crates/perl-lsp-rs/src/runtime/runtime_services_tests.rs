@@ -15,80 +15,10 @@ mod tests {
     use super::super::LspServer;
     use super::super::diagnostic_debounce::DiagnosticDebouncer;
     use super::super::file_watcher_debounce::FileWatcherDebouncer;
-    use super::super::outbound::tests::capture_tracing_records;
     use super::super::runtime_services::{
         ApplicationShutdown, ApplicationTaskClass, DuplicateRegistration, RuntimeServices,
         ShutdownReason, TaskTerminal, UnregisteredTask,
     };
-
-    #[test]
-    fn server_drop_on_worker_thread_does_not_record_settlement_timeout() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let server = Arc::new(LspServer::new());
-        let last_owner = Arc::new(parking_lot::Mutex::new(Some(Arc::clone(&server))));
-        let settled = Arc::new(AtomicBool::new(false));
-        let settled_in_cb = Arc::clone(&settled);
-
-        server.install_diagnostic_debouncer(DiagnosticDebouncer::with_interval(
-            Duration::from_millis(1),
-            move |_uri| {
-                let Some(owner) = last_owner.lock().take() else {
-                    return;
-                };
-                let records = capture_tracing_records(|| drop(owner));
-                assert!(
-                    !records.contains("settlement on server drop was not clean"),
-                    "worker-owned server drop must not false-timeout, got: {records}"
-                );
-                settled_in_cb.store(true, Ordering::SeqCst);
-            },
-        ));
-
-        server.publish_diagnostics_debounced("file:///worker_owned_drop.pl");
-        drop(server);
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !settled.load(Ordering::SeqCst) {
-            assert!(
-                Instant::now() < deadline,
-                "debounce worker must drop the last Arc and run settlement"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    #[test]
-    fn server_drop_settlement_emits_retained_instrument_failure_evidence() {
-        let services = RuntimeServices::new();
-        services.register_task(ApplicationTaskClass::ParseWorker).expect("registration succeeds");
-        services
-            .record_terminal(
-                ApplicationTaskClass::ParseWorker,
-                TaskTerminal::InstrumentFailed {
-                    reason: "parse worker pool failed to spawn any threads".to_string(),
-                },
-            )
-            .expect("terminal accepted");
-
-        let records = capture_tracing_records(|| {
-            services.settle_and_report_on_server_drop();
-        });
-
-        assert!(
-            records.contains("application background component never became operational"),
-            "instrument failure must reach settlement evidence, got: {records}"
-        );
-        assert!(
-            records.contains("parse-worker"),
-            "settlement evidence must name the component, got: {records}"
-        );
-        assert!(
-            records.contains("parse worker pool failed to spawn any threads"),
-            "settlement evidence must retain the first causal reason, got: {records}"
-        );
-    }
 
     #[test]
     fn register_then_complete_terminal_is_retained_in_settlement_snapshot() {

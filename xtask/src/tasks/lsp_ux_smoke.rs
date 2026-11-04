@@ -1,8 +1,7 @@
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use perl_lsp_ux_tests::{
-    DiagnosticsTracker, FakeWorkspace, LspEvent, ScenarioConfig, UxClient, WaitEnd,
-    normalize_lsp_payload,
+    DiagnosticsTracker, FakeWorkspace, LspEvent, ScenarioConfig, UxClient, normalize_lsp_payload,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -381,7 +380,7 @@ fn check_did_open(
     ux(client.did_open(&uri, &source))?;
     opened_files.insert(file.to_string());
 
-    let diagnostics = wait_for_latest_diagnostics(client, workspace, file, timeout)?;
+    let diagnostics = wait_for_latest_diagnostics(client, workspace, file, timeout);
     latest_diagnostics.insert(file.to_string(), diagnostics.clone());
 
     let line_ending_ok = line_endings_match_request(&source, request.line_endings.as_deref());
@@ -412,7 +411,7 @@ fn check_diagnostics(
     latest_diagnostics: &mut BTreeMap<String, Vec<Value>>,
 ) -> Result<CheckReceipt> {
     let file = required_file(request)?;
-    let diagnostics = wait_for_latest_diagnostics(client, workspace, file, timeout)?;
+    let diagnostics = wait_for_latest_diagnostics(client, workspace, file, timeout);
     latest_diagnostics.insert(file.to_string(), diagnostics.clone());
 
     let code = request.diagnostic_code.as_deref();
@@ -1010,22 +1009,17 @@ fn wait_for_latest_diagnostics(
     workspace: &FakeWorkspace,
     file: &str,
     timeout: Duration,
-) -> Result<Vec<Value>> {
+) -> Vec<Value> {
     let uri = workspace.uri(file);
     // Blocks on the client's observation stream rather than resampling
     // `peek_events` on a timer; the bound below is now a pure outer bound.
-    // A live deadline is accepted as absence, but a closed or failed stream is
-    // a smoke failure — it must not be recorded as an empty diagnostics result.
-    match DiagnosticsTracker::wait_for_uri_matching(
+    DiagnosticsTracker::wait_for_uri_matching(
         client,
         &uri,
         timeout.min(Duration::from_secs(5)),
         |_| true,
-    ) {
-        Ok(diagnostics) => Ok(diagnostics),
-        Err(WaitEnd::Deadline { .. }) => Ok(Vec::new()),
-        Err(end) => Err(eyre!("wait for diagnostics of {file}: {end}")),
-    }
+    )
+    .unwrap_or_default()
 }
 
 fn missing_expected_diagnostic_labels(

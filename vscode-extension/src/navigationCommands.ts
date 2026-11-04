@@ -18,7 +18,6 @@ export interface WorkspaceStatusSnapshot {
   readonly mode: WorkspaceStatusMode;
   readonly version?: string;
   readonly fileCount?: number;
-  readonly fileCountLowerBound?: boolean;
   readonly errorCount?: number;
   readonly lifecycle?: string;
   readonly lifecycleDetail?: string;
@@ -71,13 +70,6 @@ export async function showVersionCommand(
   }
 }
 
-function workspaceFileCountLine(count: number, lowerBound: boolean): string {
-  if (lowerBound) {
-    return `Workspace files: ${count}+ (scan limited)`;
-  }
-  return `Workspace files: ${count}`;
-}
-
 export async function showWorkspaceStatusCommand(dependencies: {
   readonly getWorkspaceStatus: () => WorkspaceStatusSnapshot;
 }): Promise<void> {
@@ -106,7 +98,7 @@ export async function showWorkspaceStatusCommand(dependencies: {
     );
   }
   if (status.fileCount !== undefined) {
-    lines.push(workspaceFileCountLine(status.fileCount, status.fileCountLowerBound === true));
+    lines.push(`Workspace files: ${status.fileCount}`);
   }
   if (status.errorCount !== undefined) {
     lines.push(`Diagnostics: ${status.errorCount} error${status.errorCount === 1 ? '' : 's'}`);

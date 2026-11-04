@@ -1,106 +1,24 @@
 use super::ImportMap;
-use perl_module::resolve_known_export_tag;
-use perl_parser_core::ast::Node;
-use perl_parser_core::hir::lower_ast;
+use perl_parser_core::ast::{Node, NodeKind};
+use perl_parser_core::hir::arguments_outside_configuration_hashes;
 use perl_semantic_analyzer::analysis::import_extractor::ImportExtractor;
-use perl_semantic_facts::{FileId, ImportKind, ImportSpec, ImportSymbols};
-use perl_workspace::semantic::workspace_import_extractor::extract_import_specs_from_hir;
+use perl_semantic_facts::{FileId, ImportKind, ImportSymbols};
 use std::collections::{HashMap, HashSet};
 
+mod symbols;
 mod used_modules;
 
+use symbols::collect_import_symbols;
 use used_modules::is_importable_module;
 
-/// Walk the document and build an `ImportMap` from canonical HIR import facts.
+/// Walk the top-level AST and build an `ImportMap` from `use` statements.
 ///
 /// Only uppercase-starting module names are included (skips pragmas like
 /// `strict`, `warnings`, `feature`, `constant`, `utf8`, `lib`, `parent`, `base`).
-/// Pass `source` when framework import normalization requires buffer text.
-pub(super) fn extract_import_map_with_source(ast: &Node, source: Option<&str>) -> ImportMap {
-    let hir = lower_ast(ast);
-    let specs = extract_import_specs_from_hir(&hir, ast, FileId(0), source);
-    import_map_from_specs(&specs)
-}
-
-fn import_map_from_specs(specs: &[ImportSpec]) -> ImportMap {
+pub(super) fn extract_import_map(ast: &Node) -> ImportMap {
     let mut map: ImportMap = HashMap::new();
-    for spec in specs {
-        if !is_importable_module(&spec.module) {
-            continue;
-        }
-        match spec.kind {
-            ImportKind::Use => {}
-            ImportKind::UseEmpty => {
-                map.entry(spec.module.clone()).or_default();
-            }
-            ImportKind::UseExplicitList | ImportKind::UseTag | ImportKind::UseConstant => {
-                merge_spec_symbols(&spec.module, &spec.symbols, &mut map);
-            }
-            ImportKind::Require
-            | ImportKind::RequireThenImport
-            | ImportKind::DynamicRequire
-            | ImportKind::ManualImport => {}
-        }
-    }
+    collect(ast, &mut map);
     map
-}
-
-fn merge_spec_symbols(module: &str, symbols: &ImportSymbols, map: &mut ImportMap) {
-    match symbols {
-        ImportSymbols::None => {
-            map.entry(module.to_string()).or_default();
-        }
-        ImportSymbols::Default | ImportSymbols::Dynamic => (),
-        ImportSymbols::Explicit(explicit) => {
-            if explicit.is_empty() {
-                map.entry(module.to_string()).or_default();
-            } else {
-                map.entry(module.to_string()).or_default().extend(explicit.iter().cloned());
-            }
-        }
-        ImportSymbols::Tags(tags) => {
-            apply_tag_and_name_symbols(module, tags, &[], map);
-        }
-        ImportSymbols::Mixed { tags, names: explicit } => {
-            apply_tag_and_name_symbols(module, tags, explicit, map);
-        }
-    }
-}
-
-fn apply_tag_and_name_symbols(
-    module: &str,
-    tags: &[String],
-    explicit: &[String],
-    map: &mut ImportMap,
-) {
-    let mut names: HashSet<String> = explicit.iter().cloned().collect();
-    let mut has_unresolved_tag = false;
-    extend_resolved_tag_symbols(module, tags, &mut names, &mut has_unresolved_tag);
-    let has_symbol_args = !tags.is_empty() || !explicit.is_empty();
-    if has_symbol_args && has_unresolved_tag && names.is_empty() {
-        return;
-    }
-    if has_symbol_args {
-        map.entry(module.to_string()).or_default().extend(names);
-    } else {
-        map.entry(module.to_string()).or_default();
-    }
-}
-
-fn extend_resolved_tag_symbols(
-    module: &str,
-    tags: &[String],
-    names: &mut HashSet<String>,
-    has_unresolved_tag: &mut bool,
-) {
-    for tag in tags {
-        let tag_token = if tag.starts_with(':') { tag.clone() } else { format!(":{tag}") };
-        if let Some(expanded) = resolve_known_export_tag(module, &tag_token) {
-            names.extend(expanded.iter().map(|name| (*name).to_string()));
-        } else {
-            *has_unresolved_tag = true;
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,12 +38,9 @@ pub(super) fn extract_runtime_import_authority(ast: &Node) -> Vec<RuntimeImportA
 
 fn collect_runtime_import_authority(
     node: &Node,
-    specs: &[ImportSpec],
+    specs: &[perl_semantic_facts::ImportSpec],
     authorities: &mut Vec<RuntimeImportAuthority>,
 ) {
-    use perl_parser_core::ast::NodeKind;
-    use perl_semantic_facts::ImportKind;
-
     let statements: &[Node] = match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => statements,
         NodeKind::Package { block: Some(block), .. } => match &block.kind {
@@ -169,11 +84,64 @@ fn collect_runtime_import_authority(
 }
 
 fn unwrap_expression_statement(node: &Node) -> &Node {
-    use perl_parser_core::ast::NodeKind;
     match &node.kind {
         NodeKind::ExpressionStatement { expression } => expression,
         _ => node,
     }
+}
+
+fn collect(node: &Node, map: &mut ImportMap) {
+    match &node.kind {
+        NodeKind::Use { module, args, .. } => collect_use_import(module, args, map),
+        NodeKind::Program { statements } | NodeKind::Block { statements } => {
+            for stmt in statements {
+                collect(stmt, map);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
+    if !is_importable_module(module) || args.is_empty() {
+        return;
+    }
+
+    let mut symbols: HashSet<String> = HashSet::new();
+    let mut has_symbol_args = false;
+    let mut has_unresolved_tag = false;
+
+    // `collect_import_symbols` skips a bare brace token but not the body
+    // between them, so configuration hashes are removed here instead.
+    for arg in arguments_outside_configuration_hashes(args) {
+        if !is_symbol_arg_candidate(arg) {
+            continue;
+        }
+        // The second tuple element signals an unresolvable export tag.  We used
+        // to bail out on any unresolved tag, silently discarding all symbols
+        // collected so far (#1700).  Now we treat it as a partial miss: the
+        // tag-expanded symbols are lost, but explicit symbol names survive.  If
+        // the import only contains unknown tags, leave the module unfiltered.
+        let (has_symbols_in_arg, unresolved_tag) =
+            collect_import_symbols(module, arg, &mut symbols);
+        has_symbol_args |= has_symbols_in_arg;
+        has_unresolved_tag |= unresolved_tag;
+    }
+
+    if has_symbol_args && has_unresolved_tag && symbols.is_empty() {
+        return;
+    }
+
+    if has_symbol_args {
+        map.entry(module.to_string()).or_default().extend(symbols);
+    } else {
+        map.entry(module.to_string()).or_default();
+    }
+}
+
+fn is_symbol_arg_candidate(arg: &str) -> bool {
+    let first_byte = arg.as_bytes().first().copied().unwrap_or(0);
+    !first_byte.is_ascii_digit() && !arg.starts_with('-')
 }
 
 pub(super) use used_modules::collect_used_module_names;
@@ -186,12 +154,16 @@ mod tests {
 
     /// Regression test for #1700: an unresolvable export tag must not silently
     /// discard the explicit symbols collected alongside it.
+    ///
+    /// Before the fix, `collect_use_import` returned early on `has_unresolved_tag`,
+    /// leaving `Module::Thing` with no entry in the ImportMap even though `known_sub`
+    /// had already been added to `symbols`.
     #[test]
     fn unresolved_export_tag_keeps_explicit_symbols() {
         let code = "use Module::Thing qw(:unknown_tag known_sub);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, Some(code));
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Module::Thing"));
         assert!(
@@ -206,7 +178,7 @@ mod tests {
         let code = "use Foo::Bar qw(alpha beta);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, Some(code));
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Foo::Bar"));
         assert!(symbols.contains("alpha"), "alpha must be present; got: {symbols:?}");
@@ -221,7 +193,7 @@ mod tests {
         let code = "use Another::Module 'param1', 'param2', {key => 'value'};\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, Some(code));
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Another::Module"));
         assert!(symbols.contains("param1"), "param1 is requested; got: {symbols:?}");
@@ -238,10 +210,12 @@ mod tests {
         let code = "use Module foo => { -as => 'bar' };\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, Some(code));
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Module"));
         assert!(symbols.contains("bar"), "the installed name must survive; got: {symbols:?}");
+        // The filter gates completion, so a leak here offers a symbol the module
+        // never installed: `as` names nothing, and `foo` was renamed away.
         assert!(!symbols.contains("as"), "an option keyword is not a symbol; got: {symbols:?}");
         assert!(!symbols.contains("foo"), "a renamed name is not installed; got: {symbols:?}");
     }
@@ -254,7 +228,7 @@ mod tests {
         let code = "use Test2::V0 ok => { -postfix => '_ok' };\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, Some(code));
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Test2::V0"));
         assert!(!symbols.contains("_ok"), "a fragment is not a symbol; got: {symbols:?}");
@@ -269,7 +243,7 @@ mod tests {
         let code = "use Module 'foo', { -config => 'value' };\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, Some(code));
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Module"));
         assert!(symbols.contains("foo"), "the requested name survives; got: {symbols:?}");
@@ -282,7 +256,7 @@ mod tests {
         let code = "use Sub::Exporter -setup => { exports => [qw(foo bar)] };\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, Some(code));
+        let map = extract_import_map(&ast);
 
         if let Some(symbols) = map.get("Sub::Exporter") {
             for leaked in ["exports", "foo", "bar"] {
@@ -299,7 +273,7 @@ mod tests {
         let code = "use strict qw(vars refs);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, None);
+        let map = extract_import_map(&ast);
 
         assert!(
             !map.contains_key("strict"),
@@ -312,7 +286,7 @@ mod tests {
         let code = "use Module::Thing;\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, None);
+        let map = extract_import_map(&ast);
 
         assert!(
             !map.contains_key("Module::Thing"),
@@ -325,7 +299,7 @@ mod tests {
         let code = "use Module::Thing qw(:unknown_tag);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, None);
+        let map = extract_import_map(&ast);
 
         assert!(
             !map.contains_key("Module::Thing"),
@@ -338,7 +312,7 @@ mod tests {
         let code = "use Module::Thing qw();\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, None);
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Module::Thing"));
         assert!(
@@ -352,7 +326,7 @@ mod tests {
         let code = "use Foo qw(bar);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, None);
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Foo"));
         assert_eq!(symbols, &HashSet::from(["bar".to_string()]));
@@ -363,7 +337,7 @@ mod tests {
         let code = "require Foo; Foo->import(qw(bar));\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, None);
+        let map = extract_import_map(&ast);
 
         assert!(
             !map.contains_key("Foo"),
@@ -400,33 +374,11 @@ mod tests {
         let code = "use My::Util qw(:nonexistent_tag foo bar baz);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map_with_source(&ast, None);
+        let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("My::Util"));
         assert!(symbols.contains("foo"), "foo must survive; got: {symbols:?}");
         assert!(symbols.contains("bar"), "bar must survive; got: {symbols:?}");
         assert!(symbols.contains("baz"), "baz must survive; got: {symbols:?}");
-    }
-
-    #[test]
-    fn recurrence_guard_rejects_completion_local_use_arg_classifier() {
-        let src = include_str!("import_map.rs");
-        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
-        assert!(
-            !production.contains("fn collect_use_import("),
-            "completion must not keep a provider-local use argument classifier"
-        );
-        assert!(
-            !production.contains("arguments_outside_configuration_hashes"),
-            "completion must not reparse flattened directive arguments for import semantics"
-        );
-        assert!(
-            production.contains("extract_import_specs_from_hir"),
-            "completion import map must consume canonical HIR import facts"
-        );
-        assert!(
-            production.contains("lower_ast"),
-            "import map must route through the HIR compile-environment projection"
-        );
     }
 }

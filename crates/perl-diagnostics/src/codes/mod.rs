@@ -144,8 +144,6 @@ define_diagnostic_codes! {
     MissingPodCoverage => "PL304",
     /// Package-qualified call to a sub not defined in the target (in-file) package (#3014)
     UnresolvedQualifiedCall => "PL305",
-    /// Method call whose name is not in the inferred receiver's known method table (#18771)
-    UnresolvedMethodCall => "PL306",
 
     // Best practices (PL400-PL499)
     /// Bareword filehandle usage
@@ -170,10 +168,6 @@ define_diagnostic_codes! {
     GotoUndefinedLabel => "PL409",
     /// `next`/`last`/`redo LABEL` references a label that does not exist in this file
     LoopControlUndefinedLabel => "PL410",
-    /// `wantarray()` conditional whose branches perform no local work
-    IrrelevantWantarrayBranch => "PL411",
-    /// Line-initial `=cut` with no preceding POD opener; the parser treats the rest as POD (#18771)
-    StrayPodCut => "PL412",
 
     // Pragma pitfalls / deprecated syntax (PL500-PL599)
     /// Use of deprecated defined(@array) / defined(%hash)

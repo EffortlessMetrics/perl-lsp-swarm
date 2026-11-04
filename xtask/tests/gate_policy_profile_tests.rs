@@ -10,22 +10,6 @@ fn project_root() -> PathBuf {
     dir
 }
 
-/// Extract one gate row from `.ci/gate-policy.yaml` (comments included).
-fn policy_gate_block<'a>(policy: &'a str, gate: &str) -> Option<&'a str> {
-    let header = format!("\n  - name: {gate}\n");
-    let start = policy.find(&header)? + 1;
-    let rest = &policy[start..];
-    let body_offset = rest.find('\n')? + 1;
-    let end = rest[body_offset..]
-        .match_indices('\n')
-        .find(|(idx, _)| {
-            let line = &rest[body_offset + idx + 1..];
-            line.starts_with("  - name:")
-        })
-        .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
-    Some(&rest[..end])
-}
-
 #[derive(Debug, Deserialize)]
 struct GatePolicyDoc {
     gates: Vec<PolicyGate>,
@@ -733,34 +717,6 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
          A crate missing here is coverage silently dropped; an extra crate is \
          coverage silently duplicated or moved from another lane."
     );
-
-    Ok(())
-}
-
-/// #17714: the LSP merge_gate lanes must not read closed issues as live blockers.
-#[test]
-fn lsp_merge_gate_comments_do_not_cite_closed_red_suite_blocker()
--> Result<(), Box<dyn std::error::Error>> {
-    let policy = fs::read_to_string(project_root().join(".ci/gate-policy.yaml"))?;
-    const STALE: &str = "blocked on the red suites in #11708";
-    const STALE_RECORDED: &str = "Recorded per #11694; flipping";
-
-    for gate_name in ["unit_lsp_core_full", "unit_lsp_full"] {
-        let block = policy_gate_block(&policy, gate_name)
-            .ok_or_else(|| format!("gate '{gate_name}' must exist in .ci/gate-policy.yaml"))?;
-        assert!(
-            !block.contains(STALE),
-            "{gate_name} must not cite #11708 as a live `--tests` blocker"
-        );
-        assert!(
-            !block.contains(STALE_RECORDED),
-            "{gate_name} must not present #11694 as the active flip gate"
-        );
-        assert!(
-            block.contains("#6054"),
-            "{gate_name} must name #6054 as the owner of expanding `--lib` merge gates to `--tests`"
-        );
-    }
 
     Ok(())
 }

@@ -64,10 +64,7 @@ fn given_undeclared_variable_when_opened_then_strict_diagnostic_is_published() -
 
     harness.open_file("live_edit.pl", UNDECLARED_SOURCE)?;
 
-    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
-        &format!("diagnostics for {}", "live_edit.pl"),
-        harness.wait_for_diagnostics("live_edit.pl", Duration::from_secs(6)),
-    )?;
+    let diagnostics = harness.wait_for_diagnostics("live_edit.pl", Duration::from_secs(6));
     assert!(
         has_global_symbol_diagnostic(&diagnostics, "$name"),
         "expected strict diagnostics for undeclared $name, got: {:?}",
@@ -104,10 +101,7 @@ fn given_live_edit_when_variable_is_declared_then_navigation_stays_transport_res
 
             harness.open_file("live_edit.pl", UNDECLARED_SOURCE)?;
 
-            let before = perl_lsp_ux_tests::wait_with_subject(
-                &format!("diagnostics for {}", "live_edit.pl"),
-                harness.wait_for_diagnostics("live_edit.pl", Duration::from_secs(6)),
-            )?;
+            let before = harness.wait_for_diagnostics("live_edit.pl", Duration::from_secs(6));
             recorder.check(
                 "precondition: undeclared symbol diagnostic before edit",
                 has_global_symbol_diagnostic(&before, "$name"),
@@ -122,7 +116,7 @@ fn given_live_edit_when_variable_is_declared_then_navigation_stays_transport_res
                     diagnostics_seen_before_edit,
                     Duration::from_secs(6),
                 )
-                .context("expected diagnostics after declaring $name in live_edit.pl")?;
+                .context("expected diagnostics after declaring $name")?;
             recorder.check(
                 "declared $name diagnostic clears after edit",
                 !has_global_symbol_diagnostic(&post_edit_diagnostics, "$name"),

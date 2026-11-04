@@ -91,7 +91,7 @@ impl EnvironmentInputAuthority {
         }
     }
 
-    pub(crate) const fn identity_tag(self) -> &'static str {
+    const fn identity_tag(self) -> &'static str {
         match self {
             Self::UserConfiguration => "user_configuration",
             Self::TrustedProjectConfiguration => "trusted_project_configuration",

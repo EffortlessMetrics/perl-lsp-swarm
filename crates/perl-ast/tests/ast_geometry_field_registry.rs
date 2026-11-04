@@ -350,17 +350,8 @@ const GEOMETRY_TYPES: &[&str] = &["SourceLocation", "Token"];
 /// `TokenKind` is here deliberately: it is a bare discriminant, unlike `Token`.
 /// `Node` is here because child locations belong to structural traversal, not
 /// to this registry.
-const NEUTRAL_TYPES: &[&str] = &[
-    "Box",
-    "GotoTargetForm",
-    "Node",
-    "Option",
-    "RegexSurfaceForm",
-    "String",
-    "TokenKind",
-    "Vec",
-    "bool",
-];
+const NEUTRAL_TYPES: &[&str] =
+    &["Box", "GotoTargetForm", "Node", "Option", "String", "TokenKind", "Vec", "bool"];
 
 /// Classify every type identifier in one field's declared type.
 ///

@@ -1,5 +1,3 @@
-#![deny(clippy::map_err_ignore)]
-// Cohort C1 activation (#12598): census-clean on all targets; new findings move the crate back to non-C1.
 //! Integration tests for the tree-sitter-compat adapter.
 
 use perl_parser_core::{ParseError, Parser};

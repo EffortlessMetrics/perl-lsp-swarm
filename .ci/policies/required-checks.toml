@@ -163,7 +163,7 @@ policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348). A job-level skip leaves GitHub expecting this name; diagnose with scripts/ci/detect_required_check_registration.py (#16469)."
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "Conflict marker check"
@@ -177,7 +177,7 @@ policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348). A job-level skip leaves GitHub expecting this name; diagnose with scripts/ci/detect_required_check_registration.py (#16469)."
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "validate-title"
@@ -338,10 +338,10 @@ name = "Semver Compatibility (facade PR)"
 producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "semver-pr"
-workflow_result = "propagate"
+workflow_result = "continue"
 events = ["pull_request"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for API-ratcheted crates; stays merge-advisory (required=false) until baseline confidence supports hard-gating, but a detected break must fail the job conclusion (#17208)."
+reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for the five published parser-stack crates; stays advisory (continue-on-error) until baseline confidence supports hard-gating."

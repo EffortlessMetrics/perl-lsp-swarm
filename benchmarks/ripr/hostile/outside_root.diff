@@ -1,4 +1,0 @@
-+++ b/other-root/Evil.pm
-@@ -1,1 +1,2 @@
- package Evil;
-+sub gone { 1 }

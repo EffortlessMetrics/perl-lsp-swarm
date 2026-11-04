@@ -36,7 +36,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use syn::visit::Visit;
-use syn::{ForeignItem, Item, Type, Visibility as SynVisibility};
+use syn::{Item, Type, Visibility as SynVisibility};
 
 /// Hand-authored disposition ledger. Humans own this file.
 pub const LEDGER_PATH: &str = "policy/tree-sitter-compat-inventory.toml";
@@ -257,8 +257,6 @@ pub enum ReferenceKind {
     Policy,
     /// Repository automation that operates on the package by name.
     Tooling,
-    /// Test code naming the package as synthetic data without consuming it.
-    TestFixture,
 }
 
 impl ReferenceKind {
@@ -273,7 +271,6 @@ impl ReferenceKind {
             Self::Documentation => "documentation",
             Self::Policy => "policy",
             Self::Tooling => "tooling",
-            Self::TestFixture => "test_fixture",
         }
     }
 }
@@ -810,46 +807,6 @@ fn syn_item_declaration(item: &Item) -> Option<(String, SymbolKind, Visibility)>
     syn_visibility(visibility).map(|visibility| (name.to_string(), kind, visibility))
 }
 
-fn syn_foreign_item_declaration(
-    item: &ForeignItem,
-    source_path: &Path,
-) -> Result<Option<(String, SymbolKind, Visibility)>> {
-    match item {
-        ForeignItem::Fn(item) => {
-            let Some(visibility) = syn_visibility(&item.vis) else {
-                return Ok(None);
-            };
-            Ok(Some((item.sig.ident.to_string(), SymbolKind::Function, visibility)))
-        }
-        ForeignItem::Static(item) => {
-            let Some(visibility) = syn_visibility(&item.vis) else {
-                return Ok(None);
-            };
-            Ok(Some((item.ident.to_string(), SymbolKind::Static, visibility)))
-        }
-        ForeignItem::Type(item) => {
-            bail!(
-                "cannot inventory foreign type `{}` in {}: foreign type aliases are not classifiable",
-                item.ident,
-                source_path.display()
-            );
-        }
-        ForeignItem::Macro(item) => {
-            let name = ItemMacroDetector::macro_path_segments(&item.mac.path);
-            bail!(
-                "cannot inventory macro-generated items in {}: foreign item macro `{name}` requires expansion",
-                source_path.display()
-            );
-        }
-        _ => {
-            bail!(
-                "cannot inventory unclassified foreign item in {}: replace it with a classifiable `pub fn` or `pub static` declaration",
-                source_path.display()
-            );
-        }
-    }
-}
-
 fn inherent_impl_name(item: &syn::ItemImpl) -> Option<String> {
     if item.trait_.is_some() {
         return None;
@@ -947,31 +904,6 @@ fn discover_syn_item_list(
                 visibility,
                 reexported_at_root: visibility == Visibility::Public && reexported,
             });
-        }
-
-        if let Item::ForeignMod(foreign_mod) = item {
-            for foreign_item in &foreign_mod.items {
-                if let Some((name, kind, declared)) =
-                    syn_foreign_item_declaration(foreign_item, source_path)?
-                {
-                    let reexported = root_reexports
-                        .iter()
-                        .any(|(path, exported)| path == module && exported == &name);
-                    let visibility =
-                        if declared == Visibility::Public && (module_public || reexported) {
-                            Visibility::Public
-                        } else {
-                            Visibility::Internal
-                        };
-                    exports.push(Export {
-                        module: module.to_string(),
-                        name,
-                        kind,
-                        visibility,
-                        reexported_at_root: visibility == Visibility::Public && reexported,
-                    });
-                }
-            }
         }
 
         if let Item::Impl(item_impl) = item
@@ -2275,53 +2207,6 @@ mod tests {
         );
         let d = discovered(vec![export("parse_to_tree")], vec!["docs/x.md"]);
         validate(&l, &d)
-    }
-
-    #[test]
-    fn test_fixture_reference_kind_has_a_stable_wire_spelling() -> TestResult {
-        let kind: ReferenceKind = serde_json::from_str("\"test_fixture\"")?;
-        assert_eq!(kind, ReferenceKind::TestFixture);
-        assert_eq!(kind.as_str(), "test_fixture");
-        assert_eq!(serde_json::to_string(&kind)?, "\"test_fixture\"");
-        Ok(())
-    }
-
-    #[test]
-    fn unused_test_fixture_is_explained_without_a_migration_obligation() -> TestResult {
-        let path = "xtask/tests/activation_check.rs";
-        let mut row = consumer(path, ReferenceKind::TestFixture);
-        row.disposition = Disposition::Unused;
-        row.canonical_owner = None;
-        row.removal_condition = None;
-        row.note = "Synthetic authority path in a JSON fixture, not a crate consumer".to_string();
-        let l = ledger(vec![], vec![row]);
-        let d = discovered(vec![], vec![path]);
-        validate(&l, &d)?;
-        assert!(
-            render_markdown(&l, &d).contains(
-                "| `xtask/tests/activation_check.rs` | `test_fixture` | `unused` | — | — |"
-            )
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn an_unexplained_test_fixture_still_blocks_the_inventory() {
-        let l = ledger(vec![], vec![]);
-        let d = discovered(vec![], vec!["xtask/tests/activation_check.rs"]);
-        let err = validate_err(&l, &d, "fixture data must have an explicit ledger row");
-        assert!(err.contains("an unexplained reference blocks the inventory"), "{err}");
-    }
-
-    #[test]
-    fn a_cargo_dependency_cannot_be_hidden_as_test_fixture_data() {
-        let path = "crates/other/Cargo.toml";
-        let l = ledger(vec![], vec![consumer(path, ReferenceKind::TestFixture)]);
-        let mut d = discovered(vec![], vec![path]);
-        d.cargo_dependents =
-            vec![CargoDependent { manifest: path.to_string(), kind: "normal".to_string() }];
-        let err = validate_err(&l, &d, "real link-time consumers cannot be fixture data");
-        assert!(err.contains("must be recorded as `cargo_dependency`"), "{err}");
     }
 
     /// A Cargo dependency with no text reference anywhere is exactly the case
@@ -3646,40 +3531,6 @@ impl<T> Wrapper<T> {
             "the sibling decoy must not be picked up as the inline child: {exports:?}"
         );
         Ok(())
-    }
-
-    #[test]
-    fn syn_walk_discovers_public_foreign_functions_and_statics() -> TestResult {
-        let exports = syn_exports(
-            "extern \"C\" {\n    pub fn foreign_fn();\n    pub static FOREIGN_STATE: i32;\n    fn private_fn();\n    static PRIVATE_STATE: i32;\n}\n",
-        )?;
-        assert!(
-            exports.iter().any(|e| e.name == "foreign_fn"
-                && e.kind == SymbolKind::Function
-                && e.visibility == Visibility::Public),
-            "exports: {exports:?}"
-        );
-        assert!(
-            exports.iter().any(|e| e.name == "FOREIGN_STATE"
-                && e.kind == SymbolKind::Static
-                && e.visibility == Visibility::Public),
-            "exports: {exports:?}"
-        );
-        assert!(
-            !exports.iter().any(|e| e.name == "private_fn" || e.name == "PRIVATE_STATE"),
-            "private foreign items must be ignored: {exports:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn syn_walk_refuses_unclassifiable_foreign_items_fail_closed() {
-        let error = syn_exports_err(
-            "extern \"C\" {\n    pub type ForeignAlias;\n}\n",
-            "foreign type alias must fail closed",
-        );
-        assert!(error.contains("foreign type"), "unexpected error: {error}");
-        assert!(error.contains("ForeignAlias"), "unexpected error: {error}");
     }
 
     #[test]

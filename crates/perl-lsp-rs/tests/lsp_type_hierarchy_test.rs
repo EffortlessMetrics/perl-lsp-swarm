@@ -1,15 +1,32 @@
-mod support;
-
+use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;
-use support::lsp_harness::LspHarness;
-
-type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Test Type Hierarchy support (LSP 3.17)
 #[test]
-fn test_type_hierarchy_prepare() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize_with_root("file:///test", Some(json!({})))?;
+
+fn test_type_hierarchy_prepare() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+
+    // Initialize server
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {}
+        })),
+    };
+    let _ = server.handle_request(init_request);
+
+    // Send initialized notification (required by LSP protocol)
+    let initialized = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    let _ = server.handle_request(initialized);
 
     // Open a document with class hierarchy
     let uri = "file:///test.pl";
@@ -27,17 +44,38 @@ sub new {
 }
 "#;
 
-    harness.open(uri, content)?;
+    // Send didOpen notification
+    let did_open_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": content
+            }
+        })),
+    };
+    let _ = server.handle_request(did_open_request);
 
-    let items = harness.request(
-        "textDocument/prepareTypeHierarchy",
-        json!({
+    // Request type hierarchy at "Base" position (line 0, char 8)
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/prepareTypeHierarchy".into(),
+        params: Some(json!({
             "textDocument": { "uri": uri },
             "position": { "line": 0, "character": 8 }
-        }),
-    )?;
+        })),
+    };
 
-    let items = items.as_array().ok_or("Should return type hierarchy items")?;
+    let response = server.handle_request(request).ok_or("Failed to get response")?;
+    let result = response.result.as_ref().and_then(|r| r.as_array());
+
+    assert!(result.is_some(), "Should return type hierarchy items");
+    let items = result.ok_or("Failed to get items array")?;
     assert!(!items.is_empty(), "Should have at least one item");
 
     let item = &items[0];
@@ -51,9 +89,30 @@ sub new {
 }
 
 #[test]
-fn test_type_hierarchy_supertypes() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize_with_root("file:///test", Some(json!({})))?;
+
+fn test_type_hierarchy_supertypes() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+
+    // Initialize server
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {}
+        })),
+    };
+    let _ = server.handle_request(init_request);
+
+    // Send initialized notification (required by LSP protocol)
+    let initialized = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    let _ = server.handle_request(initialized);
 
     // Open a document with inheritance
     let uri = "file:///test.pl";
@@ -65,22 +124,47 @@ package Parent1;
 package Parent2;
 "#;
 
-    harness.open(uri, content)?;
+    // Send didOpen notification
+    let did_open_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": content
+            }
+        })),
+    };
+    let _ = server.handle_request(did_open_request);
 
-    let items = harness.request(
-        "textDocument/prepareTypeHierarchy",
-        json!({
+    // First prepare type hierarchy on Child
+    let prepare_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/prepareTypeHierarchy".into(),
+        params: Some(json!({
             "textDocument": { "uri": uri },
             "position": { "line": 0, "character": 8 }
-        }),
-    )?;
+        })),
+    };
 
-    let items = items.as_array().ok_or("Result is not an array")?;
+    let prepare_response =
+        server.handle_request(prepare_request).ok_or("Failed to get prepare response")?;
+    let result_value =
+        prepare_response.result.ok_or("Failed to get result from prepare response")?;
+    let items_array = result_value.as_array().ok_or("Result is not an array")?;
+    let items = items_array.clone();
     let child_item = &items[0];
 
-    let supertypes = harness.request(
-        "typeHierarchy/supertypes",
-        json!({
+    // Request supertypes
+    let supertypes_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+        method: "typeHierarchy/supertypes".into(),
+        params: Some(json!({
             "item": {
                 "name": child_item["name"],
                 "kind": child_item["kind"],
@@ -92,10 +176,15 @@ package Parent2;
                     "name": "Child"
                 }
             }
-        }),
-    )?;
+        })),
+    };
 
-    let supertypes = supertypes.as_array().ok_or("Failed to get supertypes array")?;
+    let response =
+        server.handle_request(supertypes_request).ok_or("Failed to get supertypes response")?;
+    let result = response.result.as_ref().and_then(|r| r.as_array());
+
+    assert!(result.is_some(), "Should return supertypes");
+    let supertypes = result.ok_or("Failed to get supertypes array")?;
 
     // Should find Parent1 and Parent2
     let names: Vec<String> =
@@ -108,9 +197,30 @@ package Parent2;
 }
 
 #[test]
-fn test_type_hierarchy_subtypes() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize_with_root("file:///test", Some(json!({})))?;
+
+fn test_type_hierarchy_subtypes() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+
+    // Initialize server
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {}
+        })),
+    };
+    let _ = server.handle_request(init_request);
+
+    // Send initialized notification (required by LSP protocol)
+    let initialized = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    let _ = server.handle_request(initialized);
 
     // Open a document with derived classes
     let uri = "file:///test.pl";
@@ -123,22 +233,47 @@ package Derived2;
 our @ISA = ('Base');
 "#;
 
-    harness.open(uri, content)?;
+    // Send didOpen notification
+    let did_open_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": content
+            }
+        })),
+    };
+    let _ = server.handle_request(did_open_request);
 
-    let items = harness.request(
-        "textDocument/prepareTypeHierarchy",
-        json!({
+    // First prepare type hierarchy on Base
+    let prepare_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/prepareTypeHierarchy".into(),
+        params: Some(json!({
             "textDocument": { "uri": uri },
             "position": { "line": 0, "character": 8 }
-        }),
-    )?;
+        })),
+    };
 
-    let items = items.as_array().ok_or("Result is not an array")?;
+    let prepare_response =
+        server.handle_request(prepare_request).ok_or("Failed to get prepare response")?;
+    let result_value =
+        prepare_response.result.ok_or("Failed to get result from prepare response")?;
+    let items_array = result_value.as_array().ok_or("Result is not an array")?;
+    let items = items_array.clone();
     let base_item = &items[0];
 
-    let subtypes = harness.request(
-        "typeHierarchy/subtypes",
-        json!({
+    // Request subtypes
+    let subtypes_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
+        method: "typeHierarchy/subtypes".into(),
+        params: Some(json!({
             "item": {
                 "name": base_item["name"],
                 "kind": base_item["kind"],
@@ -150,10 +285,15 @@ our @ISA = ('Base');
                     "name": "Base"
                 }
             }
-        }),
-    )?;
+        })),
+    };
 
-    let subtypes = subtypes.as_array().ok_or("Failed to get subtypes array")?;
+    let response =
+        server.handle_request(subtypes_request).ok_or("Failed to get subtypes response")?;
+    let result = response.result.as_ref().and_then(|r| r.as_array());
+
+    assert!(result.is_some(), "Should return subtypes");
+    let subtypes = result.ok_or("Failed to get subtypes array")?;
 
     // Should find Derived1 and Derived2
     let names: Vec<String> =
@@ -166,11 +306,23 @@ our @ISA = ('Base');
 }
 
 #[test]
-fn test_type_hierarchy_capability_advertised() -> TestResult {
-    let mut harness = LspHarness::new();
-    let init = harness.initialize_with_root("file:///test", Some(json!({})))?;
 
-    let caps = init.get("capabilities").ok_or("Failed to get capabilities from init response")?;
+fn test_type_hierarchy_capability_advertised() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {}
+        })),
+    };
+
+    let response = server.handle_request(init_request).ok_or("Failed to get init response")?;
+    let result = response.result.ok_or("Failed to get result from init response")?;
+    let caps = &result["capabilities"];
 
     // Type hierarchy should be advertised in non-lock mode
     if !cfg!(feature = "lsp-ga-lock") {
@@ -187,9 +339,30 @@ fn test_type_hierarchy_capability_advertised() -> TestResult {
 }
 
 #[test]
-fn test_type_hierarchy_with_namespace_packages() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize_with_root("file:///test", Some(json!({})))?;
+
+fn test_type_hierarchy_with_namespace_packages() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+
+    // Initialize server
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {}
+        })),
+    };
+    let _ = server.handle_request(init_request);
+
+    // Send initialized notification (required by LSP protocol)
+    let initialized = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    let _ = server.handle_request(initialized);
 
     // Test with Foo::Bar -> Foo hierarchy
     let uri = "file:///test.pl";
@@ -200,17 +373,38 @@ package Foo::Bar;
 package Foo::Bar::Baz;
 "#;
 
-    harness.open(uri, content)?;
+    // Send didOpen notification
+    let did_open_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": content
+            }
+        })),
+    };
+    let _ = server.handle_request(did_open_request);
 
-    let items = harness.request(
-        "textDocument/prepareTypeHierarchy",
-        json!({
+    // Request type hierarchy at "Foo::Bar"
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/prepareTypeHierarchy".into(),
+        params: Some(json!({
             "textDocument": { "uri": uri },
             "position": { "line": 2, "character": 12 }
-        }),
-    )?;
+        })),
+    };
 
-    let items = items.as_array().ok_or("Failed to get items array")?;
+    let response = server.handle_request(request).ok_or("Failed to get response")?;
+    let result = response.result.as_ref().and_then(|r| r.as_array());
+
+    assert!(result.is_some(), "Should return type hierarchy items");
+    let items = result.ok_or("Failed to get items array")?;
     assert!(!items.is_empty());
 
     let item = &items[0];

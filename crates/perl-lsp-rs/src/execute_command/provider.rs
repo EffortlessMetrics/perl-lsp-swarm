@@ -84,11 +84,9 @@ pub struct ExecuteCommandProvider {
     workspace_config: Option<WorkspaceConfig>,
     /// Configured critic engine for `perl.runCritic`.
     ///
-    /// Defaults to [`CriticEngine::Native`]. [`CriticEngine::Legacy`] is still
-    /// stored so the public command can refuse retired external aliases before
-    /// any PATH lookup (#18377). Merely having `perlcritic` on `PATH` must not
-    /// change the default. The deprecated [`Self::run_critic`] wrapper retains
-    /// the #16550 spawn/fallback contract.
+    /// Defaults to [`CriticEngine::Native`]. The external (legacy `perlcritic`)
+    /// analyzer runs only when this is [`CriticEngine::Legacy`] — merely having
+    /// `perlcritic` on `PATH` must not change the default behavior.
     critic_engine: CriticEngine,
     /// Native critic rule configuration for `perl.runCritic` when the engine is
     /// [`CriticEngine::Native`]. Mirrors the `ServerConfig` values the editor's
@@ -260,10 +258,9 @@ impl ExecuteCommandProvider {
 
     /// Set the critic engine used by `perl.runCritic`.
     ///
-    /// Defaults to [`CriticEngine::Native`]. [`CriticEngine::Legacy`] is still
-    /// accepted so the public command can refuse retired external aliases
-    /// before any PATH lookup (#18377). The deprecated [`Self::run_critic`]
-    /// wrapper retains the #16550 spawn/fallback contract.
+    /// Defaults to [`CriticEngine::Native`]. Pass [`CriticEngine::Legacy`] to
+    /// route `perl.runCritic` through the external `perlcritic` analyzer when it
+    /// is available on `PATH`.
     pub fn with_critic_engine(mut self, engine: CriticEngine) -> Self {
         self.critic_engine = engine;
         self
@@ -387,16 +384,19 @@ impl ExecuteCommandProvider {
         }
 
         let mut explanation = default_provider_decision_explanation(request.provider);
-        // Capture only the defaults. Request evidence stays outside the policy
-        // heading; receipt and scenario identity stay in the structured response.
+        // Capture only the defaults. Caller context and request details belong
+        // outside the policy heading, even though the shared formatter supports both.
         let policy_summary = format_provider_decision_explanation(&explanation);
+        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
             validate_explanation_echo(&receipt_id, "receipt_id")?;
+            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
             validate_explanation_echo(&scenario, "scenario")?;
+            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -430,8 +430,9 @@ impl ExecuteCommandProvider {
         } else {
             "No request evidence is attached.".to_string()
         };
-        let user_message =
-            format!("{request_evidence}\nProvider policy summary:\n{policy_summary}");
+        let user_message = format!(
+            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
+        );
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
@@ -786,18 +787,15 @@ impl ExecuteCommandProvider {
         };
 
         if self.external_critic_requested() {
-            // Public `perl.runCritic` must not consult PATH or spawn
-            // `perlcritic` under any legacy/external/perlcritic alias, and
-            // must not silently reinterpret that intent as native or
-            // BuiltInAnalyzer parity (#18377, #6969/#9072). Configuration
-            // migration is a separate obligation. This path intentionally
-            // diverges from deprecated `run_critic`, which still keeps the
-            // #16550 spawn/fallback contract.
-            return Err(concat!(
-                "External critic engines are retired for perl.runCritic; ",
-                "configure critic.engine = native to request native rules explicitly"
-            )
-            .to_string());
+            // Legacy engine: external `perlcritic` when present, else the
+            // `BuiltInAnalyzer` (Perl::Critic-compatible) fallback. Legacy
+            // behavior is unchanged.
+            if command_exists("perlcritic")
+                && let Ok(result) = self.run_external_critic(&canonical_path)
+            {
+                return Ok(result);
+            }
+            return self.run_builtin_critic(&canonical_path);
         }
 
         // Native engine (default): route through the native rule registry so the
@@ -811,8 +809,9 @@ impl ExecuteCommandProvider {
     ///
     /// The native analyzer is the default: merely having `perlcritic` present
     /// on `PATH` must not change the default behavior of `perl.runCritic`.
-    /// `CriticEngine::Legacy` is still detected here so the public command can
-    /// refuse it before any PATH lookup (#18377).
+    /// External critic runs only when `.perl-lsp.toml` / server config sets the
+    /// critic engine to `legacy`/`external`/`perlcritic`
+    /// ([`CriticEngine::Legacy`]).
     pub(crate) fn external_critic_requested(&self) -> bool {
         matches!(self.critic_engine, CriticEngine::Legacy)
     }
@@ -832,12 +831,10 @@ impl ExecuteCommandProvider {
         }
 
         if self.external_critic_requested() {
-            if command_exists("perlcritic") {
-                // Deprecated wrapper keeps the #16550 spawn/fallback contract
-                // that public `run_critic_secure` no longer has: a present-but-
-                // failing perlcritic surfaces its error instead of silently
-                // falling back to the builtin analyzer.
-                return self.run_external_critic(path);
+            if command_exists("perlcritic")
+                && let Ok(result) = self.run_external_critic(path)
+            {
+                return Ok(result);
             }
             return self.run_builtin_critic(path);
         }
@@ -929,7 +926,8 @@ impl ExecuteCommandProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(code_text, &ast, &critic_config);
-        let profile = NativeCriticProfile::parse(&cfg.profile).unwrap_or_default();
+        let profile =
+            NativeCriticProfile::parse_legacy(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
         let file = file_path.to_string_lossy();
 
@@ -1035,15 +1033,11 @@ impl ExecuteCommandProvider {
             })
             .collect();
 
-        // `builtin` (not `native`): this is the Perl::Critic-compatible
-        // fallback analyzer, a different rule set from the native registry.
-        // Labeling it `native` made the two engines indistinguishable to the
-        // client (#16550).
         Ok(json!({
             "status": "success",
             "violations": formatted_violations,
             "violationCount": formatted_violations.len(),
-            "analyzerUsed": "builtin"
+            "analyzerUsed": "native"
         }))
     }
 

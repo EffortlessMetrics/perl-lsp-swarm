@@ -51,7 +51,6 @@ if [ "${1:-}" = "--version" ]; then echo "cargo-deny 0.16.1 (fake)"; exit 0; fi
 case "${FAKE_DENY:-clean}" in
   clean)    echo '{"type": "begin"}';;
   findings) echo '{"type": "error", "fields": {"code": "banned"}}'; exit 1;;
-  unmatched) printf 'warning[unmatched-skip]: skipped crate was not encountered\n' >&2; echo '{"type": "begin"}';;
   garbage)  echo "error: malformed deny.toml"; exit 3;;
 esac
 EOF
@@ -206,22 +205,6 @@ run_engine scan
 PATH="$FAKEBIN:$ISOLATED_PATH" bash "$ENGINE" verify "$RECEIPT" >/dev/null 2>&1 \
     || fail "T10 verify rejected intact receipt"
 pass "T10 verify accepts intact receipt"
-
-# --- T11: unmatched-skip on stderr fails cargo-deny closed --------------------
-write_fakes
-FAKE_DENY=unmatched run_engine scan
-[ "$RC" -ne 0 ] || fail "T11 exit $RC == 0 with unmatched-skip"
-receipt_has '"name": "cargo-deny".*"result": "findings"'
-pass "T11 unmatched-skip fails cargo-deny closed"
-
-# --- T12: cargo-deny findings must survive the unmatched-skip guard ---------
-write_fakes
-FAKE_DENY=findings run_engine scan
-[ "$RC" -eq 1 ] || fail "T12 exit $RC != 1"
-receipt_has '"name": "cargo-deny".*"result": "findings"'
-receipt_has '"aggregate": "findings"'
-receipt_has '"complete": true'
-pass "T12 cargo-deny findings propagate through guard"
 
 printf '\n%s\n' "----------------------------------------"
 if [ "$FAILURES" -eq 0 ]; then

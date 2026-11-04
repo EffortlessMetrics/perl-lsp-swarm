@@ -328,7 +328,8 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .all(|d| d.critic_observation.is_some() == (d.code.as_deref() == Some("PL603"))),
+                .all(|d| matches!(d.critic_observation, Some(_))
+                    == (d.code.as_deref() == Some("PL603"))),
             "carriers keep their observations through the peek"
         );
 

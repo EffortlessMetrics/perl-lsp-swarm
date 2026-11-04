@@ -119,7 +119,6 @@ pub mod feature_catalog;
 // Wave H collapsed modules (in DAG order — command_args before platform, platform before shell, value before variables)
 /// Explicit public API re-exports from all collapsed satellite modules.
 pub mod api;
-mod bounded_subprocess;
 /// AST-based breakpoint validation (from perl-dap-breakpoint).
 pub mod breakpoint;
 /// Platform-aware shell argument formatting (from perl-dap-command-args).

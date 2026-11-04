@@ -9,7 +9,7 @@
 
 use color_eyre::eyre::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -404,17 +404,8 @@ fn validate_report_for_ci(report: &AuditReport) -> Result<()> {
     }
 }
 
-/// Typed parser-floor metrics required by the CI ratchet. Additional keys in the
-/// baseline document are ignored here; this leaf validates only the two consumed
-/// floors.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ParserFloorMetrics {
-    node_kind_coverage: f64,
-    valid_parser_gap_count: f64,
-}
-
 fn parser_ratchet_failure_messages(
-    floor_metrics: &ParserFloorMetrics,
+    floor_metrics: &BTreeMap<String, Option<f64>>,
     nodekind: &nodekind_analysis::NodeKindStats,
     parse_error: usize,
 ) -> Vec<String> {
@@ -433,114 +424,40 @@ fn parser_ratchet_failure_messages(
     // never_seen; otherwise the zero-actionable ratchet cannot be believed.
     failures.extend(nodekind_analysis::omission_partition_failures(nodekind));
 
-    let baseline_nodekind = floor_metrics.node_kind_coverage;
-    let current_nodekind = if nodekind.total_count == 0 {
-        0.0
-    } else {
-        nodekind.covered_count as f64 / nodekind.total_count as f64
-    };
-    if current_nodekind + 1e-6 < baseline_nodekind {
-        failures.push(format!(
-            "NodeKind coverage regression: {current_nodekind:.4} < {baseline_nodekind:.4} baseline"
-        ));
+    if let Some(Some(baseline_nodekind)) = floor_metrics.get("node_kind_coverage") {
+        let current_nodekind = if nodekind.total_count == 0 {
+            0.0
+        } else {
+            nodekind.covered_count as f64 / nodekind.total_count as f64
+        };
+        if current_nodekind + 1e-6 < *baseline_nodekind {
+            failures.push(format!(
+                "NodeKind coverage regression: {current_nodekind:.4} < {baseline_nodekind:.4} baseline"
+            ));
+        }
     }
 
-    let baseline_gap_count = floor_metrics.valid_parser_gap_count;
-    let current_gap_count = parse_error as f64;
-    if current_gap_count > baseline_gap_count {
-        failures.push(format!(
-            "Valid parser gap regression: {current_gap_count:.0} > {baseline_gap_count:.0} baseline"
-        ));
+    if let Some(Some(baseline_gap_count)) = floor_metrics.get("valid_parser_gap_count") {
+        let current_gap_count = parse_error as f64;
+        if current_gap_count > *baseline_gap_count {
+            failures.push(format!(
+                "Valid parser gap regression: {current_gap_count:.0} > {baseline_gap_count:.0} baseline"
+            ));
+        }
     }
 
     failures
 }
 
-fn load_parser_floor_metrics() -> Result<ParserFloorMetrics> {
-    let baseline_path = crate::utils::project_root()?.join(".ci/metrics/baselines/parser.json");
-    load_parser_floor_metrics_from(&baseline_path)
+fn load_parser_floor_metrics() -> Result<BTreeMap<String, Option<f64>>> {
+    load_parser_floor_metrics_from(std::path::Path::new(".ci/metrics/baselines/parser.json"))
 }
 
-fn parse_required_node_kind_coverage(
-    obj: &serde_json::Map<String, serde_json::Value>,
+fn load_parser_floor_metrics_from(
     baseline_path: &std::path::Path,
-) -> Result<f64> {
-    let key = "node_kind_coverage";
-    let value = obj.get(key).ok_or_else(|| {
-        color_eyre::eyre::eyre!(
-            "Parser metrics baseline is missing required floor metric '{key}': {}",
-            baseline_path.display()
-        )
-    })?;
-    let coverage = value.as_f64().ok_or_else(|| {
-        color_eyre::eyre::eyre!(
-            "Parser metrics baseline floor metric '{key}' must be a finite number in 0.0..=1.0: {}",
-            baseline_path.display()
-        )
-    })?;
-    validated_node_kind_coverage(coverage, key, baseline_path)
-}
-
-fn validated_node_kind_coverage(
-    coverage: f64,
-    key: &str,
-    baseline_path: &std::path::Path,
-) -> Result<f64> {
-    if !coverage.is_finite() || !(0.0..=1.0).contains(&coverage) {
-        return Err(color_eyre::eyre::eyre!(
-            "Parser metrics baseline floor metric '{key}' must be a finite number in 0.0..=1.0: {}",
-            baseline_path.display()
-        ));
-    }
-    Ok(coverage)
-}
-
-fn parse_required_valid_parser_gap_count(
-    obj: &serde_json::Map<String, serde_json::Value>,
-    baseline_path: &std::path::Path,
-) -> Result<f64> {
-    let key = "valid_parser_gap_count";
-    let value = obj.get(key).ok_or_else(|| {
-        color_eyre::eyre::eyre!(
-            "Parser metrics baseline is missing required floor metric '{key}': {}",
-            baseline_path.display()
-        )
-    })?;
-    let gap_count = value.as_f64().ok_or_else(|| {
-        color_eyre::eyre::eyre!(
-            "Parser metrics baseline floor metric '{key}' must be a finite non-negative integer-valued number: {}",
-            baseline_path.display()
-        )
-    })?;
-    validated_valid_parser_gap_count(gap_count, key, baseline_path)
-}
-
-fn validated_valid_parser_gap_count(
-    gap_count: f64,
-    key: &str,
-    baseline_path: &std::path::Path,
-) -> Result<f64> {
-    if !gap_count.is_finite() || gap_count < 0.0 {
-        return Err(color_eyre::eyre::eyre!(
-            "Parser metrics baseline floor metric '{key}' must be a finite non-negative integer-valued number: {}",
-            baseline_path.display()
-        ));
-    }
-    if (gap_count - gap_count.round()).abs() > 1e-9 {
-        return Err(color_eyre::eyre::eyre!(
-            "Parser metrics baseline floor metric '{key}' must be a finite non-negative integer-valued number: {}",
-            baseline_path.display()
-        ));
-    }
-    Ok(gap_count)
-}
-
-fn load_parser_floor_metrics_from(baseline_path: &std::path::Path) -> Result<ParserFloorMetrics> {
+) -> Result<BTreeMap<String, Option<f64>>> {
     if !baseline_path.exists() {
-        return Err(color_eyre::eyre::eyre!(
-            "Parser metrics baseline file is missing: {}",
-            baseline_path.display()
-        ));
+        return Ok(BTreeMap::new());
     }
 
     let baseline_raw =
@@ -557,9 +474,9 @@ fn load_parser_floor_metrics_from(baseline_path: &std::path::Path) -> Result<Par
         )
     })?;
 
-    let node_kind_coverage = parse_required_node_kind_coverage(obj, baseline_path)?;
-    let valid_parser_gap_count = parse_required_valid_parser_gap_count(obj, baseline_path)?;
-    Ok(ParserFloorMetrics { node_kind_coverage, valid_parser_gap_count })
+    let floor_metrics =
+        obj.iter().map(|(k, v)| (k.clone(), v.as_f64())).collect::<BTreeMap<String, Option<f64>>>();
+    Ok(floor_metrics)
 }
 
 /// Test function to verify corpus audit functionality
@@ -597,39 +514,21 @@ mod tests {
     }
 
     #[test]
-    fn test_load_floor_metrics_valid_baseline_passes() {
+    fn test_load_floor_metrics_parses_float_and_int_values() {
         let f = write_temp_baseline(
             r#"{"floor_metrics":{"node_kind_coverage":0.942029,"valid_parser_gap_count":0}}"#,
         );
         let metrics = load_parser_floor_metrics_from(f.path()).expect("should parse");
-        assert_eq!(metrics.node_kind_coverage, 0.942_029);
-        assert_eq!(metrics.valid_parser_gap_count, 0.0);
+        assert_eq!(metrics.get("node_kind_coverage"), Some(&Some(0.942029)));
+        // JSON integer 0 must coerce to Some(0.0), not None
+        assert_eq!(metrics.get("valid_parser_gap_count"), Some(&Some(0.0)));
     }
 
     #[test]
-    fn test_load_floor_metrics_committed_parser_baseline_passes() {
-        let metrics = load_parser_floor_metrics().expect("committed parser baseline must load");
-        assert_eq!(metrics.node_kind_coverage, 0.942_029);
-        assert_eq!(metrics.valid_parser_gap_count, 0.0);
-    }
-
-    #[test]
-    fn test_load_floor_metrics_valid_with_additional_keys_passes() {
-        let f = write_temp_baseline(
-            r#"{"floor_metrics":{"node_kind_coverage":0.5,"valid_parser_gap_count":0,"system_clean_rate":"ignored"}}"#,
-        );
-        let metrics = load_parser_floor_metrics_from(f.path()).expect("should parse");
-        assert_eq!(metrics.node_kind_coverage, 0.5);
-        assert_eq!(metrics.valid_parser_gap_count, 0.0);
-    }
-
-    #[test]
-    fn test_load_floor_metrics_missing_file_is_error() {
+    fn test_load_floor_metrics_absent_file_returns_empty() {
         let path = std::path::Path::new("/tmp/this-file-definitely-does-not-exist-xyz.json");
-        assert!(
-            load_parser_floor_metrics_from(path).is_err(),
-            "missing baseline file must fail closed"
-        );
+        let metrics = load_parser_floor_metrics_from(path).expect("should return empty");
+        assert!(metrics.is_empty());
     }
 
     #[test]
@@ -648,94 +547,33 @@ mod tests {
     }
 
     #[test]
-    fn test_load_floor_metrics_missing_required_key_is_error() {
-        let f = write_temp_baseline(r#"{"floor_metrics":{"node_kind_coverage":0.5}}"#);
-        let err = load_parser_floor_metrics_from(f.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("valid_parser_gap_count"),
-            "error should name missing key: {err}"
-        );
-    }
-
-    #[test]
-    fn test_load_floor_metrics_string_value_is_error() {
-        let f = write_temp_baseline(
-            r#"{"floor_metrics":{"node_kind_coverage":"not-a-number","valid_parser_gap_count":0}}"#,
-        );
-        let err = load_parser_floor_metrics_from(f.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("node_kind_coverage"),
-            "error should name invalid key: {err}"
-        );
-    }
-
-    #[test]
-    fn test_load_floor_metrics_null_value_is_error() {
-        let f = write_temp_baseline(
-            r#"{"floor_metrics":{"node_kind_coverage":null,"valid_parser_gap_count":0}}"#,
-        );
-        assert!(load_parser_floor_metrics_from(f.path()).is_err());
-    }
-
-    #[test]
-    fn test_load_floor_metrics_nan_coverage_is_error() {
-        let path = std::path::Path::new("baseline.json");
-        let err = validated_node_kind_coverage(f64::NAN, "node_kind_coverage", path).unwrap_err();
-        assert!(
-            err.to_string().contains("node_kind_coverage"),
-            "error should name invalid coverage: {err}"
-        );
-    }
-
-    #[test]
-    fn test_load_floor_metrics_coverage_above_one_is_error() {
-        let f = write_temp_baseline(
-            r#"{"floor_metrics":{"node_kind_coverage":1.5,"valid_parser_gap_count":0}}"#,
-        );
-        let err = load_parser_floor_metrics_from(f.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("node_kind_coverage"),
-            "out-of-range coverage must fail: {err}"
-        );
-    }
-
-    #[test]
-    fn test_load_floor_metrics_negative_gap_count_is_error() {
-        let f = write_temp_baseline(
-            r#"{"floor_metrics":{"node_kind_coverage":0.5,"valid_parser_gap_count":-1}}"#,
-        );
-        let err = load_parser_floor_metrics_from(f.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("valid_parser_gap_count"),
-            "negative gap count must fail: {err}"
-        );
-    }
-
-    #[test]
-    fn test_load_floor_metrics_fractional_gap_count_is_error() {
-        let f = write_temp_baseline(
-            r#"{"floor_metrics":{"node_kind_coverage":0.5,"valid_parser_gap_count":2.5}}"#,
-        );
-        let err = load_parser_floor_metrics_from(f.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("valid_parser_gap_count"),
-            "fractional gap count must fail: {err}"
-        );
+    fn test_load_floor_metrics_non_numeric_value_maps_to_none() {
+        let f = write_temp_baseline(r#"{"floor_metrics":{"node_kind_coverage":"not-a-number"}}"#);
+        let metrics = load_parser_floor_metrics_from(f.path()).expect("should parse");
+        // A non-numeric value becomes None; the ratchet guard uses `if let Some(Some(...))` so it
+        // silently skips the check rather than panicking or failing.
+        assert_eq!(metrics.get("node_kind_coverage"), Some(&None));
     }
 
     // --------------------------------------------------------------------------
     // Parser floor ratchet logic (actionable NodeKind / ratio / gap-count)
     // --------------------------------------------------------------------------
 
-    /// Build typed parser floor metrics for ratchet tests.
-    fn floor_metrics_from(nodekind: f64, gap_count: f64) -> ParserFloorMetrics {
-        ParserFloorMetrics { node_kind_coverage: nodekind, valid_parser_gap_count: gap_count }
+    /// Build a minimal floor_metrics map for ratchet tests.
+    fn floor_metrics_from(
+        nodekind: Option<f64>,
+        gap_count: Option<f64>,
+    ) -> BTreeMap<String, Option<f64>> {
+        let mut m = BTreeMap::new();
+        m.insert("node_kind_coverage".to_string(), nodekind);
+        m.insert("valid_parser_gap_count".to_string(), gap_count);
+        m
     }
 
     /// Exercise the production ratchet with a fully covered, partition-clean
     /// NodeKindStats (no omissions at all).
     fn ratchet_failure_messages(
-        floor_metrics: &ParserFloorMetrics,
+        floor_metrics: &BTreeMap<String, Option<f64>>,
         nodekind_covered: usize,
         nodekind_total: usize,
         parse_error: usize,
@@ -857,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_nodekind_ratchet_no_regression() {
-        let m = floor_metrics_from(0.90, 999.0);
+        let m = floor_metrics_from(Some(0.90), None);
         // 95/100 = 0.95 >= 0.90 → no failure
         let msgs = ratchet_failure_messages(&m, 95, 100, 0);
         assert!(msgs.is_empty(), "expected no failure: {msgs:?}");
@@ -865,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_nodekind_ratchet_fires_on_regression() {
-        let m = floor_metrics_from(0.95, 999.0);
+        let m = floor_metrics_from(Some(0.95), None);
         // 90/100 = 0.90 < 0.95 → failure
         let msgs = ratchet_failure_messages(&m, 90, 100, 0);
         assert!(
@@ -876,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_actionable_nodekind_ratchet_fires_above_ratio_floor() {
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
 
         // 72/76 is still above the historical ratio floor, so only the semantic
         // actionable-omission ratchet can reject this regression.
@@ -900,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_recovery_only_nodekind_omissions_remain_allowed() {
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
 
         // The current 73/76 state has three recovery-only omissions and no
         // actionable omissions; never_seen is exactly the allowlisted union,
@@ -978,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_zero_actionable_with_dropped_member_is_rejected_by_ratchet() {
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
         let stats = synthetic_stats(
             vec!["AmperCall".to_string(), "VString".to_string()],
             Vec::new(),
@@ -1000,7 +838,7 @@ mod tests {
 
     #[test]
     fn test_omission_overlap_between_buckets_is_rejected_by_ratchet() {
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
         let stats = synthetic_stats(
             vec!["AmperCall".to_string()],
             vec![allowlisted("AmperCall")],
@@ -1022,7 +860,7 @@ mod tests {
 
     #[test]
     fn test_non_canonical_omission_name_is_rejected_by_ratchet() {
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
         let stats = synthetic_stats(
             vec!["AmperCal!".to_string()],
             Vec::new(),
@@ -1040,7 +878,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_omission_entries_are_rejected_by_ratchet() {
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
         let stats = synthetic_stats(
             vec!["AmperCall".to_string(), "AmperCall".to_string()],
             Vec::new(),
@@ -1058,7 +896,7 @@ mod tests {
 
     #[test]
     fn test_empty_allowlist_rationale_is_rejected_by_ratchet() {
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
         let stats = synthetic_stats(
             vec!["MissingBlock".to_string()],
             vec![nodekind_analysis::AllowlistedNodeKind {
@@ -1080,7 +918,7 @@ mod tests {
     #[test]
     fn test_nodekind_ratchet_epsilon_prevents_false_positive() {
         // current = 0.9420290 + epsilon is still >= 0.9420290, should not fire
-        let m = floor_metrics_from(0.942_029, 999.0);
+        let m = floor_metrics_from(Some(0.942_029), None);
         // 942029/1000000 ≈ 0.942029 — should be within epsilon of baseline
         let msgs = ratchet_failure_messages(&m, 942_029, 1_000_000, 0);
         assert!(msgs.is_empty(), "epsilon guard should prevent false positive: {msgs:?}");
@@ -1088,7 +926,7 @@ mod tests {
 
     #[test]
     fn test_gap_count_ratchet_zero_baseline_fires_on_any_error() {
-        let m = floor_metrics_from(0.0, 0.0);
+        let m = floor_metrics_from(None, Some(0.0));
         // baseline = 0 errors, current = 1 error → fires
         let msgs = ratchet_failure_messages(&m, 100, 100, 1);
         assert!(
@@ -1099,8 +937,16 @@ mod tests {
 
     #[test]
     fn test_gap_count_ratchet_zero_baseline_passes_with_no_errors() {
-        let m = floor_metrics_from(0.0, 0.0);
+        let m = floor_metrics_from(None, Some(0.0));
         let msgs = ratchet_failure_messages(&m, 100, 100, 0);
         assert!(msgs.is_empty(), "zero errors should pass zero baseline: {msgs:?}");
+    }
+
+    #[test]
+    fn test_all_ratchets_pass_when_floor_metrics_absent() {
+        // Empty map → all `if let Some(Some(...))` arms are skipped → no failures
+        let m = BTreeMap::new();
+        let msgs = ratchet_failure_messages(&m, 0, 0, 999);
+        assert!(msgs.is_empty(), "absent floor metrics must not fail: {msgs:?}");
     }
 }

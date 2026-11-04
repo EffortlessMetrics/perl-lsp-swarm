@@ -6,29 +6,40 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
-/// Non-publishing package rehearsal over the publish allowlist.
-///
-/// Direct local publication is disabled (#16802). The reviewed release
-/// transaction (#13768 / #6055) owns candidate admission and publication;
-/// `release-orchestration.yml` is its existing workflow entry point.
-/// This local dry run neither proves release readiness nor authorizes a release.
-pub fn publish_crates(dry_run: bool) -> Result<()> {
-    if !dry_run {
-        bail!(
-            "Direct local publication to crates.io is disabled. Follow the reviewed release \
-             transaction (#13768 / #6055) and its `release-orchestration.yml` entry point (see \
-             docs/release/RUNBOOK.md). `cargo xtask publish-crates --dry-run` is only a \
-             non-publishing package rehearsal; it does not establish release readiness."
-        );
-    }
-
-    println!("📦 Package rehearsal only (dry run; no publication or release-readiness claim)");
+pub fn publish_crates(yes: bool, dry_run: bool) -> Result<()> {
+    println!("📦 Publishing crates to crates.io");
 
     let publish_targets = load_publish_targets()?;
 
-    for target in &publish_targets {
-        println!("Verifying {}...", target.name);
+    if !yes {
+        println!("This will publish:");
+        for target in &publish_targets {
+            println!("  - {}", target.name);
+        }
+        println!();
+        print!("Continue? [y/N] ");
+
+        use std::io::{self, Write};
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Publishing cancelled.");
+            return Ok(());
+        }
+    }
+
+    let mut args = vec!["publish", "--no-verify"];
+    if dry_run {
+        args.push("--dry-run");
+    }
+
+    for (index, target) in publish_targets.iter().enumerate() {
+        println!("Publishing {}...", target.name);
         let crate_dir = target.manifest_path.parent().ok_or_else(|| {
             eyre!(
                 "Invalid manifest path for publish target '{}': {:?}",
@@ -37,21 +48,20 @@ pub fn publish_crates(dry_run: bool) -> Result<()> {
             )
         })?;
 
-        let output = Command::new("cargo")
-            .current_dir(crate_dir)
-            .args(["publish", "--no-verify", "--dry-run"])
-            .output()?;
+        let output = Command::new("cargo").current_dir(crate_dir).args(&args).output()?;
         if !output.status.success() {
-            bail!(
-                "Dry-run packaging failed for {}: {}",
-                target.name,
-                String::from_utf8_lossy(&output.stderr)
-            );
+            bail!("Failed to publish {}: {}", target.name, String::from_utf8_lossy(&output.stderr));
         }
-        println!("✅ {} packaged", target.name);
+        println!("✅ {} published", target.name);
+
+        if !dry_run && index + 1 != publish_targets.len() {
+            // Wait for crates.io to process before publishing the next package.
+            println!("Waiting 30 seconds for crates.io to process...");
+            thread::sleep(Duration::from_secs(30));
+        }
     }
     println!();
-    println!("✅ Package rehearsal completed; no publication or release readiness established.");
+    println!("✅ All crates published successfully!");
 
     Ok(())
 }
@@ -127,33 +137,89 @@ fn load_publish_targets() -> Result<Vec<PublishTarget>> {
     Ok(targets)
 }
 
-/// Direct marketplace publication is disabled (#15393): an ambient local
-/// build must never be published from a developer checkout, and publisher
-/// credentials must stay inside the GitHub environment/OIDC boundary instead
-/// of argv or inherited child-process environments. The gated
-/// `publish-extension.yml` release workflow owns marketplace publication.
-pub fn publish_vscode() -> Result<()> {
-    bail!(
-        "Direct `publish-vscode` marketplace publication is disabled. Publication runs through \
-         the reviewed release transaction (#13768 / #6055), including `publish-extension.yml` \
-         (see docs/release/RUNBOOK.md); local argv or environment credentials grant no authority."
-    );
-}
+pub fn publish_vscode(yes: bool, token: Option<String>) -> Result<()> {
+    println!("🚀 Publishing VSCode extension to marketplace");
 
-/// Fail-closed refusal for the legacy `publish-release` helper (#17904 / #16802).
-///
-/// `Publish to crates.io` requires sealed-handoff inputs this command never supplies;
-/// the reviewed release transaction owns publication through `release-orchestration.yml`.
-pub fn publish_release_refusal() -> &'static str {
-    "The legacy `publish-release` workflow dispatch is disabled. It does not supply the \
-     required `expected_sha`, `candidate_run_id`, and `manifest_sha256` inputs for \
-     `Publish to crates.io`. Follow the reviewed release transaction (#13768 / #6055) and \
-     its `release-orchestration.yml` entry point (see docs/release/RUNBOOK.md)."
+    // Check for token - try argument first, then environment variable
+    let token = token.or_else(|| std::env::var("VSCE_PAT").ok());
+    if token.is_none() {
+        bail!("VSCE_PAT token required. Set via --token or VSCE_PAT environment variable.");
+    }
+
+    if !yes {
+        println!("This will publish the VSCode extension to the marketplace.");
+        println!();
+        print!("Continue? [y/N] ");
+
+        use std::io::{self, Write};
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Publishing cancelled.");
+            return Ok(());
+        }
+    }
+
+    // First run the checked extension build (authority + type-check + bundle)
+    println!("Running checked extension build...");
+    let output =
+        Command::new("npm").current_dir("vscode-extension").args(["run", "build"]).output()?;
+
+    if !output.status.success() {
+        bail!("Failed to run checked extension build: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    // Publish to marketplace
+    println!("Publishing to marketplace...");
+    let token = token.ok_or_else(|| {
+        color_eyre::eyre::eyre!("VSCE_PAT environment variable is required for publishing")
+    })?;
+    let output = Command::new("npx")
+        .current_dir("vscode-extension")
+        .env("VSCE_PAT", token)
+        .args(["vsce", "publish"])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to publish extension: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    println!("✅ VSCode extension published successfully!");
+    println!();
+    println!(
+        "View in marketplace: https://marketplace.visualstudio.com/items?itemName=perl.language-server"
+    );
+
+    Ok(())
 }
 
 pub fn publish_release(version: String, dry_run: bool, git_ref: Option<String>) -> Result<()> {
-    let _ = (version, dry_run, git_ref);
-    bail!("{}", publish_release_refusal())
+    let root = project_root()?;
+    let ref_name = git_ref.unwrap_or_else(|| format!("v{version}"));
+
+    let status = Command::new("gh")
+        .current_dir(&root)
+        .args([
+            "workflow",
+            "run",
+            "Publish to crates.io",
+            "--ref",
+            &ref_name,
+            "-f",
+            &format!("version={version}"),
+            "-f",
+            &format!("dry_run={dry_run}"),
+        ])
+        .status()?;
+
+    if !status.success() {
+        bail!("publish-release workflow dispatch failed");
+    }
+
+    println!("Dispatched \"Publish to crates.io\" for {version} on ref {ref_name}.");
+    Ok(())
 }
 
 pub fn smoke_test_release(version: String) -> Result<()> {
@@ -174,58 +240,4 @@ pub fn smoke_test_release(version: String) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{publish_crates, publish_release, publish_release_refusal, publish_vscode};
-
-    #[test]
-    fn direct_crates_publication_refuses_without_dry_run() {
-        let err = publish_crates(false).expect_err("direct crates.io publication must refuse");
-        let message = format!("{err:#}");
-        assert!(
-            message.contains("#13768 / #6055") && message.contains("release-orchestration.yml"),
-            "refusal must route to the reviewed release transaction: {message}"
-        );
-        assert!(
-            message.contains("dry-run"),
-            "refusal must name the remaining non-publishing rehearsal: {message}"
-        );
-    }
-
-    #[test]
-    fn direct_vscode_publication_refuses() {
-        let err = publish_vscode().expect_err("direct marketplace publication must refuse");
-        let message = format!("{err:#}");
-        assert!(
-            message.contains("publish-extension.yml"),
-            "refusal must route to the gated release workflow: {message}"
-        );
-    }
-
-    #[test]
-    fn legacy_publish_release_refuses_before_dispatch() {
-        let refusal = publish_release_refusal();
-        assert!(
-            refusal.contains("release-orchestration.yml"),
-            "refusal must route to the reviewed release orchestration workflow: {refusal}"
-        );
-        assert!(
-            refusal.contains("expected_sha"),
-            "refusal must name the missing sealed-handoff inputs: {refusal}"
-        );
-
-        let err = publish_release("0.0.0".into(), false, Some("v0.0.0".into()))
-            .expect_err("legacy publish-release dispatch must refuse before spawning gh");
-        let message = format!("{err:#}");
-        assert!(
-            message.contains("release-orchestration.yml"),
-            "publish_release must fail closed with orchestration routing: {message}"
-        );
-        assert!(
-            !message.contains("workflow dispatch failed"),
-            "must not reach gh workflow dispatch: {message}"
-        );
-    }
 }

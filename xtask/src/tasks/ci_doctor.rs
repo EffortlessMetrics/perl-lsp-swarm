@@ -190,56 +190,6 @@ enum FmtRunOutcome {
     Failed(String),
 }
 
-/// What kind of failure a captured `cargo xtask fmt --check` error represents.
-///
-/// The doctor's advice differs: real drift is fixed by `cargo xtask fmt`,
-/// while an instrument failure (missing rustfmt, spawn-limit planning, cargo
-/// metadata failure) is not drift at all — telling an operator to run
-/// `cargo xtask fmt` there is circular advice that fails identically (#17166).
-/// Mixed reports carry both named-file drift and a rustfmt instrument failure;
-/// drift-only "fix: cargo xtask fmt" is the same circular hazard for the
-/// instrument half (#17436).
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum FmtFailureKind {
-    Drift,
-    Mixed,
-    Infrastructure,
-}
-
-/// Advice printed for a classified fmt `--check` failure. Kept as a helper so
-/// the Mixed branch cannot silently reuse the drift-only `cargo xtask fmt` line.
-fn fmt_failure_advice(kind: FmtFailureKind) -> &'static str {
-    match kind {
-        FmtFailureKind::Drift => "fmt drift detected — fix: cargo xtask fmt",
-        FmtFailureKind::Mixed => concat!(
-            "fmt --check reported both formatting drift and a formatter/infrastructure failure — ",
-            "cargo xtask fmt will not repair the instrument failure"
-        ),
-        FmtFailureKind::Infrastructure => {
-            "fmt --check could not run — formatter/infrastructure failure, not fmt drift"
-        }
-    }
-}
-
-/// Classify a captured fmt error without re-parsing prose: fmt's reports are
-/// self-identifying by construction. Mixed reports start with
-/// [`fmt_task::CHECK_MIXED_REPORT_PREFIX`]; pure drift reports start with
-/// [`fmt_task::CHECK_DRIFT_REPORT_PREFIX`] (see
-/// `check_drift_report_prefix_matches_the_drift_header` and
-/// `format_failure_report_does_not_count_instrument_only_crates_as_drift` in
-/// fmt.rs). Mixed is checked first so a future prefix collision cannot
-/// collapse mixed back to drift-only. Everything else — spawn failures,
-/// planning failures, cargo metadata failures — is infrastructure.
-fn classify_fmt_failure(error: &str) -> FmtFailureKind {
-    if error.starts_with(fmt_task::CHECK_MIXED_REPORT_PREFIX) {
-        FmtFailureKind::Mixed
-    } else if error.starts_with(fmt_task::CHECK_DRIFT_REPORT_PREFIX) {
-        FmtFailureKind::Drift
-    } else {
-        FmtFailureKind::Infrastructure
-    }
-}
-
 fn fmt_result_to_run_outcome(result: Result<()>) -> FmtRunOutcome {
     match result {
         Ok(()) => FmtRunOutcome::Clean,
@@ -275,11 +225,7 @@ where
             FmtDriftOutcome::Clean
         }
         FmtRunOutcome::Failed(error) => {
-            warn(fmt_failure_advice(classify_fmt_failure(&error)));
-            // The captured error is the only place the real cause lives (a
-            // spawn error, a planning bound, named files); it used to be
-            // dropped here, leaving an unexplained drift warning (#17166).
-            warn(&format!("cargo xtask fmt --check reported: {error}"));
+            warn("fmt drift detected — fix: cargo xtask fmt");
             *warnings += 1;
             FmtDriftOutcome::DriftDetected(error)
         }
@@ -416,68 +362,6 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ci_doctor_classifies_drift_report_by_shared_prefix() {
-        let drift = format!(
-            "{} 2 crate(s):\n  - crates/foo/Cargo.toml\n      crates/foo/src/lib.rs",
-            fmt_task::CHECK_DRIFT_REPORT_PREFIX
-        );
-        assert_eq!(classify_fmt_failure(&drift), FmtFailureKind::Drift);
-        assert_eq!(
-            fmt_failure_advice(FmtFailureKind::Drift),
-            "fmt drift detected — fix: cargo xtask fmt"
-        );
-    }
-
-    #[test]
-    fn ci_doctor_classifies_mixed_report_without_drift_only_advice() {
-        // Cross-crate mixed header from format_failure_report: named files in
-        // one crate plus a rustfmt_error crate. Must not classify as Drift —
-        // that path prints only "fix: cargo xtask fmt" (#17436).
-        let mixed = format!(
-            "{} — 1 crate(s) with named files, 1 crate(s) with formatter failure \
-(not formatting drift):",
-            fmt_task::CHECK_MIXED_REPORT_PREFIX
-        );
-        assert_eq!(classify_fmt_failure(&mixed), FmtFailureKind::Mixed);
-        assert_ne!(classify_fmt_failure(&mixed), FmtFailureKind::Drift);
-        let advice = fmt_failure_advice(FmtFailureKind::Mixed);
-        assert!(
-            !advice.contains("fix: cargo xtask fmt"),
-            "mixed advice must not be the drift-only repair line: {advice}"
-        );
-        assert!(advice.contains("will not repair the instrument failure"), "{advice}");
-        // A mixed prefix must not also match the drift prefix, or Mixed would
-        // be unreachable if classify checked drift first.
-        assert!(
-            !fmt_task::CHECK_MIXED_REPORT_PREFIX.starts_with(fmt_task::CHECK_DRIFT_REPORT_PREFIX)
-        );
-    }
-
-    #[test]
-    fn ci_doctor_classifies_spawn_and_planning_failures_as_infrastructure() {
-        // A rustfmt spawn failure surfaces through fmt's aggregate report;
-        // it names no files and must not read as drift (#17166).
-        let spawn = format!(
-            "cargo fmt --check failed without naming unformatted files in 1 crate(s) — \
-             this is a formatter failure, not formatting drift:\n  - crates/foo/Cargo.toml \
-             (spawn failed: program not found)"
-        );
-        assert_eq!(classify_fmt_failure(&spawn), FmtFailureKind::Infrastructure);
-        assert_eq!(
-            classify_fmt_failure(
-                "formatter planning failed for crates/foo/Cargo.toml: formatter argv for \
-                 x.rs is 17000 UTF-16 units, over the declared bound of 16384; this is a \
-                 process-spawn limit, not formatting drift"
-            ),
-            FmtFailureKind::Infrastructure
-        );
-        assert_eq!(
-            classify_fmt_failure("Failed to query cargo metadata for workspace formatting"),
-            FmtFailureKind::Infrastructure
-        );
-    }
     use std::fs;
     use std::sync::Mutex;
     use tempfile::tempdir;
@@ -614,26 +498,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ci_doctor_fmt_drift_routes_to_package_formatter() -> Result<()> {
-        if !crate::test_support::FakeCargoChild::child_requested() {
-            let fake_cargo = crate::test_support::FakeCargoChild::run(
-                "tasks::ci_doctor::tests::ci_doctor_fmt_drift_routes_to_package_formatter",
-            )?;
-            fake_cargo.ensure_success()?;
-            let invocations = fake_cargo.invocations()?;
-            assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));
-            fake_cargo.assert_package_formatting()?;
-            return Ok(());
-        }
         let _guard = CURRENT_DIR_LOCK
             .lock()
             .map_err(|_| color_eyre::eyre::eyre!("current-dir test lock poisoned"))?;
+        let fake_cargo = crate::test_support::FakeCargo::install()?;
         let start_dir = env::current_dir()?;
         let dir = tempdir()?;
         let mut warnings = 0usize;
 
         check_fmt_drift(dir.path(), &mut warnings);
 
+        let invocations = fake_cargo.invocations();
         assert_eq!(warnings, 0);
+        assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));
+        assert!(invocations.iter().any(|line| {
+            line.starts_with("fmt --manifest-path ") && line.ends_with(" -- --check")
+        }));
         assert_eq!(env::current_dir()?, start_dir);
         Ok(())
     }

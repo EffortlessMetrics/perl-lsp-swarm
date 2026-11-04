@@ -131,10 +131,7 @@ fn get_import_block_regex() -> Option<&'static Regex> {
 pub struct FileEdit {
     /// The absolute path to the file that should be edited
     pub file_path: PathBuf,
-    /// The list of text edits to apply to this file.
-    ///
-    /// Consumers that apply multiple edits must apply them from end to beginning
-    /// so that earlier offsets remain valid. Producers are not required to sort.
+    /// The list of text edits to apply to this file, in document order
     pub edits: Vec<TextEdit>,
 }
 

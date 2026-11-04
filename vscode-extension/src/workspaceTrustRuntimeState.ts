@@ -9,12 +9,7 @@ function incrementCount(target: Record<string, number>, key: string): void {
   target[key] = (target[key] ?? 0) + 1;
 }
 
-/**
- * Classify one launch-configuration path shape for the workspace-trust
- * runtime guidance. Exported so the classification surface — previously
- * untested — can be pinned directly (#17336).
- */
-export function classifyLaunchPath(value: string): string {
+function classifyLaunchPath(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
     return 'empty';

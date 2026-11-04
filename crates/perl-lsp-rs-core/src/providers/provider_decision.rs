@@ -587,8 +587,13 @@ pub fn format_provider_decision_explanation(explanation: &ProviderDecisionExplan
         lines.push(format!("Request detail: {request_message}"));
     }
 
-    // Receipt identity and scenario remain in the structured response and raw
-    // output. Installed clients need a summary that does not depend on a checkout.
+    if let Some(receipt_id) = &explanation.receipt_id {
+        lines.push(format!("Receipt: {receipt_id}."));
+    }
+    if let Some(scenario) = &explanation.scenario {
+        lines.push(format!("Scenario: {scenario}."));
+    }
+
     lines.join("\n")
 }
 
@@ -1077,13 +1082,8 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("Fallback: legacy provider."), "{message}");
-        assert!(!message.contains("docs/project/status"), "{message}");
-        assert!(!message.contains("dynamic-boundary-navigation"), "{message}");
-        assert_eq!(
-            decision.receipt_id.as_deref(),
-            Some("docs/project/status/provider_confidence_matrix.md#goto-definition")
-        );
-        assert_eq!(decision.scenario.as_deref(), Some("dynamic-boundary-navigation"));
+        assert!(message.contains("Receipt: docs/project/status"), "{message}");
+        assert!(message.contains("Scenario: dynamic-boundary-navigation."), "{message}");
     }
 
     #[test]

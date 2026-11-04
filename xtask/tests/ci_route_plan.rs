@@ -5,7 +5,6 @@
 //! contracts. The real #10176/#10178 -> adapter seam is covered by the
 //! `route_plan_seam_tests` in `xtask/src/tasks/gates/planning_types.rs`.
 
-use perl_tdd_support::{must_err_with, must_some_with, must_with};
 use xtask::ci_route_plan::{
     Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1,
     CompileRoutePlanInput, ExpansionStatus, GateSelectorInput, LifecycleDisposition,
@@ -143,7 +142,7 @@ fn baseline_input() -> CompileRoutePlanInput {
 
 #[test]
 fn baseline_compiles_one_row_per_denominator_gate() {
-    let plan = must_with(CiRoutePlanV1::compile(baseline_input()), "compile");
+    let plan = CiRoutePlanV1::compile(baseline_input()).expect("compile");
     assert_eq!(plan.schema, CI_ROUTE_PLAN_SCHEMA);
     assert_eq!(plan.producer, CI_ROUTE_PLAN_PRODUCER);
     assert_eq!(plan.requested_profile, "merge_gate");
@@ -157,18 +156,18 @@ fn baseline_compiles_one_row_per_denominator_gate() {
     assert_eq!(plan.rows[1].native_tier, "pr_fast");
     assert!(matches!(&plan.rows[0].outcome, PlannedOutcome::Run { .. }));
     assert!(matches!(&plan.rows[1].outcome, PlannedOutcome::ScopedNoop { .. }));
-    must_with(plan.validate(), "valid");
+    plan.validate().expect("valid");
 }
 
 // Control 1: one gate from the governed denominator is omitted.
 #[test]
 fn omitted_denominator_gate_fails_validation() {
-    let mut plan = must_with(CiRoutePlanV1::compile(baseline_input()), "compile");
+    let mut plan = CiRoutePlanV1::compile(baseline_input()).expect("compile");
     plan.rows.remove(1);
     plan.summary.governed = 1;
     plan.summary.scoped_noop = 0;
     plan.summary.by_policy_role.remove(&PolicyRole::Advisory);
-    let error = must_err_with(plan.validate(), "omission must not validate");
+    let error = plan.validate().expect_err("omission must not validate");
     assert!(error.contains("rows"), "{error}");
 }
 
@@ -177,17 +176,17 @@ fn omitted_denominator_gate_fails_validation() {
 fn duplicate_gate_fails_closed_everywhere() {
     let mut input = baseline_input();
     input.dispositions.push(active_disposition("fmt_gate", "pr_fast", PolicyRole::Required));
-    let error = must_err_with(CiRoutePlanV1::compile(input), "duplicate disposition must fail");
+    let error = CiRoutePlanV1::compile(input).expect_err("duplicate disposition must fail");
     assert!(error.contains("duplicate disposition"), "{error}");
 
     let mut input = baseline_input();
     input.expansion.denominator = vec!["fmt_gate".to_string(), "fmt_gate".to_string()];
-    let error = must_err_with(CiRoutePlanV1::compile(input), "duplicate denominator must fail");
+    let error = CiRoutePlanV1::compile(input).expect_err("duplicate denominator must fail");
     assert!(error.contains("duplicate"), "{error}");
 
     let mut input = baseline_input();
     input.selectors.push(selected("fmt_gate", Some(SelectorProof::Applicable)));
-    let error = must_err_with(CiRoutePlanV1::compile(input), "duplicate selector must fail");
+    let error = CiRoutePlanV1::compile(input).expect_err("duplicate selector must fail");
     assert!(error.contains("duplicate selector"), "{error}");
 }
 
@@ -198,7 +197,7 @@ fn duplicate_gate_fails_closed_everywhere() {
 #[test]
 fn aggregate_profile_cannot_lose_inherited_gate() {
     let input = baseline_input();
-    let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+    let plan = CiRoutePlanV1::compile(input).expect("compile");
     let inherited =
         plan.rows.iter().any(|row| row.native_tier == "pr_fast" && row.gate_id == "fmt_gate");
     assert!(inherited, "merge_gate plan must keep the inherited pr_fast gate");
@@ -207,14 +206,12 @@ fn aggregate_profile_cannot_lose_inherited_gate() {
     // row — as a typed error, never an omission.
     let mut input = baseline_input();
     input.selectors.retain(|selector| selector.gate_id == "unit_gate");
-    let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+    let plan = CiRoutePlanV1::compile(input).expect("compile");
     assert_eq!(plan.summary.governed, 2);
     assert_eq!(plan.summary.error, 1);
     match &plan.rows[0].outcome {
         PlannedOutcome::Error { code, .. } => assert_eq!(code, "selector_evidence_missing"),
-        other => {
-            must_some_with(Option::<()>::None, format!("expected error outcome, got {other:?}"))
-        }
+        other => panic!("expected error outcome, got {other:?}"),
     }
     // The gate that kept its positive non-applicability proof is unaffected.
     assert!(matches!(&plan.rows[1].outcome, PlannedOutcome::ScopedNoop { .. }));
@@ -244,7 +241,7 @@ fn skipped_quarantined_gate_never_becomes_scoped_noop() {
     // The runner placed the quarantined gate in the skipped population with
     // positive non-applicability proof.
     input.selectors[0] = skipped("fmt_gate", Some(SelectorProof::NotApplicableToSubject));
-    let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+    let plan = CiRoutePlanV1::compile(input).expect("compile");
     assert_eq!(plan.summary.quarantined, 1);
     assert_eq!(plan.summary.run, 0);
     // fmt_gate must be quarantined despite its skip; the other gate keeps its
@@ -253,10 +250,7 @@ fn skipped_quarantined_gate_never_becomes_scoped_noop() {
     assert!(matches!(&plan.rows[1].outcome, PlannedOutcome::ScopedNoop { .. }));
     match &plan.rows[0].outcome {
         PlannedOutcome::Quarantined { owner, .. } => assert_eq!(owner, "ci-owner"),
-        other => must_some_with(
-            Option::<()>::None,
-            format!("expected quarantined outcome, got {other:?}"),
-        ),
+        other => panic!("expected quarantined outcome, got {other:?}"),
     }
 }
 
@@ -266,15 +260,13 @@ fn skipped_quarantined_gate_never_becomes_scoped_noop() {
 fn generic_skip_without_selector_proof_is_error() {
     let mut input = baseline_input();
     input.selectors[1] = skipped("unit_gate", None);
-    let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+    let plan = CiRoutePlanV1::compile(input).expect("compile");
     assert_eq!(plan.summary.scoped_noop, 0);
     assert_eq!(plan.summary.error, 1);
     assert_eq!(plan.rows[1].applicability, Applicability::Unknown);
     match &plan.rows[1].outcome {
         PlannedOutcome::Error { code, .. } => assert_eq!(code, "selector_evidence_missing"),
-        other => {
-            must_some_with(Option::<()>::None, format!("expected error outcome, got {other:?}"))
-        }
+        other => panic!("expected error outcome, got {other:?}"),
     }
 }
 
@@ -292,10 +284,10 @@ fn policy_role_is_independent_of_requested_profile() {
     release_expansion.resolution = ExpansionStatus::Unsupported;
     release_expansion.detail = Some("no reviewed composition".to_string());
     let release_input = CompileRoutePlanInput { expansion: release_expansion, ..base };
-    let commit_plan = must_with(CiRoutePlanV1::compile(commit_input), "commit compile");
+    let commit_plan = CiRoutePlanV1::compile(commit_input).expect("commit compile");
     // Release without a reviewed composition is typed non-success, never a
     // silent alias of another profile (control 11 applies here too).
-    let error = must_err_with(CiRoutePlanV1::compile(release_input), "release must be unsupported");
+    let error = CiRoutePlanV1::compile(release_input).expect_err("release must be unsupported");
     assert!(error.contains("not consumable"), "{error}");
     assert_eq!(commit_plan.rows[0].policy_role, PolicyRole::Required);
 }
@@ -310,15 +302,12 @@ fn expired_invalid_and_ownerless_quarantine_cannot_become_active() {
         input.dispositions[1] = quarantined_disposition("unit_gate", resolution);
         // Even with a selected placement and applicable proof.
         input.selectors[1] = selected("unit_gate", Some(SelectorProof::Applicable));
-        let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+        let plan = CiRoutePlanV1::compile(input).expect("compile");
         match &plan.rows[1].outcome {
             PlannedOutcome::Error { code, .. } => {
                 assert!(code == "disposition_expired" || code == "disposition_invalid");
             }
-            other => must_some_with(
-                Option::<()>::None,
-                format!("expected error outcome for {resolution:?}, got {other:?}"),
-            ),
+            other => panic!("expected error outcome for {resolution:?}, got {other:?}"),
         }
         assert_eq!(plan.summary.run, 1, "only the healthy gate runs");
     }
@@ -328,8 +317,7 @@ fn expired_invalid_and_ownerless_quarantine_cannot_become_active() {
     let mut input = baseline_input();
     input.dispositions[1] = quarantined_disposition("unit_gate", Resolution::Current);
     input.selectors[1] = skipped("unit_gate", Some(SelectorProof::NotApplicableToSubject));
-    let error =
-        must_err_with(CiRoutePlanV1::compile(input), "missing quarantine evidence must fail");
+    let error = CiRoutePlanV1::compile(input).expect_err("missing quarantine evidence must fail");
     assert!(error.contains("no quarantine evidence"), "{error}");
 }
 
@@ -341,14 +329,11 @@ fn non_runnable_lifecycles_never_become_runnable() {
         let mut input = baseline_input();
         input.dispositions[1] = non_runnable_disposition("unit_gate", state);
         input.selectors[1] = selected("unit_gate", Some(SelectorProof::Applicable));
-        let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+        let plan = CiRoutePlanV1::compile(input).expect("compile");
         assert_eq!(plan.summary.run, 1, "{state:?} gate must not run");
         match &plan.rows[1].outcome {
             PlannedOutcome::Error { code, .. } => assert_eq!(code, "lifecycle_non_runnable"),
-            other => must_some_with(
-                Option::<()>::None,
-                format!("expected error outcome for {state:?}, got {other:?}"),
-            ),
+            other => panic!("expected error outcome for {state:?}, got {other:?}"),
         }
     }
 }
@@ -361,32 +346,26 @@ fn missing_or_contradictory_selector_evidence_is_never_scoped_noop() {
     // No selector input at all.
     let mut input = baseline_input();
     input.selectors.clear();
-    let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+    let plan = CiRoutePlanV1::compile(input).expect("compile");
     assert_eq!(plan.summary.error, 2);
     assert_eq!(plan.summary.scoped_noop, 0);
 
     // Skipped placement with applicable proof contradicts itself.
     let mut input = baseline_input();
     input.selectors[0] = skipped("fmt_gate", Some(SelectorProof::Applicable));
-    let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+    let plan = CiRoutePlanV1::compile(input).expect("compile");
     match &plan.rows[0].outcome {
         PlannedOutcome::Error { code, .. } => assert_eq!(code, "selector_contradiction"),
-        other => must_some_with(
-            Option::<()>::None,
-            format!("expected contradiction error, got {other:?}"),
-        ),
+        other => panic!("expected contradiction error, got {other:?}"),
     }
 
     // Selected placement with non-applicable proof contradicts itself.
     let mut input = baseline_input();
     input.selectors[1] = selected("unit_gate", Some(SelectorProof::NotApplicableToSubject));
-    let plan = must_with(CiRoutePlanV1::compile(input), "compile");
+    let plan = CiRoutePlanV1::compile(input).expect("compile");
     match &plan.rows[1].outcome {
         PlannedOutcome::Error { code, .. } => assert_eq!(code, "selector_contradiction"),
-        other => must_some_with(
-            Option::<()>::None,
-            format!("expected contradiction error, got {other:?}"),
-        ),
+        other => panic!("expected contradiction error, got {other:?}"),
     }
 }
 
@@ -394,19 +373,19 @@ fn missing_or_contradictory_selector_evidence_is_never_scoped_noop() {
 // validate.
 #[test]
 fn contradictory_applicability_outcome_fails_validation() {
-    let mut plan = must_with(CiRoutePlanV1::compile(baseline_input()), "plan");
+    let mut plan = CiRoutePlanV1::compile(baseline_input()).expect("plan");
     plan.rows[0].applicability = Applicability::NotApplicable;
-    let error = must_err_with(plan.validate(), "contradiction must fail");
+    let error = plan.validate().expect_err("contradiction must fail");
     assert!(error.contains("run requires applicable"), "{error}");
 
-    let mut plan = must_with(CiRoutePlanV1::compile(baseline_input()), "plan");
+    let mut plan = CiRoutePlanV1::compile(baseline_input()).expect("plan");
     plan.rows[1].applicability = Applicability::Applicable;
-    let error = must_err_with(plan.validate(), "contradiction must fail");
+    let error = plan.validate().expect_err("contradiction must fail");
     assert!(error.contains("scoped_noop requires not-applicable"), "{error}");
 
-    let mut plan = must_with(CiRoutePlanV1::compile(baseline_input()), "plan");
+    let mut plan = CiRoutePlanV1::compile(baseline_input()).expect("plan");
     plan.rows[0].selector_placement = SelectorPlacement::Skipped;
-    let error = must_err_with(plan.validate(), "placement contradiction must fail");
+    let error = plan.validate().expect_err("placement contradiction must fail");
     assert!(error.contains("selected placement"), "{error}");
 }
 
@@ -414,16 +393,16 @@ fn contradictory_applicability_outcome_fails_validation() {
 // fail closed; unknown outcome kinds cannot even deserialize.
 #[test]
 fn unknown_identities_fail_closed() {
-    let mut plan = must_with(CiRoutePlanV1::compile(baseline_input()), "plan");
+    let mut plan = CiRoutePlanV1::compile(baseline_input()).expect("plan");
     plan.schema = "ci_route_plan.v2".to_string();
     assert!(plan.validate().is_err());
 
-    let mut plan = must_with(CiRoutePlanV1::compile(baseline_input()), "plan");
+    let mut plan = CiRoutePlanV1::compile(baseline_input()).expect("plan");
     plan.requested_profile = "bogus_profile".to_string();
-    let error = must_err_with(plan.validate(), "unknown profile must fail");
+    let error = plan.validate().expect_err("unknown profile must fail");
     assert!(error.contains("unknown requested profile"), "{error}");
 
-    let mut plan = must_with(CiRoutePlanV1::compile(baseline_input()), "plan");
+    let mut plan = CiRoutePlanV1::compile(baseline_input()).expect("plan");
     // Fabricate a free-form error code on the run row; the closed vocabulary
     // must refuse it at validation.
     plan.rows[0].outcome = PlannedOutcome::Error {
@@ -432,13 +411,12 @@ fn unknown_identities_fail_closed() {
     };
     plan.summary.run = 0;
     plan.summary.error = 1;
-    let error = must_err_with(plan.validate(), "free-form code must fail");
+    let error = plan.validate().expect_err("free-form code must fail");
     assert!(error.contains("unknown error code"), "{error}");
 
-    let serialized = must_with(
-        serde_json::to_string(&must_with(CiRoutePlanV1::compile(baseline_input()), "plan")),
-        "serialize",
-    );
+    let serialized =
+        serde_json::to_string(&CiRoutePlanV1::compile(baseline_input()).expect("plan"))
+            .expect("serialize");
     let tampered = serialized.replace("\"kind\":\"run\"", "\"kind\":\"teleport\"");
     assert_ne!(tampered, serialized, "outcome tag must appear in serialized plan");
     assert!(serde_json::from_str::<CiRoutePlanV1>(&tampered).is_err());
@@ -448,8 +426,8 @@ fn unknown_identities_fail_closed() {
 // execution-result observations — those axes belong to #9156/#9159.
 #[test]
 fn payload_carries_no_enforcement_or_execution_result() {
-    let plan = must_with(CiRoutePlanV1::compile(baseline_input()), "plan");
-    let serialized = must_with(serde_json::to_string(&plan), "serialize");
+    let plan = CiRoutePlanV1::compile(baseline_input()).expect("plan");
+    let serialized = serde_json::to_string(&plan).expect("serialize");
     for forbidden in ["\"enforcement\"", "\"conclusion\"", "\"check_run\"", "\"result\""] {
         assert!(!serialized.contains(forbidden), "planning payload must not carry {forbidden}");
     }
@@ -461,8 +439,7 @@ fn unsupported_and_invalid_expansions_fail_closed_at_compile() {
         let mut input = baseline_input();
         input.expansion.resolution = resolution;
         input.expansion.detail = Some("projection detail".to_string());
-        let error =
-            must_err_with(CiRoutePlanV1::compile(input), "non-complete expansion must fail");
+        let error = CiRoutePlanV1::compile(input).expect_err("non-complete expansion must fail");
         assert!(error.contains("not consumable"), "{error}");
     }
 }
@@ -472,12 +449,12 @@ fn selection_evidence_shape_is_enforced() {
     let mut input = baseline_input();
     input.selection.fallback_used = true;
     input.selection.fallback_reason = None;
-    let error = must_err_with(CiRoutePlanV1::compile(input), "fallback shape must fail");
+    let error = CiRoutePlanV1::compile(input).expect_err("fallback shape must fail");
     assert!(error.contains("fallback_used requires fallback_reason"), "{error}");
 
     let mut input = baseline_input();
     input.selection.selector_digest = "AB".to_string();
-    let error = must_err_with(CiRoutePlanV1::compile(input), "digest shape must fail");
+    let error = CiRoutePlanV1::compile(input).expect_err("digest shape must fail");
     assert!(error.contains("selector_digest"), "{error}");
 }
 
@@ -500,7 +477,7 @@ fn stale_scope_evidence_from_another_subject_refuses() {
         risk_tags: vec![],
     });
     input.selectors[1] = skipped("unit_gate", Some(SelectorProof::NotApplicableToSubject));
-    let error = must_err_with(CiRoutePlanV1::compile(input), "stale scope must refuse");
+    let error = CiRoutePlanV1::compile(input).expect_err("stale scope must refuse");
     assert!(
         error.contains("scope head SHA") && error.contains("route subject head SHA"),
         "{error}"
@@ -520,6 +497,6 @@ fn stale_scope_evidence_from_another_subject_refuses() {
         risk_tags: vec![],
     });
     input.selectors[1] = skipped("unit_gate", Some(SelectorProof::NotApplicableToSubject));
-    let plan = must_with(CiRoutePlanV1::compile(input), "bound scope validates");
+    let plan = CiRoutePlanV1::compile(input).expect("bound scope validates");
     assert!(matches!(&plan.rows[1].outcome, PlannedOutcome::ScopedNoop { .. }));
 }

@@ -367,30 +367,24 @@ mod tests {
     #[test]
     fn required_trigger_links_synthetic_tree_and_command_evidence() -> Result<()> {
         let scratch = tempdir()?;
-        xtask::git_environment::isolate(Command::new("git"))
-            .args(["init", "--quiet"])
-            .current_dir(&scratch)
-            .output()?;
+        Command::new("git").args(["init", "--quiet"]).current_dir(&scratch).output()?;
         let repository = scratch.path();
-        xtask::git_environment::isolate(Command::new("git"))
+        Command::new("git")
             .args(["config", "user.email", "test@example.invalid"])
             .current_dir(repository)
             .output()?;
-        xtask::git_environment::isolate(Command::new("git"))
+        Command::new("git")
             .args(["config", "user.name", "integration-test"])
             .current_dir(repository)
             .output()?;
         fs::write(repository.join("base.txt"), "base\n")?;
-        xtask::git_environment::isolate(Command::new("git"))
-            .args(["add", "."])
-            .current_dir(repository)
-            .output()?;
-        xtask::git_environment::isolate(Command::new("git"))
+        Command::new("git").args(["add", "."]).current_dir(repository).output()?;
+        Command::new("git")
             .args(["commit", "--quiet", "-m", "base"])
             .current_dir(repository)
             .output()?;
         let base = String::from_utf8(
-            xtask::git_environment::isolate(Command::new("git"))
+            Command::new("git")
                 .args(["rev-parse", "HEAD"])
                 .current_dir(repository)
                 .output()?
@@ -399,16 +393,13 @@ mod tests {
         .trim()
         .to_string();
         fs::write(repository.join("candidate.txt"), "candidate\n")?;
-        xtask::git_environment::isolate(Command::new("git"))
-            .args(["add", "."])
-            .current_dir(repository)
-            .output()?;
-        xtask::git_environment::isolate(Command::new("git"))
+        Command::new("git").args(["add", "."]).current_dir(repository).output()?;
+        Command::new("git")
             .args(["commit", "--quiet", "-m", "candidate"])
             .current_dir(repository)
             .output()?;
         let head = String::from_utf8(
-            xtask::git_environment::isolate(Command::new("git"))
+            Command::new("git")
                 .args(["rev-parse", "HEAD"])
                 .current_dir(repository)
                 .output()?

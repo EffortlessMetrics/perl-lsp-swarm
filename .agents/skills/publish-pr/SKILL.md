@@ -1,6 +1,6 @@
 ---
 name: publish-pr
-description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, with frequent draft publication and explicit late qualification after substantive review.
+description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, ready by default, with draft reserved for a named remote-only proof or collaboration need.
 ---
 
 # Publish PR
@@ -32,9 +32,9 @@ A candidate publishes ready only when all applicable local preparation is curren
 
 If this threshold is not met, return to `$build-candidate` rather than opening a churn-producing ready PR.
 
-## Draft publication and transition
+## Draft exceptions and transition
 
-Use focused draft publication for ongoing collaboration and independent review, as well as:
+Use draft only for:
 
 - remote-only proof or platform behavior;
 - real branch collaboration;
@@ -44,13 +44,6 @@ Use focused draft publication for ongoing collaboration and independent review, 
 Record the exact draft reason and its completion condition in the PR body.
 
 For an existing draft, inspect that named condition. When it is complete, re-evaluate the full ready-publication threshold and explicitly mark the PR ready through the provider's native GitHub action (for example `gh pr ready <n>` or the equivalent connector operation). Do not leave a completed draft in a self-repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair instead of marking ready.
-
-Before changing readiness, inspect the actual workflow triggers. Readiness is not an
-explicit qualification request, but independent producers may still start expensive
-work on that event during partial adoption. Follow the shared development method's
-late-qualification boundary only after substantive review is current; consume the real
-#17900 request operation when available, and report its absence rather than inventing
-one. Preserve all mandatory proof and live protection requirements; publish draft evidence honestly.
 
 ## PR review index
 

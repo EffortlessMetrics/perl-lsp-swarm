@@ -159,7 +159,13 @@ impl WorkspaceIndex {
         let ast = parser.parse().map_err(|err| format!("Parse error: {err}"))?;
         let mut dependencies: HashSet<String> = ImportExtractor::extract(&ast, FileId(0))
             .into_iter()
-            .filter_map(|spec| Self::dependency_module_name(&spec.module))
+            .filter_map(|spec| {
+                if spec.module.is_empty() || matches!(spec.module.as_str(), "parent" | "base") {
+                    None
+                } else {
+                    Some(spec.module)
+                }
+            })
             .collect();
 
         Self::collect_parent_dependencies(&ast, &mut dependencies);
@@ -177,29 +183,6 @@ impl WorkspaceIndex {
 
         for child in node.children() {
             Self::collect_parent_dependencies(child, dependencies);
-        }
-    }
-
-    /// Map an import-spec module identity onto the module-name key used by
-    /// dependency lookups.
-    ///
-    /// HIR keeps path-like `require "Foo/Bar.pm"` targets as `Foo/Bar.pm`.
-    /// Callers of [`Self::file_dependencies`] look up `Foo::Bar`, so this
-    /// consumer normalizes path-like identities without changing the HIR
-    /// `ImportSpec` itself.
-    fn dependency_module_name(module: &str) -> Option<String> {
-        if module.is_empty() || matches!(module, "parent" | "base") {
-            return None;
-        }
-        Some(Self::normalize_path_like_module(module))
-    }
-
-    fn normalize_path_like_module(module: &str) -> String {
-        let cleaned = module.trim().trim_matches('\'').trim_matches('"').trim();
-        if cleaned.contains('/') || cleaned.contains('\\') || cleaned.ends_with(".pm") {
-            cleaned.trim_end_matches(".pm").replace(['\\', '/'], "::")
-        } else {
-            cleaned.to_string()
         }
     }
 
@@ -271,50 +254,7 @@ impl WorkspaceIndex {
 mod tests {
     use super::*;
     use crate::SourceLocation;
-    use crate::symbol::{Symbol, SymbolTable};
-
-    #[test]
-    fn normalize_path_like_module_converts_only_path_identities() {
-        assert_eq!(WorkspaceIndex::normalize_path_like_module("Foo::Bar"), "Foo::Bar");
-        assert_eq!(WorkspaceIndex::normalize_path_like_module("Foo/Bar.pm"), "Foo::Bar");
-        assert_eq!(WorkspaceIndex::normalize_path_like_module("\"Foo/Bar.pm\""), "Foo::Bar");
-        assert_eq!(WorkspaceIndex::normalize_path_like_module("'Foo.pm'"), "Foo");
-        assert_eq!(WorkspaceIndex::normalize_path_like_module("Foo\\Bar.pm"), "Foo::Bar");
-        assert_eq!(WorkspaceIndex::normalize_path_like_module("\"Foo\\Bar.pm\""), "Foo::Bar");
-    }
-
-    #[test]
-    fn quoted_require_path_is_indexed_as_module_name() {
-        // update_from_document, not index_file_str: the latter is a #11301
-        // compatibility API counted against the source-commit ledger.
-        let mut index = WorkspaceIndex::new();
-        index.update_from_document(
-            "file:///quoted.pl",
-            "require \"Foo/Bar.pm\";\n1;\n",
-            &SymbolTable::new(),
-        );
-        let deps = index.file_dependencies("file:///quoted.pl");
-        assert!(
-            deps.contains("Foo::Bar"),
-            "quoted require must be lookupable as Foo::Bar; deps: {deps:?}"
-        );
-        assert!(
-            !deps.contains("Foo/Bar.pm") && !deps.contains("\"Foo/Bar.pm\""),
-            "path-like HIR identity must not be the dependency lookup key; deps: {deps:?}"
-        );
-    }
-
-    #[test]
-    fn bare_require_module_is_indexed_as_module_name() {
-        let mut index = WorkspaceIndex::new();
-        index.update_from_document(
-            "file:///bare.pl",
-            "require Foo::Bar;\n1;\n",
-            &SymbolTable::new(),
-        );
-        let deps = index.file_dependencies("file:///bare.pl");
-        assert!(deps.contains("Foo::Bar"), "bare require must stay Foo::Bar; deps: {deps:?}");
-    }
+    use crate::symbol::Symbol;
 
     /// Regression: `use parent qw [..]` with whitespace before the delimiter
     /// must extract each base module as a dependency. Previously the leading

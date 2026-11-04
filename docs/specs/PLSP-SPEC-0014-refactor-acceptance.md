@@ -134,35 +134,29 @@ Invalid PRs include:
 
 ## Proof Commands
 
-Supported check/test examples below require exact-command
-`cargo-admitted --preflight` and host admission. See the
-[scoped budget route](../how-to/CONSTRAINED_CARGO_BUILDS.md) for constrained hosts.
-Legacy Clippy/xtask examples require separate root admission; they are unsupported
-by `cargo-admitted`. Do not lower capacity thresholds merely to run these checks.
-
 All refactor PRs must run:
 
 ```bash
 git diff --check
 ./scripts/storage-doctor
-./scripts/cargo-safe xtask fmt --check
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask fmt --check
 ```
 
 Leaf crate refactors must also run:
 
 ```bash
-./scripts/cargo-admitted check --all-targets -p <crate> --profile agent --locked
-./scripts/cargo-admitted test -p <crate> --profile agent --locked
-./scripts/cargo-safe clippy -p <crate> --profile agent --locked -- -D warnings -A missing_docs
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe check --all-targets -p <crate> --profile agent --locked
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe test -p <crate> --profile agent --locked
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe clippy -p <crate> --profile agent --locked -- -D warnings -A missing_docs
 ```
 
 Provider and runtime refactors must add the relevant provider smoke, receipt,
 or matrix check. Examples include:
 
 ```bash
-./scripts/cargo-safe xtask check-provider-confidence-matrix
-./scripts/cargo-safe xtask check-support-claims
-./scripts/cargo-safe xtask semantic-shadow-compare --check
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask check-provider-confidence-matrix
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask check-support-claims
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask semantic-shadow-compare --check
 ```
 
 Parser or semantic refactors must run the touched parser or semantic tests and
@@ -176,7 +170,7 @@ Docs-only PRs for this spec may use:
 
 ```bash
 git diff --check
-./scripts/cargo-safe xtask ci-hygiene check-doc-paths docs/specs
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask ci-hygiene check-doc-paths docs/specs
 ./scripts/storage-doctor
 ```
 

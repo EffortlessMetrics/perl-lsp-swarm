@@ -36,13 +36,8 @@
 #     "unresolved_count": N, "unresolved_active": N, "unresolved_outdated": N,
 #     "threads": [ { "id", "isResolved", "isOutdated", "path",
 #                    "line", "line_is_original", "originalLine", "startLine",
-#                    "diffSide", "author", "author_typename", "url", "excerpt" } ]
+#                    "diffSide", "author", "url", "excerpt" } ]
 #   }
-#
-# `author_typename` is the GraphQL Actor `__typename` of the opening comment
-# (Bot, User, Organization, Mannequin, …) or null when the author is missing
-# (ghost). `scripts/reviews/disposition --sweep-bot-outdated` selects on
-# `author_typename == "Bot"` and `isOutdated` (#17095).
 #
 # `id` is the GraphQL node ID that `disposition --thread` accepts. `line` is
 # the current diff line, falling back to `originalLine` for an outdated thread
@@ -60,7 +55,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --unresolved-only) UNRESOLVED_ONLY=1; shift ;;
         --json)            AS_JSON=1; shift ;;
-        -h|--help)         sed -n '2,53p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)         sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0 ;;
         -*)                die_usage "unknown argument: $1" ;;
         *)
             if [[ -z "$PR" ]]; then PR="$1"
@@ -85,13 +80,6 @@ fi
 [[ "$REPO" == */* ]] || die_usage "[owner/repo] must look like owner/name (got '$REPO')"
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
-# OWNER and NAME are interpolated into the GraphQL query below; restrict
-# them to the GitHub name charset so a crafted repo argument cannot break
-# out of the quoted strings (fail closed on anything else).
-[[ "$OWNER" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] \
-    || die_usage "[owner/repo] owner contains characters GitHub does not allow (got '$OWNER')"
-[[ "$NAME" =~ ^[A-Za-z0-9._-]+$ && "$NAME" != "." && "$NAME" != ".." ]] \
-    || die_usage "[owner/repo] name contains characters GitHub does not allow (got '$NAME')"
 
 PAGE_SIZE="${REVIEW_THREADS_PAGE_SIZE:-50}"
 
@@ -135,7 +123,7 @@ query {
           originalStartLine
           diffSide
           comments(first: 1) {
-            nodes { author { __typename login } body url }
+            nodes { author { login } body url }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -223,7 +211,6 @@ if ! jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
         startLine: (.startLine // .originalStartLine),
         diffSide: (.diffSide // "RIGHT"),
         author: (.comments.nodes[0].author.login // "unknown"),
-        author_typename: (.comments.nodes[0].author.__typename // null),
         url: (.comments.nodes[0].url // null),
         excerpt: (.comments.nodes[0].body | excerpt)
     })

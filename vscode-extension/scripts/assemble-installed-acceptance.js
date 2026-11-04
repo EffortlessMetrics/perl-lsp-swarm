@@ -48,11 +48,8 @@ function assembleInstalledAcceptance({
     artifactSetId: requireIdentity(artifactSetId, 'artifactSetId'),
   };
   const parent = readJson(parentReceiptPath);
-  // Parse and hash one snapshot per receipt; a producer may rewrite its file between opens.
-  const sourceBytes = fs.readFileSync(sourceReceiptPath);
-  const verifiedBytes = fs.readFileSync(verifiedArtifactPath);
-  const source = JSON.parse(sourceBytes.toString('utf8'));
-  const verified = JSON.parse(verifiedBytes.toString('utf8'));
+  const source = readJson(sourceReceiptPath);
+  const verified = readJson(verifiedArtifactPath);
 
   if (!parent.candidate || parent.candidate.candidate_id !== identity.candidateId) {
     throw new Error('parent candidate identity does not match the requested candidate');
@@ -100,19 +97,14 @@ function assembleInstalledAcceptance({
     throw new Error('source receipt bundled-server SHA-256 differs from the verified artifact');
   }
 
-  const sourceSha256 = sha256(sourceBytes);
-  requireArtifactHash(verified.source_receipt_sha256, 'verified artifact source_receipt_sha256');
-  if (verified.source_receipt_sha256 !== sourceSha256) {
-    throw new Error(
-      'verified artifact source_receipt_sha256 differs from the source receipt bytes',
-    );
-  }
+  const sourceBytes = fs.readFileSync(sourceReceiptPath);
+  const verifiedBytes = fs.readFileSync(verifiedArtifactPath);
   const installed = parent.child_receipts?.installed_acceptance;
   if (!installed) {
     throw new Error('parent receipt lacks child_receipts.installed_acceptance');
   }
   installed.source_artifact_path = relativeReceiptPath(parentReceiptPath, sourceReceiptPath);
-  installed.source_sha256 = sourceSha256;
+  installed.source_sha256 = sha256(sourceBytes);
   installed.artifact_path = relativeReceiptPath(parentReceiptPath, verifiedArtifactPath);
   installed.sha256 = sha256(verifiedBytes);
   installed.candidate_id = identity.candidateId;

@@ -8,16 +8,21 @@
 //! of accepting source `perl -c` refuses to compile.
 
 use perl_parser_core::{ParseError, Parser};
-use perl_tdd_support::{must_err_with, must_some_with, must_with};
 
 fn parse_err(code: &str) -> ParseError {
     let mut parser = Parser::new(code);
-    must_err_with(parser.parse(), format!("expected outright parse failure for `{code}`"))
+    match parser.parse() {
+        Ok(_) => panic!("expected outright parse failure for `{code}`"),
+        Err(err) => err,
+    }
 }
 
 fn parse_clean(code: &str) -> perl_parser_core::Node {
     let mut parser = Parser::new(code);
-    let ast = must_with(parser.parse(), format!("expected clean parse for `{code}`"));
+    let ast = match parser.parse() {
+        Ok(ast) => ast,
+        Err(err) => panic!("expected clean parse for `{code}`, got: {err:?}"),
+    };
     let blocking: Vec<_> =
         parser.get_errors().iter().filter(|error| error.blocks_clean_parse()).collect();
     assert!(
@@ -60,8 +65,8 @@ fn qualified_loop_control_labels_reject_exact_variant() {
 fn qualified_label_error_anchors_at_label() {
     let code = "my $x = 0; while ($x) { last FOO::BAR; }";
     let err = parse_err(code);
-    let anchor = must_some_with(err.location(), "qualified label error carries a location");
-    let label_at = must_some_with(code.find("FOO::BAR"), "probe present in source");
+    let anchor = err.location().expect("qualified label error carries a location");
+    let label_at = code.find("FOO::BAR").expect("probe present in source");
     assert_eq!(anchor, label_at, "anchor must be the label token start");
 }
 
@@ -77,8 +82,8 @@ fn qualified_label_survives_brace_fallback() {
         matches!(err, ParseError::QualifiedLoopControlLabel { .. }),
         "expected QualifiedLoopControlLabel for `{code}`, got: {err:?}"
     );
-    let anchor = must_some_with(err.location(), "qualified label error carries a location");
-    let label_at = must_some_with(code.find("FOO::BAR"), "probe present in source");
+    let anchor = err.location().expect("qualified label error carries a location");
+    let label_at = code.find("FOO::BAR").expect("probe present in source");
     assert_eq!(anchor, label_at, "anchor must be the label token start");
 }
 

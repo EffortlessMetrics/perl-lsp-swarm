@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// One fail-closed finding from the boundary verifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -609,7 +610,7 @@ fn tracked_packet_paths(
     repo_root: &Path,
     packet_root_declaration: &str,
 ) -> Option<BTreeSet<String>> {
-    let output = crate::git_environment::command()
+    let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .args(["ls-files", "-z", "--"])

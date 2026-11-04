@@ -6,9 +6,7 @@
 //!
 //! ## Features
 //!
-//! - **Preview boundary**: Jupyter-notebook + Perl cell selector admission only; transactional
-//!   lifecycle, mixed-language handling beyond selector admission, save semantics, cleanup, and
-//!   real editor receipts remain unproven (see `features.toml` / #7130 / #7132).
+//! - **Document Sync**: Full support for notebook lifecycle notifications
 //! - **Cell Tracking**: Maps cell URIs to their parent notebook
 //! - **Execution Summary**: Tracks cell execution order and success status (LSP 3.17)
 //!
@@ -39,32 +37,6 @@ fn did_close_params(uri: &str) -> Value {
     json!({
         "textDocument": { "uri": uri }
     })
-}
-
-/// Notebook type advertised by the preview `All` profile selector (`capability_map.rs`).
-const PREVIEW_NOTEBOOK_TYPE: &str = "jupyter-notebook";
-
-/// Cell language admitted into ordinary Perl document analysis for preview notebooks.
-const PREVIEW_CELL_LANGUAGE: &str = "perl";
-
-fn preview_notebook_type(notebook_type: Option<&str>) -> Result<&str, JsonRpcError> {
-    match notebook_type {
-        Some(PREVIEW_NOTEBOOK_TYPE) => Ok(PREVIEW_NOTEBOOK_TYPE),
-        _ => Err(invalid_params(
-            "Unsupported or missing notebookDocument.notebookType for preview notebook sync",
-        )),
-    }
-}
-
-fn cell_admits_perl_document_store(cell_doc: &Value) -> bool {
-    cell_doc
-        .get("languageId")
-        .and_then(|v| v.as_str())
-        .is_some_and(|language| language == PREVIEW_CELL_LANGUAGE)
-}
-
-fn cell_uri_in_perl_document_store(server: &LspServer, cell_uri: &str) -> bool {
-    server.documents_guard().contains_key(cell_uri)
 }
 
 /// Execution summary for a notebook cell (LSP 3.17)
@@ -327,9 +299,10 @@ impl LspServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("Missing notebookDocument.uri"))?;
 
-        let notebook_type = preview_notebook_type(
-            params.pointer("/notebookDocument/notebookType").and_then(|v| v.as_str()),
-        )?;
+        let notebook_type = params
+            .pointer("/notebookDocument/notebookType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("jupyter-notebook");
 
         let version = params
             .pointer("/notebookDocument/version")
@@ -376,23 +349,15 @@ impl LspServer {
                 .and_then(|v| i32::try_from(v).ok())
                 .unwrap_or(1);
 
-            if cell_admits_perl_document_store(cell_doc) {
-                let lang_id = cell_doc
-                    .get("languageId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(PREVIEW_CELL_LANGUAGE);
-                let did_open_params =
-                    did_open_params(cell_uri, lang_id, cell_version, text.to_string());
+            // Open cell as a text document using existing didOpen logic
+            let lang_id = cell_doc.get("languageId").and_then(|v| v.as_str()).unwrap_or("perl");
+            let did_open_params =
+                did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
-                self.handle_did_open(Some(did_open_params))?;
-                tracing::debug!(cell_uri, notebook_uri, "Notebook Perl cell opened");
-            } else {
-                tracing::debug!(
-                    cell_uri,
-                    notebook_uri,
-                    "Notebook cell omitted from Perl document store"
-                );
-            }
+            // Use existing didOpen handler for the cell
+            self.handle_did_open(Some(did_open_params))?;
+
+            tracing::debug!(cell_uri, notebook_uri, "Notebook cell opened");
         }
 
         // Create and store notebook state
@@ -502,26 +467,16 @@ impl LspServer {
                                 .and_then(|v| i32::try_from(v).ok())
                                 .unwrap_or(1);
 
-                            if cell_admits_perl_document_store(cell_doc) {
-                                let lang_id = cell_doc
-                                    .get("languageId")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(PREVIEW_CELL_LANGUAGE);
-                                let did_open_params = did_open_params(
-                                    cell_uri,
-                                    lang_id,
-                                    cell_version,
-                                    text.to_string(),
-                                );
+                            // Open new cell as text document
+                            let lang_id = cell_doc
+                                .get("languageId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("perl");
+                            let did_open_params =
+                                did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
-                                self.handle_did_open(Some(did_open_params))?;
-                                tracing::debug!(cell_uri, "New Perl notebook cell opened");
-                            } else {
-                                tracing::debug!(
-                                    cell_uri,
-                                    "Structure didOpen cell omitted from Perl document store"
-                                );
-                            }
+                            self.handle_did_open(Some(did_open_params))?;
+                            tracing::debug!(cell_uri, "New cell opened");
 
                             if !updated_cells.iter().any(|cell| cell.document == cell_uri) {
                                 updated_cells.push(NotebookCellState {
@@ -543,18 +498,11 @@ impl LspServer {
                                 .and_then(|v| v.as_str())
                                 .ok_or_else(|| invalid_params("Missing cell uri"))?;
 
-                            // Close admitted Perl cell text documents only
-                            if cell_uri_in_perl_document_store(self, cell_uri) {
-                                let did_close_params = did_close_params(cell_uri);
+                            // Close cell text document
+                            let did_close_params = did_close_params(cell_uri);
 
-                                self.handle_did_close(Some(did_close_params))?;
-                                tracing::debug!(cell_uri, "Admitted notebook cell closed");
-                            } else {
-                                tracing::debug!(
-                                    cell_uri,
-                                    "Skipped notebook cell close for non-admitted document"
-                                );
-                            }
+                            self.handle_did_close(Some(did_close_params))?;
+                            tracing::debug!(cell_uri, "Cell closed");
 
                             let previous_len = updated_cells.len();
                             updated_cells.retain(|cell| cell.document != cell_uri);
@@ -609,14 +557,6 @@ impl LspServer {
                         if let Some(changes) =
                             change_event.get("changes").and_then(|v| v.as_array())
                         {
-                            if !cell_uri_in_perl_document_store(self, cell_uri) {
-                                tracing::debug!(
-                                    cell_uri,
-                                    "Skipped notebook textContent for non-admitted cell"
-                                );
-                                continue;
-                            }
-
                             // Apply changes using existing didChange logic
                             let did_change_params = json!({
                                 "textDocument": {
@@ -687,18 +627,11 @@ impl LspServer {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| invalid_params("Missing cell uri"))?;
 
-                // Close admitted Perl cell text documents only
-                if cell_uri_in_perl_document_store(self, cell_uri) {
-                    let did_close_params = did_close_params(cell_uri);
+                // Close cell text document
+                let did_close_params = did_close_params(cell_uri);
 
-                    self.handle_did_close(Some(did_close_params))?;
-                    tracing::debug!(cell_uri, "Admitted notebook cell closed");
-                } else {
-                    tracing::debug!(
-                        cell_uri,
-                        "Skipped notebook didClose for non-admitted document"
-                    );
-                }
+                self.handle_did_close(Some(did_close_params))?;
+                tracing::debug!(cell_uri, "Cell closed");
             }
         }
 
@@ -974,212 +907,6 @@ mod tests {
             .ok_or("notebook missing after removing cell1")?;
         assert_eq!(notebook.cells.len(), 1);
         assert_eq!(notebook.cells[0].document, cell2_uri);
-
-        Ok(())
-    }
-
-    #[test]
-    fn notebook_did_open_rejects_unsupported_notebook_type_before_state_changes()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
-        let notebook_uri = "file:///unsupported-type.ipynb";
-        let cell_uri = "file:///unsupported-type.ipynb#cell1";
-
-        let error = server
-            .handle_notebook_did_open(Some(json!({
-                "notebookDocument": {
-                    "uri": notebook_uri,
-                    "notebookType": "custom-notebook",
-                    "version": 1,
-                    "cells": [{"kind": 2, "document": cell_uri}]
-                },
-                "cellTextDocuments": [{
-                    "uri": cell_uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $x = 1;\n"
-                }]
-            })))
-            .expect_err("unsupported notebook type should fail");
-
-        assert!(error.message.contains("notebookDocument.notebookType"));
-        assert!(server.notebook_store.get_notebook(notebook_uri).is_none());
-        assert!(!server.documents_guard().contains_key(cell_uri));
-
-        Ok(())
-    }
-
-    #[test]
-    fn notebook_did_open_rejects_missing_notebook_type_before_state_changes()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
-        let notebook_uri = "file:///missing-type.ipynb";
-        let cell_uri = "file:///missing-type.ipynb#cell1";
-
-        server
-            .handle_notebook_did_open(Some(json!({
-                "notebookDocument": {
-                    "uri": notebook_uri,
-                    "version": 1,
-                    "cells": [{"kind": 2, "document": cell_uri}]
-                },
-                "cellTextDocuments": [{
-                    "uri": cell_uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $x = 1;\n"
-                }]
-            })))
-            .expect_err("missing notebook type should fail");
-
-        assert!(server.notebook_store.get_notebook(notebook_uri).is_none());
-        assert!(!server.documents_guard().contains_key(cell_uri));
-
-        Ok(())
-    }
-
-    #[test]
-    fn notebook_did_open_admits_only_selector_matching_cells_to_document_store()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
-        let notebook_uri = "file:///mixed-language.ipynb";
-        let perl_uri = "file:///mixed-language.ipynb#perl";
-        let python_uri = "file:///mixed-language.ipynb#python";
-        let missing_lang_uri = "file:///mixed-language.ipynb#missing";
-
-        server.handle_notebook_did_open(Some(json!({
-            "notebookDocument": {
-                "uri": notebook_uri,
-                "notebookType": "jupyter-notebook",
-                "version": 1,
-                "cells": [
-                    {"kind": 2, "document": perl_uri},
-                    {"kind": 2, "document": python_uri},
-                    {"kind": 2, "document": missing_lang_uri}
-                ]
-            },
-            "cellTextDocuments": [
-                {
-                    "uri": perl_uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $x = 1;\n"
-                },
-                {
-                    "uri": python_uri,
-                    "languageId": "python",
-                    "version": 1,
-                    "text": "print('hi')\n"
-                },
-                {
-                    "uri": missing_lang_uri,
-                    "version": 1,
-                    "text": "1\n"
-                }
-            ]
-        })))?;
-
-        assert!(server.documents_guard().contains_key(perl_uri));
-        assert!(!server.documents_guard().contains_key(python_uri));
-        assert!(!server.documents_guard().contains_key(missing_lang_uri));
-
-        let notebook = server
-            .notebook_store
-            .get_notebook(notebook_uri)
-            .ok_or("notebook should be registered structurally")?;
-        assert_eq!(notebook.cells.len(), 3);
-
-        Ok(())
-    }
-
-    #[test]
-    fn notebook_structure_did_open_skips_non_perl_cells_for_document_store()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
-        let notebook_uri = "file:///structure-non-perl.ipynb";
-        let perl_uri = "file:///structure-non-perl.ipynb#perl";
-
-        server.handle_notebook_did_open(Some(json!({
-            "notebookDocument": {
-                "uri": notebook_uri,
-                "notebookType": "jupyter-notebook",
-                "version": 1,
-                "cells": [{"kind": 2, "document": perl_uri}]
-            },
-            "cellTextDocuments": [{
-                "uri": perl_uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": "my $x = 1;\n"
-            }]
-        })))?;
-
-        let python_uri = "file:///structure-non-perl.ipynb#python";
-        server.handle_notebook_did_change(Some(json!({
-            "notebookDocument": {
-                "uri": notebook_uri,
-                "version": 2
-            },
-            "change": {
-                "cells": {
-                    "structure": {
-                        "didOpen": [{
-                            "uri": python_uri,
-                            "languageId": "python",
-                            "version": 1,
-                            "text": "print('hi')\n"
-                        }]
-                    }
-                }
-            }
-        })))?;
-
-        assert!(!server.documents_guard().contains_key(python_uri));
-        assert!(server.notebook_store.get_notebook_for_cell(python_uri).is_some());
-
-        Ok(())
-    }
-
-    #[test]
-    fn notebook_text_content_skips_non_admitted_cells() -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
-        let notebook_uri = "file:///text-content-non-perl.ipynb";
-        let python_uri = "file:///text-content-non-perl.ipynb#python";
-
-        server.handle_notebook_did_open(Some(json!({
-            "notebookDocument": {
-                "uri": notebook_uri,
-                "notebookType": "jupyter-notebook",
-                "version": 1,
-                "cells": [{"kind": 2, "document": python_uri}]
-            },
-            "cellTextDocuments": [{
-                "uri": python_uri,
-                "languageId": "python",
-                "version": 1,
-                "text": "print('hi')\n"
-            }]
-        })))?;
-
-        assert!(!server.documents_guard().contains_key(python_uri));
-
-        server.handle_notebook_did_change(Some(json!({
-            "notebookDocument": {
-                "uri": notebook_uri,
-                "version": 2
-            },
-            "change": {
-                "cells": {
-                    "textContent": [{
-                        "document": python_uri,
-                        "version": 2,
-                        "changes": [{ "text": "print('bye')\n" }]
-                    }]
-                }
-            }
-        })))?;
-
-        assert!(!server.documents_guard().contains_key(python_uri));
 
         Ok(())
     }

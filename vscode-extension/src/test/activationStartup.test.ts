@@ -2,7 +2,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientStart = jest.fn(() => new Promise<void>(() => undefined));
 const mockLanguageClientStop = jest.fn(async () => undefined);
@@ -99,7 +98,7 @@ describe('extension activation startup scheduling (#3159)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    writeFakeTool(serverPath);
+    fs.writeFileSync(serverPath, '');
 
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -119,9 +118,9 @@ describe('extension activation startup scheduling (#3159)', () => {
     const activation = activate(makeContext(extensionRoot));
 
     await expect(
-      Promise.race([activation.then(() => 'activated' as const), delay(5_000)]),
+      Promise.race([activation.then(() => 'activated' as const), delay(250)]),
     ).resolves.toBe('activated');
-    await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 5_000);
+    await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 500);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
 

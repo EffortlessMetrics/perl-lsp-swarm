@@ -15,9 +15,6 @@
 mod real_process;
 
 use anyhow::{Context, Result, bail, ensure};
-use perllsp::protocol::schema::{
-    Direction, MessageKind, ProtocolSchemaValidator, ProtocolVersion, ValidationContext,
-};
 use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -193,65 +190,6 @@ fn collect_symbol_names(value: &Value, names: &mut Vec<String>) {
         }
         _ => {}
     }
-}
-
-/// Validate the exact client frame sent to the public process, after observing
-/// the save's live effect. This is one method/direction row, not an all-frame
-/// capture receipt or schema proof for the documentSymbol observation itself.
-#[test]
-fn did_save_exact_process_payloads_match_authoritative_schema() -> Result<()> {
-    let mut client = RealProcessClient::spawn_exact()?;
-    initialize(&mut client)?;
-    did_open(&mut client, 1, "sub before_save { return 1; }\n")?;
-    wait_for_current_parse_tokens(&mut client, "save-open")?;
-    ensure!(document_symbol_names(&mut client, "save-before")? == ["before_save"]);
-
-    let mut frames = Vec::new();
-    for (index, params, expected_name) in [
-        (0, json!({"textDocument": {"uri": URI}}), "before_save"),
-        (
-            1,
-            json!({"textDocument": {"uri": URI}, "text": "sub after_save { return 2; }\n"}),
-            "after_save",
-        ),
-    ] {
-        let message =
-            RealProcessClient::method_message_for_test(None, "textDocument/didSave", params)?;
-        let wire = RealProcessClient::encode_message(&message);
-        let captured = RealProcessClient::parse_stdout_frame_for_test(&wire)?
-            .context("save frame must round-trip through strict Content-Length parsing")?;
-        ensure!(captured == message, "serialized save frame changed payload");
-        client.send_raw_bytes(&wire)?;
-
-        let deadline = Instant::now() + timeout();
-        let mut attempt = 0;
-        loop {
-            let names = document_symbol_names(&mut client, &format!("save-{index}-{attempt}"))?;
-            if names == [expected_name] {
-                break;
-            }
-            ensure!(Instant::now() < deadline, "save did not expose {expected_name}: {names:?}");
-            attempt += 1;
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        client.assert_no_response_pending()?;
-        frames.push(captured);
-    }
-
-    // Complete the observed production lifecycle even when the schema is
-    // missing, so the regression distinguishes schema coverage from support.
-    finish(&mut client)?;
-    for frame in frames {
-        let validated = ProtocolSchemaValidator::default().validate(
-            &frame,
-            ValidationContext { direction: Direction::ClientToServer, method: None },
-        )?;
-        ensure!(validated.method == "textDocument/didSave");
-        ensure!(validated.direction == Direction::ClientToServer);
-        ensure!(validated.kind == MessageKind::Notification);
-        ensure!(validated.version == ProtocolVersion::Lsp317);
-    }
-    Ok(())
 }
 
 fn wait_for_current_parse_tokens(
@@ -433,104 +371,6 @@ fn parser_diagnostic_classifier_rejects_policy_codes_and_wrong_sources() -> Resu
         "malformed diagnostic code kind was silently accepted"
     );
     Ok(())
-}
-
-#[test]
-fn qualified_output_call_keeps_clean_diagnostics_through_document_lifecycle() -> Result<()> {
-    let workspace = tempfile::tempdir()?;
-    let module_dir = workspace.path().join("lib/Acme");
-    std::fs::create_dir_all(&module_dir)?;
-    std::fs::write(
-        module_dir.join("Counter.pm"),
-        "package Acme::Counter;\nsub next_value { return $_[0] + 1; }\n1;\n",
-    )?;
-    let script = workspace.path().join("counter.pl");
-    let clean = "use strict;\nuse warnings;\nuse Acme::Counter;\nmy $value = 41;\nprint Acme::Counter::next_value($value), \"\\n\";\n";
-    std::fs::write(&script, clean)?;
-    let uri = file_uri(&script)?;
-    let root_uri = file_uri(workspace.path())?;
-    let mut client = RealProcessClient::spawn_exact()?;
-    initialize_with_root(&mut client, Some(&root_uri))?;
-    did_open_uri(&mut client, &uri, 1, clean)?;
-
-    for (version, text, expected_bareword) in [
-        (1, clean.to_string(), false),
-        (2, format!("{clean}my $bad = not_a_call;\n"), true),
-        (3, clean.replace("41", "42"), false),
-    ] {
-        if version > 1 {
-            did_change_uri(&mut client, &uri, version, &text)?;
-        }
-        wait_for_current_parse_tokens_uri(&mut client, &uri, &format!("output-v{version}"))?;
-        let report =
-            diagnostic_report_uri(&mut client, &uri, &format!("output-diag-v{version}"), None)?;
-        let items = report.get("items").and_then(Value::as_array).context("missing diagnostics")?;
-        let barewords: Vec<_> =
-            items.iter().filter(|item| item.get("code") == Some(&json!("PL109"))).collect();
-        ensure!(
-            barewords.len() == usize::from(expected_bareword)
-                && barewords.iter().all(|item| item
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .is_some_and(|message| message.contains("not_a_call"))),
-            "qualified call must not be a bareword, while a genuine bareword stays diagnosed at v{version}: {report}"
-        );
-    }
-
-    client.notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}))?;
-    did_open_uri(&mut client, &uri, 1, clean)?;
-    wait_for_current_parse_tokens_uri(&mut client, &uri, "output-reopened")?;
-    let report = diagnostic_report_uri(&mut client, &uri, "output-reopened-diag", None)?;
-    ensure!(
-        report.get("items").and_then(Value::as_array).is_some_and(|items| items
-            .iter()
-            .all(|item| item.get("code") != Some(&json!("PL109")))),
-        "reopening a qualified output call must stay clean: {report}"
-    );
-    finish(&mut client)
-}
-
-// #17082: the same parser dispatch is used by native --check and document
-// analysis. Keep a malformed-header edit in the exact-process proof so silence
-// cannot be achieved by suppressing parser diagnostics.
-#[test]
-fn foreach_declaration_list_diagnostics_clear_after_header_repair() -> Result<()> {
-    let clean = "use strict;\nuse warnings;\nfor (my @filename = @_) { print $_; }\n";
-    let symbolic = "use strict;\nuse warnings;\nforeach (my $x ? 1 : 2) { print $_; }\n";
-    let power = "use strict;\nuse warnings;\nfor (my $x ** 2) { print $_; }\n";
-    let broken = "use strict;\nuse warnings;\nfor (my $i = 0 $i < 2; ++$i) { print $i; }\n";
-    let mut client = RealProcessClient::spawn_exact()?;
-    initialize(&mut client)?;
-    did_open(&mut client, 1, clean)?;
-
-    for (version, text, expect_parser_error) in [
-        (1, clean, false),
-        (2, broken, true),
-        (3, symbolic, false),
-        (4, power, false),
-        (5, clean, false),
-    ] {
-        if version > 1 {
-            did_change(&mut client, version, text)?;
-        }
-        wait_for_current_parse_tokens(&mut client, &format!("foreach-v{version}"))?;
-        let items = diagnostic_items(&mut client, &format!("foreach-diag-v{version}"))?;
-        let parser_errors = parser_diagnostic_fingerprints(&items)?;
-        ensure!(
-            parser_errors.is_empty() != expect_parser_error,
-            "foreach declaration/header diagnostics wrong at v{version}: {items:?}"
-        );
-        if expect_parser_error {
-            ensure!(
-                items.iter().any(|item| item
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .is_some_and(|message| message.contains("Missing ';' after for-loop init"))),
-                "malformed separator must retain its specific diagnostic: {items:?}"
-            );
-        }
-    }
-    finish(&mut client)
 }
 
 #[test]

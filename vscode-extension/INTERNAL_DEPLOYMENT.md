@@ -47,27 +47,15 @@ The simplest approach for internal deployment.
 
    ```bash
    cd vscode-extension
-   # Use the Node and npm versions declared in package.json.
-   npm ci
-   npm run package
+   npm install
+   npm run bundle
+   npx vsce package
    ```
 
-   The package command builds the extension and validates the produced archive
-   against the repository's package inventory. If validation fails, fix the
-   reported payload or inventory mismatch before distributing the VSIX.
-
-4. **Install the validated extension** on developer machines. From the same
-   `vscode-extension` directory, resolve the filename selected by the package
-   command rather than copying a version from this guide:
-
+4. **Install extension** on developer machines:
    ```bash
-   VSIX_NAME=$(node -p "require('./scripts/package-vsix').vsixName")
-   code --install-extension "$VSIX_NAME"
+   code --install-extension perl-lsp-rs-0.8.3.vsix
    ```
-
-   When distributing the archive to another machine, use that exact filename
-   (or its absolute path) with `code --install-extension`. This packages only the
-   extension; the external `perllsp` binary from step 1 remains a separate install.
 
 ### Benefits
 

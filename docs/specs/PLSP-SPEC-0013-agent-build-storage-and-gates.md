@@ -10,32 +10,33 @@ hardening status, PR disposition comments
 
 ## Current implementation status
 
-This spec governs agent proof reporting and storage hygiene. The strict opt-in
-route is `./scripts/cargo-admitted`; legacy recipes retain `cargo-safe` for
-compatibility without establishing private storage or strict admission.
-`storage-doctor` reports layout, not build capacity. This spec does not replace
+This spec is accepted as the agent proof and storage-hygiene contract. The
+current repo already routes agent Cargo proof through `./scripts/cargo-safe`,
+uses `./scripts/storage-doctor` as the storage receipt, and records gate timeout
+classification as control-plane evidence rather than product behavior proof.
+
+This spec governs how agents report local proof. It does not replace
 trust-lane CI routing, provider receipts, parser status, release gates, or
 support-tier evidence.
 
 ## Contract
 
-For supported Cargo work, select the smallest relevant exact command, inspect
-capacity, then execute only after host admission:
+Agent proof must use bounded build storage by default. The normal route for
+Cargo-backed checks is:
 
 ```bash
-./scripts/cargo-admitted --preflight check -p <crate> --lib --locked
-./scripts/cargo-admitted check -p <crate> --lib --locked
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe <cargo subcommand>
 ```
 
-Follow [Cargo storage admission](../agents/CARGO_STORAGE.md) and
-[constrained-host budgets](../how-to/CONSTRAINED_CARGO_BUILDS.md). A smaller reserve
-requires an explicit scoped declaration with an operator-owned sizing basis;
-do not reduce `MIN_FREE_GB`/`MAX_USED_PCT` merely to bypass refusal.
+The `just agent-*` recipes are the preferred higher-level entry points when the
+agent needs their composed behavior. They must continue routing heavy Cargo
+work through `./scripts/cargo-safe`.
 
-Existing `just agent-*` recipes, Clippy and `xtask` examples below remain legacy
-forms. Those unsupported commands require separate root admission; do not invent
-`cargo-admitted clippy` or `cargo-admitted xtask` variants. Raw diagnostic commands
-require explicit root admission and must be reported when they affect proof.
+Raw `cargo`, raw `just`, or direct recipe commands are diagnostic tools, not the
+default proof path for agent maintenance. They are allowed when an operator is
+isolating a gate failure, reproducing an underlying command, or verifying a
+non-Cargo recipe that cannot yet run through `cargo-safe`. Any such use must be
+reported in the PR or disposition summary when it affects proof.
 
 Storage hygiene is part of the proof contract. Agents must run:
 
@@ -156,7 +157,7 @@ Docs-only PRs for this spec must run:
 
 ```bash
 git diff --check
-./scripts/cargo-safe xtask ci-hygiene check-doc-paths docs/specs
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask ci-hygiene check-doc-paths docs/specs
 ./scripts/storage-doctor
 ```
 
@@ -168,8 +169,8 @@ and the scoped check that passed.
 Gate-policy or budget PRs must also run:
 
 ```bash
-./scripts/cargo-safe xtask gate-policy check
-./scripts/cargo-safe xtask fmt --check
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask gate-policy check
+MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask fmt --check
 ```
 
 When a PR is fixing a timeout discovered in `pr-fast`, it should run the fixed

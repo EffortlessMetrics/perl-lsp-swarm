@@ -35,7 +35,6 @@
     "--completion",
     "--critic-compatibility",
     "--external-tools",
-    "--dev-environment",
     "--features-json",
     "--perltidy-compat-report",
     "--perlcritic-compat-report",
@@ -46,7 +45,6 @@
     "--ripr-head",
     "--ripr-fact-classes",
     "--ripr-out",
-    "--ripr-diff",
     "--version",
     "--help"
   ],

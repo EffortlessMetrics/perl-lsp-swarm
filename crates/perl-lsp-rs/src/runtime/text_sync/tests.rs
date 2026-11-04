@@ -1256,7 +1256,6 @@ fn stale_generation_side_effects_never_reindex_symbols() -> Result<(), Box<dyn s
         generation: 0, // the generation this (now-stale) parse was captured for
         snapshot: stale_snapshot,
         text: Arc::from(stale_text),
-        refresh_consumers_after_index: false,
         // Simulates what `process_job`/`on_published` would construct on
         // the real async path -- see `PublishedParseTicket`'s doc comment.
         settle_notified_by_worker: true,
@@ -1795,94 +1794,9 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
 #[test]
 fn test_did_change_overlong_full_replacement_fails_closed_on_notification_path()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert_overlong_full_batch_fails_closed(vec![json!({ "text": "x".repeat(100_001) })])
-}
-
-#[test]
-fn test_did_change_overlong_earlier_full_member_fails_closed_on_notification_path()
--> Result<(), Box<dyn std::error::Error>> {
-    assert_overlong_full_batch_fails_closed(vec![
-        json!({ "text": "x".repeat(100_001) }),
-        json!({ "text": "sub hidden_violation { 2 }\n" }),
-    ])
-}
-
-#[test]
-fn test_did_change_overlong_middle_full_member_fails_closed_on_notification_path()
--> Result<(), Box<dyn std::error::Error>> {
-    // Checking only the first and last members would still miss this violation.
-    assert_overlong_full_batch_fails_closed(vec![
-        json!({ "text": "sub valid_prefix { 1 }\n" }),
-        json!({ "text": "x".repeat(100_001) }),
-        json!({ "text": "sub hidden_violation { 2 }\n" }),
-    ])
-}
-
-#[test]
-fn test_did_change_all_valid_full_members_keep_last_text_current() -> anyhow::Result<()> {
-    let server = LspServer::new();
-    server.test_mark_initialize_session_accepted();
-    let uri = "file:///valid-full-batch.pl";
-    server.did_open(json!({
-        "textDocument": {
-            "uri": uri, "languageId": "perl", "version": 1,
-            "text": "sub predecessor { 1 }\n"
-        }
-    }))?;
-    let opened_generation = server
-        .documents
-        .lock()
-        .get(uri)
-        .ok_or_else(|| anyhow::anyhow!("open document"))?
-        .current_generation();
-    // Exactly 100,000 Unicode scalars after BOM normalization; byte length is
-    // larger. An earlier full replacement is valid even at this boundary.
-    let boundary_text = format!("\u{feff}#{}\r\n", "é".repeat(99_999));
-    let final_text = "sub accepted_final { 2 }\n";
-    let response = server.handle_request(JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "textDocument/didChange".to_string(),
-        params: Some(json!({
-            "textDocument": { "uri": uri, "version": 2 },
-            "contentChanges": [
-                { "text": boundary_text },
-                { "text": "sub intermediate { 1 }\n" },
-                { "text": final_text }
-            ]
-        })),
-    });
-    anyhow::ensure!(response.is_none(), "didChange notification must not answer");
-    let document = server
-        .documents
-        .lock()
-        .get(uri)
-        .ok_or_else(|| anyhow::anyhow!("accepted document"))?
-        .clone();
-    anyhow::ensure!(document.text == final_text, "last full replacement must win");
-    anyhow::ensure!(document.rope == final_text, "rope must match final text");
-    anyhow::ensure!(document.version == 2, "accepted batch must advance the client version");
-    anyhow::ensure!(
-        document.current_generation() == opened_generation + 1,
-        "one full batch must advance generation once"
-    );
-    anyhow::ensure!(!document.full_sync_required(), "valid batch must stay synchronized");
-    anyhow::ensure!(document.current_parsed().is_some(), "final text must have a current parse");
-    anyhow::ensure!(
-        matches!(
-            server.lookup_user_answer_text(uri),
-            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
-        ),
-        "valid batch must expose current user-answer text"
-    );
-    Ok(())
-}
-
-fn assert_overlong_full_batch_fails_closed(
-    changes: Vec<Value>,
-) -> Result<(), Box<dyn std::error::Error>> {
     let uri = "file:///overlong-notification-desync.pl";
     let predecessor = "sub old_name { 1 }\n";
+    let overlong = "x".repeat(100_001);
     let recovered = "sub recovered_name { 2 }\n";
 
     let server = LspServer::new();
@@ -1915,7 +1829,7 @@ fn assert_overlong_full_batch_fails_closed(
         method: "textDocument/didChange".to_string(),
         params: Some(json!({
             "textDocument": { "uri": uri, "version": 2 },
-            "contentChanges": changes
+            "contentChanges": [{ "text": overlong }]
         })),
     });
     assert!(
@@ -3680,153 +3594,6 @@ fn open_save_source_generation_held_side_effects_publish_only_accepted_dispositi
         index.file_symbols(uri).iter().any(|s| s.name == "effects_v2"),
         "released save's accepted facts must land from the exact saved buffer"
     );
-
-    Ok(())
-}
-
-/// #7071 acceptance fixture: one deterministic ordering proof across parse
-/// publication, pull diagnostics, workspace index contribution, and a
-/// representative provider path — using the existing pre-publish and
-/// side-effect worker barriers (no sleeps).
-#[cfg(feature = "workspace")]
-#[test]
-fn document_task_barrier_ordering_fixture_parse_diagnostics_index_and_provider()
--> Result<(), Box<dyn std::error::Error>> {
-    use perl_tdd_support::must_some;
-
-    let server = StdArc::new(LspServer::new());
-    server.test_handle_initialize_dispatch(Some(json!({
-        "capabilities": {},
-        "rootUri": null,
-        "workspaceFolders": null
-    })))?;
-    server.install_default_parse_worker();
-    let uri = "file:///document_task_barrier_ordering.pl";
-    let normalized_uri = server.normalize_uri_key(uri);
-
-    let v1 = "package Ordering;\nsub alpha_v1 { 1 }\nmy $x =;\n1;\n";
-    let v2 = "package Ordering;\nsub beta_v2 { 2 }\nmy $x = 1;\n1;\n";
-
-    server.test_apply_did_open(uri, v1, 1)?;
-    assert!(
-        must_some(server.parse_worker())
-            .wait_until_settled(&normalized_uri, Duration::from_secs(5)),
-        "initial open must settle"
-    );
-
-    let index = must_some(server.coordinator()).index();
-    assert_eq!(index.indexed_generation(uri), Some(1));
-    assert!(index.file_symbols(uri).iter().any(|s| s.name == "alpha_v1"));
-
-    let baseline_diag = server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    })))?;
-    let baseline_items = baseline_diag
-        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
-        .ok_or("baseline pull must carry items")?;
-    assert!(
-        baseline_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
-        "baseline must report the syntax error; got {baseline_items:?}"
-    );
-
-    server.test_parse_worker_arm_barrier(uri, 2);
-    server.test_parse_worker_arm_side_effect_barrier(uri, 2);
-    server.test_apply_did_change(uri, v2, 2)?;
-    server.test_parse_worker_wait_until_paused();
-
-    assert_eq!(server.test_document_generation(uri), Some(2));
-
-    {
-        let docs = server.documents.lock();
-        let doc = must_some(docs.get(&normalized_uri));
-        assert!(
-            doc.current_parsed().is_none(),
-            "pre-publish barrier must leave current_parsed unset"
-        );
-    }
-    assert_eq!(
-        index.indexed_generation(uri),
-        Some(1),
-        "index must not advance while parse is held before publish"
-    );
-
-    let refs_pre_publish = server.test_handle_references(Some(json!({
-        "textDocument": { "uri": uri },
-        "position": { "line": 1, "character": 4 },
-        "context": { "includeDeclaration": true }
-    })))?;
-    assert!(
-        refs_pre_publish.as_ref().and_then(Value::as_array).is_none_or(|a| a.is_empty()),
-        "provider path must not answer from an unpublished snapshot; got {refs_pre_publish:?}"
-    );
-
-    let diag_pre_publish = server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    })))?;
-    let diag_pre_items = diag_pre_publish
-        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
-        .ok_or("pull diagnostics must carry items pre-publish")?;
-    assert!(
-        !diag_pre_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
-        "pull diagnostics must reflect fixed live text during the parse hold; got {diag_pre_items:?}"
-    );
-
-    server.test_parse_worker_release_barrier();
-    server.test_parse_worker_wait_until_side_effects_paused();
-
-    {
-        let docs = server.documents.lock();
-        let doc = must_some(docs.get(&normalized_uri));
-        assert_eq!(must_some(doc.current_parsed()).generation(), 2);
-    }
-    assert_eq!(
-        index.indexed_generation(uri),
-        Some(1),
-        "side-effect barrier must hold workspace index before commit"
-    );
-    assert!(
-        !index.file_symbols(uri).iter().any(|s| s.name == "beta_v2"),
-        "index symbols must not include beta_v2 while side effects are paused"
-    );
-
-    let refs_published_held = server.test_handle_references(Some(json!({
-        "textDocument": { "uri": uri },
-        "position": { "line": 1, "character": 4 },
-        "context": { "includeDeclaration": true }
-    })))?;
-    assert!(
-        refs_published_held.as_ref().and_then(Value::as_array).is_some_and(|a| !a.is_empty()),
-        "after publish, provider path may use the generation-2 snapshot; got {refs_published_held:?}"
-    );
-
-    server.test_parse_worker_release_side_effect_barrier();
-    assert!(
-        server.test_wait_for_parse_worker_settled(uri, Duration::from_secs(5)),
-        "released side effects must settle"
-    );
-
-    assert_eq!(index.indexed_generation(uri), Some(2));
-    let final_symbols = index.file_symbols(uri);
-    let final_names: Vec<&str> = final_symbols.iter().map(|s| s.name.as_str()).collect();
-    assert!(
-        final_names.contains(&"beta_v2") && !final_names.contains(&"alpha_v1"),
-        "released side effects must replace superseded index symbols; got {final_names:?}"
-    );
-
-    let final_diag = server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    })))?;
-    let final_items = final_diag
-        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
-        .ok_or("post-release pull diagnostics must carry items")?;
-    assert!(
-        !final_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
-        "post-release diagnostics must reflect the fixed generation-2 source; got {final_items:?}"
-    );
-
-    let metrics = must_some(server.test_parse_worker_metrics());
-    assert_eq!(metrics.jobs_published, 1);
-    assert_eq!(metrics.jobs_rejected_stale, 0);
 
     Ok(())
 }

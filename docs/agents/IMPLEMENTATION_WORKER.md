@@ -43,9 +43,7 @@ unrelated roadmap, history, or orchestration material into a bounded worker cont
 | `crates/perl-lexer/` | Context-aware tokenizer |
 | `crates/perl-parser-core/` | Shared parser infrastructure |
 | `crates/perl-semantic-analyzer/` | Semantic analysis and resolution |
-| `crates/perl-workspace/` | Workspace file discovery, indexing, and observability |
-| `crates/perl-workspace-core/` | LSP-free project-facts substrate: files, packages, symbols, dynamic boundaries |
-| `crates/perl-line-index/` | Byte-oriented line/column index for incremental parsing |
+| `crates/perl-workspace-index/` | Cross-file indexing and lookup |
 
 Package-local instruction files remain the domain ownership context for the package
 being changed. Do not turn them into portfolio or session-state stores.

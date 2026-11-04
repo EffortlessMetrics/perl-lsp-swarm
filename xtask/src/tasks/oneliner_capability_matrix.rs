@@ -15,24 +15,20 @@
 //!
 //! # Instrument boundary
 //!
-//! Evidence discovery is a **Rust parse** via `syn::parse_file` plus an item
-//! walk (#14346). Each `Item::Macro` for `command_line_oneliner!` is extracted
-//! directly from the parsed token tree; `#[test]` functions are found via
-//! `Item::Fn`. Comments, literals, attribute spacing, and qualifier placement
-//! are all handled by the parser, not a bespoke lexical mask.
+//! Evidence discovery is a **lexical scan**, not a Rust parse: a code mask over
+//! comments and literals, plus per-item attribute inspection. That is the same
+//! instrument, and the same boundary, that `compat_inventory` accepted in #8880
+//! and that #14332 is rebuilding on `syn`.
 //!
 //! The boundary is stated rather than hidden because its failure mode is quiet:
-//! a construct the extractor misreads becomes a fixture that is counted without
+//! a construct the scan misreads becomes a fixture that is counted without
 //! running, which is the exact dishonesty this check exists to prevent. Where
-//! reachability cannot be established — a fixture inside a module with a
-//! suppressing outer attribute — extraction refuses instead of guessing.
+//! the scan cannot establish reachability — a fixture inside a suppressed
+//! module — extraction refuses instead of guessing.
 //!
-//! `macro_rules!` definition bodies are skipped: the names inside are templates,
-//! not citable fixtures. Top-level invocations of macros defined by
-//! `macro_rules!` in the same file are refused entirely, since their generated
-//! names are not visible at parse time. Inner module attributes (`#![cfg(...)]`)
-//! suppress their module's contents during the walk rather than causing a
-//! refusal, distinguishing them from outer `#[cfg(...)]` on a `mod` item.
+//! Further lexical edge cases belong in the follow-up rebuild (#14346), not in
+//! another round of individual patches: patching them one at a time is how the
+//! sibling scanner grew (#14332).
 //!
 //! What this check does and does not establish, stated exactly: it proves the
 //! citation is real and reachable — the fixture exists in the corpus as running
@@ -53,10 +49,8 @@
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
-use proc_macro2::TokenTree;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use syn::{AttrStyle, Attribute, Item, Meta};
 
 /// Generated matrix location.
 pub const MATRIX_PATH: &str = "docs/project/status/oneliner_capability_matrix.md";
@@ -607,340 +601,634 @@ fn subject_switches(subject: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Whether a single outer attribute suppresses the item's execution.
+/// A byte mask over `source` marking bytes that are real code — outside line
+/// and block comments, string and raw-string literals, and character literals.
 ///
-/// - `#[cfg(...)]` disables the item conditionally.
-/// - `#[ignore]` or `#[ignore = "..."]` marks a test as ignored.
-/// - `#[cfg_attr(..., ignore)]` ignores the test conditionally.
-/// - `#[cfg_attr(..., cfg(...))]` applies conditional compilation via the tail.
+/// Evidence must come from fixtures that actually run. A commented-out or
+/// quoted `command_line_oneliner!` reads exactly like a live one to a plain
+/// substring scan, so without this mask a deleted fixture could still be cited
+/// to earn support.
+fn code_mask(source: &str) -> Vec<bool> {
+    classify_spans(source).into_iter().map(|span| span == Span::Code).collect()
+}
+
+/// What a byte belongs to.
 ///
-/// `#[cfg_attr(feature, allow(dead_code))]` does NOT suppress: the tail must
-/// name `ignore` or `cfg`, not an arbitrary lint path.
-fn attr_suppresses_execution(attr: &Attribute) -> bool {
-    let path = attr.path();
-    if path.is_ident("cfg") || path.is_ident("ignore") {
-        return true;
-    }
-    if path.is_ident("cfg_attr")
-        && let Meta::List(ref list) = attr.meta
-    {
-        return cfg_attr_tail_suppresses_execution(list.tokens.clone());
-    }
-    false
+/// Comments and literals are both "not code", but they are not interchangeable:
+/// a literal's *delimiters* are the structure macro-argument parsing reads,
+/// while a comment may contain any text at all, including a convincing
+/// imitation of that structure. Collapsing the two into one boolean let a
+/// quoted comment supply a fixture's switch bundle. One classifier keeps the
+/// distinction available to the callers that need it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Span {
+    Code,
+    Comment,
+    Literal,
 }
 
-/// Whether any attribute in `attrs` suppresses execution.
-fn attrs_suppress_execution(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(attr_suppresses_execution)
-}
+/// Classify every byte of `source` as code, comment, or literal.
+fn classify_spans(source: &str) -> Vec<Span> {
+    let bytes = source.as_bytes();
+    let mut spans = vec![Span::Code; bytes.len()];
+    let mut i = 0usize;
 
-/// Whether any OUTER attribute (`#[...]`) in `attrs` suppresses execution.
-fn outer_attrs_suppress_execution(attrs: &[Attribute]) -> bool {
-    attrs.iter().filter(|a| matches!(a.style, AttrStyle::Outer)).any(attr_suppresses_execution)
-}
+    let fill = |spans: &mut Vec<Span>, from: usize, to: usize, span: Span| {
+        for slot in spans.iter_mut().take(to.min(bytes.len())).skip(from) {
+            *slot = span;
+        }
+    };
 
-/// Whether the inner attributes (`#![...]`) of an inline module contain a
-/// `cfg` predicate that makes the module's contents conditionally compiled.
-fn inner_attrs_have_cfg(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|a| matches!(a.style, AttrStyle::Inner(_)) && a.path().is_ident("cfg"))
-}
+    while i < bytes.len() {
+        let byte = bytes[i];
 
-/// Split a `TokenStream` on top-level commas into non-empty segments.
-///
-/// In proc_macro2, `Group` tokens are self-contained — their interior token
-/// stream is not exposed at the top level — so a comma inside a group never
-/// appears here. No depth tracking is required.
-fn split_on_commas(tokens: proc_macro2::TokenStream) -> Vec<proc_macro2::TokenStream> {
-    let mut segments: Vec<proc_macro2::TokenStream> = vec![proc_macro2::TokenStream::new()];
-    for tt in tokens {
-        if let TokenTree::Punct(ref p) = tt
-            && p.as_char() == ','
-        {
-            segments.push(proc_macro2::TokenStream::new());
+        if byte == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            fill(&mut spans, start, i, Span::Comment);
             continue;
         }
-        if let Some(last) = segments.last_mut() {
-            last.extend(std::iter::once(tt));
-        }
-    }
-    segments.into_iter().filter(|s| !s.is_empty()).collect()
-}
 
-/// Whether a `cfg_attr`'s tail arguments apply a suppressing attribute.
-///
-/// `#[cfg_attr(cond, ignore)]`, `#[cfg_attr(cond, cfg(...))]`, and nested
-/// `#[cfg_attr(cond, cfg_attr(..., ignore))]` suppress;
-/// `#[cfg_attr(cond, allow(dead_code))]` does not.
-fn cfg_attr_tail_suppresses_execution(tokens: proc_macro2::TokenStream) -> bool {
-    let segments = split_on_commas(tokens);
-    // segments[0] is the cfg predicate; segments[1..] are the applied attrs.
-    segments.iter().skip(1).any(attribute_segment_suppresses_execution)
-}
-
-fn attribute_segment_suppresses_execution(seg: &proc_macro2::TokenStream) -> bool {
-    match seg.clone().into_iter().next() {
-        Some(TokenTree::Ident(ref id)) if *id == "ignore" || *id == "cfg" => true,
-        Some(TokenTree::Ident(ref id)) if *id == "cfg_attr" => syn::parse2::<Meta>(seg.clone())
-            .ok()
-            .is_some_and(|meta| {
-                matches!(meta, Meta::List(ref list) if cfg_attr_tail_suppresses_execution(list.tokens.clone()))
-            }),
-        _ => false,
-    }
-}
-
-/// Extract name and switch bundle from `command_line_oneliner!` token args.
-///
-/// The macro signature is `($name:ident, $switches:literal, $case:expr)`.
-fn extract_oneliner_case(tokens: &proc_macro2::TokenStream, evidence: &mut CorpusEvidence) {
-    let segments = split_on_commas(tokens.clone());
-    let (Some(name_seg), Some(switch_seg)) = (segments.first(), segments.get(1)) else {
-        return;
-    };
-    let name = match name_seg.clone().into_iter().next() {
-        Some(TokenTree::Ident(id)) => id.to_string(),
-        _ => return,
-    };
-    if !is_identifier(&name) {
-        return;
-    }
-    let switch = match switch_seg.clone().into_iter().next() {
-        Some(TokenTree::Literal(lit)) => {
-            let Ok(lit_str) =
-                syn::parse2::<syn::LitStr>(proc_macro2::TokenStream::from(TokenTree::Literal(lit)))
-            else {
-                return;
-            };
-            lit_str.value()
-        }
-        _ => return,
-    };
-    if switch.is_empty() {
-        return;
-    }
-    evidence.switch_cases.insert(name, switch);
-}
-
-/// Whether a token stream contains a `command_line_oneliner!` invocation.
-fn tokens_contain_oneliner_invocation(tokens: &proc_macro2::TokenStream) -> bool {
-    let tts: Vec<TokenTree> = tokens.clone().into_iter().collect();
-    let mut i = 0;
-    while i < tts.len() {
-        match &tts[i] {
-            TokenTree::Ident(id) if *id == "command_line_oneliner" => {
-                if let (Some(TokenTree::Punct(p)), Some(TokenTree::Group(_))) =
-                    (tts.get(i + 1), tts.get(i + 2))
-                    && p.as_char() == '!'
-                {
-                    return true;
+        if byte == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let start = i;
+            let mut depth = 1usize;
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
                 }
-                i += 1;
             }
-            TokenTree::Group(g) => {
-                if tokens_contain_oneliner_invocation(&g.stream()) {
-                    return true;
-                }
-                i += 1;
+            fill(&mut spans, start, i, Span::Comment);
+            continue;
+        }
+
+        // String literals, including the `b`, `c`, and raw forms: `"`, `b"`,
+        // `c"`, `r"`, `br"`, `cr"`, and any of the raw ones with `#` padding.
+        // The prefix must start a token, or it is the tail of an identifier.
+        if matches!(byte, b'r' | b'b' | b'c') && starts_token(source, i) {
+            let mut cursor = i;
+            if matches!(bytes[cursor], b'b' | b'c') {
+                cursor += 1;
             }
-            _ => {
-                i += 1;
+            let raw = bytes.get(cursor) == Some(&b'r');
+            if raw {
+                cursor += 1;
+            }
+            let mut hashes = 0usize;
+            while bytes.get(cursor) == Some(&b'#') {
+                hashes += 1;
+                cursor += 1;
+            }
+            // `#` padding belongs to the raw forms only.
+            if bytes.get(cursor) == Some(&b'"') && (raw || hashes == 0) {
+                let start = i;
+                i = if raw {
+                    skip_raw_string(bytes, cursor + 1, hashes)
+                } else {
+                    skip_quoted_string(bytes, cursor + 1)
+                };
+                fill(&mut spans, start, i, Span::Literal);
+                continue;
             }
         }
+
+        if byte == b'"' {
+            let start = i;
+            i = skip_quoted_string(bytes, i + 1);
+            fill(&mut spans, start, i, Span::Literal);
+            continue;
+        }
+
+        // A `'` that does not open a literal is a lifetime: ordinary code.
+        if byte == b'\''
+            && let Some(end) = char_literal_end(source, i)
+        {
+            fill(&mut spans, i, end, Span::Literal);
+            i = end;
+            continue;
+        }
+
+        i += 1;
     }
-    false
+
+    spans
 }
 
-/// Walk parsed items and populate `evidence`.
+/// Byte index just past an ordinary quoted string whose body starts at `start`.
+fn skip_quoted_string(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+/// `source` with comment bytes replaced by spaces, leaving literals intact.
 ///
-/// `suppressed` is `true` when the enclosing scope is conditionally compiled
-/// (e.g. a module whose inner `#![cfg(...)]` disables its contents).
-fn extract_from_items(items: &[Item], evidence: &mut CorpusEvidence, suppressed: bool) {
-    for item in items {
-        match item {
-            Item::Macro(item_macro) => {
-                // macro_rules! definitions are templates, not citable fixtures.
-                if item_macro.mac.path.is_ident("macro_rules") {
-                    continue;
-                }
-                let item_suppressed = suppressed || attrs_suppress_execution(&item_macro.attrs);
-                if item_macro.mac.path.is_ident("command_line_oneliner") && !item_suppressed {
-                    extract_oneliner_case(&item_macro.mac.tokens, evidence);
-                }
+/// Macro-argument parsing needs the literal delimiters it is looking for to be
+/// real, while ignoring any imitation of them inside a comment.
+fn blank_comments(source: &str) -> String {
+    let spans = classify_spans(source);
+    let mut blanked = String::with_capacity(source.len());
+    for (index, character) in source.char_indices() {
+        if character == '\n' || spans.get(index) != Some(&Span::Comment) {
+            blanked.push(character);
+        } else {
+            for _ in 0..character.len_utf8() {
+                blanked.push(' ');
             }
-            Item::Fn(item_fn) => {
-                if suppressed || attrs_suppress_execution(&item_fn.attrs) {
-                    continue;
-                }
-                let has_test = item_fn.attrs.iter().any(|a| a.path().is_ident("test"));
-                if has_test {
-                    let name = item_fn.sig.ident.to_string();
-                    if !evidence.switch_cases.contains_key(&name) {
-                        evidence.proof_tests.insert(name);
+        }
+    }
+    blanked
+}
+
+/// Whether `byte` can appear inside a Rust identifier.
+///
+/// Used to decide token boundaries, so a keyword is not recognised in the tail
+/// of a longer name.
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// Byte index just past a raw string whose body starts at `start`.
+fn skip_raw_string(bytes: &[u8], start: usize, hashes: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let closing = i + 1 + hashes;
+            if bytes.get(i + 1..closing).is_some_and(|tail| tail.iter().all(|b| *b == b'#')) {
+                return closing;
+            }
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+/// Byte index just past a character literal starting at `quote`, or `None` when
+/// the quote opens a lifetime instead.
+fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
+    let rest = source.get(quote + 1..)?;
+    if rest.starts_with('\\') {
+        // Escaped: the literal ends at the next quote.
+        let close = rest.find('\'')?;
+        return Some(quote + 1 + close + 1);
+    }
+    let first = rest.chars().next()?;
+    let after = quote + 1 + first.len_utf8();
+    if source.as_bytes().get(after) == Some(&b'\'') { Some(after + 1) } else { None }
+}
+
+/// Qualifiers that may sit between an item's attributes and its keyword.
+const ITEM_QUALIFIERS: &[&str] = &["pub", "unsafe", "async", "default", "const"];
+
+/// Byte spans covering the bodies of `macro_rules!` definitions.
+///
+/// A fixture invocation inside a macro definition is a template, not a test.
+/// `cargo test` generates nothing from it until the macro is invoked, and then
+/// under whatever name the caller supplies — so counting the template would
+/// publish support for a fixture that never runs under the name cited.
+///
+/// Excluding the body is the honest reading rather than a refusal: the names
+/// inside are not fixture names, so they simply never become citable, and a row
+/// naming one fails the existing "cites no such corpus case" rule. A fixture
+/// that a macro genuinely *generates* stays invisible for the same reason,
+/// which understates rather than over-claims; #14346 owns making that an
+/// explicit refusal once discovery is a parse.
+fn macro_definition_bodies(source: &str, code: &[bool]) -> Vec<(usize, usize)> {
+    const KEYWORD: &str = "macro_rules!";
+    let bytes = source.as_bytes();
+    let mut bodies = Vec::new();
+
+    for (index, _) in source.match_indices(KEYWORD) {
+        // The keyword must start a token. `helper_macro_rules!(..)` is an
+        // ordinary invocation whose tail happens to spell the keyword, and
+        // treating it as a definition would blank a real fixture's arguments —
+        // the same token-boundary rule `code_mask` applies to a raw string's
+        // leading `r`.
+        if !code.get(index).copied().unwrap_or(false) || !starts_token(source, index) {
+            continue;
+        }
+        // Step over the macro's name to its opening delimiter. Anything else
+        // between the two means this is not a definition we can bound, so the
+        // region stays visible rather than being excluded on a guess.
+        let mut cursor = index + KEYWORD.len();
+        while let Some(&byte) = bytes.get(cursor) {
+            if matches!(byte, b'{' | b'(' | b'[') {
+                break;
+            }
+            if !byte.is_ascii_whitespace() && !is_identifier_byte(byte) {
+                break;
+            }
+            cursor += 1;
+        }
+        let Some(&open) = bytes.get(cursor) else {
+            continue;
+        };
+        let close = match open {
+            b'{' => b'}',
+            b'(' => b')',
+            b'[' => b']',
+            _ => continue,
+        };
+
+        let mut depth = 0usize;
+        let mut scan = cursor;
+        while scan < bytes.len() {
+            if code.get(scan).copied().unwrap_or(false) {
+                if bytes[scan] == open {
+                    depth += 1;
+                } else if bytes[scan] == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
                     }
                 }
             }
-            Item::Mod(item_mod) => {
-                let Some((_, sub_items)) = &item_mod.content else {
-                    // Out-of-line module declarations have no inline fixtures.
-                    continue;
-                };
-                if suppressed || outer_attrs_suppress_execution(&item_mod.attrs) {
-                    continue;
-                }
-                // Inner attributes (#![cfg(...)]) suppress the module's
-                // contents; the module itself is not refused here (that is
-                // reject_suppressed_modules's job for outer attributes).
-                let mod_suppressed = inner_attrs_have_cfg(&item_mod.attrs);
-                extract_from_items(sub_items, evidence, mod_suppressed);
-            }
-            _ => {}
+            scan += 1;
         }
+        // An unbalanced body is not bounded, so it is left visible.
+        if depth == 0 && scan < bytes.len() {
+            bodies.push((cursor, scan + 1));
+        }
+    }
+
+    bodies
+}
+
+/// The mask evidence discovery runs against: real code, minus the bodies of
+/// macro definitions, which describe tests rather than declaring them.
+fn evidence_mask(source: &str) -> Vec<bool> {
+    let mut code = code_mask(source);
+    // A comment may sit between `macro_rules!` and its body, so the definition
+    // is located on the blanked view for the same reason the item walks are:
+    // otherwise the search for the opening delimiter stops at the comment and
+    // the template stays visible.
+    let scan = blank_non_code(source, &code);
+    for (start, end) in macro_definition_bodies(&scan, &code) {
+        for flag in code.iter_mut().take(end).skip(start) {
+            *flag = false;
+        }
+    }
+    code
+}
+
+/// `source` with every non-code byte replaced by a space, preserving byte
+/// offsets so indices remain interchangeable with the original.
+///
+/// The backward attribute and qualifier walks below are neighbourhood scans:
+/// they step over whitespace and read whatever token they land on. Anything
+/// non-code in the way stops them short — a comment between an attribute and
+/// its item, or between a visibility qualifier and its keyword — and a
+/// suppressed fixture then counts as running evidence.
+///
+/// Blanking first is what keeps that from being a list of special cases: the
+/// walks see the same token neighbourhood the compiler does, and `code_mask`
+/// stays the one place that decides what is code.
+fn blank_non_code(source: &str, code: &[bool]) -> String {
+    let mut blanked = String::with_capacity(source.len());
+    for (index, character) in source.char_indices() {
+        if character == '\n' || code.get(index).copied().unwrap_or(false) {
+            blanked.push(character);
+        } else {
+            // Space per byte, so every later index still addresses the same token.
+            for _ in 0..character.len_utf8() {
+                blanked.push(' ');
+            }
+        }
+    }
+    blanked
+}
+
+/// Byte index where an item's own tokens begin, stepping back over any
+/// visibility or modifier qualifiers before its keyword.
+///
+/// `#[cfg(..)] pub mod x` puts `pub` between the attribute and `mod`, so
+/// searching for attributes directly above the keyword finds none and the
+/// suppression is missed.
+fn item_start_before(source: &str, index: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut start = index;
+    loop {
+        let mut cursor = start;
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        // A restriction such as `pub(crate)` precedes its keyword.
+        if cursor > 0 && bytes[cursor - 1] == b')' {
+            let mut depth = 0usize;
+            let mut scan = cursor;
+            while scan > 0 {
+                scan -= 1;
+                match bytes[scan] {
+                    b')' => depth += 1,
+                    b'(' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if depth != 0 {
+                return start;
+            }
+            cursor = scan;
+        }
+        let word_end = cursor;
+        while cursor > 0 && is_identifier_byte(bytes[cursor - 1]) {
+            cursor -= 1;
+        }
+        let Some(word) = source.get(cursor..word_end) else {
+            return start;
+        };
+        if !ITEM_QUALIFIERS.contains(&word) {
+            return start;
+        }
+        start = cursor;
     }
 }
 
-/// Extract corpus evidence from the conformance corpus source text.
+/// The attributes attached directly above the item containing `index`.
 ///
-/// Returns empty evidence when the source does not parse as valid Rust; the
-/// caller's "no corpus cases found" check will catch that.
-fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
-    let file = match syn::parse_file(source) {
-        Ok(f) => f,
-        Err(_) => return CorpusEvidence::default(),
+/// Attributes are consumed as bracket-balanced groups rather than as lines,
+/// because a `cfg_attr` may be wrapped across several lines. A line-based walk
+/// stops at the continuation line and misses the suppression entirely.
+///
+/// The walk is not capped at a fixed number of attributes. A cap returns a
+/// *partial* set, which reads to the caller exactly like "no suppression here"
+/// — so a `cfg` sitting one attribute beyond the limit silently revived a
+/// disabled fixture. The loop is bounded by the source instead: it stops at the
+/// first thing above that is not an attribute, and a group that fails to
+/// consume any bytes ends it rather than spinning.
+fn preceding_attributes(source: &str, index: usize) -> String {
+    let Some(head) = source.get(..index) else {
+        return String::new();
     };
-    let mut evidence = CorpusEvidence::default();
-    extract_from_items(&file.items, &mut evidence, false);
-    evidence
+    let bytes = head.as_bytes();
+    let mut end = head.len();
+    let mut collected: Vec<&str> = Vec::new();
+
+    loop {
+        // Step back over whitespace between the item and the attribute above.
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        if end == 0 || bytes[end - 1] != b']' {
+            break;
+        }
+        // Walk back to the matching `[` so a multiline group stays intact.
+        let mut depth = 0usize;
+        let mut start = end;
+        while start > 0 {
+            start -= 1;
+            match bytes[start] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // An attribute is `#[..]` or the inner form `#![..]`.
+        let marker = start.saturating_sub(if bytes.get(start.wrapping_sub(1)) == Some(&b'!') {
+            2
+        } else {
+            1
+        });
+        if depth != 0 || bytes.get(marker) != Some(&b'#') {
+            break;
+        }
+        let Some(text) = head.get(marker..end) else {
+            break;
+        };
+        // Without a fixed cap, termination rests on the walk moving left every
+        // iteration. Make that explicit rather than assumed.
+        if marker >= end {
+            break;
+        }
+        collected.push(text);
+        end = marker;
+    }
+
+    collected.reverse();
+    collected.join("\n")
 }
 
-/// Refuse to extract from a corpus that invokes a macro defined by
-/// `macro_rules!` in the same file, or passes `command_line_oneliner!` through
-/// another macro invocation (including inside inline modules).
+/// Whether attribute text disables the item or stops it from running.
 ///
-/// Generated fixtures are not discoverable at parse time: macro expansion
-/// produces names that only exist after the compiler has run, so those names
-/// never appear in the invocation list the parser sees. Rather than silently
-/// under-counting, this function fails closed and names the offending macro.
+/// A `cfg`-disabled fixture is not compiled and a `cfg_attr(..., ignore)` one is
+/// skipped, so neither is executed by the corpus command. Counting either as
+/// evidence would let a row claim support from a fixture that never runs.
 ///
-/// Exceptions: the `macro_rules` path itself (definitions, not invocations)
-/// and `command_line_oneliner` (the canonical corpus macro, handled
-/// separately). A parse failure bails with a diagnostic rather than silently
-/// accepting.
-fn refuse_macro_expansion_fixtures(source: &str) -> Result<()> {
-    let file = match syn::parse_file(source) {
-        Ok(f) => f,
-        Err(e) => bail!("failed to parse {CORPUS_PATH} with syn: {e}"),
+/// Whitespace is removed before matching rather than enumerated: `#[ cfg(..) ]`
+/// is valid Rust and means exactly what `#[cfg(..)]` means, so a spacing the
+/// patterns did not anticipate would otherwise let a disabled fixture certify
+/// support. Removing whitespace as a variable covers every spelling at once
+/// instead of adding a rule per layout. `rustfmt` would normalise these forms,
+/// but the checker must not depend on another gate being green to be sound.
+fn suppresses_execution(attributes: &str) -> bool {
+    let dense: String = attributes.chars().filter(|c| !c.is_whitespace()).collect();
+    dense.contains("#[cfg(") || dense.contains("#[cfg_attr(") || dense.contains("#[ignore")
+}
+
+/// Whether a match at `index` begins a token rather than continuing an
+/// identifier.
+///
+/// Every scan in this module looks for a literal, and a literal also occurs
+/// inside longer names: `helper_command_line_oneliner!`, `émacro_rules!`,
+/// `commodity`. Without this the scan reads an unrelated construct as the one it
+/// was looking for, which has been the single most repeated defect here. It
+/// belongs in one predicate applied at every site rather than at whichever site
+/// was last reported — and because it is one predicate, correcting it for
+/// Unicode identifiers corrects every scan at once.
+fn starts_token(source: &str, index: usize) -> bool {
+    let Some(head) = source.get(..index) else {
+        return true;
     };
-    let mut defined: BTreeSet<String> = BTreeSet::new();
-    collect_macro_rules_names(&file.items, &mut defined);
-    refuse_macro_invocations_in_items(&file.items, &defined, false)
+    // Rust identifiers are not ASCII. Inspecting one preceding *byte* reads a
+    // UTF-8 continuation byte as a non-identifier, so `écommand_line_oneliner!`
+    // passed as the fixture macro. Step back one whole character instead.
+    !head
+        .chars()
+        .next_back()
+        .is_some_and(|character| character.is_alphanumeric() || character == '_')
 }
 
-fn refuse_macro_invocations_in_items(
-    items: &[Item],
-    defined: &BTreeSet<String>,
-    suppressed: bool,
-) -> Result<()> {
-    for item in items {
-        match item {
-            Item::Macro(item_macro) => {
-                if item_macro.mac.path.is_ident("macro_rules") {
-                    continue;
-                }
-                let item_suppressed = suppressed || attrs_suppress_execution(&item_macro.attrs);
-                if item_suppressed || item_macro.mac.path.is_ident("command_line_oneliner") {
-                    continue;
-                }
-                let name = macro_path_string(&item_macro.mac.path);
-                if defined.contains(&name) {
-                    bail!(
-                        "{CORPUS_PATH} invokes `{name}!`, and `{name}` is defined by \
-                         `macro_rules!` in the same file. Fixtures generated by macro \
-                         expansion are not discoverable by this checker. Inline the \
-                         fixtures directly or use `command_line_oneliner!` instead."
-                    );
-                }
-                if tokens_contain_oneliner_invocation(&item_macro.mac.tokens) {
-                    bail!(
-                        "{CORPUS_PATH} passes `command_line_oneliner!` through `{name}!`. \
-                         Fixtures inside unexpanded macro arguments are not discoverable \
-                         and may not run. Inline fixtures at item level or use \
-                         `command_line_oneliner!` directly."
-                    );
-                }
-            }
-            Item::Mod(item_mod) => {
-                let Some((_, sub_items)) = &item_mod.content else {
-                    continue;
-                };
-                if suppressed || outer_attrs_suppress_execution(&item_mod.attrs) {
-                    continue;
-                }
-                let mod_suppressed = inner_attrs_have_cfg(&item_mod.attrs);
-                refuse_macro_invocations_in_items(sub_items, defined, mod_suppressed)?;
-            }
-            _ => {}
-        }
+/// Whether the `mod` keyword starts at `index`.
+///
+/// Matched as a token rather than the literal `"mod "`: `mod\tname` and a name
+/// on the next line are both valid Rust, and missing them would let a suppressed
+/// module's fixtures count as running evidence. Callers pass the blanked view,
+/// so `mod/* c */name` separates correctly too.
+fn mod_keyword_at(source: &str, index: usize) -> bool {
+    if !source.as_bytes()[index..].starts_with(b"mod") || !starts_token(source, index) {
+        return false;
     }
-    Ok(())
-}
-
-fn collect_macro_rules_names(items: &[Item], names: &mut BTreeSet<String>) {
-    for item in items {
-        match item {
-            Item::Macro(m) if m.mac.path.is_ident("macro_rules") => {
-                if let Some(ident) = &m.ident {
-                    names.insert(ident.to_string());
-                }
-            }
-            Item::Mod(m) => {
-                if let Some((_, sub_items)) = &m.content {
-                    collect_macro_rules_names(sub_items, names);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn macro_path_string(path: &syn::Path) -> String {
-    path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::")
+    // A keyword must be followed by separating whitespace, not more identifier.
+    source.as_bytes().get(index + 3).is_some_and(u8::is_ascii_whitespace)
 }
 
 /// Refuse to extract from a corpus containing a suppressed module.
 ///
-/// An outer `#[cfg(...)]`, `#[ignore]`, or `#[cfg_attr(..., ignore)]` on an
-/// `Item::Mod` makes the module's contents unreachable without the toolchain
-/// actually evaluating the predicate. Rather than silently over-count, this
-/// function fails closed and names the module.
+/// Attribute inspection is per-item: it cannot see that a fixture sits inside a
+/// `#[cfg(...)] mod { .. }` that is never compiled, so such a fixture would be
+/// counted as running evidence. Proving reachability properly needs a real Rust
+/// parser, which is more machinery than a documentation generator should carry.
 ///
-/// Inner `#![cfg(...)]` attributes are handled by the extraction walk (the
-/// walk marks the contents as suppressed rather than refusing), because they
-/// are semantically equivalent but expressed as a module-internal signal.
-///
-/// A parse failure returns `Ok(())`: an unparseable corpus has no discernible
-/// suppressed modules; the downstream "no corpus cases" check handles it.
+/// Failing closed is the honest alternative. The corpus has no suppressed
+/// module today, so this never fires; if one appears, the check stops and says
+/// what to do rather than quietly over-counting.
 fn reject_suppressed_modules(source: &str) -> Result<()> {
-    let file = match syn::parse_file(source) {
-        Ok(f) => f,
-        Err(_) => return Ok(()),
-    };
-    reject_suppressed_in_items(&file.items)
-}
-
-fn reject_suppressed_in_items(items: &[Item]) -> Result<()> {
-    for item in items {
-        let Item::Mod(item_mod) = item else { continue };
-        if outer_attrs_suppress_execution(&item_mod.attrs) {
-            bail!(
-                "{CORPUS_PATH} declares module `{}` under a suppressing attribute.                  Fixture reachability inside a disabled module cannot be established by                  attribute inspection, so evidence extraction stops rather than counting                  fixtures that may never compile. Move the fixtures out of the module, or                  extend the extractor with a real item walk.",
-                item_mod.ident
-            );
+    let code = evidence_mask(source);
+    let scan = blank_non_code(source, &code);
+    for (index, _) in source.match_indices("mod") {
+        if !code.get(index).copied().unwrap_or(false) || !mod_keyword_at(&scan, index) {
+            continue;
         }
-        if let Some((_, sub_items)) = &item_mod.content {
-            reject_suppressed_in_items(sub_items)?;
+        let attributes = preceding_attributes(&scan, item_start_before(&scan, index));
+        if suppresses_execution(&attributes) {
+            let name: String = scan
+                .get(index + "mod".len()..)
+                .unwrap_or_default()
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            bail!(
+                "{CORPUS_PATH} declares module `{name}` under a suppressing attribute. \
+                 Fixture reachability inside a disabled module cannot be established by \
+                 attribute inspection, so evidence extraction stops rather than counting \
+                 fixtures that may never compile. Move the fixtures out of the module, or \
+                 extend the extractor with a real item walk."
+            );
         }
     }
     Ok(())
+}
+
+/// Extract corpus evidence from the conformance corpus source text.
+fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
+    let mut evidence = CorpusEvidence::default();
+    let code = evidence_mask(source);
+    let scan = blank_non_code(source, &code);
+    let arguments = blank_comments(source);
+
+    for (index, _) in source.match_indices("command_line_oneliner!(") {
+        // `helper_command_line_oneliner!(..)` is a different macro whose name
+        // ends with this one; its arguments are not corpus fixtures.
+        if !code.get(index).copied().unwrap_or(false) || !starts_token(source, index) {
+            continue;
+        }
+        if suppresses_execution(&preceding_attributes(&scan, item_start_before(&scan, index))) {
+            continue;
+        }
+        // Read from the comment-blanked view throughout, so neither a comma
+        // nor a quote inside a comment can stand in for a real argument
+        // delimiter. That view keeps literals intact, so the bundle text is
+        // still the real one.
+        let start = index + "command_line_oneliner!(".len();
+        let Some(rest) = arguments.get(start..) else {
+            continue;
+        };
+        let Some(comma) = rest.find(',') else {
+            continue;
+        };
+        let Some(name) = arguments.get(start..start + comma).map(str::trim) else {
+            continue;
+        };
+        if name.is_empty() || !is_identifier(name) {
+            continue;
+        }
+        let after_name = start + comma + 1;
+        let Some(after) = arguments.get(after_name..) else {
+            continue;
+        };
+        let Some(open) = after.find('"') else {
+            continue;
+        };
+        let body = after_name + open + 1;
+        let Some(tail) = arguments.get(body..) else {
+            continue;
+        };
+        let Some(close) = tail.find('"') else {
+            continue;
+        };
+        let Some(bundle) = arguments.get(body..body + close) else {
+            continue;
+        };
+        evidence.switch_cases.insert(name.to_string(), bundle.to_string());
+    }
+
+    // Free `#[test]` functions: the corpus's typed-proof and negative-control
+    // targets. Macro-generated cases are already captured above.
+    for (index, _) in source.match_indices("#[test]") {
+        if !code.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(rest) = source.get(index..) else {
+            continue;
+        };
+        // The declaration must be real code. A `fn ` inside a doc attribute,
+        // string, or comment between the attribute and the declaration would
+        // otherwise supply the fixture name.
+        let Some(fn_offset) = rest.match_indices("fn ").map(|(offset, _)| offset).find(|offset| {
+            code.get(index + offset).copied().unwrap_or(false)
+                && starts_token(source, index + offset)
+        }) else {
+            continue;
+        };
+        // Only accept the declaration that actually follows the attribute.
+        // Anything between them must be whitespace or further attributes, so a
+        // `#[test]` with no declaration of its own cannot borrow the name of a
+        // later function.
+        // Read the gap from the blanked view: a `;` or a `#[ignore]` inside a
+        // comment there is not part of the declaration and must not decide it.
+        let Some(gap) = scan.get(index + "#[test]".len()..index + fn_offset) else {
+            continue;
+        };
+        if gap.contains(['{', '}', ';']) {
+            continue;
+        }
+        // A test that is ignored, cfg-disabled, or conditionally ignored does
+        // not run, so it cannot evidence anything. Attributes may sit on either
+        // side of `#[test]`, so both neighbourhoods are inspected.
+        if suppresses_execution(gap) || suppresses_execution(&preceding_attributes(&scan, index)) {
+            continue;
+        }
+        let Some(after_fn) = rest.get(fn_offset + "fn ".len()..) else {
+            continue;
+        };
+        let name: String =
+            after_fn.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if name.is_empty() {
+            continue;
+        }
+        if !evidence.switch_cases.contains_key(&name) {
+            evidence.proof_tests.insert(name);
+        }
+    }
+
+    evidence
 }
 
 /// Whether `value` is a plausible Rust item name.
@@ -1107,7 +1395,6 @@ pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;
     let corpus = fs::read_to_string(root.join(CORPUS_PATH))
         .with_context(|| format!("failed to read {CORPUS_PATH}"))?;
-    refuse_macro_expansion_fixtures(&corpus)?;
     reject_suppressed_modules(&corpus)?;
     let evidence = extract_corpus_evidence(&corpus);
 
@@ -1273,7 +1560,6 @@ fn normalize_newlines(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::{must_err_with, must_some_with, must_with};
 
     const CORPUS_SAMPLE: &str = r####"
 command_line_oneliner!(e_print_literal, "-e", r#"print "hello\n";"#);
@@ -1300,8 +1586,8 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     }
 
     fn real_evidence() -> CorpusEvidence {
-        let root = must_with(project_root(), "project root");
-        let corpus = must_with(fs::read_to_string(root.join(CORPUS_PATH)), "corpus readable");
+        let root = project_root().expect("project root");
+        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
         extract_corpus_evidence(&corpus)
     }
 
@@ -1387,12 +1673,16 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
 
     fn expect_rejected(rows: &[CapabilityRow], fragment: &str) {
         let evidence = sample_evidence();
-        let error = must_err_with(
-            validate(rows, &evidence),
-            format!("expected validation to reject rows mentioning {fragment}"),
-        );
-        let message = error.to_string();
-        assert!(message.contains(fragment), "error {message:?} did not mention {fragment:?}");
+        match validate(rows, &evidence) {
+            Ok(()) => panic!("expected validation to reject rows mentioning {fragment}"),
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains(fragment),
+                    "error {message:?} did not mention {fragment:?}"
+                );
+            }
+        }
     }
 
     // ---- corpus extraction ------------------------------------------------
@@ -1465,10 +1755,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     #[test]
     fn committed_rows_validate_against_the_committed_corpus() {
         let evidence = real_evidence();
-        must_with(
-            validate(ROWS, &evidence),
-            "committed rows must be backed by the committed corpus",
-        );
+        validate(ROWS, &evidence).expect("committed rows must be backed by the committed corpus");
     }
 
     #[test]
@@ -1493,13 +1780,12 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             .filter(|row| row.layer == Layer::StructuredArgv)
             .any(|row| row.status.is_earned());
         for adapter in REQUIRED_SHELL_ADAPTERS {
-            let row = must_some_with(
-                ROWS.iter()
-                    .find(|row| row.layer == Layer::ShellAdapters && row.subject == *adapter),
-                "adapter row present",
-            );
+            let row = ROWS
+                .iter()
+                .find(|row| row.layer == Layer::ShellAdapters && row.subject == *adapter)
+                .expect("adapter row present");
             assert!(
-                !row.status.is_earned() || argv_earned,
+                !(row.status.is_earned() && !argv_earned),
                 "{adapter} cannot be earned while structured-argv decoding is not"
             );
         }
@@ -1590,13 +1876,14 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "    command_line_oneliner!(ghost_in_mod, \"-e\", \"print 1;\");\n",
             "}\n"
         );
-        let error = must_err_with(
-            reject_suppressed_modules(disabled_mod),
-            "a suppressed module was accepted",
-        );
-        let message = error.to_string();
-        assert!(message.contains("disabled_fixtures"), "{message}");
-        assert!(message.contains("reachability"), "{message}");
+        match reject_suppressed_modules(disabled_mod) {
+            Ok(()) => panic!("a suppressed module was accepted"),
+            Err(error) => {
+                let message = error.to_string();
+                assert!(message.contains("disabled_fixtures"), "{message}");
+                assert!(message.contains("reachability"), "{message}");
+            }
+        }
 
         // A visibility qualifier between the attribute and the keyword must not
         // hide the suppression.
@@ -1612,11 +1899,11 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         }
 
         // An ordinary module declaration is fine; the committed corpus has one.
-        must_with(reject_suppressed_modules("mod cpan_test_helpers;\n"), "plain module accepted");
-        must_with(reject_suppressed_modules("pub mod helpers;\n"), "plain pub module accepted");
-        let root = must_with(project_root(), "project root");
-        let corpus = must_with(fs::read_to_string(root.join(CORPUS_PATH)), "corpus readable");
-        must_with(reject_suppressed_modules(&corpus), "committed corpus has no suppressed module");
+        reject_suppressed_modules("mod cpan_test_helpers;\n").expect("plain module accepted");
+        reject_suppressed_modules("pub mod helpers;\n").expect("plain pub module accepted");
+        let root = project_root().expect("project root");
+        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
+        reject_suppressed_modules(&corpus).expect("committed corpus has no suppressed module");
     }
 
     /// Adding a typed proof target must not slip past the drift rule.
@@ -1625,9 +1912,12 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         let corpus = format!("{CORPUS_SAMPLE}\n#[test]\nfn brand_new_proof_target() {{}}\n");
         let evidence = extract_corpus_evidence(&corpus);
         assert!(evidence.proof_tests.contains("brand_new_proof_target"));
-        let error =
-            must_err_with(validate(&scaffold(), &evidence), "an uncited proof target was accepted");
-        assert!(error.to_string().contains("brand_new_proof_target"), "{error}");
+        match validate(&scaffold(), &evidence) {
+            Ok(()) => panic!("an uncited proof target was accepted"),
+            Err(error) => {
+                assert!(error.to_string().contains("brand_new_proof_target"), "{error}");
+            }
+        }
     }
 
     /// A negative control is cited as a boundary control, never as support, so
@@ -1642,7 +1932,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             }),
             "the negative control should be cited only as a boundary control"
         );
-        must_with(validate(ROWS, &evidence), "committed rows still validate");
+        validate(ROWS, &evidence).expect("committed rows still validate");
     }
 
     /// A cfg-disabled fixture is never compiled, so the corpus command never
@@ -1665,14 +1955,11 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "#[test]\n#[cfg_attr(windows, ignore)]\nfn conditionally_ignored() {}\n",
             "#[cfg_attr(windows, ignore)]\n#[test]\nfn conditionally_ignored() {}\n",
             "#[cfg(target_os = \"linux\")]\n#[test]\nfn platform_only() {}\n",
-            "#[cfg_attr(test, cfg(any()))]\n#[test]\nfn cfg_attr_cfg_disabled() {}\n",
-            "#[cfg_attr(test, cfg(any()))]\ncommand_line_oneliner!(cfg_attr_cfg_case, \"-e\", \"print 1;\");\n",
         ] {
             let evidence = extract_corpus_evidence(source);
             assert!(
-                evidence.proof_tests.is_empty() && evidence.switch_cases.is_empty(),
-                "suppressed item was captured from {source:?}: switch={:?} proof={:?}",
-                evidence.switch_cases,
+                evidence.proof_tests.is_empty(),
+                "suppressed test was captured from {source:?}: {:?}",
                 evidence.proof_tests
             );
         }
@@ -1764,10 +2051,11 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         );
 
         // Citing the phantom is refused by the existing unknown-fixture rule.
-        let mut row = must_some_with(
-            ROWS.iter().find(|row| row.layer == Layer::ParserBody && row.subject == "-e").cloned(),
-            "the -e row exists",
-        );
+        let mut row = ROWS
+            .iter()
+            .find(|row| row.layer == Layer::ParserBody && row.subject == "-e")
+            .cloned()
+            .expect("the -e row exists");
         row.evidence = &["phantom_case"];
         expect_rejected(&scaffold_with(row), "phantom_case");
 
@@ -1797,32 +2085,24 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         }
 
         // The keyword must start a token. An invocation whose name merely ends
-        // in `macro_rules` is ordinary code, but passing `command_line_oneliner!`
-        // through another macro is refused rather than counted or silently skipped.
+        // in `macro_rules` is ordinary code, and blanking its arguments would
+        // hide a real fixture without tripping the uncited-fixture rule.
         let tail_named = concat!(
             "helper_macro_rules!(\n",
             "    command_line_oneliner!(real_case, \"-ne\", \"print;\");\n",
             ");\n"
         );
-        let error = must_err_with(
-            refuse_macro_expansion_fixtures(tail_named),
-            "a wrapped oneliner invocation was accepted",
-        );
-        assert!(
-            error.to_string().contains("helper_macro_rules"),
-            "error did not name the wrapper macro: {error}"
-        );
         let evidence = extract_corpus_evidence(tail_named);
         assert!(
-            evidence.switch_cases.is_empty(),
-            "wrapped fixture was extracted: {:?}",
+            evidence.switch_cases.contains_key("real_case"),
+            "an invocation ending in `macro_rules` was treated as a definition: {:?}",
             evidence.switch_cases
         );
 
         // The committed corpus defines its fixture macro this way and still
         // yields every real invocation that follows it.
-        let root = must_with(project_root(), "project root");
-        let corpus = must_with(fs::read_to_string(root.join(CORPUS_PATH)), "corpus readable");
+        let root = project_root().expect("project root");
+        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
         assert!(corpus.contains("macro_rules! command_line_oneliner"), "corpus shape changed");
         let evidence = extract_corpus_evidence(&corpus);
         assert_eq!(evidence.switch_cases.len(), 20, "{:?}", evidence.switch_cases.keys());
@@ -1869,19 +2149,16 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "#[cfg(feature = \"x\")]\nmod\tdisabled {}\n",
             "#[cfg(feature = \"x\")]\nmod\n    disabled {}\n",
         ] {
-            let error = must_err_with(
-                reject_suppressed_modules(form),
-                format!("whitespace hid the suppressed module in {form:?}"),
-            );
-            assert!(error.to_string().contains("disabled"), "{error}");
+            match reject_suppressed_modules(form) {
+                Ok(()) => panic!("whitespace hid the suppressed module in {form:?}"),
+                Err(error) => assert!(error.to_string().contains("disabled"), "{error}"),
+            }
         }
 
         // A token match must not fire on an identifier that merely contains it.
-        for form in ["#[cfg(feature = \"x\")]\nfn modify() {}\n", "fn commodity() {}\n"] {
-            must_with(
-                reject_suppressed_modules(form),
-                format!("`mod` matched inside a word in {form:?}"),
-            );
+        for form in ["#[cfg(feature = \"x\")]\nfn modify() {}\n", "let commodity = 1;\n"] {
+            reject_suppressed_modules(form)
+                .unwrap_or_else(|error| panic!("`mod` matched inside a word in {form:?}: {error}"));
         }
     }
 
@@ -1920,18 +2197,18 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         );
 
         // …and the refusal must still name the module, not an empty string.
-        let error = must_err_with(
-            reject_suppressed_modules("#[cfg(feature = \"x\")]\nmod /* c */ disabled {}\n"),
-            "a comment hid the suppressed module",
-        );
-        assert!(
-            error.to_string().contains("`disabled`"),
-            "refusal did not name the module: {error}"
-        );
+        match reject_suppressed_modules("#[cfg(feature = \"x\")]\nmod /* c */ disabled {}\n") {
+            Ok(()) => panic!("a comment hid the suppressed module"),
+            Err(error) => assert!(
+                error.to_string().contains("`disabled`"),
+                "refusal did not name the module: {error}"
+            ),
+        }
 
         // Identifiers that merely contain a scanned literal stay untouched.
-        for form in ["fn modify() {}\n", "fn commodity() {}\n"] {
-            must_with(reject_suppressed_modules(form), "`mod` matched inside a word");
+        for form in ["fn modify() {}\n", "let commodity = 1;\n"] {
+            reject_suppressed_modules(form)
+                .unwrap_or_else(|error| panic!("`mod` matched inside a word: {error}"));
         }
     }
 
@@ -1976,7 +2253,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         }
 
         // …while the prefixes as ordinary identifiers stay code.
-        let identifiers = "type Br = i32; type B = i32; type Cr = i32;\ncommand_line_oneliner!(live, \"-e\", \"print 1;\");\n";
+        let identifiers = "let br = 1; let b = 2; let cr = 3;\ncommand_line_oneliner!(live, \"-e\", \"print 1;\");\n";
         assert!(extract_corpus_evidence(identifiers).switch_cases.contains_key("live"));
 
         // A Unicode-prefixed name whose tail spells a scanned token is a
@@ -2008,6 +2285,27 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "an attribute run hid the suppression: {:?}",
             extract_corpus_evidence(&many).switch_cases
         );
+    }
+
+    /// Blanking preserves byte offsets, so indices stay interchangeable with
+    /// the original source. A shifted index would silently misread every walk.
+    #[test]
+    fn blanking_preserves_byte_offsets() {
+        for source in [
+            "let s = \"héllo ✓\"; // näive\nmod a {}\n",
+            "let r = r##\"raw ✓ \"# text\"##;\nmod b {}\n",
+            "/* ✓ block */ mod c {}\n",
+            "let c = '✓';\nmod d {}\n",
+        ] {
+            let blanked = blank_non_code(source, &code_mask(source));
+            assert_eq!(blanked.len(), source.len(), "offsets shifted for {source:?}");
+            let keyword = source.find("mod ").expect("keyword present");
+            assert_eq!(
+                blanked.get(keyword..keyword + 4),
+                Some("mod "),
+                "keyword moved for {source:?}"
+            );
+        }
     }
 
     /// Pinning required forms to their layer stops a form from being moved out
@@ -2298,294 +2596,18 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
 
         let mut row = base_row();
         row.evidence = &["ghost_case"];
-        let error = must_err_with(
-            validate(&scaffold_with(row), &evidence),
-            "a commented-out fixture earned support",
-        );
-        assert!(error.to_string().contains("does not exist"));
+        match validate(&scaffold_with(row), &evidence) {
+            Ok(()) => panic!("a commented-out fixture earned support"),
+            Err(error) => assert!(error.to_string().contains("does not exist")),
+        }
     }
 
     /// Code context must not be over-trimmed: the live corpus still resolves,
     /// including its raw-string bodies and character literals.
     #[test]
-    fn syn_extraction_finds_all_live_corpus_cases() {
+    fn code_mask_keeps_the_live_corpus_visible() {
         let evidence = real_evidence();
         assert!(evidence.switch_cases.len() >= 18, "live cases lost: {:?}", evidence.switch_cases);
         assert!(evidence.proof_tests.contains("named_idioms_share_one_structural_table"));
-    }
-
-    // ---- syn-specific: delimiter variants, inline mods, cfg_attr, macros --
-
-    /// `command_line_oneliner!` with `[]` or `{}` delimiters is discovered
-    /// the same way as the canonical `()` form — the token content is
-    /// identical regardless of which delimiter syn gives us.
-    #[test]
-    fn spaced_bracket_and_brace_delimiters_are_discovered() {
-        let source = concat!(
-            "command_line_oneliner!(paren_case, \"-e\", \"print 1;\");\n",
-            "command_line_oneliner![bracket_case, \"-ne\", \"print;\"];\n",
-            "command_line_oneliner!{brace_case, \"-pe\", \"s/a/b/;\"}\n",
-            "#[test]\nfn proof_paren() {}\n",
-        );
-        let evidence = extract_corpus_evidence(source);
-        assert!(
-            evidence.switch_cases.contains_key("paren_case"),
-            "paren delimiter not found: {:?}",
-            evidence.switch_cases
-        );
-        assert!(
-            evidence.switch_cases.contains_key("bracket_case"),
-            "bracket delimiter not found: {:?}",
-            evidence.switch_cases
-        );
-        assert!(
-            evidence.switch_cases.contains_key("brace_case"),
-            "brace delimiter not found: {:?}",
-            evidence.switch_cases
-        );
-        assert!(evidence.proof_tests.contains("proof_paren"));
-    }
-
-    /// A fixture inside a plain inline module is discovered. A fixture inside
-    /// an inline module whose inner `#![cfg(...)]` disables it is suppressed
-    /// by the extraction walk (marked with the suppressed flag) rather than
-    /// causing a refusal.
-    #[test]
-    fn plain_inline_mod_fixture_is_discovered_and_cfg_inner_suppresses() {
-        // Plain inline mod: fixture must be found.
-        let plain = concat!(
-            "mod helpers {\n",
-            "    command_line_oneliner!(in_plain, \"-e\", \"print 1;\");\n",
-            "    #[test]\n",
-            "    fn plain_proof() {}\n",
-            "}\n"
-        );
-        let evidence = extract_corpus_evidence(plain);
-        assert!(
-            evidence.switch_cases.contains_key("in_plain"),
-            "inline mod fixture not found: {:?}",
-            evidence.switch_cases
-        );
-        assert!(evidence.proof_tests.contains("plain_proof"));
-
-        // Inline mod with inner #![cfg(...)]: fixture must be suppressed.
-        let inner_cfg = concat!(
-            "mod inner_disabled {\n",
-            "    #![cfg(feature = \"never\")]\n",
-            "    command_line_oneliner!(in_inner_cfg, \"-e\", \"print 1;\");\n",
-            "}\n"
-        );
-        let evidence = extract_corpus_evidence(inner_cfg);
-        assert!(
-            evidence.switch_cases.is_empty(),
-            "inner-cfg fixture was not suppressed: {:?}",
-            evidence.switch_cases
-        );
-
-        // The same module is not rejected by reject_suppressed_modules (outer
-        // attrs only trigger that check).
-        must_with(
-            reject_suppressed_modules(inner_cfg),
-            "inner-cfg mod must not be rejected by the outer-attr check",
-        );
-    }
-
-    /// A `#[cfg_attr(feature, allow(dead_code))]` on a fixture does NOT
-    /// suppress it. Only `cfg_attr` tails that apply `ignore` or `cfg` suppress.
-    #[test]
-    fn benign_cfg_attr_allow_on_fixture_still_counts() {
-        let source = concat!(
-            "#[cfg_attr(feature = \"extra\", allow(dead_code))]\n",
-            "command_line_oneliner!(benign_attr, \"-e\", \"print 1;\");\n",
-            "#[cfg_attr(test, allow(clippy::pedantic))]\n",
-            "#[test]\n",
-            "fn benign_fn_attr() {}\n",
-        );
-        let evidence = extract_corpus_evidence(source);
-        assert!(
-            evidence.switch_cases.contains_key("benign_attr"),
-            "benign cfg_attr suppressed a macro case: {:?}",
-            evidence.switch_cases
-        );
-        assert!(
-            evidence.proof_tests.contains("benign_fn_attr"),
-            "benign cfg_attr suppressed a proof test: {:?}",
-            evidence.proof_tests
-        );
-    }
-
-    /// A top-level invocation of a macro defined by `macro_rules!` in the
-    /// same file is refused with an error naming the macro. Invocations of
-    /// `command_line_oneliner!` and the `macro_rules` definition itself are
-    /// not refused.
-    #[test]
-    fn macro_rules_expansion_invocation_is_refused() {
-        let expansion = concat!(
-            "macro_rules! make {\n",
-            "    () => { command_line_oneliner!(fake, \"-e\", \"x;\"); };\n",
-            "}\n",
-            "make!();\n"
-        );
-        let error = must_err_with(
-            refuse_macro_expansion_fixtures(expansion),
-            "a macro expansion invocation was accepted",
-        );
-        let message = error.to_string();
-        assert!(message.contains("`make!`"), "error did not name the macro: {message}");
-
-        let module_expansion = concat!(
-            "mod extra {\n",
-            "    macro_rules! make {\n",
-            "        () => { command_line_oneliner!(new_case, \"-e\", \"x;\"); };\n",
-            "    }\n",
-            "    make!();\n",
-            "}\n"
-        );
-        let error = must_err_with(
-            refuse_macro_expansion_fixtures(module_expansion),
-            "module-local macro expansion was accepted",
-        );
-        assert!(
-            error.to_string().contains("`make!`"),
-            "module-local error did not name the macro: {error}"
-        );
-
-        // command_line_oneliner! invocations are exempt.
-        let only_canonical = concat!(
-            "macro_rules! command_line_oneliner {\n",
-            "    ($n:ident, $s:literal, $e:expr) => { #[test] fn $n() {} };\n",
-            "}\n",
-            "command_line_oneliner!(safe_case, \"-e\", \"print 1;\");\n"
-        );
-        must_with(
-            refuse_macro_expansion_fixtures(only_canonical),
-            "canonical macro invocations must be exempt",
-        );
-
-        // A source with no macro_rules at all is fine.
-        must_with(
-            refuse_macro_expansion_fixtures(
-                "command_line_oneliner!(also_safe, \"-e\", \"print 1;\");\n",
-            ),
-            "source with no macro_rules must pass",
-        );
-    }
-
-    /// A doc comment, line comment, or block comment that contains text
-    /// resembling a suppressing attribute does NOT suppress the fixture below
-    /// it. Only real parsed attributes trigger suppression.
-    #[test]
-    fn fake_suppressing_text_in_comments_does_not_suppress() {
-        // Doc comment with fake cfg text.
-        let doc = concat!(
-            "/// #[cfg(feature = \"never\")]\n",
-            "command_line_oneliner!(doc_comment_case, \"-e\", \"print 1;\");\n",
-        );
-        let evidence = extract_corpus_evidence(doc);
-        assert!(
-            evidence.switch_cases.contains_key("doc_comment_case"),
-            "doc comment text suppressed the fixture: {:?}",
-            evidence.switch_cases
-        );
-
-        // Line comment with fake cfg text.
-        let line = concat!(
-            "// #[cfg(feature = \"never\")]\n",
-            "command_line_oneliner!(line_comment_case, \"-e\", \"print 1;\");\n",
-        );
-        let evidence = extract_corpus_evidence(line);
-        assert!(
-            evidence.switch_cases.contains_key("line_comment_case"),
-            "line comment text suppressed the fixture: {:?}",
-            evidence.switch_cases
-        );
-
-        // Block comment with fake cfg text.
-        let block = concat!(
-            "/* #[cfg(feature = \"never\")] */\n",
-            "command_line_oneliner!(block_comment_case, \"-e\", \"print 1;\");\n",
-        );
-        let evidence = extract_corpus_evidence(block);
-        assert!(
-            evidence.switch_cases.contains_key("block_comment_case"),
-            "block comment text suppressed the fixture: {:?}",
-            evidence.switch_cases
-        );
-
-        // Doc attribute with fake ignore text (not an ignore attribute).
-        let doc_attr = concat!(
-            "#[doc = \"#[ignore] this is just docs\"]\n",
-            "#[test]\n",
-            "fn doc_attr_proof() {}\n",
-        );
-        let evidence = extract_corpus_evidence(doc_attr);
-        assert!(
-            evidence.proof_tests.contains("doc_attr_proof"),
-            "doc attribute text suppressed the proof test: {:?}",
-            evidence.proof_tests
-        );
-    }
-
-    /// Token spacing that is invisible to substring scans must still resolve
-    /// once discovery is a parse.
-    #[test]
-    fn spaced_macro_and_test_declaration_tokens_are_discovered() {
-        let source = concat!(
-            "command_line_oneliner! (spaced_macro, \"-e\", \"print 1;\");\n",
-            "#[test]\nfn\nspaced_proof() {}\n",
-        );
-        let evidence = extract_corpus_evidence(source);
-        assert!(
-            evidence.switch_cases.contains_key("spaced_macro"),
-            "spaced macro invocation not found: {:?}",
-            evidence.switch_cases
-        );
-        assert!(
-            evidence.proof_tests.contains("spaced_proof"),
-            "newline-separated test fn not found: {:?}",
-            evidence.proof_tests
-        );
-    }
-
-    /// Suppression on an outer inline module hides fixtures in nested modules;
-    /// an inner module without its own suppression stays visible when the
-    /// outer module is live.
-    #[test]
-    fn nested_module_suppression_composes_from_outer_cfg_only() {
-        let outer_disabled = concat!(
-            "#[cfg(feature = \"off\")]\n",
-            "mod outer {\n",
-            "    mod inner {\n",
-            "        command_line_oneliner!(nested_ghost, \"-e\", \"print 1;\");\n",
-            "    }\n",
-            "}\n",
-        );
-        assert!(
-            reject_suppressed_modules(outer_disabled).is_err(),
-            "outer cfg mod should be refused"
-        );
-        assert!(
-            extract_corpus_evidence(outer_disabled).switch_cases.is_empty(),
-            "nested fixture leaked through outer cfg: {:?}",
-            extract_corpus_evidence(outer_disabled).switch_cases
-        );
-
-        let outer_live = concat!(
-            "mod outer {\n",
-            "    mod inner {\n",
-            "        command_line_oneliner!(nested_live, \"-e\", \"print 1;\");\n",
-            "        #[test]\n",
-            "        fn nested_proof() {}\n",
-            "    }\n",
-            "}\n",
-        );
-        must_with(reject_suppressed_modules(outer_live), "live nested modules must not be refused");
-        let evidence = extract_corpus_evidence(outer_live);
-        assert!(
-            evidence.switch_cases.contains_key("nested_live"),
-            "nested live fixture missing: {:?}",
-            evidence.switch_cases
-        );
-        assert!(evidence.proof_tests.contains("nested_proof"));
     }
 }

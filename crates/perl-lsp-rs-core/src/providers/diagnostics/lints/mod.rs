@@ -130,24 +130,6 @@
 //! |------|----------|-------------|
 //! | `PL410` | Warning | `next`/`last`/`redo LABEL` references a label that is not defined in the file |
 //!
-//! ## Irrelevant wantarray branches (`wantarray_branch.rs`)
-//!
-//! | Code | Severity | Description |
-//! |------|----------|-------------|
-//! | `PL411` | Warning | `wantarray()` conditional whose branches perform no local work |
-//!
-//! ## Undefined methods (`undefined_method.rs`)
-//!
-//! | Code | Severity | Description |
-//! |------|----------|-------------|
-//! | `PL306` | Warning | `->method` is not in the inferred in-file class method table |
-//!
-//! ## Stray POD `=cut` (`stray_pod_cut.rs`)
-//!
-//! | Code | Severity | Description |
-//! |------|----------|-------------|
-//! | `PL412` | Warning | Line-initial `=cut` with no preceding POD opener hides the rest of the file |
-//!
 //! # Severity Levels
 //!
 //! Each lint produces diagnostics with appropriate severity:
@@ -190,11 +172,7 @@ pub mod role_conflicts;
 pub mod security;
 /// Source-filter module warning (PL702)
 pub mod source_filter;
-/// Stray `=cut` that opens POD and hides trailing code (PL412, issue #18771)
-pub mod stray_pod_cut;
 pub mod strict_warnings;
-/// Undefined method calls on a known in-file class (PL306, issue #18771)
-pub mod undefined_method;
 /// Unreachable code detection (PL406)
 pub mod unreachable_code;
 /// PL406 semantic traversal disposition registry (issue #10844)
@@ -203,5 +181,3 @@ pub mod unreachable_code_disposition;
 pub mod unused_imports;
 /// Perl version compatibility warnings (PL900)
 pub mod version_compat;
-/// Irrelevant `wantarray()` branch detection (PL411, issue #2993)
-pub mod wantarray_branch;

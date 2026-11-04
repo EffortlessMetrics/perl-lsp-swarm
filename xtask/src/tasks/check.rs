@@ -122,38 +122,41 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn check_task_run_routes_fmt_through_package_formatter() -> Result<()> {
-        if crate::test_support::FakeCargoChild::child_requested() {
-            return run(false, true, false);
-        }
-        let fake_cargo = crate::test_support::FakeCargoChild::run(
-            "tasks::check::tests::check_task_run_routes_fmt_through_package_formatter",
-        )?;
-        fake_cargo.ensure_success()?;
+        let fake_cargo = crate::test_support::FakeCargo::install()?;
 
-        let invocations = fake_cargo.invocations()?;
+        run(false, true, false)?;
+
+        let invocations = fake_cargo.invocations();
         assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));
-        fake_cargo.assert_package_formatting()?;
+        assert!(invocations.iter().any(|line| {
+            line.starts_with("fmt --manifest-path ") && line.ends_with(" -- --check")
+        }));
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
     fn check_task_run_preserves_all_check_order() -> Result<()> {
-        if crate::test_support::FakeCargoChild::child_requested() {
-            return run(false, false, true);
-        }
-        let fake_cargo = crate::test_support::FakeCargoChild::run(
-            "tasks::check::tests::check_task_run_preserves_all_check_order",
-        )?;
-        fake_cargo.ensure_success()?;
-        fake_cargo.assert_package_formatting()?;
-        let mut expected = vec![
-            "clippy --all-targets --all-features -- -D warnings".to_string(),
-            "metadata --format-version 1 --no-deps".to_string(),
-        ];
-        expected.extend(fake_cargo.expected_format_invocations());
-        expected.push("check --all-targets --all-features".to_string());
-        assert_eq!(fake_cargo.invocations()?, expected);
+        let fake_cargo = crate::test_support::FakeCargo::install()?;
+
+        run(false, false, true)?;
+
+        let invocations = fake_cargo.invocations();
+        assert_eq!(
+            invocations,
+            vec![
+                "clippy --all-targets --all-features -- -D warnings".to_string(),
+                "metadata --format-version 1 --no-deps".to_string(),
+                invocations
+                    .get(2)
+                    .filter(|line| {
+                        line.starts_with("fmt --manifest-path ") && line.ends_with(" -- --check")
+                    })
+                    .cloned()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("missing package fmt invocation"))?,
+                "check --all-targets --all-features".to_string(),
+            ]
+        );
         Ok(())
     }
 }

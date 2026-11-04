@@ -31,13 +31,10 @@ use super::lints::printf_format::check_printf_format;
 use super::lints::role_conflicts::check_role_conflicts;
 use super::lints::security::check_security_with_canonical_regex;
 use super::lints::source_filter::check_source_filter_risk;
-use super::lints::stray_pod_cut::check_stray_pod_cut;
 use super::lints::strict_warnings::check_strict_warnings_with_pragma_map;
-use super::lints::undefined_method::check_undefined_methods;
 use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
 use super::lints::version_compat::check_version_compat_with_pragma_map;
-use super::lints::wantarray_branch::check_irrelevant_wantarray_branches;
 use super::parse_errors::{parse_error_code, parse_error_severity};
 use super::regex_canonical::project_canonical_regex_diagnostics;
 use super::scope::scope_issues_to_diagnostics_with_semantics_ref;
@@ -622,10 +619,7 @@ impl DiagnosticsProvider {
             };
 
             let range_start = location.min(source_len);
-            let range_end = source
-                .get(range_start..)
-                .and_then(|suffix| suffix.chars().next())
-                .map_or(range_start, |next| range_start + next.len_utf8());
+            let range_end = range_start.saturating_add(1).min(source_len.saturating_add(1));
 
             let suggestion = build_parse_error_suggestion(error);
 
@@ -681,12 +675,6 @@ impl DiagnosticsProvider {
             }
             None => Vec::new(),
         };
-
-        // PL412 is a source-text scan of POD directives, not an AST lint.
-        // A stray `=cut` is visible in the bytes even when it amputates the
-        // rest of the file and leaves blocking parse errors; the #5089 gate
-        // would hide the one finding that explains the amputation.
-        check_stray_pod_cut(source, &mut diagnostics);
 
         // Skip lint/scope analysis when there are blocking parse errors —
         // the salvaged AST is unreliable and produces cascading false
@@ -781,12 +769,6 @@ impl DiagnosticsProvider {
 
             // Unreachable code detection (PL406)
             check_unreachable_code(ast, &mut diagnostics);
-
-            // Irrelevant wantarray() branches (PL411, issue #2993)
-            check_irrelevant_wantarray_branches(ast, &mut diagnostics);
-
-            // Undefined method calls on a known in-file class (PL306, issue #18771)
-            check_undefined_methods(ast, source, &mut diagnostics);
 
             // Duplicate hash key detection (PL408)
             check_duplicate_hash_keys(ast, &mut diagnostics);

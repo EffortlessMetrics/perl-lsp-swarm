@@ -218,7 +218,7 @@ fn main() -> Result<()> {
         Command::Gen { generator, count, seed } => {
             use proptest::prelude::*;
             use proptest::strategy::ValueTree;
-            use proptest::test_runner::{Config, RngAlgorithm, RngSeed, TestRunner};
+            use proptest::test_runner::{Config, TestRunner};
 
             let seed = match seed {
                 Some(s) => s,
@@ -237,14 +237,15 @@ fn main() -> Result<()> {
                 }
             };
 
-            let config = Config {
-                cases: count as u32,
-                rng_algorithm: RngAlgorithm::ChaCha,
-                rng_seed: RngSeed::Fixed(seed),
-                ..Config::default()
-            };
+            let config = Config { cases: count as u32, ..Config::default() };
 
-            let mut runner = TestRunner::new(config);
+            let mut runner = TestRunner::new_with_rng(
+                config,
+                proptest::test_runner::TestRng::from_seed(
+                    proptest::test_runner::RngAlgorithm::ChaCha,
+                    &seed.to_le_bytes(),
+                ),
+            );
 
             println!("# Generated with perl-corpus (seed: {})", seed);
             println!();

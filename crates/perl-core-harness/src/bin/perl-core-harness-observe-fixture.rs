@@ -56,11 +56,10 @@ fn emulate(argv: &[String]) -> Option<i32> {
         .filter(|argument| !argument.starts_with('-'))
         .cloned()
         .collect::<Vec<_>>();
-    let core = argv.iter().any(|argument| argument == "--core");
     let mode = fs::read_to_string(MODE_MARKER)
         .map(|raw| raw.trim().to_string())
         .unwrap_or_else(|_| "select".to_string());
-    match run_mode(&mode, &selectors, core) {
+    match run_mode(&mode, &selectors) {
         Ok(status) => Some(status),
         Err(error) => {
             eprintln!("observe-fixture: {error}");
@@ -69,21 +68,14 @@ fn emulate(argv: &[String]) -> Option<i32> {
     }
 }
 
-/// Upstream `--core` roots at the pinned revision; every other root
-/// directory (for example `porting`, `lib`) is suppressed under `--core`.
-const CORE_ROOTS: [&str; 13] = [
-    "base", "comp", "run", "cmd", "io", "re", "opbasic", "op", "uni", "mro", "class", "perf",
-    "test_pl",
-];
-
-fn run_mode(mode: &str, selectors: &[String], core: bool) -> io::Result<i32> {
+fn run_mode(mode: &str, selectors: &[String]) -> io::Result<i32> {
     match mode {
         "hang" => {
             // A mid-run observation: the member rows are emitted and flushed
             // (signalled through the readiness marker), then the process parks
             // so deadline/cancellation supervision can type the terminal state
             // from real retained evidence.
-            let rows = selected_rows(selectors, core)?;
+            let rows = selected_rows(selectors)?;
             write_rows(&rows)?;
             let _ = fs::write(READY_MARKER, "ready\n");
             park_forever();
@@ -91,25 +83,17 @@ fn run_mode(mode: &str, selectors: &[String], core: bool) -> io::Result<i32> {
         }
         "empty" => Ok(0),
         "select" => {
-            let rows = selected_rows(selectors, core)?;
+            let rows = selected_rows(selectors)?;
             write_rows(&rows)?;
             Ok(0)
         }
         "select_fail" => {
-            let rows = selected_rows(selectors, core)?;
+            let rows = selected_rows(selectors)?;
             write_rows(&rows)?;
             Ok(7)
         }
-        "select_stderr" => {
-            // Same selection on stdout, plus ordinary stderr output: paired
-            // equivalence must type this as a measured difference (#12286).
-            let rows = selected_rows(selectors, core)?;
-            write_rows(&rows)?;
-            eprintln!("fixture warning on ordinary stderr");
-            Ok(0)
-        }
         "duplicate_first" => {
-            let mut rows = selected_rows(selectors, core)?;
+            let mut rows = selected_rows(selectors)?;
             if let Some(first) = rows.first().cloned() {
                 rows.insert(1, first);
             }
@@ -117,13 +101,13 @@ fn run_mode(mode: &str, selectors: &[String], core: bool) -> io::Result<i32> {
             Ok(0)
         }
         "foreign_extra" => {
-            let mut rows = selected_rows(selectors, core)?;
+            let mut rows = selected_rows(selectors)?;
             rows.push("t/comp/foreign_extra.t".to_string());
             write_rows(&rows)?;
             Ok(0)
         }
         "drifted_row" => {
-            let mut rows = selected_rows(selectors, core)?;
+            let mut rows = selected_rows(selectors)?;
             if let Some(first) = rows.first_mut() {
                 // Leading-space drift: a row the strict decoder must type as
                 // malformed, never trim into an accepted member.
@@ -136,7 +120,7 @@ fn run_mode(mode: &str, selectors: &[String], core: bool) -> io::Result<i32> {
             // Emits `t/`-relative rows; the observation route binds the
             // canonical repository frame from the runner route, so these rows
             // must stay out of target instead of re-framing the stream.
-            let rows = selected_rows(selectors, core)?;
+            let rows = selected_rows(selectors)?;
             let relative = rows
                 .into_iter()
                 .map(|row| row.strip_prefix("t/").map(str::to_string).unwrap_or(row))
@@ -165,31 +149,8 @@ fn write_rows(rows: &[String]) -> io::Result<()> {
 /// Collect `.t` rows for the selector roots exactly like the emulated upstream
 /// walk: recursive per root, printed as repository-root-relative spellings and
 /// sorted, mirroring `_find_tests` plus `dump_tests` at the pinned ref.
-fn selected_rows(selectors: &[String], core: bool) -> io::Result<Vec<String>> {
+fn selected_rows(selectors: &[String]) -> io::Result<Vec<String>> {
     let mut rows = Vec::new();
-    if selectors.is_empty() {
-        // Upstream zero-file-argument form (for example `TEST --core
-        // --dumptests`): the runner expands its own roots internally. With
-        // `--core`, only the pinned core roots survive; without it, the
-        // stand-in walks every root directory present in its tree.
-        let mut roots = Vec::new();
-        for entry in fs::read_dir(".")? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                roots.push(entry.file_name().to_string_lossy().into_owned());
-            }
-        }
-        if core {
-            roots.retain(|root| CORE_ROOTS.contains(&root.as_str()));
-        }
-        roots.sort();
-        for root in &roots {
-            collect_dot_t(Path::new(root), root, &mut rows)?;
-        }
-        rows.sort();
-        rows.dedup();
-        return Ok(rows);
-    }
     for selector in selectors {
         collect_dot_t(Path::new(selector), selector, &mut rows)?;
     }

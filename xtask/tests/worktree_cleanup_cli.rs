@@ -20,10 +20,7 @@ use std::process::{Command, Stdio};
 const GH_BIN_ENV: &str = "XTASK_WORKTREE_CLEANUP_GH_BIN";
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
-    let status = xtask::git_environment::isolate(Command::new("git"))
-        .current_dir(dir)
-        .args(args)
-        .status()?;
+    let status = Command::new("git").current_dir(dir).args(args).status()?;
     if !status.success() {
         bail!("git {args:?} failed in {}", dir.display());
     }
@@ -95,10 +92,7 @@ fn commit_unpushed_change(path: &Path, filename: &str, contents: &str) -> Result
 /// exactly at the merged state) or doesn't (worktree has post-merge
 /// commits) the worktree's actual HEAD.
 fn worktree_head_sha(path: &Path) -> Result<String> {
-    let output = xtask::git_environment::isolate(Command::new("git"))
-        .current_dir(path)
-        .args(["rev-parse", "HEAD"])
-        .output()?;
+    let output = Command::new("git").current_dir(path).args(["rev-parse", "HEAD"]).output()?;
     if !output.status.success() {
         bail!("git rev-parse HEAD failed in {}", path.display());
     }

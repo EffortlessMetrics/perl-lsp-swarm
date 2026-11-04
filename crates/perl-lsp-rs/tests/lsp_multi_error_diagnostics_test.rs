@@ -8,26 +8,41 @@
 // way it does to production code.
 #![allow(clippy::print_stderr)]
 
-mod support;
-
+use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;
-use std::time::Duration;
-use support::lsp_harness::LspHarness;
-
-const DIAGNOSTIC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Test that LSP diagnostics include all parse errors from a single file (AC #451)
 #[test]
 fn test_451_lsp_reports_multiple_parse_errors() -> Result<(), Box<dyn std::error::Error>> {
     // AC:451 - Integration test for multiple error collection
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": {
-            "diagnostic": {
-                "dynamicRegistration": false
+    let server = LspServer::new();
+
+    // Initialize server with diagnostic support
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {
+                "textDocument": {
+                    "diagnostic": {
+                        "dynamicRegistration": false
+                    }
+                }
             }
-        }
-    })))?;
+        })),
+    };
+    let _ = server.handle_request(init_request);
+
+    // Send initialized notification
+    let initialized_notification = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    let _ = server.handle_request(initialized_notification);
 
     // Open a document with MULTIPLE syntax errors
     let uri = "file:///test_multiple_errors.pl";
@@ -41,17 +56,34 @@ print "world";  # Valid statement
 my $c = ;       # Error 3: missing expression
 "#;
 
-    harness.open(uri, content)?;
-    harness.barrier();
+    let did_open_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": content
+            }
+        })),
+    };
+    let _ = server.handle_request(did_open_request);
 
     // Request pull diagnostics to get all errors
-    let result = harness.request_with_timeout(
-        "textDocument/diagnostic",
-        json!({
+    let diagnostic_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/diagnostic".into(),
+        params: Some(json!({
             "textDocument": { "uri": uri }
-        }),
-        DIAGNOSTIC_REQUEST_TIMEOUT,
-    )?;
+        })),
+    };
+
+    let response =
+        server.handle_request(diagnostic_request).ok_or("Failed to get diagnostic response")?;
+    let result = response.result.ok_or("Response missing result field")?;
 
     // Verify we got a full diagnostic report
     assert_eq!(result["kind"], "full", "Should return full diagnostic report");
@@ -87,8 +119,26 @@ my $c = ;       # Error 3: missing expression
 #[test]
 fn test_451_lsp_reports_errors_in_nested_blocks() -> Result<(), Box<dyn std::error::Error>> {
     // AC:451 - Nested block error collection
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let server = LspServer::new();
+
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {}
+        })),
+    };
+    let _ = server.handle_request(init_request);
+
+    let initialized_notification = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    let _ = server.handle_request(initialized_notification);
 
     // Document with errors in different blocks
     let uri = "file:///test_nested.pl";
@@ -109,16 +159,33 @@ while (1) {
 }
 "#;
 
-    harness.open(uri, content)?;
-    harness.barrier();
+    let did_open_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": content
+            }
+        })),
+    };
+    let _ = server.handle_request(did_open_request);
 
-    let result = harness.request_with_timeout(
-        "textDocument/diagnostic",
-        json!({
+    let diagnostic_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/diagnostic".into(),
+        params: Some(json!({
             "textDocument": { "uri": uri }
-        }),
-        DIAGNOSTIC_REQUEST_TIMEOUT,
-    )?;
+        })),
+    };
+
+    let response =
+        server.handle_request(diagnostic_request).ok_or("Failed to get diagnostic response")?;
+    let result = response.result.ok_or("Response missing result field")?;
 
     let items = result["items"].as_array().ok_or("Expected items to be an array")?;
 
@@ -136,8 +203,26 @@ while (1) {
 #[test]
 fn test_451_lsp_respects_error_limit() -> Result<(), Box<dyn std::error::Error>> {
     // AC:451 - AC5: Error limit enforcement
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let server = LspServer::new();
+
+    let init_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({
+            "processId": 1,
+            "capabilities": {}
+        })),
+    };
+    let _ = server.handle_request(init_request);
+
+    let initialized_notification = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    let _ = server.handle_request(initialized_notification);
 
     // Generate many errors (more than typical limit)
     let mut content = String::from("#!/usr/bin/perl\n");
@@ -146,16 +231,33 @@ fn test_451_lsp_respects_error_limit() -> Result<(), Box<dyn std::error::Error>>
     }
 
     let uri = "file:///test_many_errors.pl";
-    harness.open(uri, &content)?;
-    harness.barrier();
+    let did_open_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": content
+            }
+        })),
+    };
+    let _ = server.handle_request(did_open_request);
 
-    let result = harness.request_with_timeout(
-        "textDocument/diagnostic",
-        json!({
+    let diagnostic_request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/diagnostic".into(),
+        params: Some(json!({
             "textDocument": { "uri": uri }
-        }),
-        DIAGNOSTIC_REQUEST_TIMEOUT,
-    )?;
+        })),
+    };
+
+    let response =
+        server.handle_request(diagnostic_request).ok_or("Failed to get diagnostic response")?;
+    let result = response.result.ok_or("Response missing result field")?;
 
     let items = result["items"].as_array().ok_or("Expected items to be an array")?;
 

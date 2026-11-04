@@ -559,8 +559,7 @@ def validate_topology(
 ) -> None:
     version = topology.get("schema")
     if type(version) not in (int, float) or version not in ((1, 2, 4) if allow_mapped_rc else (1, 2)):
-        allowed = "1 or 2 or 4" if allow_mapped_rc else "1 or 2"
-        raise BuildIdentityError(f"release topology schema must be {allowed}")
+        raise BuildIdentityError("release topology schema must be 1 or 2")
     if version == 4:
         if __package__:
             from .release_vsix_mapping import mapped_vsix_identity, mapping_from_topology

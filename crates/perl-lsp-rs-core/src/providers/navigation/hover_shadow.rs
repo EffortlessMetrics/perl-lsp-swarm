@@ -87,7 +87,6 @@ pub fn hover_shadow<Q: SemanticQueries>(
             &visible,
             symbol,
             ProviderFallbackState::Shadow,
-            None,
         ),
     );
 
@@ -170,8 +169,6 @@ pub fn hover_cutover<Q: SemanticQueries>(
     let visible = semantic_queries.visible_symbols_at(file_id, byte_offset, scope_id);
     let query_context = QueryContext::new(file_id, scope_id, Some(byte_offset));
     let definitions = semantic_queries.definitions(symbol, &query_context);
-    let boundary_at_position =
-        semantic_queries.dynamic_boundary_at(file_id, byte_offset, Some(symbol));
     let new_summary = semantic_hover_to_summary(entity_occ.as_ref(), &visible, symbol);
 
     // ── Legacy path (for fallback and receipt) ──
@@ -184,7 +181,6 @@ pub fn hover_cutover<Q: SemanticQueries>(
         &definitions,
         symbol,
         legacy_hover_text,
-        boundary_at_position.as_ref(),
     );
     let fallback_state = hover_result_fallback_state(&result);
 
@@ -195,13 +191,7 @@ pub fn hover_cutover<Q: SemanticQueries>(
         old_summary,
         new_summary,
         Vec::new(),
-        hover_fact_source_traces(
-            entity_occ.as_ref(),
-            &visible,
-            symbol,
-            fallback_state,
-            boundary_at_position.as_ref(),
-        ),
+        hover_fact_source_traces(entity_occ.as_ref(), &visible, symbol, fallback_state),
     );
 
     tracing::debug!(
@@ -228,7 +218,6 @@ fn classify_hover_result(
     definitions: &[DefinitionCandidate],
     symbol: &str,
     legacy_text: Option<String>,
-    boundary_at_position: Option<&OccurrenceFact>,
 ) -> HoverCutoverResult {
     match entity_occ {
         Some((ref entity, ref occurrence)) => {
@@ -271,11 +260,6 @@ fn classify_hover_result(
                 visible.iter().filter(|v| v.name == symbol).collect();
 
             if matching_visible.is_empty() {
-                if boundary_at_position.is_some() {
-                    return HoverCutoverResult::DynamicBoundary(
-                        build_position_scoped_dynamic_boundary_explanation(symbol),
-                    );
-                }
                 return HoverCutoverResult::LegacyFallback(legacy_text);
             }
 
@@ -399,23 +383,6 @@ fn build_ambiguous_explanation(
 }
 
 /// Build a hover explanation for a dynamic boundary entity.
-fn build_position_scoped_dynamic_boundary_explanation(symbol: &str) -> HoverExplanation {
-    let source = fact_source_phrase(
-        ProviderFactSourceKind::DynamicBoundary,
-        Provenance::DynamicBoundary,
-        Confidence::Low,
-        ProviderFactFreshness::Fresh,
-    );
-    let markdown = format!(
-        "**Dynamic construct** `{symbol}`\n\n\
-         ⚠️ This position is inside runtime-evaluated or dynamically loaded Perl \
-         (string eval, `do EXPR`, or similar). Static analysis cannot fully resolve \
-         symbols here.\n\n\
-         {source}"
-    );
-    HoverExplanation { markdown }
-}
-
 fn build_dynamic_boundary_explanation(
     entity: &EntityFact,
     _occurrence: &OccurrenceFact,
@@ -648,7 +615,6 @@ fn hover_fact_source_traces(
     visible: &[VisibleSymbol],
     symbol: &str,
     fallback_state: ProviderFallbackState,
-    boundary_at_position: Option<&OccurrenceFact>,
 ) -> Vec<ProviderFactTrace> {
     let mut traces = Vec::new();
 
@@ -664,20 +630,6 @@ fn hover_fact_source_traces(
             state,
             None,
             entity.anchor_id,
-            Some(1),
-        ));
-    }
-
-    if let Some(boundary) = boundary_at_position {
-        traces.push(ProviderFactTrace::new(
-            ProviderSurface::Hover,
-            ProviderFactSourceKind::DynamicBoundary,
-            Provenance::DynamicBoundary,
-            boundary.confidence,
-            ProviderFactFreshness::Fresh,
-            ProviderFallbackState::Blocked,
-            None,
-            Some(boundary.anchor_id),
             Some(1),
         ));
     }
@@ -1291,110 +1243,6 @@ mod tests {
                 ));
             }
             other => return Err(format!("expected Exact, got {:?}", other).into()),
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn cutover_dynamic_boundary_at_position_without_entity()
-    -> Result<(), Box<dyn std::error::Error>> {
-        struct PositionBoundaryStub {
-            boundary: OccurrenceFact,
-        }
-
-        impl SemanticQueries for PositionBoundaryStub {
-            fn symbol_at(
-                &self,
-                _file_id: FileId,
-                _byte_offset: u32,
-            ) -> Option<(EntityFact, OccurrenceFact)> {
-                None
-            }
-
-            fn definitions(
-                &self,
-                _symbol: &str,
-                _context: &QueryContext,
-            ) -> Vec<DefinitionCandidate> {
-                Vec::new()
-            }
-
-            fn references(&self, _entity_id: EntityId) -> Vec<OccurrenceFact> {
-                Vec::new()
-            }
-
-            fn visible_symbols_at(
-                &self,
-                _file_id: FileId,
-                _byte_offset: u32,
-                _scope_id: Option<ScopeId>,
-            ) -> Vec<VisibleSymbol> {
-                Vec::new()
-            }
-
-            fn method_candidates(
-                &self,
-                _receiver_package: &str,
-                _method_name: &str,
-            ) -> Vec<DefinitionCandidate> {
-                Vec::new()
-            }
-
-            fn rename_plan(&self, entity_id: EntityId, new_name: &str) -> RenamePlan {
-                RenamePlan::new(
-                    entity_id,
-                    String::new(),
-                    new_name.to_string(),
-                    vec![],
-                    vec![],
-                    vec![],
-                )
-            }
-
-            fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
-                SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
-            }
-
-            fn dynamic_boundary_at(
-                &self,
-                _file_id: FileId,
-                _byte_offset: u32,
-                _symbol: Option<&str>,
-            ) -> Option<OccurrenceFact> {
-                Some(self.boundary.clone())
-            }
-
-            fn dynamic_callable_may_be_visible_at(
-                &self,
-                _file_id: FileId,
-                _byte_offset: u32,
-                _symbol: &str,
-            ) -> Option<DynamicCallableEvidence> {
-                None
-            }
-        }
-
-        let boundary = OccurrenceFact {
-            id: OccurrenceId(4242),
-            kind: OccurrenceKind::DynamicBoundary,
-            entity_id: None,
-            anchor_id: AnchorId(4241),
-            scope_id: None,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-        };
-        let queries = PositionBoundaryStub { boundary };
-
-        let outcome = hover_cutover(None, &queries, "x", FileId(1), 12, None);
-
-        match &outcome.result {
-            HoverCutoverResult::DynamicBoundary(explanation) => {
-                assert!(explanation.markdown.contains("Dynamic construct"));
-                assert!(explanation.markdown.contains("runtime-evaluated"));
-            }
-            other => {
-                return Err(format!("expected DynamicBoundary, got {:?}", other).into());
-            }
         }
         Ok(())
     }

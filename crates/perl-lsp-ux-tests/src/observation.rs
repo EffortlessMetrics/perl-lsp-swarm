@@ -48,18 +48,28 @@
 //! server latency is a separate concern with its own authority. The loop is
 //! still bounded: at most one further evaluation happens once the bound passes.
 //!
-//! # Typed wait outcomes
+//! # Where the typed reason survives — and where it does not
 //!
-//! [`WaitEnd`] is retained by diagnostics and readiness wrappers so a scenario
-//! can distinguish a live deadline from an orderly server close or transport
-//! failure. `UxClient::wait_for_response` folds the reason (plus the child's
-//! real exit status) into its request error. A successful empty diagnostics
-//! publication remains distinct from every unsuccessful wait outcome.
+//! [`WaitEnd`] is produced by every wait here, but not every *caller* keeps it.
+//! Be precise about which layer you are relying on:
+//!
+//! - **Kept.** The substrate itself, and `UxClient::wait_for_response`, which
+//!   folds the reason (plus the child's real exit status) into its error.
+//! - **Discarded today.** The convenience wrappers above it collapse the
+//!   outcome to a plain value: `DiagnosticsTracker`'s waits end in `.ok()`,
+//!   `UxHarness::wait_for_active_document_ready` and
+//!   `wait_for_index_ready_event_after` in `.is_ok()`, and
+//!   `wait_for_diagnostics` / `wait_for_latest_diagnostics` in
+//!   `.unwrap_or_default()`. A scenario calling those still cannot tell a
+//!   closed stream from an expired bound.
+//!
+//! So "the harness can tell you why a wait ended" is true of this module and
+//! the request path, and not yet true end to end. Propagating the reason
+//! through those wrappers changes their signatures and their call sites, and is
+//! tracked as remaining work on the still-open #13319 rather than claimed here.
 
 use serde_json::Value;
-use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -139,14 +149,6 @@ impl WaitEnd {
     }
 }
 
-impl std::fmt::Display for WaitEnd {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.describe())
-    }
-}
-
-impl std::error::Error for WaitEnd {}
-
 /// A consistent, lock-free view of the inbox at one sequence point.
 #[derive(Debug, Clone)]
 pub struct InboxSnapshot {
@@ -199,57 +201,6 @@ pub struct Inbox {
 struct InboxInner {
     state: Mutex<InboxState>,
     signal: Condvar,
-    /// Event-value clones performed by in-flight raw-event waits. Test-only
-    /// so a waiter can prove it copied each retained event once, not once per
-    /// wake.
-    #[cfg(test)]
-    event_wait_clones: std::sync::atomic::AtomicUsize,
-}
-
-/// Per-waiter retained-event projection.
-///
-/// This is a copy cursor, not a capture-identity / post-transition cursor
-/// (#13559 / #13765). The waiter still observes the complete retained history;
-/// each wake copies only events newer than the last one it already holds.
-/// A drain (or any other prefix removal) resets the cursor so drained events
-/// cannot linger in the waiter-local view.
-#[derive(Default)]
-struct EventWaitProjection {
-    events: Vec<Value>,
-    first_id: Option<ObservationId>,
-    last_id: Option<ObservationId>,
-}
-
-impl EventWaitProjection {
-    /// Refresh this waiter-local view from `state`.
-    ///
-    /// Returns the index of the first event copied on this call (`0` when the
-    /// retained prefix was reset or the waiter had seen nothing yet).
-    fn sync(&mut self, state: &InboxState) -> usize {
-        let front_id = state.events.front().map(|(id, _)| *id);
-        let reset = match (self.first_id, front_id) {
-            (Some(cached), Some(front)) => cached != front,
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-        if reset {
-            self.events.clear();
-            self.first_id = None;
-            self.last_id = None;
-        }
-        let new_from = self.events.len();
-        for (id, value) in &state.events {
-            if self.last_id.is_some_and(|last| *id <= last) {
-                continue;
-            }
-            self.events.push(value.clone());
-            if self.first_id.is_none() {
-                self.first_id = Some(*id);
-            }
-            self.last_id = Some(*id);
-        }
-        new_from
-    }
 }
 
 impl Default for Inbox {
@@ -272,8 +223,6 @@ impl Inbox {
                     terminal: None,
                 }),
                 signal: Condvar::new(),
-                #[cfg(test)]
-                event_wait_clones: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
     }
@@ -437,57 +386,20 @@ impl Inbox {
     /// The counterpart to [`Self::wait_for_responses`]; see its note on why a
     /// wait copies only the buffer it actually inspects.
     ///
-    /// Each waiter keeps a copy cursor so a wake clones only events newer than
-    /// the last one it already observed. A drain resets that cursor. The
-    /// predicate still receives the complete retained history, oldest first —
-    /// this bounds copy work; it does not change event order or which events a
-    /// wait observes.
-    ///
     /// # Errors
     ///
     /// Returns the typed [`WaitEnd`].
     pub fn wait_for_raw_events<T>(
         &self,
         timeout: Duration,
-        mut select: impl FnMut(&[Value]) -> Option<T>,
+        select: impl FnMut(&[Value]) -> Option<T>,
     ) -> Result<T, WaitEnd> {
-        self.wait_for_raw_events_incremental(timeout, |events, _new_from| select(events))
-    }
-
-    /// Incremental event wait used by decoded event waits so they can decode
-    /// only the newly copied suffix.
-    ///
-    /// `select` receives the complete retained history and the index of the
-    /// first event copied on this wake (`0` after a reset or the first look).
-    pub(crate) fn wait_for_raw_events_incremental<T>(
-        &self,
-        timeout: Duration,
-        mut select: impl FnMut(&[Value], usize) -> Option<T>,
-    ) -> Result<T, WaitEnd> {
-        let projection = Rc::new(RefCell::new(EventWaitProjection::default()));
-        let for_project = Rc::clone(&projection);
-        let for_select = Rc::clone(&projection);
+        let mut select = select;
         self.wait_projected(
             timeout,
-            move |state| {
-                let new_from = for_project.borrow_mut().sync(state);
-                #[cfg(test)]
-                {
-                    let copied = for_project.borrow().events.len().saturating_sub(new_from);
-                    self.inner
-                        .event_wait_clones
-                        .fetch_add(copied, std::sync::atomic::Ordering::Relaxed);
-                }
-                new_from
-            },
-            move |new_from: &usize| select(&for_select.borrow().events, *new_from),
+            |state| state.events.iter().map(|(_, value)| value.clone()).collect::<Vec<_>>(),
+            move |events: &Vec<Value>| select(events),
         )
-    }
-
-    /// Event-value clones performed by [`Self::wait_for_raw_events`] on this inbox.
-    #[cfg(test)]
-    pub(crate) fn event_wait_clone_count(&self) -> usize {
-        self.inner.event_wait_clones.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn snapshot_of(state: &InboxState) -> InboxSnapshot {
@@ -1068,97 +980,6 @@ mod tests {
         });
 
         anyhow::ensure!(matched.is_ok(), "a predicate that reads the inbox must not deadlock");
-        Ok(())
-    }
-
-    /// A waiter held across N notifications must clone each event once, not
-    /// once per wake. Publishing from inside the predicate makes every wake
-    /// see exactly one new event, so a full-history re-copy is triangular.
-    #[test]
-    fn event_wait_clones_only_new_events_across_n_notifications() -> anyhow::Result<()> {
-        const N: usize = 32;
-        let inbox = Inbox::new();
-        let publisher = inbox.clone();
-        let mut published = 0_usize;
-
-        let matched = inbox.wait_for_raw_events(GENEROUS, |events| {
-            if published < N {
-                publisher.push_event(json!({
-                    "method": "window/logMessage",
-                    "params": { "message": published.to_string() }
-                }));
-                published += 1;
-            }
-            (events.len() == N).then_some(events.len())
-        })?;
-
-        anyhow::ensure!(matched == N, "predicate must observe the full retained history");
-        let clones = inbox.event_wait_clone_count();
-        let triangular = N * (N + 1) / 2;
-        anyhow::ensure!(
-            clones == N,
-            "event wait must clone each of {N} events once, got {clones} (triangular would be {triangular})"
-        );
-        Ok(())
-    }
-
-    /// Incremental copy must not change which events a wait observes: the
-    /// predicate still sees early retained events after later notifications.
-    #[test]
-    fn event_wait_predicate_still_sees_full_retained_history() -> anyhow::Result<()> {
-        const N: usize = 8;
-        let inbox = Inbox::new();
-        let publisher = inbox.clone();
-        let mut published = 0_usize;
-
-        let matched = inbox.wait_for_raw_events(GENEROUS, |events| {
-            if published < N {
-                let method = if published == 0 { "wanted/early" } else { "window/logMessage" };
-                publisher.push_event(json!({ "method": method, "params": { "n": published } }));
-                published += 1;
-            }
-            let has_early = events.iter().any(|event| event["method"] == "wanted/early");
-            (has_early && events.len() == N).then_some(events.len())
-        })?;
-
-        anyhow::ensure!(matched == N, "early event must remain visible after later wakes");
-        Ok(())
-    }
-
-    /// A drain mid-wait must reset the waiter-local view. Otherwise the
-    /// incremental cursor would keep drained events and change what a wait
-    /// observes.
-    #[test]
-    fn event_wait_does_not_observe_events_removed_by_drain() -> anyhow::Result<()> {
-        let inbox = Inbox::new();
-        let publisher = inbox.clone();
-        let mut evaluations = 0_u32;
-        let mut saw_stale_before_drain = false;
-
-        let matched = inbox.wait_for_raw_events(GENEROUS, |events| {
-            evaluations += 1;
-            match evaluations {
-                1 => {
-                    publisher.push_event(json!({ "method": "stale/drained" }));
-                    None
-                }
-                2 => {
-                    saw_stale_before_drain =
-                        events.len() == 1 && events[0]["method"] == "stale/drained";
-                    let _ = publisher.drain_events();
-                    publisher.push_event(json!({ "method": "fresh/after-drain" }));
-                    None
-                }
-                _ => {
-                    let only_fresh =
-                        events.len() == 1 && events[0]["method"] == "fresh/after-drain";
-                    only_fresh.then_some(events.len())
-                }
-            }
-        })?;
-
-        anyhow::ensure!(saw_stale_before_drain, "pre-drain view must contain the stale event");
-        anyhow::ensure!(matched == 1, "post-drain wait must observe only the fresh event");
         Ok(())
     }
 }

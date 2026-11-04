@@ -3,8 +3,8 @@ use perl_lsp_rs_core::providers::formatting::{
 };
 use perl_lsp_rs_core::tooling::perltidy::FormatterMode;
 use perl_lsp_rs_core::tooling::perltidy::native::{
-    FormatContext, FormatDisposition, FormatEngine, FormatExecutionStrategy,
-    FormatLineEndingDisposition, FormatReasonCode, FormatRequestTarget,
+    FormatContext, FormatDisposition, FormatEngine, FormatLineEndingDisposition, FormatReasonCode,
+    FormatRequestTarget,
 };
 use perl_lsp_rs_core::tooling::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 use std::sync::{
@@ -139,83 +139,6 @@ fn external_partial_range_refuses_without_native_substitution_or_spawn()
         "a refusal must never be followed by whitespace-fallback edits"
     );
     assert!(!invoked.load(Ordering::SeqCst), "unsafe external ranges must not spawn");
-    Ok(())
-}
-
-#[test]
-fn requested_target_and_execution_strategy_stay_independent_across_entry_points()
--> Result<(), Box<dyn std::error::Error>> {
-    let runtime = RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) };
-    let native = FormattingProvider::new(runtime.clone());
-    let external =
-        FormattingProvider::new(runtime).with_formatter_mode(FormatterMode::ExternalLegacy);
-    let source = "my$x=1;\n";
-    let whole_document_range = FormatRange::whole_document(source);
-    let partial_range = FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 4));
-
-    let native_document =
-        native.format_document_decision(source, &options(), &FormatContext::default())?;
-    assert_eq!(native_document.outcome.target, FormatRequestTarget::Document);
-    assert_eq!(native_document.outcome.execution, FormatExecutionStrategy::NativeDocument);
-
-    let native_range =
-        native.format_range_decision(source, &partial_range, &options(), &context())?;
-    assert!(matches!(native_range.outcome.target, FormatRequestTarget::Range { .. }));
-    assert_eq!(native_range.outcome.execution, FormatExecutionStrategy::NativeRangeOrIsland);
-
-    let external_document =
-        external.format_document_decision(source, &options(), &FormatContext::default())?;
-    assert_eq!(external_document.outcome.target, FormatRequestTarget::Document);
-    assert_eq!(external_document.outcome.execution, FormatExecutionStrategy::ExternalWholeDocument);
-
-    let external_whole_document_range = external.format_range_decision(
-        source,
-        &whole_document_range,
-        &options(),
-        &FormatContext::default(),
-    )?;
-    assert!(matches!(
-        external_whole_document_range.outcome.target,
-        FormatRequestTarget::Range { .. }
-    ));
-    assert_eq!(
-        external_whole_document_range.outcome.execution,
-        FormatExecutionStrategy::ExternalWholeDocument,
-        "whole-document external execution must not rewrite a range request into document authority"
-    );
-
-    let external_partial = external.format_range_decision(
-        source,
-        &partial_range,
-        &options(),
-        &FormatContext::default(),
-    )?;
-    assert!(matches!(external_partial.outcome.target, FormatRequestTarget::Range { .. }));
-    assert_eq!(
-        external_partial.outcome.execution,
-        FormatExecutionStrategy::ExternalPartialUnsupported
-    );
-    assert_ne!(
-        external_partial.outcome.target,
-        FormatRequestTarget::Document,
-        "negative control: range requests must not collapse to document target identity"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn invalid_range_admission_records_not_started_execution_without_substituting_document()
--> Result<(), Box<dyn std::error::Error>> {
-    let provider =
-        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
-    let range = FormatRange::new(FormatPosition::new(0, 5), FormatPosition::new(0, 2));
-    let decision = provider.format_range_decision("abcdef\n", &range, &options(), &context())?;
-
-    assert_eq!(decision.outcome.disposition, FormatDisposition::Refused);
-    assert!(matches!(decision.outcome.target, FormatRequestTarget::Range { .. }));
-    assert_eq!(decision.outcome.execution, FormatExecutionStrategy::NotStarted);
-    assert_ne!(decision.outcome.target, FormatRequestTarget::Document);
     Ok(())
 }
 

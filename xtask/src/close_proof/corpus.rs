@@ -72,7 +72,10 @@ pub struct FixtureDocument {
 
 impl FixtureDocument {
     pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
-        super::wire::from_json_str(json, "close_proof_contract_fixture")
+        serde_json::from_str(json).map_err(|error| CloseProofError::Schema {
+            field: "close_proof_contract_fixture".to_string(),
+            message: error.to_string(),
+        })
     }
 
     /// Deterministic serialization; a second generation produces no diff.
@@ -189,7 +192,10 @@ pub struct CorpusManifest {
 
 impl CorpusManifest {
     pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
-        super::wire::from_json_str(json, "corpus_manifest")
+        serde_json::from_str(json).map_err(|error| CloseProofError::Schema {
+            field: "corpus_manifest".to_string(),
+            message: error.to_string(),
+        })
     }
 
     pub fn validate(&self) -> Result<(), CloseProofError> {

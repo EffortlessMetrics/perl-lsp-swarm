@@ -22,9 +22,9 @@
 //!   Dynamic/Unavailable → block.
 
 use perl_semantic_facts::{
-    Confidence, EntityId, PlanBlocker, PlanBlockerReason, PlannedEdit, Provenance,
-    ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState,
-    ProviderSurface, RenamePlan,
+    Confidence, EntityId, PlanBlocker, PlanBlockerReason, PlannedEdit, PlannedEditCategory,
+    Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
+    ProviderFallbackState, ProviderSurface, RenamePlan,
 };
 use perl_workspace::semantic::queries::SemanticQueries;
 use perl_workspace::semantic_shadow_compare::{
@@ -142,9 +142,7 @@ pub struct RenameCutoverOutcome {
 pub enum RenamePackagePilotResult {
     /// The plan is eligible for the scoped pilot proof.
     Eligible {
-        /// Source-backed planned edits covered by the proof (any admitted
-        /// [`PlannedEditCategory`], including import-list and export-list
-        /// projections when blockers are absent).
+        /// The source-backed definition/reference edits covered by the proof.
         edits: Vec<PlannedEdit>,
     },
     /// The plan is not eligible for the scoped pilot proof.
@@ -166,6 +164,9 @@ pub enum RenamePackagePilotIneligibleReason {
     EmptyPlan,
     /// One or more blockers prevent authorizing the edit.
     Blocked,
+    /// The plan contains edit categories outside source-backed definition and
+    /// reference replacement.
+    UnsupportedEditCategory,
 }
 
 /// Outcome of a package/compiler-backed rename pilot proof request.
@@ -243,10 +244,10 @@ pub fn rename_cutover<Q: SemanticQueries>(
 /// Classify a semantic rename plan for a future package/compiler-backed pilot.
 ///
 /// This reuses the cutover receipt path but applies a narrower policy envelope:
-/// no blockers and at least one source-backed edit (any admitted
-/// [`PlannedEditCategory`]). The returned proof is not sufficient on its own for
-/// live package rename authorization; live callers must separately prove the
-/// materialized edit set, source-backed anchors, and workspace ambiguity guard.
+/// source-backed definition/reference edits only, no blockers, and at least one
+/// edit. The returned proof is not sufficient on its own for live package
+/// rename authorization; live callers must separately prove the materialized
+/// edit set, source-backed anchors, and workspace ambiguity guard.
 pub fn rename_package_pilot_proof<Q: SemanticQueries>(
     legacy_allowed: bool,
     semantic_queries: &Q,
@@ -284,8 +285,21 @@ fn classify_package_pilot_result(result: RenameCutoverResult) -> RenamePackagePi
                 blockers: Vec::new(),
             }
         }
-        RenameCutoverResult::Allowed { edits } => RenamePackagePilotResult::Eligible { edits },
+        RenameCutoverResult::Allowed { edits }
+            if edits.iter().all(is_package_pilot_edit_category) =>
+        {
+            RenamePackagePilotResult::Eligible { edits }
+        }
+        RenameCutoverResult::Allowed { edits } => RenamePackagePilotResult::Ineligible {
+            reason: RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
+            edits,
+            blockers: Vec::new(),
+        },
     }
+}
+
+fn is_package_pilot_edit_category(edit: &PlannedEdit) -> bool {
+    matches!(edit.category, PlannedEditCategory::Definition | PlannedEditCategory::Reference)
 }
 
 fn package_pilot_receipt_note(result: &RenamePackagePilotResult) -> String {
@@ -306,6 +320,7 @@ impl RenamePackagePilotIneligibleReason {
         match self {
             Self::EmptyPlan => "empty_plan",
             Self::Blocked => "blocked",
+            Self::UnsupportedEditCategory => "unsupported_edit_category",
         }
     }
 }
@@ -1116,11 +1131,9 @@ mod tests {
     }
 
     #[test]
-    fn rename_package_pilot_accepts_import_and_export_edits()
+    fn rename_package_pilot_rejects_import_and_export_edits()
     -> Result<(), Box<dyn std::error::Error>> {
         let edits = vec![
-            make_edit(10, PlannedEditCategory::Definition),
-            make_edit(20, PlannedEditCategory::Reference),
             make_edit(30, PlannedEditCategory::ImportList),
             make_edit(40, PlannedEditCategory::ExportList),
         ];
@@ -1128,7 +1141,7 @@ mod tests {
             EntityId(1),
             "Old::Name".to_string(),
             "New::Name".to_string(),
-            edits.clone(),
+            edits,
             vec![],
             vec![],
         );
@@ -1137,43 +1150,18 @@ mod tests {
         let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::Name");
 
         match &outcome.result {
-            RenamePackagePilotResult::Eligible { edits: result_edits } => {
-                assert_eq!(result_edits.len(), 4);
-                assert_eq!(*result_edits, edits);
+            RenamePackagePilotResult::Ineligible { reason, blockers, .. } => {
+                assert_eq!(*reason, RenamePackagePilotIneligibleReason::UnsupportedEditCategory);
+                assert!(blockers.is_empty());
             }
-            other => return Err(format!("expected Eligible, got {:?}", other).into()),
+            other => return Err(format!("expected Ineligible, got {:?}", other).into()),
         }
         let notes = outcome.receipt.notes.join(" ");
-        assert!(notes.contains("eligible=true"), "missing eligible note in {}", notes);
-        Ok(())
-    }
-
-    #[test]
-    fn rename_package_pilot_accepts_import_and_export_only_edits()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let edits = vec![
-            make_edit(30, PlannedEditCategory::ImportList),
-            make_edit(40, PlannedEditCategory::ExportList),
-        ];
-        let plan = RenamePlan::new(
-            EntityId(1),
-            "Old::Name".to_string(),
-            "New::Name".to_string(),
-            edits.clone(),
-            vec![],
-            vec![],
+        assert!(
+            notes.contains("reason=unsupported_edit_category"),
+            "missing unsupported category reason in {}",
+            notes
         );
-        let queries = StubSemanticQueries { rename_plan_result: plan };
-
-        let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::Name");
-
-        match &outcome.result {
-            RenamePackagePilotResult::Eligible { edits: result_edits } => {
-                assert_eq!(result_edits.len(), 2);
-                assert_eq!(*result_edits, edits);
-            }
-            other => return Err(format!("expected Eligible, got {:?}", other).into()),
-        }
         Ok(())
     }
 

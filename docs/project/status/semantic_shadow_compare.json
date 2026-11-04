@@ -250,12 +250,12 @@
       },
       "verdict": "same",
       "notes": [
-        "references shadow proof: AST/workspace-index imported symbol occurrence is traced through ImportSpec/ExportSet; no live navigation behavior change"
+        "references shadow proof: compiler-ranked imported symbol occurrence is traced through ImportSpec/ExportSet; no live navigation behavior change"
       ],
       "fact_source_traces": [
         {
           "surface": "References",
-          "source": "SemanticFact",
+          "source": "CompilerFact",
           "provenance": "ImportExportInference",
           "confidence": "High",
           "freshness": "Fresh",

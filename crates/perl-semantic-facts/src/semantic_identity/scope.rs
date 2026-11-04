@@ -419,7 +419,11 @@ impl SemanticScopeIdentity {
         package_context: Option<SemanticSourceOrderIdentity>,
         recovery: SemanticScopeRecovery,
     ) -> Result<Self, SemanticIdentityContractError> {
-        Self::validate_parent(kind, parent_fingerprint.as_deref())?;
+        if parent_fingerprint.as_deref().is_some_and(|parent| parent.trim().is_empty()) {
+            return Err(SemanticIdentityContractError::EmptyIdentityField(
+                "SemanticScopeIdentity.parent_fingerprint",
+            ));
+        }
         if owning_declaration_key.as_ref().is_some_and(|key| {
             key.declaration_form().trim().is_empty()
                 || key.declared_name().trim().is_empty()
@@ -427,6 +431,16 @@ impl SemanticScopeIdentity {
         }) {
             return Err(SemanticIdentityContractError::EmptyIdentityField(
                 "SemanticScopeIdentity.owning_declaration_key",
+            ));
+        }
+        if matches!(kind, SemanticScopeKind::File) && parent_fingerprint.is_some() {
+            return Err(SemanticIdentityContractError::ContradictoryStatus(
+                "file/global scope cannot have a parent scope",
+            ));
+        }
+        if !matches!(kind, SemanticScopeKind::File) && parent_fingerprint.is_none() {
+            return Err(SemanticIdentityContractError::MissingCompanion(
+                "SemanticScopeIdentity.parent_fingerprint",
             ));
         }
         // Fail closed at construction: validity is not opt-in through a
@@ -559,7 +573,6 @@ impl SemanticScopeIdentity {
     /// Returns a contract error when any identity slot is empty or a
     /// structural rule is violated.
     pub fn validate(&self) -> Result<(), SemanticIdentityContractError> {
-        Self::validate_parent(self.kind, self.parent_fingerprint.as_deref())?;
         if matches!(
             self.recovery,
             SemanticScopeRecovery::Recovered | SemanticScopeRecovery::Ambiguous
@@ -581,29 +594,6 @@ impl SemanticScopeIdentity {
         {
             return Err(SemanticIdentityContractError::MissingCompanion(
                 "SemanticScopeIdentity.package_context",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Apply the same local parent law at construction and after transport.
-    fn validate_parent(
-        kind: SemanticScopeKind,
-        parent_fingerprint: Option<&str>,
-    ) -> Result<(), SemanticIdentityContractError> {
-        if parent_fingerprint.is_some_and(|parent| parent.trim().is_empty()) {
-            return Err(SemanticIdentityContractError::EmptyIdentityField(
-                "SemanticScopeIdentity.parent_fingerprint",
-            ));
-        }
-        if matches!(kind, SemanticScopeKind::File) && parent_fingerprint.is_some() {
-            return Err(SemanticIdentityContractError::ContradictoryStatus(
-                "file/global scope cannot have a parent scope",
-            ));
-        }
-        if !matches!(kind, SemanticScopeKind::File) && parent_fingerprint.is_none() {
-            return Err(SemanticIdentityContractError::MissingCompanion(
-                "SemanticScopeIdentity.parent_fingerprint",
             ));
         }
         Ok(())

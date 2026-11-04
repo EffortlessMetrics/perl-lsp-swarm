@@ -10,6 +10,8 @@ from dap_authority_common import (
     DISPATCH_PATH,
     PEER_DISPATCH_PATHS,
     RECEIPT_SCHEMA,
+    SEND_EVENT_CALL_RE,
+    SEND_EVENT_LITERAL_RE,
     AuthorityError,
     array_value,
     extractor_identity,
@@ -17,7 +19,6 @@ from dap_authority_common import (
     object_value,
     parse_request_table,
     parse_peer_dispatch_routes,
-    parse_production_event_names,
     production_dispatch_sources,
     production_source_graph,
     read_json,
@@ -41,8 +42,16 @@ def _production_events(root: Path) -> set[str]:
     events: set[str] = set()
     for path in sorted(source_root.rglob("*.rs")):
         text = read_text(path, "DAP production source")
-        relative = path.relative_to(root).as_posix()
-        events.update(parse_production_event_names(text, context=relative))
+        for call in SEND_EVENT_CALL_RE.finditer(text):
+            literal = SEND_EVENT_LITERAL_RE.match(text, call.end())
+            if literal is None:
+                relative = path.relative_to(root)
+                line = text.count("\n", 0, call.start()) + 1
+                raise AuthorityError(
+                    f"cannot derive self.send_event wire name at {relative}:{line}; "
+                    "use a literal or extend the typed inventory"
+                )
+            events.add(literal.group(1))
     return events
 
 

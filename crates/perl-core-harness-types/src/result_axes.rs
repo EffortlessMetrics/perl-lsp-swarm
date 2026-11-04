@@ -28,38 +28,6 @@
 //! the published schema. Generating report space and comparing both
 //! validators against stated report-level rules is a separate instrument that
 //! this module does not provide.
-//!
-//! # Schema enforceability (#14177)
-//!
-//! The published JSON Schema is a **shape contract**: types, required fields,
-//! enumerations, and the subset of report rules JSON Schema 2020-12 can
-//! express structurally. It is not a full invariant contract. Rules that
-//! compare two numbers — including a support claim weighed against nested
-//! rail counts — stay in the Rust validators. Structural nested checks the
-//! schema can already express, such as a clean rollup over detail
-//! observations, stay in the schema. That boundary is accepted for v2, not
-//! unfinished schema work. Closing the arithmetic gap would require a
-//! different validation language or a v3 wire format. Generating the schema
-//! from the Rust rules would only pin the expressible subset; it cannot
-//! carry those comparisons.
-//!
-//! Ingest points that must run Rust validation:
-//!
-//! - **Axis construction and axis wire ingest:** [`ResultAxes::new`], including
-//!   `ResultAxes` deserialization (via a private repr that calls `new`).
-//! - **Report wire ingest:** `RunAxesReport` deserialization (via a private
-//!   repr that calls [`RunAxesReport::validate`]).
-//! - **In-process report assembly:** producers that fill [`RunAxesReport`]
-//!   public fields must call [`RunAxesReport::validate`] before serializing
-//!   or treating the value as honest.
-//! - **Current-authority ingest:**
-//!   [`RunAxesReport::admissible_as_current_authority`] before using a report
-//!   as current authority for its series.
-//!
-//! An external producer that validates only the published schema is therefore
-//! laxer than this crate. The report-fixture corpus marks those remaining
-//! disagreements `RustStricter` under the accepted residual classes, not as
-//! v2 schema defects.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1410,16 +1378,11 @@ impl TryFrom<RunAxesReportRepr> for RunAxesReport {
 /// A complete v2 result report for one measured series.
 ///
 /// Like [`ResultAxes`], this envelope goes through an invariant check before it
-/// exists: deserialization is generated from a private repr and the converted
-/// value must pass [`RunAxesReport::validate`], so a report that fails a
-/// report-level rule cannot be obtained by parsing. A payload that only needed
-/// to stay readable for diagnosis is rejected at the boundary instead of being
-/// trusted because it parsed.
-///
-/// That deserialize door is one named ingest point of the accepted #14177
-/// shape-contract decision. The published schema does not carry cross-field
-/// arithmetic; filling these public fields in process is another ingest, and
-/// callers must still run [`RunAxesReport::validate`] before publishing.
+/// exists: deserialization is generated from [`RunAxesReportRepr`] and the
+/// converted value must pass [`RunAxesReport::validate`], so a report that
+/// fails a report-level rule cannot be obtained by parsing. A payload that only
+/// needed to stay readable for diagnosis is rejected at the boundary instead of
+/// being trusted because it parsed.
 ///
 /// `files` and `invocations` are samples, not necessarily complete coverage of
 /// the denominator: a report may carry every file record or only the
@@ -1465,10 +1428,6 @@ impl RunAxesReport {
     /// Runs every component validator plus the cross-part rules: valid evidence
     /// needs a complete measurement, and legacy-adapted evidence stays
     /// historical.
-    ///
-    /// Named ingest (#14177): call this after assembling a report from public
-    /// fields, and rely on deserialization to call it for wire payloads. The
-    /// published schema is a shape contract and does not replace this check.
     ///
     /// # Errors
     ///
@@ -1675,9 +1634,6 @@ impl RunAxesReport {
     }
 
     /// Whether this report may serve as current authority for its series.
-    ///
-    /// Named ingest (#14177): current-authority consumers must go through this
-    /// check rather than trusting schema validation or a parsed report alone.
     ///
     /// # Errors
     ///
@@ -3345,26 +3301,15 @@ mod tests {
         Ok(())
     }
 
-    /// Accepted residual of the #14177 shape-contract decision: rules the
-    /// published schema structurally cannot carry.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    enum AcceptedSchemaResidual {
-        AdmissionDistributionVersusDenominator,
-        DeclaredVersusDistributedAcceptedDebt,
-        ParsePassedVersusTotal,
-        RollupVersusDistribution,
-        AggregateSupportVersusRailCoverage,
-    }
-
     /// How the published schema is expected to relate to the Rust validator for
     /// one report fixture.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum SchemaAgreement {
         /// Both accept, or both reject.
         Same,
-        /// Rust rejects and the schema accepts. That is the accepted v2
-        /// boundary for this residual class, not a missing schema rule.
-        RustStricter(AcceptedSchemaResidual),
+        /// Rust rejects and the schema accepts, because the rule compares two
+        /// values and JSON Schema cannot express cross-field arithmetic.
+        RustStricter,
     }
 
     fn valid_report() -> Result<RunAxesReport, ResultAxisViolation> {
@@ -3513,9 +3458,7 @@ mod tests {
             "aggregate support with no rail backing its mechanism",
             serde_json::to_value(unbacked_support)?,
             false,
-            SchemaAgreement::RustStricter(
-                AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
-            ),
+            SchemaAgreement::RustStricter,
         ));
 
         let mut weak_rail = valid_report()?;
@@ -3534,9 +3477,7 @@ mod tests {
             "general support resting on a stale rail",
             serde_json::to_value(weak_rail)?,
             false,
-            SchemaAgreement::RustStricter(
-                AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
-            ),
+            SchemaAgreement::RustStricter,
         ));
 
         let mut adopted_regression = valid_report()?;
@@ -3578,7 +3519,7 @@ mod tests {
             "clean parse rail with failed subjects",
             serde_json::to_value(short_parse)?,
             false,
-            SchemaAgreement::RustStricter(AcceptedSchemaResidual::ParsePassedVersusTotal),
+            SchemaAgreement::RustStricter,
         ));
 
         let mut overstated = valid_report()?;
@@ -3587,7 +3528,7 @@ mod tests {
             "general rollup over a distribution containing blocked subjects",
             serde_json::to_value(overstated)?,
             false,
-            SchemaAgreement::RustStricter(AcceptedSchemaResidual::RollupVersusDistribution),
+            SchemaAgreement::RustStricter,
         ));
 
         let mut blank_boundary = valid_report()?;
@@ -3612,18 +3553,16 @@ mod tests {
             SchemaAgreement::Same,
         ));
 
-        // Accepted #14177 residual: JSON Schema 2020-12 cannot relate one
-        // property to another, so these stay Rust-only by decision, not as
-        // unfinished schema work.
+        // Rules that compare two numbers. JSON Schema 2020-12 has no way to
+        // relate one property to another, so the schema cannot carry these and
+        // the Rust validator is deliberately the stricter authority.
         let mut short_distribution = valid_report()?;
         short_distribution.admission.by_admission = distribution(&[("implemented", 3)]);
         fixtures.push((
             "admission distribution under the denominator",
             serde_json::to_value(short_distribution)?,
             false,
-            SchemaAgreement::RustStricter(
-                AcceptedSchemaResidual::AdmissionDistributionVersusDenominator,
-            ),
+            SchemaAgreement::RustStricter,
         ));
 
         let mut debt_mismatch = valid_report()?;
@@ -3635,9 +3574,7 @@ mod tests {
             "declared zero debt against a distribution that has some",
             serde_json::to_value(debt_mismatch)?,
             false,
-            SchemaAgreement::RustStricter(
-                AcceptedSchemaResidual::DeclaredVersusDistributedAcceptedDebt,
-            ),
+            SchemaAgreement::RustStricter,
         ));
 
         let mut parse_overrun = valid_report()?;
@@ -3646,7 +3583,7 @@ mod tests {
             "parse rail passing more than it covered",
             serde_json::to_value(parse_overrun)?,
             false,
-            SchemaAgreement::RustStricter(AcceptedSchemaResidual::ParsePassedVersusTotal),
+            SchemaAgreement::RustStricter,
         ));
 
         let partial_axes = ResultAxes::new(
@@ -3693,7 +3630,7 @@ mod tests {
             "partial rollup over a wholly general distribution",
             serde_json::to_value(partial_over_general)?,
             false,
-            SchemaAgreement::RustStricter(AcceptedSchemaResidual::RollupVersusDistribution),
+            SchemaAgreement::RustStricter,
         ));
 
         let mut general_over_debt = valid_report()?;
@@ -3703,7 +3640,7 @@ mod tests {
             "general rollup over a wholly accepted-debt admission distribution",
             serde_json::to_value(general_over_debt)?,
             false,
-            SchemaAgreement::RustStricter(AcceptedSchemaResidual::RollupVersusDistribution),
+            SchemaAgreement::RustStricter,
         ));
 
         // Reaching into a nested rail's counts to weigh them against the
@@ -3726,9 +3663,7 @@ mod tests {
             "partial support backed only by a rail that passed nothing",
             serde_json::to_value(zero_success_rail)?,
             false,
-            SchemaAgreement::RustStricter(
-                AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
-            ),
+            SchemaAgreement::RustStricter,
         ));
 
         Ok(fixtures)
@@ -3755,111 +3690,16 @@ mod tests {
                     "'{name}': published schema accepts={schema_accepts} but Rust \
                      accepts={rust_accepts}; the schema and the validator have drifted"
                 ),
-                SchemaAgreement::RustStricter(residual) => {
+                SchemaAgreement::RustStricter => {
                     assert!(!rust_accepts, "'{name}' is only rust-stricter if Rust rejects it");
                     assert!(
                         schema_accepts,
-                        "'{name}' ({residual:?}): marked RustStricter, but the schema \
-                         rejected it too — reclassify the fixture as Same; a rule the \
-                         schema can carry is not an accepted residual"
+                        "'{name}': marked RustStricter, but the schema rejected it too — \
+                         reclassify the fixture as Same"
                     );
                 }
             }
         }
-        Ok(())
-    }
-
-    #[test]
-    fn published_schema_declares_the_shape_contract() -> Result<(), Box<dyn std::error::Error>> {
-        let description = schema_document()?
-            .get("description")
-            .and_then(|value| value.as_str())
-            .ok_or("published schema is missing a description")?
-            .to_string();
-        assert!(
-            description.to_ascii_lowercase().contains("shape contract"),
-            "schema description must record the #14177 shape-contract decision; got: \
-             {description}"
-        );
-        assert!(
-            description.contains("14177"),
-            "schema description must name #14177 so the decision stays findable; got: \
-             {description}"
-        );
-        let lowered = description.to_ascii_lowercase();
-        assert!(
-            !lowered.contains("reach into nested"),
-            "schema description must not claim nested structure is inexpressible; \
-             structural nested checks already live in this document. got: {description}"
-        );
-        assert!(
-            !description.contains("ResultAxes::new"),
-            "report-level description must not name ResultAxes::new; that constructor \
-             owns axis combinations. got: {description}"
-        );
-        assert!(
-            description.contains("RunAxesReport::validate"),
-            "report-level ingest must name RunAxesReport::validate; got: {description}"
-        );
-        assert!(
-            lowered.contains("cross-field numeric") || lowered.contains("compare two numbers"),
-            "schema description must name cross-field numeric comparison as the \
-             inexpressible remainder. got: {description}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn rust_stricter_corpus_covers_every_accepted_residual()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let expected = [
-            AcceptedSchemaResidual::AdmissionDistributionVersusDenominator,
-            AcceptedSchemaResidual::DeclaredVersusDistributedAcceptedDebt,
-            AcceptedSchemaResidual::ParsePassedVersusTotal,
-            AcceptedSchemaResidual::RollupVersusDistribution,
-            AcceptedSchemaResidual::AggregateSupportVersusRailCoverage,
-        ];
-        let mut seen = std::collections::BTreeSet::new();
-        for (name, _fixture, rust_should_accept, agreement) in report_fixtures()? {
-            if let SchemaAgreement::RustStricter(residual) = agreement {
-                assert!(
-                    !rust_should_accept,
-                    "'{name}' is classified RustStricter but expected to pass Rust"
-                );
-                seen.insert(residual);
-            }
-        }
-        for residual in expected {
-            assert!(
-                seen.contains(&residual),
-                "accepted residual {residual:?} has no RustStricter fixture; the corpus \
-                 no longer reflects the #14177 decision"
-            );
-        }
-        assert_eq!(
-            seen.len(),
-            expected.len(),
-            "RustStricter corpus named unexpected residual classes: {seen:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn in_process_report_assembly_is_a_named_rust_ingest() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut candidate = valid_report()?;
-        candidate.admission.by_admission = distribution(&[("implemented", 3)]);
-        assert!(
-            candidate.validate().is_err(),
-            "filling public fields must still require RunAxesReport::validate; that is \
-             the named in-process ingest under #14177"
-        );
-        let wire = serde_json::to_value(&candidate)?;
-        assert!(
-            serde_json::from_value::<RunAxesReport>(wire).is_err(),
-            "serializing an unvalidated in-process report must still be refused at \
-             wire ingest"
-        );
         Ok(())
     }
 

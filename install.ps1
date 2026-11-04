@@ -1208,28 +1208,11 @@ Check the release page for an existing tag: https://github.com/$Repo/releases"
 
     # Verify installation
     try {
-        $VerificationErrorAction = $ErrorActionPreference
-        try {
-            # Windows PowerShell 5.1 treats redirected native stderr as an
-            # ErrorRecord. Capture it without terminating before inspecting
-            # the native exit code, and restore the installer's error policy.
-            $ErrorActionPreference = "Continue"
-            $global:LASTEXITCODE = $null
-            $VersionOutput = @(& $DestPath --version 2>&1)
-            $VerificationExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $VerificationErrorAction
-        }
-        if ($null -eq $VerificationExitCode) {
-            throw "--version did not return a native exit code. Output: $($VersionOutput -join [Environment]::NewLine)"
-        }
-        if ($VerificationExitCode -ne 0) {
-            throw "--version exited with exit code $VerificationExitCode. Output: $($VersionOutput -join [Environment]::NewLine)"
-        }
+        $VersionOutput = & $DestPath --version 2>&1
+        Write-Success "Installation verified: $VersionOutput"
     } catch {
-        Write-Error "Installed binary verification failed at '$DestPath': $($_.Exception.Message)"
+        Write-Warn "Could not verify installation"
     }
-    Write-Success "Installation verified: $($VersionOutput -join [Environment]::NewLine)"
 
     # Persist a user-local install directory safely. The old guidance printed a
     # command that copied the merged process/system/user `$env:Path` back into

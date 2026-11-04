@@ -4,10 +4,8 @@
 
 pub use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
 pub use perl_parser_core::error::{
-    ErrorCategory, ErrorClass, ParseBudgetExhaustionDimension, ParseCancellationIdentity,
-    ParseCatastrophicCause, ParseCompletion, ParseCompletionClass, ParseCompletionRange,
-    ParseCompletionStage, ParseCompletionValidationError, ParseDiagnosticAnchor, ParseError,
-    ParseOutput, ParseResult, ParseStopCause, ResolvedParseDiagnosticAnchor,
+    ErrorCategory, ErrorClass, ParseDiagnosticAnchor, ParseError, ParseOutput, ParseResult,
+    ResolvedParseDiagnosticAnchor,
 };
 pub use perl_parser_core::parser::Parser;
 

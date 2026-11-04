@@ -37,7 +37,7 @@ fn test_mock_runtime() {
     let result = runtime.run_command("perltidy", &["-st"], Some(b"my $x = 1;"));
 
     assert!(result.is_ok());
-    let output = perl_test_must::must(result);
+    let output = perl_tdd_support::must(result);
     assert!(output.success());
     assert_eq!(output.stdout_lossy(), "formatted code");
 
@@ -58,7 +58,7 @@ fn test_os_runtime_echo() {
     let result = runtime.run_command("echo", &["hello"], None);
 
     assert!(result.is_ok());
-    let output = perl_test_must::must(result);
+    let output = perl_tdd_support::must(result);
     assert!(output.success());
     assert!(output.stdout_lossy().trim() == "hello");
 }
@@ -102,25 +102,18 @@ fn test_os_runtime_rejects_nul_bytes_in_program_or_args() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
-    let cmd = perl_test_must::must(resolve_command_invocation(
+    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
         r"C:\Strawberry\perl\bin\perltidy.bat",
         &["-st", "-se"],
     ));
 
     // The cmd.exe used for batch wrappers is resolved to an ABSOLUTE path —
     // never the bare "cmd.exe", which CreateProcess would search CWD-first.
-    let program = cmd.get_program().to_string_lossy().to_string();
-    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
         "batch wrapper must run via an absolute cmd.exe path, not a bare name; got: {program}"
     );
-    // The /C payload is composed in cmd.exe conventions (per-token `"..."`),
-    // wrapped in ONE extra outer quote pair that cmd /S strips, and appended as
-    // a raw (un-MSVC-escaped) argument so its quotes reach cmd.exe verbatim
-    // (#17371).  std's default escaping would turn the inner `"` into `\"`,
-    // which cmd.exe cannot parse.
     assert_eq!(
         args,
         vec![
@@ -128,7 +121,7 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
             "/V:OFF".to_string(),
             "/S".to_string(),
             "/C".to_string(),
-            "\"\"C:\\Strawberry\\perl\\bin\\perltidy.bat\" \"-st\" \"-se\"\"".to_string(),
+            "\"C:\\Strawberry\\perl\\bin\\perltidy.bat\" \"-st\" \"-se\"".to_string(),
         ]
     );
 }
@@ -141,13 +134,11 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_includes_v_off_flag() {
-    let cmd = perl_test_must::must(resolve_command_invocation(
+    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
         r"C:\tools\perlcritic.bat",
         &["--profile=!TEMP!"],
     ));
 
-    let program = cmd.get_program().to_string_lossy().to_string();
-    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
@@ -160,33 +151,15 @@ fn test_resolve_command_invocation_includes_v_off_flag() {
     );
 }
 
-/// `%TEMP%` in a batch-wrapper argument would be silently substituted by
-/// cmd.exe's command-line expansion pass (`%` has no command-line escape), so
-/// the resolver must fail closed instead of corrupting the argument (#17371).
-#[cfg(windows)]
-#[test]
-fn test_resolve_command_invocation_fails_closed_on_expandable_percent_ref() {
-    // TEMP is defined in every Windows environment.
-    let result = resolve_command_invocation(r"C:\tools\perlcritic.bat", &[r"--out=%TEMP%\x"]);
-    assert!(result.is_err(), "an expandable %NAME% argument must fail closed; got: {result:?}");
-    let err = result.expect_err("must be Err");
-    assert!(
-        err.message.contains("cmd.exe would substitute"),
-        "error must explain the %...% substitution refusal; got: {}",
-        err.message
-    );
-}
-
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_preserves_executable_paths() {
-    let cmd = perl_test_must::must(resolve_command_invocation(
+    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
         r"C:\tools\perlcritic.exe",
         &["--version"],
     ));
 
-    assert_eq!(cmd.get_program(), std::ffi::OsStr::new(r"C:\tools\perlcritic.exe"));
-    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
+    assert_eq!(program, r"C:\tools\perlcritic.exe");
     assert_eq!(args, vec!["--version".to_string()]);
 }
 
@@ -274,43 +247,6 @@ fn test_subprocess_error_usable_as_std_error_trait_object() {
 // Windows-absolute paths (`C:\tools\perltidy.exe`) on Windows.  The underlying
 // logic is identical on both; only the path syntax differs.
 
-/// Disposable directory tree for `select_path_candidate` proofs that need real
-/// on-disk candidates (canonicalize-the-file + fail-closed).
-struct SelectPathTempTree {
-    root: std::path::PathBuf,
-}
-
-impl SelectPathTempTree {
-    fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "perl-subprocess-select-path-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("create select-path temp tree");
-        Self { root }
-    }
-
-    fn dir(&self, name: &str) -> std::path::PathBuf {
-        let dir = self.root.join(name);
-        std::fs::create_dir_all(&dir).expect("create select-path temp dir");
-        dir
-    }
-
-    fn plant(&self, dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-        let path = dir.join(name);
-        std::fs::write(&path, b"").expect("plant select-path candidate");
-        path
-    }
-}
-
-impl Drop for SelectPathTempTree {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
 /// Layer 1 — absolute check: a relative candidate is always rejected, returning
 /// `None`.  This pins the `!Path::new(c).is_absolute() { return false; }` seam.
 #[test]
@@ -371,133 +307,18 @@ fn availability_rejects_absolute_and_separator_bearing_inputs()
 /// raw path comparison, which is sufficient for this layer-2 proof.
 #[test]
 fn test_select_path_candidate_cwd_parent_candidate_rejected() {
-    let tree = SelectPathTempTree::new("cwd-parent");
-    let cwd = tree.dir("workspace");
-    let candidate = tree.plant(&cwd, "planted_tool");
+    // Build a fake CWD using the real temp dir so the absolute-path check passes,
+    // then construct a candidate whose parent IS that CWD.
+    let cwd = std::env::temp_dir();
+    // Construct a candidate path that has `cwd` as its parent directory.
+    let candidate = cwd.join("planted_tool");
     let candidate_str = candidate.to_string_lossy().to_string();
     let candidate_refs: Vec<&str> = vec![candidate_str.as_str()];
     let result = select_path_candidate(&candidate_refs, &cwd);
-    // The candidate's canonical path lies under the CWD, so it must be excluded.
+    // The candidate's parent == cwd, so it must be excluded (Layer 2).
     assert!(
         result.is_none(),
         "a candidate whose parent is the CWD must be rejected; got: {result:?}"
-    );
-}
-
-/// Layer 2 — CWD subtree: a candidate under `<cwd>/bin` must be rejected even
-/// though its immediate parent is not the CWD directory itself.
-#[test]
-fn test_select_path_candidate_rejects_candidate_in_cwd_subtree() {
-    let tree = SelectPathTempTree::new("cwd-subtree");
-    let cwd = tree.dir("workspace");
-    let bin = tree.dir("workspace/bin");
-    let planted = tree.plant(&bin, "perltidy.exe");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let candidates = [planted.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_refs, &cwd);
-    assert_eq!(
-        result.as_deref(),
-        Some(safe.as_path()),
-        "a candidate under `<cwd>/bin` must be rejected; safe PATH binary must win"
-    );
-}
-
-/// Fail closed when the working directory cannot be canonicalized.
-#[test]
-fn test_select_path_candidate_fail_closed_when_cwd_missing() {
-    let tree = SelectPathTempTree::new("missing-cwd");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let missing_cwd = tree.root.join("definitely-not-a-real-cwd");
-    let candidate_refs = [safe.to_string_lossy().into_owned()];
-    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_ref_strs, &missing_cwd);
-    assert!(result.is_none(), "missing CWD must fail closed; got: {result:?}");
-}
-
-/// At a filesystem root CWD, subtree matching would reject every absolute path;
-/// installed tools outside the root directory must remain selectable.
-#[cfg(unix)]
-#[test]
-fn test_select_path_candidate_filesystem_root_cwd_admits_usr_bin() {
-    use std::path::Path;
-    let cwd = Path::new("/");
-    let candidate = Path::new("/usr/bin/true");
-    if !candidate.is_file() {
-        return;
-    }
-    let candidate_str = candidate.to_string_lossy().to_string();
-    let result = select_path_candidate(&[candidate_str.as_str()], cwd);
-    assert_eq!(
-        result.as_deref(),
-        Some(candidate),
-        "filesystem-root CWD must not reject installed tools under /usr/bin"
-    );
-}
-
-/// Fail-closed: a non-existent absolute candidate is dropped rather than compared
-/// via a raw parent-path fallback.
-#[test]
-fn test_select_path_candidate_fail_closed_on_nonexistent_candidate() {
-    let tree = SelectPathTempTree::new("fail-closed");
-    let cwd = tree.dir("workspace");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let missing = safe_dir.join("definitely-missing-perltidy.exe");
-    let candidates = [missing.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_refs, &cwd);
-    assert_eq!(
-        result.as_deref(),
-        Some(safe.as_path()),
-        "non-existent candidate must be dropped fail-closed; safe binary must win"
-    );
-}
-
-/// Symlink whose literal path is outside the CWD but whose target resolves inside
-/// the CWD must be rejected.
-#[cfg(unix)]
-#[test]
-fn test_select_path_candidate_rejects_symlink_target_inside_cwd() {
-    use std::os::unix::fs::symlink;
-
-    let tree = SelectPathTempTree::new("symlink-into-cwd");
-    let cwd = tree.dir("workspace");
-    let outside = tree.dir("outside");
-    let planted = tree.plant(&cwd, "perltidy.exe");
-    let link = outside.join("perltidy.exe");
-    symlink(&planted, &link).expect("create symlink into CWD");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let candidates = [link.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_refs, &cwd);
-    assert_eq!(
-        result.as_deref(),
-        Some(safe.as_path()),
-        "symlink into CWD must be rejected; safe PATH binary must win"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn test_select_path_candidate_symlink_into_cwd_only_returns_none() {
-    use std::os::unix::fs::symlink;
-
-    let tree = SelectPathTempTree::new("symlink-only");
-    let cwd = tree.dir("workspace");
-    let outside = tree.dir("outside");
-    let planted = tree.plant(&cwd, "perltidy.exe");
-    let link = outside.join("perltidy.exe");
-    symlink(&planted, &link).expect("create symlink into CWD");
-    let candidate_refs = [link.to_string_lossy().into_owned()];
-    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_ref_strs, &cwd);
-    assert!(
-        result.is_none(),
-        "symlink-only candidate resolving into CWD must return None; got: {result:?}"
     );
 }
 
@@ -531,33 +352,30 @@ fn test_candidate_priority_case_insensitive() {
 
 /// RCE regression: a planted `perltidy.exe` in the CWD must not be selected
 /// when a legitimate `perltidy.exe` exists on PATH.
+#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_planted_cwd_binary_is_rejected_in_favor_of_path() {
-    let tree = SelectPathTempTree::new("planted-vs-path");
-    let cwd = tree.dir("workspace");
-    let planted = tree.plant(&cwd, "perltidy.exe");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let candidates = [planted.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_refs, &cwd);
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[
+        r"C:\Users\user\project\perltidy.exe", // planted — must be excluded
+        r"C:\Strawberry\perl\bin\perltidy.exe", // legitimate PATH install
+    ];
+    let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(safe.as_path()),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "planted CWD binary must not be selected; legitimate PATH binary must win"
     );
 }
 
 /// Security invariant: when the only candidate is under the CWD, resolve to
 /// `None` rather than executing a planted binary.
+#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_cwd_only_returns_none() {
-    let tree = SelectPathTempTree::new("cwd-only");
-    let cwd = tree.dir("workspace");
-    let planted = tree.plant(&cwd, "perltidy.exe");
-    let candidate_refs = [planted.to_string_lossy().into_owned()];
-    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_ref_strs, &cwd);
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\untrusted-workspace");
+    let candidates = &[r"C:\Users\user\untrusted-workspace\perltidy.exe"];
+    let result = select_path_candidate(candidates, &cwd);
     assert!(
         result.is_none(),
         "a planted-only candidate list must return None, not execute the planted binary; got: {result:?}"
@@ -565,18 +383,15 @@ fn test_select_path_candidate_cwd_only_returns_none() {
 }
 
 /// Baseline: a candidate on a real PATH directory (not CWD) resolves correctly.
+#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_legitimate_path_binary_resolves() {
-    let tree = SelectPathTempTree::new("legitimate-path");
-    let cwd = tree.dir("workspace");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let candidate_refs = [safe.to_string_lossy().into_owned()];
-    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_ref_strs, &cwd);
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[r"C:\Strawberry\perl\bin\perltidy.exe"];
+    let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(safe.as_path()),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "a legitimate PATH binary must resolve when CWD is different"
     );
 }
@@ -584,19 +399,16 @@ fn test_select_path_candidate_legitimate_path_binary_resolves() {
 /// Extension priority: among PATH candidates, `.exe` must beat `.bat`.
 /// The CWD exclusion must not disturb the priority ordering among safe
 /// candidates.
+#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_extension_priority_preserved_among_path_candidates() {
-    let tree = SelectPathTempTree::new("ext-priority");
-    let cwd = tree.dir("workspace");
-    let safe_dir = tree.dir("usr-bin");
-    let bat = tree.plant(&safe_dir, "perltidy.bat");
-    let exe = tree.plant(&safe_dir, "perltidy.exe");
-    let candidates = [bat.to_string_lossy().into_owned(), exe.to_string_lossy().into_owned()];
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_refs, &cwd);
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates =
+        &[r"C:\Strawberry\perl\bin\perltidy.bat", r"C:\Strawberry\perl\bin\perltidy.exe"];
+    let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(exe.as_path()),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         ".exe must beat .bat in extension priority ordering"
     );
 }
@@ -625,18 +437,18 @@ fn test_select_path_candidate_relative_candidate_returns_none() {
 
 /// A relative candidate alongside a legitimate absolute PATH candidate: only
 /// the absolute one is selected; the relative one is silently dropped.
+#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
-    let tree = SelectPathTempTree::new("relative-drop");
-    let cwd = tree.dir("workspace");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let candidates = ["perltidy.EXE".to_string(), safe.to_string_lossy().into_owned()];
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_refs, &cwd);
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[
+        "perltidy.EXE",                         // relative — must be dropped
+        r"C:\Strawberry\perl\bin\perltidy.exe", // absolute PATH install — must win
+    ];
+    let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(safe.as_path()),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "relative candidate must be dropped; absolute PATH binary must win"
     );
 }
@@ -657,33 +469,30 @@ fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
 
 /// A candidate for an extensioned bare name (`perltidy.exe`) that lives in the
 /// CWD must be rejected in favour of a PATH-directory copy.
+#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_extensioned_bare_cwd_binary_rejected_in_favor_of_path() {
-    let tree = SelectPathTempTree::new("extensioned-planted");
-    let cwd = tree.dir("workspace");
-    let planted = tree.plant(&cwd, "perltidy.exe");
-    let safe_dir = tree.dir("usr-bin");
-    let safe = tree.plant(&safe_dir, "perltidy.exe");
-    let candidates = [planted.to_string_lossy().into_owned(), safe.to_string_lossy().into_owned()];
-    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_refs, &cwd);
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[
+        r"C:\Users\user\project\perltidy.exe", // planted in CWD — must be dropped
+        r"C:\Strawberry\perl\bin\perltidy.exe", // legitimate PATH install
+    ];
+    let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(safe.as_path()),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "extensioned bare name: CWD-planted binary must be rejected; PATH binary must win"
     );
 }
 
 /// When an extensioned bare name is not found on PATH at all, `None` is
 /// returned — never falls back to the CWD.
+#[cfg(windows)]
 #[test]
 fn test_select_path_candidate_extensioned_bare_cwd_only_returns_none() {
-    let tree = SelectPathTempTree::new("extensioned-only-cwd");
-    let cwd = tree.dir("workspace");
-    let planted = tree.plant(&cwd, "perltidy.exe");
-    let candidate_refs = [planted.to_string_lossy().into_owned()];
-    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
-    let result = select_path_candidate(&candidate_ref_strs, &cwd);
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[r"C:\Users\user\project\perltidy.exe"]; // only in CWD
+    let result = select_path_candidate(candidates, &cwd);
     assert!(
         result.is_none(),
         "extensioned bare name not on PATH must return None, not execute CWD binary; got: {result:?}"
@@ -755,11 +564,7 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         let runtime = OsSubprocessRuntime::new();
         let result = runtime.run_command("pwned.bat", &[], None);
         assert!(result.is_err(), "child must fail closed: {result:?}");
-        // `writeln!` rather than `println!`: the marker must stay on stdout
-        // (the parent asserts the captured child stdout contains it), and the
-        // workspace clippy gate denies `clippy::print_stdout`.
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stdout(), "PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
+        println!("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
         return;
     }
 
@@ -808,95 +613,6 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
     );
 }
 
-// --- Batch-wrapper command-line round-trip (#17371) ---
-//
-// `resolve_command_invocation` routes `.bat`/`.cmd` tools through
-// `cmd.exe /D /V:OFF /S /C <payload>`. The payload is composed in cmd.exe
-// quoting conventions (per-token `"..."`, `%` verbatim, `""` doubling), so it
-// must reach cmd.exe byte-for-byte: std's default MSVC escaping rewrites its
-// `"` into `\"`, and cmd.exe — which does not understand `\"` — then fails to
-// recognize the batch file at all ('\"...bat\"' is not recognized). The fixed
-// path appends the payload with `CommandExt::raw_arg` wrapped in one extra
-// outer quote pair, which `/S` mode strips, leaving the per-token-quoted line
-// intact.
-//
-// This test drives the REAL spawn chain (`run_command` → resolve →
-// `std::process::Command` → CreateProcess → cmd.exe → child .bat) with a
-// perlcritic.bat-style probe and asserts every argument round-trips verbatim:
-// the `%`-bearing format strings that direct `Command::new(bat)` refuses
-// (Rust's BatBadBut hardening), a path containing a space, an empty argument,
-// embedded double quotes, and shell metacharacters.
-
-#[cfg(windows)]
-#[test]
-fn bat_wrapper_arguments_round_trip_through_real_cmd_spawn() {
-    let workspace =
-        std::env::temp_dir().join(format!("cmd_quote_roundtrip_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&workspace);
-    std::fs::create_dir_all(&workspace).expect("create temp workspace");
-
-    let probe = workspace.join("probe_args.bat");
-    {
-        use std::io::Write as _;
-        let mut f = std::fs::File::create(&probe).expect("write probe .bat");
-        writeln!(f, "@echo off").expect("write bat header");
-        writeln!(f, ":loop").expect("write bat loop label");
-        writeln!(f, "if [%1]==[] goto done").expect("write bat loop guard");
-        writeln!(f, "echo ARG=%1").expect("write bat arg echo");
-        writeln!(f, "shift").expect("write bat shift");
-        writeln!(f, "goto loop").expect("write bat loop jump");
-        writeln!(f, ":done").expect("write bat done label");
-        writeln!(f, "echo END_OF_ARGS").expect("write bat terminator");
-    }
-
-    let runtime = OsSubprocessRuntime::with_timeout(30);
-    let result = runtime.run_command(
-        probe.to_str().expect("temp path is UTF-8"),
-        &[
-            // Literal `\n` two-char sequence — perlcritic's --verbose format
-            // strings carry real `%` directives that must survive cmd's
-            // substitution pass untouched.
-            "--verbose=%f:%l:%c:%s:%p:%m\\n",
-            "--",
-            r"C:\dir with space\fixture.pl",
-            // Empty argument: must survive as an empty quoted token.
-            "",
-            // Embedded double quotes: cmd.exe `""` doubling must deliver the
-            // cmd-convention-encoded token without losing the quotes.
-            r#"--note="quoted value""#,
-            // Shell metacharacters: must stay literal inside the quoted token
-            // (no `&` command split, no `|`/`^` processing by cmd.exe).
-            "--flag=a&b|c^d",
-        ],
-        None,
-    );
-    let _ = std::fs::remove_dir_all(&workspace);
-
-    let output = perl_test_must::must(result);
-    assert!(
-        output.success(),
-        "batch wrapper spawn must succeed; status={:?} stderr={:?}",
-        output.status_code,
-        output.stderr_lossy()
-    );
-    let stdout = output.stdout_lossy();
-    let lines: Vec<&str> =
-        stdout.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty()).collect();
-    assert_eq!(
-        lines,
-        vec![
-            r#"ARG="--verbose=%f:%l:%c:%s:%p:%m\n""#,
-            r#"ARG="--""#,
-            r#"ARG="C:\dir with space\fixture.pl""#,
-            r#"ARG="""#,
-            r#"ARG="--note=""quoted value""""#,
-            r#"ARG="--flag=a&b|c^d""#,
-            "END_OF_ARGS",
-        ],
-        "every argument must round-trip through cmd.exe verbatim; stdout={stdout:?}"
-    );
-}
-
 // --- Relative path-with-separator bypass regression ---
 //
 // `resolve_windows_program` passes a program through unchanged when it contains
@@ -925,9 +641,11 @@ fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
-    let cmd =
-        perl_test_must::must(resolve_command_invocation(r"C:\tools\perltidy.exe", &["--version"]));
-    assert_eq!(cmd.get_program(), std::ffi::OsStr::new(r"C:\tools\perltidy.exe"));
+    let (program, _args) = perl_tdd_support::must(resolve_command_invocation(
+        r"C:\tools\perltidy.exe",
+        &["--version"],
+    ));
+    assert_eq!(program, r"C:\tools\perltidy.exe");
 }
 
 // --- Call-observation tests for resolve_program public API ---

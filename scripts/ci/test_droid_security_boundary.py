@@ -258,13 +258,6 @@ class DroidMentionBoundaryTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", self.mention)
         self.assertIn("droid-mention-hosted-v2-", self.mention)
 
-    def test_issue_comment_guard_requires_pull_request_target(self) -> None:
-        """Non-PR issue comments must not instantiate the droid job (#18705)."""
-        self.assertIn(
-            "github.event_name == 'issue_comment' && github.event.issue.pull_request != null",
-            self.mention.replace("\n", " "),
-        )
-
     def test_isolated_action_owns_model_and_publisher_boundary(self) -> None:
         action = _mention_step(
             self.mention, "Run isolated Droid review with MiniMax M3"

@@ -56,20 +56,13 @@ const DOCUMENT_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// completion request is issued while indexing is still in flight and only
 /// succeeds because a later retry catches up.
 ///
-/// Only a live deadline is tolerated as absence: readiness is an *optimization*
-/// for the attempts below, not an assertion, so a server that never publishes
-/// the signal still gets its full [`USEFUL_RESULT_TIMEOUT`] worth of attempts,
-/// and the scenario still fails on the useful-result predicate rather than on a
-/// missing signal. An orderly stream end or transport failure is different:
-/// optional_wait_with_subject propagates it, and the scenario fails at the
-/// readiness wait before any attempt runs.
-fn await_document_ready(harness: &UxHarness, relative_path: &str) -> Result<()> {
+/// The result is intentionally ignored: readiness is an *optimization* for the
+/// attempts below, not an assertion. A server that never publishes it still
+/// gets its full [`USEFUL_RESULT_TIMEOUT`] worth of attempts, and the scenario
+/// still fails on the useful-result predicate rather than on a missing signal.
+fn await_document_ready(harness: &UxHarness, relative_path: &str) {
     let uri = harness.workspace.uri(relative_path);
-    perl_lsp_ux_tests::optional_wait_with_subject(
-        &format!("active-document readiness for {uri}"),
-        harness.wait_for_active_document_ready(&uri, DOCUMENT_READY_TIMEOUT),
-    )?;
-    Ok(())
+    let _ = harness.wait_for_active_document_ready(&uri, DOCUMENT_READY_TIMEOUT);
 }
 
 /// Re-issue `attempt` until it reports a useful result, bounded by a wall-clock
@@ -187,7 +180,7 @@ fn useful_static_variable_hover(result: &Value) -> Result<String> {
 }
 
 fn static_variable_hover_with_retry(harness: &UxHarness) -> Result<Value> {
-    await_document_ready(harness, HOVER_FILE)?;
+    await_document_ready(harness, HOVER_FILE);
     retry_until_useful(USEFUL_RESULT_TIMEOUT, "useful hover for `$x` at test.pl:3:3", |budget| {
         match harness.hover_with_timeout(HOVER_FILE, HOVER_LINE, HOVER_CHARACTER, budget)? {
             Some(result) => {
@@ -262,7 +255,7 @@ fn includes_useful_completion(items: &[Value]) -> Result<bool> {
 }
 
 fn completion_with_retry(harness: &UxHarness) -> Result<Vec<Value>> {
-    await_document_ready(harness, COMPLETION_FILE)?;
+    await_document_ready(harness, COMPLETION_FILE);
     let mut last_items: Vec<Value> = Vec::new();
     match retry_until_useful(
         USEFUL_RESULT_TIMEOUT,

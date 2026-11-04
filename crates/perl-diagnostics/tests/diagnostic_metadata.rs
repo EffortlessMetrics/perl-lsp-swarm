@@ -30,8 +30,6 @@ fn diagnostic_code_registry_is_complete_unique_and_ordered()
     // inventories (#3014, #5035, #9818). The macro guarantees membership; these
     // assertions preserve their assigned public identities.
     assert_eq!(DiagnosticCode::UnresolvedQualifiedCall.as_str(), "PL305");
-    assert_eq!(DiagnosticCode::UnresolvedMethodCall.as_str(), "PL306");
-    assert_eq!(DiagnosticCode::StrayPodCut.as_str(), "PL412");
     assert_eq!(DiagnosticCode::SecuritySqlInjection.as_str(), "PL607");
     assert_eq!(DiagnosticCode::SecuritySubstitutionEval.as_str(), "PL608");
     assert_eq!(DiagnosticCode::SecurityEmbeddedRegexCode.as_str(), "PL609");

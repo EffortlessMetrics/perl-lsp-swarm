@@ -1,24 +1,52 @@
-mod support;
-
+use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;
-use std::time::Duration;
-use support::lsp_harness::LspHarness;
 
 #[test]
+
 fn semantic_tokens_emit_data() -> Result<(), Box<dyn std::error::Error>> {
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let srv = LspServer::new();
+    let init = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({"capabilities":{}})),
+    };
+    srv.handle_request(init);
+
+    // Send initialized notification (required by LSP protocol)
+    let initialized = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    srv.handle_request(initialized);
 
     let uri = "file:///tokens.pl";
     let text = r#"package Foo; my $x = 1; sub bar { return $x } $x = 2; bar();"#;
-    harness.open(uri, text)?;
-    harness.barrier();
+    let open = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": text
+            }
+        })),
+    };
+    srv.handle_request(open);
 
-    let result = harness.request_with_timeout(
-        "textDocument/semanticTokens/full",
-        json!({"textDocument": {"uri": uri}}),
-        Duration::from_secs(30),
-    )?;
+    let req = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/semanticTokens/full".into(),
+        params: Some(json!({"textDocument": {"uri": uri}})),
+    };
+    let res = srv.handle_request(req).ok_or("handle_request returned None")?;
+    let result = res.result.ok_or("response result is None")?;
     let arr = result["data"].as_array().ok_or("data field is not an array")?;
     assert!(!arr.is_empty(), "semantic tokens should return data");
 
@@ -33,8 +61,23 @@ fn semantic_tokens_emit_data() -> Result<(), Box<dyn std::error::Error>> {
 /// leaving declaration and read tokens unchanged. Closes #5716.
 #[test]
 fn semantic_tokens_modification_modifier_on_assignment() -> Result<(), Box<dyn std::error::Error>> {
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let srv = LspServer::new();
+
+    let init = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({"capabilities": {}})),
+    };
+    srv.handle_request(init);
+
+    let initialized = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    };
+    srv.handle_request(initialized);
 
     let uri = "file:///test_modification.pl";
     // Line 0: my $x = 1;  -> $x declared (bit 0 = declaration, not bit 7)
@@ -42,14 +85,29 @@ fn semantic_tokens_modification_modifier_on_assignment() -> Result<(), Box<dyn s
     // Line 2: $y = $x;    -> $x RHS read (neither bit 0 nor bit 7)
     let code = "my $x = 1;\n$x = 2;\n$y = $x;";
 
-    harness.open(uri, code)?;
-    harness.barrier();
+    let open = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": code
+            }
+        })),
+    };
+    srv.handle_request(open);
 
-    let result = harness.request_with_timeout(
-        "textDocument/semanticTokens/full",
-        json!({"textDocument": {"uri": uri}}),
-        Duration::from_secs(30),
-    )?;
+    let req = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+        method: "textDocument/semanticTokens/full".into(),
+        params: Some(json!({"textDocument": {"uri": uri}})),
+    };
+    let res = srv.handle_request(req).ok_or("handle_request returned None")?;
+    let result = res.result.ok_or("response result is None")?;
     let data = result["data"].as_array().ok_or("data field is not an array")?;
 
     assert_eq!(data.len() % 5, 0, "semantic tokens must be 5-tuples");

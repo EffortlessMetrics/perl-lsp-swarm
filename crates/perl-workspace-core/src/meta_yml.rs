@@ -59,9 +59,9 @@
 //!
 //! # What this module does NOT do (#8458 non-goals)
 //!
-//! No `META.json` ↔ `META.yml` reconciliation here (see [`crate::dist::compare_dist_metadata`]
-//! and [`crate::model::ProjectModel::compare_meta_json_with_meta_yml`]), no Kwalitee metric,
-//! and no `Makefile.PL` / `Build.PL` / `dist.ini` extraction.
+//! No full spec-conformance verdict (that is #7176), no `META.json` ↔
+//! `META.yml` reconciliation, no Kwalitee metric, and no `Makefile.PL` /
+//! `Build.PL` / `dist.ini` extraction.
 
 use std::collections::HashSet;
 
@@ -71,7 +71,6 @@ use crate::dist::{
     DistMetadataFacts, DistMetadataSource, META_V1_PHASED_REQUIRES, Prereq, RELATIONS,
 };
 use crate::id::{Digest, FileId};
-use crate::meta_yml_spec::{MetaYmlLicenseShape, MetaYmlSpecValidation, validate_meta_yml_spec};
 
 /// Budgets bounding the parser's work. Exceeding one is a typed finding, not
 /// a panic or a silent truncation.
@@ -82,14 +81,6 @@ const MAX_NODES: usize = 10_000;
 /// unreported, which fails the whole parse closed rather than publishing facts
 /// with only partly reported refusals.
 const MAX_FINDINGS: usize = 64;
-
-fn empty_spec_validation() -> MetaYmlSpecValidation {
-    MetaYmlSpecValidation {
-        recognized_spec: false,
-        conforms_to_supported_spec: false,
-        findings: Vec::new(),
-    }
-}
 
 /// The observed `meta-spec` version, kept distinct from the parse state: a
 /// file can parse cleanly while declaring an unrecognized spec.
@@ -186,8 +177,6 @@ pub struct MetaYmlOutcome {
     /// Deterministic content fingerprint (`fnv64:<hex>`), independent of the
     /// host path.
     pub source_digest: String,
-    /// Structural Meta spec recognition/conformance, separate from YAML parse state (#7176).
-    pub spec_validation: MetaYmlSpecValidation,
     /// Static limitations of this parser, stable across runs.
     pub limitations: Vec<String>,
 }
@@ -197,7 +186,7 @@ pub const META_YML_LIMITATIONS: &[&str] = &[
     "anchors, aliases, merge keys, explicit tags, block scalars, and multi-document streams are refused, not resolved",
     "scalar values keep their source spelling; no YAML type resolution is performed",
     "double-quoted escapes outside newline, tab, carriage return, quote and backslash are refused",
-    "structural Meta spec validation covers required fields and supported top-level keys; extended provides/resources validation remains #7176 follow-up",
+    "no META spec-conformance verdict is produced (#7176 owns spec validation)",
 ];
 
 /// Parse a `META.yml` under the bounded YAML subset.
@@ -215,14 +204,7 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
                 content.len()
             ),
         ));
-        return outcome(
-            MetaYmlParseState::Unsupported,
-            None,
-            None,
-            findings,
-            source_digest,
-            empty_spec_validation(),
-        );
+        return outcome(MetaYmlParseState::Unsupported, None, None, findings, source_digest);
     }
     if content.trim().is_empty() {
         findings.push(MetaYmlFinding::new(
@@ -230,14 +212,7 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
             None,
             "document is empty",
         ));
-        return outcome(
-            MetaYmlParseState::Malformed,
-            None,
-            None,
-            findings,
-            source_digest,
-            empty_spec_validation(),
-        );
+        return outcome(MetaYmlParseState::Malformed, None, None, findings, source_digest);
     }
 
     for (index, line) in content.lines().enumerate() {
@@ -247,21 +222,14 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
                 Some(index + 1),
                 "raw line contains a forbidden control character",
             ));
-            return outcome(
-                MetaYmlParseState::Malformed,
-                None,
-                None,
-                findings,
-                source_digest,
-                empty_spec_validation(),
-            );
+            return outcome(MetaYmlParseState::Malformed, None, None, findings, source_digest);
         }
     }
     let mut doc = Doc::new(content);
     if let Err(finding) = scan_stream_safety(&mut doc) {
         let state = failure_state(&finding);
         findings.push(finding);
-        return outcome(state, None, None, findings, source_digest, empty_spec_validation());
+        return outcome(state, None, None, findings, source_digest);
     }
 
     let mut parser = Parser { lines: doc.body, pos: 0, nodes: 0, depth: 0 };
@@ -270,7 +238,7 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
         Err(finding) => {
             let state = failure_state(&finding);
             findings.push(finding);
-            return outcome(state, None, None, findings, source_digest, empty_spec_validation());
+            return outcome(state, None, None, findings, source_digest);
         }
     };
     // Trailing content that is not blank after the first top-level node is a
@@ -281,14 +249,7 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
             Some(parser.lines[parser.pos].number),
             "content follows the first document; only single-document META.yml is supported",
         ));
-        return outcome(
-            MetaYmlParseState::Unsupported,
-            None,
-            None,
-            findings,
-            source_digest,
-            empty_spec_validation(),
-        );
+        return outcome(MetaYmlParseState::Unsupported, None, None, findings, source_digest);
     }
 
     let Yaml::Map(root) = value else {
@@ -297,14 +258,7 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
             None,
             "top level of a META.yml must be a mapping",
         ));
-        return outcome(
-            MetaYmlParseState::Malformed,
-            None,
-            None,
-            findings,
-            source_digest,
-            empty_spec_validation(),
-        );
+        return outcome(MetaYmlParseState::Malformed, None, None, findings, source_digest);
     };
 
     let spec_version = recognized_spec_version(&root, &mut findings);
@@ -317,16 +271,6 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
         licenses: root_licenses(&root, &mut findings),
         prereqs: root_prereqs(&root),
     };
-    let top_level_keys: Vec<String> = root.iter().map(|(key, _)| key.clone()).collect();
-    let meta_spec_key_present = top_level_keys.iter().any(|key| key == "meta-spec");
-    let license_shape = root_license_shape(&root);
-    let spec_validation = validate_meta_yml_spec(
-        spec_version,
-        meta_spec_key_present,
-        license_shape,
-        &top_level_keys,
-        &facts,
-    );
     if findings.len() > MAX_FINDINGS {
         // The finding list itself is bounded; a pathological input must not
         // grow it without limit. Once it overflows, the remaining refusals
@@ -347,17 +291,9 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
             None,
             findings,
             source_digest,
-            empty_spec_validation(),
         );
     }
-    outcome(
-        MetaYmlParseState::Parsed,
-        spec_version,
-        Some(facts),
-        findings,
-        source_digest,
-        spec_validation,
-    )
+    outcome(MetaYmlParseState::Parsed, spec_version, Some(facts), findings, source_digest)
 }
 
 fn failure_state(finding: &MetaYmlFinding) -> MetaYmlParseState {
@@ -379,7 +315,6 @@ fn outcome(
     facts: Option<DistMetadataFacts>,
     findings: Vec<MetaYmlFinding>,
     source_digest: String,
-    spec_validation: MetaYmlSpecValidation,
 ) -> MetaYmlOutcome {
     MetaYmlOutcome {
         state,
@@ -387,7 +322,6 @@ fn outcome(
         facts,
         findings,
         source_digest,
-        spec_validation,
         limitations: META_YML_LIMITATIONS.iter().map(|s| (*s).to_string()).collect(),
     }
 }
@@ -1343,17 +1277,6 @@ fn root_string(
 /// single string. Every declared entry that cannot become a license fact is
 /// reported rather than filtered away; see [`NullMeaning`] for why a null
 /// item is reported while a null field value is not.
-fn root_license_shape(root: &[(String, Yaml)]) -> MetaYmlLicenseShape {
-    let Some((_, value)) = root.iter().find(|(key, _)| key == "license") else {
-        return MetaYmlLicenseShape::Absent;
-    };
-    match value {
-        Yaml::Seq(_) => MetaYmlLicenseShape::Sequence,
-        Yaml::Scalar(_) => MetaYmlLicenseShape::Scalar,
-        _ => MetaYmlLicenseShape::Absent,
-    }
-}
-
 fn root_licenses(root: &[(String, Yaml)], findings: &mut Vec<MetaYmlFinding>) -> Vec<String> {
     let Some((_, value)) = root.iter().find(|(k, _)| k == "license") else {
         return Vec::new();

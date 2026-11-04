@@ -830,7 +830,6 @@ fn sexp_method_call() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_regex() -> Result<(), Box<dyn std::error::Error>> {
     let r = Node::new(
         NodeKind::Regex {
-            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "foo".to_string(),
             replacement: None,
             modifiers: "gi".to_string(),
@@ -848,7 +847,6 @@ fn sexp_regex() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_regex_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let r = Node::new(
         NodeKind::Regex {
-            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "(?{1})".to_string(),
             replacement: None,
             modifiers: "".to_string(),
@@ -1801,7 +1799,6 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
         ),
         Node::new(
             NodeKind::Regex {
-                form: perl_ast::RegexSurfaceForm::BarePattern,
                 pattern: "a".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),

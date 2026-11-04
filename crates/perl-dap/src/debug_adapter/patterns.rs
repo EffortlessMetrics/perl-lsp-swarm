@@ -11,36 +11,6 @@ pub(super) const DEBUG_SESSION_TERMINATE_WAIT_MS: u64 = 250;
 pub(super) const DEBUGGER_QUERY_WAIT_MS: u64 = 75;
 pub(super) const DEBUGGER_FRAME_POLL_MS: u64 = 10;
 
-/// Effective kill-confirmation budget for the terminate/cleanup paths.
-///
-/// Production keeps the tight [`DEBUG_SESSION_TERMINATE_WAIT_MS`] bounded
-/// reap: after `kill()` the exit confirmation only needs to absorb
-/// process-teardown latency, and a tight bound keeps a genuinely stuck
-/// cleanup verdict prompt.
-///
-/// #17173: under the parallel unit-test suite the reaping thread itself can
-/// be starved well past that budget (observed: 10 polls / 260ms for an
-/// already-terminated child), which fails tests that drive real children
-/// through `disconnect`/`terminate` and cleanup retries with a spurious
-/// "cleanup remains unconfirmed" verdict. Test builds resolve a larger
-/// budget so the assertion stays "the killed child was reaped", not "the
-/// reaper thread won a scheduling race". The value stays under the
-/// cleanup-driving tests' own 2s response deadlines so a slow confirm
-/// surfaces as a pass, not as a different timeout, and the production
-/// default is unchanged.
-pub(super) fn debug_session_terminate_wait_ms() -> u64 {
-    if cfg!(test) {
-        // Test-build budget (#17173): ~5x the observed worst starvation
-        // (260ms) while remaining under the 2s response deadlines of the
-        // disconnect/terminate tests. TerminateProcess/`kill()` completes
-        // in milliseconds; the window only absorbs observer scheduling
-        // latency under load and returns as soon as the exit is observed.
-        1_500
-    } else {
-        DEBUG_SESSION_TERMINATE_WAIT_MS
-    }
-}
-
 pub(super) const RECENT_OUTPUT_MAX_LINES: usize = 2048;
 
 /// Capacity of the outbound DAP event queue.
@@ -178,12 +148,6 @@ pub(super) fn dangerous_ops_re() -> Option<&'static Regex> {
             //   - Network: socket, connect, bind, listen, accept, send, recv, shutdown
             //   - IPC: msg*, sem*, shm*
             // Note: s/tr/y regex mutation operators handled separately via regex_mutation_re()
-            //
-            // `each` is denied: it advances the hash iterator (perlfunc).
-            // `keys`/`values` also reset that iterator. That reset is accepted —
-            // they return a complete snapshot rather than walking the iterator,
-            // and Watch/repl cannot send allowSideEffects. Do not add `keys` or
-            // `values` here (#18436 item 2).
             let ops = [
                 // State mutation
                 "push",
@@ -196,6 +160,8 @@ pub(super) fn dangerous_ops_re() -> Option<&'static Regex> {
                 "srand",
                 "bless",
                 "each",
+                "keys",
+                "values",
                 "reset", // Process control
                 "system",
                 "exec",
@@ -360,27 +326,4 @@ pub(super) fn is_valid_function_breakpoint_name(name: &str) -> bool {
 
 pub(super) fn inc_re() -> Option<&'static Regex> {
     INC_RE.get_or_init(|| Regex::new(r"'([^']+)'\s*=>\s*'([^']+)'")).as_ref().ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keys_and_values_are_admitted_each_remains_denied() {
-        use perl_tdd_support::must_some;
-        let re = must_some(dangerous_ops_re());
-
-        for expr in ["keys %h", "values %$ref", "scalar keys %h"] {
-            assert!(
-                !re.is_match(expr),
-                "read-only hash snapshot {expr:?} must not match the deny-list"
-            );
-        }
-        assert!(re.is_match("each %h"), "each advances the iterator and must remain denied");
-        assert!(
-            re.is_match("keys %h; system('true')"),
-            "compound expressions must still match remaining dangerous ops"
-        );
-    }
 }

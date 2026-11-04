@@ -501,7 +501,12 @@ pub fn perl_lsp::runtime::LspServer::try_begin_request_progress(&self, prefix: &
 pub fn perl_lsp::runtime::LspServer::did_open(&self, params: serde_json::value::Value) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_change_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_open_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
-pub fn perl_lsp::runtime::LspServer::exit_ends_connection(self) -> perl_lsp::runtime::LspServer
+pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> std::io::Result<()>
+pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
+pub fn perl_lsp::runtime::LspServer::run(&self) -> std::io::Result<()>
+pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> std::io::Result<()>
+pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
+pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::new() -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile_and_tuning(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> perl_lsp::runtime::LspServer
@@ -513,12 +518,6 @@ pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(re
 pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> perl_lsp::runtime::LspServer
-pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> std::io::Result<()>
-pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
-pub fn perl_lsp::runtime::LspServer::run(&self) -> std::io::Result<()>
-pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> std::io::Result<()>
-pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
-pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::offset_to_position(&self, content: &str, offset: usize) -> (u32, u32)
 pub fn perl_lsp::runtime::LspServer::position_to_offset(&self, content: &str, line: u32, character: u32) -> usize
 pub fn perl_lsp::runtime::LspServer::request_code_lens_refresh(&self) -> std::io::Result<()>
@@ -693,7 +692,12 @@ pub fn perl_lsp::runtime::LspServer::try_begin_request_progress(&self, prefix: &
 pub fn perl_lsp::runtime::LspServer::did_open(&self, params: serde_json::value::Value) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_change_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_open_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
-pub fn perl_lsp::runtime::LspServer::exit_ends_connection(self) -> perl_lsp::runtime::LspServer
+pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> std::io::Result<()>
+pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
+pub fn perl_lsp::runtime::LspServer::run(&self) -> std::io::Result<()>
+pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> std::io::Result<()>
+pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
+pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::new() -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile_and_tuning(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> perl_lsp::runtime::LspServer
@@ -705,12 +709,6 @@ pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(re
 pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> perl_lsp::runtime::LspServer
-pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> std::io::Result<()>
-pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
-pub fn perl_lsp::runtime::LspServer::run(&self) -> std::io::Result<()>
-pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> std::io::Result<()>
-pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
-pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::offset_to_position(&self, content: &str, offset: usize) -> (u32, u32)
 pub fn perl_lsp::runtime::LspServer::position_to_offset(&self, content: &str, line: u32, character: u32) -> usize
 pub fn perl_lsp::runtime::LspServer::request_code_lens_refresh(&self) -> std::io::Result<()>
@@ -863,8 +861,6 @@ pub mod perl_lsp::util::command_timeout
 pub fn perl_lsp::util::command_timeout::run_command_with_timeout(cmd: std::process::Command, timeout_secs: u64) -> core::result::Result<std::process::Output, alloc::string::String>
 pub mod perl_lsp::util::uri
 pub use perl_lsp::util::uri::parse_uri
-pub use perl_lsp::util::uri::parse_uri_or_err
-pub use perl_lsp::util::uri::try_parse_uri
 pub fn perl_lsp::util::anchor_arg_start(body: &str, rel: usize) -> usize
 pub fn perl_lsp::util::arg_starts_in_call_body(body: &str) -> alloc::vec::Vec<usize>
 pub fn perl_lsp::util::arg_starts_top_level(src: &str) -> alloc::vec::Vec<usize>
@@ -920,7 +916,12 @@ pub fn perl_lsp::runtime::LspServer::try_begin_request_progress(&self, prefix: &
 pub fn perl_lsp::runtime::LspServer::did_open(&self, params: serde_json::value::Value) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_change_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_open_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
-pub fn perl_lsp::runtime::LspServer::exit_ends_connection(self) -> perl_lsp::runtime::LspServer
+pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> std::io::Result<()>
+pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
+pub fn perl_lsp::runtime::LspServer::run(&self) -> std::io::Result<()>
+pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> std::io::Result<()>
+pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
+pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::new() -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile_and_tuning(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> perl_lsp::runtime::LspServer
@@ -932,12 +933,6 @@ pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(re
 pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> perl_lsp::runtime::LspServer
 pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> perl_lsp::runtime::LspServer
-pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> std::io::Result<()>
-pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
-pub fn perl_lsp::runtime::LspServer::run(&self) -> std::io::Result<()>
-pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> std::io::Result<()>
-pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
-pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::offset_to_position(&self, content: &str, offset: usize) -> (u32, u32)
 pub fn perl_lsp::runtime::LspServer::position_to_offset(&self, content: &str, line: u32, character: u32) -> usize
 pub fn perl_lsp::runtime::LspServer::request_code_lens_refresh(&self) -> std::io::Result<()>

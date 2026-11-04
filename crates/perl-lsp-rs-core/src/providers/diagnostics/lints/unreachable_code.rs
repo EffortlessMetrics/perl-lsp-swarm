@@ -144,7 +144,9 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
         NodeKind::While { condition, body, continue_block, .. } => {
             let _ = summarize_expression(condition, diagnostics);
             let _ = summarize_node(body, diagnostics);
-            summarize_loop_continue(continue_block, diagnostics);
+            if let Some(continue_block) = continue_block {
+                let _ = summarize_node(continue_block, diagnostics);
+            }
             FlowSummary::falls_through()
         }
         NodeKind::For { init, condition, update, body, continue_block, .. } => {
@@ -171,7 +173,9 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
                 }
             }
             let _ = summarize_node(body, diagnostics);
-            summarize_loop_continue(continue_block, diagnostics);
+            if let Some(continue_block) = continue_block {
+                let _ = summarize_node(continue_block, diagnostics);
+            }
             if let Some(update) = update {
                 let _ = summarize_expression(update, diagnostics);
             }
@@ -183,7 +187,9 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             let _ = summarize_expression(variable, diagnostics);
             let _ = summarize_expression(list, diagnostics);
             let _ = summarize_node(body, diagnostics);
-            summarize_loop_continue(continue_block, diagnostics);
+            if let Some(continue_block) = continue_block {
+                let _ = summarize_node(continue_block, diagnostics);
+            }
             FlowSummary::falls_through()
         }
 
@@ -539,12 +545,6 @@ fn summarize_function_call(
 fn analyze_expression_list(nodes: &[Node], diagnostics: &mut Vec<Diagnostic>) {
     for node in nodes {
         let _ = summarize_expression(node, diagnostics);
-    }
-}
-
-fn summarize_loop_continue(continue_block: &Option<Box<Node>>, diagnostics: &mut Vec<Diagnostic>) {
-    if let Some(continue_block) = continue_block {
-        let _ = summarize_node(continue_block, diagnostics);
     }
 }
 
@@ -930,16 +930,6 @@ mod tests {
             count_pl406(&diags),
             1,
             "dynamic goto transfers without sibling fallthrough: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn targetless_goto_does_not_fall_through() {
-        let diags = unreachable_diags("goto; print 'dead';");
-        assert_eq!(
-            count_pl406(&diags),
-            1,
-            "targetless goto transfers without sibling fallthrough: {diags:?}"
         );
     }
 

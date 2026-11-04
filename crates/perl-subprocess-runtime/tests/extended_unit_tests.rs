@@ -1,5 +1,3 @@
-#![deny(clippy::map_err_ignore)]
-// Cohort C1 activation (#12598): census-clean on all targets; new findings move the crate back to non-C1.
 //! Extended unit tests for perl-subprocess-runtime crate.
 //!
 //! This test suite provides comprehensive coverage including:
@@ -10,7 +8,7 @@
 
 use perl_subprocess_runtime::mock::{CommandInvocation, MockResponse, MockSubprocessRuntime};
 use perl_subprocess_runtime::{SubprocessError, SubprocessOutput, SubprocessRuntime};
-use perl_test_must::must;
+use perl_tdd_support::must;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -300,7 +298,7 @@ fn mock_runtime_concurrent_invocations() -> Result<(), Box<dyn std::error::Error
     }
 
     for h in handles {
-        h.join().map_err(|e| format!("thread panicked: {e:?}"))?;
+        h.join().map_err(|_| "thread panicked")?;
     }
 
     let invocations = runtime.invocations();
@@ -323,7 +321,7 @@ fn mock_runtime_concurrent_add_responses() -> Result<(), Box<dyn std::error::Err
     }
 
     for h in handles {
-        h.join().map_err(|e| format!("thread panicked: {e:?}"))?;
+        h.join().map_err(|_| "thread panicked")?;
     }
 
     // At least the default response is always there
@@ -350,7 +348,7 @@ fn mock_runtime_concurrent_clear_invocations() -> Result<(), Box<dyn std::error:
         let _output = runtime.run_command(&format!("cmd{}", i), &[], None);
     }
 
-    clear_thread.join().map_err(|e| format!("thread panicked: {e:?}"))?;
+    clear_thread.join().map_err(|_| "thread panicked")?;
 
     // After clear, should be empty (timing dependent but testing the capability)
     if *must(cleared.lock()) {

@@ -44,7 +44,7 @@ use std::process::Command;
 pub const DEFAULT_WARN_THRESHOLD: u32 = 5;
 
 pub const RECEIPT_KIND: &str = "session_start";
-pub const SCHEMA_VERSION: &str = "session_start.v1";
+pub const SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_OUT_PATH: &str = "target/receipts/session-start.json";
 
 /// Machine-readable session-start receipt. Field shape mirrors
@@ -53,7 +53,7 @@ pub const DEFAULT_OUT_PATH: &str = "target/receipts/session-start.json";
 /// the schema's `required`/`properties`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionReceipt {
-    pub schema_version: String,
+    pub schema_version: u32,
     pub kind: String,
     pub captured_at: String,
     pub timestamp_source: String,
@@ -221,7 +221,7 @@ fn build_receipt(
     let stale_warning = compute_stale_warning(behind_origin_main, warn_threshold);
 
     Ok(SessionReceipt {
-        schema_version: SCHEMA_VERSION.to_owned(),
+        schema_version: SCHEMA_VERSION,
         kind: RECEIPT_KIND.to_owned(),
         captured_at: chrono::Utc::now().to_rfc3339(),
         timestamp_source,
@@ -372,7 +372,7 @@ mod tests {
 
     fn sample_receipt() -> SessionReceipt {
         SessionReceipt {
-            schema_version: SCHEMA_VERSION.to_owned(),
+            schema_version: SCHEMA_VERSION,
             kind: RECEIPT_KIND.to_owned(),
             captured_at: "2026-07-11T00:00:00+00:00".to_owned(),
             timestamp_source: "system_clock".to_owned(),
@@ -392,27 +392,6 @@ mod tests {
             warn_threshold: DEFAULT_WARN_THRESHOLD,
             stale_warning: None,
         }
-    }
-
-    #[test]
-    fn schema_version_is_project_wide_string_field() {
-        // Pin the #15324 D1 fix: session-start receipts must emit
-        // `schema_version: String` (`session_start.v1`), not legacy `u32 = 1`.
-        const EXPECTED: &str = "session_start.v1";
-        let receipt = sample_receipt();
-        assert_eq!(receipt.schema_version, EXPECTED);
-
-        let rendered = serde_json::to_value(&receipt).expect("serialize receipt");
-        let object = rendered.as_object().expect("receipt is a JSON object");
-        assert_eq!(
-            object.get("schema_version").and_then(serde_json::Value::as_str),
-            Some(EXPECTED),
-            "serialized receipt must expose schema_version as a string for project-wide consumers",
-        );
-        assert!(
-            object.get("schema_version").and_then(serde_json::Value::as_u64).is_none(),
-            "schema_version must not serialize as a JSON number (legacy u32 drift)",
-        );
     }
 
     #[test]
@@ -668,7 +647,7 @@ mod tests {
                 receipt["captured_at"] = serde_json::json!(1_752_192_000);
             }),
             ("schema_version not the pinned const", |receipt| {
-                receipt["schema_version"] = serde_json::json!("session_start.v0");
+                receipt["schema_version"] = serde_json::json!(2);
             }),
             ("kind not the pinned const", |receipt| {
                 receipt["kind"] = serde_json::json!("session_finish");

@@ -41,7 +41,6 @@ fn assert_incremental_matches_fresh(state: &IncrementalState) {
     assert_eq!(incremental_output.recovered_count, fresh_output.recovered_count);
     assert_eq!(incremental_output.terminated_early(), fresh_output.terminated_early());
     assert_eq!(incremental_output.stop_cause(), fresh_output.stop_cause());
-    assert_eq!(incremental_output.completion(), fresh_output.completion());
     assert_eq!(
         state.snapshot().disposition(),
         ParseSnapshot::from_output(
@@ -52,7 +51,6 @@ fn assert_incremental_matches_fresh(state: &IncrementalState) {
         )
         .disposition()
     );
-    assert_eq!(state.snapshot().completion(), fresh_output.completion());
     assert!(state.snapshot().validate_against(state.source()).is_ok());
 }
 

@@ -11,23 +11,18 @@
 use anyhow::{Context, Result, anyhow};
 use perl_dap::DapMessage;
 use perl_dap::backend::capabilities::ControlMode;
-#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
-use perl_dap::backend::peer_launch::ENV_PEER_TOKEN;
-use perl_dap::backend::peer_launch::PeerListenEndpoint;
+use perl_dap::backend::peer_launch::{ENV_PEER_TOKEN, PeerListenEndpoint};
 use perl_dap::peer_protocol::message::{PeerMessage, PeerRequest, command};
 use perl_dap::peer_protocol::payloads::HelloArgs;
 use perl_dap::peer_protocol::{PROTOCOL_VERSION, PeerReportedCapabilities, encode_message};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
-#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -362,7 +357,6 @@ fn assert_socket_fails_before_bind(
     Ok(())
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct StdioAdapter {
     child: Child,
     stdin: Option<std::process::ChildStdin>,
@@ -371,7 +365,6 @@ struct StdioAdapter {
     pending: VecDeque<DapMessage>,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl StdioAdapter {
     fn spawn(extra_args: &[&str]) -> Result<Self> {
         let mut command = Command::new(cargo_dap_binary());
@@ -488,7 +481,6 @@ impl StdioAdapter {
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl Drop for StdioAdapter {
     fn drop(&mut self) {
         if let Ok(None) = self.child.try_wait() {
@@ -503,7 +495,6 @@ struct Cleanup {
     stderr: String,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn spawn_frame_reader<R>(mut reader: R) -> Receiver<std::result::Result<DapMessage, String>>
 where
     R: Read + Send + 'static,
@@ -599,7 +590,6 @@ fn assert_no_tcp_initialize(addr: SocketAddr, why: &str) -> Result<()> {
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn initialize_args() -> Value {
     json!({
         "adapterID": "perl-dap",
@@ -609,7 +599,6 @@ fn initialize_args() -> Value {
     })
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn dap_text(message: &DapMessage) -> String {
     serde_json::to_string(message).unwrap_or_else(|_| format!("{message:?}"))
 }
@@ -701,7 +690,6 @@ impl Drop for ListeningFakePeer {
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn send_wrong_token_hello(addr: SocketAddr, token: &str) -> Result<()> {
     let mut stream = TcpStream::connect_timeout(&addr, ATTACKER_TIMEOUT)?;
     stream.set_write_timeout(Some(ATTACKER_TIMEOUT))?;
@@ -740,7 +728,6 @@ fn write_receipt(receipt: &Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn observe_spawned_mode(mode: &str, args: &[&str]) -> Result<(SocketObservation, Cleanup)> {
     let adapter = StdioAdapter::spawn(args)?;
     thread::sleep(Duration::from_millis(200));

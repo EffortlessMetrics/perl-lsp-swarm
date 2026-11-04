@@ -48,10 +48,7 @@ function request(input: BinaryIdentityCommandInput): BinaryIdentityRequestV1 {
       // The selected channel is the artifact role the server must agree with.
       binary_artifact_role: input.selectedRole,
       // The installed VSIX is the authority that produced this expectation.
-      // The token carries the packaged extension identity rather than the
-      // installed version string, so it stays stable across upgrades; the
-      // version itself is compared in its dedicated `version` field above.
-      authority_identity: `vsix:${CANONICAL_EXTENSION_ID}`,
+      authority_identity: `vsix:${input.extensionVersion}`,
       ...(input.extensionCandidate === undefined
         ? {}
         : { candidate_identity: input.extensionCandidate }),

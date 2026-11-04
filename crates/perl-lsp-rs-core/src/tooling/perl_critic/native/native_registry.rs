@@ -18,9 +18,9 @@ use super::{
     DuplicateParameterRule, ParameterShadowsGlobalRule, PipeOpenRule, PrintfFormatArityRule,
     ProhibitLeadingZerosRule, QxReadpipeRule, RequirePodSectionsRule, RequireUseStrictRule,
     RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule, StringEvalRule,
-    SubTooLongRule, SystemExecRule, TooManyNestedBlocksRule, TooManyParamsRule, TwoArgOpenRule,
-    UncheckedOpenCloseRule, UndeclaredVariableRule, UndefComparisonRule, UninitializedVariableRule,
-    UnquotedBarewordRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
+    SystemExecRule, TwoArgOpenRule, UncheckedOpenCloseRule, UndeclaredVariableRule,
+    UndefComparisonRule, UninitializedVariableRule, UnquotedBarewordRule, UnreachableCodeRule,
+    UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
 #[cfg(any(test, feature = "test-instrumentation"))]
@@ -174,9 +174,6 @@ static NATIVE_IDENTITY_DISPOSITIONS: &[NativeCriticIdentityDisposition] = &[
     NativeCriticIdentityDisposition::new("native.syntax.unquoted_bareword", GENERAL),
     NativeCriticIdentityDisposition::new("native.documentation.require_pod_sections", GENERAL),
     NativeCriticIdentityDisposition::new("native.syntax.prohibit_leading_zeros", GENERAL),
-    NativeCriticIdentityDisposition::new("native.maintainability.sub_too_long", GENERAL),
-    NativeCriticIdentityDisposition::new("native.maintainability.too_many_nested_blocks", GENERAL),
-    NativeCriticIdentityDisposition::new("native.maintainability.too_many_params", GENERAL),
 ];
 
 const MAX_REJECTED_PROFILE_CHARS: usize = 80;
@@ -448,9 +445,6 @@ impl NativeCriticRegistry {
             Box::new(UnquotedBarewordRule),
             Box::new(RequirePodSectionsRule),
             Box::new(ProhibitLeadingZerosRule),
-            Box::new(SubTooLongRule),
-            Box::new(TooManyNestedBlocksRule),
-            Box::new(TooManyParamsRule),
         ])
     }
 

@@ -470,9 +470,7 @@ crate = "perl-parser"
 name = "modernize"
 role = "experimental_opt_in"
 owner = "#8409"
-consumers = []
-migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
-note = "Declared with no edges and no cfg consumer; modernization API is always compiled after Wave 4 absorption (#4543)."
+consumers = ["cfg_gated"]
 
 [[feature]]
 crate = "perl-parser"
@@ -566,7 +564,7 @@ crate = "perl-parser"
 name = "workspace_refactor"
 role = "legacy_alias"
 owner = "#8409"
-consumers = ["propagated"]
+consumers = ["cfg_gated", "propagated"]
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
 name_exception = { roadmap = "Name asserts an in-flight refactor; #8411 owns the rename." }
 note = "Default-on and widely consumed; the migration it named has landed."
@@ -705,7 +703,7 @@ crate = "perl-workspace"
 name = "workspace"
 role = "build_composition"
 owner = "#8409"
-consumers = ["cfg_gated", "propagated"]
+consumers = ["cfg_gated", "propagated", "required_features"]
 
 [[feature]]
 crate = "tree-sitter-perl-c"

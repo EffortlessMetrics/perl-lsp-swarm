@@ -197,7 +197,6 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         ),
         Node::new(
             NodeKind::Regex {
-                form: perl_ast::RegexSurfaceForm::BarePattern,
                 pattern: "foo".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),

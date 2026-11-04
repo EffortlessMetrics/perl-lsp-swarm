@@ -5,8 +5,7 @@
 
 use crate::error::ParseError;
 use crate::heredoc::{HeredocQueue, HeredocRemoval, HeredocScan};
-use crate::outcome::{ParseAttempt, ParseOutcome, ParserFailure, SourceRange, StrictParseError};
-
+use crate::outcome::{ParserFailure, StrictParseError};
 use crate::pratt_parser::PrattParser;
 use pest::{
     Parser,
@@ -20,11 +19,6 @@ use std::sync::{Arc, LazyLock};
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
 pub struct PerlParser;
-
-static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
-static ASSIGN_BITNOT_RE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"=\s+~\s*(?P<expr>\$[A-Za-z_][A-Za-z0-9_:]*)").ok());
 
 /// Opening delimiter for a heredoc placeholder embedded in `q{...}` / `qq{...}` content
 /// (see `Rule::q_string` / `Rule::qq_string` in `build_node`).
@@ -501,12 +495,7 @@ impl PureRustPerlParser {
         }
     }
 
-    /// Legacy recovering parse adapter (#8435 / train #8410 PR-03).
-    ///
-    /// This entry point applies the heredoc pre-pass, source normalization, and
-    /// statement-level recovery. It does **not** imply strict completeness over
-    /// the caller's original source. For a strict boundary that parses the
-    /// original bytes without recovery or normalization, use [`Self::parse_strict`].
+    /// Parse `source` into an [`AstNode`].
     ///
     /// `source` is rewritten by an internal normalization pass before Pest sees
     /// it (see [`Self::normalize_source_mapped`]). Pest's byte offsets therefore index
@@ -518,56 +507,6 @@ impl PureRustPerlParser {
     pub fn parse(&mut self, source: &str) -> Result<AstNode, ParseError> {
         let scan = crate::heredoc::scan(source);
         self.parse_scanned(&scan, source)
-    }
-
-    /// Strict parse of `source` over the caller's original bytes (#8435).
-    ///
-    /// Pest runs on `source` verbatim: no heredoc body removal, no
-    /// [`Self::normalize_source_mapped`] rewrites, and no
-    /// [`Self::parse_with_recovery`]. A [`crate::ParseCompleteness::Complete`] outcome
-    /// means Pest consumed the full `SOI … EOI` program and AST construction
-    /// succeeded without recovery metadata.
-    pub fn parse_strict(&mut self, source: &str) -> ParseAttempt<AstNode> {
-        self.heredocs = HeredocQueue::default();
-        self.heredoc_offsets_exact = false;
-        self.heredoc_span_base = 0;
-        self.heredoc_nodes_built = 0;
-
-        if let Some(rejection) = Self::strict_rejection_for_normalization_only(source) {
-            return ParseAttempt::rejected(rejection);
-        }
-
-        let scan = crate::heredoc::scan(source);
-        if !scan.captures().is_empty() {
-            let Some(range) = SourceRange::try_over_source(0, source.len(), source).ok() else {
-                return ParseAttempt::failed(ParserFailure::instrument(
-                    "failed to bind heredoc strict rejection to the caller source",
-                ));
-            };
-            return ParseAttempt::rejected(StrictParseError::new(
-                range,
-                "strict parse does not account for heredoc bodies in original source yet",
-                format!(
-                    "found {} heredoc capture(s); use parse() or parse_heredoc_outcome until \
-                     whole-source heredoc strict accounting lands",
-                    scan.captures().len()
-                ),
-            ));
-        }
-
-        match <PerlParser as Parser<Rule>>::parse(Rule::program, source) {
-            Ok(pairs) => match self.build_ast(pairs) {
-                Ok(ast) => ParseAttempt::outcome(ParseOutcome::complete(ast)),
-                Err(ParseError::Rejected(rejection)) => ParseAttempt::rejected(rejection),
-                Err(ParseError::Failed(failure)) => ParseAttempt::failed(failure),
-            },
-            Err(error) => match StrictParseError::from_pest(&error, source) {
-                Ok(rejection) => ParseAttempt::rejected(rejection),
-                Err(outcome_error) => ParseAttempt::failed(ParserFailure::instrument(format!(
-                    "failed to bind pest rejection to the caller source: {outcome_error}"
-                ))),
-            },
-        }
     }
 
     /// Parse the body-stripped text of `scan`, attaching its captured bodies.
@@ -630,6 +569,11 @@ impl PureRustPerlParser {
     /// into the coordinate system Pest actually reports, so a capture keeps a
     /// usable identity instead of falling back to matching on marker text alone.
     fn normalize_source_mapped(source: &str) -> (String, NormalizationMap) {
+        static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
+            LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
+        static ASSIGN_BITNOT_RE: LazyLock<Option<Regex>> =
+            LazyLock::new(|| Regex::new(r"=\s+~\s*(?P<expr>\$[A-Za-z_][A-Za-z0-9_:]*)").ok());
+
         // These are fixed patterns; if one ever fails to compile, skip normalization
         // rather than panicking inside production parser code.
         let Some(scalar_deref_re) = SIMPLE_SCALAR_DEREF_RE.as_ref() else {
@@ -651,23 +595,6 @@ impl PureRustPerlParser {
             });
 
         (normalized, NormalizationMap { passes: vec![deref_edits, bitnot_edits] })
-    }
-
-    /// Reject strict parses that would require legacy bitwise-not normalization.
-    fn strict_rejection_for_normalization_only(source: &str) -> Option<StrictParseError> {
-        let re = ASSIGN_BITNOT_RE.as_ref()?;
-        let caps = re.captures(source)?;
-        let matched = caps.get(0)?;
-        let range = SourceRange::try_over_source(matched.start(), matched.end(), source).ok()?;
-        Some(StrictParseError::new(
-            range,
-            "strict parse does not apply source normalization substitutions",
-            format!(
-                "strict parse leaves `{raw}` in the original source; legacy \
-                 normalization would rewrite it before Pest sees the text",
-                raw = matched.as_str()
-            ),
-        ))
     }
 
     /// `normalized` must be the exact text Pest attempted to parse (and that

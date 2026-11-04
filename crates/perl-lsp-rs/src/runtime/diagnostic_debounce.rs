@@ -80,18 +80,6 @@ impl DiagnosticDebouncer {
         self.worker_handle.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
-    /// Whether the debounce worker thread is still running on this thread.
-    ///
-    /// When the publish callback drops the last `Arc<LspServer>`, settlement
-    /// runs inside that callback before the worker can report `has_exited`.
-    /// `RuntimeServices` treats that as an in-flight cooperative stop rather
-    /// than waiting for a self-join timeout (#8088).
-    pub(crate) fn runs_on_worker_thread(&self) -> bool {
-        self.worker_handle.as_ref().is_some_and(|handle| {
-            !handle.is_finished() && handle.thread().id() == thread::current().id()
-        })
-    }
-
     /// Whether the worker loop returned normally rather than unwinding.
     /// Only meaningful once [`Self::has_exited`] is true: `false` there means
     /// the thread died, typically because `publish_fn` panicked, which

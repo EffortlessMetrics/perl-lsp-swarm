@@ -23,11 +23,6 @@ pub struct CompletionContext {
     pub prefix: String,
     /// Start position of the prefix (for text edit range calculation)
     pub prefix_start: usize,
-    /// End of the identifier suffix after the cursor. When completion is
-    /// invoked mid-token, producers that replace the whole token extend
-    /// their text edit range to here so the suffix is not duplicated
-    /// (#18123). Defaults to `position` (end-of-token invocation).
-    pub suffix_end: usize,
     /// The innermost scope containing the cursor position
     pub cursor_scope_id: ScopeId,
 }
@@ -155,7 +150,6 @@ impl CompletionContext {
             current_package,
             prefix,
             prefix_start,
-            suffix_end: position,
             cursor_scope_id: 0,
         }
     }

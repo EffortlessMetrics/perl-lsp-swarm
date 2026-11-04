@@ -1134,7 +1134,6 @@ fn collect_identifiers(block: &syn::Block, referenced: &mut BTreeSet<String>) {
 }
 
 /// Whole-identifier containment, so `FOO` does not match `FOO_BAR`.
-#[cfg(test)]
 fn contains_word(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
@@ -1154,7 +1153,6 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     false
 }
 
-#[cfg(test)]
 fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }

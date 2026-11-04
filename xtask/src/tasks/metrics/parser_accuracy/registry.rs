@@ -461,8 +461,6 @@ impl MetricRegistry {
 
 #[cfg(test)]
 mod tests {
-    use perl_tdd_support::{must_err_with, must_some_with, must_with};
-
     use super::*;
 
     fn measured(metric: &str, value: f64, sample_count: u64) -> MetricRow {
@@ -488,9 +486,8 @@ mod tests {
     }
 
     fn ratio_registry() -> MetricRegistry {
-        must_with(
-            one_metric_registry(
-                r#"name = "sample_rate"
+        one_metric_registry(
+            r#"name = "sample_rate"
 family = "line"
 kind = "ratio"
 direction = "up"
@@ -501,14 +498,13 @@ min_sample_count = 2
 high_confidence_sample_count = 5
 cadences = ["pr"]
 "#,
-            ),
-            "fixture registry is coherent",
         )
+        .expect("fixture registry is coherent")
     }
 
     #[test]
     fn authored_registry_is_coherent_and_non_empty() {
-        let registry = must_with(MetricRegistry::load(), "authored registry must parse");
+        let registry = MetricRegistry::load().expect("authored registry must parse");
         assert!(registry.len() > 100, "registry governs {} metrics", registry.len());
     }
 
@@ -516,20 +512,14 @@ cadences = ["pr"]
     fn apply_derives_direction_and_confidence_from_sample_count() {
         let registry = ratio_registry();
         let mut rows = vec![measured("sample_rate", 0.5, 2)];
-        must_with(registry.apply(&mut rows), "registered metric applies");
+        registry.apply(&mut rows).expect("registered metric applies");
 
-        let (direction, confidence) = must_some_with(
-            match &rows[0] {
-                MetricRow::Measured { direction, confidence, .. } => {
-                    Some((*direction, *confidence))
-                }
-                _ => None,
-            },
-            "expected a measured row",
-        );
-        assert_eq!(direction, Direction::Up);
+        let MetricRow::Measured { direction, confidence, .. } = &rows[0] else {
+            panic!("expected a measured row");
+        };
+        assert_eq!(*direction, Direction::Up);
         assert_eq!(
-            confidence,
+            *confidence,
             Confidence::Low,
             "2 samples is below the declared high-confidence threshold of 5"
         );
@@ -539,30 +529,26 @@ cadences = ["pr"]
     fn apply_permits_high_confidence_at_the_declared_threshold() {
         let registry = ratio_registry();
         let mut rows = vec![measured("sample_rate", 0.5, 5)];
-        must_with(registry.apply(&mut rows), "registered metric applies");
+        registry.apply(&mut rows).expect("registered metric applies");
 
-        let confidence = must_some_with(
-            match &rows[0] {
-                MetricRow::Measured { confidence, .. } => Some(*confidence),
-                _ => None,
-            },
-            "expected a measured row",
-        );
-        assert_eq!(confidence, Confidence::High);
+        let MetricRow::Measured { confidence, .. } = &rows[0] else {
+            panic!("expected a measured row");
+        };
+        assert_eq!(*confidence, Confidence::High);
     }
 
     #[test]
     fn unregistered_metric_is_rejected() {
         let registry = ratio_registry();
         let rows = vec![measured("not_registered", 0.5, 9)];
-        let err = must_err_with(registry.validate_conformance(&rows), "unknown metric must fail");
+        let err = registry.validate_conformance(&rows).expect_err("unknown metric must fail");
         assert!(err.to_string().contains("unregistered metric 'not_registered'"), "{err}");
     }
 
     #[test]
     fn unemitted_registered_metric_is_rejected() {
         let registry = ratio_registry();
-        let err = must_err_with(registry.validate_completeness(&[]), "missing metric must fail");
+        let err = registry.validate_completeness(&[]).expect_err("missing metric must fail");
         assert!(err.to_string().contains("did not emit registered metric 'sample_rate'"), "{err}");
     }
 
@@ -571,7 +557,7 @@ cadences = ["pr"]
         // A deliberately reduced fixture manifest scores fewer planes. That is a smaller
         // artifact, not a violation, so soundness must pass where completeness would not.
         let registry = ratio_registry();
-        must_with(registry.validate_conformance(&[]), "a reduced artifact is still sound");
+        registry.validate_conformance(&[]).expect("a reduced artifact is still sound");
         assert!(registry.validate_completeness(&[]).is_err());
     }
 
@@ -594,10 +580,9 @@ cadences = ["pr"]
     fn over_confident_insufficient_row_is_rejected() {
         let registry = ratio_registry();
         let rows = vec![insufficient("sample_rate", 0, Confidence::High)];
-        let err = must_err_with(
-            registry.validate_conformance(&rows),
-            "an over-confident insufficient row must fail",
-        );
+        let err = registry
+            .validate_conformance(&rows)
+            .expect_err("an over-confident insufficient row must fail");
         assert!(err.to_string().contains("claims High confidence"), "{err}");
     }
 
@@ -608,14 +593,14 @@ cadences = ["pr"]
     fn low_confidence_insufficient_row_is_accepted() {
         let registry = ratio_registry();
         let rows = vec![insufficient("sample_rate", 0, Confidence::Low)];
-        must_with(registry.validate_conformance(&rows), "a Low insufficient row is well formed");
+        registry.validate_conformance(&rows).expect("a Low insufficient row is well formed");
     }
 
     #[test]
     fn duplicate_metric_row_is_rejected() {
         let registry = ratio_registry();
         let rows = vec![measured("sample_rate", 0.5, 9), measured("sample_rate", 0.6, 9)];
-        let err = must_err_with(registry.validate_conformance(&rows), "duplicate row must fail");
+        let err = registry.validate_conformance(&rows).expect_err("duplicate row must fail");
         assert!(err.to_string().contains("more than once"), "{err}");
     }
 
@@ -623,15 +608,14 @@ cadences = ["pr"]
     fn out_of_range_value_is_rejected() {
         let registry = ratio_registry();
         let rows = vec![measured("sample_rate", 1.4, 9)];
-        let err = must_err_with(registry.validate_conformance(&rows), "out-of-range must fail");
+        let err = registry.validate_conformance(&rows).expect_err("out-of-range must fail");
         assert!(err.to_string().contains("outside its declared range 0..=1"), "{err}");
     }
 
     #[test]
     fn zero_budget_violation_is_rejected() {
-        let registry = must_with(
-            one_metric_registry(
-                r#"name = "false_exact_count"
+        let registry = one_metric_registry(
+            r#"name = "false_exact_count"
 family = "safety"
 kind = "count"
 direction = "down"
@@ -641,15 +625,14 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "fixture registry is coherent",
-        );
+        )
+        .expect("fixture registry is coherent");
 
         let mut row = measured("false_exact_count", 1.0, 9);
         if let MetricRow::Measured { direction, .. } = &mut row {
             *direction = Direction::Down;
         }
-        let err = must_err_with(registry.validate_conformance(&[row]), "zero budget must fail");
+        let err = registry.validate_conformance(&[row]).expect_err("zero budget must fail");
         assert!(err.to_string().contains("carries a zero budget but reported 1"), "{err}");
     }
 
@@ -657,7 +640,7 @@ cadences = ["pr"]
     fn under_sampled_measured_row_is_rejected() {
         let registry = ratio_registry();
         let rows = vec![measured("sample_rate", 0.5, 1)];
-        let err = must_err_with(registry.validate_conformance(&rows), "under-sampled must fail");
+        let err = registry.validate_conformance(&rows).expect_err("under-sampled must fail");
         assert!(err.to_string().contains("must be reported as insufficient_data"), "{err}");
     }
 
@@ -667,7 +650,7 @@ cadences = ["pr"]
         // 3 samples clears min_sample_count (2) but not high_confidence_sample_count (5),
         // so the hardcoded `Confidence::High` on this row is now a violation.
         let rows = vec![measured("sample_rate", 0.5, 3)];
-        let err = must_err_with(registry.validate_conformance(&rows), "over-claim must fail");
+        let err = registry.validate_conformance(&rows).expect_err("over-claim must fail");
         assert!(err.to_string().contains("reports High confidence from 3 sample(s)"), "{err}");
     }
 
@@ -681,7 +664,7 @@ cadences = ["pr"]
         if let MetricRow::Measured { confidence, .. } = &mut row {
             *confidence = Confidence::Low;
         }
-        let err = must_err_with(registry.validate_conformance(&[row]), "under-claim must fail");
+        let err = registry.validate_conformance(&[row]).expect_err("under-claim must fail");
         assert!(err.to_string().contains("reports Low confidence from 9 sample(s)"), "{err}");
     }
 
@@ -692,7 +675,7 @@ cadences = ["pr"]
         if let MetricRow::Measured { cadence, .. } = &mut row {
             *cadence = Cadence::Release;
         }
-        let err = must_err_with(registry.validate_conformance(&[row]), "bad cadence must fail");
+        let err = registry.validate_conformance(&[row]).expect_err("bad cadence must fail");
         assert!(err.to_string().contains("ineligible cadence"), "{err}");
     }
 
@@ -703,15 +686,14 @@ cadences = ["pr"]
         if let MetricRow::Measured { direction, .. } = &mut row {
             *direction = Direction::Down;
         }
-        let err = must_err_with(registry.validate_conformance(&[row]), "bad direction must fail");
+        let err = registry.validate_conformance(&[row]).expect_err("bad direction must fail");
         assert!(err.to_string().contains("registry declares Up"), "{err}");
     }
 
     #[test]
     fn duplicate_registry_entry_is_rejected() {
-        let err = must_err_with(
-            MetricRegistry::parse(
-                r#"schema_version = 1
+        let err = MetricRegistry::parse(
+            r#"schema_version = 1
 
 [[metric]]
 name = "dup"
@@ -733,9 +715,8 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "duplicate registry entry must fail",
-        );
+        )
+        .expect_err("duplicate registry entry must fail");
         assert!(err.to_string().contains("more than once"), "{err}");
     }
 
@@ -744,9 +725,8 @@ cadences = ["pr"]
         // The dangerous shape: every comparison against NaN is false, so `value < min`
         // never trips and a NaN lower bound silently disables the range check instead of
         // failing. TOML has a `nan` literal, so this is reachable from authored policy.
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "nan_bound"
+        let err = one_metric_registry(
+            r#"name = "nan_bound"
 family = "line"
 kind = "count"
 direction = "down"
@@ -755,17 +735,15 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "a NaN bound must fail",
-        );
+        )
+        .expect_err("a NaN bound must fail");
         assert!(err.to_string().contains("non-finite min"), "{err}");
     }
 
     #[test]
     fn infinite_registry_max_is_rejected() {
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "inf_bound"
+        let err = one_metric_registry(
+            r#"name = "inf_bound"
 family = "line"
 kind = "count"
 direction = "down"
@@ -775,17 +753,15 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "an infinite bound must fail",
-        );
+        )
+        .expect_err("an infinite bound must fail");
         assert!(err.to_string().contains("non-finite max"), "{err}");
     }
 
     #[test]
     fn inverted_registry_range_is_rejected() {
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "inverted"
+        let err = one_metric_registry(
+            r#"name = "inverted"
 family = "line"
 kind = "count"
 direction = "down"
@@ -795,17 +771,15 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "inverted range must fail",
-        );
+        )
+        .expect_err("inverted range must fail");
         assert!(err.to_string().contains("inverted range"), "{err}");
     }
 
     #[test]
     fn ratio_declared_outside_unit_interval_is_rejected() {
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "bad_ratio"
+        let err = one_metric_registry(
+            r#"name = "bad_ratio"
 family = "line"
 kind = "ratio"
 direction = "up"
@@ -815,17 +789,15 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "ratio outside 0..=1 must fail",
-        );
+        )
+        .expect_err("ratio outside 0..=1 must fail");
         assert!(err.to_string().contains("inside 0.0..=1.0"), "{err}");
     }
 
     #[test]
     fn high_confidence_threshold_below_measurement_threshold_is_rejected() {
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "incoherent"
+        let err = one_metric_registry(
+            r#"name = "incoherent"
 family = "line"
 kind = "count"
 direction = "down"
@@ -834,9 +806,8 @@ min_sample_count = 8
 high_confidence_sample_count = 2
 cadences = ["pr"]
 "#,
-            ),
-            "incoherent thresholds must fail",
-        );
+        )
+        .expect_err("incoherent thresholds must fail");
         assert!(err.to_string().contains("below min_sample_count"), "{err}");
     }
 
@@ -844,9 +815,8 @@ cadences = ["pr"]
     fn fractional_count_value_is_rejected() {
         // A count is a tally. A fractional one means the emitter reported an average or a
         // rate under a counting metric, which the declared range alone cannot catch.
-        let registry = must_with(
-            one_metric_registry(
-                r#"name = "widget_count"
+        let registry = one_metric_registry(
+            r#"name = "widget_count"
 family = "line"
 kind = "count"
 direction = "down"
@@ -855,24 +825,21 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "fixture registry is coherent",
-        );
+        )
+        .expect("fixture registry is coherent");
 
         let mut row = measured("widget_count", 2.5, 9);
         if let MetricRow::Measured { direction, .. } = &mut row {
             *direction = Direction::Down;
         }
-        let err =
-            must_err_with(registry.validate_conformance(&[row]), "fractional count must fail");
+        let err = registry.validate_conformance(&[row]).expect_err("fractional count must fail");
         assert!(err.to_string().contains("reported the fractional value 2.5"), "{err}");
     }
 
     #[test]
     fn whole_count_value_is_accepted() {
-        let registry = must_with(
-            one_metric_registry(
-                r#"name = "widget_count"
+        let registry = one_metric_registry(
+            r#"name = "widget_count"
 family = "line"
 kind = "count"
 direction = "down"
@@ -881,23 +848,21 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "fixture registry is coherent",
-        );
+        )
+        .expect("fixture registry is coherent");
 
         let mut row = measured("widget_count", 3.0, 9);
         if let MetricRow::Measured { direction, .. } = &mut row {
             *direction = Direction::Down;
         }
-        must_with(registry.validate_conformance(&[row]), "a whole count is well shaped");
+        registry.validate_conformance(&[row]).expect("a whole count is well shaped");
     }
 
     #[test]
     fn fractional_duration_is_accepted() {
         // Durations are legitimately fractional; the shape rule must not over-reach.
-        let registry = must_with(
-            one_metric_registry(
-                r#"name = "widget_ms_p95"
+        let registry = one_metric_registry(
+            r#"name = "widget_ms_p95"
 family = "cost"
 kind = "duration_ms"
 direction = "down"
@@ -906,24 +871,22 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "fixture registry is coherent",
-        );
+        )
+        .expect("fixture registry is coherent");
 
         let mut row = measured("widget_ms_p95", 0.0155, 9);
         if let MetricRow::Measured { direction, .. } = &mut row {
             *direction = Direction::Down;
         }
-        must_with(registry.validate_conformance(&[row]), "a fractional duration is well shaped");
+        registry.validate_conformance(&[row]).expect("a fractional duration is well shaped");
     }
 
     #[test]
     fn misspelled_zero_budget_is_rejected() {
         // The dangerous shape: `zero_budget` defaults to false, so a typo would otherwise
         // parse cleanly and silently disable the hard violation it was meant to declare.
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "typo_metric"
+        let err = one_metric_registry(
+            r#"name = "typo_metric"
 family = "safety"
 kind = "count"
 direction = "down"
@@ -933,17 +896,15 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "an unknown registry field must fail",
-        );
+        )
+        .expect_err("an unknown registry field must fail");
         assert!(err.to_string().contains("zero_buget"), "{err}");
     }
 
     #[test]
     fn unknown_family_is_rejected() {
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "orphan"
+        let err = one_metric_registry(
+            r#"name = "orphan"
 family = "not_a_plane"
 kind = "count"
 direction = "down"
@@ -952,17 +913,15 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = ["pr"]
 "#,
-            ),
-            "unknown family must fail",
-        );
+        )
+        .expect_err("unknown family must fail");
         assert!(err.to_string().contains("declares unknown family 'not_a_plane'"), "{err}");
     }
 
     #[test]
     fn empty_cadence_set_is_rejected() {
-        let err = must_err_with(
-            one_metric_registry(
-                r#"name = "no_cadence"
+        let err = one_metric_registry(
+            r#"name = "no_cadence"
 family = "line"
 kind = "count"
 direction = "down"
@@ -971,9 +930,8 @@ min_sample_count = 1
 high_confidence_sample_count = 1
 cadences = []
 "#,
-            ),
-            "empty cadence set must fail",
-        );
+        )
+        .expect_err("empty cadence set must fail");
         assert!(err.to_string().contains("no eligible cadences"), "{err}");
     }
 }

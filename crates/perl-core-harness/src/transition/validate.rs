@@ -977,7 +977,6 @@ mod ripr_inventory_call_observers {
             file_results: vec![
                 RunFileResult {
                     mechanism: None,
-                    scaffold_stamp: None,
                     path: "base/0.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -985,7 +984,6 @@ mod ripr_inventory_call_observers {
                 },
                 RunFileResult {
                     mechanism: None,
-                    scaffold_stamp: None,
                     path: "base/1.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -1181,7 +1179,6 @@ mod ripr_inventory_call_observers {
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
                 mechanism: None,
-                scaffold_stamp: None,
                 path: "base/0.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,

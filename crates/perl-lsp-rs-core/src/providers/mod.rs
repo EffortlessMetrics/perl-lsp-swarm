@@ -51,6 +51,7 @@ pub mod rename;
 pub mod semantic_tokens;
 
 // Wave G1b Phase 2 -- near-leaves
+#[cfg(feature = "ai-provider")]
 pub mod ai;
 pub mod formatting;
 

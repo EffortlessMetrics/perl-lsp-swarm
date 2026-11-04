@@ -1,0 +1,47 @@
+# Perl Kwalitee Report
+
+Verdict: FAIL
+
+Score: 63/100
+
+Profile: release
+
+Commit: unknown
+
+Generated: 2026-08-14T00:00:00Z
+
+## Mandatory indicators
+
+| Indicator | Status | Evidence |
+|---|---|---|
+| manifest.workspace_member_declared | pass | `Cargo.toml [workspace].members` |
+| manifest.publish_policy_clean | pass | `crates/perl-kwalitee/Cargo.toml [package].publish`<br>`Cargo.toml [workspace.metadata.publish].allow` |
+| license.declared | pass | `crates/perl-kwalitee/Cargo.toml [package].license` |
+| product_surface.native_only | pass | `cargo xtask check-native-product-surface` |
+| dap.cli_native_only | pass | `perl-dap main.rs::cli_help_has_no_bridge_product_surface` |
+| release.native_binaries_present | fail | `cargo xtask release artifact-check --dist <dir>` |
+| release.no_external_tooling | fail | `cargo xtask release artifact-check --dist <dir>` |
+| release.checksums_valid | fail | `cargo xtask release artifact-check --dist <dir>` |
+| formatter.native_default | pass | `<fixture-root>/target/receipts/native-tooling/readiness.json`<br>`native-default engine` |
+| critic.native_default | warn | `<fixture-root>/target/receipts/native-tooling/readiness.json`<br>`native default` |
+| critic.run_critic_registry_parity | unverified | `no external result supplied for critic.run_critic_registry_parity` |
+| quality.no_new_severe_gaps | pass | `<fixture-root>/target/receipts/quality/quality-gate.json`<br>`pass` |
+| docs.status_current | unverified | `no external result supplied for docs.status_current` |
+
+### Remediation
+
+- **release.native_binaries_present** (fail): The release profile requires --dist; supply a populated dist directory.
+- **release.no_external_tooling** (fail): The release profile requires --dist; supply a populated dist directory.
+- **release.checksums_valid** (fail): The release profile requires --dist; supply a populated dist directory.
+- **critic.native_default** (warn): Run `cargo xtask native-tooling readiness` and confirm the critic native-default criterion is ready.
+- **critic.run_critic_registry_parity** (unverified): Run `cargo test -p perl-lsp-rs --lib execute_command::tests::run_critic_native_matches_pull_diagnostics_registry` and resolve the parity failure.
+- **docs.status_current** (unverified): Run `cargo xtask update-status --check`; regenerate with `--write` if drift is reported.
+
+## Advisory indicators
+
+| Indicator | Status | Evidence |
+|---|---|---|
+| formatter.corpus_idempotent | not_applicable | `receipt-heavy advisory indicators are only evaluated under the nightly profile` |
+| critic.no_false_positives | not_applicable | `receipt-heavy advisory indicators are only evaluated under the nightly profile` |
+| formatter.perltidy_compat_no_external_only | not_applicable | `receipt-heavy advisory indicators are only evaluated under the nightly profile` |
+| critic.perlcritic_compat_no_external_only | not_applicable | `receipt-heavy advisory indicators are only evaluated under the nightly profile` |

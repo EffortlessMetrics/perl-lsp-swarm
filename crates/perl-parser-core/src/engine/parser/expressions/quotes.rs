@@ -233,7 +233,6 @@ impl<'a> Parser<'a> {
 
                 self.charge_node(
                     NodeKind::Regex {
-                        form: perl_ast::RegexSurfaceForm::Qr,
                         pattern: format!("{}{}{}", opening_delim, content, closing_delim),
                         replacement: None,
                         modifiers,
@@ -288,7 +287,6 @@ impl<'a> Parser<'a> {
                 end = self.previous_position();
                 self.charge_node(
                     NodeKind::Regex {
-                        form: perl_ast::RegexSurfaceForm::MatchOperator,
                         pattern: format!("{}{}{}", opening_delim, content, closing_delim),
                         replacement: None,
                         modifiers,

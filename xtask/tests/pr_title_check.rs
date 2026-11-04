@@ -31,7 +31,7 @@ fn init_git_repo() -> Result<TempDir> {
 }
 
 fn git_cmd(args: &[&str], cwd: &Path) -> Result<()> {
-    let status = xtask::git_environment::isolate(Command::new("git"))
+    let status = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .stdout(Stdio::null())

@@ -4,8 +4,8 @@
 
 1. **Node.js 26.x (CI pins 26.5.0) and npm 11.18.0** installed
 2. **Visual Studio Code** installed
-   Publisher credentials belong to the reviewed release workflow; local preparation
-   does not require or authorize ambient registry tokens.
+3. **Publisher account** on Visual Studio Marketplace
+4. **Open VSX access token** for `EffortlessMetrics` publisher
 
 ## Build Process
 
@@ -57,9 +57,7 @@ To validate the Open VSX tooling before publishing:
 npm run check:openvsx
 ```
 
-Open VSX receives the same selected `perl-lsp-rs-<version>.vsix` artifact as the
-Visual Studio Marketplace. Local tooling checks do not establish publisher
-authority; the canonical workflow owns credential validation.
+Open VSX publishes the same `perl-lsp-rs-<version>.vsix` artifact used for the Visual Studio Marketplace, so the main extra preflight is confirming the `ovsx` CLI is installed and authenticated.
 
 ### 3. Test Locally
 
@@ -107,17 +105,35 @@ Place binaries in appropriate directories:
 - `bin/darwin-arm64/perllsp`
 - `bin/win32-x64/perllsp.exe`
 
-### 5. Use the reviewed release transaction
+### 5. Create Publisher
 
-The supported `npm run publish` and `npm run publish:openvsx` aliases are retired
-and refuse (#16802). Command-line tokens and ambient `VSCE_PAT`/`OVSX_PAT` do not
-enable those aliases. This does not prevent arbitrary direct use of installed
-publisher tools or the distinct `npm publish` lifecycle command.
+If you haven't already:
 
-Follow the reviewed [release transaction](../docs/release/RUNBOOK.md) (#13768 / #6055).
-The existing `publish-extension.yml` workflow consumes the selected VSIX and owns
-its publisher credentials. Local packaging/inspection is rehearsal only (#16786 / #4350).
-Dispatch acceptance is not publication or completion (#16799).
+1. Go to https://marketplace.visualstudio.com/manage
+2. Create a publisher ID (e.g., "tree-sitter-perl")
+3. Get a Personal Access Token from Azure DevOps
+
+### 6. Login to vsce
+
+```bash
+npm exec -- @vscode/vsce login <publisher-id>
+# Enter your Personal Access Token when prompted
+```
+
+### 7. Publish
+
+```bash
+# Publish to Visual Studio Marketplace
+npm run publish -- --pat "$VSCE_PAT"
+
+# Publish the Open VSX-specific package
+npm run publish:openvsx -- perl-lsp-rs-<version>.vsix --pat "$OVSX_PAT"
+
+# Or publish with version bump on Marketplace
+npm exec -- @vscode/vsce publish minor  # 0.5.0 -> 0.6.0
+npm exec -- @vscode/vsce publish major  # 0.5.0 -> 0.9.x
+npm exec -- @vscode/vsce publish 0.5.1  # Specific version
+```
 
 ## Post-Publishing
 
@@ -136,9 +152,10 @@ Dispatch acceptance is not publication or completion (#16799).
    - Add installation instructions
    - Update CHANGELOG.md
 
-3. **Verify the controller-owned GitHub release**
-   - Check the exact tag, release and selected VSIX against the reviewed transaction.
-   - Report missing or mismatched artifacts to the controller; do not create a parallel release.
+3. **Create GitHub Release**
+   - Tag the release: `git tag vscode-extension-v0.5.0`
+   - Create release on GitHub
+   - Attach the .vsix file
 
 ## Maintenance
 
@@ -147,7 +164,7 @@ Dispatch acceptance is not publication or completion (#16799).
 1. Update version in `package.json`
 2. Update `CHANGELOG.md`
 3. Rebuild and test
-4. Submit the exact candidate to the reviewed #13768 / #6055 release transaction.
+4. Publish update: `vsce publish`
 
 ### Monitoring
 
@@ -163,8 +180,7 @@ Update `package.json` with your publisher ID.
 
 ### "Personal Access Token expired"
 
-Report the failed canonical workflow run to the release controller so its owner
-can repair credential configuration. Local login does not authorize a retry.
+Create a new token and login again with `vsce login`.
 
 ### Binary not found
 
@@ -184,4 +200,4 @@ Before first public launch:
 - [ ] Run `npm run verify:marketplace` and install the generated `.vsix` locally.
 - [ ] Validate extension activation in a clean profile (`code --user-data-dir <tmpdir>`).
 - [ ] Verify binary download fallback works when no bundled binary exists for the host platform.
-- [ ] Have the reviewed controller select the release channel and authorize any later promotion using the exact validated candidate.
+- [ ] Publish as pre-release first (recommended for initial alpha), then promote to stable after validation feedback.

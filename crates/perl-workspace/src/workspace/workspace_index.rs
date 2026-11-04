@@ -108,7 +108,7 @@ use crate::workspace_symbol_query::{
     legacy_index_match_rank, match_searchable_key,
 };
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
-use perl_symbol::surface::decl::{SymbolDecl, extract_symbol_decls};
+use perl_symbol::surface::decl::extract_symbol_decls;
 use perl_symbol::surface::facts::{symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts};
 // Only used by `build_canonical_fact_shard_for_ast`, which is now
 // `#[cfg(test)]`-gated (shadow/parity-harness-only as of the 1711-B cutover).
@@ -1126,8 +1126,6 @@ pub enum ReferenceKind {
     Definition,
     /// General usage of the symbol (function call, method call)
     Usage,
-    /// Code-reference creation (`\&foo` without call parentheses), not a call site
-    Coderef,
     /// Dynamic or static method dispatch stored under its bare method name.
     ///
     /// Method dispatch is kept distinct from a bare function usage because a
@@ -3085,10 +3083,6 @@ impl WorkspaceIndex {
     /// let _refs = index.find_references("Utils::process_data");
     /// ```
     pub fn find_references(&self, symbol_name: &str) -> Vec<Location> {
-        self.find_references_filtered(symbol_name, false)
-    }
-
-    fn find_references_filtered(&self, symbol_name: &str, exclude_coderef: bool) -> Vec<Location> {
         // Log staleness warning when queries are made while files have pending
         // (uncommitted) generations — results may reflect pre-edit state (#5963).
         let stale = self.stale_file_count();
@@ -3105,7 +3099,7 @@ impl WorkspaceIndex {
         // We retry up to 3 times to get a consistent snapshot.
         for _ in 0..3 {
             let v1 = self.write_version();
-            let result = self.find_references_inner(symbol_name, exclude_coderef);
+            let result = self.find_references_inner(symbol_name);
             let v2 = self.write_version();
             if v1 == v2 {
                 return result;
@@ -3114,10 +3108,10 @@ impl WorkspaceIndex {
             tracing::debug!("Torn read in find_references, retrying");
         }
         // Fallback: return whatever the last attempt produced
-        self.find_references_inner(symbol_name, exclude_coderef)
+        self.find_references_inner(symbol_name)
     }
 
-    fn find_references_inner(&self, symbol_name: &str, exclude_coderef: bool) -> Vec<Location> {
+    fn find_references_inner(&self, symbol_name: &str) -> Vec<Location> {
         let global_refs = self.global_references.read();
         let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
         let mut locations = Vec::new();
@@ -3125,9 +3119,6 @@ impl WorkspaceIndex {
         // O(1) lookup for exact symbol name
         if let Some(refs) = global_refs.get(symbol_name) {
             for sym_ref in refs {
-                if exclude_coderef && sym_ref.kind == ReferenceKind::Coderef {
-                    continue;
-                }
                 let key = (
                     sym_ref.uri.clone(),
                     sym_ref.range.start.line,
@@ -3147,9 +3138,6 @@ impl WorkspaceIndex {
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
                 for sym_ref in refs {
-                    if exclude_coderef && sym_ref.kind == ReferenceKind::Coderef {
-                        continue;
-                    }
                     if !self.bare_reference_matches_package(sym_ref, package) {
                         continue;
                     }
@@ -3174,9 +3162,6 @@ impl WorkspaceIndex {
                 }
 
                 for sym_ref in refs {
-                    if exclude_coderef && sym_ref.kind == ReferenceKind::Coderef {
-                        continue;
-                    }
                     let key = (
                         sym_ref.uri.clone(),
                         sym_ref.range.start.line,
@@ -3730,27 +3715,35 @@ impl WorkspaceIndex {
     /// **Production canonical builder for the unified reference traversal
     /// (perl-lsp-swarm#1711-B cutover).** Identical to
     /// [`Self::build_canonical_fact_shard_for_ast`] except it takes an
-    /// ALREADY-COMPUTED `decls: &[SymbolDecl]` and `refs: &[SymbolRef]`
-    /// instead of calling `extract_symbol_decls` / `extract_symbol_refs(ast)`
-    /// itself -- this is what lets `FileExtractionBundle::build_unified`
-    /// feed it the inventory and reference vector produced by one production
-    /// pass each. Every other extractor call (eval-sub, generated-member) is
-    /// unchanged. Called by `index_file_with_generation` via
-    /// `FileExtractionBundle::build_unified`; `build_canonical_fact_shard_for_ast`
-    /// above remains live only for the `extraction_bundle_shadow_compare`
-    /// parity harness's `build_direct` reference path, not for production.
+    /// ALREADY-COMPUTED `refs: &[SymbolRef]` instead of calling
+    /// `extract_symbol_refs(ast)` itself -- this is what lets
+    /// `FileExtractionBundle::build_unified` feed it the `Vec<SymbolRef>`
+    /// produced by `IndexVisitor::visit_unified`'s single traversal, instead
+    /// of running a second, independent `extract_symbol_refs` walk. Every
+    /// other extractor call (`extract_symbol_decls` for declarations,
+    /// eval-sub, generated-member) is UNCHANGED and unaffected -- only the
+    /// reference walk is unified (see the #1711 feasibility comment for why
+    /// declarations are a separable follow-up). Called by
+    /// `index_file_with_generation` via `FileExtractionBundle::build_unified`;
+    /// `build_canonical_fact_shard_for_ast` above remains live only for the
+    /// `extraction_bundle_shadow_compare` parity harness's `build_direct`
+    /// reference path, not for production.
     fn build_canonical_fact_shard_from_symbol_refs(
         uri: &str,
         content_hash: u64,
         ast: &Node,
-        decls: &[SymbolDecl],
         refs: &[perl_symbol::surface::r#ref::SymbolRef],
         inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
         source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
-        let decl_facts = symbol_decls_to_semantic_facts(decls, file_id);
+        #[cfg(test)]
+        let decl_start = Instant::now();
+        let decls = extract_symbol_decls(ast, None);
+        #[cfg(test)]
+        reindex_metrics::record_decl_extract(decl_start.elapsed());
+        let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
 
         // Own declarations rank above inherited aliases (#812: own overrides
         // rank above inherited methods): the declaration map wins the lookup
@@ -3939,62 +3932,6 @@ impl WorkspaceIndex {
         }
 
         location
-    }
-
-    /// Resolve many anchors to source-backed LSP-wire locations in one pass
-    /// over the shards, in the same order as `anchor_ids`.
-    ///
-    /// Each entry answers exactly what [`Self::semantic_anchor_wire_location`]
-    /// answers for the same id: `None` for missing anchors, zero-width
-    /// fallback anchors, unavailable source text, or an `anchor_id` claimed by
-    /// more than one shard or more than once per shard. Duplicates fail closed
-    /// instead of choosing an arbitrary hash-map iteration result, matching
-    /// the single-anchor form.
-    ///
-    /// This is the find-references hot path: one location is wired per
-    /// occurrence, so the per-anchor scan is quadratic in the workspace
-    /// (#17247). Callers resolving every occurrence of a request should use
-    /// this batch once instead of the single-anchor form per occurrence. An
-    /// empty request returns an empty map without taking the shard lock, so a
-    /// no-result find-references request pays no anchor scan.
-    pub fn semantic_anchor_wire_locations(
-        &self,
-        anchor_ids: &[AnchorId],
-    ) -> std::collections::HashMap<AnchorId, Option<WireLocation>> {
-        if anchor_ids.is_empty() {
-            return std::collections::HashMap::new();
-        }
-        let shards = self.fact_shards.read();
-        let requested: std::collections::HashSet<AnchorId> = anchor_ids.iter().copied().collect();
-        let mut resolved: std::collections::HashMap<AnchorId, Option<WireLocation>> =
-            anchor_ids.iter().map(|id| (*id, None)).collect();
-        let mut claimed: std::collections::HashMap<AnchorId, usize> = HashMap::new();
-
-        for shard in shards.values() {
-            for anchor in shard.anchors.iter().filter(|a| requested.contains(&a.id)) {
-                let claimed = claimed.entry(anchor.id).or_default();
-                *claimed += 1;
-                if *claimed > 1 {
-                    resolved.insert(anchor.id, None);
-                    continue;
-                }
-                if anchor.span_end_byte <= anchor.span_start_byte {
-                    resolved.insert(anchor.id, None);
-                    continue;
-                }
-                let next_location = self.document_store.get(&shard.source_uri).and_then(|doc| {
-                    let start = usize::try_from(anchor.span_start_byte).ok()?;
-                    let end = usize::try_from(anchor.span_end_byte).ok()?;
-                    Some(WireLocation::new(
-                        shard.source_uri.clone(),
-                        WireRange::from_byte_offsets(doc.text(), start, end),
-                    ))
-                });
-                resolved.insert(anchor.id, next_location);
-            }
-        }
-
-        resolved
     }
 
     /// Resolve a semantic anchor to a source-backed LSP-wire location in a
@@ -4986,41 +4923,6 @@ impl WorkspaceIndex {
         members
     }
 
-    /// Get symbols whose membership is anchored to exactly `package_name`.
-    ///
-    /// Unlike [`Self::get_package_members`], which also returns nested-namespace
-    /// descendants (`Animal::Dog::*` and `Animal::Kennel::*` when queried with
-    /// `Animal`), this query returns only direct members: symbols whose
-    /// container is `package_name`, or whose qualified name denotes a bare
-    /// member `package_name::<name>` with no deeper `::`. Callers walking a
-    /// real inheritance chain (`@ISA`/parent/role) must use this query so a
-    /// shared namespace root cannot dress same-root sibling packages up as
-    /// inherited members (#17160).
-    pub fn get_direct_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
-        self.get_package_members(package_name)
-            .into_iter()
-            .filter(|symbol| Self::is_direct_package_member(symbol, package_name))
-            .collect()
-    }
-
-    /// Whether `symbol` is a direct member of exactly `package_name`.
-    ///
-    /// A symbol anchored to a deeper nested namespace (`Animal::Dog::speak`
-    /// against `Animal`) is a descendant-namespace member, not a member of the
-    /// queried package.
-    fn is_direct_package_member(symbol: &WorkspaceSymbol, package_name: &str) -> bool {
-        if symbol.container_name.as_deref() == Some(package_name) {
-            return true;
-        }
-        symbol
-            .qualified_name
-            .as_deref()
-            .and_then(|qualified| {
-                qualified.strip_prefix(package_name).and_then(|rest| rest.strip_prefix("::"))
-            })
-            .is_some_and(|bare| !bare.contains("::"))
-    }
-
     /// Return framework-generated members for one package from semantic fact shards.
     ///
     /// Legacy package members remain available through get_package_members.
@@ -5236,20 +5138,6 @@ impl WorkspaceIndex {
     /// let _refs = index.find_refs(&key);
     /// ```
     pub fn find_refs(&self, key: &SymbolKey) -> Vec<Location> {
-        self.find_refs_filtered(key, false)
-    }
-
-    /// Like [`Self::find_refs`] but excludes code-reference creations
-    /// (`\&foo` without call parentheses, [`ReferenceKind::Coderef`]).
-    ///
-    /// Call hierarchy incoming calls are call sites, so a reference creation
-    /// must not be reported as one (#17442); references and rename keep using
-    /// [`Self::find_refs`], which retains those locations.
-    pub fn find_call_refs(&self, key: &SymbolKey) -> Vec<Location> {
-        self.find_refs_filtered(key, true)
-    }
-
-    fn find_refs_filtered(&self, key: &SymbolKey, exclude_coderef: bool) -> Vec<Location> {
         let files_locked = self.files.read();
         let mut all_refs = if let Some(sigil) = key.sigil {
             // It's a variable - search through all files for this variable name
@@ -5258,9 +5146,6 @@ impl WorkspaceIndex {
             for (_uri_key, file_index) in files_locked.iter() {
                 if let Some(var_refs) = file_index.references.get(&var_name) {
                     for reference in var_refs {
-                        if exclude_coderef && reference.kind == ReferenceKind::Coderef {
-                            continue;
-                        }
                         refs.push(Location { uri: reference.uri.clone(), range: reference.range });
                     }
                 }
@@ -5270,15 +5155,11 @@ impl WorkspaceIndex {
             // It's a subroutine or package
             if key.pkg.as_ref() == "main" {
                 // For main package, we search for both "main::foo" and bare "foo"
-                let mut refs =
-                    self.find_references_filtered(&format!("main::{}", key.name), exclude_coderef);
+                let mut refs = self.find_references(&format!("main::{}", key.name));
                 // Add bare name references
                 for (_uri_key, file_index) in files_locked.iter() {
                     if let Some(bare_refs) = file_index.references.get(key.name.as_ref()) {
                         for reference in bare_refs {
-                            if exclude_coderef && reference.kind == ReferenceKind::Coderef {
-                                continue;
-                            }
                             refs.push(Location {
                                 uri: reference.uri.clone(),
                                 range: reference.range,
@@ -5289,7 +5170,7 @@ impl WorkspaceIndex {
                 refs
             } else {
                 let qualified_name = format!("{}::{}", key.pkg, key.name);
-                self.find_references_filtered(&qualified_name, exclude_coderef)
+                self.find_references(&qualified_name)
             }
         };
         drop(files_locked);
@@ -5328,41 +5209,9 @@ impl WorkspaceIndex {
             .into_iter()
             .flat_map(|refs| refs.iter())
             .filter(|reference| {
-                (reference.kind == ReferenceKind::Usage || reference.kind == ReferenceKind::Coderef)
+                reference.kind == ReferenceKind::Usage
                     && reference.package.as_deref() != Some(key.pkg.as_ref())
             })
-            .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
-            .collect::<Vec<_>>();
-        drop(global_refs);
-
-        Self::sort_locations_deterministically(&mut locations);
-        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
-        locations
-    }
-
-    /// Find every arrow method-call site recorded under the bare method name of
-    /// a symbol key, regardless of receiver attribution (#9814).
-    ///
-    /// Arrow dispatch is indexed under the bare method name with no package
-    /// attribution, and [`Self::find_refs`] retains only the conventional
-    /// `$self`/`$this` receivers (see `bare_reference_matches_package`) — every
-    /// other receiver (`$obj->method`) is invisible to it. Consumers that
-    /// attribute receivers themselves (the rename layer resolves constructor-
-    /// typed receivers from the call-site AST) need the unfiltered arrow-site
-    /// denominator so a resolvable call site is never silently omitted from a
-    /// rename edit set. Each span covers the full method-call expression
-    /// (`$obj->greet`), mirroring the bare-name index entries.
-    pub fn find_method_call_refs(&self, key: &SymbolKey) -> Vec<Location> {
-        if key.sigil.is_some() {
-            return Vec::new();
-        }
-
-        let global_refs = self.global_references.read();
-        let mut locations = global_refs
-            .get(key.name.as_ref())
-            .into_iter()
-            .flat_map(|refs| refs.iter())
-            .filter(|reference| reference.kind == ReferenceKind::MethodCall)
             .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
             .collect::<Vec<_>>();
         drop(global_refs);
@@ -5392,17 +5241,16 @@ impl WorkspaceIndex {
 ///
 /// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
 /// |---|---|---|
-/// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by projecting the shared `extract_symbol_decls(ast, initial_package_for_uri(uri))` inventory via `IndexVisitor::project_precomputed_symbol_declarations` | [`EntityFact`] + [`AnchorFact`] via the same shared inventory -> `symbol_decls_to_semantic_facts` |
+/// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by `IndexVisitor::project_symbol_declarations`, which calls `extract_symbol_decls(ast, Some("main"))` | [`EntityFact`] + [`AnchorFact`] via `extract_symbol_decls(ast, None)` -> `symbol_decls_to_semantic_facts` |
 /// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,MethodCall,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
 /// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
 ///
-/// Declaration extraction is unified on module/template URIs (`*.pm`, etc.)
-/// where [`initial_package_for_uri`] is `None`: `build_unified` runs one
-/// `extract_symbol_decls` pass for both legacy and canonical projections
-/// (perl-lsp-swarm#4047). Script URIs still run a second canonical `None`-seed
-/// pass until source-backed references can consume the shared inventory.
+/// Declaration extraction is intentionally still NOT unified (`extract_symbol_decls`
+/// is called once per projection, in both `build()` and `build_unified()`) --
+/// a separable follow-up tracked on #1711 (see the feasibility comment, item
+/// 3). Only the reference walk is unified by this cutover.
 pub(crate) struct FileExtractionBundle {
     /// The legacy `IndexVisitor` projection, produced by one `visit()` call.
     pub(crate) legacy_index: FileIndex,
@@ -5465,14 +5313,22 @@ impl FileExtractionBundle {
         Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
     }
 
-    /// **Production extraction path (perl-lsp-swarm#1711-B reference cutover;
-    /// perl-lsp-swarm#4047 declaration cutover).** Runs ONE reference walk
-    /// (`IndexVisitor::visit_unified`) and ONE declaration inventory
-    /// (`extract_symbol_decls(ast, initial_package_for_uri(uri))`), feeding both the legacy
-    /// [`FileIndex`] declaration projection and the canonical
-    /// [`FileFactShard`] from the shared `Vec<SymbolDecl>`. Import/use-lib
-    /// extraction projects HIR compile-environment facts (`#16823`) rather
-    /// than classifying flattened `Use.args`.
+    /// **Production extraction path (perl-lsp-swarm#1711-B cutover).** The
+    /// REAL unified traversal: runs ONE reference walk
+    /// (`IndexVisitor::visit_unified`) that produces BOTH the legacy
+    /// [`FileIndex`] reference/dependency projection AND the canonical
+    /// `Vec<SymbolRef>` projection, then feeds that single `Vec<SymbolRef>`
+    /// into `WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs`
+    /// instead of calling `extract_symbol_refs(ast)` a second time. This is
+    /// what eliminates one of the two full-AST reference walks
+    /// `index_file_with_generation` used to run.
+    ///
+    /// Declaration extraction is UNCHANGED: `extract_symbol_decls` is still
+    /// called twice (once per projection, with the existing
+    /// `Some("main")`/`None` package-context seeds) -- unifying declarations
+    /// is a separable follow-up (see the #1711 feasibility comment, item 3).
+    /// Import/use-lib extraction projects HIR compile-environment facts
+    /// (`#16823`) rather than classifying flattened `Use.args`.
     ///
     /// Uses [`Node::for_each_child`] as the unified walk's recursion
     /// fallback (see `IndexVisitor::walk_unified`'s doc comment), which
@@ -5503,30 +5359,9 @@ impl FileExtractionBundle {
         };
         let mut symbol_refs = Vec::new();
         let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
-        let initial_package = initial_package_for_uri(uri_str);
-        let package_seed = initial_package.as_deref();
-        #[cfg(test)]
-        let decl_start = Instant::now();
-        let legacy_decls = extract_symbol_decls(ast, package_seed);
-        #[cfg(test)]
-        reindex_metrics::record_decl_extract(decl_start.elapsed());
-        let canonical_decls_storage;
-        let canonical_decls: &[SymbolDecl] = if initial_package.is_some() {
-            // Script/extensionless URIs seed legacy with implicit `main`; canonical
-            // facts remain on the `None` inventory until a follow-up retires this
-            // second pass without breaking source-backed references (#4047).
-            #[cfg(test)]
-            let decl_start = Instant::now();
-            canonical_decls_storage = extract_symbol_decls(ast, None);
-            #[cfg(test)]
-            reindex_metrics::record_decl_extract(decl_start.elapsed());
-            &canonical_decls_storage
-        } else {
-            &legacy_decls
-        };
         #[cfg(test)]
         let visit_start = Instant::now();
-        visitor.visit_unified(ast, &legacy_decls, &mut file_index, &mut symbol_refs);
+        visitor.visit_unified(ast, &mut file_index, &mut symbol_refs);
         #[cfg(test)]
         reindex_metrics::record_visit(visit_start.elapsed());
 
@@ -5534,7 +5369,6 @@ impl FileExtractionBundle {
             uri_str,
             content_hash,
             ast,
-            canonical_decls,
             &symbol_refs,
             inherited_method_aliases,
             doc.text(),
@@ -5612,109 +5446,6 @@ fn package_edges_from_stash_graph(
         .collect()
 }
 
-/// Anchor span for expression-form `eval` / `do` dynamic boundaries.
-///
-/// String-literal bodies cover the literal (runtime-evaluated code). Other
-/// operands (for example `eval $expr`, `do $file`) cover only the keyword so
-/// undeclared-variable suppression stays position-scoped on the operand.
-fn eval_do_expression_boundary_anchor_span(node: &Node) -> Option<(usize, usize)> {
-    let (keyword_len, block) = match &node.kind {
-        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
-            (4, block.as_ref())
-        }
-        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
-            (2, block.as_ref())
-        }
-        _ => return None,
-    };
-    let node_start = node.location.start;
-    if matches!(block.kind, NodeKind::String { .. }) {
-        Some((block.location.start, block.location.end))
-    } else {
-        Some((node_start, node_start + keyword_len))
-    }
-}
-
-fn collect_expression_form_eval_do_boundaries(
-    node: &Node,
-    uri: &str,
-    file_id: FileId,
-    anchors: &mut Vec<AnchorFact>,
-    occurrences: &mut Vec<OccurrenceFact>,
-) {
-    match &node.kind {
-        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
-            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
-                push_hir_dynamic_boundary_occurrence(
-                    uri,
-                    file_id,
-                    start,
-                    end,
-                    1,
-                    anchors,
-                    occurrences,
-                );
-            }
-        }
-        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
-            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
-                push_hir_dynamic_boundary_occurrence(
-                    uri,
-                    file_id,
-                    start,
-                    end,
-                    2,
-                    anchors,
-                    occurrences,
-                );
-            }
-        }
-        _ => {}
-    }
-    node.for_each_child(|child| {
-        collect_expression_form_eval_do_boundaries(child, uri, file_id, anchors, occurrences);
-    });
-}
-
-fn push_hir_dynamic_boundary_occurrence(
-    uri: &str,
-    file_id: FileId,
-    span_start: usize,
-    span_end: usize,
-    boundary_kind_tag: u8,
-    anchors: &mut Vec<AnchorFact>,
-    occurrences: &mut Vec<OccurrenceFact>,
-) {
-    let mut anchor_hasher = DefaultHasher::new();
-    uri.hash(&mut anchor_hasher);
-    span_start.hash(&mut anchor_hasher);
-    span_end.hash(&mut anchor_hasher);
-    boundary_kind_tag.hash(&mut anchor_hasher);
-    let anchor_id = AnchorId(anchor_hasher.finish());
-    let mut occurrence_hasher = DefaultHasher::new();
-    anchor_id.hash(&mut occurrence_hasher);
-    1u8.hash(&mut occurrence_hasher);
-    let occurrence_id = OccurrenceId(occurrence_hasher.finish());
-    anchors.push(AnchorFact {
-        id: anchor_id,
-        file_id,
-        span_start_byte: span_start.min(u32::MAX as usize) as u32,
-        span_end_byte: span_end.min(u32::MAX as usize) as u32,
-        scope_id: None,
-        provenance: Provenance::DynamicBoundary,
-        confidence: Confidence::Low,
-    });
-    occurrences.push(OccurrenceFact {
-        id: occurrence_id,
-        kind: OccurrenceKind::DynamicBoundary,
-        entity_id: None,
-        anchor_id,
-        scope_id: None,
-        provenance: Provenance::DynamicBoundary,
-        confidence: Confidence::Low,
-    });
-}
-
 fn dynamic_isa_facts(
     uri: &str,
     ast: &Node,
@@ -5726,17 +5457,35 @@ fn dynamic_isa_facts(
     for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
         boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
     }) {
-        push_hir_dynamic_boundary_occurrence(
-            uri,
+        let mut anchor_hasher = DefaultHasher::new();
+        uri.hash(&mut anchor_hasher);
+        boundary.range.start.hash(&mut anchor_hasher);
+        boundary.range.end.hash(&mut anchor_hasher);
+        boundary.kind.hash(&mut anchor_hasher);
+        let anchor_id = AnchorId(anchor_hasher.finish());
+        let mut occurrence_hasher = DefaultHasher::new();
+        anchor_id.hash(&mut occurrence_hasher);
+        1u8.hash(&mut occurrence_hasher);
+        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+        anchors.push(AnchorFact {
+            id: anchor_id,
             file_id,
-            boundary.range.start,
-            boundary.range.end,
-            0,
-            &mut anchors,
-            &mut occurrences,
-        );
+            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
+            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+        occurrences.push(OccurrenceFact {
+            id: occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: None,
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
     }
-    collect_expression_form_eval_do_boundaries(ast, uri, file_id, &mut anchors, &mut occurrences);
     (anchors, occurrences)
 }
 
@@ -5797,16 +5546,7 @@ impl IndexVisitor {
     }
 
     fn project_symbol_declarations(&self, node: &Node, file_index: &mut FileIndex) {
-        let decls = extract_symbol_decls(node, self.current_package.as_deref());
-        self.project_precomputed_symbol_declarations(&decls, file_index);
-    }
-
-    fn project_precomputed_symbol_declarations(
-        &self,
-        decls: &[SymbolDecl],
-        file_index: &mut FileIndex,
-    ) {
-        for decl in decls {
+        for decl in extract_symbol_decls(node, self.current_package.as_deref()) {
             let definition_package = decl.container.clone();
             let (start, end) = match decl.kind {
                 SymbolKind::Variable(_) => match decl.anchor_span {
@@ -5830,14 +5570,14 @@ impl IndexVisitor {
             // they participate in the package namespace.
             let qualified_name = match &decl.declarator {
                 Some(d) if d == "my" || d == "state" => None,
-                _ => (!decl.qualified_name.is_empty()).then_some(decl.qualified_name.clone()),
+                _ => (!decl.qualified_name.is_empty()).then_some(decl.qualified_name),
             };
 
             // Top-level package declarations have no containing package; suppress the
             // spurious "main" container that comes from the walker's initial context.
             let container_name = match decl.kind {
                 SymbolKind::Package => None,
-                _ => decl.container.clone(),
+                _ => decl.container,
             };
 
             // Lexical declarators (my/state) produce scope-local variables that cannot be
@@ -6268,50 +6008,6 @@ impl IndexVisitor {
                 }
             }
 
-            // `\&foo` creates a code reference, not a call site (#17442):
-            // record the operand with the coderef classification (the
-            // parenthesized `\&foo()` form stays a call-site `Usage`)
-            // instead of letting generic recursion claim it as a call.
-            NodeKind::Unary { op, operand }
-                if op == "\\"
-                    && matches!(
-                        operand.kind,
-                        NodeKind::FunctionCall { .. } | NodeKind::AmperCall { .. }
-                    )
-                    && canonical_coderef_target_ref(
-                        operand,
-                        (node.location.start, node.location.end),
-                    )
-                    .is_some() =>
-            {
-                if let NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } =
-                    &operand.kind
-                {
-                    let location = self.node_to_range(operand);
-                    let (pkg, bare_name) = if let Some(idx) = name.rfind("::") {
-                        (&name[..idx], &name[idx + 2..])
-                    } else {
-                        (self.current_package.as_deref().unwrap_or("main"), name.as_str())
-                    };
-                    let qualified = format!("{pkg}::{bare_name}");
-                    let ref_kind = self.coderef_operand_ref_kind(operand);
-                    file_index.references.entry(bare_name.to_string()).or_default().push(
-                        SymbolReference {
-                            uri: self.uri.clone(),
-                            range: location,
-                            kind: ref_kind,
-                            package: Some(pkg.to_string()),
-                        },
-                    );
-                    file_index.references.entry(qualified).or_default().push(SymbolReference {
-                        uri: self.uri.clone(),
-                        range: location,
-                        kind: ref_kind,
-                        package: None,
-                    });
-                }
-            }
-
             // Handle special assignments (++ and --)
             NodeKind::Unary { op, operand } if op == "++" || op == "--" => {
                 // Pre/post increment/decrement are both read and write
@@ -6427,17 +6123,6 @@ impl IndexVisitor {
         }
     }
 
-    /// Classify a `\&foo` operand as a code-reference creation or a real
-    /// call, mirroring the open-document call-hierarchy classification
-    /// (#17370, #17442): explicit parentheses (`\&foo()`) invoke the sub and
-    /// reference its result, so they stay a call-site `Usage`.
-    fn coderef_operand_ref_kind(&self, operand: &Node) -> ReferenceKind {
-        match self.document.text().get(operand.location.start..operand.location.end) {
-            Some(text) if text.contains('(') => ReferenceKind::Usage,
-            _ => ReferenceKind::Coderef,
-        }
-    }
-
     fn node_to_range(&mut self, node: &Node) -> Range {
         // LineIndex.range returns line numbers and UTF-16 code unit columns
         let ((start_line, start_col), (end_line, end_col)) =
@@ -6455,10 +6140,11 @@ impl IndexVisitor {
     /// projection (the input `symbol_refs_to_semantic_facts` expects) from
     /// ONE recursive descent -- replacing what production used to run as
     /// TWO separate full-AST walks (`IndexVisitor::visit` +
-    /// `extract_symbol_refs`). Declaration symbols are projected from the
-    /// shared declaration inventory passed in by
-    /// `FileExtractionBundle::build_unified` (perl-lsp-swarm#4047) rather
-    /// than re-running `extract_symbol_decls` here.
+    /// `extract_symbol_refs`). Declaration
+    /// extraction is UNCHANGED and NOT unified here (`project_symbol_declarations`
+    /// still calls `extract_symbol_decls(ast, Some("main"))` exactly as
+    /// `visit()` does today) -- see the #1711 feasibility comment, item 3,
+    /// a separable follow-up.
     ///
     /// Uses [`Node::for_each_child`] as its recursion fallback (the
     /// complete, compiler-exhaustive dispatcher) instead of
@@ -6479,11 +6165,10 @@ impl IndexVisitor {
     fn visit_unified(
         &mut self,
         node: &Node,
-        shared_decls: &[SymbolDecl],
         file_index: &mut FileIndex,
         symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
     ) {
-        self.project_precomputed_symbol_declarations(shared_decls, file_index);
+        self.project_symbol_declarations(node, file_index);
         self.walk_unified(node, file_index, symbol_refs);
     }
 
@@ -6509,17 +6194,14 @@ impl IndexVisitor {
     ) {
         match &node.kind {
             NodeKind::Package { name, block, .. } => {
+                self.current_package = Some(name.clone());
                 // NEW COVERAGE: `IndexVisitor::visit_node` never recurses
                 // into `block` for references today (only
                 // `project_symbol_declarations`/`extract_symbol_decls` sees
                 // it, for declarations). Recursing here closes that gap --
                 // see `docs/reference/1711-B-coverage-delta.md` case 1.
                 if let Some(b) = block {
-                    let saved_package = self.current_package.replace(name.clone());
                     self.walk_unified(b, file_index, symbol_refs);
-                    self.current_package = saved_package;
-                } else {
-                    self.current_package = Some(name.clone());
                 }
             }
 
@@ -6788,13 +6470,9 @@ impl IndexVisitor {
             }
 
             NodeKind::Block { statements } => {
-                // A statement-form package declaration lasts only through
-                // this lexical block, just as in extract_symbol_decls.
-                let saved_package = self.current_package.clone();
                 for stmt in statements {
                     self.walk_unified(stmt, file_index, symbol_refs);
                 }
-                self.current_package = saved_package;
             }
 
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
@@ -7047,11 +6725,6 @@ impl IndexVisitor {
                                     )
                                 };
                                 let qualified = format!("{pkg}::{bare_name}");
-                                // A `\&foo` operand is a code-reference
-                                // creation, not a call site (#17442); only
-                                // the parenthesized `\&foo()` form stays a
-                                // call-site `Usage`.
-                                let ref_kind = self.coderef_operand_ref_kind(operand);
                                 file_index
                                     .references
                                     .entry(bare_name.to_string())
@@ -7059,14 +6732,14 @@ impl IndexVisitor {
                                     .push(SymbolReference {
                                         uri: self.uri.clone(),
                                         range: location,
-                                        kind: ref_kind,
+                                        kind: ReferenceKind::Usage,
                                         package: Some(pkg.to_string()),
                                     });
                                 file_index.references.entry(qualified).or_default().push(
                                     SymbolReference {
                                         uri: self.uri.clone(),
                                         range: location,
-                                        kind: ref_kind,
+                                        kind: ReferenceKind::Usage,
                                         package: None,
                                     },
                                 );
@@ -7107,7 +6780,7 @@ fn initial_package_for_uri(uri: &str) -> Option<String> {
     let path = file_path.as_deref().unwrap_or_else(|| Path::new(parsed_uri.path()));
     let extension = path.extension().and_then(|extension| extension.to_str());
     if extension.is_some_and(|extension| {
-        ["pm", "pod", "ep", "tt", "tt2", "mason"]
+        ["pm", "ep", "tt", "tt2", "mason"]
             .iter()
             .any(|excluded| extension.eq_ignore_ascii_case(excluded))
     }) {
@@ -7914,62 +7587,6 @@ mod tests {
     use perl_tdd_support::{must, must_some};
 
     #[test]
-    fn direct_package_members_exclude_nested_namespace_descendants() -> anyhow::Result<()> {
-        // #17160: a shared namespace root is not an inheritance edge. `Animal`
-        // must return only members anchored to `Animal` itself (plus the nested
-        // package declarations), never `Animal::Dog::*` or `Animal::Kennel::*`
-        // members from same-root sibling/descendant namespaces.
-        let index = WorkspaceIndex::new();
-        index
-            .index_initial_file(
-                Url::parse("file:///lib/Animal.pm")?,
-                "package Animal;\nsub new { 1 }\nsub speak { 1 }\n1;".to_string(),
-            )
-            .map_err(anyhow::Error::msg)?;
-        index
-            .index_initial_file(
-                Url::parse("file:///lib/Animal/Dog.pm")?,
-                "package Animal::Dog;\nuse parent -norequire, 'Animal';\nsub speak { 1 }\nsub fetch { 1 }\n1;"
-                    .to_string(),
-            )
-            .map_err(anyhow::Error::msg)?;
-        index
-            .index_initial_file(
-                Url::parse("file:///lib/Animal/Kennel.pm")?,
-                "package Animal::Kennel;\nsub admit { 1 }\nsub capacity { 1 }\n1;".to_string(),
-            )
-            .map_err(anyhow::Error::msg)?;
-
-        let direct = index.get_direct_package_members("Animal");
-        let direct_names: Vec<_> = direct.iter().map(|symbol| symbol.name.as_str()).collect();
-        anyhow::ensure!(
-            direct_names.contains(&"new") && direct_names.contains(&"speak"),
-            "Animal's own members must stay direct members: {direct_names:?}"
-        );
-        anyhow::ensure!(
-            direct.iter().all(|symbol| {
-                symbol.container_name.as_deref() != Some("Animal::Dog")
-                    && symbol.container_name.as_deref() != Some("Animal::Kennel")
-            }),
-            "descendant-namespace members must not pass as direct members of Animal: {direct_names:?}"
-        );
-        anyhow::ensure!(
-            direct_names.contains(&"Animal::Dog") && direct_names.contains(&"Animal::Kennel"),
-            "nested package declarations stay discoverable for namespace completion: {direct_names:?}"
-        );
-
-        // The loose query keeps its nested-namespace behavior for its existing
-        // callers (hover); the distinction between the two queries is the point.
-        let loose = index.get_package_members("Animal");
-        anyhow::ensure!(
-            loose.iter().any(|symbol| symbol.name == "fetch"
-                && symbol.container_name.as_deref() == Some("Animal::Dog")),
-            "get_package_members must keep returning nested descendants: {loose:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn package_less_extensionless_scripts_keep_main_namespace() -> anyhow::Result<()> {
         for uri in ["file:///bin/tool", "file:///release.v1/bin/tool", "untitled:tool"] {
             let index = WorkspaceIndex::new();
@@ -8065,52 +7682,6 @@ mod tests {
         anyhow::ensure!(
             symbols.iter().any(|symbol| symbol.qualified_name.as_deref() == Some("main::helper")),
             "scripts must retain their implicit main namespace: {symbols:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn package_less_pod_documentation_has_no_main_package() -> anyhow::Result<()> {
-        let index = WorkspaceIndex::new();
-        let uri = "file:///doc/Module.pod";
-        let pod_only = "=head1 NAME\n\nModule - docs\n\n=cut\n\nsub helper { 1 }\n";
-        anyhow::ensure!(
-            super::initial_package_for_uri(uri).is_none(),
-            "POD files must not receive an implicit package seed"
-        );
-        index
-            .index_initial_file(Url::parse(uri)?, pod_only.to_string())
-            .map_err(anyhow::Error::msg)?;
-
-        let symbols = index.file_symbols(uri);
-        anyhow::ensure!(
-            symbols.iter().all(|symbol| symbol.qualified_name.as_deref() != Some("main::helper")),
-            "POD files must not qualify declarations with main: {symbols:?}"
-        );
-        anyhow::ensure!(
-            symbols.iter().all(|symbol| symbol.name != "main"),
-            "POD documentation must not synthesize a main package: {symbols:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn package_less_test_file_keeps_main_namespace() -> anyhow::Result<()> {
-        let index = WorkspaceIndex::new();
-        let uri = "file:///t/basic.t";
-        index
-            .index_initial_file(
-                Url::parse(uri)?,
-                "use Test::More; sub test_something { 1 }".to_string(),
-            )
-            .map_err(anyhow::Error::msg)?;
-
-        let symbols = index.file_symbols(uri);
-        anyhow::ensure!(
-            symbols
-                .iter()
-                .any(|symbol| symbol.qualified_name.as_deref() == Some("main::test_something")),
-            "test scripts must retain implicit main for subs: {symbols:?}"
         );
         Ok(())
     }
@@ -8650,15 +8221,10 @@ has 'name' => (is => 'ro');
 
         let foo_kinds = reference_kinds_for(&index, uri, "foo");
         assert!(
-            foo_kinds.iter().all(|kind| matches!(
-                kind,
-                ReferenceKind::Definition | ReferenceKind::Usage | ReferenceKind::Coderef
-            )),
-            r"dynamic call forms stay Usage or Definition, with only \&foo typed as Coderef (#17442)"
-        );
-        assert!(
-            foo_kinds.contains(&ReferenceKind::Coderef),
-            r"\&foo reference creations must be classified as Coderef (#17442); got {foo_kinds:?}"
+            foo_kinds
+                .iter()
+                .all(|kind| matches!(kind, ReferenceKind::Definition | ReferenceKind::Usage)),
+            r"dynamic call forms (&foo, \&foo, goto &foo) are currently flattened to Usage"
         );
 
         assert!(
@@ -8784,48 +8350,6 @@ sub call_on_other {
         assert!(
             !refs.iter().any(|location| location.uri == unrelated_uri),
             "qualified method lookup must not retain an arbitrary receiver; got {refs:?}"
-        );
-    }
-
-    #[test]
-    fn test_find_call_refs_excludes_code_reference_creation() {
-        let index = WorkspaceIndex::new();
-        let uri = "file:///P.pm";
-        let code = "package P;\nsub foo { return 1; }\nsub caller {\n    my $cb = \\&foo;\n    my $result_ref = \\&foo();\n    foo();\n    return $cb;\n}\n1;\n";
-        must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
-
-        let key = SymbolKey {
-            pkg: Arc::from("P"),
-            name: Arc::from("foo"),
-            sigil: None,
-            kind: SymKind::Sub,
-        };
-
-        // References and rename keep every location, including the
-        // code-reference creation on line 3.
-        let all_refs = index.find_refs(&key);
-        assert_eq!(all_refs.len(), 3, "find_refs must retain coderef locations; got {all_refs:?}");
-        assert!(
-            all_refs.iter().any(|location| location.range.start.line == 3),
-            "find_refs must retain the line 3 coderef creation; got {all_refs:?}"
-        );
-
-        // Call hierarchy call sites exclude the creation but keep the real
-        // calls: `\&foo()` on line 4 and `foo()` on line 5.
-        let call_refs = index.find_call_refs(&key);
-        assert_eq!(
-            call_refs.len(),
-            2,
-            "find_call_refs must exclude only the coderef; got {call_refs:?}"
-        );
-        assert!(
-            call_refs.iter().all(|location| location.range.start.line != 3),
-            "find_call_refs must not report the line 3 coderef creation; got {call_refs:?}"
-        );
-        assert!(
-            call_refs.iter().any(|location| location.range.start.line == 4)
-                && call_refs.iter().any(|location| location.range.start.line == 5),
-            "find_call_refs must keep lines 4 and 5; got {call_refs:?}"
         );
     }
 
@@ -13200,62 +12724,6 @@ mod semantic_query_callback_tests {
         Ok(())
     }
 
-    /// #17247: the batched anchor resolution must answer exactly what the
-    /// single-anchor form answers for every anchor in a multi-file index.
-    /// The fixture spans several files whose import placeholder anchors are
-    /// intentionally degenerate and claim the same synthetic id across files,
-    /// so the equivalence also pins the duplicate/degenerate fail-closed
-    /// behavior the find-references batch relies on.
-    #[test]
-    fn semantic_anchor_wire_locations_matches_single_anchor_resolution()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let index = WorkspaceIndex::new();
-        let sources = [
-            (
-                "file:///lib/BatchA.pm",
-                "package BatchA;\nuse strict;\nuse warnings;\nsub alpha { 1 }\nsub beta { alpha() }\n1;\n",
-            ),
-            ("file:///lib/BatchB.pm", "package BatchB;\nuse POSIX;\nsub gamma { 2 }\n1;\n"),
-            (
-                "file:///lib/BatchC.pm",
-                "package BatchC;\nuse strict;\nsub delta { 3 }\nBatchB::gamma();\n1;\n",
-            ),
-        ];
-        for (uri, code) in sources {
-            // The ungenerationed `index_file` surface is a compatibility API
-            // with a caller-count ledger (#11301); tests index through the
-            // typed initial-generation form.
-            must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
-        }
-
-        let mut all_anchor_ids: Vec<AnchorId> = Vec::new();
-        let mut shards_with_anchors = 0;
-        for (uri, _) in sources {
-            if let Some(shard) = index.file_fact_shard(uri) {
-                if !shard.anchors.is_empty() {
-                    shards_with_anchors += 1;
-                }
-                all_anchor_ids.extend(shard.anchors.iter().map(|anchor| anchor.id));
-            }
-        }
-        assert!(
-            shards_with_anchors >= 3 && all_anchor_ids.len() >= 6,
-            "fixture must produce anchors in every file, got {shards_with_anchors} files / \
-             {} ids",
-            all_anchor_ids.len()
-        );
-
-        let batched = index.semantic_anchor_wire_locations(&all_anchor_ids);
-        for anchor_id in &all_anchor_ids {
-            assert_eq!(
-                batched.get(anchor_id).cloned().flatten(),
-                index.semantic_anchor_wire_location(*anchor_id),
-                "batch and single anchor resolution must agree for {anchor_id:?}"
-            );
-        }
-        Ok(())
-    }
-
     // Covers lines 4140-4144: NodeKind::NestedVariableList arm in visit_node.
     // Indexing a file that produces a NestedVariableList in the AST ensures the
     // workspace indexer recurses into it to discover nested-declared variables.
@@ -15169,9 +14637,21 @@ mod extraction_bundle_shadow_compare {
     }
 
     /// **1711-B phase 2: canonical-side parity for the REAL unified
-    /// traversal.** Canonical declaration facts on script URIs still use
-    /// the `None` inventory (see `FileExtractionBundle::build_unified`);
-    /// module URIs share one pass. Reference coverage remains unchanged.
+    /// traversal.** Asserts the unified walk's canonical `FileFactShard`
+    /// (built from `IndexVisitor::visit_unified`'s `Vec<SymbolRef>`, via
+    /// `build_canonical_fact_shard_from_symbol_refs`) is BYTE-FOR-BYTE
+    /// IDENTICAL to production's own canonical output
+    /// (`build_canonical_fact_shard_for_ast`, via `extract_symbol_refs`).
+    ///
+    /// This MUST hold with zero deltas everywhere, including fixtures that
+    /// exercise the coverage-delta constructs (block-form packages/classes,
+    /// Typeglob, Goto, regex-binds, etc.) -- canonical's `extract_symbol_refs`
+    /// already reaches all of those today via its own complete
+    /// `Node::for_each_child`-based fallback (verified empirically; see
+    /// `docs/reference/1711-B-coverage-delta.md`). Only the LEGACY
+    /// `FileIndex` projection gains new coverage under unification (see
+    /// `assert_unified_legacy_is_superset` below) -- canonical does not
+    /// change at all.
     fn assert_unified_canonical_parity(label: &str, uri: &str, text: &str) {
         let mut parser = Parser::new(text);
         let ast = match parser.parse() {
@@ -15239,30 +14719,6 @@ mod extraction_bundle_shadow_compare {
         }
     }
 
-    /// **#4047 declaration-inventory cutover:** for URIs whose legacy package
-    /// seed matches the unified shared inventory (`initial_package_for_uri`),
-    /// the production path must emit the same legacy `WorkspaceSymbol` list
-    /// as the old dual-walk path.
-    fn assert_unified_legacy_symbols_exact_for_shared_seed_uri(label: &str, uri: &str, text: &str) {
-        let mut parser = Parser::new(text);
-        let ast = match parser.parse() {
-            Ok(ast) => ast,
-            Err(e) => {
-                eprintln!("skip {label} ({uri}): parse error: {e}");
-                return;
-            }
-        };
-
-        let direct = build_direct(uri, text, &ast);
-        let unified = build_bundle_unified(uri, text, &ast);
-
-        assert_eq!(
-            direct.file_index.symbols, unified.legacy_index.symbols,
-            "{label}: unified legacy WorkspaceSymbol list diverged on a shared-seed URI \
-             ({uri}) after unifying the declaration inventory (#4047)"
-        );
-    }
-
     // ── Targeted edge cases ──────────────────────────────────────────────
 
     #[test]
@@ -15303,24 +14759,6 @@ mod extraction_bundle_shadow_compare {
         assert_parity("declaration", uri, text);
         assert_unified_canonical_parity("declaration", uri, text);
         assert_unified_legacy_is_superset("declaration", uri, text);
-    }
-
-    #[test]
-    fn unified_shared_declaration_inventory_on_module_uri() {
-        let text = "package Foo;\nour $count = 0;\nmy $local = 1;\nsub bar { my ($x, $y) = @_; return $x + $y; }\n1;\n";
-        let uri = "file:///lib/Foo.pm";
-        assert_unified_canonical_parity("4047_module_decl", uri, text);
-        assert_unified_legacy_symbols_exact_for_shared_seed_uri("4047_module_decl", uri, text);
-
-        let mut parser = Parser::new(text);
-        let ast = must(parser.parse());
-        reindex_metrics::start();
-        let _bundle = build_bundle_unified(uri, text, &ast);
-        let metrics = reindex_metrics::take();
-        assert_eq!(
-            metrics.decl_extract_calls, 1,
-            "shared-seed module URI must run exactly one declaration extract in build_unified (#4047)"
-        );
     }
 
     #[test]

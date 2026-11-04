@@ -1,5 +1,3 @@
-#![deny(clippy::map_err_ignore)]
-
 //! Asserts the lower-crate dependency contract for `perl-operation-trace`.
 //!
 //! `perl-operation-trace` owns `operation_trace.v1` and must sit below the

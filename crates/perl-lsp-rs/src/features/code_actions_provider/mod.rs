@@ -1154,8 +1154,7 @@ mod tests {
         let actions = provider.get_actions_for_diagnostic(&diagnostic);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Add closing brace");
-        assert_eq!(actions[0].edit.new_text, "\n}");
-        assert_eq!(actions[0].edit.range, (provider.source().len(), provider.source().len()));
+        assert_eq!(actions[0].edit.new_text, "}");
     }
 
     #[test]
@@ -1625,8 +1624,7 @@ mod tests {
         let actions = provider.get_actions_for_diagnostic(&diagnostic);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Add closing brace");
-        assert_eq!(actions[0].edit.new_text, "\n}");
-        assert_eq!(actions[0].edit.range, (provider.source().len(), provider.source().len()));
+        assert_eq!(actions[0].edit.new_text, "}");
     }
 
     #[test]

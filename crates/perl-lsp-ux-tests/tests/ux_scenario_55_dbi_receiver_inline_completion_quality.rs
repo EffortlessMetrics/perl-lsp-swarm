@@ -8,9 +8,9 @@
 #![allow(clippy::print_stderr)]
 
 use anyhow::Result;
-use perl_lsp_ux_tests::{QualityPollOutcome, ScenarioConfig, UxHarness, binary_available};
-use serde_json::json;
-use std::time::Duration;
+use perl_lsp_ux_tests::{ScenarioConfig, UxHarness, binary_available};
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 
 const DBI_HANDLE_PATH: &str = "lib/Inline/DbiHandle.pl";
 const DBI_STATEMENT_PATH: &str = "lib/Inline/DbiStatement.pl";
@@ -55,6 +55,13 @@ fn create_harness() -> Result<UxHarness> {
     UxHarness::new(config)
 }
 
+fn insert_texts_for(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| item.get("insertText").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
 fn missing_expected<'a>(insert_texts: &[String], expected: &'a [&str]) -> Vec<&'a str> {
     expected
         .iter()
@@ -77,21 +84,20 @@ fn wait_for_expected_inserts(
     line: u32,
     character: u32,
     expected: &[&str],
-) -> Result<(Vec<String>, QualityPollOutcome)> {
+) -> Result<Vec<String>> {
     // The quality budget must tolerate analysis lag on cold CI runners:
     // post-diagnostics, completion facts can land after the previous 5s
     // window closed (observed as a one-probe zero on a refreshed-base run).
-    // The poll carries its [`QualityPollOutcome`] into the assertion message
-    // so a load-induced budget exhaustion is rendered with the deadline
-    // marker the receipt classifier keys on, rather than reading like a
-    // real provider regression (#16103).
-    harness.poll_inline_completion_until_quality(
-        file,
-        line,
-        character,
-        Duration::from_secs(30),
-        |insert_texts| missing_expected(insert_texts, expected).is_empty(),
-    )
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let insert_texts = insert_texts_for(
+            &harness.inline_completion_with_trigger_kind(file, line, character, 1)?,
+        );
+        if missing_expected(&insert_texts, expected).is_empty() || Instant::now() >= deadline {
+            return Ok(insert_texts);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -107,28 +113,22 @@ fn scenario_55_dbi_receiver_inline_completion_quality_stdio() -> Result<()> {
     // fixed sleep: on a cold CI runner the previous 250ms guess let completion
     // queries outrun the first analysis of the just-opened document, starving
     // the DBI semantic context for the whole poll window (#15870).
-    let readiness = perl_lsp_ux_tests::wait_with_subject(
-        &format!("diagnostics for {}", DBI_HANDLE_PATH),
-        harness.wait_for_diagnostics(DBI_HANDLE_PATH, Duration::from_secs(30)),
-    )?;
+    let readiness = harness.wait_for_diagnostics(DBI_HANDLE_PATH, Duration::from_secs(30));
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
-            "analysis readiness: observed empty diagnostics payload; this scenario requires nonempty diagnostics (#15899)"
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
         )
         .into());
     }
-    let readiness = perl_lsp_ux_tests::wait_with_subject(
-        &format!("diagnostics for {}", DBI_STATEMENT_PATH),
-        harness.wait_for_diagnostics(DBI_STATEMENT_PATH, Duration::from_secs(30)),
-    )?;
+    let readiness = harness.wait_for_diagnostics(DBI_STATEMENT_PATH, Duration::from_secs(30));
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
-            "analysis readiness: observed empty diagnostics payload; this scenario requires nonempty diagnostics (#15899)"
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
         )
         .into());
     }
 
-    let (handle_insert_texts, handle_outcome) = wait_for_expected_inserts(
+    let handle_insert_texts = wait_for_expected_inserts(
         &harness,
         DBI_HANDLE_PATH,
         DBI_HANDLE_LINE,
@@ -138,7 +138,7 @@ fn scenario_55_dbi_receiver_inline_completion_quality_stdio() -> Result<()> {
     let handle_missing = missing_expected(&handle_insert_texts, EXPECTED_HANDLE_INSERTS);
     let handle_forbidden = present_forbidden(&handle_insert_texts, FORBIDDEN_INSERTS);
 
-    let (statement_insert_texts, statement_outcome) = wait_for_expected_inserts(
+    let statement_insert_texts = wait_for_expected_inserts(
         &harness,
         DBI_STATEMENT_PATH,
         DBI_STATEMENT_LINE,
@@ -150,50 +150,27 @@ fn scenario_55_dbi_receiver_inline_completion_quality_stdio() -> Result<()> {
 
     assert!(
         !handle_insert_texts.is_empty(),
-        "DBI database handle inline completion returned no candidates; {}",
-        handle_outcome.describe()
+        "DBI database handle inline completion returned no candidates"
     );
     assert!(
         handle_missing.is_empty(),
-        "DBI database handle inline completion missed expected methods: {handle_missing:?}; actual: {handle_insert_texts:?}; {}",
-        handle_outcome.describe()
+        "DBI database handle inline completion missed expected methods: {handle_missing:?}; actual: {handle_insert_texts:?}"
     );
     assert!(
         handle_forbidden.is_empty(),
-        "DBI database handle inline completion returned forbidden methods: {handle_forbidden:?}; {}",
-        handle_outcome.describe()
+        "DBI database handle inline completion returned forbidden methods: {handle_forbidden:?}"
     );
     assert!(
         !statement_insert_texts.is_empty(),
-        "DBI statement handle inline completion returned no candidates; {}",
-        statement_outcome.describe()
+        "DBI statement handle inline completion returned no candidates"
     );
     assert!(
         statement_missing.is_empty(),
-        "DBI statement handle inline completion missed expected methods: {statement_missing:?}; actual: {statement_insert_texts:?}; {}",
-        statement_outcome.describe()
+        "DBI statement handle inline completion missed expected methods: {statement_missing:?}; actual: {statement_insert_texts:?}"
     );
     assert!(
         statement_forbidden.is_empty(),
-        "DBI statement handle inline completion returned forbidden methods: {statement_forbidden:?}; {}",
-        statement_outcome.describe()
-    );
-
-    // Pin that neither poll exhausted its budget. A passing run must end in
-    // `Matched`, never `Deadline`, or the helper that we expect to time
-    // out under load has already done so on the well-trodden path. This
-    // catches a regression in the deadline budget itself (#16103).
-    assert_eq!(
-        handle_outcome,
-        QualityPollOutcome::Matched,
-        "DBI handle poll exhausted the deadline on a passing run; {}",
-        handle_outcome.describe()
-    );
-    assert_eq!(
-        statement_outcome,
-        QualityPollOutcome::Matched,
-        "DBI statement poll exhausted the deadline on a passing run; {}",
-        statement_outcome.describe()
+        "DBI statement handle inline completion returned forbidden methods: {statement_forbidden:?}"
     );
 
     harness.assert_no_crash();

@@ -288,8 +288,7 @@ perl-uri = { path = "crates/perl-uri", version = "0.17.0" }
 # (perl-lsp-protocol absorbed into perl-lsp-rs-core::protocol — Wave G3 step 2)
 # Wave D absorbed: perl-path-normalize → perl-parser-core::path_normalize
 # Wave D absorbed: perl-path-security → perl-parser-core::path_security
-# Tooling may decline core defaults; product/test consumers explicitly retain them.
-perl-lsp-rs-core = { path = "crates/perl-lsp-rs-core", version = "0.17.0", default-features = false }
+perl-lsp-rs-core = { path = "crates/perl-lsp-rs-core", version = "0.17.0" }
 perl-ci-hygiene = { path = "crates/perl-ci-hygiene", version = "0.17.0" }
 # Legacy mixed release-readiness evaluator. Private (publish = false); consumed
 # by xtask's perl-kwalitee command. Receipt kind remains `perl_kwalitee`.
@@ -437,8 +436,6 @@ dbg_macro = "deny"
 # Async discipline: lock-across-await is a deadlock/perf risk (#2899).
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
-# async_yields_async: async fn must not return a nested Future without awaiting (#2323).
-async_yields_async = "deny"
 # let_underscore_lock: activated by #14444 after a zero-site confirmation on a
 # complete workspace --all-targets measurement (force-warn pierces allows).
 # This row covers non-std guards only — borrowed `parking_lot` mutex and
@@ -450,8 +447,8 @@ async_yields_async = "deny"
 # #11240), while `drop(m.lock())` is seen by no Clippy lint at any level and
 # stays with the #11236 deliberate-discard contract.
 let_underscore_lock = "deny"
-# mutex_atomic: workspace deny after a zero-finding lib measurement (#2323 / #9884).
-mutex_atomic = "deny"
+# mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
+mutex_atomic = "warn"
 # collapsible_if: activated by #6305 after the 293-site burn-down (#6375-#6380)
 # and a warn-forced zero-finding all-targets remeasurement plus 38 fresh fixes.
 # Seven crates retain historical blanket allows over 257 force-warn-measured

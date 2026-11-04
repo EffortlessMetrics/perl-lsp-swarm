@@ -20,37 +20,8 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn workspace() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let canonical = workspace_boundary(tmp.path())?;
+    let canonical = tmp.path().canonicalize()?;
     Ok((tmp, canonical))
-}
-
-/// The workspace root spelling that matches `validate_path` results.
-///
-/// `validate_path` resolves the root itself and returns paths with the
-/// Windows extended-length `\\?\` prefix removed (perl-parser-core's
-/// `normalize_filesystem_path`), while `Path::canonicalize` produces the
-/// prefixed `\\?\C:\...` spelling on Windows. Comparing a canonicalized
-/// root against those results made every in-bounds `Ok` assertion fail on
-/// a spelling mismatch, not on security behavior (#17174B). Canonicalize
-/// (resolving 8.3 short names) and then strip the device prefix so
-/// boundary comparisons match by content.
-fn workspace_boundary(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let canonical = path.canonicalize()?;
-    // Strip the verbatim device prefix only from spellings representable as
-    // UTF-8 text: a lossy conversion would rewrite invalid-byte path
-    // spellings instead of just removing the prefix (CodeRabbit follow-up
-    // on #17174B).
-    #[cfg(windows)]
-    if let Some(text) = canonical.to_str() {
-        return Ok(PathBuf::from(match text.strip_prefix(r"\\?\UNC\") {
-            Some(unc) => format!(r"\\{unc}"),
-            None => match text.strip_prefix(r"\\?\") {
-                Some(plain) => plain.to_string(),
-                None => text.to_string(),
-            },
-        }));
-    }
-    Ok(canonical)
 }
 
 /// Assert that a validate_path result is a traversal or outside-workspace error.
@@ -419,7 +390,7 @@ mod symlink_attacks {
 
         let result = validate_path(Path::new("lib_alias/Module.pm"), ws)?;
         assert!(
-            result.starts_with(workspace_boundary(ws)?),
+            result.starts_with(ws.canonicalize()?),
             "Symlink within workspace should be allowed"
         );
         Ok(())
@@ -690,7 +661,7 @@ fn valid_path_with_safe_dotdot_that_stays_inside() -> TestResult {
 
     // a/b/../c resolves to a/c which is still inside workspace
     let result = validate_path(Path::new("a/b/../c.pl"), ws)?;
-    assert!(result.starts_with(workspace_boundary(ws)?));
+    assert!(result.starts_with(ws.canonicalize()?));
     Ok(())
 }
 

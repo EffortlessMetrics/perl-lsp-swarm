@@ -681,22 +681,6 @@ fn is_htmx_attribute_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
 }
 
-/// Byte offset just past the HTML attribute name that begins at `name_start`.
-#[must_use]
-pub fn markup_attribute_name_suffix_end(source: &str, name_start: usize) -> usize {
-    let Some(rest) = source.get(name_start..) else {
-        return name_start;
-    };
-    let mut end = name_start;
-    for (offset, byte) in rest.bytes().enumerate() {
-        if !is_attribute_name_byte(byte) {
-            break;
-        }
-        end = name_start + offset + 1;
-    }
-    end
-}
-
 #[cfg(test)]
 mod tests {
     use super::{MAX_MARKUP_SCAN_BYTES, htmx_attribute_name_context};

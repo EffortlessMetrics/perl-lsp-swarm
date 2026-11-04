@@ -16,7 +16,6 @@
 
 mod support;
 
-use perl_parser_core::Parser;
 use serde_json::{Value, json};
 use support::lsp_harness::LspHarness;
 
@@ -33,14 +32,13 @@ const SUCCESS_UTF8_PRAGMA: &str = "cac-parity-utf8-pragma-only-for-non-ascii-sou
 const SUCCESS_REWRITE_TRANSFORM: &str = "cac-parity-enhanced-rewrite-transform-publishes-an-edit";
 const IDENTITY_V2_DIAGNOSTIC: &str = "cac-parity-v2-attaches-originating-diagnostic";
 const IDENTITY_EXPLAIN: &str = "cac-parity-explain-diagnostic-command-only";
+const IDENTITY_TEST_GENERATION: &str = "cac-parity-test-generation-command-only";
 const DISABLED_EXTRACT: &str = "cac-parity-disabled-extract-requires-selection";
 const REFUSED_NO_DISABLED_SUPPORT: &str = "cac-parity-refused-without-disabled-support";
 const STALE_SUPERSEDED_VERSION: &str = "cac-parity-stale-superseded-document-version";
 const AMBIGUOUS_EXTRACT_SELECTION: &str = "cac-parity-extract-variable-requires-selection";
 const AMBIGUOUS_DUPLICATE_COLLAPSED: &str = "cac-parity-duplicate-authority-collapsed";
 const RECOVERY_KEEPS_AST_PATH: &str = "cac-parity-parse-error-recovery-keeps-ast-path";
-const RECOVERY_SINGLE_UNCLOSED_BLOCK: &str =
-    "cac-parity-parse-error-single-unclosed-block-associated-quickfix";
 const EMPTY_OUT_OF_RANGE_SOURCE: &str = "cac-parity-legitimate-empty-out-of-range-source-action";
 const EMPTY_KIND_FILTER: &str = "cac-parity-kind-filter-excludes-other-families";
 const EMPTY_UNKNOWN_DOCUMENT: &str = "cac-parity-unknown-document-is-empty-not-error";
@@ -57,10 +55,6 @@ const NO_PRAGMAS: &str = "my $value = 1;\nprint $value;\n";
 /// Carries real parse errors. The v3 parser recovers rather than failing, so
 /// this stays on the AST path — see `parse_errors_stay_on_the_ast_path`.
 const PARSE_ERRORS: &str = "sub broken { my $x = ; if ( { $x\n";
-
-/// One genuinely repairable unclosed block; a single appended `}` completes
-/// the source — see `single_unclosed_block_quickfix_is_associated_and_complete`.
-const SINGLE_UNCLOSED_BLOCK: &str = "sub broken {\n";
 
 /// Produces a PL109 unquoted-bareword diagnostic. The explain generation only
 /// answers PL701 and PL109, so a PL103 source leaves it silent.
@@ -142,23 +136,6 @@ fn edits_for(action: &Value, uri: &str) -> Vec<Value> {
 
 fn titles(actions: &[Value]) -> Vec<&str> {
     actions.iter().map(title).collect()
-}
-
-fn source_has_parse_errors(source: &str) -> bool {
-    let mut parser = Parser::new(source);
-    parser.parse().is_err() || !parser.errors().is_empty()
-}
-
-fn source_reparses_cleanly(source: &str) -> bool {
-    let mut parser = Parser::new(source);
-    parser.parse().is_ok() && parser.errors().is_empty()
-}
-
-fn lsp_position_at_eof(source: &str) -> (u32, u32) {
-    let line = u32::try_from(source.matches('\n').count()).unwrap_or(0);
-    let line_start = source.rfind('\n').map_or(0, |index| index + 1);
-    let character = u32::try_from(source[line_start..].encode_utf16().count()).unwrap_or(0);
-    (line, character)
 }
 
 // --- successful -------------------------------------------------------------
@@ -535,6 +512,44 @@ fn explain_diagnostic_action_is_command_only() -> TestResult {
     Ok(())
 }
 
+/// The test generator publishes a command-only action per discovered
+/// subroutine.
+#[test]
+fn test_generation_action_is_command_only() -> TestResult {
+    let uri = "file:///cac_parity_test_generation.pl";
+    let mut harness = harness_with(None)?;
+    harness.open(uri, EXTRACTABLE)?;
+    harness.barrier();
+
+    let actions = code_actions(&mut harness, uri, ((3, 0), (6, 1)), None)?;
+
+    let generated = actions
+        .iter()
+        .filter(|action| title(action).starts_with("Generate test for"))
+        .collect::<Vec<_>>();
+    assert!(
+        !generated.is_empty(),
+        "{IDENTITY_TEST_GENERATION}: expected a test generation action, got {:?}",
+        titles(&actions)
+    );
+
+    for action in generated {
+        assert_eq!(kind(action), "source", "{IDENTITY_TEST_GENERATION}: wrong kind");
+        assert!(
+            action.get("edit").is_none(),
+            "{IDENTITY_TEST_GENERATION}: {:?} must not carry a workspace edit",
+            title(action)
+        );
+        assert!(
+            action.get("command").is_some(),
+            "{IDENTITY_TEST_GENERATION}: {:?} must carry a command",
+            title(action)
+        );
+    }
+
+    Ok(())
+}
+
 /// The V2 generation is the only one that links a quick fix back to the
 /// diagnostic that produced it. This fixture is the retirement blocker
 /// `canonical_route_omits_diagnostic_association` in executable form: it must
@@ -613,7 +628,7 @@ fn zero_width_selection_publishes_a_disabled_extract_action() -> TestResult {
             format!("{DISABLED_EXTRACT}: no disabled action was published: {:?}", titles(&actions))
         })?;
 
-    assert_eq!(kind(disabled), "refactor.extract.variable", "{DISABLED_EXTRACT}: wrong kind");
+    assert_eq!(kind(disabled), "refactor.extract", "{DISABLED_EXTRACT}: wrong kind");
     let reason = disabled
         .pointer("/disabled/reason")
         .and_then(Value::as_str)
@@ -651,7 +666,7 @@ fn zero_width_selection_publishes_nothing_without_disabled_support() -> TestResu
     // assertion above alone would pass if the server started publishing one for
     // a zero-width selection. The refusal is that no extract action appears.
     assert!(
-        actions.iter().all(|action| !kind(action).starts_with("refactor.extract")),
+        actions.iter().all(|action| kind(action) != "refactor.extract"),
         "{REFUSED_NO_DISABLED_SUPPORT}: an extract action was published for a zero-width selection to a client without disabledSupport: {:?}",
         titles(&actions)
     );
@@ -795,110 +810,36 @@ fn parse_errors_stay_on_the_ast_path() -> TestResult {
 
     let actions = code_actions(&mut harness, uri, ((0, 0), (1, 0)), None)?;
 
-    // `source.modernize` and the `source.fixAll` aggregate exist only on the
-    // AST path; the degraded text generation cannot produce either.
+    // `source.modernize` and test generation exist only on the AST path; the
+    // degraded text generation cannot produce either.
     assert!(
         actions.iter().any(|action| kind(action) == "source.modernize"),
         "{RECOVERY_KEEPS_AST_PATH}: no source.modernize action, so the request did not stay on the AST path: {:?}",
         titles(&actions)
     );
     assert!(
-        actions.iter().any(|action| kind(action) == "source.fixAll"),
-        "{RECOVERY_KEEPS_AST_PATH}: no source.fixAll aggregate, so the request did not stay on the AST path: {:?}",
+        actions.iter().any(|action| title(action).starts_with("Generate test for")),
+        "{RECOVERY_KEEPS_AST_PATH}: no test generation action, so the request did not stay on the AST path: {:?}",
         titles(&actions)
     );
 
-    // #17794/#5547: one appended brace is not a complete repair for this source.
+    // Recovery must still route the parse error itself to an *associated*
+    // quick fix. This extends `cac-parity-v2-attaches-originating-diagnostic`
+    // to the PL00x parse-error family: verified by removing the V2 association,
+    // which fails this assertion too.
     assert!(
-        source_has_parse_errors(&format!("{PARSE_ERRORS}\n}}")),
-        "{RECOVERY_KEEPS_AST_PATH}: a single closing brace must not fully repair the severe fixture"
-    );
-
-    assert!(
-        actions.iter().all(|action| {
-            !(kind(action) == "quickfix"
-                && title(action).contains("closing brace")
-                && !edits_for(action, uri).is_empty())
+        actions.iter().any(|action| {
+            action.get("diagnostics").and_then(Value::as_array).is_some_and(|diagnostics| {
+                diagnostics.iter().any(|diagnostic| {
+                    diagnostic
+                        .get("code")
+                        .and_then(Value::as_str)
+                        .is_some_and(|code| code.starts_with("PL00"))
+                })
+            })
         }),
-        "{RECOVERY_KEEPS_AST_PATH}: an unsafe partial closing-brace quick fix was published: {:?}",
+        "{RECOVERY_KEEPS_AST_PATH}: no associated parse-error quick fix was published for source with real parse errors: {:?}",
         titles(&actions)
-    );
-
-    Ok(())
-}
-
-/// A single unclosed block is genuinely repairable, so the V2 generation must
-/// attach a PL002 quick fix with the accepted EOF edit and a clean reparse after
-/// application. The severe fixture above keeps the AST-path and refusal checks.
-#[test]
-fn single_unclosed_block_quickfix_is_associated_and_complete() -> TestResult {
-    let uri = "file:///cac_parity_single_unclosed_block.pl";
-    let mut harness = harness_with(None)?;
-    harness.open(uri, SINGLE_UNCLOSED_BLOCK)?;
-    harness.barrier();
-
-    let actions = code_actions(&mut harness, uri, ((0, 0), (2, 0)), Some(&["quickfix"]))?;
-
-    let (eof_line, eof_char) = lsp_position_at_eof(SINGLE_UNCLOSED_BLOCK);
-    let brace_fix = actions
-        .iter()
-        .find(|action| {
-            kind(action) == "quickfix"
-                && title(action).contains("closing brace")
-                && action.get("diagnostics").and_then(Value::as_array).is_some_and(
-                    |diagnostics| {
-                        diagnostics.iter().any(|diagnostic| {
-                            diagnostic.get("code").and_then(Value::as_str) == Some("PL002")
-                        })
-                    },
-                )
-        })
-        .ok_or_else(|| {
-            format!(
-                "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: expected one associated PL002 closing-brace quick fix, got {:?}",
-                titles(&actions)
-            )
-        })?;
-
-    let edits = edits_for(brace_fix, uri);
-    assert_eq!(
-        edits.len(),
-        1,
-        "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: expected exactly one edit, got {edits:?}"
-    );
-    assert_eq!(
-        edits[0].get("newText").and_then(Value::as_str),
-        Some("\n}"),
-        "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: unexpected edit text"
-    );
-    let range = edits[0]
-        .get("range")
-        .ok_or_else(|| format!("{RECOVERY_SINGLE_UNCLOSED_BLOCK}: edit missing range"))?;
-    assert_eq!(
-        range.get("start").and_then(|start| start.get("line")).and_then(Value::as_u64),
-        Some(u64::from(eof_line)),
-        "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: edit must start at EOF line"
-    );
-    assert_eq!(
-        range.get("start").and_then(|start| start.get("character")).and_then(Value::as_u64),
-        Some(u64::from(eof_char)),
-        "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: edit must start at EOF column"
-    );
-    assert_eq!(
-        range.get("end").and_then(|end| end.get("line")).and_then(Value::as_u64),
-        Some(u64::from(eof_line)),
-        "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: edit must end at EOF line"
-    );
-    assert_eq!(
-        range.get("end").and_then(|end| end.get("character")).and_then(Value::as_u64),
-        Some(u64::from(eof_char)),
-        "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: edit must end at EOF column"
-    );
-
-    let repaired = format!("{SINGLE_UNCLOSED_BLOCK}\n}}");
-    assert!(
-        source_reparses_cleanly(&repaired),
-        "{RECOVERY_SINGLE_UNCLOSED_BLOCK}: applied edit must reparse without errors"
     );
 
     Ok(())

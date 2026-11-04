@@ -39,7 +39,7 @@ thiserror.workspace = true
 toml = "1.1.2"
 
 [dev-dependencies]
-# Receipt fixtures are self-contained; do not pull in the parser test helpers.
+perl-tdd-support = { workspace = true }
 sha2.workspace = true
 tempfile.workspace = true
 

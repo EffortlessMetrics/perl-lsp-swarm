@@ -23,9 +23,8 @@ Two modes backing the two acceptance arms of issue #11943:
     ``::error`` annotations that name the offending log and the filled target
     directory, and appends a decision-grade verdict plus a fresh free-bytes
     snapshot to ``pr-fast-disk-pressure.log`` (composing with #11977's raw
-    capture). Only ENOSPC / os-error-28 matches earn the resource-exhaustion
-    verdict, which names the matched logs and leaves other failure causes
-    unattributed. A linker SIGBUS or a lone rustc-LLVM
+    capture). Only ENOSPC / os-error-28 matches earn the definitive "not
+    candidate defects" verdict. A linker SIGBUS or a lone rustc-LLVM
     output-stream failure is recorded as corroborating evidence under a
     distinct ``not_proven_io_failure`` verdict that does not exonerate the
     candidate: signal 7 identifies a bus error, not its cause (truncated or
@@ -38,12 +37,10 @@ Two modes backing the two acceptance arms of issue #11943:
 Measured basis (2026-08-24 receipt artifacts, runs 32697324730 and
 32697144932): the single PR Smoke ``CARGO_TARGET_DIR`` grows to ~83 GiB on a
 cold-cache branch while the hosted runner offers ~83-84 GiB free at start on a
-145 GiB root volume, so unbounded builds fill the disk mid-link. Run
-37195503421 (2026-10-04) measured 85 GiB after the debuginfo trim (#17231).
-The preflight floor is derived from that declared footprint bound plus a
-reserve, so a runner that cannot hold the tier is rejected before any build
-instead of being accepted into a mid-link ENOSPC; the bound is declared in
-the workflow beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
+145 GiB root volume, so unbounded builds fill the disk mid-link. The default
+preflight budget is set below that starting headroom so only genuinely
+degraded runners fail fast; the footprint bound itself lives in the workflow
+(``CARGO_PROFILE_*_DEBUG``), not here.
 """
 
 from __future__ import annotations
@@ -57,48 +54,13 @@ from typing import Callable
 
 GIB = 1024**3
 
-# Declared footprint bound for the PR Smoke tier (#17231): the single
-# CARGO_TARGET_DIR measured 85 GiB in run 37195503421 (2026-10-04 receipt,
-# pr-fast-disk-pressure.log), after the line-tables-only debuginfo trim.
-# The preflight floor is DERIVED from this bound (footprint + reserve), so
-# the two cannot drift apart the way the former fixed 32 GiB floor did:
-# that floor's rejection band was empty and it accepted runners the lane
-# then filled to 100% (ENOSPC -> ld SIGBUS). Update the bound only with a
-# fresh measured receipt; the workflow declares the same number beside the
-# trim that bounds it (PR_SMOKE_FOOTPRINT_GIB in ci.yml).
-MEASURED_FOOTPRINT_BYTES = 85 * GIB
-RESERVE_BYTES = 5 * GIB
-
-
-def effective_min_free_bytes(
-    requested: int | None,
-    footprint_bytes: int = MEASURED_FOOTPRINT_BYTES,
-    reserve_bytes: int = RESERVE_BYTES,
-) -> int:
-    """Floor for preflight: always exceeds the declared footprint.
-
-    An explicit override at or below the footprint is a configuration
-    error, not a smaller floor: it would re-open the empty rejection
-    band #17231 measured. Larger overrides are honoured.
-    """
-    floor = footprint_bytes + reserve_bytes
-    if requested is None:
-        return floor
-    if requested <= footprint_bytes:
-        raise ValueError(
-            f"min-free override {requested} bytes does not exceed the "
-            f"declared PR Smoke footprint {footprint_bytes} bytes; the "
-            "floor must exceed the footprint or it cannot reject any "
-            "runner the lane would exhaust (issue #17231)"
-        )
-    return max(requested, floor)
+# Free-space floor for the preflight guard. Measured worst-case tier growth is
+# ~83 GiB against ~83-84 GiB of starting headroom; after the CI debuginfo trim
+# the realistic need sits well below this floor, so breaching it means the
+# runner itself is degraded and building would end in ENOSPC anyway.
+DEFAULT_MIN_FREE_BYTES = 32 * GIB
 
 PRESSURE_LOG_NAME = "pr-fast-disk-pressure.log"
-# Written by the preparation step into the shared receipt-log directory before
-# the full pr-fast tier runs; it must not satisfy full-tier gate-evidence
-# binding when receipt.json is absent (#17915 review).
-PREPARATION_GATE_LOG = "unit_routed_full_build.log"
-NAVIGATION_LOG_PREFIX = "navigation-"
 
 # Signatures taken verbatim from the confirmed exhaustion receipts (runs
 # 32697324730 / 32697144932): collect2 SIGBUS during linking, cargo/rustc
@@ -121,9 +83,9 @@ EXHAUSTION_SIGNATURES: tuple[tuple[str, str], ...] = (
 # objects, and hardware faults produce it without any ENOSPC condition — and
 # "IO failure on output stream" names no errno at all. A lone match of either
 # class is recorded and annotated as corroborating evidence under the
-# non-exonerating ``not_proven_io_failure`` verdict; the resource-exhaustion
-# classification requires an ENOSPC / os-error-28 match and applies only to
-# the matched logs (review #12183).
+# non-exonerating ``not_proven_io_failure`` verdict; the definitive "not
+# candidate defects" classification additionally requires an ENOSPC /
+# os-error-28 match in the same run's logs (review #12183).
 STRONG_EXHAUSTION_CLASSES = frozenset({"enospc"})
 
 Probe = Callable[[str], shutil._ntuple_diskusage]
@@ -260,10 +222,6 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
     if not logs_dir.is_dir():
         return findings
     for log_path in sorted(logs_dir.glob("*.log")):
-        if log_path.name == PRESSURE_LOG_NAME:
-            continue
-        if log_path.is_symlink():
-            continue
         try:
             text = log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -279,41 +237,6 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
                 )
                 break
     return findings
-
-
-def gate_log_paths(logs_dir: Path) -> list[Path]:
-    """Return gate log files excluding the advisory pressure transcript."""
-    if not logs_dir.is_dir():
-        return []
-    return sorted(
-        path
-        for path in logs_dir.glob("*.log")
-        if path.name != PRESSURE_LOG_NAME and path.is_file() and not path.is_symlink()
-    )
-
-
-def _log_is_preparation_or_navigation(name: str) -> bool:
-    return name == PREPARATION_GATE_LOG or name.startswith(NAVIGATION_LOG_PREFIX)
-
-
-def has_full_tier_gate_evidence(
-    logs_dir: Path,
-    gate_logs: list[Path],
-    receipt_path: Path | None = None,
-) -> bool:
-    """True when pr-fast produced gate logs beyond preparation-only residue.
-
-    Preparation copies ``unit_routed_full_build.log`` into the shared log
-    directory before the tier receipt exists. A planning failure on the full
-    ``xtask gates`` invocation must not treat that log as tier evidence.
-    """
-    if not gate_logs:
-        return False
-    if receipt_path is None:
-        receipt_path = logs_dir.parent / "receipt.json"
-    if receipt_path.is_file():
-        return True
-    return any(not _log_is_preparation_or_navigation(path.name) for path in gate_logs)
 
 
 def _emit(message: str) -> None:
@@ -363,16 +286,7 @@ def run_preflight(args: argparse.Namespace) -> int:
     paths = {"workspace": args.workspace_path}
     target_dir = args.target_dir or str(Path(args.workspace_path) / "target")
     paths["cargo-target-dir"] = target_dir
-    try:
-        min_free_bytes = effective_min_free_bytes(
-            args.min_free_bytes,
-            footprint_bytes=getattr(args, "footprint_bytes", MEASURED_FOOTPRINT_BYTES),
-            reserve_bytes=getattr(args, "reserve_bytes", RESERVE_BYTES),
-        )
-    except ValueError as error:
-        _emit(f"::error::PR Smoke pre-flight disk guard misconfigured: {error}")
-        return 2
-    breaches = evaluate_preflight(paths, min_free_bytes)
+    breaches = evaluate_preflight(paths, args.min_free_bytes)
     pressure_log = Path(args.workspace_path) / "target/receipts/logs"
     # Current-run evidence binding (#11943 review): sweep cache-restored logs
     # before anything writes today's records, so the post-run classify step
@@ -397,14 +311,12 @@ def run_preflight(args: argparse.Namespace) -> int:
         header="== PR Smoke pre-flight disk budget accepted the runner ==",
         body_lines=[*removal_note, render_snapshot(paths)],
     )
-    _emit(f"PR Smoke pre-flight disk budget OK (>= {min_free_bytes} bytes free)")
+    _emit(f"PR Smoke pre-flight disk budget OK (>= {args.min_free_bytes} bytes free)")
     return 0
 
 
 def run_classify(args: argparse.Namespace) -> int:
-    logs_dir = Path(args.logs_dir)
-    gate_logs = gate_log_paths(logs_dir)
-    findings = scan_logs(logs_dir)
+    findings = scan_logs(Path(args.logs_dir))
     strong = [
         finding
         for finding in findings
@@ -417,21 +329,11 @@ def run_classify(args: argparse.Namespace) -> int:
     ]
     target_dir = args.target_dir or "target"
     body_lines = [render_snapshot({"cargo-target-dir": target_dir})]
-    if not gate_logs or not has_full_tier_gate_evidence(logs_dir, gate_logs):
-        body_lines.append(
-            "VERDICT: NOT_PROVEN: no gate logs available for exhaustion "
-            "classification (the pr-fast tier did not produce gate evidence)."
-        )
-        _emit(
-            "PR-fast disk-exhaustion classification: NOT_PROVEN "
-            f"(no gate logs under {args.logs_dir})"
-        )
-    elif strong:
+    if strong:
         body_lines.append(
             "VERDICT: resource-exhaustion detected in gate logs "
-            "(ENOSPC / os-error-28 class); matched logs: "
-            f"{', '.join(finding.log_path for finding in strong)}. "
-            "Other gate failure causes remain unattributed."
+            "(ENOSPC / os-error-28 class); the gate failures above are disk "
+            "exhaustion, not candidate defects."
         )
         for finding in (*strong, *corroborating):
             annotation = finding.annotation(target_dir)
@@ -496,16 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument(
         "--min-free-bytes",
         type=parse_min_free_bytes,
-        default=None,
-        help="free-byte floor override, bytes or GiB suffix; must exceed "
-        "--footprint-bytes (default: footprint + reserve)",
-    )
-    preflight.add_argument(
-        "--footprint-bytes",
-        type=parse_min_free_bytes,
-        default=MEASURED_FOOTPRINT_BYTES,
-        help="declared tier footprint bound, bytes or GiB suffix "
-        "(default: measured 85GiB, issue #17231)",
+        default=DEFAULT_MIN_FREE_BYTES,
+        help="free-byte floor per filesystem, bytes or GiB suffix (default 32GiB)",
     )
     preflight.set_defaults(handler=run_preflight)
 

@@ -109,6 +109,8 @@ pub mod source_syntax;
 /// Incremental parsing AST types extracted into a dedicated microcrate.
 pub use perl_ast_v2 as v2;
 
+/// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
+pub use ast::GotoTargetForm;
 /// Primary AST node -- the building block of every syntax tree.
 pub use ast::{
     AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
@@ -117,8 +119,6 @@ pub use ast::{
     NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
     NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
 };
-/// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
-pub use ast::{GotoTargetForm, RegexSurfaceForm};
 /// Owner-neutral declaration-attribute source contracts.
 pub use declaration::{
     DeclarationAttributeArgumentDisposition, DeclarationAttributeArgumentSyntax,

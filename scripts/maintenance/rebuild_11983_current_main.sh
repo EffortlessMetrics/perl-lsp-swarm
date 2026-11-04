@@ -449,6 +449,7 @@ cargo test -p perl-lsp-rs --test lsp_capabilities_snapshot --locked
 cargo run -q -p xtask -- check-provider-confidence-matrix > /dev/null
 cargo xtask check-support-claims
 cargo xtask check-test-wiring
+cargo xtask check-architecture
 cargo clippy -p perl-lsp-rs -p xtask --all-targets --all-features --locked -- -D warnings
 git diff --check
 

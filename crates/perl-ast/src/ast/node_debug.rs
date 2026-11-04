@@ -361,8 +361,7 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
         NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
             push_str(&mut parts, &mut truncated, "name", name);
         }
-        NodeKind::Regex { form, pattern, replacement, modifiers, has_embedded_code } => {
-            parts.push(format!("form={form:?}"));
+        NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
             push_str(&mut parts, &mut truncated, "pattern", pattern);
             if let Some(replacement) = replacement {
                 push_str(&mut parts, &mut truncated, "replacement", replacement);

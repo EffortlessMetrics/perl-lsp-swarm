@@ -234,10 +234,7 @@ fn run_git(
     repo: &std::path::Path,
     args: &[&str],
 ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
-    Ok(xtask::git_environment::isolate(Command::new("git"))
-        .args(args)
-        .current_dir(repo)
-        .output()?)
+    Ok(Command::new("git").args(args).current_dir(repo).output()?)
 }
 
 fn require_success(

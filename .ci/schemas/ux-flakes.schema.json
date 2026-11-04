@@ -254,14 +254,6 @@
           "minimum": 1,
           "description": "Current GitHub issue for active failures; null when no current failure remains."
         },
-        "route": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1,
-          "description": "Optional explicit triage route for the update-status blocker projection; when absent or null the projection derives the route from failure_class."
-        },
         "owner": {
           "type": [
             "string",
@@ -297,7 +289,7 @@
             "null"
           ],
           "minimum": 1,
-          "description": "Bounded review window in days. Required (non-null, >= 1) for active entries — no indefinite quarantine; null only once the row is resolved."
+          "description": "Optional auto-expiry for active entries."
         },
         "resolved_in": {
           "type": [
@@ -352,12 +344,7 @@
               },
               "owner": {
                 "type": "string",
-                "minLength": 1,
-                "pattern": "\\S"
-              },
-              "expires_after_days": {
-                "type": "integer",
-                "minimum": 1
+                "minLength": 1
               },
               "resolved_in": {
                 "type": "null"

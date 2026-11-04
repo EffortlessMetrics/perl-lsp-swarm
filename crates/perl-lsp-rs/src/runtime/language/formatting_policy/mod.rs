@@ -424,7 +424,6 @@ impl LspServer {
 }
 
 mod handlers;
-mod presentation;
 mod receipt;
 
 #[cfg(test)]

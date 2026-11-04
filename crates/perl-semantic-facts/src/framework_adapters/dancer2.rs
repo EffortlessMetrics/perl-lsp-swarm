@@ -26,15 +26,9 @@ pub const DANCER2_FRAMEWORK_NAME: &str = "Dancer2";
 
 /// Reviewed supported version range for the Dancer2 application DSL.
 ///
-/// Covers the Dancer2 1.x series. The workspace fixture
+/// Covers the Dancer2 1.x series (the workspace fixture
 /// `test_corpus/real_projects/dancer2_skeleton/lib/Dancer2.pm` carries
-/// `1.1.1` (`36bdd7aa4e9b97585ad545180a2135fe26278ad1`). Terminal 1.x
-/// release 1.1.2 (`126be702b5628a8ab91e8ec6883f7c975c8898f1`, 2024-11-25)
-/// changes only `.github/workflows/ci.yml`, `Changes`, `cpanfile`, and
-/// `dist.ini`; the 1.1 semantic profile is reused through 1.1.2. Dancer2
-/// 2.x is a separate bounded profile
-/// ([`crate::framework_adapters::dancer2_two_x`]), not a widening of this
-/// constraint.
+/// `1.1.1`). A Dancer v2.0+ release has not been reviewed.
 pub const DANCER2_VERSION_CONSTRAINT: &str = ">=1.0.0,<2.0.0";
 
 /// Provisional adapter identity.

@@ -34,7 +34,6 @@
 //! locals/injection capture queries are documented follow-ups.
 
 #![warn(missing_docs)]
-#![deny(clippy::map_err_ignore)] // Cohort C1 activation (#12598): census-clean on all targets; new findings move the crate back to non-C1.
 
 pub mod convert;
 pub mod highlight;

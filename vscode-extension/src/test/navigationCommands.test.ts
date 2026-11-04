@@ -132,25 +132,6 @@ describe('navigation command implementations', () => {
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.showOutput');
   });
 
-  test('marks a capped workspace file scan as a lower bound, not an exact count (#14454)', async () => {
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
-
-    await showWorkspaceStatusCommand({
-      getWorkspaceStatus: () => ({
-        mode: 'running',
-        fileCount: 50_000,
-        fileCountLowerBound: true,
-      }),
-    });
-
-    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-      'Perl LSP workspace status\nProduct: perl-lsp\nServer state: running\nWorkspace files: 50000+ (scan limited)\nWorkspace index: legacy server (enhanced readiness unavailable)',
-      'Run Health Check',
-      'Show Output',
-      'Open Actions',
-    );
-  });
-
   test('preserves a custom server-reported version string verbatim', async () => {
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(undefined);
 

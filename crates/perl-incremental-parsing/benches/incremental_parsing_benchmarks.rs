@@ -81,8 +81,7 @@ fn generate_file_with_checkpoints() -> String {
     // The fixture must stay materially larger than every edit offset (150, 600, 2000) and larger
     // than the 5,000-byte checkpoint-distance bound, so the `<= 5000` assertions keep
     // discriminating checkpoint-selection locality instead of passing by construction.
-    // #17397 backs the right-checkpoint-distance contract (#13217): each target above
-    // is recorded at-or-after its offset, so edits below 5000 see bounded windows.
+    // #13217 owns the open right-checkpoint-distance (25107) contract question.
     source.push_str("# Preamble to position 100\n");
     for i in 0..20 {
         source.push_str(&format!("my $var{} = {};\n", i, i));
@@ -367,7 +366,7 @@ fn bench_repeated_edits(c: &mut Criterion) {
 fn bench_checkpoint_boundaries(c: &mut Criterion) {
     let mut group = c.benchmark_group("checkpoint_boundaries");
 
-    // Checkpoints are recorded at a token boundary at-or-after: 0, 100, 500, 1000, 5000 (#17397)
+    // Checkpoints are at positions: 0, 100, 500, 1000, 5000
     let boundary_positions = vec![
         ("before_100", 90),
         ("at_100", 100),

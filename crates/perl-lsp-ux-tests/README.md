@@ -56,9 +56,8 @@ response:
 - unsupported methods receive JSON-RPC `Method not found` (`-32601`).
 
 The child-process fixture validates exact response IDs and envelopes. The public
-`UxClient` evidence accessors expose request payloads, default-mode exchanges
-(selected policy, exact response envelope, and write disposition), and capability
-violations.
+`UxClient` evidence accessors expose request payloads and capability violations;
+they do not expose a general client-response or selected-policy ledger.
 
 Request and violation evidence stays in memory for the lifetime of one client.
 Draining normal events does not release these separate copies, and the evidence
@@ -84,14 +83,8 @@ cargo test -p perl-lsp-ux-tests
 
 The local `just ux-tests` and `just ux-tests-full` recipes build
 `target/debug/perl-lsp` first and set `PERL_LSP_BIN` automatically. Raw
-`cargo test` runs work with a prebuilt binary alone: the harness
-auto-discovers the candidate via `resolve_binary()` — explicit
-`PERL_LSP_BIN` override, then a walk from the test executable to
-`target/<profile>/perl-lsp`, then `CARGO_TARGET_DIR`, then a
-`CARGO_MANIFEST_DIR` workspace walk, then `PATH`. Scenarios without a
-resolvable binary skip, except the exact-process lifecycle proofs, which
-fail loudly by design; set `PERL_LSP_UX_REQUIRE_BINARY=1` to turn every
-silent skip into a hard failure.
+`cargo test` runs still require a prebuilt binary or an explicit
+`PERL_LSP_BIN=/path/to/perl-lsp`.
 
 To force integration-gated tests (if present):
 

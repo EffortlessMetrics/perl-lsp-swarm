@@ -12,13 +12,8 @@ analysis can be undermined by ambient state — `PERL5LIB`, `cwd`, `HOME`,
 the shell's perlbrew shims, a `local::lib` setup, locale settings, or a
 sitecustomize hook.
 
-Tracking (this repository): **[EffortlessMetrics/perl-lsp-swarm#2007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2007)**
-(migrated from EffortlessMetrics/perl-lsp-swarm#2726). Historical implementation
-companion on `perl-lsp`: **[EffortlessMetrics/perl-lsp#8551](https://github.com/EffortlessMetrics/perl-lsp/issues/8551)**
-(`PerlOracleEnv` struct + editor-runtime migration — landed; see
-`crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs`). Bare `#8555` in older
-docs pointed at a closed workspace-URI duplicate in this repository; do not use it
-as live tracking authority.
+Tracking: **#8555**. Implementation companion: **#8551** (`PerlOracleEnv`
+struct + per-call-site migration).
 
 ---
 
@@ -122,7 +117,7 @@ been added.
 
 | Seam | Purpose | Ambient inputs | Timeout | Cache | Internalization |
 |---|---|---|---|---|---|
-| **Startup `@INC` probe** (`fetch_perl_inc` in `perl-lsp-rs-core/src/config/mod.rs`) | Discover interpreter startup `@INC` paths | `PATH`, selected Perl binary; `PERL5LIB` only when `usePerl5lib=true` | 1s | per (config, folder) | **Bridge** — replace with modeled config + workspace heuristics (today: bounded `PerlOracleEnv`; ownership [#7420](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7420), [#12950](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12950)) |
+| **Startup `@INC` probe** (`fetch_perl_inc` in `perl-lsp-rs-core/src/config/mod.rs`) | Discover interpreter startup `@INC` paths | `PATH`, selected Perl binary; `PERL5LIB` only when `usePerl5lib=true` | 1s | per (config, folder) | **Bridge** — replace with modeled config + workspace heuristics |
 | **Real-Perl oracle** (parser conformance tests) | Differential test evidence: what does real Perl say about this source? | Controlled fixture env (PERL5LIB unset, HOME=test temp, locale=C) | bounded | test-local | **Oracle** — never editor-runtime |
 | **perlcritic / perltidy** (if invoked) | External tool integration | Explicit tool path, config path | bounded | per (tool, config) | **Bridge** — native critic / formatter lanes are the long-term plan |
 
@@ -155,13 +150,8 @@ When implementing a new "ask Perl" subprocess:
    probably shouldn't exist — find an in-process alternative.
 2. **Write the per-seam declaration** in `docs/architecture/perl-subprocess-seams.md`
    (this doc) before writing the code.
-3. **Construct an explicit `PerlOracleEnv`** (see
-   [`perl_oracle_env.rs`](../../crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs)
-   and historical [EffortlessMetrics/perl-lsp#8551](https://github.com/EffortlessMetrics/perl-lsp/issues/8551))
-   instead of a bare `Command::new("perl")`. Default policy: deny-all-ambient.
-   Automated recurrence enforcement for new production seams is tracked in
-   [EffortlessMetrics/perl-lsp-swarm#1975](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1975),
-   not a Perl-only grep gate on this issue.
+3. **Construct an explicit `PerlOracleEnv`** (see **#8551**) instead of a
+   bare `Command::new("perl")`. Default policy: deny-all-ambient.
 4. **Write a poisoned-env test** that asserts the subprocess output does
    NOT reflect a poisoned ambient input the contract denies.
 5. **Document the cache key and invalidation trigger.** Subprocess
@@ -172,18 +162,14 @@ When implementing a new "ask Perl" subprocess:
 
 ## Related
 
-- **[EffortlessMetrics/perl-lsp-swarm#2007](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2007)** — tracking issue for explicit subprocess-environment contracts (this doc + [`perl-oracle-subprocess-contract.md`](perl-oracle-subprocess-contract.md)).
-- **[EffortlessMetrics/perl-lsp-swarm#1975](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1975)** — process-wide subprocess inventory, migration ledger, and CI ratchet (includes bare-`Command::new("perl")` negative control for production seams).
-- **[EffortlessMetrics/perl-lsp#8551](https://github.com/EffortlessMetrics/perl-lsp/issues/8551)** — historical `PerlOracleEnv` implementation + editor-runtime migration (landed).
-- **[EffortlessMetrics/perl-lsp#8493](https://github.com/EffortlessMetrics/perl-lsp/issues/8493)** — the `PERL5LIB` env-leak incident that surfaced the cross-cutting rule.
-- **[EffortlessMetrics/perl-lsp#8525](https://github.com/EffortlessMetrics/perl-lsp/issues/8525)**, **[EffortlessMetrics/perl-lsp#8537](https://github.com/EffortlessMetrics/perl-lsp/issues/8537)** — downstream @INC strictness work.
-- **Installed `perldoc` fallback** (after in-process/current-source POD): [EffortlessMetrics/perl-lsp-swarm#8223](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8223), [EffortlessMetrics/perl-lsp-swarm#8612](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8612), [EffortlessMetrics/perl-lsp-swarm#11023](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11023).
-- **`docs/devex/freshness-check.md`** + **[EffortlessMetrics/perl-lsp#8546](https://github.com/EffortlessMetrics/perl-lsp/issues/8546)** — adjacent silent-failure-mode story (different domain; same lesson about implicit ambient state).
+- **#8555** — tracking issue (this doc).
+- **#8551** — `PerlOracleEnv` struct implementation + per-call-site migration.
+- **#8493** — the `PERL5LIB` env-leak incident that surfaced the cross-cutting rule.
+- **#8525**, **#8537** — downstream @INC strictness work that benefited from explicit env handling.
+- **`docs/devex/freshness-check.md`** + **#8546** — adjacent silent-failure-mode story (different domain; same lesson about implicit ambient state). The `docs/devex/freshness-check.md` spec is the merged-doctrine version of the original orchestrator memory.
 
 ## Claim boundary
 
-Architecture and policy. Editor-runtime `PerlOracleEnv` wiring and poisoned-env
-tests live in `perl-lsp-rs-core`; this doc is the framing and ownership map. Do not
-treat every remaining external Perl subprocess as one uniform “internalize everything”
-programme — each seam below carries its own owner and exit policy in
-[`perl-oracle-subprocess-contract.md`](perl-oracle-subprocess-contract.md).
+Architecture and policy. No code change in this doc; the implementation
+of `PerlOracleEnv` and the per-call-site migration lives in **#8551**. This
+doc is the framing; #8551 is the proof.
