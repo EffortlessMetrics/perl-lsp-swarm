@@ -84,7 +84,7 @@ pub fn create_extract_subroutine_action(
 
     Some(CodeAction {
         title: "Extract to subroutine".to_string(),
-        kind: CodeActionKind::RefactorExtract,
+        kind: CodeActionKind::RefactorExtractSubroutine,
         diagnostics: Vec::new(),
         edit: CodeActionEdit {
             changes: vec![

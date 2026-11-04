@@ -1116,15 +1116,15 @@ cargo test -p perl-parser scope_analyzer_tests::test_hash_key_context_detection
 cargo test -p perl-parser --test symbol_documentation_tests
 
 # Test specific comment patterns and edge cases
-cargo test -p perl-parser symbol_documentation_tests::comment_separated_by_blank_line_is_not_captured
-cargo test -p perl-parser symbol_documentation_tests::comment_with_extra_hashes_and_spaces
-cargo test -p perl-parser symbol_documentation_tests::multi_package_comment_scenarios
-cargo test -p perl-parser symbol_documentation_tests::complex_comment_formatting
-cargo test -p perl-parser symbol_documentation_tests::unicode_in_comments
-cargo test -p perl-parser symbol_documentation_tests::performance_with_large_comment_blocks
+cargo test -p perl-parser --test symbol_documentation_tests comment_separated_by_blank_line_is_not_captured
+cargo test -p perl-parser --test symbol_documentation_tests comment_with_extra_hashes_and_spaces
+cargo test -p perl-parser --test symbol_documentation_tests multi_package_comment_scenarios
+cargo test -p perl-parser --test symbol_documentation_tests complex_comment_formatting
+cargo test -p perl-parser --test symbol_documentation_tests unicode_in_comments
+cargo test -p perl-parser --test symbol_documentation_tests performance_with_large_comment_blocks
 
 # Performance benchmarking (<100µs per iteration target)
-cargo test -p perl-parser symbol_documentation_tests::performance_benchmark_comment_extraction -- --nocapture
+cargo test -p perl-parser --test symbol_documentation_tests performance_benchmark_comment_extraction -- --nocapture
 ```
 
 ### Testing Position Tracking
@@ -1141,14 +1141,14 @@ cargo test -p perl-parser parser_context_tests::test_multiline_string_token_posi
 ### Testing File Completion
 ```bash
 # Run file completion specific tests
-cargo test -p perl-parser --test file_completion_tests
+cargo test -p perl-lsp-rs --test file_completion_tests
 
 # Test individual scenarios
-cargo test -p perl-parser file_completion_tests::completes_files_in_src_directory
-cargo test -p perl-parser file_completion_tests::basic_security_test_rejects_path_traversal
+cargo test -p perl-lsp-rs --test file_completion_tests completes_files_in_src_directory
+cargo test -p perl-lsp-rs --test file_completion_tests basic_security_test_rejects_path_traversal
 
 # Test with various file patterns
-cargo test -p perl-parser --test lsp_comprehensive_e2e_test -- test_completion
+cargo test -p perl-lsp-rs --test lsp_comprehensive_e2e_test test_e2e_code_completion
 ```
 
 ## Parser Generation Commands

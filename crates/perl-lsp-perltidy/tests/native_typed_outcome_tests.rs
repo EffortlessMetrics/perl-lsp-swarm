@@ -924,3 +924,79 @@ fn comment_braces_do_not_open_blocks() {
     );
     assert_eq!(ranged.formatted, "# note {\nmy $x = 1;\n");
 }
+
+#[test]
+fn reindents_comment_lines_inside_blocks() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n# explain\nmy $x = 1;\n}\n# top level\n";
+    let expected = "sub f {\n    # explain\n    my $x = 1;\n}\n# top level\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+}
+
+#[test]
+fn line_directives_are_not_reindented_inside_blocks() {
+    let formatter = NativeFormatter::new();
+    // Perl honors `#line` only at column zero, so moving it would change
+    // __LINE__/__FILE__ and error locations (PR #17704 review).
+    let source = "sub f {\n#line 100 \"generated.pl\"\nmy $x = 1;\n}\n";
+    let expected = "sub f {\n#line 100 \"generated.pl\"\n    my $x = 1;\n}\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+
+    // The `# line 42 "file"` spelling is the same directive.
+    let spaced = "sub f {\n# line 42 \"other.pl\"\nmy $x = 1;\n}\n";
+    let spaced_expected = "sub f {\n# line 42 \"other.pl\"\n    my $x = 1;\n}\n";
+    assert_eq!(
+        formatter.format_document(spaced, &FormatConfig::default()).formatted,
+        spaced_expected
+    );
+
+    // Range formatting that selects the directive line must not move it,
+    // while still reindenting the selected code line below it.
+    let ranged = formatter.format_range(
+        source,
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 10)),
+        &FormatConfig::default(),
+    );
+    assert_eq!(ranged.formatted, expected);
+
+    // An indented directive-shaped comment is preserved where it sits:
+    // directive-shaped text is never moved by the formatter.
+    let indented = "sub f {\n  #line 7 \"x.pl\"\nmy $x = 1;\n}\n";
+    let indented_expected = "sub f {\n  #line 7 \"x.pl\"\n    my $x = 1;\n}\n";
+    assert_eq!(
+        formatter.format_document(indented, &FormatConfig::default()).formatted,
+        indented_expected
+    );
+
+    // A comment that merely starts with `#line` letters is not a directive
+    // and still follows block layout.
+    let lookalike = "sub f {\n#linear notes\nmy $x = 1;\n}\n";
+    let lookalike_expected = "sub f {\n    #linear notes\n    my $x = 1;\n}\n";
+    assert_eq!(
+        formatter.format_document(lookalike, &FormatConfig::default()).formatted,
+        lookalike_expected
+    );
+}
+
+#[test]
+fn typed_outcome_certifies_preserved_line_directive_as_already_formatted() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n#line 100 \"generated.pl\"\n    my $x = 1;\n}\n";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert_eq!(typed.result.formatted, source);
+}

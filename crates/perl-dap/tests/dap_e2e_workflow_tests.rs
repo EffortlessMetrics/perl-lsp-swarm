@@ -635,7 +635,10 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
     );
 
     let (spaced_arithmetic_result, _) = session.evaluate_expression("6 * 7", frame_id)?;
-    if !spaced_arithmetic_result.split_whitespace().eq(["0", "42"]) {
+    // #17244: the evaluate result is the value itself. The pre-fix adapter
+    // leaked perl5db's `x`-dump ordinal into the text (`0  42`); the response
+    // must present exactly `42`.
+    if !spaced_arithmetic_result.split_whitespace().eq(["42"]) {
         return Err(format!(
             "watch evaluate should return the exact spaced arithmetic result, got `{spaced_arithmetic_result}`"
         )
@@ -647,7 +650,7 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
     );
 
     let (leading_space_result, _) = session.evaluate_expression(" 6 * 7", frame_id)?;
-    if !leading_space_result.split_whitespace().eq(["0", "42"]) {
+    if !leading_space_result.split_whitespace().eq(["42"]) {
         return Err(format!(
             "watch evaluate should preserve leading whitespace numeric arithmetic, got `{leading_space_result}`"
         )
