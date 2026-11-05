@@ -1048,10 +1048,6 @@ async function runExtensionActivation(
   }
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
-  statusBarItem.accessibilityInformation = {
-    label: 'Perl Language Server',
-    role: 'button',
-  };
   statusBarItem.show();
   activation.own('base', 'mandatory_for_activation', statusBarItem);
   healthWidget = new HealthWidget(statusBarItem);

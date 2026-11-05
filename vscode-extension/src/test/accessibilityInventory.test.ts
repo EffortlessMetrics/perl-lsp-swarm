@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
+import { HealthWidget } from '../healthWidget';
 import {
   type AccessibilityInventory,
   type AccessibilityReceipt,
@@ -129,15 +131,25 @@ describe('accessibility inventory is bound to the shipped extension', () => {
     }
   });
 
-  test('a surface naming a VS Code accessibility API has that API assigned in source', () => {
-    const surfaces = CURRENT_ACCESSIBILITY_INVENTORY.surfaces.filter(
-      (surface) => surface.accessible_name_source === 'StatusBarItem.accessibilityInformation',
+  test('workspace status inventory is backed by current status-item semantics', () => {
+    const surface = CURRENT_ACCESSIBILITY_INVENTORY.surfaces.find(
+      (entry) => entry.surface_id === 'workspace_status',
+    );
+    expect(surface).toEqual(
+      expect.objectContaining({
+        owner: 'HealthWidget/statusBarItem',
+        accessible_name_source: 'StatusBarItem.accessibilityInformation',
+        evidence: 'semantic_automated_proven',
+      }),
     );
 
-    expect(surfaces.length).toBeGreaterThan(0);
-    expect(readExtensionSource('extension.ts')).toMatch(
-      /statusBarItem\.accessibilityInformation\s*=/,
-    );
+    const item = vscode.window.createStatusBarItem();
+    const widget = new HealthWidget(item);
+    expect(item.accessibilityInformation?.label).toMatch(/starting/i);
+    widget.setWorkspaceLifecycleState('ready');
+    expect(item.accessibilityInformation?.label).toMatch(/ready|running/i);
+    expect(item.accessibilityInformation?.role).toBe('button');
+    item.dispose();
   });
 
   test('a surface claiming VS Code theme variables really uses them', () => {

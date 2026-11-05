@@ -359,6 +359,7 @@ export class HealthWidget {
     this._mode = presentation.mode;
     this.item.text = presentation.text;
     this.item.tooltip = presentation.tooltip;
+    this.item.accessibilityInformation = { label: presentation.accessibilityLabel, role: 'button' };
     this.item.backgroundColor =
       presentation.background === 'warning'
         ? new vscode.ThemeColor('statusBarItem.warningBackground')

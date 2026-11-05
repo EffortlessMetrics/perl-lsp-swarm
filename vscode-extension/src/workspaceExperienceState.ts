@@ -86,6 +86,7 @@ export interface WorkspaceExperiencePresentation {
   readonly mode: LegacyWidgetMode;
   readonly text: string;
   readonly tooltip: string;
+  readonly accessibilityLabel: string;
   readonly background: 'warning' | 'error' | undefined;
 }
 
@@ -112,37 +113,88 @@ function detailTooltip(
   return `${details.join(' — ')} (${affordance})`;
 }
 
-/** Count a countable noun without emitting "1 files" in the status bar. */
-function countLabel(count: number, singular: string, lowerBound = false): string {
-  return `${count}${lowerBound ? '+' : ''} ${singular}${count === 1 && !lowerBound ? '' : 's'}`;
+/** Spoken state uses the same human detail/action, without diagnostic reason codes. */
+function accessibilityLabel(
+  snapshot: WorkspaceExperienceSnapshot,
+  state: string,
+  fallbackDetail?: string,
+): string {
+  const parts = [`Perl Language Server: ${state}`];
+  const detail = snapshot.detail ?? fallbackDetail;
+  if (detail) {
+    parts.push(detail);
+  }
+  if (snapshot.action) {
+    parts.push(`Next: ${snapshot.action}`);
+  }
+  parts.push('Show workspace status');
+  return parts
+    .map((part) =>
+      part
+        .replace(/\$\([a-z0-9-]+(?:~[a-z0-9-]+)?\)/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter(Boolean)
+    .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
+    .join(' ');
 }
 
-function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
+type CountPresentation = 'compact' | 'spoken';
+
+/** Count a countable noun without emitting "1 files" in the status bar. */
+function countLabel(
+  count: number,
+  singular: string,
+  lowerBound = false,
+  presentation: CountPresentation = 'compact',
+): string {
+  const plural = count === 1 && (!lowerBound || presentation === 'spoken') ? '' : 's';
+  return lowerBound && presentation === 'spoken'
+    ? `at least ${count} ${singular}${plural}`
+    : `${count}${lowerBound ? '+' : ''} ${singular}${plural}`;
+}
+
+function readyLabel(
+  telemetry: WorkspaceExperienceTelemetry,
+  presentation: CountPresentation = 'compact',
+): string {
   // The server's self-reported name wins when present (#12705); the built-in
   // product identity remains the fallback so existing behavior is unchanged.
   const product = telemetry.name ?? 'perl-lsp';
   const label = telemetry.version ? `${product} v${telemetry.version}` : product;
   const parts: string[] = [];
   if (telemetry.fileCount !== undefined) {
-    parts.push(countLabel(telemetry.fileCount, 'file', telemetry.fileCountLowerBound));
+    parts.push(
+      countLabel(telemetry.fileCount, 'file', telemetry.fileCountLowerBound, presentation),
+    );
   }
   if ((telemetry.errorCount ?? 0) > 0) {
     parts.push(countLabel(telemetry.errorCount ?? 0, 'error'));
   }
-  return parts.length > 0 ? `${label}: ${parts.join(' | ')}` : label;
+  return parts.length > 0
+    ? `${label}: ${parts.join(presentation === 'spoken' ? ', ' : ' | ')}`
+    : label;
 }
 
-function indexingLabel(telemetry: WorkspaceExperienceTelemetry): string {
-  let message = telemetry.indexingMessage ?? 'Indexing…';
+function indexingLabel(
+  telemetry: WorkspaceExperienceTelemetry,
+  presentation: CountPresentation = 'compact',
+): string {
+  let message = telemetry.indexingMessage ?? (presentation === 'spoken' ? '' : 'Indexing…');
   if ((telemetry.fileCount ?? 0) > 0) {
-    message = `Indexing… (${countLabel(
+    const files = countLabel(
       telemetry.fileCount ?? 0,
       'file',
       telemetry.fileCountLowerBound,
-    )})`;
+      presentation,
+    );
+    message = presentation === 'spoken' ? files : `Indexing… (${files})`;
   }
   if ((telemetry.indexingPercentage ?? 0) > 0) {
-    message += ` ${Math.round(telemetry.indexingPercentage ?? 0)}%`;
+    const percentage = Math.round(telemetry.indexingPercentage ?? 0);
+    message +=
+      presentation === 'spoken' ? `${message ? ', ' : ''}${percentage} percent` : ` ${percentage}%`;
   }
   return message;
 }
@@ -218,6 +270,11 @@ export function presentWorkspaceExperience(
           snapshot,
           'Perl Language Server starts when you open a Perl file or run a server command',
         ),
+        accessibilityLabel: accessibilityLabel(
+          snapshot,
+          'not started',
+          'Open a Perl file or run a server command to start language features.',
+        ),
         background: undefined,
       };
     case 'starting':
@@ -225,6 +282,7 @@ export function presentWorkspaceExperience(
         mode: 'starting',
         text: '$(sync~spin) Perl LSP',
         tooltip: detailTooltip(snapshot, 'Perl Language Server is starting…'),
+        accessibilityLabel: accessibilityLabel(snapshot, 'starting'),
         background: undefined,
       };
     case 'resolving_environment':
@@ -235,6 +293,7 @@ export function presentWorkspaceExperience(
           snapshot,
           'Perl Language Server is resolving workspace configuration',
         ),
+        accessibilityLabel: accessibilityLabel(snapshot, 'resolving workspace configuration'),
         background: undefined,
       };
     case 'indexing_active_context':
@@ -242,15 +301,22 @@ export function presentWorkspaceExperience(
         mode: 'indexing',
         text: '$(sync~spin) perl-lsp: preparing active file',
         tooltip: detailTooltip(snapshot, 'The active Perl document is still becoming ready'),
+        accessibilityLabel: accessibilityLabel(snapshot, 'preparing the active file'),
         background: undefined,
       };
-    case 'indexing_workspace':
+    case 'indexing_workspace': {
+      const progress = indexingLabel(telemetry, 'spoken');
       return {
         mode: 'indexing',
         text: `$(sync~spin) perl-lsp: ${indexingLabel(telemetry)}`,
         tooltip: detailTooltip(snapshot, 'Perl Language Server is indexing your workspace'),
+        accessibilityLabel: accessibilityLabel(
+          snapshot,
+          `indexing workspace${progress ? `; ${progress}` : ''}`,
+        ),
         background: undefined,
       };
+    }
     case 'ready': {
       const label = readyLabel(telemetry);
       const versionNote = telemetry.version ? ` v${telemetry.version}` : '';
@@ -258,6 +324,10 @@ export function presentWorkspaceExperience(
         mode: 'running',
         text: `$(check) ${label}`,
         tooltip: detailTooltip(snapshot, `Perl Language Server${versionNote} is running`),
+        accessibilityLabel: accessibilityLabel(
+          snapshot,
+          `ready; ${readyLabel(telemetry, 'spoken')}`,
+        ),
         background: undefined,
       };
     }
@@ -271,6 +341,10 @@ export function presentWorkspaceExperience(
           snapshot,
           'Perl Language Server is ready with bounded workspace coverage',
         ),
+        accessibilityLabel: accessibilityLabel(
+          snapshot,
+          `ready with limited workspace coverage; ${product}${version}`,
+        ),
         background: undefined,
       };
     }
@@ -282,6 +356,7 @@ export function presentWorkspaceExperience(
           snapshot,
           'Perl Language Server needs configuration or trust action',
         ),
+        accessibilityLabel: accessibilityLabel(snapshot, 'configuration or trust action required'),
         background: 'warning',
       };
     case 'failed':
@@ -292,6 +367,13 @@ export function presentWorkspaceExperience(
           snapshot,
           'Perl Language Server has stopped; choose Restart Server from the status menu',
           'click for restart options',
+        ),
+        accessibilityLabel: accessibilityLabel(
+          {
+            ...snapshot,
+            action: snapshot.action ?? 'Choose Restart Server from the workspace status actions.',
+          },
+          snapshot.detail ? 'failed' : 'stopped',
         ),
         background: 'error',
       };

@@ -93,6 +93,16 @@ describe('extension activation wires HealthWidget counts (#4620)', () => {
 
     await activate(makeContext(extensionRoot));
 
+    // Read the actual item created by activation, not a widget-only fixture.
+    const statusItem = (vscode.window.createStatusBarItem as jest.Mock).mock.results
+      .map((result) => result.value as vscode.StatusBarItem)
+      .find((item) => item.command === 'perl-lsp.showWorkspaceStatus');
+    expect(statusItem).toBeDefined();
+    expect(statusItem?.text).toContain('not started');
+    expect(statusItem?.accessibilityInformation?.label).toMatch(/not started/i);
+    expect(statusItem?.accessibilityInformation?.label).toContain('open a Perl file');
+    expect(statusItem?.accessibilityInformation?.role).toBe('button');
+
     // The production wiring registered a diagnostics listener during activation.
     expect(vscode.languages.onDidChangeDiagnostics).toHaveBeenCalledTimes(1);
     expect(diagListener).toBeDefined();
