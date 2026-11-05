@@ -176,6 +176,7 @@ jobs:
         python3 benchmarks/scripts/test_benchmark_targets.py -v
         bash benchmarks/scripts/test_run_benchmarks_parse.sh
         bash benchmarks/scripts/test_run_benchmarks_failure.sh
+        bash benchmarks/scripts/test_run_benchmarks_rustc_probe.sh
 
     - name: Build perllsp binary for real-repo UX perf lane
       run: cargo build -p perllsp --bin perllsp --locked
@@ -240,7 +241,7 @@ jobs:
           "perl-parser:cpan_patterns_benchmark:"
           "perl-parser:positions_bench:"
           "perl-parser:substitution_performance:"
-          "perl-lsp-rs:rope_performance_benchmark:"
+          "perl-lsp-rs:rope_performance_benchmark:benchmarks"
           "perl-lsp-rs:lsp_stdio_roundtrip_benchmark:"
           "perl-lsp-perltidy:native_pipeline_benchmark:"
           "perl-lexer:lexer_benchmarks:"
@@ -725,8 +726,23 @@ jobs:
             --manifest .ci/coverage-packs.toml \
             --receipt target/receipts/quality/ci-route.json \
             --summary target/receipts/quality/ci-route.md
-          coverage_required="$(python3 -c 'import json; from pathlib import Path; route = json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")); print("true" if route.get("coverage_proof_packs") else "false")')"
+          coverage_required="$(python3 <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          route = json.loads(
+              Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")
+          )
+          schema = route.get("schema_version")
+          if schema != "ci-route.v1":
+              sys.exit(f"unsupported ci-route schema: {schema!r}")
+          print("true" if route.get("coverage_proof_packs") else "false")
+          PY
+          )"
+          routing_classification="$(python3 -c 'import json; from pathlib import Path; print(json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8"))["routing_classification"])')"
           echo "coverage_required=$coverage_required" >> "$GITHUB_OUTPUT"
+          echo "routing_classification=$routing_classification" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # nightly (master)
@@ -757,6 +773,9 @@ jobs:
           touch archive/legacy-tests/test_fixtures/test.t
 
       - name: Run workspace coverage proof
+        if: |
+          steps.coverage_route.outputs.coverage_required == 'true' ||
+          steps.coverage_route.outputs.routing_classification == 'routing_skip'
         env:
           BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
           RUSTFLAGS: "-Cdebuginfo=0"
@@ -768,7 +787,7 @@ jobs:
           just coverage-proof "origin/$base_ref"
 
       - name: Emit skipped coverage proof receipt
-        if: always() && steps.coverage_route.outputs.coverage_required != 'true'
+        if: always() && steps.coverage_route.outputs.coverage_required != 'true' && steps.coverage_route.outputs.routing_classification != 'routing_skip'
         run: |
           set -euo pipefail
           routing_classification="$(python3 -c 'import json; from pathlib import Path; print(json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8"))["routing_classification"])')"
@@ -782,6 +801,10 @@ jobs:
             > target/receipts/quality/quality-gate-coverage.md
           printf '{"schema_version":"quality_gate.v1","mode":"enforce-patch-coverage","decision":"%s","reason":"%s"}\n' "$decision" "$reason" \
             > target/receipts/quality/quality-gate-coverage.json
+          if [ "$routing_classification" = "routing_bug" ]; then
+            echo "::error::$reason"
+            exit 1
+          fi
 
       - name: Append coverage proof summary
         if: always()

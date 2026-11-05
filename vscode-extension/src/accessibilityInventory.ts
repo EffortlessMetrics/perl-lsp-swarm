@@ -388,11 +388,12 @@ export function buildInstalledAccessibilityReceipt(
       let semanticLabels: AccessibilityDimensionVerdict = 'not_proven';
       if (routeId !== null) {
         const registered = observations.registeredCommands.has(routeId);
-        keyboard = !registered || observations.paletteHiddenCommands.has(routeId)
-          ? 'failed'
-          : observations.paletteUnprovenCommands.has(routeId)
-            ? 'not_proven'
-            : 'pass';
+        keyboard =
+          !registered || observations.paletteHiddenCommands.has(routeId)
+            ? 'failed'
+            : observations.paletteUnprovenCommands.has(routeId)
+              ? 'not_proven'
+              : 'pass';
         const title = observations.commandTitles.get(routeId);
         semanticLabels =
           registered && typeof title === 'string' && /\p{L}/u.test(title) ? 'pass' : 'failed';
