@@ -3,7 +3,9 @@
 //! disposition, while non-interpolating forms stay invariant controls and
 //! `qx`/backtick bodies stay an intentional opaque boundary.
 
-use perl_lexer::{Checkpointable, LexerConfig, PerlLexer, StringPart, Token, TokenType};
+use perl_lexer::{
+    Checkpointable, LexerConfig, PerlLexer, StringPart, StringPartKind, Token, TokenType,
+};
 
 type R<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -62,10 +64,10 @@ fn qq_enabled_segments_the_body_during_the_scan() -> R {
     assert_eq!(
         parts,
         vec![
-            StringPart::Variable("$name".into()),
-            StringPart::Literal(" and ".into()),
-            StringPart::Variable("@list".into()),
-            StringPart::Literal("!".into()),
+            StringPart::expect(StringPartKind::Variable, "$name"),
+            StringPart::expect(StringPartKind::Literal, " and "),
+            StringPart::expect(StringPartKind::Variable, "@list"),
+            StringPart::expect(StringPartKind::Literal, "!"),
         ]
     );
     Ok(())
@@ -77,7 +79,7 @@ fn qq_disabled_is_uniformly_opaque() -> R {
         let parts = quote_double_parts(input, false)?;
         assert_eq!(
             parts,
-            vec![StringPart::Literal(expected_opaque_body(input).into())],
+            vec![StringPart::expect(StringPartKind::Literal, expected_opaque_body(input))],
             "disabled qq must keep one opaque Literal part for {input:?}"
         );
     }
@@ -99,7 +101,7 @@ fn qq_delimiter_variants_all_segment_when_enabled() -> R {
         let parts = quote_double_parts(input, true)?;
         assert_eq!(
             parts,
-            vec![StringPart::Variable("$v".into())],
+            vec![StringPart::expect(StringPartKind::Variable, "$v")],
             "delimiter variant {input:?} must segment the island"
         );
     }
@@ -185,19 +187,37 @@ fn punctuation_variables_yield_to_the_active_qq_terminator() -> R {
     // A closing delimiter directly after the sigil wins over punctuation-
     // variable classification, for paired and unpaired delimiters and for
     // the `@+`/`@-` match-offset arrays when `+`/`-` is the delimiter.
-    assert_eq!(quote_double_parts("qq!$!", true)?, vec![StringPart::Literal("$".into())]);
-    assert_eq!(quote_double_parts("qq[$]", true)?, vec![StringPart::Literal("$".into())]);
-    assert_eq!(quote_double_parts("qq@$@", true)?, vec![StringPart::Literal("$".into())]);
-    assert_eq!(quote_double_parts("qq+$+", true)?, vec![StringPart::Literal("$".into())]);
-    assert_eq!(quote_double_parts("qq+@+", true)?, vec![StringPart::Literal("@".into())]);
-    assert_eq!(quote_double_parts("qq-@-", true)?, vec![StringPart::Literal("@".into())]);
+    assert_eq!(
+        quote_double_parts("qq!$!", true)?,
+        vec![StringPart::expect(StringPartKind::Literal, "$")]
+    );
+    assert_eq!(
+        quote_double_parts("qq[$]", true)?,
+        vec![StringPart::expect(StringPartKind::Literal, "$")]
+    );
+    assert_eq!(
+        quote_double_parts("qq@$@", true)?,
+        vec![StringPart::expect(StringPartKind::Literal, "$")]
+    );
+    assert_eq!(
+        quote_double_parts("qq+$+", true)?,
+        vec![StringPart::expect(StringPartKind::Literal, "$")]
+    );
+    assert_eq!(
+        quote_double_parts("qq+@+", true)?,
+        vec![StringPart::expect(StringPartKind::Literal, "@")]
+    );
+    assert_eq!(
+        quote_double_parts("qq-@-", true)?,
+        vec![StringPart::expect(StringPartKind::Literal, "@")]
+    );
     // Away from the delimiter the same characters still interpolate.
     assert_eq!(
         quote_double_parts("qq[$! and @-]", true)?,
         vec![
-            StringPart::Variable("$!".into()),
-            StringPart::Literal(" and ".into()),
-            StringPart::Variable("@-".into()),
+            StringPart::expect(StringPartKind::Variable, "$!"),
+            StringPart::expect(StringPartKind::Literal, " and "),
+            StringPart::expect(StringPartKind::Variable, "@-"),
         ]
     );
     Ok(())
@@ -212,14 +232,14 @@ fn list_separator_dollar_quote_interpolates_when_quote_is_not_the_delimiter() ->
     assert_eq!(
         quote_double_parts(r#"qq{<$">}"#, true)?,
         vec![
-            StringPart::Literal("<".into()),
-            StringPart::Variable("$\"".into()),
-            StringPart::Literal(">".into()),
+            StringPart::expect(StringPartKind::Literal, "<"),
+            StringPart::expect(StringPartKind::Variable, "$\""),
+            StringPart::expect(StringPartKind::Literal, ">"),
         ]
     );
     assert_eq!(
         quote_double_parts(r#"qq"$""#, true)?,
-        vec![StringPart::Literal("$".into())],
+        vec![StringPart::expect(StringPartKind::Literal, "$")],
         "the quote delimiter must win over `$\"` classification"
     );
     Ok(())
@@ -232,11 +252,17 @@ fn array_and_hash_slices_interpolate_with_the_array() -> R {
     // part, not literal text, on both the qq and ordinary scanners.
     assert_eq!(
         quote_double_parts("qq{@a[0]}", true)?,
-        vec![StringPart::Variable("@a".into()), StringPart::ArraySlice("[0]".into()),]
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@a"),
+            StringPart::expect(StringPartKind::ArraySlice, "[0]"),
+        ]
     );
     assert_eq!(
         quote_double_parts("qq{@h{key}}", true)?,
-        vec![StringPart::Variable("@h".into()), StringPart::Expression("{key}".into()),]
+        vec![
+            StringPart::expect(StringPartKind::Variable, "@h"),
+            StringPart::expect(StringPartKind::Expression, "{key}"),
+        ]
     );
     Ok(())
 }
@@ -248,20 +274,20 @@ fn package_qualified_scalars_interpolate_as_one_variable() -> R {
     // not literal text. Same policy on the ordinary and heredoc scanners.
     assert_eq!(
         quote_double_parts("qq{$Foo::bar}", true)?,
-        vec![StringPart::Variable("$Foo::bar".into())]
+        vec![StringPart::expect(StringPartKind::Variable, "$Foo::bar")]
     );
     assert_eq!(
         interpolated_string_parts("\"$Foo::bar\"")?,
-        vec![StringPart::Variable("$Foo::bar".into())]
+        vec![StringPart::expect(StringPartKind::Variable, "$Foo::bar")]
     );
     let source = heredoc_source("v=$Foo::bar");
     match heredoc_body_kind(&source, true)? {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
-                StringPart::Literal("v=".into()),
-                StringPart::Variable("$Foo::bar".into()),
-                StringPart::Literal("\n".into()),
+                StringPart::expect(StringPartKind::Literal, "v="),
+                StringPart::expect(StringPartKind::Variable, "$Foo::bar"),
+                StringPart::expect(StringPartKind::Literal, "\n"),
             ]
         ),
         other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
@@ -275,7 +301,10 @@ fn package_separator_folds_yield_to_the_active_terminator() -> R {
     // separator fold: `qq:$a::b:` closes at the first `:` after `$a` (the
     // `::` fold must not swallow it), and `qq'$foo'bar'` closes at the
     // first `'` instead of folding `foo'bar` and running past the close.
-    assert_eq!(quote_double_parts("qq:$a::b:", true)?, vec![StringPart::Variable("$a".into())]);
+    assert_eq!(
+        quote_double_parts("qq:$a::b:", true)?,
+        vec![StringPart::expect(StringPartKind::Variable, "$a")]
+    );
     // The quote closes at the first `'`: parts stay `Variable("$foo")`
     // (before the fix the fold swallowed the close into `"$foo'bar"` and
     // the quote never terminated). The trailing `bar'` after the close is
@@ -283,7 +312,7 @@ fn package_separator_folds_yield_to_the_active_terminator() -> R {
     // ordinary lexer contract for unterminated input.
     assert_eq!(
         quote_double_parts("qq'$foo'bar'", true)?,
-        vec![StringPart::Variable("$foo".into())]
+        vec![StringPart::expect(StringPartKind::Variable, "$foo")]
     );
     Ok(())
 }
@@ -316,15 +345,21 @@ fn unclosed_qq_still_recovers_into_the_error_token() {
 fn paired_qq_delimiters_are_not_consumed_as_interpolation_tail_boundaries() -> R {
     assert_eq!(
         quote_double_parts("qq{${foo}}", true)?,
-        vec![StringPart::Expression("${foo}".into())],
+        vec![StringPart::expect(StringPartKind::Expression, "${foo}")],
     );
     assert_eq!(
         quote_double_parts("qq[$a[0]]", true)?,
-        vec![StringPart::Variable("$a".into()), StringPart::ArraySlice("[0]".into())],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$a"),
+            StringPart::expect(StringPartKind::ArraySlice, "[0]")
+        ],
     );
     assert_eq!(
         quote_double_parts("qq($obj->())", true)?,
-        vec![StringPart::Variable("$obj".into()), StringPart::MethodCall("->()".into())],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$obj"),
+            StringPart::expect(StringPartKind::MethodCall, "->()")
+        ],
     );
     Ok(())
 }
@@ -359,9 +394,9 @@ fn interpolating_heredoc_enabled_segments_the_body() -> R {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
-                StringPart::Literal("value ".into()),
-                StringPart::Variable("$name".into()),
-                StringPart::Literal("!\n".into()),
+                StringPart::expect(StringPartKind::Literal, "value "),
+                StringPart::expect(StringPartKind::Variable, "$name"),
+                StringPart::expect(StringPartKind::Literal, "!\n"),
             ]
         ),
         other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
@@ -375,7 +410,7 @@ fn interpolating_heredoc_disabled_is_uniformly_opaque() -> R {
     match heredoc_body_kind(&source, false)? {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
-            vec![StringPart::Literal("value $name!\n".into())],
+            vec![StringPart::expect(StringPartKind::Literal, "value $name!\n")],
             "disabled interpolating heredocs keep one opaque Literal part"
         ),
         other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
@@ -389,7 +424,11 @@ fn disabled_interpolating_heredocs_keep_one_complete_literal_for_empty_and_escap
         let source = heredoc_source(body);
         match heredoc_body_kind(&source, false)? {
             TokenType::InterpolatedHeredocBody(parts) => {
-                assert_eq!(parts, vec![StringPart::Literal(expected.into())], "{body:?}");
+                assert_eq!(
+                    parts,
+                    vec![StringPart::expect(StringPartKind::Literal, expected)],
+                    "{body:?}"
+                );
             }
             other => {
                 return Err(missing(format!("expected interpolated heredoc body, got {other:?}")));
@@ -420,9 +459,9 @@ fn interpolating_heredoc_segments_across_multiple_body_lines() -> R {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
-                StringPart::Literal("line1 ".into()),
-                StringPart::Variable("$v".into()),
-                StringPart::Literal("\nline2\n".into()),
+                StringPart::expect(StringPartKind::Literal, "line1 "),
+                StringPart::expect(StringPartKind::Variable, "$v"),
+                StringPart::expect(StringPartKind::Literal, "\nline2\n"),
             ]
         ),
         other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
@@ -439,15 +478,15 @@ fn interpolating_heredoc_segments_slices_and_list_separator() -> R {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
-                StringPart::Literal("v=".into()),
-                StringPart::Variable("@a".into()),
-                StringPart::ArraySlice("[0]".into()),
-                StringPart::Literal(" h=".into()),
-                StringPart::Variable("@h".into()),
-                StringPart::Expression("{key}".into()),
-                StringPart::Literal(" s=<\"".into()),
-                StringPart::Variable("$\"".into()),
-                StringPart::Literal(">\n".into()),
+                StringPart::expect(StringPartKind::Literal, "v="),
+                StringPart::expect(StringPartKind::Variable, "@a"),
+                StringPart::expect(StringPartKind::ArraySlice, "[0]"),
+                StringPart::expect(StringPartKind::Literal, " h="),
+                StringPart::expect(StringPartKind::Variable, "@h"),
+                StringPart::expect(StringPartKind::Expression, "{key}"),
+                StringPart::expect(StringPartKind::Literal, " s=<\""),
+                StringPart::expect(StringPartKind::Variable, "$\""),
+                StringPart::expect(StringPartKind::Literal, ">\n"),
             ]
         ),
         other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
@@ -462,9 +501,9 @@ fn interpolating_heredoc_allows_multiline_interpolation_islands() -> R {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
-                StringPart::Literal("before ".into()),
-                StringPart::Expression("${\n  $name\n}".into()),
-                StringPart::Literal(" after\n".into()),
+                StringPart::expect(StringPartKind::Literal, "before "),
+                StringPart::expect(StringPartKind::Expression, "${\n  $name\n}"),
+                StringPart::expect(StringPartKind::Literal, " after\n"),
             ]
         ),
         other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
@@ -485,7 +524,10 @@ fn unclosed_heredoc_interpolation_stays_within_body_boundary() -> R {
         .ok_or_else(|| missing("interpolated heredoc body"))?;
     assert_eq!(
         body,
-        &vec![StringPart::Literal("before ".into()), StringPart::Expression("${\n$name\n".into()),]
+        &vec![
+            StringPart::expect(StringPartKind::Literal, "before "),
+            StringPart::expect(StringPartKind::Expression, "${\n$name\n"),
+        ]
     );
     assert!(body.iter().all(|part| !format!("{part:?}").contains("END")));
     assert!(tokens.iter().any(|token| token.text == "print".into()));
@@ -499,9 +541,9 @@ fn indented_interpolating_heredoc_segments_too() -> R {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
-                StringPart::Literal("    value ".into()),
-                StringPart::Variable("$v".into()),
-                StringPart::Literal("\n".into())
+                StringPart::expect(StringPartKind::Literal, "    value "),
+                StringPart::expect(StringPartKind::Variable, "$v"),
+                StringPart::expect(StringPartKind::Literal, "\n")
             ]
         ),
         other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),

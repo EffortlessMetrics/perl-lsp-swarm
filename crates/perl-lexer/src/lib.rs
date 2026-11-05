@@ -210,7 +210,7 @@ pub use limits::MAX_REGEX_PARSE_STEPS;
 pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
-pub use token::{StringPart, Token, TokenType};
+pub use token::{StringPart, StringPartKind, Token, TokenType};
 pub use unicode::is_perl_identifier_continue;
 
 use unicode::{is_perl_identifier_start, is_perl_package_segment_start};
@@ -3153,15 +3153,16 @@ impl<'a> PerlLexer<'a> {
         self.advance(); // Skip opening quote
         let mut parts = Vec::new();
         let mut current_literal = String::new();
+        let mut literal_start = self.position;
         let mut last_pos = self.position;
 
         while let Some(ch) = self.current_char() {
             match ch {
                 '"' => {
-                    self.advance();
                     if !current_literal.is_empty() {
-                        parts.push(StringPart::Literal(Arc::from(current_literal)));
+                        self.flush_literal_part(&mut current_literal, literal_start, &mut parts);
                     }
+                    self.advance();
 
                     let text = &self.input[start..self.position];
                     self.mode = LexerMode::ExpectOperator;
@@ -3178,6 +3179,9 @@ impl<'a> PerlLexer<'a> {
                     });
                 }
                 '\\' => {
+                    if current_literal.is_empty() {
+                        literal_start = self.position;
+                    }
                     self.advance();
                     if let Some(escaped) = self.current_char() {
                         // Optimize by reserving space to avoid frequent reallocations
@@ -3199,16 +3203,19 @@ impl<'a> PerlLexer<'a> {
                 // `$!` under the `@` sigil).
                 '@' if self.config.parse_interpolation => {
                     if !current_literal.is_empty() {
-                        parts.push(StringPart::Literal(Arc::from(current_literal)));
-                        current_literal = String::new();
+                        self.flush_literal_part(&mut current_literal, literal_start, &mut parts);
                     }
                     let part_start = self.position;
                     self.advance(); // consume '@'
                     match self.current_char() {
                         Some('{') => {
                             let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Expression(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Expression,
+                                part_start,
+                                self.position,
+                            );
                         }
                         // Package-qualified array names interpolate as one
                         // variable -- verified against real perl 5.38.2:
@@ -3225,8 +3232,12 @@ impl<'a> PerlLexer<'a> {
                                 || (ch == ':' && self.peek_char(1) == Some(':')) =>
                         {
                             self.consume_qualified_identifier_in_string(Some('"'));
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                             // Array and hash slices interpolate with the
                             // array (`"@a[0]"` yields the slice element,
                             // `@h{key}` the hash slice; verified against
@@ -3238,15 +3249,21 @@ impl<'a> PerlLexer<'a> {
                             if self.current_char() == Some('[') {
                                 let tail_start = self.position;
                                 let _ = self.consume_balanced_segment_in_string('[', ']', '"');
-                                parts.push(StringPart::ArraySlice(Arc::from(
-                                    &self.input[tail_start..self.position],
-                                )));
+                                self.push_string_part(
+                                    &mut parts,
+                                    StringPartKind::ArraySlice,
+                                    tail_start,
+                                    self.position,
+                                );
                             } else if self.current_char() == Some('{') {
                                 let tail_start = self.position;
                                 let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                                parts.push(StringPart::Expression(Arc::from(
-                                    &self.input[tail_start..self.position],
-                                )));
+                                self.push_string_part(
+                                    &mut parts,
+                                    StringPartKind::Expression,
+                                    tail_start,
+                                    self.position,
+                                );
                             }
                         }
                         // Array dereference: `@$ref`, `@$$ref`, `@$main::ref`.
@@ -3265,8 +3282,12 @@ impl<'a> PerlLexer<'a> {
                                 self.advance();
                             }
                             self.consume_qualified_identifier_in_string(Some('"'));
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                         }
                         // Regex match-offset special arrays `@+` and `@-`. These
                         // are real Perl array variables and DO interpolate
@@ -3278,11 +3299,18 @@ impl<'a> PerlLexer<'a> {
                         // keeps the string scanner consistent with it.
                         Some('+' | '-') => {
                             self.advance(); // consume the '+' or '-'
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                         }
                         _ => {
                             // '@' not followed by identifier or '{' — treat as literal
+                            if current_literal.is_empty() {
+                                literal_start = part_start;
+                            }
                             current_literal.push('@');
                         }
                     }
@@ -3290,8 +3318,7 @@ impl<'a> PerlLexer<'a> {
                 '$' if self.config.parse_interpolation => {
                     // Handle variable interpolation - avoid unnecessary clone
                     if !current_literal.is_empty() {
-                        parts.push(StringPart::Literal(Arc::from(current_literal)));
-                        current_literal = String::new(); // Clear without cloning
+                        self.flush_literal_part(&mut current_literal, literal_start, &mut parts);
                     }
 
                     let part_start = self.position;
@@ -3299,9 +3326,12 @@ impl<'a> PerlLexer<'a> {
                     match self.current_char() {
                         Some('{') => {
                             let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                            parts.push(StringPart::Expression(Arc::from(
-                                &self.input[part_start..self.position],
-                            )));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Expression,
+                                part_start,
+                                self.position,
+                            );
                         }
                         Some(ch) if is_perl_identifier_start(ch) => {
                             let var_start = self.position;
@@ -3335,8 +3365,12 @@ impl<'a> PerlLexer<'a> {
                                 // `:` or `'` as the quote delimiter the close
                                 // wins before a separator fold.
                                 self.consume_qualified_identifier_in_string(Some('"'));
-                                let var_name = &self.input[part_start..self.position];
-                                parts.push(StringPart::Variable(Arc::from(var_name)));
+                                self.push_string_part(
+                                    &mut parts,
+                                    StringPartKind::Variable,
+                                    part_start,
+                                    self.position,
+                                );
 
                                 if self.matches_bytes(b"->") {
                                     let tail_start = self.position;
@@ -3347,23 +3381,32 @@ impl<'a> PerlLexer<'a> {
                                         Some('[') => {
                                             let _ = self
                                                 .consume_balanced_segment_in_string('[', ']', '"');
-                                            parts.push(StringPart::MethodCall(Arc::from(
-                                                &self.input[tail_start..self.position],
-                                            )));
+                                            self.push_string_part(
+                                                &mut parts,
+                                                StringPartKind::MethodCall,
+                                                tail_start,
+                                                self.position,
+                                            );
                                         }
                                         Some('{') => {
                                             let _ = self
                                                 .consume_balanced_segment_in_string('{', '}', '"');
-                                            parts.push(StringPart::MethodCall(Arc::from(
-                                                &self.input[tail_start..self.position],
-                                            )));
+                                            self.push_string_part(
+                                                &mut parts,
+                                                StringPartKind::MethodCall,
+                                                tail_start,
+                                                self.position,
+                                            );
                                         }
                                         Some('(') => {
                                             let _ = self
                                                 .consume_balanced_segment_in_string('(', ')', '"');
-                                            parts.push(StringPart::MethodCall(Arc::from(
-                                                &self.input[tail_start..self.position],
-                                            )));
+                                            self.push_string_part(
+                                                &mut parts,
+                                                StringPartKind::MethodCall,
+                                                tail_start,
+                                                self.position,
+                                            );
                                         }
                                         Some(ch) if is_perl_identifier_start(ch) => {
                                             // Perl does NOT interpolate a bare
@@ -3398,6 +3441,9 @@ impl<'a> PerlLexer<'a> {
                                             }
                                             let tail_text = &self.input[tail_start..self.position];
                                             if !tail_text.is_empty() {
+                                                if current_literal.is_empty() {
+                                                    literal_start = tail_start;
+                                                }
                                                 current_literal.reserve(tail_text.len());
                                                 current_literal.push_str(tail_text);
                                             }
@@ -3407,6 +3453,9 @@ impl<'a> PerlLexer<'a> {
                                             // identifier — also literal (#5428).
                                             let tail_text = &self.input[tail_start..self.position];
                                             if !tail_text.is_empty() {
+                                                if current_literal.is_empty() {
+                                                    literal_start = tail_start;
+                                                }
                                                 current_literal.reserve(tail_text.len());
                                                 current_literal.push_str(tail_text);
                                             }
@@ -3415,15 +3464,21 @@ impl<'a> PerlLexer<'a> {
                                 } else if self.current_char() == Some('[') {
                                     let tail_start = self.position;
                                     let _ = self.consume_balanced_segment_in_string('[', ']', '"');
-                                    parts.push(StringPart::ArraySlice(Arc::from(
-                                        &self.input[tail_start..self.position],
-                                    )));
+                                    self.push_string_part(
+                                        &mut parts,
+                                        StringPartKind::ArraySlice,
+                                        tail_start,
+                                        self.position,
+                                    );
                                 } else if self.current_char() == Some('{') {
                                     let tail_start = self.position;
                                     let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                                    parts.push(StringPart::Expression(Arc::from(
-                                        &self.input[tail_start..self.position],
-                                    )));
+                                    self.push_string_part(
+                                        &mut parts,
+                                        StringPartKind::Expression,
+                                        tail_start,
+                                        self.position,
+                                    );
                                 }
                             }
                         }
@@ -3439,8 +3494,12 @@ impl<'a> PerlLexer<'a> {
                             while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                                 self.advance();
                             }
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                         }
                         // Control variables: $^W, $^O, $^X, etc.
                         Some('^') => {
@@ -3448,8 +3507,12 @@ impl<'a> PerlLexer<'a> {
                             if self.current_char().is_some_and(|c| c.is_ascii_uppercase()) {
                                 self.advance(); // consume the uppercase letter
                             }
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                         }
                         // Array-length operator: $#array, $#{expr}, $#$ref. All
                         // three interpolate to the last index of the referenced
@@ -3478,8 +3541,12 @@ impl<'a> PerlLexer<'a> {
                                 }
                                 self.consume_qualified_identifier_in_string(Some('"'));
                             }
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                         }
                         // $$ (PID) when not followed by an identifier or brace
                         // group; otherwise `$$foo`, `$$$foo`, `$${foo}`, etc. are
@@ -3511,8 +3578,12 @@ impl<'a> PerlLexer<'a> {
                                     self.advance();
                                 }
                                 let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                                let part_text = &self.input[part_start..self.position];
-                                parts.push(StringPart::Expression(Arc::from(part_text)));
+                                self.push_string_part(
+                                    &mut parts,
+                                    StringPartKind::Expression,
+                                    part_start,
+                                    self.position,
+                                );
                             } else if after_run.is_some_and(is_perl_identifier_start) {
                                 // Deref chain: consume the remaining '$' sigils,
                                 // then the identifier they dereference, then any
@@ -3534,8 +3605,12 @@ impl<'a> PerlLexer<'a> {
                                     self.advance();
                                 }
                                 self.consume_qualified_identifier_in_string(Some('"'));
-                                let part_text = &self.input[part_start..self.position];
-                                parts.push(StringPart::Variable(Arc::from(part_text)));
+                                self.push_string_part(
+                                    &mut parts,
+                                    StringPartKind::Variable,
+                                    part_start,
+                                    self.position,
+                                );
 
                                 // Arrow *subscripts* chain onto the deref and do
                                 // interpolate -- verified against real perl
@@ -3558,18 +3633,30 @@ impl<'a> PerlLexer<'a> {
                                         let _ =
                                             self.consume_balanced_segment_in_string('{', '}', '"');
                                     }
-                                    let tail_text = &self.input[tail_start..self.position];
-                                    parts.push(StringPart::MethodCall(Arc::from(tail_text)));
+                                    self.push_string_part(
+                                        &mut parts,
+                                        StringPartKind::MethodCall,
+                                        tail_start,
+                                        self.position,
+                                    );
                                 } else if self.current_char() == Some('[') {
                                     let tail_start = self.position;
                                     let _ = self.consume_balanced_segment_in_string('[', ']', '"');
-                                    let tail_text = &self.input[tail_start..self.position];
-                                    parts.push(StringPart::ArraySlice(Arc::from(tail_text)));
+                                    self.push_string_part(
+                                        &mut parts,
+                                        StringPartKind::ArraySlice,
+                                        tail_start,
+                                        self.position,
+                                    );
                                 } else if self.current_char() == Some('{') {
                                     let tail_start = self.position;
                                     let _ = self.consume_balanced_segment_in_string('{', '}', '"');
-                                    let tail_text = &self.input[tail_start..self.position];
-                                    parts.push(StringPart::Expression(Arc::from(tail_text)));
+                                    self.push_string_part(
+                                        &mut parts,
+                                        StringPartKind::Expression,
+                                        tail_start,
+                                        self.position,
+                                    );
                                 }
                             } else if after_run.is_some_and(|c| c.is_ascii_digit()) {
                                 // Digits do not start an identifier, but they do
@@ -3589,8 +3676,12 @@ impl<'a> PerlLexer<'a> {
                                 while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                                     self.advance();
                                 }
-                                let part_text = &self.input[part_start..self.position];
-                                parts.push(StringPart::Variable(Arc::from(part_text)));
+                                self.push_string_part(
+                                    &mut parts,
+                                    StringPartKind::Variable,
+                                    part_start,
+                                    self.position,
+                                );
                             } else {
                                 // Bare `$$` is the PID. A longer pure sigil run
                                 // (`$$$`, `$$$$`) is still one interpolation
@@ -3607,8 +3698,12 @@ impl<'a> PerlLexer<'a> {
                                 for _ in 0..dollar_run {
                                     self.advance();
                                 }
-                                let part_text = &self.input[part_start..self.position];
-                                parts.push(StringPart::Variable(Arc::from(part_text)));
+                                self.push_string_part(
+                                    &mut parts,
+                                    StringPartKind::Variable,
+                                    part_start,
+                                    self.position,
+                                );
                             }
                         }
                         // Package-qualified scalars written with a leading `::`
@@ -3622,8 +3717,12 @@ impl<'a> PerlLexer<'a> {
                         // shared `::`-folding scan produces here.
                         Some(':') if self.peek_char(1) == Some(':') => {
                             self.consume_qualified_identifier_in_string(Some('"'));
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                         }
                         // Punctuation special variables: $!, $@, $?, $&, $:, etc.
                         // `is_perl_punctuation_variable` owns the exact set and
@@ -3632,17 +3731,27 @@ impl<'a> PerlLexer<'a> {
                         // falls through to the literal arm below.
                         Some(ch) if is_perl_punctuation_variable(ch) => {
                             self.advance(); // consume the special character
-                            let part_text = &self.input[part_start..self.position];
-                            parts.push(StringPart::Variable(Arc::from(part_text)));
+                            self.push_string_part(
+                                &mut parts,
+                                StringPartKind::Variable,
+                                part_start,
+                                self.position,
+                            );
                         }
                         // Unrecognized '$' — treat as literal character
                         _ => {
+                            if current_literal.is_empty() {
+                                literal_start = part_start;
+                            }
                             current_literal.push('$');
                         }
                     }
                 }
                 _ => {
                     // Optimize string building with better capacity management
+                    if current_literal.is_empty() {
+                        literal_start = self.position;
+                    }
                     if current_literal.capacity() == 0 {
                         current_literal.reserve(32);
                     }
@@ -4757,8 +4866,17 @@ impl<'a> PerlLexer<'a> {
                 let (parts, body_closed) = if self.config.interpolation_enabled() {
                     self.read_delimited_body_with_parts(delimiter)
                 } else {
+                    let body_start = self.position;
                     let (body, body_closed) = self.read_delimited_body(delimiter);
-                    (vec![StringPart::Literal(Arc::from(body))], body_closed)
+                    (
+                        vec![StringPart::from_source(
+                            StringPartKind::Literal,
+                            self.input,
+                            body_start,
+                            body_start + body.len(),
+                        )],
+                        body_closed,
+                    )
                 };
                 qq_parts = Some(parts);
                 body_closed

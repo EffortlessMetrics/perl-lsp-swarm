@@ -41,9 +41,9 @@ fn backslash_qq_keeps_interpolation_and_literal_mode() -> Result<(), String> {
             return Err("qq not classified".into());
         };
         let valid = if enabled {
-            matches!(parts.as_slice(), [StringPart::Variable(value)] if &**value == "$x")
+            matches!(parts.as_slice(), [StringPart::Variable(payload)] if payload.text.as_ref() == "$x")
         } else {
-            matches!(parts.as_slice(), [StringPart::Literal(value)] if &**value == "$x")
+            matches!(parts.as_slice(), [StringPart::Literal(payload)] if payload.text.as_ref() == "$x")
         };
         if !valid || token.end != 6 {
             return Err(format!("wrong interpolation or range: {parts:?}, {}", token.end));

@@ -13,7 +13,8 @@
 use std::{collections::HashSet, sync::Arc};
 
 use perl_lexer::{
-    Checkpointable, LexerConfig, LocalSymbolTable, PerlLexer, StringPart, Token, TokenType,
+    Checkpointable, LexerConfig, LocalSymbolTable, PerlLexer, StringPart, StringPartKind, Token,
+    TokenType,
 };
 
 type R<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -79,26 +80,26 @@ fn interpolation_switch_has_an_exact_legacy_segmentation_contract() -> R {
         (
             r#""hello $name""#,
             vec![
-                StringPart::Literal(Arc::from("hello ")),
-                StringPart::Variable(Arc::from("$name")),
+                StringPart::expect(StringPartKind::Literal, "hello "),
+                StringPart::expect(StringPartKind::Variable, "$name"),
             ],
         ),
-        (r#""@items""#, vec![StringPart::Variable(Arc::from("@items"))]),
-        (r#""${name}""#, vec![StringPart::Expression(Arc::from("${name}"))]),
+        (r#""@items""#, vec![StringPart::expect(StringPartKind::Variable, "@items")]),
+        (r#""${name}""#, vec![StringPart::expect(StringPartKind::Expression, "${name}")]),
         (
             r#""$items[0]""#,
             vec![
-                StringPart::Variable(Arc::from("$items")),
-                StringPart::ArraySlice(Arc::from("[0]")),
+                StringPart::expect(StringPartKind::Variable, "$items"),
+                StringPart::expect(StringPartKind::ArraySlice, "[0]"),
             ],
         ),
-        (r#""\$name""#, vec![StringPart::Literal(Arc::from(r"\$name"))]),
+        (r#""\$name""#, vec![StringPart::expect(StringPartKind::Literal, r"\$name")]),
         (
             r#""$x:$x""#,
             vec![
-                StringPart::Variable(Arc::from("$x")),
-                StringPart::Literal(Arc::from(":")),
-                StringPart::Variable(Arc::from("$x")),
+                StringPart::expect(StringPartKind::Variable, "$x"),
+                StringPart::expect(StringPartKind::Literal, ":"),
+                StringPart::expect(StringPartKind::Variable, "$x"),
             ],
         ),
     ];
@@ -126,7 +127,7 @@ fn interpolation_switch_has_an_exact_legacy_segmentation_contract() -> R {
             .ok_or_else(|| missing("ordinary string fixture lost its quote boundaries"))?;
         assert_eq!(
             disabled_parts,
-            &vec![StringPart::Literal(Arc::from(inner))],
+            &vec![StringPart::expect(StringPartKind::Literal, inner)],
             "disabled interpolation must retain one literal part for {input:?}"
         );
         assert_eq!(disabled.text.as_ref(), input);
@@ -149,14 +150,14 @@ fn interpolation_switch_governs_qq_bodies_without_changing_their_identity() {
     assert!(
         matches!(enabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble(parts))
         if parts == &vec![
-            StringPart::Literal(Arc::from("hello ")),
-            StringPart::Variable(Arc::from("$name")),
+            StringPart::expect(StringPartKind::Literal, "hello "),
+            StringPart::expect(StringPartKind::Variable, "$name"),
         ]),
         "enabled qq must segment its islands: {enabled:?}"
     );
     assert!(
         matches!(disabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble(parts))
-            if parts == &vec![StringPart::Literal(Arc::from("hello $name"))]),
+            if parts == &vec![StringPart::expect(StringPartKind::Literal, "hello $name")]),
         "disabled qq must keep one opaque literal part: {disabled:?}"
     );
     // Token identity is stable across the setting: same kind, text, geometry.

@@ -5,19 +5,132 @@
 
 use std::sync::Arc;
 
-/// Parts of an interpolated string
-#[derive(Debug, Clone, PartialEq)]
+/// Classification of one [`StringPart`] interpolation segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StringPartKind {
+    /// Literal text run (raw source bytes, including escapes as written).
+    Literal,
+    /// Variable interpolation: `$var`, `@array`, `%hash`.
+    Variable,
+    /// Expression interpolation: `${expr}`, `@{expr}`.
+    Expression,
+    /// Method/subscript tail: `->method()`, `->[0]`, etc.
+    MethodCall,
+    /// Array/hash slice tail: `[1..3]`, `{key}` after a variable head.
+    ArraySlice,
+}
+
+/// Raw lexical spelling plus absolute source byte range for one segment (#6730).
+///
+/// `text` is always the exact `source[start..end]` bytes captured during the
+/// original lexer scan. No cooked/decoded alternate is stored today; escapes
+/// remain backslash-prefixed in literal runs.
+#[derive(Debug, Clone, Eq)]
+pub struct SegmentPayload {
+    /// Raw source spelling for this segment.
+    pub text: Arc<str>,
+    /// Absolute start byte (inclusive) in the lexer's input.
+    pub start: usize,
+    /// Absolute end byte (exclusive) in the lexer's input.
+    pub end: usize,
+}
+
+impl PartialEq for SegmentPayload {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text && self.start == other.start && self.end == other.end
+    }
+}
+
+/// Parts of an interpolated string with authoritative source geometry (#6730).
+#[derive(Debug, Clone, Eq)]
 pub enum StringPart {
     /// Literal text
-    Literal(Arc<str>),
+    Literal(SegmentPayload),
     /// Variable interpolation: $var, @array, %hash
-    Variable(Arc<str>),
+    Variable(SegmentPayload),
     /// Expression interpolation: ${expr}, @{expr}
-    Expression(Arc<str>),
+    Expression(SegmentPayload),
     /// Method call: `->method()`
-    MethodCall(Arc<str>),
+    MethodCall(SegmentPayload),
     /// Array slice: [1..3]
-    ArraySlice(Arc<str>),
+    ArraySlice(SegmentPayload),
+}
+
+impl PartialEq for StringPart {
+    /// Compare segment kind and raw text only (geometry is asserted separately).
+    fn eq(&self, other: &Self) -> bool {
+        self.kind() == other.kind() && self.text() == other.text()
+    }
+}
+
+impl StringPart {
+    /// Build a segment from an authoritative source slice.
+    pub fn from_source(kind: StringPartKind, source: &str, start: usize, end: usize) -> Self {
+        let payload = SegmentPayload { text: Arc::from(&source[start..end]), start, end };
+        match kind {
+            StringPartKind::Literal => Self::Literal(payload),
+            StringPartKind::Variable => Self::Variable(payload),
+            StringPartKind::Expression => Self::Expression(payload),
+            StringPartKind::MethodCall => Self::MethodCall(payload),
+            StringPartKind::ArraySlice => Self::ArraySlice(payload),
+        }
+    }
+
+    /// Segment kind.
+    pub fn kind(&self) -> StringPartKind {
+        match self {
+            Self::Literal(_) => StringPartKind::Literal,
+            Self::Variable(_) => StringPartKind::Variable,
+            Self::Expression(_) => StringPartKind::Expression,
+            Self::MethodCall(_) => StringPartKind::MethodCall,
+            Self::ArraySlice(_) => StringPartKind::ArraySlice,
+        }
+    }
+
+    /// Raw lexical spelling (identical to `source[start..end]` at emission).
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Literal(p)
+            | Self::Variable(p)
+            | Self::Expression(p)
+            | Self::MethodCall(p)
+            | Self::ArraySlice(p) => p.text.as_ref(),
+        }
+    }
+
+    /// Absolute start byte (inclusive) in the source file.
+    pub fn start(&self) -> usize {
+        match self {
+            Self::Literal(p)
+            | Self::Variable(p)
+            | Self::Expression(p)
+            | Self::MethodCall(p)
+            | Self::ArraySlice(p) => p.start,
+        }
+    }
+
+    /// Absolute end byte (exclusive) in the source file.
+    pub fn end(&self) -> usize {
+        match self {
+            Self::Literal(p)
+            | Self::Variable(p)
+            | Self::Expression(p)
+            | Self::MethodCall(p)
+            | Self::ArraySlice(p) => p.end,
+        }
+    }
+
+    /// Absolute source byte range for this segment.
+    pub fn source_range(&self) -> std::ops::Range<usize> {
+        self.start()..self.end()
+    }
+
+    /// Expectation helper when tests assert kind/text without caring about offsets.
+    pub fn expect(kind: StringPartKind, text: impl Into<Arc<str>>) -> Self {
+        let text = text.into();
+        let len = text.len();
+        Self::from_source(kind, text.as_ref(), 0, len)
+    }
 }
 
 /// Token types for Perl

@@ -16,15 +16,37 @@
 //! qualified, dereference, slice, repeated-sigil, digit, `^`-control,
 //! punctuation, and `::`-qualified forms).
 
-use crate::token::StringPart;
+use super::interpolation_scan::is_perl_punctuation_variable;
+use crate::quote_handler;
+use crate::token::{StringPart, StringPartKind};
 use crate::{
     PerlLexer,
     unicode::{is_perl_identifier_continue, is_perl_identifier_start},
 };
-use std::sync::Arc;
 
-use super::interpolation_scan::is_perl_punctuation_variable;
-use crate::quote_handler;
+impl PerlLexer<'_> {
+    pub(crate) fn push_string_part(
+        &self,
+        parts: &mut Vec<StringPart>,
+        kind: StringPartKind,
+        start: usize,
+        end: usize,
+    ) {
+        parts.push(StringPart::from_source(kind, self.input, start, end));
+    }
+
+    pub(crate) fn flush_literal_part(
+        &self,
+        literal: &mut String,
+        literal_start: usize,
+        parts: &mut Vec<StringPart>,
+    ) {
+        if !literal.is_empty() {
+            self.push_string_part(parts, StringPartKind::Literal, literal_start, self.position);
+            literal.clear();
+        }
+    }
+}
 
 impl PerlLexer<'_> {
     /// Read a delimited body, segmenting interpolation islands into
@@ -43,6 +65,7 @@ impl PerlLexer<'_> {
         let close = paired.unwrap_or(delim);
         let mut parts: Vec<StringPart> = Vec::new();
         let mut literal = String::new();
+        let mut literal_start = self.position;
         let mut depth = i32::from(paired.is_some());
         let terminator = close;
 
@@ -50,6 +73,9 @@ impl PerlLexer<'_> {
             if ch == '\\' && delim != '\\' {
                 // Escape pairs stay raw in the literal run, exactly like the
                 // ordinary-string scanner (no flush: `a\$b` is one literal).
+                if literal.is_empty() {
+                    literal_start = self.position;
+                }
                 literal.push(ch);
                 self.advance();
                 if let Some(next) = self.current_char() {
@@ -60,6 +86,9 @@ impl PerlLexer<'_> {
             }
 
             if paired.is_some() && ch == delim {
+                if literal.is_empty() {
+                    literal_start = self.position;
+                }
                 depth += 1;
                 literal.push(ch);
                 self.advance();
@@ -70,26 +99,35 @@ impl PerlLexer<'_> {
                 if paired.is_some() {
                     depth -= 1;
                     if depth == 0 {
+                        self.flush_literal_part(&mut literal, literal_start, &mut parts);
                         self.advance();
-                        Self::flush_literal(&mut literal, &mut parts);
                         return (parts, true);
                     }
                     literal.push(ch);
                     self.advance();
                 } else {
+                    self.flush_literal_part(&mut literal, literal_start, &mut parts);
                     self.advance();
-                    Self::flush_literal(&mut literal, &mut parts);
                     return (parts, true);
                 }
                 continue;
             }
 
             if (ch == '$' || ch == '@') && self.config.interpolation_enabled() {
-                Self::flush_literal(&mut literal, &mut parts);
-                self.scan_interpolation_island(ch, Some(terminator), &mut parts, &mut literal);
+                self.flush_literal_part(&mut literal, literal_start, &mut parts);
+                self.scan_interpolation_island(
+                    ch,
+                    Some(terminator),
+                    &mut parts,
+                    &mut literal,
+                    &mut literal_start,
+                );
                 continue;
             }
 
+            if literal.is_empty() {
+                literal_start = self.position;
+            }
             literal.push(ch);
             self.advance();
         }
@@ -97,17 +135,8 @@ impl PerlLexer<'_> {
         // EOF reached without finding the closing delimiter. The caller turns
         // an unclosed body into its recovery token, so the partial parts are
         // still returned honestly.
-        Self::flush_literal(&mut literal, &mut parts);
+        self.flush_literal_part(&mut literal, literal_start, &mut parts);
         (parts, false)
-    }
-
-    /// Flush a pending literal run into `parts` (empty runs are dropped),
-    /// mirroring the ordinary-string scanner's flush points.
-    pub(crate) fn flush_literal(literal: &mut String, parts: &mut Vec<StringPart>) {
-        if !literal.is_empty() {
-            parts.push(StringPart::Literal(Arc::from(literal.as_str())));
-            literal.clear();
-        }
     }
 
     /// Consume one `$`/`@` interpolation island at the current position.
@@ -124,14 +153,15 @@ impl PerlLexer<'_> {
         terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
+        literal_start: &mut usize,
     ) {
         let part_start = self.position;
         self.advance(); // consume the sigil
 
         if sigil == '@' {
-            self.scan_at_island_tail(part_start, terminator, parts, literal);
+            self.scan_at_island_tail(part_start, terminator, parts, literal, literal_start);
         } else {
-            self.scan_dollar_island_tail(part_start, terminator, parts, literal);
+            self.scan_dollar_island_tail(part_start, terminator, parts, literal, literal_start);
         }
     }
 
@@ -143,21 +173,20 @@ impl PerlLexer<'_> {
         terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
+        literal_start: &mut usize,
     ) {
         match self.current_char() {
             Some('{') => {
                 let _ =
                     self.consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
-                parts.push(StringPart::Expression(Arc::from(
-                    &self.input[part_start..self.position],
-                )));
+                self.push_string_part(parts, StringPartKind::Expression, part_start, self.position);
             }
             Some(ch)
                 if is_perl_identifier_start(ch)
                     || (ch == ':' && self.peek_char(1) == Some(':')) =>
             {
                 self.consume_qualified_identifier_in_string(terminator);
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
                 // Array and hash slices interpolate with the array
                 // (`qq{@a[0]}` yields the slice element, `@h{key}` the hash
                 // slice; verified against real perl: `@a=(x,y); print
@@ -168,16 +197,22 @@ impl PerlLexer<'_> {
                     let tail_start = self.position;
                     let _ = self
                         .consume_balanced_segment_in_string_with_terminator('[', ']', terminator);
-                    parts.push(StringPart::ArraySlice(Arc::from(
-                        &self.input[tail_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::ArraySlice,
+                        tail_start,
+                        self.position,
+                    );
                 } else if self.current_char() == Some('{') {
                     let tail_start = self.position;
                     let _ = self
                         .consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
-                    parts.push(StringPart::Expression(Arc::from(
-                        &self.input[tail_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::Expression,
+                        tail_start,
+                        self.position,
+                    );
                 }
             }
             Some('$') => {
@@ -185,17 +220,20 @@ impl PerlLexer<'_> {
                     self.advance();
                 }
                 self.consume_qualified_identifier_in_string(terminator);
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             Some(ch @ ('+' | '-')) if terminator != Some(ch) => {
                 // The active terminator wins over the `@+`/`@-` match-offset
                 // arrays: in `qq+@+` the `+` closes the quote, and `@` stays
                 // literal text.
                 self.advance();
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             _ => {
                 // '@' not followed by an identifier or '{' — literal text.
+                if literal.is_empty() {
+                    *literal_start = part_start;
+                }
                 literal.push('@');
             }
         }
@@ -210,31 +248,36 @@ impl PerlLexer<'_> {
         terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
+        literal_start: &mut usize,
     ) {
         match self.current_char() {
             Some('{') => {
                 let _ =
                     self.consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
-                parts.push(StringPart::Expression(Arc::from(
-                    &self.input[part_start..self.position],
-                )));
+                self.push_string_part(parts, StringPartKind::Expression, part_start, self.position);
             }
             Some(ch) if is_perl_identifier_start(ch) => {
-                self.scan_variable_with_tails(part_start, terminator, parts, literal);
+                self.scan_variable_with_tails(
+                    part_start,
+                    terminator,
+                    parts,
+                    literal,
+                    literal_start,
+                );
             }
             Some(ch) if ch.is_ascii_digit() => {
                 self.advance();
                 while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                     self.advance();
                 }
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             Some('^') => {
                 self.advance();
                 if self.current_char().is_some_and(|c| c.is_ascii_uppercase()) {
                     self.advance();
                 }
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             Some('#') => {
                 self.advance();
@@ -247,7 +290,7 @@ impl PerlLexer<'_> {
                     }
                     self.consume_qualified_identifier_in_string(terminator);
                 }
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             Some('$') => {
                 let mut dollar_run = 0usize;
@@ -261,17 +304,23 @@ impl PerlLexer<'_> {
                     }
                     let _ = self
                         .consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
-                    parts.push(StringPart::Expression(Arc::from(
-                        &self.input[part_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::Expression,
+                        part_start,
+                        self.position,
+                    );
                 } else if after_run.is_some_and(is_perl_identifier_start) {
                     for _ in 0..dollar_run {
                         self.advance();
                     }
                     self.consume_qualified_identifier_in_string(terminator);
-                    parts.push(StringPart::Variable(Arc::from(
-                        &self.input[part_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::Variable,
+                        part_start,
+                        self.position,
+                    );
                     if self.matches_bytes(b"->")
                         && matches!(self.peek_byte(2), Some(b'[') | Some(b'{'))
                     {
@@ -287,25 +336,34 @@ impl PerlLexer<'_> {
                                 '{', '}', terminator,
                             );
                         }
-                        parts.push(StringPart::MethodCall(Arc::from(
-                            &self.input[tail_start..self.position],
-                        )));
+                        self.push_string_part(
+                            parts,
+                            StringPartKind::MethodCall,
+                            tail_start,
+                            self.position,
+                        );
                     } else if self.current_char() == Some('[') {
                         let tail_start = self.position;
                         let _ = self.consume_balanced_segment_in_string_with_terminator(
                             '[', ']', terminator,
                         );
-                        parts.push(StringPart::ArraySlice(Arc::from(
-                            &self.input[tail_start..self.position],
-                        )));
+                        self.push_string_part(
+                            parts,
+                            StringPartKind::ArraySlice,
+                            tail_start,
+                            self.position,
+                        );
                     } else if self.current_char() == Some('{') {
                         let tail_start = self.position;
                         let _ = self.consume_balanced_segment_in_string_with_terminator(
                             '{', '}', terminator,
                         );
-                        parts.push(StringPart::Expression(Arc::from(
-                            &self.input[tail_start..self.position],
-                        )));
+                        self.push_string_part(
+                            parts,
+                            StringPartKind::Expression,
+                            tail_start,
+                            self.position,
+                        );
                     }
                 } else if after_run.is_some_and(|c| c.is_ascii_digit()) {
                     for _ in 0..dollar_run {
@@ -314,21 +372,27 @@ impl PerlLexer<'_> {
                     while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                         self.advance();
                     }
-                    parts.push(StringPart::Variable(Arc::from(
-                        &self.input[part_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::Variable,
+                        part_start,
+                        self.position,
+                    );
                 } else {
                     for _ in 0..dollar_run {
                         self.advance();
                     }
-                    parts.push(StringPart::Variable(Arc::from(
-                        &self.input[part_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::Variable,
+                        part_start,
+                        self.position,
+                    );
                 }
             }
             Some(':') if self.peek_char(1) == Some(':') => {
                 self.consume_qualified_identifier_in_string(terminator);
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             // `$"` is the list-separator special variable and interpolates on
             // every surface whose terminator is not `"`. The ordinary
@@ -338,7 +402,7 @@ impl PerlLexer<'_> {
             // with `local $" = "SEP"`, `print qq{<$">}` prints `<SEP>`.
             Some('"') if terminator != Some('"') => {
                 self.advance();
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             Some(ch) if is_perl_punctuation_variable(ch) && terminator != Some(ch) => {
                 // Terminator precedence: a character that is both a
@@ -346,10 +410,13 @@ impl PerlLexer<'_> {
                 // (`qq!$!`, `qq[$]`), so it stays available to the outer
                 // scanner and the sigil returns to the literal bucket.
                 self.advance();
-                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
             }
             _ => {
                 // Unrecognized '$' — literal character.
+                if literal.is_empty() {
+                    *literal_start = part_start;
+                }
                 literal.push('$');
             }
         }
@@ -364,6 +431,7 @@ impl PerlLexer<'_> {
         terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
+        literal_start: &mut usize,
     ) {
         let var_start = self.position;
 
@@ -400,7 +468,7 @@ impl PerlLexer<'_> {
         // `qq'$foo'bar'`).
         self.consume_qualified_identifier_in_string(terminator);
 
-        parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+        self.push_string_part(parts, StringPartKind::Variable, part_start, self.position);
 
         if self.matches_bytes(b"->") {
             let tail_start = self.position;
@@ -411,23 +479,32 @@ impl PerlLexer<'_> {
                 Some('[') => {
                     let _ = self
                         .consume_balanced_segment_in_string_with_terminator('[', ']', terminator);
-                    parts.push(StringPart::MethodCall(Arc::from(
-                        &self.input[tail_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::MethodCall,
+                        tail_start,
+                        self.position,
+                    );
                 }
                 Some('{') => {
                     let _ = self
                         .consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
-                    parts.push(StringPart::MethodCall(Arc::from(
-                        &self.input[tail_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::MethodCall,
+                        tail_start,
+                        self.position,
+                    );
                 }
                 Some('(') => {
                     let _ = self
                         .consume_balanced_segment_in_string_with_terminator('(', ')', terminator);
-                    parts.push(StringPart::MethodCall(Arc::from(
-                        &self.input[tail_start..self.position],
-                    )));
+                    self.push_string_part(
+                        parts,
+                        StringPartKind::MethodCall,
+                        tail_start,
+                        self.position,
+                    );
                 }
                 Some(ch) if is_perl_identifier_start(ch) => {
                     // Bare method call: literal tail (#5428).
@@ -451,6 +528,9 @@ impl PerlLexer<'_> {
                     }
                     let tail_text = &self.input[tail_start..self.position];
                     if !tail_text.is_empty() {
+                        if literal.is_empty() {
+                            *literal_start = tail_start;
+                        }
                         literal.reserve(tail_text.len());
                         literal.push_str(tail_text);
                     }
@@ -459,6 +539,9 @@ impl PerlLexer<'_> {
                     // `->` followed by neither subscript nor name: literal.
                     let tail_text = &self.input[tail_start..self.position];
                     if !tail_text.is_empty() {
+                        if literal.is_empty() {
+                            *literal_start = tail_start;
+                        }
                         literal.reserve(tail_text.len());
                         literal.push_str(tail_text);
                     }
@@ -467,11 +550,11 @@ impl PerlLexer<'_> {
         } else if self.current_char() == Some('[') {
             let tail_start = self.position;
             let _ = self.consume_balanced_segment_in_string_with_terminator('[', ']', terminator);
-            parts.push(StringPart::ArraySlice(Arc::from(&self.input[tail_start..self.position])));
+            self.push_string_part(parts, StringPartKind::ArraySlice, tail_start, self.position);
         } else if self.current_char() == Some('{') {
             let tail_start = self.position;
             let _ = self.consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
-            parts.push(StringPart::Expression(Arc::from(&self.input[tail_start..self.position])));
+            self.push_string_part(parts, StringPartKind::Expression, tail_start, self.position);
         }
     }
 
@@ -490,17 +573,26 @@ impl PerlLexer<'_> {
         let body_end = body_end.min(self.input.len());
         if !self.config.interpolation_enabled() {
             self.position = saved_position;
-            return vec![StringPart::Literal(Arc::from(&self.input[body_start..body_end]))];
+            return vec![StringPart::from_source(
+                StringPartKind::Literal,
+                self.input,
+                body_start,
+                body_end,
+            )];
         }
         let saved_scan_limit = self.scan_limit;
         self.scan_limit = Some(body_end);
         self.position = body_start;
         let mut parts: Vec<StringPart> = Vec::new();
         let mut literal = String::new();
+        let mut literal_start = body_start;
 
         while self.position < body_end {
             let Some(ch) = self.current_char() else { break };
             if ch == '\\' {
+                if literal.is_empty() {
+                    literal_start = self.position;
+                }
                 literal.push(ch);
                 self.advance();
                 if self.position < body_end
@@ -512,15 +604,24 @@ impl PerlLexer<'_> {
                 continue;
             }
             if (ch == '$' || ch == '@') && self.config.interpolation_enabled() {
-                Self::flush_literal(&mut literal, &mut parts);
-                self.scan_interpolation_island(ch, None, &mut parts, &mut literal);
+                self.flush_literal_part(&mut literal, literal_start, &mut parts);
+                self.scan_interpolation_island(
+                    ch,
+                    None,
+                    &mut parts,
+                    &mut literal,
+                    &mut literal_start,
+                );
                 continue;
+            }
+            if literal.is_empty() {
+                literal_start = self.position;
             }
             literal.push(ch);
             self.advance();
         }
 
-        Self::flush_literal(&mut literal, &mut parts);
+        self.flush_literal_part(&mut literal, literal_start, &mut parts);
         self.position = saved_position;
         self.scan_limit = saved_scan_limit;
         parts

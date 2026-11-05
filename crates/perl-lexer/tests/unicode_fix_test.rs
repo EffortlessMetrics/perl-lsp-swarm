@@ -83,7 +83,10 @@ fn assert_typeglob_guard_tokens(input: &str, expected: &[(TokenType, &str)]) -> 
 
 fn semicolon_quote_kind(quote: char) -> TokenType {
     match quote {
-        '"' => TokenType::InterpolatedString(vec![perl_lexer::StringPart::Literal(";".into())]),
+        '"' => TokenType::InterpolatedString(vec![perl_lexer::StringPart::expect(
+            perl_lexer::StringPartKind::Literal,
+            ";",
+        )]),
         '\'' => TokenType::StringLiteral,
         _ => TokenType::QuoteCommand,
     }

@@ -5,8 +5,7 @@
 //! and silently dropped the `$` sigil, producing an empty or incorrect
 //! InterpolatedString parts list.
 
-use perl_lexer::{PerlLexer, StringPart, TokenType};
-use std::sync::Arc;
+use perl_lexer::{PerlLexer, StringPart, StringPartKind, TokenType};
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
@@ -25,21 +24,21 @@ fn interpolated_parts(input: &str) -> Option<Vec<StringPart>> {
 #[test]
 fn dollar_bang_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$!""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$!"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$!")]);
     Ok(())
 }
 
 #[test]
 fn dollar_at_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$@""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$@"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$@")]);
     Ok(())
 }
 
 #[test]
 fn dollar_question_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$?""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$?"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$?")]);
     Ok(())
 }
 
@@ -49,7 +48,7 @@ fn dollar_backslash_in_string_emits_variable() -> R {
     // to land in the literal-backslash case. The plain "$\" case is handled by
     // the escape arm before the '$' interpolation arm fires.
     let parts = interpolated_parts(r#""$|""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$|"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$|")]);
     Ok(())
 }
 
@@ -60,7 +59,7 @@ fn dollar_backslash_in_string_emits_variable() -> R {
 #[test]
 fn dollar_dollar_in_string_emits_pid_variable() -> R {
     let parts = interpolated_parts(r#""$$""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$$")]);
     Ok(())
 }
 
@@ -72,7 +71,7 @@ fn dollar_dollar_in_string_emits_pid_variable() -> R {
 #[test]
 fn dollar_dollar_identifier_is_scalar_deref() -> R {
     let parts = interpolated_parts(r#""$$foo""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$foo"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$$foo")]);
     Ok(())
 }
 
@@ -82,7 +81,7 @@ fn dollar_dollar_identifier_is_scalar_deref() -> R {
 #[test]
 fn dollar_dollar_dollar_identifier_is_double_scalar_deref() -> R {
     let parts = interpolated_parts(r#""$$$foo""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$foo"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$$$foo")]);
     Ok(())
 }
 
@@ -96,7 +95,7 @@ fn dollar_dollar_package_qualified_deref_is_one_variable() -> R {
     let parts = interpolated_parts(r#""$$main::foo""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$main::foo"))],
+        vec![StringPart::expect(StringPartKind::Variable, "$$main::foo")],
         "\"$$main::foo\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -108,7 +107,7 @@ fn triple_dollar_multi_segment_package_deref_is_one_variable() -> R {
     let parts = interpolated_parts(r#""$$$Acme::Deep::Var""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$$Acme::Deep::Var"))],
+        vec![StringPart::expect(StringPartKind::Variable, "$$$Acme::Deep::Var")],
         "\"$$$Acme::Deep::Var\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -121,7 +120,10 @@ fn dollar_dollar_deref_stops_at_a_single_colon() -> R {
     let parts = interpolated_parts(r#""$$ref:tail""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$ref")), StringPart::Literal(Arc::from(":tail"))],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$ref"),
+            StringPart::expect(StringPartKind::Literal, ":tail")
+        ],
         "a lone ':' must end \"$$ref\", got {parts:?}"
     );
     Ok(())
@@ -138,9 +140,9 @@ fn dollar_dollar_bare_still_emits_pid_variable() -> R {
     assert_eq!(
         parts,
         vec![
-            StringPart::Literal(Arc::from("pid=")),
-            StringPart::Variable(Arc::from("$$")),
-            StringPart::Literal(Arc::from(";")),
+            StringPart::expect(StringPartKind::Literal, "pid="),
+            StringPart::expect(StringPartKind::Variable, "$$"),
+            StringPart::expect(StringPartKind::Literal, ";"),
         ]
     );
     Ok(())
@@ -155,7 +157,10 @@ fn dollar_dollar_then_punctuation_is_pid_plus_literal_text() -> R {
     let parts = interpolated_parts(r#""$$!""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$")), StringPart::Literal(Arc::from("!"))]
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$"),
+            StringPart::expect(StringPartKind::Literal, "!")
+        ]
     );
     Ok(())
 }
@@ -172,14 +177,14 @@ fn dollar_dollar_then_punctuation_is_pid_plus_literal_text() -> R {
 #[test]
 fn triple_dollar_run_is_one_variable_not_pid_plus_literal_dollar() -> R {
     let parts = interpolated_parts(r#""$$$""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$$$")]);
     Ok(())
 }
 
 #[test]
 fn quadruple_dollar_run_is_one_variable() -> R {
     let parts = interpolated_parts(r#""$$$$""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$$"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$$$$")]);
     Ok(())
 }
 
@@ -195,7 +200,10 @@ fn dollar_dollar_digit_is_a_capture_deref_not_pid_plus_digit() -> R {
     let parts = interpolated_parts(r#""$$1X""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$1")), StringPart::Literal(Arc::from("X"))]
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$1"),
+            StringPart::expect(StringPartKind::Literal, "X")
+        ]
     );
     Ok(())
 }
@@ -205,7 +213,7 @@ fn dollar_dollar_digit_is_a_capture_deref_not_pid_plus_digit() -> R {
 #[test]
 fn dollar_dollar_multi_digit_capture_deref_consumes_the_whole_digit_run() -> R {
     let parts = interpolated_parts(r#""$$12""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$12"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$$12")]);
     Ok(())
 }
 
@@ -214,7 +222,7 @@ fn dollar_dollar_multi_digit_capture_deref_consumes_the_whole_digit_run() -> R {
 #[test]
 fn triple_dollar_digit_capture_deref_keeps_the_whole_sigil_run() -> R {
     let parts = interpolated_parts(r#""$$$9""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$$$9"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$$$9")]);
     Ok(())
 }
 
@@ -225,14 +233,14 @@ fn triple_dollar_digit_capture_deref_keeps_the_whole_sigil_run() -> R {
 #[test]
 fn dollar_zero_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$0""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$0"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$0")]);
     Ok(())
 }
 
 #[test]
 fn dollar_one_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$1""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$1"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$1")]);
     Ok(())
 }
 
@@ -243,7 +251,7 @@ fn dollar_one_in_string_emits_variable() -> R {
 #[test]
 fn dollar_ten_in_string_emits_single_multi_digit_variable() -> R {
     let parts = interpolated_parts(r#""$10""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$10"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$10")]);
     Ok(())
 }
 
@@ -254,14 +262,14 @@ fn dollar_ten_in_string_emits_single_multi_digit_variable() -> R {
 #[test]
 fn dollar_caret_w_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$^W""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$^W"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$^W")]);
     Ok(())
 }
 
 #[test]
 fn dollar_caret_o_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$^O""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$^O"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$^O")]);
     Ok(())
 }
 
@@ -271,7 +279,7 @@ fn dollar_caret_bare_in_string_emits_variable() -> R {
     let parts = interpolated_parts("\"$^\x01\"").ok_or("no InterpolatedString")?;
     // $^ followed by a non-uppercase char → Variable("$^") + Literal of the next char
     assert!(
-        parts.first() == Some(&StringPart::Variable(Arc::from("$^"))),
+        parts.first() == Some(&StringPart::expect(StringPartKind::Variable, "$^")),
         "expected Variable(\"$^\") as first part, got {:?}",
         parts
     );
@@ -286,7 +294,7 @@ fn dollar_caret_bare_in_string_emits_variable() -> R {
 #[test]
 fn dollar_hash_array_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$#array""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#array"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$#array")]);
     Ok(())
 }
 
@@ -298,7 +306,7 @@ fn dollar_hash_array_in_string_emits_variable() -> R {
 #[test]
 fn dollar_hash_brace_ref_in_string_emits_single_variable() -> R {
     let parts = interpolated_parts(r#""$#{$ref}""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#{$ref}"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$#{$ref}")]);
     Ok(())
 }
 
@@ -308,7 +316,7 @@ fn dollar_hash_brace_ref_in_string_emits_single_variable() -> R {
 #[test]
 fn dollar_hash_dollar_ref_in_string_emits_single_variable() -> R {
     let parts = interpolated_parts(r#""$#$ref""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#$ref"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$#$ref")]);
     Ok(())
 }
 
@@ -323,7 +331,7 @@ fn dollar_hash_dollar_ref_in_string_emits_single_variable() -> R {
 #[test]
 fn dollar_hash_double_dollar_ref_in_string_emits_single_variable() -> R {
     let parts = interpolated_parts(r#""$#$$ref""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#$$ref"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$#$$ref")]);
     Ok(())
 }
 
@@ -340,7 +348,7 @@ fn dollar_hash_double_dollar_ref_in_string_emits_single_variable() -> R {
 #[test]
 fn dollar_dollar_brace_expr_is_single_expression() -> R {
     let parts = interpolated_parts(r#""$${foo}""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Expression(Arc::from("$${foo}"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Expression, "$${foo}")]);
     Ok(())
 }
 
@@ -350,7 +358,7 @@ fn dollar_dollar_brace_expr_is_single_expression() -> R {
 #[test]
 fn triple_dollar_brace_expr_is_single_expression() -> R {
     let parts = interpolated_parts(r#""$$${foo}""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Expression(Arc::from("$$${foo}"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Expression, "$$${foo}")]);
     Ok(())
 }
 
@@ -362,7 +370,10 @@ fn dollar_dollar_brace_expr_then_bracket_stays_literal_suffix() -> R {
     let parts = interpolated_parts(r#""$${foo}[0]""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Expression(Arc::from("$${foo}")), StringPart::Literal(Arc::from("[0]")),]
+        vec![
+            StringPart::expect(StringPartKind::Expression, "$${foo}"),
+            StringPart::expect(StringPartKind::Literal, "[0]"),
+        ]
     );
     Ok(())
 }
@@ -380,7 +391,10 @@ fn dollar_dollar_identifier_array_subscript_not_literal() -> R {
     let parts = interpolated_parts(r#""$$foo[1]""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$foo")), StringPart::ArraySlice(Arc::from("[1]")),]
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$foo"),
+            StringPart::expect(StringPartKind::ArraySlice, "[1]"),
+        ]
     );
     Ok(())
 }
@@ -393,7 +407,10 @@ fn dollar_dollar_identifier_hash_subscript_not_literal() -> R {
     let parts = interpolated_parts(r#""$$foo{a}""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$foo")), StringPart::Expression(Arc::from("{a}")),]
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$foo"),
+            StringPart::expect(StringPartKind::Expression, "{a}"),
+        ]
     );
     Ok(())
 }
@@ -408,7 +425,7 @@ fn dollar_dollar_identifier_hash_subscript_not_literal() -> R {
 #[test]
 fn dollar_hash_qualified_package_array_emits_single_variable() -> R {
     let parts = interpolated_parts(r#""$#main::array""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$#main::array"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$#main::array")]);
     Ok(())
 }
 
@@ -421,7 +438,7 @@ fn escaped_dollar_foo_stays_literal() -> R {
     let parts = interpolated_parts(r#""\$foo""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Literal(Arc::from("\\$foo"))],
+        vec![StringPart::expect(StringPartKind::Literal, "\\$foo")],
         "an escaped \\$ must never become a Variable part"
     );
     Ok(())
@@ -438,7 +455,7 @@ fn bare_trailing_dollar_in_middle_of_literal_stays_literal() -> R {
     let joined: String = parts
         .iter()
         .map(|part| match part {
-            StringPart::Literal(text) => Ok(text.to_string()),
+            StringPart::Literal(payload) => Ok(payload.text.to_string()),
             other => Err(format!("expected only literal parts, got {other:?}")),
         })
         .collect::<Result<String, String>>()?;
@@ -455,7 +472,10 @@ fn literal_prefix_then_dollar_bang_emits_two_parts() -> R {
     let parts = interpolated_parts(r#""Error: $!""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Literal(Arc::from("Error: ")), StringPart::Variable(Arc::from("$!")),]
+        vec![
+            StringPart::expect(StringPartKind::Literal, "Error: "),
+            StringPart::expect(StringPartKind::Variable, "$!"),
+        ]
     );
     Ok(())
 }
@@ -467,14 +487,14 @@ fn literal_prefix_then_dollar_bang_emits_two_parts() -> R {
 #[test]
 fn dollar_foo_in_string_still_emits_variable() -> R {
     let parts = interpolated_parts(r#""$foo""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$foo"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$foo")]);
     Ok(())
 }
 
 #[test]
 fn dollar_brace_expr_in_string_still_emits_expression() -> R {
     let parts = interpolated_parts(r#""${expr}""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Expression(Arc::from("${expr}"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Expression, "${expr}")]);
     Ok(())
 }
 
@@ -495,7 +515,7 @@ fn trailing_dollar_does_not_consume_closing_quote() -> R {
     let parts = interpolated_parts(r#""$""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Literal(Arc::from("$"))],
+        vec![StringPart::expect(StringPartKind::Literal, "$")],
         "a trailing '$' must stay literal and leave the closing quote intact"
     );
     Ok(())
@@ -511,7 +531,7 @@ fn trailing_dollar_leaves_following_tokens_intact() -> R {
     let first = lexer.next_token().ok_or("no first token")?;
     assert_eq!(
         first.token_type,
-        TokenType::InterpolatedString(vec![StringPart::Literal(Arc::from("$"))]),
+        TokenType::InterpolatedString(vec![StringPart::expect(StringPartKind::Literal, "$")]),
         "first token must be the complete string \"$\""
     );
 
@@ -536,7 +556,7 @@ fn literal_prefix_then_trailing_dollar_stays_literal() -> R {
     let joined: String = parts
         .iter()
         .map(|part| match part {
-            StringPart::Literal(text) => Ok(text.to_string()),
+            StringPart::Literal(payload) => Ok(payload.text.to_string()),
             other => Err(format!("expected only literal parts, got {other:?}")),
         })
         .collect::<Result<String, String>>()?;
@@ -565,7 +585,10 @@ fn deref_chain_arrow_array_subscript_is_method_call_part() -> R {
     let parts = interpolated_parts("\"$$rr->[1]\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$rr")), StringPart::MethodCall(Arc::from("->[1]")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$rr"),
+            StringPart::expect(StringPartKind::MethodCall, "->[1]"),
+        ],
         "\"$$rr->[1]\" must chain the arrow subscript, got {parts:?}"
     );
     Ok(())
@@ -576,7 +599,10 @@ fn deref_chain_arrow_hash_subscript_is_method_call_part() -> R {
     let parts = interpolated_parts("\"$$hrr->{k}\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$hrr")), StringPart::MethodCall(Arc::from("->{k}")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$hrr"),
+            StringPart::expect(StringPartKind::MethodCall, "->{k}"),
+        ],
         "\"$$hrr->{{k}}\" must chain the arrow subscript, got {parts:?}"
     );
     Ok(())
@@ -589,7 +615,10 @@ fn deref_chain_arrow_method_call_stays_literal() -> R {
     let parts = interpolated_parts("\"$$ro->bar\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$ro")), StringPart::Literal(Arc::from("->bar")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$ro"),
+            StringPart::expect(StringPartKind::Literal, "->bar"),
+        ],
         "a bare arrow method must remain literal text, got {parts:?}"
     );
     Ok(())
@@ -600,7 +629,10 @@ fn triple_deref_chain_arrow_subscript_chains() -> R {
     let parts = interpolated_parts("\"$$$ref->[0]\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$$ref")), StringPart::MethodCall(Arc::from("->[0]")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$$ref"),
+            StringPart::expect(StringPartKind::MethodCall, "->[0]"),
+        ],
         "a longer deref chain must still chain the arrow subscript, got {parts:?}"
     );
     Ok(())
@@ -625,7 +657,10 @@ fn deref_chain_trailing_arrow_without_subscript_stays_literal() -> R {
     let parts = interpolated_parts("\"$$r->\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$r")), StringPart::Literal(Arc::from("->")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$r"),
+            StringPart::expect(StringPartKind::Literal, "->"),
+        ],
         "a trailing arrow with nothing after it must stay literal, got {parts:?}"
     );
     Ok(())
@@ -636,7 +671,10 @@ fn deref_chain_arrow_paren_call_stays_literal() -> R {
     let parts = interpolated_parts("\"$$rr->(1)\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$$rr")), StringPart::Literal(Arc::from("->(1)")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$$rr"),
+            StringPart::expect(StringPartKind::Literal, "->(1)"),
+        ],
         "an arrow code-deref call does not interpolate and must stay literal, got {parts:?}"
     );
     Ok(())
@@ -676,7 +714,7 @@ fn every_punctuation_special_variable_in_the_match_arm_emits_one_variable_part()
             .ok_or_else(|| format!("\"${punct}\" did not lex as an InterpolatedString"))?;
         assert_eq!(
             parts,
-            vec![StringPart::Variable(Arc::from(expected.as_str()))],
+            vec![StringPart::expect(StringPartKind::Variable, expected.as_str())],
             "\"${punct}\" must interpolate as Variable(\"${punct}\"), got {parts:?}"
         );
     }
@@ -697,9 +735,9 @@ fn dollar_backslash_is_the_output_record_separator_not_the_start_of_an_escape() 
     assert_eq!(
         parts,
         vec![
-            StringPart::Literal(Arc::from("x")),
-            StringPart::Variable(Arc::from("$\\")),
-            StringPart::Literal(Arc::from("ny")),
+            StringPart::expect(StringPartKind::Literal, "x"),
+            StringPart::expect(StringPartKind::Variable, "$\\"),
+            StringPart::expect(StringPartKind::Literal, "ny"),
         ],
         "\"x$\\ny\" must interpolate $\\ and leave \"ny\" literal, got {parts:?}"
     );
@@ -715,7 +753,7 @@ fn a_character_outside_the_punctuation_arm_falls_through_to_the_literal_fallback
     let parts = interpolated_parts("\"$*tail\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Literal(Arc::from("$*tail"))],
+        vec![StringPart::expect(StringPartKind::Literal, "$*tail")],
         "'*' is not in the punctuation-variable set, so \"$*tail\" stays literal, got {parts:?}"
     );
     Ok(())
@@ -735,7 +773,10 @@ fn dollar_digit_run_stops_at_the_first_non_digit_character() -> R {
     let parts = interpolated_parts("\"$1a\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$1")), StringPart::Literal(Arc::from("a")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$1"),
+            StringPart::expect(StringPartKind::Literal, "a"),
+        ],
         "\"$1a\" must be Variable(\"$1\") + Literal(\"a\"), got {parts:?}"
     );
     Ok(())
@@ -752,7 +793,7 @@ fn dollar_digit_arm_uses_is_ascii_digit_and_rejects_a_non_ascii_unicode_digit() 
     let parts = interpolated_parts("\"$\u{0663}\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Literal(Arc::from("$\u{0663}"))],
+        vec![StringPart::expect(StringPartKind::Literal, "$\u{0663}")],
         "\"$٣\" must stay literal, got {parts:?}"
     );
     Ok(())
@@ -769,7 +810,10 @@ fn dollar_caret_followed_by_a_lowercase_letter_leaves_the_letter_literal() -> R 
     let parts = interpolated_parts("\"$^w\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$^")), StringPart::Literal(Arc::from("w")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$^"),
+            StringPart::expect(StringPartKind::Literal, "w"),
+        ],
         "\"$^w\" must be Variable(\"$^\") + Literal(\"w\"), got {parts:?}"
     );
     Ok(())
@@ -784,7 +828,7 @@ fn dollar_hash_dollar_ref_folds_a_package_qualified_name() -> R {
     let parts = interpolated_parts("\"$#$main::ref\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$#$main::ref"))],
+        vec![StringPart::expect(StringPartKind::Variable, "$#$main::ref")],
         "\"$#$main::ref\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -798,7 +842,10 @@ fn dollar_hash_dollar_ref_stops_at_a_single_colon() -> R {
     let parts = interpolated_parts("\"$#$ref:tail\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$#$ref")), StringPart::Literal(Arc::from(":tail")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$#$ref"),
+            StringPart::expect(StringPartKind::Literal, ":tail"),
+        ],
         "a lone ':' must end \"$#$ref\", got {parts:?}"
     );
     Ok(())
@@ -811,7 +858,10 @@ fn dollar_hash_bare_array_stops_at_a_single_colon() -> R {
     let parts = interpolated_parts("\"$#arr:tail\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$#arr")), StringPart::Literal(Arc::from(":tail")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$#arr"),
+            StringPart::expect(StringPartKind::Literal, ":tail"),
+        ],
         "a lone ':' must end \"$#arr\", got {parts:?}"
     );
     Ok(())
@@ -827,7 +877,7 @@ fn dollar_hash_brace_arm_keeps_a_plain_inner_expression_in_one_variable() -> R {
     let parts = interpolated_parts("\"$#{arr}\"").ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$#{arr}"))],
+        vec![StringPart::expect(StringPartKind::Variable, "$#{arr}")],
         "\"$#{{arr}}\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -842,7 +892,7 @@ fn dollar_hash_brace_arm_keeps_a_plain_inner_expression_in_one_variable() -> R {
 #[test]
 fn dollar_colon_in_string_emits_variable() -> R {
     let parts = interpolated_parts(r#""$:""#).ok_or("no InterpolatedString")?;
-    assert_eq!(parts, vec![StringPart::Variable(Arc::from("$:"))]);
+    assert_eq!(parts, vec![StringPart::expect(StringPartKind::Variable, "$:")]);
     Ok(())
 }
 
@@ -854,7 +904,10 @@ fn dollar_colon_then_identifier_leaves_literal_tail() -> R {
     let parts = interpolated_parts(r#""$:foo""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$:")), StringPart::Literal(Arc::from("foo"))],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$:"),
+            StringPart::expect(StringPartKind::Literal, "foo")
+        ],
         "\"$:foo\" must be Variable(\"$:\") + Literal(\"foo\"), got {parts:?}"
     );
     Ok(())
@@ -867,7 +920,7 @@ fn dollar_double_colon_is_a_package_qualified_variable() -> R {
     let parts = interpolated_parts(r#""$::foo""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$::foo"))],
+        vec![StringPart::expect(StringPartKind::Variable, "$::foo")],
         "\"$::foo\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -881,7 +934,7 @@ fn dollar_double_colon_bare_is_one_variable() -> R {
     let parts = interpolated_parts(r#""$::""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$::"))],
+        vec![StringPart::expect(StringPartKind::Variable, "$::")],
         "\"$::\" must be one Variable part, got {parts:?}"
     );
     Ok(())
@@ -895,7 +948,10 @@ fn dollar_triple_colon_folds_only_the_leading_pair() -> R {
     let parts = interpolated_parts(r#""$:::foo""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$::")), StringPart::Literal(Arc::from(":foo"))],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$::"),
+            StringPart::expect(StringPartKind::Literal, ":foo")
+        ],
         "\"$:::foo\" must be Variable(\"$::\") + Literal(\":foo\"), got {parts:?}"
     );
     Ok(())
@@ -922,7 +978,10 @@ fn plain_identifier_arrow_method_call_stays_literal() -> R {
     let parts = interpolated_parts(r#""$foo->bar""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$foo")), StringPart::Literal(Arc::from("->bar")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$foo"),
+            StringPart::expect(StringPartKind::Literal, "->bar"),
+        ],
         "a bare arrow method after a plain identifier must stay literal, got {parts:?}"
     );
     Ok(())
@@ -936,8 +995,8 @@ fn plain_identifier_arrow_method_call_with_args_stays_literal() -> R {
     assert_eq!(
         parts,
         vec![
-            StringPart::Variable(Arc::from("$foo")),
-            StringPart::Literal(Arc::from("->method(x)")),
+            StringPart::expect(StringPartKind::Variable, "$foo"),
+            StringPart::expect(StringPartKind::Literal, "->method(x)"),
         ],
         "a bare arrow method with args must stay literal, got {parts:?}"
     );
@@ -951,21 +1010,30 @@ fn plain_identifier_arrow_subscripts_still_interpolate() -> R {
     let parts = interpolated_parts(r#""$ar->[1]""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$ar")), StringPart::MethodCall(Arc::from("->[1]")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$ar"),
+            StringPart::expect(StringPartKind::MethodCall, "->[1]"),
+        ],
         "an array arrow subscript must still interpolate, got {parts:?}"
     );
 
     let parts = interpolated_parts(r#""$hr->{k}""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$hr")), StringPart::MethodCall(Arc::from("->{k}")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$hr"),
+            StringPart::expect(StringPartKind::MethodCall, "->{k}"),
+        ],
         "a hash arrow subscript must still interpolate, got {parts:?}"
     );
 
     let parts = interpolated_parts(r#""$fn->(1)""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$fn")), StringPart::MethodCall(Arc::from("->(1)")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$fn"),
+            StringPart::expect(StringPartKind::MethodCall, "->(1)"),
+        ],
         "a coderef arrow call must still interpolate, got {parts:?}"
     );
     Ok(())
@@ -979,7 +1047,10 @@ fn plain_identifier_trailing_arrow_without_subscript_stays_literal() -> R {
     let parts = interpolated_parts(r#""$foo->""#).ok_or("no InterpolatedString")?;
     assert_eq!(
         parts,
-        vec![StringPart::Variable(Arc::from("$foo")), StringPart::Literal(Arc::from("->")),],
+        vec![
+            StringPart::expect(StringPartKind::Variable, "$foo"),
+            StringPart::expect(StringPartKind::Literal, "->"),
+        ],
         "a trailing arrow with no subscript must stay literal, got {parts:?}"
     );
     Ok(())

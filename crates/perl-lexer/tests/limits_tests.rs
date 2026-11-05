@@ -19,7 +19,7 @@
 //!    Elapsed time is deliberately not part of the lexer's source-derived token
 //!    contract (hang-detector, 2-second ceiling — not a latency benchmark).
 
-use perl_lexer::{MAX_REGEX_PARSE_STEPS, PerlLexer, StringPart, TokenType};
+use perl_lexer::{MAX_REGEX_PARSE_STEPS, PerlLexer, StringPart, StringPartKind, TokenType};
 use std::time::Instant;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -140,7 +140,7 @@ fn limits_interpolation_excessive_nesting_uses_local_recovery() -> TestResult {
     };
     let expected_expression = format!("${}", "{".repeat(MAX_DELIM_NEST));
     assert!(
-        matches!(parts.first(), Some(StringPart::Expression(text)) if text.as_ref() == expected_expression),
+        matches!(parts.first(), Some(StringPart::Expression(payload)) if payload.text.as_ref() == expected_expression),
         "depth rejection must stop the expression at MAX_DELIM_NEST"
     );
     // A faulty recovery could discard the braces above the limit and the tail
@@ -150,7 +150,7 @@ fn limits_interpolation_excessive_nesting_uses_local_recovery() -> TestResult {
     // consumed and 73 survive into the literal remainder.
     let expected_remainder = format!("{}tail", "{".repeat(200 - MAX_DELIM_NEST + 1));
     assert!(
-        matches!(parts.get(1), Some(StringPart::Literal(text)) if text.as_ref() == expected_remainder),
+        matches!(parts.get(1), Some(StringPart::Literal(payload)) if payload.text.as_ref() == expected_remainder),
         "local recovery must preserve the post-limit braces and tail text in the string literal"
     );
     let semicolon = tokens

@@ -296,14 +296,31 @@ pub fn perl_lexer::symbol_table::LocalSymbolTable::default() -> perl_lexer::symb
 pub fn perl_lexer::symbol_table::LocalSymbolTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lexer::token
 pub enum perl_lexer::token::StringPart
-pub perl_lexer::token::StringPart::ArraySlice(alloc::sync::Arc<str>)
-pub perl_lexer::token::StringPart::Expression(alloc::sync::Arc<str>)
-pub perl_lexer::token::StringPart::Literal(alloc::sync::Arc<str>)
-pub perl_lexer::token::StringPart::MethodCall(alloc::sync::Arc<str>)
-pub perl_lexer::token::StringPart::Variable(alloc::sync::Arc<str>)
+pub perl_lexer::token::StringPart::ArraySlice(perl_lexer::token::SegmentPayload)
+pub perl_lexer::token::StringPart::Expression(perl_lexer::token::SegmentPayload)
+pub perl_lexer::token::StringPart::Literal(perl_lexer::token::SegmentPayload)
+pub perl_lexer::token::StringPart::MethodCall(perl_lexer::token::SegmentPayload)
+pub perl_lexer::token::StringPart::Variable(perl_lexer::token::SegmentPayload)
+pub fn perl_lexer::token::StringPart::end(&self) -> usize
+pub fn perl_lexer::token::StringPart::expect(kind: perl_lexer::token::StringPartKind, text: impl core::convert::Into<alloc::sync::Arc<str>>) -> perl_lexer::token::StringPart
+pub fn perl_lexer::token::StringPart::from_source(kind: perl_lexer::token::StringPartKind, source: &str, start: usize, end: usize) -> perl_lexer::token::StringPart
+pub fn perl_lexer::token::StringPart::kind(&self) -> perl_lexer::token::StringPartKind
+pub fn perl_lexer::token::StringPart::source_range(&self) -> core::ops::range::Range<usize>
+pub fn perl_lexer::token::StringPart::start(&self) -> usize
+pub fn perl_lexer::token::StringPart::text(&self) -> &str
 pub fn perl_lexer::token::StringPart::clone(&self) -> perl_lexer::token::StringPart
 pub fn perl_lexer::token::StringPart::eq(&self, other: &perl_lexer::token::StringPart) -> bool
 pub fn perl_lexer::token::StringPart::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::token::StringPartKind
+pub perl_lexer::token::StringPartKind::ArraySlice
+pub perl_lexer::token::StringPartKind::Expression
+pub perl_lexer::token::StringPartKind::Literal
+pub perl_lexer::token::StringPartKind::MethodCall
+pub perl_lexer::token::StringPartKind::Variable
+pub fn perl_lexer::token::StringPartKind::clone(&self) -> perl_lexer::token::StringPartKind
+pub fn perl_lexer::token::StringPartKind::eq(&self, other: &perl_lexer::token::StringPartKind) -> bool
+pub fn perl_lexer::token::StringPartKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::token::StringPartKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_lexer::token::TokenType
 pub perl_lexer::token::TokenType::Arrow
 pub perl_lexer::token::TokenType::Colon
@@ -350,6 +367,13 @@ pub fn perl_lexer::token::TokenType::is_trivia(&self) -> bool
 pub fn perl_lexer::token::TokenType::clone(&self) -> perl_lexer::token::TokenType
 pub fn perl_lexer::token::TokenType::eq(&self, other: &perl_lexer::token::TokenType) -> bool
 pub fn perl_lexer::token::TokenType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::token::SegmentPayload
+pub perl_lexer::token::SegmentPayload::end: usize
+pub perl_lexer::token::SegmentPayload::start: usize
+pub perl_lexer::token::SegmentPayload::text: alloc::sync::Arc<str>
+pub fn perl_lexer::token::SegmentPayload::clone(&self) -> perl_lexer::token::SegmentPayload
+pub fn perl_lexer::token::SegmentPayload::eq(&self, other: &perl_lexer::token::SegmentPayload) -> bool
+pub fn perl_lexer::token::SegmentPayload::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::token::Token
 pub perl_lexer::token::Token::end: usize
 pub perl_lexer::token::Token::start: usize
@@ -455,14 +479,31 @@ pub fn perl_lexer::mode::LexerMode::eq(&self, other: &perl_lexer::mode::LexerMod
 pub fn perl_lexer::mode::LexerMode::default() -> perl_lexer::mode::LexerMode
 pub fn perl_lexer::mode::LexerMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lexer::StringPart
-pub perl_lexer::StringPart::ArraySlice(alloc::sync::Arc<str>)
-pub perl_lexer::StringPart::Expression(alloc::sync::Arc<str>)
-pub perl_lexer::StringPart::Literal(alloc::sync::Arc<str>)
-pub perl_lexer::StringPart::MethodCall(alloc::sync::Arc<str>)
-pub perl_lexer::StringPart::Variable(alloc::sync::Arc<str>)
+pub perl_lexer::StringPart::ArraySlice(perl_lexer::token::SegmentPayload)
+pub perl_lexer::StringPart::Expression(perl_lexer::token::SegmentPayload)
+pub perl_lexer::StringPart::Literal(perl_lexer::token::SegmentPayload)
+pub perl_lexer::StringPart::MethodCall(perl_lexer::token::SegmentPayload)
+pub perl_lexer::StringPart::Variable(perl_lexer::token::SegmentPayload)
+pub fn perl_lexer::token::StringPart::end(&self) -> usize
+pub fn perl_lexer::token::StringPart::expect(kind: perl_lexer::token::StringPartKind, text: impl core::convert::Into<alloc::sync::Arc<str>>) -> perl_lexer::token::StringPart
+pub fn perl_lexer::token::StringPart::from_source(kind: perl_lexer::token::StringPartKind, source: &str, start: usize, end: usize) -> perl_lexer::token::StringPart
+pub fn perl_lexer::token::StringPart::kind(&self) -> perl_lexer::token::StringPartKind
+pub fn perl_lexer::token::StringPart::source_range(&self) -> core::ops::range::Range<usize>
+pub fn perl_lexer::token::StringPart::start(&self) -> usize
+pub fn perl_lexer::token::StringPart::text(&self) -> &str
 pub fn perl_lexer::token::StringPart::clone(&self) -> perl_lexer::token::StringPart
 pub fn perl_lexer::token::StringPart::eq(&self, other: &perl_lexer::token::StringPart) -> bool
 pub fn perl_lexer::token::StringPart::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::StringPartKind
+pub perl_lexer::StringPartKind::ArraySlice
+pub perl_lexer::StringPartKind::Expression
+pub perl_lexer::StringPartKind::Literal
+pub perl_lexer::StringPartKind::MethodCall
+pub perl_lexer::StringPartKind::Variable
+pub fn perl_lexer::token::StringPartKind::clone(&self) -> perl_lexer::token::StringPartKind
+pub fn perl_lexer::token::StringPartKind::eq(&self, other: &perl_lexer::token::StringPartKind) -> bool
+pub fn perl_lexer::token::StringPartKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::token::StringPartKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_lexer::TokenType
 pub perl_lexer::TokenType::Arrow
 pub perl_lexer::TokenType::Colon
