@@ -67,6 +67,11 @@ The README is a front door, not the metric source of truth. Current release post
 
 ## Install
 
+Release downloads below come from the publication repository,
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp/releases).
+To install the code in **this `perl-lsp-swarm` repository**, follow
+[Install From Source](docs/how-to/INSTALLATION.md#install-from-source).
+
 **VS Code** — installs the extension, which downloads the matching `perllsp` binary for you:
 
 ```bash
@@ -98,8 +103,8 @@ both values, the identity-bound bootstrap has this shape
 ([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
 
 ```bash
-INSTALLER_REF=<full-40-char-commit-sha>
-INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+INSTALLER_REF='<full-40-char-commit-sha>'
+INSTALLER_SHA256='<reviewed-sha256-of-scripts-install-sh>'
 curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
   | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
     PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
@@ -126,13 +131,15 @@ ARM64 under x64 emulation. It selects the current
 `perllsp.exe`, and verifies the asset against the release `SHA256SUMS` file,
 aborting on a checksum mismatch; any other checksum failure — the file cannot
 be downloaded, has no row for the asset, cannot be parsed, or the hash cannot
-be computed — prints a warning and continues without verification. Download
-it, inspect it, then run it from PowerShell:
+be computed — prints a warning and continues without verification. The pinned
+script has a known Windows PowerShell 5.1 parsing limitation. Use PowerShell 7
+(`pwsh`) for this script, or use the manual archive. Download and inspect it
+before running:
 
 ```powershell
 irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1 -OutFile install.ps1
 # Review install.ps1, then:
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+pwsh -File .\install.ps1
 ```
 
 This fetches the exact audited revision pinned in the
@@ -145,6 +152,12 @@ promotes `perllsp.exe` and `perl-dap.exe` as one atomic product unit
 Windows 10 ARM64 and unsupported architectures must build from source. On
 x86_64 Windows the manual archive above remains available as an alternative to
 the installer.
+
+For a standalone or Cargo install, add the directory containing the executable
+to your `PATH`, then open a new terminal and restart your editor. See the
+[PATH and binary-selection steps](docs/how-to/INSTALLATION.md#add-the-binary-directory-to-path)
+if the command is missing or resolves to an older copy. An extension-managed
+binary need not be on your shell's PATH.
 
 Then inspect the install before wiring it into an editor. `--doctor` reports
 the local Perl and workspace setup; it is a diagnostic report, not a CI gate.

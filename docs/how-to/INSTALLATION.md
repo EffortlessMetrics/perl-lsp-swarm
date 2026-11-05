@@ -3,6 +3,12 @@
 Use this page when you need to install `perllsp`, upgrade an existing install,
 or verify that the binary works on your machine.
 
+This is the development repository, `EffortlessMetrics/perl-lsp-swarm`.
+Published release downloads intentionally come from
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp/releases).
+To run this checkout's changes, use [Install From Source](#install-from-source);
+installing a release or the crates.io package does not build this checkout.
+
 If you only need editor integration after installation, jump to
 [EDITOR_SETUP.md](EDITOR_SETUP.md). If the binary starts but does not behave as
 expected, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
@@ -22,10 +28,10 @@ Use one of the public install paths that matches how you work:
 - macOS or Linux: use the [macOS and Linux manual archive](#macos-and-linux-manual-archive) until the release packet publishes an immutable installer identity and digest. The identity-bound [installer wrapper](#installer-script-macos-and-linux) becomes usable when those values exist.
 - Windows: install from the [manual archive](#manual-archive), or use the [published PowerShell script](#published-powershell-script) for `perllsp.exe` only after reviewing its checksum limitations.
 - Other editors: download a prebuilt binary from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and put it on your `PATH`.
-- Local testing or pre-release validation: install from this repo with `cargo install --path crates/perllsp`.
+- Cargo users: [install the published `perllsp` package](#cargo-published-package) with `cargo install perllsp --locked` (language server only).
+- Local testing or pre-release validation: [install this checkout](#install-from-source) with `cargo install --path crates/perllsp --locked` from the repository root.
 
-Do not install the unrelated crates.io package named `perl-lsp`. That package
-name is owned by another project, so the supported Cargo package is `perllsp`.
+The crates.io package `perl-lsp` is a different project; install `perllsp`.
 
 Inspect the install before wiring it into an editor. `--doctor` reports the
 local Perl and workspace setup; it is a diagnostic report, not a CI gate.
@@ -35,6 +41,18 @@ local Perl and workspace setup; it is a diagnostic report, not a CI gate.
 perllsp --version
 perllsp --doctor
 ```
+
+If those commands are missing or report an older version, check
+[PATH and binary selection](#add-the-binary-directory-to-path). For an
+extension-managed installation, use the extension's **Perl: Show Server Version**
+command; its private binary directory need not be on your shell's PATH.
+
+## Before You Start
+
+- Prebuilt archives and extension-managed downloads do not require Rust or a C/C++ toolchain. Cargo installs compile Rust code; see [build prerequisites](#build-prerequisites).
+- The language server is a native executable. Install Perl separately to run Perl programs, tests, or the debugger; see [Perl setup](PERL_SETUP_TROUBLESHOOTING.md).
+- Install in the environment where the editor runs the server. For WSL, use the Linux instructions inside WSL. For an SSH or container workspace, install inside that remote environment and configure the editor there.
+- Keep the archive's extracted directory in a permanent location before adding it to PATH. Restart already-running terminals and editors after persistent PATH changes.
 
 ## Installer Script (macOS and Linux)
 
@@ -52,8 +70,8 @@ positional. A third positional fails closed. Remaining flags
 From a clone, the wrapper executes the sibling `scripts/install.sh` directly:
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp.git
-cd perl-lsp
+git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+cd perl-lsp-swarm
 bash install.sh --help
 ```
 
@@ -74,8 +92,8 @@ installer only after the content digest matches.
 Once a release closeout publishes both values, use this command shape:
 
 ```bash
-INSTALLER_REF=<full-40-char-commit-sha>
-INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+INSTALLER_REF='<full-40-char-commit-sha>'
+INSTALLER_SHA256='<reviewed-sha256-of-scripts-install-sh>'
 
 curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
   | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
@@ -95,7 +113,7 @@ pipeline:
 curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
   | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
     PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" \
-    VERSION=v0.18.0 \
+    VERSION=v0.17.0 \
     INSTALL_DIR="$HOME/.local/bin" \
     PERL_LSP_LINUX_LIBC=musl bash
 ```
@@ -163,7 +181,9 @@ independently reviewed checksum or attestation evidence for release-sensitive
 installation until those remaining boundaries land.
 
 `BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode runs
-`cargo install perllsp`. The crates.io package `perl-lsp` is a different project,
+`cargo install perllsp --locked` against crates.io; it does not build the local
+checkout. To install this repository's code, follow
+[Install From Source](#install-from-source). The crates.io package `perl-lsp` is a different project,
 not this language server. The `perllsp` package declares just the one binary, so
 the debug adapter is skipped without an error. If you need the
 debugger, use a release archive instead — the archives ship both binaries — or
@@ -197,30 +217,63 @@ need `PERL_LSP_INSTALLER_REF` or `PERL_LSP_INSTALLER_SHA256`.
 # Replace VERSION and TARGET after checking GitHub Releases.
 VERSION=0.17.0
 TARGET=x86_64-unknown-linux-gnu
-TAG="v${VERSION}"
-ASSET="perllsp-${VERSION}-${TARGET}.tar.gz"
-BASE="https://github.com/EffortlessMetrics/perl-lsp/releases/download/${TAG}"
 
-curl -fsSL -O "${BASE}/${ASSET}"
-curl -fsSL -O "${BASE}/SHA256SUMS"
+# A subshell stops on failure without exiting your interactive shell.
+(
+  set -eu
+  ASSET="perllsp-${VERSION}-${TARGET}.tar.gz"
+  BASE="https://github.com/EffortlessMetrics/perl-lsp/releases/download/v${VERSION}"
 
-# Fail closed if SHA256SUMS has no row for this asset, and do not extract
-# unless that row verifies. An interactive paste has neither `set -e` nor
-# `pipefail`, so extraction is chained with `&&`.
-ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
-# GNU coreutils (Linux):
-printf '%s\n' "$ROW" | sha256sum -c - && tar -xzf "$ASSET"
-# macOS:
-# printf '%s\n' "$ROW" | shasum -a 256 -c - && tar -xzf "$ASSET"
+  curl -fsSL -O "${BASE}/${ASSET}"
+  curl -fsSL -O "${BASE}/SHA256SUMS"
+
+  # Match the complete filename, not a substring such as "$ASSET.bak".
+  # Accept the standard SHA256SUMS text or binary marker; refuse duplicates.
+  ROW="$(awk -v asset="$ASSET" '
+    { name = $2; sub(/^\*/, "", name) }
+    name == asset {
+      count++
+      if (NF != 2 || length($1) != 64 || $1 !~ /^[0-9a-fA-F]+$/) bad = 1
+      row = $0
+    }
+    END {
+      if (count != 1 || bad) exit 1
+      print row
+    }
+  ' SHA256SUMS)" || {
+    printf 'Expected exactly one valid checksum for %s\n' "$ASSET" >&2
+    exit 1
+  }
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n' "$ROW" | sha256sum -c -
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s\n' "$ROW" | shasum -a 256 -c -
+  else
+    printf 'Install sha256sum or shasum before continuing.\n' >&2
+    exit 1
+  fi && tar -xzf "$ASSET"
+)
 ```
 
-Put the extracted directory (`perllsp-${VERSION}-${TARGET}`) on your `PATH`,
-then inspect the binaries:
+Continue only if download, verification, and extraction succeeded. From the
+same directory, verify the extracted files directly before selecting them on
+PATH. If you moved the extracted directory to a permanent location, set
+`INSTALL_DIR` to that absolute directory instead:
 
 ```bash
-perllsp --version
-perl-dap --version
+INSTALL_DIR="$(pwd)/perllsp-${VERSION}-${TARGET}"
+"$INSTALL_DIR/perllsp" --version
+"$INSTALL_DIR/perl-dap" --version
+export PATH="$INSTALL_DIR:$PATH"
+command -v perllsp
+command -v perl-dap
 ```
+
+That export affects only the current shell. Follow the
+[PATH persistence steps](#add-the-binary-directory-to-path) before opening a
+new terminal or editor. The clone-local POSIX installer also prints PATH
+instructions; it does not edit your shell startup files for you.
 
 A reviewed clone is the other working POSIX alternative: from a checkout,
 `bash install.sh` executes the sibling [`scripts/install.sh`](../../scripts/install.sh)
@@ -259,14 +312,21 @@ terminal and verify `perllsp --version` before configuring your editor.
 Download and inspect this same script revision before running it. Pass
 `-Version` to select a release and `-InstallDir` to change the install directory:
 
+Use **PowerShell 7 (`pwsh`)** for this pinned published script. The older
+published file has a known Windows PowerShell 5.1 parsing/encoding limitation;
+changing execution policy or using `Unblock-File` does not repair its syntax.
+If you only have Windows PowerShell 5.1, use the [manual archive](#manual-archive).
+
 ```powershell
 irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1 -OutFile install.ps1
 # Review install.ps1, then:
-.\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
+pwsh -File .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 ```
 
-If PowerShell refuses to run the downloaded script, either unblock it
-(`Unblock-File .\install.ps1`) or run it in a session that allows local scripts.
+If execution policy blocks the reviewed file in PowerShell 7, follow your
+machine's script-execution policy; `Unblock-File .\install.ps1` removes the
+download mark when that is the cause. The manual archive does not require
+running an installer script.
 
 ### Development-checkout installer
 
@@ -351,24 +411,84 @@ perllsp --completion zsh > "$(brew --prefix)/share/zsh/site-functions/_perllsp"
 perllsp --completion fish > "$(brew --prefix)/share/fish/completions/perllsp.fish"
 ```
 
+## Cargo: Published Package
+
+This compiles the independently published crates.io package. It does not use
+the code in a local `perl-lsp-swarm` checkout. Complete the
+[build prerequisites](#build-prerequisites).
+The crates.io package `perl-lsp` is a different project; use `perllsp`:
+
+```bash
+cargo install perllsp --locked
+```
+
+`--locked` uses the package's lockfile. This installs **`perllsp` only**;
+it does not install `perl-dap`. For the published server/adapter pair, use a
+[release archive](#prebuilt-releases).
+
+Add the directory containing Cargo's installed executable to PATH, then
+[verify the selected executable](#add-the-binary-directory-to-path). Check the
+installed version against the channel you intended to use; crates.io and
+GitHub Releases are independently versioned.
+
 ## Install From Source
 
-Use this when you want to test the workspace locally or build a release binary
-before publishing:
+Use this to install and test the code in **this development repository**.
+A checkout build is not the same artifact as a published release.
+
+### Build prerequisites
+
+Install Rust and Cargo using the [official Rust instructions](https://www.rust-lang.org/tools/install/).
+The workspace requires Rust 1.95 or newer and pins Rust **1.95.0** in
+[`rust-toolchain.toml`](../../rust-toolchain.toml); rustup selects that pinned
+toolchain when you run commands inside the checkout. Git is required to clone
+the repository. You also need the native build tools for your platform:
+
+| Platform | Build tools |
+| --- | --- |
+| Linux | A C/C++ compiler, linker, and development headers from your distribution's build-tools packages |
+| macOS | Xcode Command Line Tools (`xcode-select --install`) |
+| Windows with the MSVC target | Visual Studio Build Tools with the C++ build tools and Windows SDK; follow the Rust installer's prompts |
+
+These build dependencies are not needed to run a prebuilt release archive.
+
+### Install this checkout
+
+Run from the repository root after cloning:
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp.git
-cd perl-lsp
-cargo build --release --bin perllsp -p perllsp
+git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+cd perl-lsp-swarm
+rustc --version
+cargo --version
+cargo install --path crates/perllsp --locked
 ```
 
-If you want Cargo to build and install the published package into
-Cargo's bin directory instead:
+This builds and installs the `perllsp` package from `crates/perllsp`, using the
+workspace lockfile. A plain `cargo build` only creates build output; it does not
+replace the executable your shell or editor finds on PATH. Installing by
+package name without `--path` selects the registry instead of this checkout.
+
+If you also want to test the debug adapter from this checkout:
 
 ```bash
-cargo install perllsp
+cargo install --path crates/perl-dap --locked --bin perl-dap
 ```
-> The crates.io package `perl-lsp` is a different project, not this language server.
+
+These are separate Cargo installs, not the standalone installer's atomic
+server/adapter promotion. Running or debugging Perl code also requires Perl.
+
+To keep a development server separate from an existing installation, use a
+different install root instead of overwriting it:
+
+```bash
+cargo install --path crates/perllsp --locked --root ./target/install-preview
+```
+
+Run that exact binary as `./target/install-preview/bin/perllsp --version` on
+Linux/macOS, or `.\target\install-preview\bin\perllsp.exe --version` in
+PowerShell. Configure your editor with its absolute path. For development
+checks and contribution workflow, see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Prebuilt Releases
 
@@ -393,22 +513,83 @@ vendor field and is expected; choose based on the final `gnu` or `musl` segment.
 
 ## After Installation
 
-Once `perllsp` is installed, add it to your editor with the command:
+### Add the binary directory to PATH
+
+For a standalone install, add the directory that actually contains `perllsp`
+(`perllsp.exe` on Windows). For an archive, this is the extracted binary
+directory. For Cargo, use the directory shown by its installation output.
+Cargo normally uses `$HOME/.cargo/bin` on Unix or
+`%USERPROFILE%\.cargo\bin` on Windows; `CARGO_HOME`, `CARGO_INSTALL_ROOT`,
+Cargo configuration, or `--root` can change that location.
+
+For the default Cargo location in **Bash or Zsh**:
 
 ```bash
-perllsp --stdio
+export PATH="$HOME/.cargo/bin:$PATH"
+type -a perllsp
 ```
 
-Then inspect the install from a shell before debugging editor integration:
+Substitute the actual binary directory for an archive or custom Cargo root.
+To persist the change, add the export with that stable path to the startup
+file your shell reads (for example, `~/.bashrc` or `~/.zshrc`). Do not put a
+temporary `$(pwd)` expression or an unset `INSTALL_DIR` variable in that file.
+Open a new terminal and restart your editor. An editor launched from a desktop
+menu may need an explicit server path even when your shell resolves it.
+
+For the default Cargo location in **PowerShell**, update the current session:
+
+```powershell
+$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+Get-Command perllsp -All | Select-Object CommandType, Source
+```
+
+For persistence, open **Edit environment variables for your account**, select
+**Path** under **User variables**, and add the actual binary directory as its
+own entry. Then open a new terminal and restart your editor. `Get-Command
+perllsp -All` (or `type -a perllsp` on Unix) helps identify an older copy earlier
+on PATH. Use an absolute executable path when you need to select a specific
+installation.
+
+### Verify before configuring the editor
+
+Run these from your Perl project's directory using the executable selected
+above:
 
 ```bash
+perllsp --version
+perllsp --health
 perllsp --doctor
 ```
 
-`perllsp --health` is also available as a liveness probe. It prints `ok <version>`
-but does not inspect Perl, workspace, or module-lookup
-configuration. For CI, use explicit checks for the environment paths your job
-requires rather than treating the doctor report or its exit status as a gate.
+`--health` prints `ok <version>` and confirms that the executable starts.
+`--doctor` describes Perl, workspace, and module-lookup configuration; it is
+a diagnostic report, not a readiness gate. For CI, check the specific paths
+and dependencies your job needs. If you installed the debugger, also run
+`perl-dap --version` using that install's binary path.
+
+Generic LSP clients should launch the command `perllsp` with the argument
+`--stdio`; see [Editor Setup](EDITOR_SETUP.md). Running `perllsp --stdio`
+manually waits for LSP messages and can appear idle. Use the checks above for
+a shell smoke check; press Ctrl+C if you started stdio interactively.
+
+### Select a development binary in VS Code
+
+The extension can manage its own downloaded server. Installing a binary with
+Cargo does not by itself select it in the extension. To test your local build,
+set these in **User Settings (JSON)**, replacing the path with the absolute
+path to your installed executable:
+
+```json
+{
+  "perl-lsp.serverPath": "/absolute/path/to/perllsp",
+  "perl-lsp.autoDownload": false
+}
+```
+
+On Windows, use a path such as `C:/tools/bin/perllsp.exe` (forward slashes
+avoid JSON backslash escaping). Run **Perl: Restart Perl Language Server**,
+then **Perl: Show Server Version** from the Command Palette. See the
+[VS Code guide](../EDITORS/VS_CODE_SETUP.md) for complete configuration.
 
 ## Release Maintainers
 
