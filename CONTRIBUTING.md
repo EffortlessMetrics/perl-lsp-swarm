@@ -42,8 +42,8 @@ Follow [Development environment](docs/how-to/DEVELOPMENT_ENVIRONMENT.md) next:
 choose Nix or native tools, activate this shell, run build-free prerequisite
 probes, admit the hook installation/check, then choose focused proof. The guide
 uses [rust-toolchain.toml](rust-toolchain.toml) as the Rust/component authority
-and covers optional tools by task. The repository pins Rust `1.95.0` and requires
-MSRV 1.95.
+and covers optional tools by task. The repository pins Rust channel `1.95.0` and
+requires MSRV 1.95.
 
 ### Windows shell for `just` recipes
 
