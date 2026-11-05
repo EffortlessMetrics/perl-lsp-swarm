@@ -590,13 +590,22 @@ impl LspServer {
             let source_path = source_path_from_uri(uri);
             let project_version = project_version_for_doc(self, uri);
 
-            // Wait for index build, then sample staleness before touching the
-            // workspace index tier (#5016 item 2).  Sample after readiness and
-            // before any documents_guard re-entry (#6199 deadlock lesson).
+            // Sample staleness before touching the workspace index tier
+            // (#5016 item 2). Sample after readiness and before any
+            // documents_guard re-entry (#6199 deadlock lesson).
+            //
+            // Push diagnostics is a background stream: it uses the current
+            // snapshot and never blocks on index readiness (the readiness
+            // module's SnapshotOnly contract). Waiting here stalled every
+            // debounced publish behind the post-open Building window for up
+            // to INDEX_READY_WAIT_MS (#18774); the not-ready fallback below
+            // keeps the payload honest until the index lands. The pull path
+            // and workspace diagnostics keep WaitBriefly -- those are
+            // explicit user requests where waiting is the point.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             let workspace_index_tier_enabled = {
                 let _ = self.check_index_readiness(
-                    crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
+                    crate::runtime::readiness::IndexReadinessPolicy::SnapshotOnly,
                 );
                 !self.workspace_index_stale_for_any_open_document()
             };
@@ -7676,6 +7685,42 @@ sub after { 2 }
             "SyntaxOnly must not run the undefined-method lint: {text:?}"
         );
         assert!(!text.contains("PL412"), "SyntaxOnly must not run the stray-cut lint: {text:?}");
+        Ok(())
+    }
+
+    /// #18774: the push publish path must not block on workspace-index
+    /// readiness. With `indexing_in_progress` set and the coordinator held
+    /// in Building -- exactly the post-open eager-indexing window -- the
+    /// old WaitBriefly policy stalled every debounced publish in a 1ms
+    /// poll loop for up to INDEX_READY_WAIT_MS (2s). SnapshotOnly must
+    /// publish from the current snapshot well inside that budget.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn push_publish_does_not_block_while_workspace_index_is_building()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _buf) = make_server_with_capture();
+        let uri = "file:///sink_building_index_publish.pl";
+        let text = "package Building;\nsub new { bless {}, shift }\n1;\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": text}
+        })))?;
+
+        // Hold the exact post-open window: coordinator Building plus the
+        // background-indexing flag -- the condition WaitBriefly polls on.
+        server.test_index_file_in_building_state(uri, text)?;
+        server.test_simulate_indexing_start();
+
+        let start = Instant::now();
+        server.publish_diagnostics(uri);
+        let elapsed = start.elapsed();
+
+        server.test_simulate_indexing_complete();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "push publish must use the current snapshot instead of waiting \
+             for index readiness; took {elapsed:?} (the WaitBriefly budget is 2s)"
+        );
         Ok(())
     }
 }
