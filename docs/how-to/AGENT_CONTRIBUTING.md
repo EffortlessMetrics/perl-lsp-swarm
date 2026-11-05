@@ -20,6 +20,10 @@ or orchestration documents.
 
 ## Activate tools in the task shell
 
+Follow the ordered [development environment setup](DEVELOPMENT_ENVIRONMENT.md)
+for acquisition, build-free inspection, hook provisioning, and focused proof.
+The example below handles activation of an existing custom cloud installation.
+
 A saved cloud setup can install tools successfully while leaving a fresh task
 shell unable to find `cargo` or `just`. Exports in an executed setup script apply
 to that process and its children; they do not configure later task shells.
@@ -37,19 +41,24 @@ saved setup; these are example locations, not repository defaults:
   export CARGO_HOME=/workspace/shared/cargo
   export RUSTUP_HOME=/workspace/shared/rustup
   export PATH="$CARGO_HOME/bin:$PATH"
+  export RUSTUP_AUTO_INSTALL=0
   # Use rust-toolchain.toml for ordinary repository work in this subshell.
   unset RUSTUP_TOOLCHAIN
-  command -v cargo rustup just
-  rustup show active-toolchain
+  for tool in cargo rustup just; do command -v "$tool"; done
+  . scripts/lib/cargo-toolchain-guard.sh
+  cargo_toolchain_guard
   cargo --version
   just --version
   # Run the task's separately admitted commands here, in this same subshell.
 )
 ```
 
-Check that the repository-pinned toolchain is already installed before running
-the probes; rustup can otherwise attempt to download it. Keep an explicitly
-qualified alternative toolchain in its own task scope. The parentheses keep
+The existing guard rejects Cargo proxies whose rustup manager is too old to
+honor the no-install setting and refuses a missing repository-pinned toolchain.
+The version probe verifies Cargo selection; command discovery alone does not
+verify all compiler components. Return to explicit acquisition when tools are
+absent. Keep an explicitly qualified alternative toolchain in its own task scope.
+The parentheses keep
 these selections out of the parent shell; repeat the activation in each task
 shell that needs the tools. No shell-profile or global configuration edit is
 needed. Tool discovery does not establish hook readiness or build capacity;

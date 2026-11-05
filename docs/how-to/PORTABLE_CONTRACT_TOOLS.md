@@ -4,8 +4,12 @@ The repository supports two installation paths:
 
 | Path | Authority | Use |
 |---|---|---|
-| Nix development shell | `flake.nix` / `flake.lock` | Complete contributor environment, including Rust, Python, Node, and repository CLIs |
-| Aqua | `aqua.yaml` | Exact portable non-language CLIs for contributors and CI jobs that do not enter Nix |
+| Nix development shell | [flake.nix](../../flake.nix) / [flake.lock](../../flake.lock) | Pinned Rust, Python, Perl, `just`, and the additional tools listed in the flake; Node is acquired separately |
+| Aqua | [aqua.yaml](../../aqua.yaml) | The exact portable non-language CLIs listed in the manifest for contributors and CI jobs that do not enter Nix |
+
+Follow [Development environment](DEVELOPMENT_ENVIRONMENT.md) for the complete
+setup sequence and task-specific prerequisites. The inventories above cover
+different tool sets.
 
 Aqua is deliberately **not** a task runner. `just` and `cargo xtask` remain the command and policy authorities.
 

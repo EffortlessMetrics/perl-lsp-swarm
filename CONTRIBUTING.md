@@ -36,34 +36,18 @@ cargo run --locked -p xtask --bin contributor-topology
 ```bash
 git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
 cd perl-lsp-swarm
-
-# Recommended reproducible environment
-nix develop
-
-# Verify tools and repository health
-just devex
-just doctor
-
-# Fast local proof
-just pr-fast
 ```
 
-Without Nix, install the pinned Rust toolchain through
-[rustup](https://rustup.rs/) and install `just`:
-
-```bash
-rustup show
-cargo install just
-just devex
-just pr-fast
-```
-
-The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
-requires MSRV 1.95.
+Follow [Development environment](docs/how-to/DEVELOPMENT_ENVIRONMENT.md) next:
+choose Nix or native tools, activate this shell, run build-free prerequisite
+probes, admit the hook installation/check, then choose focused proof. The guide
+uses [rust-toolchain.toml](rust-toolchain.toml) as the Rust/component authority
+and covers optional tools by task. The repository pins Rust `1.95.0` and requires
+MSRV 1.95.
 
 ### Windows shell for `just` recipes
 
-The `just` recipes are bash scripts. Run them from Git Bash (or another bash
+The `just` recipes require Bash 4 or newer. Run them from Git Bash (or another bash
 with `cygpath` on `PATH`). From PowerShell or `cmd.exe`, `just` fails with
 ``Could not find `cygpath` `` when `cygpath` is not on `PATH`. Git Bash
 already puts `cygpath` and the other tools these recipes need on its own
@@ -194,7 +178,8 @@ refuses the request. Do not lower limits merely to pass.
 
 | Situation | Command |
 | --- | --- |
-| Tool or environment problem | `just devex` |
+| Initial environment setup | [Development environment](docs/how-to/DEVELOPMENT_ENVIRONMENT.md) |
+| Tool diagnostics after build admission | `just devex` (compiles `xtask`; see the setup guide's Nix limitation) |
 | Repository health or generated drift | `just doctor` |
 | Fast inner loop | `just pr-fast` |
 | Full local merge gate | `just ci-gate` |
