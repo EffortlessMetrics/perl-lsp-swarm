@@ -5,8 +5,8 @@ use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma, format_simple_line, indent_unit, is_perl_line_directive,
-    is_rendered_block_boundary_line, literal_preserve_region, preserve_region_lines,
-    range_includes_line, rendered_boundary_role, split_trailing_comment,
+    is_rendered_block_boundary_line, literal_preserve_region, range_includes_line,
+    rendered_boundary_role, source_layout, split_trailing_comment,
 };
 use serde::{Deserialize, Serialize};
 
@@ -679,11 +679,9 @@ fn utf16_len(source: &str) -> u32 {
 /// formatter, so they impose no constraint.
 ///
 /// A range target is judged with its enclosing block context (#17713): the
-/// walk covers the whole document with an opener stack like the document
-/// formatter's `format_safe_subset` walk — the range formatter's
-/// `format_safe_subset_range` keeps no opener stack and only rewrites
-/// selected lines with `format_simple_line` — so blocks opened before the
-/// range seed the stack and blocks closed after it balance it. Only lines
+/// walk covers the whole document with an opener stack like the formatter's
+/// `format_safe_subset` and `format_safe_subset_range` walks, so blocks opened
+/// before the range seed the stack and blocks closed after it balance it. Only lines
 /// inside the range are adjudicated: an out-of-range line can neither
 /// refuse the range nor be excused by it, it only moves the stack. Before
 /// this, a range was judged on its selected lines alone, so a no-change
@@ -708,7 +706,8 @@ fn target_has_only_supported_lines(
     // code: exactly as in `format_safe_subset`, they never move the block
     // stack and are never adjudicated, so string content shaped like a
     // block header cannot invent an opener for a later range.
-    let literal_lines = preserve_region_lines(source);
+    let layout = source_layout(source);
+    let literal_lines = &layout.literal_lines;
     for (line, text) in split_lines_for_range_validation(source).into_iter().enumerate() {
         if literal_lines.contains(&line) {
             continue;
@@ -784,7 +783,7 @@ fn target_has_only_supported_lines(
             if code.starts_with('}') {
                 open_blocks.pop();
             }
-            if code.ends_with('{') && !code.starts_with('{') {
+            if layout.opens_fallback_block(code) {
                 open_blocks.push(indent);
             }
         } else if format_simple_line(text, config).is_none()

@@ -132,7 +132,8 @@ impl NativeFormatter {
         // Physical lines inside a multiline literal (string, regex, qwâ€¦)
         // are literal bytes, not code: never reindent them and never let
         // their contents move the block stack.
-        let literal_lines = preserve_region_lines(source);
+        let layout = source_layout(source);
+        let literal_lines = &layout.literal_lines;
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
@@ -178,7 +179,7 @@ impl NativeFormatter {
                 // text must not move the block stack.
                 let code = if body.trim_start().starts_with('#') { "" } else { code.trim() };
                 let closes = code.starts_with('}');
-                let opens = code.ends_with('{') && !code.starts_with('{');
+                let opens = layout.opens_fallback_block(code);
                 let popped = if closes { indent_stack.pop() } else { None };
                 let indent =
                     popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
@@ -238,7 +239,8 @@ impl NativeFormatter {
         // relative to its enclosing block; only in-range lines are emitted.
         let mut indent_stack: Vec<String> = Vec::new();
         let unit = indent_unit(config);
-        let literal_lines = preserve_region_lines(source);
+        let layout = source_layout(source);
+        let literal_lines = &layout.literal_lines;
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
@@ -279,7 +281,7 @@ impl NativeFormatter {
                 // text must not move the block stack.
                 let code = if body.trim_start().starts_with('#') { "" } else { code.trim() };
                 let closes = code.starts_with('}');
-                let opens = code.ends_with('{') && !code.starts_with('{');
+                let opens = layout.opens_fallback_block(code);
                 let popped = if closes { indent_stack.pop() } else { None };
                 let indent =
                     popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
@@ -386,15 +388,43 @@ pub(super) fn is_perl_line_directive(line: &str) -> bool {
     rest.is_empty() || rest.starts_with([' ', '\t'])
 }
 
-/// Line indices (0-based) that belong to a literal-preserve region and must
-/// be emitted byte-exact, excluded from the block stack and from formatting
-/// (#17708). Covers multiline literal continuations, single- and multi-line
-/// regex/substitution/transliteration/quote-like tokens, heredoc bodies
-/// (terminator-tracked), POD blocks, `__DATA__`/`__END__` sections, and
-/// `format` bodies. The heredoc opener line itself is code and stays
-/// formattable; only its body and terminator are preserved.
-pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
+/// Source facts shared by layout and the typed outcome's context walk.
+pub(super) struct SourceLayout<'a> {
+    source: &'a str,
+    pub(super) literal_lines: std::collections::HashSet<usize>,
+    opening_braces: std::collections::HashSet<usize>,
+}
+
+impl SourceLayout<'_> {
+    /// Whether a trimmed, comment-stripped slice of this original source
+    /// ends in a real fallback block opener. Braces inside a multiline
+    /// string's opening line are literal bytes, not delimiter tokens.
+    ///
+    /// Use the slice's byte provenance instead of line numbers: the layout
+    /// and outcome walks have different line-splitting conventions. Never
+    /// pass an allocated or reindented replacement here.
+    pub(super) fn opens_fallback_block(&self, code: &str) -> bool {
+        if !code.ends_with('{') || code.starts_with('{') {
+            return false;
+        }
+        let Some(start) = code.as_ptr().addr().checked_sub(self.source.as_ptr().addr()) else {
+            return false;
+        };
+        let Some(end) = start.checked_add(code.len()) else {
+            return false;
+        };
+        end <= self.source.len() && self.opening_braces.contains(&(end - 1))
+    }
+}
+
+/// Collect preserved lines and lexer-owned opening braces in the same scan.
+/// Preserved lines are emitted byte-exact and excluded from the block stack
+/// (#17708): multiline literal continuations, regex/quote-like tokens,
+/// heredoc and format bodies, POD, and DATA/END sections. The heredoc opener
+/// remains formattable code; only its body and terminator are preserved.
+pub(super) fn source_layout(source: &str) -> SourceLayout<'_> {
     let mut lines = multiline_literal_lines(source);
+    let mut opening_braces = std::collections::HashSet::new();
     let line_starts: Vec<usize> =
         std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
     let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
@@ -406,6 +436,9 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
             Ok(token) if token.kind() == perl_parser_core::TokenKind::Eof => break,
             Ok(token) => {
                 use perl_parser_core::TokenKind;
+                if token.kind() == TokenKind::LeftBrace {
+                    opening_braces.insert(token.start());
+                }
                 if matches!(
                     token.kind(),
                     TokenKind::Regex
@@ -492,7 +525,7 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
             heredoc_queue.extend(heredoc_openers(body));
         }
     }
-    lines
+    SourceLayout { source, literal_lines: lines, opening_braces }
 }
 
 /// Every heredoc opener queued on one code line, in order, as
