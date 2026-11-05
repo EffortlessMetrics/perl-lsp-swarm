@@ -276,6 +276,19 @@
       "production_eligible": true
     },
     {
+      "name": "snapshot::ParseOperationFailure",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Parser-domain operation failure before a snapshot could exist; instrument failure and NOT_PROVEN stay distinct from parser terminal classes (#7001).",
+      "pending": {
+        "reason": "The canonical incremental contract has not yet admitted this failure vocabulary to the reviewed production export marker.",
+        "resolves_when": "#6975 lands the canonical incremental contract."
+      },
+      "production_eligible": false
+    },
+    {
       "name": "snapshot::ParseSnapshot",
       "classification": "incremental_parser",
       "disposition": "retain",
@@ -283,6 +296,19 @@
       "target_owner": "#6975",
       "exit_condition": "Canonical generation-bound parser result authority: exact source digest, disposition, strategy, native output (#7001).",
       "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshotConstructionError",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Typed reason a parser snapshot could not be constructed; instrument/setup failure cannot become a snapshot (#7001).",
+      "pending": {
+        "reason": "The canonical incremental contract has not yet admitted this construction-error vocabulary to the reviewed production export marker.",
+        "resolves_when": "#6975 lands the canonical incremental contract."
+      },
+      "production_eligible": false
     },
     {
       "name": "snapshot::ParseSnapshotStrategy",

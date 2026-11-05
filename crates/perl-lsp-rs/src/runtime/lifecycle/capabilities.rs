@@ -1014,6 +1014,7 @@ pub(crate) fn apply_disabled_feature_id(
         "lsp.references" => flags.references = false,
         "lsp.document_symbol" => flags.document_symbol = false,
         "lsp.workspace_symbol" => flags.workspace_symbol = false,
+        "lsp.workspace_symbol_resolve" => flags.workspace_symbol_resolve = false,
         "lsp.code_action" => flags.code_actions = false,
         "lsp.code_lens" => flags.code_lens = false,
         "lsp.rename" => flags.rename = false,
