@@ -29,6 +29,10 @@ Verdicts and process exit codes:
 
 Usage:
     extract-failed-tests.py <observations.jsonl> [--head SHA] [--toolchain V]
+        [--expect PACKAGE:NAME | --expect-replay PACKAGE:NAME]
+
+--expect remains passing-only proof. --expect-replay proves one complete
+library-test lifecycle and permits either an exact pass or an ordinary failure.
 """
 
 import argparse
@@ -371,7 +375,46 @@ def parse_observation_stream(lines):
     }
 
 
-def build_receipt(lines, head, toolchain, expect=None):
+def _matches_exact_replay(lines, expected):
+    """Bind one ordered library-test lifecycle to an exact replay identity.
+
+    The general observation parser owns verdicts; this stricter replay proof
+    also rejects duplicate/out-of-order events and Python's bool/float numeric
+    aliases. Ordinary Cargo diagnostics remain noise, not test evidence.
+    """
+    package, sep, name = expected.partition(":")
+    if not sep or not package or not name:
+        return False
+    events = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and "type" in event:
+            events.append(event)
+    if len(events) != 6:
+        return False
+    run, suite_start, test_start, test_end, suite_end, trailer = events
+    outcome = test_end.get("event")
+    if outcome not in ("ok", "failed"):
+        return False
+    expected_shapes = (
+        (run, {"type": "run", "package": package, "target": "lib"}),
+        (suite_start, {"type": "suite", "event": "started", "test_count": 1}),
+        (test_start, {"type": "test", "event": "started", "name": name}),
+        (test_end, {"type": "test", "event": outcome, "name": name}),
+        (suite_end, {"type": "suite", "event": outcome, "passed": int(outcome == "ok"),
+                     "failed": int(outcome == "failed"), "ignored": 0}),
+        (trailer, {"type": "run_end", "package": package, "exit_status": 0 if outcome == "ok" else 101}),
+    )
+    return all(
+        type(actual.get(key)) is type(value) and actual.get(key) == value
+        for actual, shape in expected_shapes for key, value in shape.items()
+    )
+
+
+def build_receipt(lines, head, toolchain, expect=None, expect_replay=None):
     receipt = parse_observation_stream(lines)
     if expect is not None:
         expected_package, sep, expected_name = expect.partition(":")
@@ -394,6 +437,22 @@ def build_receipt(lines, head, toolchain, expect=None):
             receipt["stream"]["reasons"].append(
                 f"expected exactly one passing replay of {expect!r}; observed "
                 f"passes={observed!r} counts={receipt['counts']!r}"
+            )
+    if expect_replay is not None and receipt["success_verdict"]:
+        # Outcome-aware replay is deliberately separate from --expect's
+        # passing-only proof. Accept one coherent ordinary failure without
+        # turning a different, empty, extra, or broken run into stable evidence.
+        matched = (
+            receipt["verdict"] in ("COMPLETE_PASS", "COMPLETE_WITH_FAILURES")
+            and _matches_exact_replay(lines, expect_replay)
+        )
+        if not matched:
+            receipt["verdict"] = "NOT_PROVEN"
+            receipt["exit_code"] = EXIT_CODES["NOT_PROVEN"]
+            receipt["success_verdict"] = False
+            receipt["stream"]["reasons"].append(
+                f"expected exactly one complete library replay of {expect_replay!r}; "
+                f"observed counts={receipt['counts']!r}"
             )
     receipt["metadata"] = {
         "head": head,
@@ -425,10 +484,16 @@ def main(argv=None):
     parser.add_argument("observation_file", nargs="?")
     parser.add_argument("--head", default=None, help="repository head SHA")
     parser.add_argument("--toolchain", default=None, help="toolchain identity string")
-    parser.add_argument(
+    expectation = parser.add_mutually_exclusive_group()
+    expectation.add_argument(
         "--expect",
         default=None,
         help="PACKAGE:NAME exact single passing test identity a replay must prove",
+    )
+    expectation.add_argument(
+        "--expect-replay",
+        default=None,
+        help="PACKAGE:NAME exact single library test that must complete, passing or failing",
     )
     args = parser.parse_args(argv)
 
@@ -445,7 +510,9 @@ def main(argv=None):
     else:
         lines = sys.stdin.readlines()
 
-    receipt = build_receipt(lines, args.head, args.toolchain, expect=args.expect)
+    receipt = build_receipt(
+        lines, args.head, args.toolchain, expect=args.expect, expect_replay=args.expect_replay
+    )
     print(json.dumps(receipt, indent=2))
     return receipt["exit_code"]
 

@@ -57,6 +57,11 @@ jobs:
         with:
           tool: just
 
+      - name: Test flake observation and replay contracts
+        run: |
+          python3 .ci/scripts/test_extract_failed_tests.py
+          python3 .ci/scripts/test_flake_consumer.py
+
       - name: Run workspace library tests (capture results)
         id: initial_run
         env:
@@ -115,60 +120,37 @@ jobs:
             echo "::endgroup::"
           done
 
-          # Fail closed: the extractor exit code is authoritative and its
-          # typed verdict gates every downstream step. Never `|| true` here.
+          # Preserve the authoritative extractor status, but consume its receipt
+          # before enforcing failure so valid sibling failures remain visible.
+          # The final step retains any instrument failure (#18539, #19084).
           TOOLCHAIN=$(cargo --version)
           if [ -z "$TOOLCHAIN" ]; then
             echo "::error::cargo --version produced no toolchain identity"
             exit 1
           fi
+          extractor_rc=0
           python3 .ci/scripts/extract-failed-tests.py "$OBS" \
             --head "${GITHUB_SHA:-unknown}" \
             --toolchain "$TOOLCHAIN" \
-            > flake-receipt.json
+            > flake-receipt.json || extractor_rc=$?
 
-          verdict=$(python3 -c 'import json; print(json.load(open("flake-receipt.json"))["verdict"])')
-          flake_count=$(python3 -c 'import json; print(json.load(open("flake-receipt.json"))["counts"]["failed"])')
-          echo "Observation verdict: $verdict (initial failed tests: $flake_count)"
+          python3 .ci/scripts/prepare-flake-replay.py "$OBS" flake-receipt.json \
+            --extractor-exit "$extractor_rc" \
+            --expected-head "${GITHUB_SHA:-unknown}" \
+            --expected-toolchain "$TOOLCHAIN" \
+            --filter-count "${#FILTER[@]}"
 
-          case "$verdict" in
-            COMPLETE_PASS)
-              echo "All workspace library tests ran and passed."
-              ;;
-            COMPLETE_WITH_FAILURES)
-              python3 - <<'PY'
-          import json
-          receipt = json.load(open("flake-receipt.json"))
-          with open("failed-tests.tsv", "w") as f:
-              for failure in receipt["failures"]:
-                  f.write(f'{failure["package"]}\t{failure["name"]}\n')
-          PY
-              ;;
-            NO_TESTS_DISCOVERED)
-              if [ "${#FILTER[@]}" -eq 0 ]; then
-                echo "::error::NO_TESTS_DISCOVERED without an explicit test filter is not a complete pass"
-                python3 -c 'import json; [print("::error::" + r) for r in json.load(open("flake-receipt.json"))["stream"]["reasons"]]'
-                exit 1
-              fi
-              echo "No tests discovered for the requested subject; observation complete."
-              ;;
-            *)
-              python3 -c 'import json; [print("::error::" + r) for r in json.load(open("flake-receipt.json"))["stream"]["reasons"]]'
-              echo "::error::flake instrument failure: verdict=$verdict; failing closed (#15349)"
-              exit 1
-              ;;
-          esac
-
-          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
-          echo "flake_count=$flake_count" >> "$GITHUB_OUTPUT"
           # Persist the subject-defining cargo args so every exact replay
           # runs the same feature/target/profile subject as the initial run
           # (#15349). A replay under different cargo options is not evidence
           # about the originally observed test event.
-          printf '%s\n' "${FILTER[@]}" > test-filter-args.txt
+          : > test-filter-args.txt
+          if [ "${#FILTER[@]}" -gt 0 ]; then
+            printf '%s\n' "${FILTER[@]}" > test-filter-args.txt
+          fi
 
       - name: Retry failed tests 3x with exact identity
-        if: steps.initial_run.outputs.verdict == 'COMPLETE_WITH_FAILURES'
+        if: ${{ !cancelled() && steps.initial_run.outcome == 'success' && steps.initial_run.outputs.replay_count > 0 }}
         id: retry_results
         run: |
           set -euo pipefail
@@ -218,13 +200,13 @@ jobs:
               fi
               # The extractor writes a typed receipt even on non-zero exit.
               # Its exit is captured, never masked: a non-zero exit or a
-              # receipt that does not prove exactly this test passed is an
-              # instrument failure below, not flake evidence.
+              # receipt that does not prove exactly this test completed is an
+              # instrument failure below, not flake or stable-failure evidence.
               extractor_rc=0
               python3 .ci/scripts/extract-failed-tests.py retry-obs.jsonl \
                 --head "${GITHUB_SHA:-unknown}" \
                 --toolchain "$TOOLCHAIN" \
-                --expect "$pkg:$test_name" > retry-receipt.json || extractor_rc=$?
+                --expect-replay "$pkg:$test_name" > retry-receipt.json || extractor_rc=$?
               if [ ! -s retry-receipt.json ]; then
                 echo "Instrument failure on retry $i for $pkg :: $test_name: extractor exit $extractor_rc with no receipt"
                 INSTRUMENT_FAILURES+=("$pkg :: $test_name retry $i extractor exit=$extractor_rc")
@@ -232,11 +214,11 @@ jobs:
                 break
               fi
               verdict=$(verdict_of retry-receipt.json)
-              if [ "$verdict" = "COMPLETE_PASS" ]; then
+              if [ "$extractor_rc" -eq 0 ] && [ "$verdict" = "COMPLETE_PASS" ]; then
                 passed=true
                 cp retry-obs.jsonl retry-run.log
                 break
-              elif [ "$verdict" = "COMPLETE_WITH_FAILURES" ]; then
+              elif [ "$extractor_rc" -eq 0 ] && [ "$verdict" = "COMPLETE_WITH_FAILURES" ]; then
                 cp retry-obs.jsonl retry-run.log
               else
                 # Retry process failure, non-identical replay, truncated or
@@ -288,7 +270,7 @@ jobs:
           echo "instrument_failure=${#INSTRUMENT_FAILURES[@]}" >> "$GITHUB_OUTPUT"
 
       - name: Auto-quarantine flaky tests
-        if: steps.retry_results.outputs.flake_count > 0 && steps.retry_results.outputs.instrument_failure == '0'
+        if: steps.initial_run.outputs.aggregate_trusted == 'true' && steps.retry_results.outputs.flake_count > 0 && steps.retry_results.outputs.instrument_failure == '0'
         id: quarantine
         run: |
           bash .ci/scripts/quarantine-flaky.sh \
@@ -297,7 +279,7 @@ jobs:
             --ledger .ci/debt-ledger.yaml
 
       - name: Create PR for quarantine changes
-        if: steps.quarantine.outcome == 'success'
+        if: steps.initial_run.outputs.aggregate_trusted == 'true' && steps.quarantine.outcome == 'success'
         run: |
           if git diff --quiet .ci/debt-ledger.yaml; then
             echo "No ledger changes needed"
@@ -327,7 +309,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Comment on #2093 with flake report
-        if: steps.retry_results.outputs.flake_count > 0
+        if: steps.initial_run.outputs.aggregate_trusted == 'true' && steps.retry_results.outputs.flake_count > 0
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
         with:
           script: |
@@ -368,7 +350,7 @@ jobs:
             }
 
       - name: Create issue for stable failures
-        if: steps.retry_results.outputs.stable_failure_count > 0
+        if: steps.initial_run.outputs.aggregate_trusted == 'true' && steps.retry_results.outputs.stable_failure_count > 0
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
         with:
           script: |
@@ -398,6 +380,23 @@ jobs:
               body: body,
               labels: ['bug', 'testing']
             });
+
+      - name: Enforce initial observation result
+        if: always()
+        env:
+          OBSERVATION_EXIT_CODE: ${{ steps.initial_run.outputs.observation_exit_code }}
+        run: |
+          case "$OBSERVATION_EXIT_CODE" in
+            0) ;;
+            [1-6])
+              echo "::error::initial flake observation failed; retaining exit $OBSERVATION_EXIT_CODE"
+              exit "$OBSERVATION_EXIT_CODE"
+              ;;
+            *)
+              echo "::error::initial flake observation produced no valid consumer result"
+              exit 1
+              ;;
+          esac
 
       - name: Upload flake detection artifacts
         if: always()

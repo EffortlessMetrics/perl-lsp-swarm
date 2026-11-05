@@ -15,6 +15,7 @@ or quarantine mutation.
 """
 
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -256,6 +257,78 @@ class ExtractFailedTestsTest(unittest.TestCase):
         receipt = _MODULE.build_receipt(lines, "head", "tc", expect="pkg_a:a::flaky_case")
         self.assertEqual(receipt["verdict"], "NOT_PROVEN")
 
+    def replay_events(self, failed=True):
+        return [
+            {"type": "run", "package": "pkg_a", "target": "lib", "command": ["cargo", "test", "-p", "pkg_a", "--lib"]},
+            {"type": "suite", "event": "started", "test_count": 1},
+            {"type": "test", "event": "started", "name": "a::case"},
+            {"type": "test", "event": "failed" if failed else "ok", "name": "a::case"},
+            {"type": "suite", "event": "failed" if failed else "ok", "passed": 0 if failed else 1,
+             "failed": 1 if failed else 0, "ignored": 0},
+            {"type": "run_end", "package": "pkg_a", "exit_status": 101 if failed else 0},
+        ]
+
+    def replay_cli(self, records, flag="--expect-replay"):
+        text = "\n".join(json.dumps(record) if isinstance(record, dict) else record for record in records) + "\n"
+        return subprocess.run([sys.executable, str(_MODULE_PATH), flag, "pkg_a:a::case"],
+                              input=text, capture_output=True, text=True)
+
+    def test_outcome_aware_replay_cli_accepts_exact_pass_and_failure_without_weakening_expect(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                records = self.replay_events(failed)
+                records.insert(2, "warning: ordinary cargo diagnostic")
+                result = self.replay_cli(records)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                receipt = json.loads(result.stdout)
+                self.assertEqual(receipt["verdict"], "COMPLETE_WITH_FAILURES" if failed else "COMPLETE_PASS")
+                passing_only = self.replay_cli(records, "--expect")
+                self.assertEqual(passing_only.returncode, 6 if failed else 0)
+
+    def test_outcome_aware_replay_cli_rejects_wrong_or_incoherent_evidence(self):
+        base = self.replay_events()
+
+        def changed(index, **fields):
+            records = copy.deepcopy(base)
+            records[index].update(fields)
+            return records
+
+        cases = {
+            "wrong package": changed(0, package="other"),
+            "wrong target": changed(0, target="bin"),
+            "wrong terminal name": changed(3, name="wrong::case"),
+            "wrong start name": changed(2, name="wrong::case"),
+            "missing start name": changed(2, name=None),
+            "wrong trailer package": changed(5, package="other"),
+            "missing test start": base[:2] + base[3:],
+            "duplicate suite start": base[:2] + [base[1]] + base[2:],
+            "duplicate suite end": base[:5] + [base[4]] + base[5:],
+            "start after outcome": base[:2] + [base[3], base[2]] + base[4:],
+            "unknown test event": base[:3] + [{"type": "test", "event": "timeout", "name": "a::case"}] + base[3:],
+            "extra zero-test block": base + [
+                {"type": "run", "package": "empty", "target": "lib"},
+                {"type": "suite", "event": "started", "test_count": 0},
+                {"type": "suite", "event": "ok", "passed": 0, "failed": 0, "ignored": 0},
+                {"type": "run_end", "package": "empty", "exit_status": 0},
+            ],
+            "event outside envelope": [base[2]] + base,
+            "truncated": base[:-1],
+            "corrupt": base[:3] + ["{broken"] + base[3:],
+            "contradictory summary": changed(4, passed=1),
+            "ignored": changed(3, event="ignored"),
+        }
+        for value in (None, True, 1.0, -1, 2):
+            cases[f"discovery {value!r}"] = changed(1, test_count=value)
+        for value in (None, True, 1.0, -1):
+            cases[f"summary {value!r}"] = changed(4, failed=value)
+        for value in (None, True, 101.0, 0, 2, 137, -9):
+            cases[f"exit {value!r}"] = changed(5, exit_status=value)
+        for name, records in cases.items():
+            with self.subTest(case=name):
+                result = self.replay_cli(records)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(json.loads(result.stdout)["success_verdict"])
+
     def test_flake_workflow_pins_nightly_and_checked_toolchain(self):
         workflow = (
             Path(__file__).parents[2] / ".github" / "workflows" / "flake-detection.yml"
@@ -272,7 +345,7 @@ class ExtractFailedTestsTest(unittest.TestCase):
         # replay is bound to the exact expected test identity.
         replay_call = workflow.split("run_exact_replay \"$pkg\" \"$test_name\" retry-obs.jsonl", 1)[1]
         self.assertNotIn("|| true", replay_call.split("verdict=$(verdict_of", 1)[0])
-        self.assertIn("--expect \"$pkg:$test_name\"", workflow)
+        self.assertIn("--expect-replay \"$pkg:$test_name\"", workflow)
 
     def test_suite_ok_with_failed_events_is_not_proven(self):
         lines = [
