@@ -250,6 +250,78 @@ level = "deny"
 status = "active"
 class = "numeric"
 reason = "fixture required pin"
+
+# Active required rows add no lifecycle obligations to this fixture.
+
+[[lint]]
+name = "clippy::await_holding_lock"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::await_holding_refcell_ref"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::async_yields_async"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::mutex_atomic"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::unwrap_used"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::expect_used"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::panic"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::todo"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::unimplemented"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
+
+[[lint]]
+name = "clippy::dbg_macro"
+level = "deny"
+status = "active"
+class = "restriction"
+reason = "fixture required pin"
 "##,
         )?;
         fs::write(

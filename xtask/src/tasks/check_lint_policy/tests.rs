@@ -3,6 +3,7 @@ mod config;
 mod debt;
 mod disposition;
 mod lock_partition;
+mod panic_debug_discipline;
 mod summary;
 
 use super::model::{

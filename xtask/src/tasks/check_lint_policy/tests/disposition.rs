@@ -32,6 +32,22 @@ fn required_ledger() -> super::super::model::LintLedger {
     ledger.lint.push(lint_entry(REQUIRED[7], "active"));
     ledger.lint.push(lint_entry(REQUIRED[8], "active"));
     ledger.lint.push(lint_entry(REQUIRED[9], "active"));
+    // Explicit fixture policy, independent of REQUIRED_DISPOSITIONS. Include
+    // the existing async pins as well as the panic/debug discipline pins.
+    for identity in [
+        "clippy::await_holding_lock",
+        "clippy::await_holding_refcell_ref",
+        "clippy::async_yields_async",
+        "clippy::mutex_atomic",
+        "clippy::unwrap_used",
+        "clippy::expect_used",
+        "clippy::panic",
+        "clippy::todo",
+        "clippy::unimplemented",
+        "clippy::dbg_macro",
+    ] {
+        ledger.lint.push(lint_entry(identity, "active"));
+    }
     ledger
 }
 

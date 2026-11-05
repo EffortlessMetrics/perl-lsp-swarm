@@ -57,12 +57,11 @@ A row whose lint is already deny-by-default upstream is still stated explicitly.
 
 ### What the ledger does and does not enforce
 
-`cargo xtask check-lint-policy` compares the workspace-root `Cargo.toml` against the ledger. That is the whole of its reach, and the required-disposition pins inherit the same boundary: they guarantee a governed row cannot be deleted, downgraded, or demoted **in those two files**. Two things sit outside it and are not caught by any current repository check:
+`cargo xtask check-lint-policy` compares workspace-root Cargo lint levels against the merged ledger and checks that explicit workspace members inherit them with `[lints] workspace = true`. A member replacing that inheritance with its own lint table is rejected. Required-disposition pins guarantee that pinned identities remain present at their required level and status even when Cargo and the ledger are edited together. `cargo xtask policy cadence` validates these same ledger pins before projecting owner work.
 
-- a crate-level `#![allow(...)]` for a governed lint — the strict Clippy gates run `-D warnings`, which respects an `allow` rather than piercing it (only `--force-warn`, used for measurement sweeps, does that);
-- a member crate replacing `[lints] workspace = true` with its own table that omits a governed row.
+The existing `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::todo`, `clippy::unimplemented`, and `clippy::dbg_macro` rows are pinned to `active` at `deny` (#19091). Removing a row from both authorities, synchronizing a downgrade to `allow` or `warn`, or moving it to `tracked`, `planned`, or `deferred_due` fails the ratchet. This preserves the current policy; it does not activate additional lints or expand the target cohort.
 
-This is a property of the mechanism, not of any one lint, and closing it means a separate check over member manifests and source attributes. Read a pin as "the workspace policy cannot silently lose this row," not as "no crate can opt out."
+Source attributes remain outside this structural guarantee. A crate-level `#![allow(...)]` for a governed lint is not detected by this checker; strict Clippy gates using `-D warnings` respect an `allow` rather than piercing it. The pins protect workspace policy and explicit member inheritance, while source-level opt-outs require a separate check.
 
 ## Workspace posture
 
