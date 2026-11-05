@@ -17,6 +17,16 @@ const REQUIRED: &[&str] = &[
     "rust::let_underscore_lock",
     "clippy::let_underscore_lock",
     "clippy::decimal_bitwise_operands",
+    "clippy::await_holding_lock",
+    "clippy::await_holding_refcell_ref",
+    "clippy::async_yields_async",
+    "clippy::mutex_atomic",
+    "clippy::unwrap_used",
+    "clippy::expect_used",
+    "clippy::panic",
+    "clippy::todo",
+    "clippy::unimplemented",
+    "clippy::dbg_macro",
 ];
 
 fn required_ledger() -> super::super::model::LintLedger {
@@ -29,25 +39,7 @@ fn required_ledger() -> super::super::model::LintLedger {
     ledger.lint.push(lint_entry(REQUIRED[4], "active"));
     ledger.deferred_due.push(deferred_lint(REQUIRED[5], "1.95"));
     ledger.deferred_due.push(deferred_lint(REQUIRED[6], "1.95"));
-    ledger.lint.push(lint_entry(REQUIRED[7], "active"));
-    ledger.lint.push(lint_entry(REQUIRED[8], "active"));
-    ledger.lint.push(lint_entry(REQUIRED[9], "active"));
-    // Explicit fixture policy, independent of REQUIRED_DISPOSITIONS. Include
-    // the existing async pins as well as the panic/debug discipline pins.
-    for identity in [
-        "clippy::await_holding_lock",
-        "clippy::await_holding_refcell_ref",
-        "clippy::async_yields_async",
-        "clippy::mutex_atomic",
-        "clippy::unwrap_used",
-        "clippy::expect_used",
-        "clippy::panic",
-        "clippy::todo",
-        "clippy::unimplemented",
-        "clippy::dbg_macro",
-    ] {
-        ledger.lint.push(lint_entry(identity, "active"));
-    }
+    ledger.lint.extend(REQUIRED[7..].iter().map(|name| lint_entry(name, "active")));
     ledger
 }
 

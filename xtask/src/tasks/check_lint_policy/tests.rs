@@ -1,9 +1,9 @@
 mod async_discipline;
 mod config;
+mod core_denials;
 mod debt;
 mod disposition;
 mod lock_partition;
-mod panic_debug_discipline;
 mod summary;
 
 use super::model::{

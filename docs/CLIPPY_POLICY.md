@@ -24,6 +24,12 @@ Every governed lint has exactly one current state:
 
 A lint cannot appear in two states. A Cargo lint without a ledger entry fails, as does an active ledger entry missing from Cargo. Due lints cannot remain ordinary planned work indefinitely.
 
+### Core denial ratchet (#19091)
+
+The established `clippy::unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, and `dbg_macro` rules are required at `deny` in an `active` ledger row. The checker rejects deleting any of these identities, lowering a level even when Cargo and the ledger change together, or moving a row to `debt`, `tracked`, `planned`, or `deferred_due`. `cargo xtask policy cadence` applies the same ledger invariant before projecting policy state.
+
+These pins preserve the existing production and test policy. Changing that contract requires an explicit change to the checker's required dispositions as well as the Cargo and ledger policy.
+
 ### Split-tool coverage
 
 One invariant sometimes needs a row in both `[workspace.lints.rust]` and `[workspace.lints.clippy]`, because rustc and Clippy each cover part of the surface. The rows share a name but are distinct governed identities, and neither is redundant:
@@ -57,11 +63,11 @@ A row whose lint is already deny-by-default upstream is still stated explicitly.
 
 ### What the ledger does and does not enforce
 
-`cargo xtask check-lint-policy` compares workspace-root Cargo lint levels against the merged ledger and checks that explicit workspace members inherit them with `[lints] workspace = true`. A member replacing that inheritance with its own lint table is rejected. Required-disposition pins guarantee that pinned identities remain present at their required level and status even when Cargo and the ledger are edited together. `cargo xtask policy cadence` validates these same ledger pins before projecting owner work.
+`cargo xtask check-lint-policy` reconciles the workspace-root `Cargo.toml` with the merged ledger. Required-disposition pins additionally preserve the named identities, levels, and statuses even when both authorities change together.
 
-The existing `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::todo`, `clippy::unimplemented`, and `clippy::dbg_macro` rows are pinned to `active` at `deny` (#19091). Removing a row from both authorities, synchronizing a downgrade to `allow` or `warn`, or moving it to `tracked`, `planned`, or `deferred_due` fails the ratchet. This preserves the current policy; it does not activate additional lints or expand the target cohort.
+The checker also reads every literal path listed in root `[workspace].members` and requires its manifest to set `[lints] workspace = true`. Replacing that inheritance setting with a local lint table is rejected. This declared-member check does not expand Cargo member globs or discover implicit members through path dependencies.
 
-Source attributes remain outside this structural guarantee. A crate-level `#![allow(...)]` for a governed lint is not detected by this checker; strict Clippy gates using `-D warnings` respect an `allow` rather than piercing it. The pins protect workspace policy and explicit member inheritance, while source-level opt-outs require a separate check.
+Source attributes remain a separate boundary: a crate-level `#![allow(...)]` can override an inherited lint, and the strict gates' `-D warnings` respects that allowance. Measurement sweeps use `--force-warn` to pierce it. Source-suppression admission remains owned by #11217. Read required-disposition pins as guarantees about workspace policy rows; source exceptions require their own governance.
 
 ## Workspace posture
 
