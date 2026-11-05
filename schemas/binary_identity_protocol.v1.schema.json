@@ -36,7 +36,7 @@
       "minItems": 1,
       "maxItems": 64,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/reasonToken" }
+      "items": { "$ref": "#/$defs/compatibilityReasonToken" }
     },
     "redacted": { "type": "boolean", "description": "true when NO field was removed or replaced: the payload is copy-safe. false means at least one field was redacted and must not be trusted verbatim." },
     "limitations": {
@@ -52,6 +52,48 @@
       "minLength": 1,
       "maxLength": 128,
       "pattern": "^[a-z0-9_]+$"
+    },
+    "compatibilityReasonToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9_]+$",
+      "enum": [
+        "server_product_mismatch",
+        "product_repository_mismatch",
+        "packet_schema_unsupported",
+        "product_identity_version_unsupported",
+        "dap_posture_mismatch",
+        "extension_publisher_mismatch",
+        "extension_package_mismatch",
+        "extension_identity_mismatch",
+        "extension_authority_not_proven",
+        "extension_package_digest_not_proven",
+        "version_mismatch",
+        "target_mismatch",
+        "target_not_proven",
+        "source_revision_mismatch",
+        "source_revision_not_proven",
+        "source_tree_digest_mismatch",
+        "source_tree_digest_not_proven",
+        "profile_mismatch",
+        "profile_not_proven",
+        "candidate_mismatch",
+        "candidate_not_proven",
+        "artifact_role_mismatch",
+        "artifact_role_not_proven",
+        "artifact_digest_mismatch",
+        "artifact_digest_not_proven",
+        "dap_role_mismatch",
+        "dap_identity_absent",
+        "build_identity_partial",
+        "build_identity_not_proven",
+        "payload_not_redacted",
+        "server_instance_stale",
+        "environment_snapshot_stale",
+        "feature_version_unsupported",
+        "exact_identity_match"
+      ]
     },
     "boundedToken": {
       "type": "string",

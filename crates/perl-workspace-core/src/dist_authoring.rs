@@ -21,7 +21,7 @@ use crate::provenance::{Confidence, EvidenceSource, Producer, Provenance};
 use crate::range::{SourceRange, Utf8LineIndex};
 
 pub use build_pl::parse_build_pl;
-pub use dist_ini::parse_dist_ini;
+pub use dist_ini::{parse_dist_ini, plugin_generates_metadata, plugin_registry_identity};
 pub use makefile::parse_makefile_pl;
 
 use scan::{ScanPair, ScanValue};
