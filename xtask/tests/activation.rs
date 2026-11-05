@@ -83,7 +83,8 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     // carried it, so both fell one gate behind the authority.
     // 95 -> 96: routed integration-test compilation preparation (#17459).
     // 96 -> 97: `regex_static_ratchet` entered .ci/gate-policy.yaml (#16260).
-    ("gate", 97),
+    // 97 -> 98: `public_api_baseline_canonical` entered .ci/gate-policy.yaml (#18736).
+    ("gate", 98),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -102,7 +103,8 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // the merge carrying it onto this branch predates the last inventory write.
     // 95/95 -> 96/96: unit_routed_full_build adds one required compilation gate (#17459).
     // 96/96 -> 97/97: regex_static_ratchet adds one required pr_fast gate (#16260).
-    ("gate-policy-gates", 97, 97),
+    // 97/97 -> 98/98: public_api_baseline_canonical adds one required pr_fast gate (#18736).
+    ("gate-policy-gates", 98, 98),
     // 15/15 -> 16/16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]]
     // target added by the #17154 ripr packet benchmark suite (#17170).
     // 16/16 -> 17/17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]]

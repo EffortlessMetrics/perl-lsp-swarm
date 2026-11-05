@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 97,
-      "emitted": 97,
+      "considered": 98,
+      "emitted": 98,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -4421,6 +4421,33 @@
         "state": "not_evaluated"
       },
       "notes": "Reject HIR-only completion claims for control.postfix_modifier capability docs (#13281)"
+    },
+    {
+      "surface_id": "gate:public_api_baseline_canonical",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#public_api_baseline_canonical",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Committed .ci/public-api-baselines/*.txt are filter-stable canonical form (#18736)"
     },
     {
       "surface_id": "gate:publish_closure",
