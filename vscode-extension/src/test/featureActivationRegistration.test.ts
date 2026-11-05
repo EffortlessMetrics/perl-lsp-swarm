@@ -26,20 +26,20 @@ describe('measureOrDeferFeature', () => {
   test('registers normally when the experiment is not armed', () => {
     const metrics = new FeatureActivationMetrics();
     metrics.beginActivation();
-    const value = measureOrDeferFeature(metrics, 'mcp', false, () => 'registered');
+    const value = measureOrDeferFeature(metrics, 'onboarding', false, () => 'registered');
     expect(value).toBe('registered');
     expect(metrics.snapshot().measurements[0]?.registration_status).toBe('registered');
   });
 
   test('skips non-critical registration when deferral is armed', () => {
     process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT = '1';
-    process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'mcp';
+    process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'onboarding';
     const metrics = new FeatureActivationMetrics();
     metrics.beginActivation();
-    const value = measureOrDeferFeature(metrics, 'mcp', false, () => 'registered');
+    const value = measureOrDeferFeature(metrics, 'onboarding', false, () => 'registered');
     expect(value).toBeUndefined();
     expect(metrics.snapshot().measurements[0]).toMatchObject({
-      domain: 'mcp',
+      domain: 'onboarding',
       registration_status: 'deferred',
     });
   });

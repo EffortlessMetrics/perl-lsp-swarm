@@ -164,6 +164,12 @@ A second receipt must repeat the journey using the released public extension
 and a public `perllsp` artifact. Only then may the support registry and generated
 documentation promote the relevant Zed cells.
 
+## Competing Perl tooling
+
+Zed does not run the VS Code coexistence detector. Use `perllsp --health`, your
+editor configuration, and [Competing Perl tooling (coexistence)](COEXISTENCE.md) for
+honest overlap guidance without inventing automatic conflict detection.
+
 For server-side configuration and general diagnostics, see
 [CONFIG.md](../reference/CONFIG.md) and
 [TROUBLESHOOTING.md](../how-to/TROUBLESHOOTING.md).

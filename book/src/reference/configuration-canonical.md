@@ -1,8 +1,1630 @@
-# Configuration (Canonical)
+# Configuration Reference
 
-The complete configuration reference is authored in the canonical docs tree,
-kept in sync with the server, CLI, environment, VS Code, and DAP contracts;
-the published book regenerates this chapter from it at build time.
+**Source of truth for all configurable options in perl-lsp.**
 
-See the canonical configuration reference:
-[docs/reference/CONFIG.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/CONFIG.md)
+This document consolidates every setting available in the Perl Language Server,
+organized by where the setting is expressed: LSP workspace settings, CLI flags,
+environment variables, VS Code extension properties, and DAP launch/attach
+configuration.
+
+## Table of Contents
+
+- [How Configuration Works](#how-configuration-works)
+- [Project Configuration File (.perl-lsp.toml)](#project-configuration-file-perl-lsptoml)
+- [Configuration Precedence](#configuration-precedence)
+- [Workspace Settings (LSP)](#workspace-settings-lsp)
+  - [perl.workspace](#perlworkspace)
+  - [perl.inlayHints](#perlinlayhints)
+  - [perl.formatting](#perlformatting)
+  - [perl.perlcritic](#perlperlcritic)
+  - [perl.critic](#perlcritic)
+  - [perl.telemetry](#perltelemetry)
+  - [perl.limits](#perllimits)
+- [CLI Flags](#cli-flags)
+- [Environment Variables](#environment-variables)
+- [VS Code Extension Settings](#vs-code-extension-settings)
+- [DAP Debug Configuration](#dap-debug-configuration)
+  - [Launch Configuration](#launch-configuration)
+  - [Attach Configuration](#attach-configuration)
+- [Feature Profiles](#feature-profiles)
+- [Example Configurations](#example-configurations)
+
+---
+
+## How Configuration Works
+
+Settings reach the server through four independent channels:
+
+1. **`initializationOptions`** — Passed in the LSP `initialize` request. Applied once at startup.
+2. **`workspace/didChangeConfiguration`** — Sent by the editor whenever settings change. Applied incrementally; unspecified keys keep their current value.
+3. **CLI flags** — Passed on the command line when launching the binary.
+4. **Environment variables** — Set in the shell before starting the server.
+
+All LSP workspace settings live under the `perl` namespace:
+
+```json
+{
+  "perl": {
+    "workspace": { "includePaths": ["lib"] },
+    "inlayHints": { "enabled": true },
+    "formatting": { "engine": "native" },
+    "perlcritic": { "enabled": false },
+    "critic": { "engine": "legacy" },
+    "telemetry": { "enabled": false },
+    "limits": { "completionCap": 100 }
+  }
+}
+```
+
+---
+
+## Project Configuration File (.perl-lsp.toml)
+
+`.perl-lsp.toml` is an optional, editor-agnostic project configuration file that you commit to your repository. It lets you share settings with your whole team without requiring each developer to configure their own editor. The file lives at the **workspace root** (the directory containing your `.git` folder or `Makefile.PL` / `cpanfile`).
+
+For v0.13, this per-folder `.perl-lsp.toml` model is the supported multi-root mechanism. Fully dynamic per-folder scoping through the `workspace/configuration` reverse-request flow is deferred (see [#3515](https://github.com/EffortlessMetrics/perl-lsp/issues/3515)).
+
+The server silently skips the file if it does not exist. If the file exists but contains invalid TOML, the server emits a `window/showMessage` warning and continues with defaults.
+
+Configuration errors distinguish malformed TOML syntax from invalid setting values.
+For example, `include_paths = "lib"` under `[perl]` is valid TOML but an invalid value:
+`include_paths` requires an array such as `["lib"]`. The warning preserves the
+error's line, column, and expected type so you can correct the file.
+
+Unknown keys and sections are silently ignored for forward compatibility.
+
+### Discovery strategy
+
+The server searches for `.perl-lsp.toml` by walking **parent directories**
+upward from each workspace folder root to the filesystem root, returning the
+first file found. This matches the parent-walk behavior used for
+`.perlcriticrc` discovery, so that a monorepo opened at a subdirectory (e.g.
+`monorepo/services/web/`) still discovers a root-level `.perl-lsp.toml` at the
+monorepo root. When multiple `.perl-lsp.toml` files exist along the path, the
+nearest one to the workspace folder wins.
+
+```
+monorepo/
+  .perl-lsp.toml        ← found from any subdirectory
+  .perlcriticrc         ← also discovered via parent walk
+  services/
+    web/                ← opened as the workspace folder
+      lib/App.pm
+```
+
+### File Location
+
+```
+your-project/
+  .git/
+  .perl-lsp.toml   ← add this file
+  lib/
+  t/
+```
+
+### Multi-root workspaces
+
+In a multi-root workspace (e.g. a monorepo with several Perl subprojects), each
+folder loads its own `.perl-lsp.toml` independently. The sections split into two
+scoping tiers:
+
+- **Per-folder** — `[perl]` (module resolution: `include_paths`, `use_perl5lib`,
+  `perl5lib_precedence`). These are scoped to the owning folder through the
+  per-folder effective workspace config, so two folders can have completely
+  different include paths without interacting.
+- **Server-global** — `[diagnostics]`, `[critic]`, `[features]`, `[formatting]`,
+  and `[ai_completion]`. These target the single shared
+  `ServerConfig`, so they are inherently server-wide rather than per-folder.
+
+Because the server-global sections are shared, two folders that set the **same**
+key to **different** values would conflict. perl-lsp resolves this with
+**first-folder-wins** semantics: each key takes the value from the first folder
+(in workspace-folder iteration order) that sets it, and a later folder's
+conflicting value is ignored. Non-conflicting keys from different folders all
+apply (e.g. folder A's `[diagnostics]` and folder B's `[features]` are both
+honored).
+
+When one or more keys conflict, the server emits a single `window/showMessage`
+**Warning** naming the conflicting keys and the per-folder values, so a silently
+overwritten setting becomes visible. The warning lists each conflict as
+`section.key (folderA=valueA, folderB=valueB)`.
+
+If you need genuinely per-folder diagnostics, formatting, or AI completion,
+configure those per folder through editor settings (`scope: "resource"` VS Code
+settings routed via `workspace/configuration`), which override `.perl-lsp.toml`
+per folder. See [Configuration Precedence](#configuration-precedence).
+
+### Supported Sections and Keys
+
+#### `[perl]` — Module Resolution
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `include_paths` | `string[]` | `[]` | Additional include paths for module resolution, relative to workspace root. An empty list leaves the built-in defaults (`lib`, `.`, `local/lib/perl5`) unchanged. |
+| `version` | `string` | (none) | Per-folder Perl version hint, e.g. `"5.38"`, used as the PL900 fallback target when source has no `use VERSION` declaration. Malformed values produce an actionable configuration diagnostic and are never used as a fallback target. |
+
+#### `[diagnostics]` — Linting
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `perlcritic` | `boolean` | (unset) | Enable critic diagnostics. When unset, the server default (`true`) applies. The default native engine does not require `perlcritic`; `legacy`, `perlcritic`, and `external` modes use the Perl::Critic-compatible shell-out path. |
+| `perlcritic_severity` | `integer` (1–5) | (unset) | Minimum critic severity to report. Perl::Critic uses `1 = least severe` and `5 = most severe`, so `1` reports everything while `5` reports only the most severe violations. Must be in the range 1–5; values outside this range are clamped to the nearest bound and a warning is logged. |
+
+##### Diagnostic `source` strings
+
+Every diagnostic the server publishes carries a `source` field that editors use
+for filtering and grouping in the Problems panel. The server uses exactly two
+source strings (see [#4627](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4627)):
+
+| `source` | Covers | Example codes |
+|----------|--------|---------------|
+| `perl-lsp` | All built-in diagnostics: parse errors, built-in lints, and native critic findings. | `PL001`, `PL102`, `native.testing.require_use_strict` |
+| `perl-lsp-critic` | Findings from the external `perlcritic` binary (legacy/external engine). | `TestingAndDebugging::RequireUseStrict`, `Variables::ProhibitUnusedVariables` |
+
+The same logical finding carries the same `source` regardless of whether it
+traveled the push or pull transport. Filter the Problems panel with
+`[perl-lsp]` to see all server-produced diagnostics, or `[perl-lsp-critic]` to
+see only external Perl::Critic findings.
+
+#### `[critic]` — Critic Engine Selection
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `engine` | `"legacy"`, `"perlcritic"`, `"external"`, or `"native"` | `"native"` | Selects the critic engine. `native` uses the Rust-native rule registry; `legacy`, `perlcritic`, and `external` use the Perl::Critic-compatible shell-out path. Unrecognized values are ignored and a warning is logged. |
+
+For the native engine, see the [Native Critic Rule Matrix](native-critic-rule-matrix.md)
+for every shipped rule (ID, category, severity, and which of the `recommended` /
+`strict` profiles enables it), plus the `profile` / `severity` / `include` /
+`exclude` knobs.
+
+#### `[features]` — LSP Feature Toggles
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inlay_hints` | `boolean` | (unset) | Enable or disable all inlay hints globally. When unset, the server default (`true`) applies. |
+
+#### `[formatting]` — Formatting
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | `boolean` | (unset) | Enable or disable LSP formatting. When unset, the server default (`true`) applies. |
+| `engine` | `"native"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. The retired `"compat"` / `"perltidy-compat"` tokens (#7129) are rejected the same way; they never had behavior of their own, and the deprecation window (#15624) closed before any release accepted them. |
+| `perltidy_profile` | `string` | (unset) | Path to a `.perltidyrc` profile. Used by the external perltidy adapter and by compatibility reporting. |
+| `perltidy_maximum_line_length` | `integer` | (unset) | Maximum line length for formatting compatibility options. |
+| `perltidy_indent_columns` | `integer` | (unset) | Indent width in spaces. |
+| `perltidy_tabs` | `boolean` | (unset) | Use tabs instead of spaces when supported by the selected engine. |
+| `perltidy_opening_brace_on_new_line` | `boolean` | (unset) | Opening-brace style compatibility option. |
+| `perltidy_cuddled_else` | `boolean` | (unset) | Cuddled-else style compatibility option. |
+| `perltidy_space_after_keyword` | `boolean` | (unset) | Space-after-keyword compatibility option. |
+| `perltidy_add_trailing_commas` | `boolean` | (unset) | Trailing-comma compatibility option. |
+| `perltidy_vertical_alignment` | `boolean` | (unset) | Vertical-alignment compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
+| `perltidy_block_comment_indentation` | `integer` | (unset) | Block-comment indentation compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
+| `perltidy_extra_args` | `string[]` | `[]` | Extra arguments for the external perltidy adapter. Ignored by the native formatter. |
+| `perltidy_timeout_secs` | `integer` | (unset) | Timeout in seconds for the external perltidy adapter. |
+
+### Full Example
+
+```toml
+# .perl-lsp.toml — project-wide defaults for perl-lsp
+# Commit this file to share settings across your team.
+# All keys are optional. Unknown keys are silently ignored.
+
+[perl]
+# Per-folder PL900 fallback target when source has no `use VERSION` declaration.
+# Source declarations win; invalid values fail closed.
+version = "5.38"
+
+# Module search paths relative to workspace root.
+# Leave empty (or omit this key) to keep the built-in defaults:
+#   lib, ., local/lib/perl5
+include_paths = ["lib", "local/lib/perl5"]
+
+[diagnostics]
+# Critic diagnostics default to native Rust rules. Set false to disable them.
+perlcritic = true
+
+# Minimum severity to report: 1 (everything) to 5 (most severe only)
+perlcritic_severity = 3
+
+[critic]
+# Critic engine: "native" or "legacy" / "perlcritic" / "external".
+engine = "native"
+profile = "recommended"
+
+[features]
+# Toggle all inlay hints globally
+inlay_hints = true
+
+[formatting]
+# Native formatter is the default engine. Use "external-perltidy" only when
+# exact perltidy compatibility is required.
+enabled = true
+engine = "native"
+perltidy_profile = ".perltidyrc"
+```
+
+An example file is also available at [`.perl-lsp.toml.example`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/.perl-lsp.toml.example) in the repository root.
+
+---
+
+## Configuration Precedence
+
+The server applies configuration in three layers, last-write-wins:
+
+```
+.perl-lsp.toml          (lowest priority — project defaults)
+       ↓
+initializationOptions   (set at server startup by your editor)
+       ↓
+didChangeConfiguration  (highest priority — live editor settings)
+```
+
+This means:
+- Values in `.perl-lsp.toml` act as project-wide defaults.
+- Your editor's `initializationOptions` (set once at startup) override TOML values.
+- `workspace/didChangeConfiguration` updates (live settings changes) always win.
+
+Only keys **explicitly set** in `.perl-lsp.toml` override the built-in defaults. Absent keys are untouched, not zeroed.
+
+**Exception for `include_paths`**: an empty `include_paths = []` in the TOML file is treated as "not set" and leaves the built-in defaults (`lib`, `.`, `local/lib/perl5`) unchanged. This prevents an empty list from accidentally wiping your module paths. Set at least one path to override the defaults.
+
+---
+
+## Workspace Settings (LSP)
+
+These settings are read from the LSP client via `initializationOptions` or
+`workspace/didChangeConfiguration`. Source: `crates/perl-lsp-rs-core/src/config/mod.rs`.
+
+### perl.workspace
+
+Controls module resolution and workspace scanning behaviour.
+
+#### `perl.workspace.includePaths`
+
+| Property | Value |
+|---|---|
+| Type | `string[]` |
+| Default | `["lib", ".", "local/lib/perl5"]` |
+| Key | `includePaths` |
+
+Directories to search for Perl modules. Relative entries are resolved against
+the workspace root. Absolute entries are honored as provided only when they
+still stay inside the workspace boundary. These paths are searched by
+`perl-lsp` and are not appended to Perl's runtime `@INC`.
+
+The optional startup `@INC` module probe resolves `perl` in a fixed order: an
+active perlbrew interpreter, then an active plenv interpreter, then `perl` on
+`PATH`. perlbrew and plenv therefore take precedence over `PATH`. Direct
+selection reads the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of
+the server process: `plenv local` or `plenv global` alone does not set
+`PLENV_VERSION` for a server launched outside a plenv-initialised shell, and
+without direct detection the first `perl` on `PATH` is used, resolved from the
+server process working directory. Set `PLENV_VERSION` before starting
+`perllsp`, or reorder `PATH`. Use
+`useSystemInc` to opt in to that system `@INC` lookup. The separate interpreter
+availability check during initialization uses OS-aware discovery; on Windows
+it prefers Strawberry or ActiveState over MSYS even if MSYS is first on `PATH`.
+
+#### `perl.workspace.perlPath` — refused, not configurable
+
+| Property | Value |
+|---|---|
+| Type | `string` |
+| Status | **ignored if set** |
+| Key | `perlPath` |
+
+The language server accepts no interpreter path. Setting this key has no
+effect, produces no warning, and the value is discarded.
+
+That is deliberate. Honouring an interpreter path or argv from workspace or
+editor settings would let a hostile cloned repository choose which program the
+server executes and with which arguments, so the keys are refused on every
+client-settings channel and `.perl-lsp.toml` has no field for them at all.
+
+To make the startup `@INC` module probe use a specific Perl, control resolution order instead:
+set the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of the server
+process to an installed version (`plenv local` or `plenv global` alone does
+not set `PLENV_VERSION` outside a plenv-initialised shell). Without direct
+detection, put the intended `perl` first on `PATH` (`where.exe perl` on
+Windows, `which -a perl` elsewhere); it is resolved from the server process
+working directory. The read-only workspace trust report does not
+resolve or verify the selected interpreter.
+
+The debugger is a separate channel: `launch.json` accepts a per-launch
+`perlPath`, and that one is honored.
+
+#### `perl.workspace.perlArgs` — refused, not configurable
+
+| Property | Value |
+|---|---|
+| Type | `string[]` |
+| Status | **ignored if set** |
+| Key | `perlArgs` |
+
+Extra arguments for the Perl interpreter used to probe startup `@INC`. Refused
+for the same reason as `perlPath` above: argv chosen by a workspace must not
+reach a process the server spawns.
+
+```json
+{
+  "perl": {
+    "workspace": {
+      "includePaths": ["lib", ".", "local/lib/perl5", "vendor/lib"]
+    }
+  }
+}
+```
+
+#### `perl.workspace.discoverySkippedDirs`
+
+| Property | Value |
+|---|---|
+| Type | `string[]` |
+| Default | `[]` |
+| Key | `discoverySkippedDirs` |
+
+Additional directory names skipped while the workspace is discovered and
+indexed. Values are exact directory names compared against each component of
+a candidate path — not globs, regular expressions, or path fragments — so
+`build` skips a `build/` directory but not `build-out/`. Whitespace around a
+name is trimmed and duplicates are removed.
+
+This list is **additive**. Discovery already skips `.git`, `.hg`, `.svn`,
+`target`, `node_modules`, `.cache`, `blib`, `local`, `vendor`, and
+`.perl-lsp` in both enumeration modes, so listing any of those here has no
+effect. An `includePaths` entry can permit discovery inside a skipped
+directory (for example `local/lib/perl5`) when its files are included in
+Git's file listing, or when discovery uses its filesystem walk fallback.
+Untracked files ignored by Git remain absent from Git's listing.
+
+Project configuration exposes the same control as `[perl].discovery_skipped_dirs`:
+
+```toml
+[perl]
+discovery_skipped_dirs = ["generated"]
+```
+
+#### `perl.workspace.useSystemInc`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+| Key | `useSystemInc` |
+
+Include the interpreter startup `@INC` paths (queried from
+`perl -e 'print join("\n", @INC)'`) in module resolution. Disabled by default
+to avoid blocking on network filesystems and surprising matches from
+globally installed modules. The current directory `.` is always filtered
+out of the system `@INC` for security.
+
+This does **not** control `PERL5LIB`; use `usePerl5lib` for that. When
+`usePerl5lib` is `false`, `PERL5LIB` is also stripped from the probe
+subprocess environment so it cannot leak in via startup `@INC`. Changing
+this value at runtime clears the internal `@INC` cache.
+
+```json
+{ "perl": { "workspace": { "useSystemInc": true } } }
+```
+
+#### `perl.workspace.usePerl5lib`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+| Key | `usePerl5lib` |
+
+Whether `perl-lsp` reads the `PERL5LIB` environment variable and merges
+its paths into module resolution. Default is enabled so the LSP behaves
+like running `perl` directly from the same shell.
+
+This is independent of `useSystemInc`. `PERL5LIB` is an explicit
+environment search path; `useSystemInc` controls probing the selected
+Perl interpreter's startup `@INC`. Set `usePerl5lib` to `false` when you
+want module resolution to ignore ambient shell environment paths.
+
+Toggling this setting invalidates the lazy startup-`@INC` cache so the
+next probe runs with the correct `PERL5LIB` environment.
+
+```json
+{ "perl": { "workspace": { "usePerl5lib": false } } }
+```
+
+#### `perl.workspace.perl5libPrecedence`
+
+| Property | Value |
+|---|---|
+| Type | `"prepend"` or `"append"` |
+| Default | `"prepend"` |
+| Key | `perl5libPrecedence` |
+
+Controls whether `PERL5LIB` entries are searched before or after configured
+`includePaths`. `"prepend"` matches Perl's normal runtime behavior. Only
+takes effect when `usePerl5lib` is `true` and `PERL5LIB` is non-empty.
+
+Unknown values are ignored (the current setting is preserved) rather than
+rejected, so a typo does not silently reset an explicit configuration.
+
+```json
+{ "perl": { "workspace": { "perl5libPrecedence": "append" } } }
+```
+
+#### `perl.workspace.resolutionTimeout`
+
+| Property | Value |
+|---|---|
+| Type | `number` (milliseconds) |
+| Default | `50` |
+| Key | `resolutionTimeout` |
+
+Maximum time the server will spend resolving a single module path. Prevents UI
+stalls on slow or network-mounted filesystems.
+
+```json
+{ "perl": { "workspace": { "resolutionTimeout": 100 } } }
+```
+
+---
+
+### perl.inlayHints
+
+Controls inlay hints displayed inline in the editor.
+
+#### `perl.inlayHints.enabled`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Master switch for all inlay hints. Setting this to `false` suppresses all hint
+types regardless of the individual settings below.
+
+#### `perl.inlayHints.parameterHints`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Show parameter name hints at function call sites.
+
+```perl
+# With parameterHints enabled:
+some_function(/* name: */ "value", /* count: */ 42);
+```
+
+#### `perl.inlayHints.typeHints`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Show inferred type annotations for `my` variables.
+
+#### `perl.inlayHints.chainedHints`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+
+Show intermediate type annotations on chained method calls.
+
+#### `perl.inlayHints.maxLength`
+
+| Property | Value |
+|---|---|
+| Type | `number` |
+| Default | `30` |
+
+Maximum character length for a single hint label before it is truncated.
+
+```json
+{
+  "perl": {
+    "inlayHints": {
+      "enabled": true,
+      "parameterHints": true,
+      "typeHints": true,
+      "chainedHints": false,
+      "maxLength": 30
+    }
+  }
+}
+```
+
+---
+
+### perl.formatting
+
+Controls LSP document and range formatting. Native formatting is built into the
+server. External perltidy remains available only through trusted project
+configuration, not generic client settings.
+
+#### `perl.formatting.enabled`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Master switch for LSP formatting. When `false`, formatting requests return no
+edits regardless of the selected engine.
+
+#### `perl.formatting.engine`
+
+| Property | Value |
+|---|---|
+| Type | `"native"\|"off"` |
+| Default | `"native"` |
+
+Formatter engine for LSP formatting requests:
+
+- `native` uses the Rust-native formatter.
+- `off` disables formatting.
+
+The retired `"compat"` alias is rejected here (#7129/#15624): it never
+selected a different engine or produced different output — it always ran the
+native formatter. Set the value to `"native"` instead.
+
+External formatter aliases are project-configuration values, not accepted
+through the generic LSP client-settings channel. Use the project `[formatting]`
+configuration above when legacy perltidy execution is explicitly required.
+
+#### `perl.formatting.maximumLineLength`
+
+| Property | Value |
+|---|---|
+| Type | `number` |
+| Default | `80` |
+
+Maximum line length for formatting compatibility options.
+
+#### `perl.formatting.indentColumns`
+
+| Property | Value |
+|---|---|
+| Type | `number` |
+| Default | (unset) |
+
+Indent width in spaces. When unset, formatting uses the editor-supplied
+`tabSize` from the `textDocument/formatting` request. When set, the configured
+width wins over `tabSize` for the native formatting path.
+
+#### Additional formatting compatibility options
+
+The server also accepts:
+
+- `perl.formatting.tabs`
+- `perl.formatting.openingBraceOnNewLine`
+- `perl.formatting.cuddledElse`
+- `perl.formatting.spaceAfterKeyword`
+- `perl.formatting.addTrailingCommas`
+- `perl.formatting.verticalAlignment`
+- `perl.formatting.blockCommentIndentation`
+- `perl.formatting.timeoutSecs`
+
+These are native compatibility hints on the generic client-settings channel.
+External perltidy profile and argument settings are project-only: configure
+`perltidy_profile` and `perltidy_extra_args` in the trusted project
+`[formatting]` section above. They are not accepted as generic client settings.
+Use `perllsp --perltidy-compat-report .perltidyrc` or the receipt-backed
+native-tooling compatibility reports to classify a specific `.perltidyrc`
+before switching a project.
+
+```json
+{
+  "perl": {
+    "formatting": {
+      "enabled": true,
+      "engine": "native",
+      "maximumLineLength": 100,
+      "indentColumns": 4
+    }
+  }
+}
+```
+
+---
+
+### perl.perlcritic
+
+Controls critic diagnostics. The default engine is the Rust-native recommended
+profile. The Perl::Critic-compatible shell-out path is selected explicitly with
+`perl.critic.engine = "legacy"`, `"perlcritic"`, or `"external"`.
+
+#### `perl.perlcritic.enabled`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+When `true`, the server publishes critic diagnostics. With the default native
+engine, diagnostics come from the Rust-native rule registry and do not require
+the `perlcritic` executable. With the legacy/external engine, the server runs
+`perlcritic` and merges violations into the diagnostic stream. If `perlcritic`
+is missing, profile resolution fails, or the command execution fails, the
+server emits a workspace warning instead of silently skipping.
+
+#### `perl.perlcritic.severity`
+
+| Property | Value |
+|---|---|
+| Type | `integer` (1–5) |
+| Default | `3` |
+
+Minimum severity level to report. Perl::Critic uses `1` for least severe
+violations and `5` for most severe violations. Values are clamped to the
+valid range. Equivalent to `perlcritic --severity N`.
+
+#### `perl.perlcritic.profile`
+
+| Property | Value |
+|---|---|
+| Type | `string` |
+| Default | (none — auto-discovery) |
+
+Path to a `.perlcriticrc` profile file. With the legacy engine, passes
+`--profile=<path>` to perlcritic. When absent, perlcritic's standard
+auto-discovery looks for `.perlcriticrc` in the workspace root. Native-tooling
+compatibility reports can also classify this file against native rule coverage.
+
+### perl.critic
+
+Selects the critic engine independently of whether critic diagnostics are
+enabled.
+
+#### Critic setting precedence
+
+When the same setting is supplied through both critic namespaces, the current
+`perl.critic.*` block wins over the legacy `perl.perlcritic.*` block. This
+allows an existing legacy configuration to keep working while a project
+incrementally adopts the current native-critic settings:
+
+1. `perl.perlcritic.*` is read as the compatibility baseline.
+2. `perl.critic.*` is applied afterward and overrides shared values such as
+   `enabled` and `severity`.
+
+The VS Code extension follows the same boundary. Use `perl-lsp.critic.*` for
+current settings; `perl-lsp.perlcritic.*` is a deprecated compatibility alias,
+and the current namespace wins when both are explicitly configured. Defaults
+that have not been explicitly changed by the user are not sent as overrides.
+
+The LSP and VS Code settings channels can select native critic settings, but
+they cannot enable the external Perl::Critic-compatible engine. To use that
+engine, set `[critic] engine = "legacy"` (or another accepted external alias)
+in the trusted `.perl-lsp.toml` project configuration, then configure the
+compatible profile and enablement settings as needed. Native critic
+diagnostics remain the default and do not require a `perlcritic` executable.
+
+#### `perl.critic.engine`
+
+| Property | Value |
+|---|---|
+| Type | `"legacy"\|"perlcritic"\|"external"\|"native"` |
+| Default | `"native"` |
+
+Use `native` to route critic diagnostics through the Rust-native rule registry.
+Use `legacy`, `perlcritic`, or `external` to keep the Perl::Critic-compatible
+shell-out path.
+
+#### `perl.critic.profile`
+
+| Property | Value |
+|---|---|
+| Type | `"recommended"\|"strict"` |
+| Default | `"recommended"` |
+
+Native-critic rule bundle used when `perl.critic.engine = "native"`.
+`recommended` selects the lower-noise security/common-mistake/testing profile.
+`strict` enables the full native rule surface. Unrecognized values are ignored
+and a warning is logged.
+
+#### `perl.critic.include`
+
+| Property | Value |
+|---|---|
+| Type | `string[]` |
+| Default | `[]` |
+
+Native critic rule IDs to include. When non-empty, exactly the listed rule IDs
+run. IDs are resolved against the full native rule catalog, not just the
+selected profile, so a strict-only rule such as
+`native.variables.unused_lexical` can be enabled without switching
+`perl.critic.profile` to `strict`. Use native IDs such as
+`native.testing.require_use_strict`, not Perl::Critic policy names; unknown IDs
+match nothing and are logged as a warning.
+
+#### `perl.critic.exclude`
+
+| Property | Value |
+|---|---|
+| Type | `string[]` |
+| Default | `[]` |
+
+Native critic rule IDs to suppress from the selected profile. This is useful
+when migrating a project to the native recommended profile while deferring one
+specific rule.
+
+```json
+{
+  "perl": {
+    "perlcritic": {
+      "enabled": true,
+      "severity": 3,
+      "profile": "${workspaceFolder}/.perlcriticrc"
+    },
+    "critic": {
+      "engine": "native",
+      "profile": "recommended",
+      "exclude": ["native.documentation.require_pod_sections"]
+    }
+  }
+}
+```
+
+---
+
+### perl.telemetry
+
+#### `perl.telemetry.enabled`
+
+| Property | Value |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+
+Enable server-side telemetry events (`telemetry/event` notifications to the
+client). Off by default; no data leaves the machine — this only controls
+whether the client receives telemetry payloads from the server.
+
+---
+
+### perl.limits
+
+Resource caps and deadline settings. Increase values for large workspaces;
+decrease them for resource-constrained environments.
+
+#### Result caps
+
+| Key | Default | Description |
+|---|---|---|
+| `workspaceSymbolCap` | `200` | Maximum results from `workspace/symbol` |
+| `referencesCap` | `500` | Maximum results from `textDocument/references` |
+| `completionCap` | `100` | Maximum completion items returned |
+| `documentSymbolCap` | `500` | Maximum results from `textDocument/documentSymbol` |
+| `codeLensCap` | `100` | Maximum code lens items per file |
+| `diagnosticsPerFileCap` | `200` | Maximum diagnostics per file |
+| `inlayHintsCap` | `500` | Maximum inlay hints per file |
+
+#### Cache settings
+
+| Key | Default | Description |
+|---|---|---|
+
+#### Index limits
+
+| Key | Default | Description |
+|---|---|---|
+| `maxSymbolsPerFile` | `5000` | Maximum symbols indexed per file |
+| `parseStormThreshold` | `10` | Pending parse count before degradation |
+| `maxFileSizeBytes` | `1048576` | Skip files larger than this in bytes (default: 1 MB). Files over the limit are stored with an empty AST and no diagnostics. |
+
+#### Deadline settings (milliseconds)
+
+| Key | Default | Description |
+|---|---|---|
+| `fileIndexDeadlineMs` | `5000` | Single file indexing budget |
+| `referenceSearchDeadlineMs` | `2000` | Reference search budget |
+| `regexScanDeadlineMs` | `1000` | Regex scan budget |
+| `fsOperationDeadlineMs` | `500` | Filesystem operation budget |
+
+```json
+{
+  "perl": {
+    "limits": {
+      "workspaceSymbolCap": 300,
+      "referencesCap": 1000,
+    }
+  }
+}
+```
+
+---
+
+## CLI Flags
+
+Flags passed when launching the `perllsp` executable. Source:
+`crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs`.
+
+### Server mode
+
+| Flag | Description |
+|---|---|
+| `--stdio` | Use stdio transport (default) |
+| `--socket` | Use TCP socket transport |
+| `--port <n>` | TCP port to listen on (default: `9257`; implies `--socket`) |
+| `--log` | Enable logging to stderr |
+| `--feature-profile <name>` | Select feature profile (see [Feature Profiles](#feature-profiles)) |
+
+### Diagnostic and info
+
+Diagnostic/info actions in this group exit immediately and do not start the LSP
+server. `--json` is an output modifier for `--doctor` and the composed
+`--info --json` identity form; `--json` alone does not select an exit action
+(source: `crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs`). One-shot
+`--identity` / `--identity-json` constraints are enforced in
+`crates/perl-lsp-rs-core/src/product_identity.rs` before the ordinary parser runs.
+
+| Flag | Description |
+|---|---|
+| `--health` | Print `ok <version>` and exit |
+| `--info` | Print version, parser, profile, feature count, and executable path |
+| `--version` | Print version string and exit |
+| `--features-json` | Print the active feature catalog as JSON and exit |
+| `--doctor [dir]` | Explain Perl path, config, and effective `@INC` roots for a workspace directory (defaults to `.` when omitted). Conflicts with `--check` and `--check-project`. |
+| `--external-tools` | With `--doctor`: registry-driven native-first external tooling report (ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--critic-compatibility` and `--dev-environment`. |
+| `--critic-compatibility` | With `--doctor`: `.perlcriticrc` compatibility report (process-free; ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--external-tools` and `--dev-environment`. |
+| `--dev-environment` | With `--doctor`: development-environment prerequisite report (symlink privilege, shells, toolchain pin, Perl identity; ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--external-tools` and `--critic-compatibility`. |
+| `--json` | Machine-readable JSON output when paired with `--doctor`. With `--info`, forms the composed one-shot identity output (see below). |
+| `--identity` | Print the installed-binary identity packet and exit (`product_identity.rs`). One-shot: must be the only argument. |
+| `--identity-json` | Print the same packet as `perl_lsp.binary_identity.v1` JSON and exit (`product_identity.rs`). One-shot: must be the only argument. |
+| `--info --json` | Composed one-shot identity JSON (`--info` and `--json` only; either order). |
+| `--perltidy-compat-report <profile>` | Report native formatter compatibility for a `.perltidyrc` profile and exit. Mutually exclusive with `--perlcritic-compat-report`. |
+| `--perlcritic-compat-report <profile>` | Report native critic compatibility for a `.perlcriticrc` profile and exit. Mutually exclusive with `--perltidy-compat-report`. |
+
+### Tool mode (no editor required)
+
+| Flag | Description |
+|---|---|
+| `--check <files...>` | Native in-process parser check of listed files (does not execute project Perl) |
+| `--check-project [dir]` | Native parsability report (80% threshold; not a strict all-clean check; defaults to `.`) |
+| `--completion <shell>` | Print shell completion script (`bash`, `zsh`, `fish`, `powershell`) |
+
+Native vs real-Perl checking, exits, and examples: [Checking Perl files](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/CHECKING.md).
+
+Examples:
+
+```bash
+perllsp --stdio                         # stdio mode (default)
+perllsp --stdio --log                   # with logging to stderr
+perllsp --socket --port 9257            # TCP socket mode
+perllsp --stdio --feature-profile prod  # production feature profile
+perllsp --check lib/MyModule.pm         # native listed-file parser check
+perllsp --check-project lib/            # native parsability report (80%)
+perllsp --info                          # print server information
+perllsp --doctor .                      # first-run setup report
+perllsp --doctor --json                 # same report as JSON
+perllsp --identity                      # installed-binary identity packet
+perllsp --completion bash >> ~/.bashrc  # install bash completions
+```
+
+---
+
+### Vim Client Examples
+
+#### Vim with vim-lsp
+
+```vim
+autocmd User lsp_setup call lsp#register_server({
+      \ 'name': 'perl-lsp',
+      \ 'cmd': {server_info -> ['perllsp', '--stdio']},
+      \ 'allowlist': ['perl'],
+      \ 'workspace_config': {
+      \   'perl': {
+      \     'workspace': {
+      \       'includePaths': ['lib', '.', 'local/lib/perl5']
+      \     }
+      \   }
+      \ },
+      \ })
+```
+
+#### Vim with coc.nvim
+
+```json
+{
+  "languageserver": {
+    "perl-lsp": {
+      "command": "perllsp",
+      "args": ["--stdio"],
+      "filetypes": ["perl"],
+      "rootPatterns": [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini", ".git"],
+      "settings": {
+        "perl": {
+          "workspace": {
+            "includePaths": ["lib", ".", "local/lib/perl5"],
+            "useSystemInc": false
+          },
+          "inlayHints": {
+            "enabled": true,
+            "parameterHints": true,
+            "typeHints": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+coc.nvim uses Vim/Neovim filetypes, so Perl buffers must have `filetype=perl`.
+
+## Environment Variables
+
+Environment variables read at startup by the `perllsp` executable. Source:
+`crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs`.
+
+### `PERL_LSP_LOG`
+
+Set to any non-empty value to enable logging to stderr. Equivalent to the
+`--log` flag. When both are present, environment wins over the flag default but
+either enables logging.
+
+```bash
+PERL_LSP_LOG=1 perllsp --stdio
+```
+
+### `RUST_LOG`
+
+Standard `tracing`/`env_logger` filter directive. Controls log level and
+per-module filtering. Takes precedence over the `--log` flag default filter.
+
+```bash
+RUST_LOG=perl_lsp=debug perllsp --stdio
+RUST_LOG=perl_parser=trace perllsp --stdio
+RUST_LOG=warn perllsp --stdio
+```
+
+Common filter tokens:
+
+| Token | Effect |
+|---|---|
+| `error` | Errors only |
+| `warn` | Warnings and errors |
+| `info` | Info, warnings, errors (typical) |
+| `debug` | Debug output |
+| `trace` | Maximum verbosity |
+| `perl_lsp=debug` | Debug for the LSP crate only |
+
+### `NO_COLOR`
+
+When set, disables ANSI colour in log output. Follows the
+[no-color.org](https://no-color.org) convention.
+
+```bash
+NO_COLOR=1 perllsp --stdio
+```
+
+### `PERL_LSP_LOG_FILE`
+
+Also log to a daily-rotated file (max 5 files retained). The path is the
+file prefix; the actual filename includes a date suffix.
+
+```bash
+PERL_LSP_LOG_FILE=/tmp/perl-lsp.log perllsp --stdio
+```
+
+### `PERL_LSP_QUIET`
+
+Suppress the startup banner on stderr. Useful when piping stdout through a
+non-LSP consumer or embedding in a larger process.
+
+```bash
+PERL_LSP_QUIET=1 perllsp --stdio
+```
+
+### `PERL_LSP_DIAGNOSTIC_MODE`
+
+Set diagnostic scope tuning. Values: `normal` (full diagnostics), `syntax-only`
+(parse errors only, no semantic/perlcritic). Useful for very large files where
+semantic analysis is too slow.
+
+```bash
+PERL_LSP_DIAGNOSTIC_MODE=syntax-only perllsp --stdio
+```
+
+### `PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS`
+
+Override the diagnostic debounce window (milliseconds). Controls how long the
+server waits after an edit before recomputing diagnostics.
+
+```bash
+PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=500 perllsp --stdio
+```
+
+### `PERL_LSP_EAGER_WORKSPACE_INDEXING`
+
+Set to `true` to index the entire workspace on startup (default: lazy indexing
+on first access). Trades startup time for immediate cross-file features.
+
+```bash
+PERL_LSP_EAGER_WORKSPACE_INDEXING=true perllsp --stdio
+```
+
+### `PERL_LSP_FILE_WATCHERS`
+
+Set to `true` or `false` to enable/disable file-watcher-based reindexing.
+
+```bash
+PERL_LSP_FILE_WATCHERS=false perllsp --stdio
+```
+
+### `PERL_LSP_TIMING`
+
+Enable phase-1 latency instrumentation. Every sink writes JSONL — one JSON
+object per line.
+
+| Value | Effect |
+|---|---|
+| unset, empty, `off`, `0`, `false` | disabled (default) |
+| `stderr`, `1`, `true` | JSONL to stderr |
+| `json` | JSONL to stderr (the same sink; there is no separate JSON format) |
+| `spans` | accepted for compatibility; **not implemented** — emits one warning-level notice (unless filtered by `RUST_LOG`), then behaves as `json` |
+| a file path | JSONL appended to that file, created if absent |
+
+```bash
+PERL_LSP_TIMING=stderr perllsp --stdio
+PERL_LSP_TIMING=./timing.jsonl perllsp --stdio
+```
+
+Any value that is none of the modes above is treated as a **file path** and
+created if it does not exist, so quote it if it contains spaces or shell
+metacharacters.
+
+`spans` was previously documented here as "human-readable timing spans". That
+output does not exist; there is no human-readable span formatter in the server.
+
+### `PERL_LSP_INCREMENTAL`
+
+Enable incremental reparsing (experimental). When set, the server reuses
+parsed subtrees across edits instead of reparsing from scratch.
+
+```bash
+PERL_LSP_INCREMENTAL=1 perllsp --stdio
+```
+
+### `NO_COLOR`
+
+Disable colored output in stderr logging.
+
+```bash
+NO_COLOR=1 perllsp --stdio
+```
+
+---
+
+## VS Code Extension Settings
+
+Settings specific to the VS Code extension (`vscode-extension/package.json`).
+These are separate from the LSP workspace settings above and control extension
+behaviour such as binary management and feature toggles.
+
+The VS Code extension uses the `perl-lsp.*` namespace. Server-side workspace
+settings use the `perl.*` namespace and may be forwarded via initialization
+options or client-specific configuration mechanisms.
+
+### Binary management
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `perl-lsp.serverPath` | `string` | `""` | Absolute path to the `perllsp` binary. Empty = auto-download. |
+| `perl-lsp.autoDownload` | `boolean` | `true` | Download the binary automatically if not found locally. |
+| `perl-lsp.downloadBaseUrl` | `string` | `""` | Override the GitHub releases base URL for internal mirrors. |
+| `perl-lsp.linuxLibc` | `"auto"\|"gnu"\|"glibc"\|"musl"` | `"auto"` | Linux libc release asset selection for managed downloads. Most Linux distributions use `gnu`/`glibc`; use `musl` mainly for Alpine Linux and musl-based containers. |
+| `perl-lsp.channel` | `"latest"\|"stable"\|"tag"` | `"latest"` | Release channel to track. |
+| `perl-lsp.versionTag` | `string` | `""` | Specific release tag (e.g., `v0.8.3`) when `channel` is `"tag"`. |
+
+### Trae
+
+Trae can use VS Code-compatible extensions. Prefer the official
+`EffortlessMetrics.perl-lsp-rs` extension. For manual binary management, set:
+
+```json
+{
+  "perl-lsp.serverPath": "/absolute/path/to/perllsp",
+  "perl-lsp.autoDownload": false
+}
+```
+
+If using a generic LSP client extension instead, configure that extension to
+launch `perllsp --stdio`.
+
+### Debugging
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `perl-lsp.trace.server` | `"off"\|"messages"\|"verbose"` | `"off"` | Log LSP message traffic for diagnostics. |
+
+### Language features
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `perl-lsp.enableSemanticTokens` | `boolean` | `true` | Enhanced syntax highlighting. |
+| `perl-lsp.enableFormatting` | `boolean` | `true` | Document formatting. Native formatting is built in; external perltidy is compatibility mode. |
+| `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. The extension formats through the whole-document provider; server-owned `willSaveWaitUntil` formatting is withdrawn (#11955) until #8092 proves one save owner. |
+| `perl-lsp.enableTestIntegration` | `boolean` | `true` | Test::More and Test2 integration. |
+
+### Perl-specific
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `perl-lsp.includePaths` | `string[]` | `["lib", "local/lib/perl5"]` | Additional module search paths (merged with server-side `perl.workspace.includePaths`). |
+| `perl-lsp.perltidyConfig` | `string` | `""` | Path to a `.perltidyrc` configuration file for external perltidy compatibility and native-tooling compatibility reports. |
+| `perl-lsp.featureProfile` | `string` | `"auto"` | Feature profile passed to the server at startup (see [Feature Profiles](#feature-profiles)). |
+
+---
+
+## DAP Debug Configuration
+
+Debug Adapter Protocol configuration used in `launch.json`. Source:
+`crates/perl-dap/src/config/mod.rs` and `vscode-extension/package.json`.
+
+For a full walkthrough, see the [DAP User Guide](../dap/user-guide.md).
+
+### Launch Configuration
+
+Start a new Perl process under the debugger.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `program` | `string` | Yes | — | Path to the Perl script to debug. |
+| `args` | `string[]` | No | `[]` | Command-line arguments passed to the script. |
+| `perlPath` | `string` | No | `"perl"` | Path to the Perl executable. |
+| `includePaths` | `string[]` | No | `[]` | Paths added to `@INC` (as `-I` flags). |
+| `cwd` | `string` | No | `${workspaceFolder}` | Working directory for the debugged process. |
+| `env` | `object` | No | `{}` | Environment variables for the debugged process. |
+| `stopOnEntry` | `boolean` | No | `true` | Pause immediately on the first line. |
+
+Example `launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "perl",
+      "request": "launch",
+      "name": "Launch Perl Script",
+      "program": "${workspaceFolder}/script.pl",
+      "args": ["--verbose"],
+      "perlPath": "perl",
+      "includePaths": ["${workspaceFolder}/lib"],
+      "cwd": "${workspaceFolder}",
+      "env": { "PERL5LIB": "${workspaceFolder}/lib" },
+      "stopOnEntry": true
+    }
+  ]
+}
+```
+
+### Attach Configuration
+
+TCP **attach** connects **outbound** from the debug adapter to a compatible
+debugger peer that is already **listening** on `host`/`port`. The adapter
+exchanges DAP over TCP using Content-Length–framed JSON (see
+`crates/perl-dap/src/tcp_attach/`). This path does not require
+`Perl::LanguageServer` or any bundled third-party debug bridge in the target
+process ([Native stack policy](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/NATIVE_STACK_POLICY.md) / PLSP-SPEC-0015).
+
+**Refused attach shapes:** `processId` (PID) attach, and `stopOnEntry: true` in
+attach launch configurations. Stock `perl -d` with `PERLDB_OPTS=RemotePort=…`
+is not documented here as a verified end-to-end attach recipe; a working attach
+journey needs a separately proven compatible transport or bridge, not a
+documentation-only assertion.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `host` | `string` | `"localhost"` | Hostname or IP where the compatible debugger peer is listening. |
+| `port` | `number` | `13603` | TCP port the peer is listening on. |
+| `timeout` | `number` (ms) | `5000` | Connection and TCP I/O timeout in milliseconds (connect, read, and write; default `5000` in `tcp_attach/config.rs`). |
+
+Example:
+
+```json
+{
+  "type": "perl",
+  "request": "attach",
+  "name": "Attach to Perl Debugger",
+  "host": "localhost",
+  "port": 13603,
+  "timeout": 5000
+}
+```
+
+---
+
+## Feature Profiles
+
+Feature profiles control which LSP capabilities the server advertises to the
+client. The active profile is selected at startup via the `--feature-profile`
+CLI flag or the `perl-lsp.featureProfile` VS Code setting.
+
+| Profile | Aliases | Description |
+|---|---|---|
+| `production` | `prod` | Default profile. Full GA feature set. |
+| `ga-lock` | `ga`, `ga_lock` | Conservative profile. Minimal surface, all features GA-locked. |
+| `all` | — | All in-tree features, including proposed/experimental. |
+| `auto` | — | Resolves to the compile-time default (usually `production`). |
+
+```bash
+perllsp --stdio --feature-profile ga-lock
+perllsp --stdio --feature-profile all
+perllsp --features-json --feature-profile production
+```
+
+---
+
+## Example Configurations
+
+### Minimal project
+
+```json
+{ "perl": { "workspace": { "includePaths": ["lib"] } } }
+```
+
+### Typical project
+
+```json
+{
+  "perl": {
+    "workspace": {
+      "includePaths": ["lib", ".", "local/lib/perl5"],
+      "useSystemInc": false,
+      "resolutionTimeout": 50
+    },
+    "inlayHints": {
+      "enabled": true,
+      "parameterHints": true,
+      "typeHints": true
+    },
+    "perlcritic": { "enabled": false }
+  }
+}
+```
+
+### Large codebase (10K+ files)
+
+```json
+{
+  "perl": {
+    "workspace": {
+      "includePaths": ["lib", ".", "local/lib/perl5"],
+      "useSystemInc": false,
+      "resolutionTimeout": 100
+    },
+    "limits": {
+      "workspaceSymbolCap": 300,
+      "referencesCap": 1000,
+    }
+  }
+}
+```
+
+### Resource-constrained environment
+
+```json
+{
+  "perl": {
+    "workspace": {
+      "includePaths": ["lib"],
+      "useSystemInc": false,
+      "resolutionTimeout": 25
+    },
+    "inlayHints": { "enabled": false },
+    "limits": {
+      "workspaceSymbolCap": 100,
+      "referencesCap": 200,
+      "referenceSearchDeadlineMs": 1000
+    }
+  }
+}
+```
+
+### CI / testing environment
+
+```json
+{
+  "perl": {
+    "workspace": { "useSystemInc": false },
+    "perlcritic": { "enabled": true }
+  }
+}
+```
+
+### Editor-specific snippets
+
+#### Neovim 0.11+ (lua)
+
+```lua
+vim.lsp.config('perllsp', {
+  cmd = { 'perllsp', '--stdio' },
+  filetypes = { 'perl' },
+  root_markers = {
+    '.perl-lsp.toml',
+    'Makefile.PL',
+    'Build.PL',
+    'cpanfile',
+    'dist.ini',
+    '.git',
+  },
+  init_options = {
+    perl = {
+      workspace = {
+        includePaths = { 'lib', '.', 'local/lib/perl5' },
+        useSystemInc = false,
+      },
+      inlayHints = {
+        enabled = true,
+        parameterHints = true,
+      },
+    },
+  },
+})
+
+vim.lsp.enable('perllsp')
+```
+
+#### Helix (`languages.toml`)
+
+Helix has built-in Perl language support, but its default Perl language server is
+`perlnavigator`. To use `perllsp`, define the server and attach it to the `perl`
+language:
+
+```toml
+[language-server.perllsp]
+command = "perllsp"
+args = ["--stdio"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
+
+[language-server.perllsp.config.perl.workspace]
+includePaths = ["lib", ".", "local/lib/perl5"]
+useSystemInc = false
+
+[language-server.perllsp.config.perl.inlayHints]
+enabled = true
+```
+
+Helix's built-in `perl` entry also owns Raku/NQP/P6 file extensions, so the
+`file-types` narrowing above keeps the Perl 5 server off Raku-family files. The
+checked base registration is
+[`docs/examples/helix/languages.toml`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/examples/helix/languages.toml).
+
+#### Zed (`settings.json`)
+
+Zed requires a language extension that registers the language server ID used
+below. The `lsp` block configures known servers; it does not register a new
+language server by itself.
+
+```json
+{
+  "lsp": {
+    "perl-lsp": {
+      "binary": {
+        "path": "/usr/local/bin/perllsp",
+        "arguments": ["--stdio"]
+      },
+      "initialization_options": {
+        "perl": {
+          "workspace": {
+            "includePaths": ["lib", ".", "local/lib/perl5"]
+          },
+          "inlayHints": {
+            "enabled": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Emacs (eglot)
+
+```elisp
+(use-package eglot
+  :ensure nil
+  :hook ((perl-mode . eglot-ensure)
+         (cperl-mode . eglot-ensure))
+  :config
+  (add-to-list 'eglot-server-programs
+               '(((perl-mode :language-id "perl")
+                  (cperl-mode :language-id "perl"))
+                 . ("perllsp" "--stdio"
+                    :initializationOptions
+                    (:perl
+                     (:workspace
+                      (:includePaths ["lib" "." "local/lib/perl5"]
+                       :useSystemInc :json-false)))))))
+```
+
+#### Emacs (`lsp-mode`)
+
+```elisp
+(use-package lsp-mode
+  :commands (lsp lsp-deferred)
+  :hook ((perl-mode . lsp-deferred)
+         (cperl-mode . lsp-deferred))
+  :config
+  (add-to-list 'lsp-language-id-configuration '(perl-mode . "perl"))
+  (add-to-list 'lsp-language-id-configuration '(cperl-mode . "perl"))
+
+  (lsp-register-client
+   (make-lsp-client
+    :new-connection (lsp-stdio-connection '("perllsp" "--stdio"))
+    :activation-fn (lsp-activate-on "perl")
+    :major-modes '(perl-mode cperl-mode)
+    :priority 1
+    :server-id 'perllsp)))
+```
+
+#### Sublime Text (LSP package)
+
+Open `Preferences: LSP Server Configurations` and add:
+
+```json
+{
+  "perl-lsp": {
+    "enabled": true,
+    "command": ["perllsp", "--stdio"],
+    "selector": "source.perl",
+    "initialization_options": {
+      "perl": {
+        "workspace": {
+          "includePaths": ["lib", ".", "local/lib/perl5"]
+        }
+      }
+    }
+  }
+}
+```
+
+#### OpenCode (`opencode.json`)
+
+OpenCode configures custom LSP servers through the `lsp` block. The `command`
+array launches the server, `extensions` controls activation, and
+`initialization` is sent as LSP initialization options.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "perl-lsp": {
+      "command": ["perllsp", "--stdio"],
+      "extensions": [".pl", ".PL", ".pm", ".t", ".pod", ".psgi", ".cgi", ".fcgi", ".xs", ".xsi"],
+      "initialization": {
+        "perl": {
+          "workspace": {
+            "includePaths": ["lib", ".", "local/lib/perl5"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+For settings shared across editors, prefer `.perl-lsp.toml`.
+
+#### Amazon Kiro
+
+Kiro IDE uses OpenVSX-compatible extensions. Prefer
+`EffortlessMetrics.perl-lsp-rs` and keep auto-download enabled unless you need
+pinned/offline binaries:
+
+```json
+{
+  "perl-lsp.serverPath": "/absolute/path/to/perllsp",
+  "perl-lsp.autoDownload": false
+}
+```
+
+Kiro CLI uses workspace-scoped LSP configuration. Run `/code init`, then edit
+the generated `lsp.json` (path varies by Kiro CLI build) and add a Perl entry:
+
+```json
+{
+  "languages": {
+    "perl": {
+      "name": "perl-lsp",
+      "command": "perllsp",
+      "args": ["--stdio"],
+      "file_extensions": ["pl", "PL", "pm", "t", "psgi", "cgi", "fcgi", "xs", "xsi"],
+      "project_patterns": [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini", ".git"],
+      "multi_workspace": false,
+      "initialization_options": {
+        "perl": {
+          "workspace": {
+            "includePaths": ["lib", ".", "local/lib/perl5"],
+            "useSystemInc": false
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Claude Code (plugin `.lsp.json`)
+
+```json
+{
+  "perl-lsp": {
+    "command": "perllsp",
+    "args": ["--stdio"],
+    "extensionToLanguage": {
+      ".pl": "perl",
+      ".pm": "perl",
+      ".t": "perl",
+      ".psgi": "perl"
+    },
+    "initializationOptions": {
+      "perl": {
+        "workspace": {
+          "includePaths": ["lib", ".", "local/lib/perl5"],
+          "useSystemInc": false
+        }
+      }
+    }
+  }
+}
+```
+
+#### Codex CLI via MCP bridge
+
+Codex CLI does not configure LSP servers directly. Use an MCP bridge that
+launches `perllsp --stdio`.
+
+Codex config (`~/.codex/config.toml` or trusted `.codex/config.toml`):
+
+```toml
+[mcp_servers.perl_lsp]
+command = "lsp-mcp"
+args = ["--config", "/absolute/path/to/project/lsp-mcp.toml", "--workspace", "/absolute/path/to/project"]
+cwd = "/absolute/path/to/project"
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+```
+
+Bridge config (`lsp-mcp.toml`):
+
+```toml
+[[servers]]
+name = "perl"
+command = ["perllsp", "--stdio"]
+extensions = [".pl", ".PL", ".pm", ".t", ".pod", ".psgi", ".cgi", ".fcgi", ".xs", ".xsi"]
+root_markers = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini", ".git"]
+language_id = "perl"
+```
+
+Do not register `perllsp --stdio` directly as an MCP server; it speaks LSP, not
+MCP.
+
+---
+
+## See Also
+
+- [EDITOR_SETUP.md](editor-setup-canonical.md) — Editor-specific setup guides
+- [PERFORMANCE_TUNING.md](../advanced/performance-guide.md) — Performance optimisation
+- [performance-slo.md](performance-slo.md) — Performance targets and limits
+- [../user-guides/lsp-features.md](../user-guides/lsp-features.md) — Supported LSP features and maturity
+- [THREADING_CONFIGURATION_GUIDE.md](../advanced/threading-configuration.md) — Threading options
+- [configuration-schema.md](configuration-schema.md) — JSON Schema for machine validation
+- [DAP User Guide](../dap/user-guide.md) — Debugger setup and usage

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7816,
-  "reason": "Cross-process managed cache mutation lock (#7816): managedCacheLock wiring increases bundled extension.js; inventory measured from hosted VS Code smoke projected_actual.",
-  "base_baseline_file_sha256": "1233267f59fc7a419b838be670662dcecdff5bea5cb6bdc03b54c225ebbdea6d",
-  "base_inventory_sha256": "67f9e75176be9de4b49f088559bd864607aafa66d70015a744a7e50003caa5fd",
-  "candidate_baseline_file_sha256": "0633a7e9aa1ea0246ab5ad17079bbf5df52fa8c7c4813dd53b65bdd56ca2d833",
-  "candidate_inventory_sha256": "86e984708b37c1da15009138adc353afc1a437324ea12308b978960679213a60"
+  "owner_issue": 19061,
+  "reason": "Stacked VS Code fixes: js-yaml devDependency declaration grows package.json, and the catch-binding fix grows the bundled extension.js",
+  "base_baseline_file_sha256": "292d722be60c88ef570ed1ab0ff04a3693b2429e5a888b10aac84009f0bba53d",
+  "candidate_baseline_file_sha256": "88dbd8ee592842af8db272dad51d8074faff18eb36a0e85ad3a5c3e220d7f770",
+  "base_inventory_sha256": "7d2af3584b62f7648c64abde174d11b61b2298660813892177ef38d45a0bc6b8",
+  "candidate_inventory_sha256": "568097ca4eecddd8d70f8b1c3ecc1bbdfff020cf20f70e9f410b2d0f75a4f321"
 }
