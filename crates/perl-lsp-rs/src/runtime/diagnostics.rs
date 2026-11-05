@@ -4037,11 +4037,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         buf.lock().clear();
 
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
-        // Positive control: the push under test really published, so a skipped
+        // Positive control: the push under test really committed, so a skipped
         // push cannot pass this by leaving the cells untouched.
-        assert_push_published(&buf.lock().clone(), uri)?;
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         let analysis = {
             let documents = server.documents.lock();
@@ -4100,15 +4102,18 @@ mod tests {
         };
 
         // Push cycle: production's server-initiated publish.
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
 
         // `after_push == 1` below does not on its own prove this push ran:
         // `didOpen` publishes too, so the cell is already warm at 1 before
         // `publish_diagnostics` is called, and a write-once cell reads 1 either
-        // way. Require the publish itself, which the buffer clear above makes
-        // attributable to this push alone.
-        assert_push_published(&buf.lock().clone(), uri)?;
+        // way. Require the commit itself, whose ledger sequence advances on
+        // every commit -- including one whose byte-identical frame #18774
+        // suppresses on the wire.
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         let after_push = build_count(&server)?;
         assert_eq!(
@@ -4193,19 +4198,44 @@ mod tests {
     /// or raced push would leave them green while proving nothing about the
     /// push route -- only about the pull that follows.
     ///
-    /// The capture buffer is the instrument that can tell the difference,
-    /// because each test clears it after `didOpen` settles: a
-    /// `publishDiagnostics` frame naming this document can then only have come
-    /// from the explicit push under test. The snapshot's
-    /// `diagnostic_analysis_build_count` cannot substitute here -- `didOpen`
-    /// publishes too, so it has already warmed that cell to 1 before the push
-    /// runs, and the counter reads 1 whether or not the push happened.
-    fn assert_push_published(captured: &[u8], uri: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let text = std::str::from_utf8(captured)?;
+    /// The *committed* ledger is the instrument that can tell the difference.
+    /// Its per-URI sequence advances on every commit -- including a commit
+    /// whose outbound frame was suppressed by #18774's identical-content law
+    /// -- and it does not advance at all when no commit happened.
+    ///
+    /// The outbound frame used to serve this role and no longer can.
+    /// `publishDiagnostics` is replace-mode, so a publication whose
+    /// diagnostics are byte-identical to the last committed one carries no
+    /// new client-visible information and is deliberately not sent. A
+    /// frame-observing guard therefore cannot distinguish "the push ran and
+    /// published" from "the push ran, committed, and was suppressed" -- two
+    /// states the identical-content law made indistinguishable on the wire --
+    /// and it never could distinguish "the push never ran". The committed
+    /// ledger distinguishes all three, and it names the generation the push
+    /// committed against.
+    ///
+    /// The snapshot's `diagnostic_analysis_build_count` still cannot
+    /// substitute here -- `didOpen` publishes too, so it has already warmed
+    /// that cell to 1 before the push runs, and the counter reads 1 whether or
+    /// not the push happened.
+    ///
+    /// `before` is the ledger record observed immediately before the push
+    /// under test.
+    fn assert_push_committed(
+        server: &LspServer,
+        uri: &str,
+        before: Option<(u32, u64)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let key = server.normalize_uri_key(uri);
+        let after = server.test_last_committed_push_diagnostic(&key).ok_or_else(|| {
+            format!("the push under test must have committed diagnostics for {uri}")
+        })?;
+        let before_sequence = before.map(|record| record.1).unwrap_or(0);
         assert!(
-            latest_published_diagnostics(text, uri).is_some(),
-            "the push under test must have published diagnostics for {uri}; without a real \
-             push the rebuild count asserted below measures only the pull route"
+            after.1 > before_sequence,
+            "the push under test must have committed diagnostics for {uri}; the committed \
+             sequence did not advance (before={before:?} after={after:?}), so the rebuild \
+             count asserted below measures only the pull route"
         );
         Ok(())
     }
@@ -4270,9 +4300,11 @@ mod tests {
         reset_native_critic_scope_rebuild_count();
         reset_native_critic_scope_reuse_count();
 
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
-        assert_push_published(&buf.lock().clone(), uri)?;
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         // Read the push's contribution before the pull runs: a total taken at
         // the end cannot tell a pull that composed from a pull that skipped the
@@ -4419,9 +4451,11 @@ mod tests {
         reset_native_critic_scope_rebuild_count();
         reset_native_critic_scope_reuse_count();
 
+        let committed_before_push =
+            server.test_last_committed_push_diagnostic(&server.normalize_uri_key(uri));
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
-        assert_push_published(&buf.lock().clone(), uri)?;
+        assert_push_committed(&server, uri, committed_before_push)?;
 
         let push_rebuilds = native_critic_scope_rebuild_count();
         let push_reuses = native_critic_scope_reuse_count();
@@ -4511,6 +4545,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         buf.lock().clear();
 
+        // #18774's identical-content law suppresses an outbound frame whose
+        // diagnostics array is byte-identical to the last committed one. This
+        // test's claim is about the *codes* the push route publishes, so it
+        // needs the frame itself: detach the committed ledger so the push
+        // reaches the wire unconditionally. That is the falsifier the sink
+        // ships for exactly this purpose.
+        server.test_clear_committed_push_diagnostics();
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
 
@@ -4724,6 +4765,9 @@ mod tests {
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         buf.lock().clear();
 
+        let key = server.normalize_uri_key(uri);
+        let committed_before_gap_push = server.test_last_committed_push_diagnostic(&key);
+
         // While the gap is open, nothing is published.
         server.publish_diagnostics(uri);
         {
@@ -4733,6 +4777,16 @@ mod tests {
                 !text.contains("publishDiagnostics"),
                 "gap must still suppress publish before republication; got: {text:?}"
             );
+            // The frame alone proves nothing under #18774's identical-content
+            // law: a suppressed frame and a gap-suppressed publish look
+            // identical on the wire. The committed ledger does not -- a
+            // gap-suppressed publish never reaches the commit boundary, so
+            // the committed sequence cannot advance.
+            assert_eq!(
+                server.test_last_committed_push_diagnostic(&key),
+                committed_before_gap_push,
+                "the pending-parse gap must suppress the commit, not merely the frame"
+            );
         }
 
         // Close the gap by publishing a snapshot for the current generation.
@@ -4740,15 +4794,22 @@ mod tests {
             .test_publish_parse_for_current_generation(uri)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         server.publish_diagnostics(uri);
-        drop(server);
         std::thread::sleep(Duration::from_millis(50));
 
-        let bytes = buf.lock().clone();
-        let text = String::from_utf8(bytes)?;
+        // The publish must have *resumed*. `my $y = 2;` and `my $y = 3;`
+        // differ only in a literal that appears in no diagnostic, so the
+        // diagnostics array is byte-identical and #18774 correctly suppresses
+        // the redundant frame. The commit still happens and the ledger records
+        // it, so the ledger -- not the wire -- is what proves the resume.
+        let committed_after_resume = server.test_last_committed_push_diagnostic(&key);
         assert!(
-            text.contains("publishDiagnostics"),
-            "publish must resume once a fresh snapshot closes the pending-parse gap; got: {text:?}"
+            committed_after_resume.map(|record| record.1).unwrap_or(0)
+                > committed_before_gap_push.map(|record| record.1).unwrap_or(0),
+            "publish must resume once a fresh snapshot closes the pending-parse gap; \
+             the committed ledger did not advance: before={committed_before_gap_push:?} \
+             after={committed_after_resume:?}"
         );
+        drop(server);
         Ok(())
     }
 
@@ -7068,6 +7129,12 @@ unambiguous_builtin_alias_code("native.testing.require_use_strict")
         server.test_simulate_indexing_complete();
 
         buf.lock().clear();
+        // #18774's identical-content law suppresses an outbound frame whose
+        // diagnostics array is byte-identical to the last committed one. This
+        // test's claim is about the dead-code diagnostic the publish route
+        // produces, so it needs the frame itself: detach the committed ledger
+        // so the publish reaches the wire unconditionally.
+        server.test_clear_committed_push_diagnostics();
         server.publish_diagnostics(uri);
         wait_for_published_diagnostics(&buf, uri)?;
         drop(server);

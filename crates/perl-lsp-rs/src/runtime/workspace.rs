@@ -4612,6 +4612,15 @@ mod tests {
             "B's scoped pull item is missing",
         )?;
 
+        // #18774's identical-content law suppresses an outbound frame whose
+        // diagnostics array is byte-identical to the last committed one. The
+        // scoped-pull refresh republishes all three documents, but only A's
+        // squiggles actually change -- B and the folderless document keep the
+        // same PL701, so their refresh frames are suppressed. This test's
+        // claim is about the wire -- "refreshes fallback consumers" with their
+        // diagnostic policy -- so detach the committed ledger and let the
+        // refresh reach the client.
+        server.test_clear_committed_push_diagnostics();
         server.handle_client_response(Some(json!({
             "id": id,
             "result": [
