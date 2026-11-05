@@ -27,7 +27,7 @@ use perl_parser_core::ast::{Node, NodeKind};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 use crate::tooling::perl_critic::{
-    BuiltInCriticObservation, Severity, is_backtick_string, is_qx_string,
+    BuiltInCriticObservation, Severity, is_backtick_string, is_qx_string, is_string_eval_expression,
 };
 use perl_diagnostics::codes::DiagnosticSeverity;
 
@@ -567,12 +567,9 @@ fn signal_name_from_key(node: &Node) -> Option<String> {
 ///
 /// The parser produces `Eval { block }` for both `eval { ... }` and
 /// `eval "string"`. Block evals (`eval { ... }`) are safe exception handling;
-/// string/variable evals are a security risk.
+/// expression evals execute the resulting value as Perl source.
 fn check_eval_node(block: &Node, eval_node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    let is_string_eval = matches!(&block.kind, NodeKind::String { .. } | NodeKind::Variable { .. })
-        || matches!(&block.kind, NodeKind::Binary { op, .. } if op == ".");
-
-    if !is_string_eval {
+    if !is_string_eval_expression(block) {
         return;
     }
 
@@ -647,19 +644,14 @@ fn check_two_arg_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut 
 /// risk when the string contains user input. Block eval (`eval { ... }`) is
 /// safe and used for exception handling.
 fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    if name != "eval" {
+    // `&eval(...)` invokes a user subroutine, not the keyword eval operator.
+    if name != "eval" || matches!(&node.kind, NodeKind::AmperCall { .. }) {
         return;
     }
 
-    // Check that the first argument is a string (not a block/other expression).
-    // eval { ... } is parsed as NodeKind::Eval, not FunctionCall, so reaching
-    // here already means this is the function-call form. But we still check
-    // the arg is a string to avoid false positives on eval($coderef).
-    let is_string_arg = args.first().is_some_and(|arg| match &arg.kind {
-        NodeKind::String { .. } | NodeKind::Variable { .. } => true,
-        NodeKind::Binary { op, .. } if op == "." => true,
-        _ => false,
-    });
+    // Ordinary keyword eval parses as NodeKind::Eval. Retain this compatibility
+    // call path's argument handling, including its existing no-argument case.
+    let is_string_arg = args.first().is_some_and(is_string_eval_expression);
 
     if !is_string_arg && !args.is_empty() {
         return;

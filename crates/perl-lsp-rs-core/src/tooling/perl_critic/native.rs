@@ -20,6 +20,8 @@ use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssu
 mod native_contract;
 mod native_registry;
 mod native_suppressions;
+#[cfg(test)]
+mod string_eval_tests;
 
 pub use native_contract::{
     CriticCategory, CriticContext, CriticFinding, CriticFix, CriticRelatedInformation, CriticRule,
@@ -2245,12 +2247,13 @@ fn collect_system_exec_findings(
     }
 }
 
-fn is_string_eval_expression(node: &Node) -> bool {
-    match &node.kind {
-        NodeKind::String { .. } | NodeKind::Variable { .. } => true,
-        NodeKind::Binary { op, .. } => op == ".",
-        _ => false,
-    }
+/// Consume the parser's block-versus-expression distinction for an eval operand.
+/// Only the immediate operand determines the form: `eval do { ... }` still
+/// evaluates a value as source, and a recovered descendant must not silence an
+/// otherwise recognized expression. Immediate recovery artifacts are not proof
+/// of an expression operand.
+pub(crate) fn is_string_eval_expression(node: &Node) -> bool {
+    !matches!(&node.kind, NodeKind::Block { .. }) && !node.kind.is_recovery()
 }
 
 fn effective_call_args(args: &[Node]) -> &[Node] {

@@ -66,9 +66,9 @@ pub use service::{
 pub use types::{CriticConfig, Severity, Violation};
 pub use work_receipt::NativeCriticWorkReceipt;
 
-/// String-surface form classifiers shared by the native critic rules and the
+/// Syntax form classifiers shared by the native critic rules and the
 /// core lint emitters so both producers observe identical syntax shapes.
-pub(crate) use native::{is_backtick_string, is_qx_string};
+pub(crate) use native::{is_backtick_string, is_qx_string, is_string_eval_expression};
 
 /// Error returned when an external native-critic profile token is not recognized.
 ///
