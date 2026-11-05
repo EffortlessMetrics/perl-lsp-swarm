@@ -263,8 +263,20 @@ async function collectArchiveInventory(vsixPath) {
         throw new Error(`VSIX archive contains a duplicate entry name: ${JSON.stringify(rawName)}`);
       }
       seen.add(rawName);
+      const fileType = (entry.externalFileAttributes >>> 16) & 0xf000;
+      const dosDirectory = (entry.externalFileAttributes & 0x10) !== 0;
       if (rawName.endsWith('/')) {
+        // Check the type before skipping: a trailing slash must not hide a
+        // symlink or another special entry as a harmless directory record.
+        if ((fileType !== 0 && fileType !== 0x4000) || entry.uncompressedSize !== 0) {
+          throw new Error(
+            `VSIX archive entry ${JSON.stringify(rawName)} is not a directory record`,
+          );
+        }
         continue;
+      }
+      if ((fileType !== 0 && fileType !== 0x8000) || dosDirectory) {
+        throw new Error(`VSIX archive entry ${JSON.stringify(rawName)} is not a regular file`);
       }
       const declaredSize = entry.uncompressedSize;
       assertNonNegativeSafeInteger(

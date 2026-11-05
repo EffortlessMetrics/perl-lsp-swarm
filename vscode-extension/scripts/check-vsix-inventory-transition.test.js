@@ -600,13 +600,14 @@ void test('rejects a payload corrupted without damaging the central directory', 
   }
 });
 
-// JSZip normalizes traversal names when it writes, so a hostile archive has to
-// be assembled byte-wise to reach the canonical-path guard at all.
+// JSZip normalizes traversal names and some entry types when it writes, so
+// hostile archives need byte-wise construction to preserve those distinctions.
+/** @param {[string, string, number?][]} entries */
 function storedZip(entries) {
   const locals = [];
   const central = [];
   let offset = 0;
-  for (const [name, contents] of entries) {
+  for (const [name, contents, attributes = 0] of entries) {
     const nameBytes = Buffer.from(name, 'utf8');
     const data = Buffer.from(contents, 'utf8');
     const crc = zlib.crc32(data);
@@ -623,13 +624,14 @@ function storedZip(entries) {
 
     const header = Buffer.alloc(46);
     header.writeUInt32LE(0x02014b50, 0);
-    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x0314, 4); // UNIX creator, ZIP version 2.0
     header.writeUInt16LE(20, 6);
     header.writeUInt16LE(0, 10); // stored
     header.writeUInt32LE(crc, 16);
     header.writeUInt32LE(data.length, 20);
     header.writeUInt32LE(data.length, 24);
     header.writeUInt16LE(nameBytes.length, 28);
+    header.writeUInt32LE(attributes >>> 0, 38);
     header.writeUInt32LE(offset, 42);
     central.push(header, nameBytes);
 
@@ -646,6 +648,120 @@ function storedZip(entries) {
 
   return Buffer.concat([...locals, centralBytes, end]);
 }
+
+void test('archive entry types preserve regular files and legitimate directories', async () => {
+  const archive = storedZip([
+    ['extension/', '', (0o040755 << 16) | 0x10],
+    ['extension/unix/', '', 0o040755 << 16],
+    ['extension/dos/', '', 0x10],
+    ['extension/unspecified/', ''],
+    ['extension/unix/regular.js', 'same bytes', 0o100644 << 16],
+    ['extension/unix/executable', 'same bytes', 0o100755 << 16],
+    ['extension/dos/unspecified.js', 'same bytes'],
+    ['extension/unspecified/permissions.js', 'same bytes', 0o644 << 16],
+    ['extension.vsixmanifest', '<PackageManifest/>', 0o100644 << 16],
+  ]);
+
+  const actual = await collectArchiveInventory(archive);
+  assert.deepEqual(
+    actual.inventory,
+    inventory({
+      'unix/regular.js': 10,
+      'unix/executable': 10,
+      'dos/unspecified.js': 10,
+      'unspecified/permissions.js': 10,
+    }),
+  );
+  assert.deepEqual(actual.metadata_entries, ['extension.vsixmanifest']);
+});
+
+/** @type {[string, string, number][]} */
+const nonFileEntries = [
+  ['symlink', 'extension/out/extension.js', 0o120777 << 16],
+  ['FIFO', 'extension/out/extension.js', 0o010644 << 16],
+  ['character device', 'extension/out/extension.js', 0o020644 << 16],
+  ['block device', 'extension/out/extension.js', 0o060644 << 16],
+  ['socket', 'extension/out/extension.js', 0o140644 << 16],
+  ['Unix directory without slash', 'extension/out/extension.js', 0o040755 << 16],
+  ['DOS directory without slash', 'extension/out/extension.js', 0x10],
+  ['regular file with DOS directory flag', 'extension/out/extension.js', (0o100644 << 16) | 0x10],
+  ['symlink with trailing slash', 'extension/out/link/', 0o120777 << 16],
+  ['socket with trailing slash', 'extension/out/socket/', 0o140644 << 16],
+  ['regular file with trailing slash', 'extension/out/file/', 0o100644 << 16],
+  ['metadata symlink', 'extension.vsixmanifest', 0o120777 << 16],
+];
+
+for (const [label, name, attributes] of nonFileEntries) {
+  void test(`archive entry types reject ${label}`, async () => {
+    const archive = storedZip([
+      ['extension/package.json', '{}'],
+      [name, name.endsWith('/') ? '' : 'same bytes', attributes],
+    ]);
+
+    await assert.rejects(collectArchiveInventory(archive), (error) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /not a (regular file|directory)/);
+      assert.ok(error.message.includes(JSON.stringify(name)), error.message);
+      return true;
+    });
+  });
+}
+
+void test('archive entry types reject a directory record containing payload bytes', async () => {
+  const archive = storedZip([
+    ['extension/package.json', '{}'],
+    ['extension/hidden/', 'not a directory record', (0o040755 << 16) | 0x10],
+  ]);
+
+  await assert.rejects(
+    collectArchiveInventory(archive),
+    /VSIX archive entry "extension\/hidden\/" is not a directory/,
+  );
+});
+
+void test('ordinary inventory CLI rejects a non-file with baseline-matching contents', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-entry-type-'));
+  try {
+    const baseline = JSON.parse(
+      fs.readFileSync(path.join(__dirname, 'vsix-inventory-baseline.json'), 'utf8'),
+    );
+    assert.ok(Object.hasOwn(baseline.files, 'out/extension.js'));
+    const vsixPath = path.join(directory, 'candidate.vsix');
+    for (const mode of [0o100644, 0o120777]) {
+      /** @type {[string, string, number][]} */
+      const entries = Object.entries(baseline.files).map(([file, bytes]) => [
+        `extension/${file}`,
+        'x'.repeat(Number(bytes)),
+        (file === 'out/extension.js' ? mode : 0o100644) << 16,
+      ]);
+      fs.writeFileSync(vsixPath, storedZip(entries));
+      const checker = spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'check-vsix-inventory.js'), '--vsix', vsixPath],
+        {
+          cwd: path.resolve(__dirname, '..'),
+          encoding: 'utf8',
+          windowsHide: true,
+          env: { ...process.env, PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: '' },
+        },
+      );
+      assert.ifError(checker.error);
+      if (mode === 0o100644) {
+        assert.equal(checker.status, 0, checker.stderr);
+        assert.equal(JSON.parse(checker.stdout).classification, 'pass');
+      } else {
+        assert.equal(checker.status, 2, 'non-file must fail before baseline comparison');
+        assert.equal(checker.stdout, '', 'non-file must not produce a passing inventory receipt');
+        assert.match(
+          checker.stderr,
+          /VSIX archive entry "extension\/out\/extension\.js" is not a regular file/,
+        );
+      }
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 void test('an archive entry escaping the package root is rejected', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
