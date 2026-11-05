@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16719,
-  "reason": "Accept the 303-byte TextMate v-string rule merged in #16718; the measured Linux VSIX keeps all other member sizes unchanged, including the 1775895-byte extension bundle.",
-  "base_baseline_file_sha256": "88dbd8ee592842af8db272dad51d8074faff18eb36a0e85ad3a5c3e220d7f770",
-  "candidate_baseline_file_sha256": "296f128f3628b8e74be1b00365683ddd739ddeb55ccd50119195986017dd0390",
-  "base_inventory_sha256": "568097ca4eecddd8d70f8b1c3ecc1bbdfff020cf20f70e9f410b2d0f75a4f321",
-  "candidate_inventory_sha256": "34841972742c558a1fde74eb9b1b75214bc1953db9badf76eae0e9b4241de5d4"
+  "owner_issue": 9072,
+  "reason": "Correct the native critic compatibility-alias and ignored legacy-profile guidance in the shipped settings UI; the measured package.json shrinks by 182 bytes with all other archive members unchanged.",
+  "base_baseline_file_sha256": "296f128f3628b8e74be1b00365683ddd739ddeb55ccd50119195986017dd0390",
+  "candidate_baseline_file_sha256": "31de3201ec2dc442ef37959093264bbdb68cdbe1dadc1ef4858f1dc416964b03",
+  "base_inventory_sha256": "34841972742c558a1fde74eb9b1b75214bc1953db9badf76eae0e9b4241de5d4",
+  "candidate_inventory_sha256": "4e11b54f44643082190e71fa1b3155714cbf822c0ae341d67b45f210d91af694"
 }
