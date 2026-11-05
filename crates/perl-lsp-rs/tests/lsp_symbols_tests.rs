@@ -13,6 +13,23 @@ use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+/// Flatten an outline recursively. Since #18111 the top level holds package
+/// roots spanning their extents and every member nests under its package, so
+/// member lookups must descend (#18769).
+fn flatten_symbols(symbols: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    let mut out = Vec::new();
+    fn collect<'a>(symbols: &'a [serde_json::Value], out: &mut Vec<&'a serde_json::Value>) {
+        for symbol in symbols {
+            out.push(symbol);
+            if let Some(children) = symbol.get("children").and_then(|c| c.as_array()) {
+                collect(children, out);
+            }
+        }
+    }
+    collect(symbols, &mut out);
+    out
+}
+
 /// Test that a file with subroutines returns Function symbols
 #[test]
 fn test_document_symbol_subroutines() -> TestResult {
@@ -134,12 +151,15 @@ sub load {
     });
     assert!(config_pkg.is_some(), "Should find MyApp::Config package symbol");
 
-    // Check for subroutines
-    let helper = symbols.iter().find(|s| s["name"].as_str() == Some("helper"));
-    assert!(helper.is_some(), "Should find 'helper' sub symbol");
+    // Check for subroutines. They nest under their package root (#18111), so
+    // the lookup descends the outline instead of reading top-level names
+    // only (#18769).
+    let all_symbols = flatten_symbols(symbols);
+    let helper = all_symbols.iter().any(|s| s["name"].as_str() == Some("helper"));
+    assert!(helper, "Should find 'helper' sub symbol");
 
-    let load = symbols.iter().find(|s| s["name"].as_str() == Some("load"));
-    assert!(load.is_some(), "Should find 'load' sub symbol");
+    let load = all_symbols.iter().any(|s| s["name"].as_str() == Some("load"));
+    assert!(load, "Should find 'load' sub symbol");
 
     Ok(())
 }
@@ -435,22 +455,25 @@ sub multiply {
 
     let symbols = response.as_array().ok_or("response is not an array")?;
 
-    // Should have at least the package and two subs
+    // Should have at least the package and two subs. Members nest under the
+    // package root (#18111), so the count and lookups descend the outline
+    // instead of reading top-level names only (#18769).
+    let all_symbols = flatten_symbols(symbols);
     assert!(
-        symbols.len() >= 3,
+        all_symbols.len() >= 3,
         "Should have at least 3 symbols (package + 2 subs), got {}",
-        symbols.len()
+        all_symbols.len()
     );
 
     // Verify the two subroutines are present
-    let add = symbols.iter().find(|s| s["name"].as_str() == Some("add"));
-    assert!(add.is_some(), "Should find 'add' symbol");
+    let add = all_symbols.iter().any(|s| s["name"].as_str() == Some("add"));
+    assert!(add, "Should find 'add' symbol");
 
-    let multiply = symbols.iter().find(|s| s["name"].as_str() == Some("multiply"));
-    assert!(multiply.is_some(), "Should find 'multiply' symbol");
+    let multiply = all_symbols.iter().any(|s| s["name"].as_str() == Some("multiply"));
+    assert!(multiply, "Should find 'multiply' symbol");
 
     // Verify each symbol has a valid range
-    for symbol in symbols {
+    for symbol in &all_symbols {
         if symbol["range"].is_object() {
             assert!(
                 symbol["range"]["start"]["line"].is_number(),

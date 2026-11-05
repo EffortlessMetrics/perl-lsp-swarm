@@ -261,7 +261,10 @@ impl LspServer {
                         perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(
                             &text,
                         );
-                    perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
+                    // AST-path roots span their package extents, so headings
+                    // nest under the enclosing package instead of cluttering
+                    // the top level and duplicating nested subs (#18769).
+                    perl_lsp_rs_core::providers::document_symbols::nest_pod_headings_into_outline(
                         &mut outline,
                         pod_headings,
                     );

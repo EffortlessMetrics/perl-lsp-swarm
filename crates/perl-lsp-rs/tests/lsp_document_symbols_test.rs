@@ -944,6 +944,79 @@ fn test_pod_section_unicode_heading() -> TestResult {
     Ok(())
 }
 
+// ---- POD nesting tests (issue #18769) ----
+
+#[test]
+fn test_pod_headings_nest_under_the_package_and_top_level_stays_packages_only() -> TestResult {
+    // Interleaved-POD Moo class: headings before and between the subs.
+    let server = setup_server();
+    let content = "package Thing;\nuse Moo;\n\n=head1 NAME\n\nThing - demo\n\n=head1 SYNOPSIS\n\n    use Thing;\n\n=cut\n\nsub get_thing_01 { return 1; }\n\n=head2 NOTES\n\nMore docs.\n\n=cut\n\nsub validate_thing_01 { return 1; }\n\n1;\n";
+    open_document(&server, "file:///test_pod_nest.pm", content);
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "textDocument/documentSymbol".to_string(),
+        params: Some(json!({ "textDocument": { "uri": "file:///test_pod_nest.pm" } })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(17_i64)),
+    };
+    let response = server.handle_request(request).ok_or("No response")?;
+    let result = response.result.ok_or("Missing result")?;
+    let symbols = result.as_array().ok_or("Not an array")?;
+
+    // Top level carries only the package root; every POD heading nested under it.
+    assert_eq!(symbols.len(), 1, "top level must contain only the package root: {symbols:?}");
+    assert_eq!(symbols[0]["name"], "Thing", "root is the package");
+    let children = symbols[0]["children"].as_array().ok_or("root has no children")?;
+    let child_names: Vec<&str> = children.iter().filter_map(|c| c["name"].as_str()).collect();
+    for heading in ["NAME", "SYNOPSIS", "NOTES"] {
+        assert!(
+            children.iter().any(|c| c["name"] == heading && c["kind"] == 26),
+            "{heading} heading must nest under the package; children: {child_names:?}"
+        );
+    }
+    assert!(
+        !symbols.iter().any(|s| s["kind"] == 26),
+        "no POD heading may stay at the top level: {symbols:?}"
+    );
+
+    // Subs stay present under the package.
+    let all_symbols = flatten_symbols(symbols);
+    for sub in ["get_thing_01", "validate_thing_01"] {
+        assert!(
+            all_symbols.iter().any(|s| s["name"] == sub && s["kind"] == 12),
+            "sub {sub} must remain in the outline"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_pod_heading_matching_sub_name_is_not_duplicated() -> TestResult {
+    let server = setup_server();
+    let content = "package Widget;\n\n=head2 widget_help\n\nHelp text.\n\n=cut\n\nsub widget_help { }\n\n=head1 AUTHORS\n\nSomeone\n\n1;\n";
+    open_document(&server, "file:///test_pod_dup.pm", content);
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "textDocument/documentSymbol".to_string(),
+        params: Some(json!({ "textDocument": { "uri": "file:///test_pod_dup.pm" } })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(18_i64)),
+    };
+    let response = server.handle_request(request).ok_or("No response")?;
+    let result = response.result.ok_or("Missing result")?;
+    let symbols = result.as_array().ok_or("Not an array")?;
+    let all_symbols = flatten_symbols(symbols);
+
+    let matches: Vec<_> = all_symbols.iter().filter(|s| s["name"] == "widget_help").collect();
+    assert_eq!(matches.len(), 1, "exactly one widget_help entry: {matches:?}");
+    assert_eq!(matches[0]["kind"], 12, "the surviving entry is the code sub");
+    assert!(
+        all_symbols.iter().any(|s| s["name"] == "AUTHORS" && s["kind"] == 26),
+        "unrelated POD heading still present"
+    );
+
+    Ok(())
+}
+
 // ---- Phase block tests (issue #3464) ----
 
 #[test]

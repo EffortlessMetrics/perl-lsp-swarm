@@ -5,7 +5,7 @@
 //! ancestry is preserved, and source order stays stable.
 
 use super::{DocumentSymbol, leaf_document_symbol};
-use perl_position_tracking::{WirePosition, WireRange};
+use perl_position_tracking::{LineStartsCache, WirePosition, WireRange};
 use perl_source_identity::ContentDigest;
 use serde::{Deserialize, Serialize};
 
@@ -80,13 +80,16 @@ pub fn count_document_symbol_nodes(symbols: &[DocumentSymbol]) -> usize {
 }
 
 /// Append POD `=head1..=head4` headings as outline roots in source order.
+///
+/// The end column converts through one per-request [`LineStartsCache`]
+/// instead of a whole-source rescan per heading (#18769).
 #[must_use]
 pub fn pod_heading_document_symbols(source: &str) -> Vec<DocumentSymbol> {
     let Ok(head_regex) = regex::Regex::new(r"^=(head[1-4])\s+(.+)$") else {
         return Vec::new();
     };
     let mut symbols = Vec::new();
-    let line_starts = line_start_byte_offsets(source);
+    let line_starts = LineStartsCache::new(source);
     for (line_num, line) in source.lines().enumerate() {
         if line == "__DATA__" || line == "__END__" {
             break;
@@ -99,10 +102,9 @@ pub fn pod_heading_document_symbols(source: &str) -> Vec<DocumentSymbol> {
             continue;
         }
         let line_index = u32::try_from(line_num).unwrap_or(u32::MAX);
-        let line_start = line_starts.get(line_num).copied().unwrap_or(0);
+        let line_start = line_starts.position_to_offset(source, line_index, 0);
         let line_end_byte = line_start.saturating_add(line.len());
-        let end_character =
-            perl_position_tracking::offset_to_utf16_line_col(source, line_end_byte).1;
+        let (_end_line, end_character) = line_starts.offset_to_position(source, line_end_byte);
         let range = WireRange {
             start: WirePosition::new(line_index, 0),
             end: WirePosition::new(line_index, end_character),
@@ -122,6 +124,82 @@ pub fn merge_document_symbol_roots_in_source_order(
     }
     outline.extend(additional);
     outline.sort_by(source_order_key);
+}
+
+/// Nest POD headings under their innermost enclosing outline root, dropping
+/// headings whose trimmed name duplicates an existing child of that root
+/// (#18769).
+///
+/// The AST-path outline roots are namespace containers whose ranges span the
+/// whole package extent, so a heading between the package statement and
+/// `__END__`/`__DATA__` is enclosed by exactly one innermost root; nesting it
+/// there keeps the top level to package roots while the heading stays
+/// visible under its owner. A heading outside every root (file-header POD
+/// before the first package) stays at the top level. Kind, name, and range
+/// of surviving headings are unchanged; an empty outline falls back to the
+/// flat root merge.
+pub fn nest_pod_headings_into_outline(
+    outline: &mut Vec<DocumentSymbol>,
+    pod_headings: Vec<DocumentSymbol>,
+) {
+    if pod_headings.is_empty() || outline.is_empty() {
+        merge_document_symbol_roots_in_source_order(outline, pod_headings);
+        return;
+    }
+    for heading in pod_headings {
+        let heading_line = heading.range.start.line;
+        let Some(parent_index) = innermost_enclosing_root(outline, heading_line) else {
+            outline.push(heading);
+            continue;
+        };
+        let parent = &mut outline[parent_index];
+        let heading_name = heading.name.trim();
+        // The code symbol already carries the anchor, detail, and selection
+        // range; the same-name POD heading adds nothing on the wire, so the
+        // `=head2 get_thing_01` / `sub get_thing_01` pair keeps one entry.
+        if parent.children.iter().any(|child| child.name.trim() == heading_name) {
+            continue;
+        }
+        insert_by_child_order_key(&mut parent.children, heading);
+    }
+    outline.sort_by(source_order_key);
+}
+
+/// Index of the root whose range most tightly encloses `line`.
+fn innermost_enclosing_root(outline: &[DocumentSymbol], line: u32) -> Option<usize> {
+    let mut best: Option<(usize, u32)> = None;
+    for (index, root) in outline.iter().enumerate() {
+        if line < root.range.start.line || line > root.range.end.line {
+            continue;
+        }
+        let span = root.range.end.line.saturating_sub(root.range.start.line);
+        if best.is_none_or(|(_, best_span)| span < best_span) {
+            best = Some((index, span));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+/// Insert a child at its assembler-order position (priority, span start,
+/// span end, name, kind — the same key the document-symbol assembler uses
+/// for children). Children arrive sorted by this key, so a partition-point
+/// insert preserves both the existing order and determinism.
+fn insert_by_child_order_key(children: &mut Vec<DocumentSymbol>, symbol: DocumentSymbol) {
+    let key = child_order_key(&symbol);
+    let position = children.partition_point(|child| child_order_key(child) <= key);
+    children.insert(position, symbol);
+}
+
+fn child_order_key(symbol: &DocumentSymbol) -> (u8, u32, u32, u32, u32, &str, u32) {
+    (
+        symbol.sort_priority,
+        symbol.range.start.line,
+        symbol.range.start.character,
+        symbol.range.end.line,
+        symbol.range.end.character,
+        symbol.name.as_str(),
+        symbol.kind,
+    )
 }
 
 /// Apply the configured recursive node budget to a composed outline tree.
@@ -187,16 +265,6 @@ fn source_order_key(left: &DocumentSymbol, right: &DocumentSymbol) -> std::cmp::
         .then_with(|| left.range.end.character.cmp(&right.range.end.character))
         .then_with(|| left.name.cmp(&right.name))
         .then_with(|| left.kind.cmp(&right.kind))
-}
-
-fn line_start_byte_offsets(source: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for (idx, byte) in source.bytes().enumerate() {
-        if byte == b'\n' {
-            offsets.push(idx.saturating_add(1));
-        }
-    }
-    offsets
 }
 
 fn visible_tree_fingerprint(symbols: &[DocumentSymbol]) -> String {
@@ -344,5 +412,76 @@ mod tests {
         let flat = vec![symbol("A", 0, vec![]), symbol("B", 1, vec![])];
         let nested = vec![symbol("A", 0, vec![symbol("B", 1, vec![])])];
         assert_ne!(visible_tree_fingerprint(&flat), visible_tree_fingerprint(&nested));
+    }
+
+    /// A package root shaped like the AST-path output: its range spans the
+    /// whole package extent, and code members are its children.
+    fn package_root(name: &str, end_line: u32, children: Vec<DocumentSymbol>) -> DocumentSymbol {
+        let mut root = symbol(name, 0, children);
+        root.range.end = WirePosition::new(end_line, 1);
+        root
+    }
+
+    #[test]
+    fn pod_headings_nest_under_the_enclosing_package_root() {
+        // Root extent lines 0..=9; NAME lands on line 2, SEE ALSO on line 7.
+        let mut outline = vec![package_root("Pkg", 9, vec![symbol("sub_a", 4, vec![])])];
+        let pod = pod_heading_document_symbols(
+            "package Pkg;\n\n=head1 NAME\n\nPkg - demo\n\nnothing here\n=head1 SEE ALSO\n\nelsewhere\n",
+        );
+        nest_pod_headings_into_outline(&mut outline, pod);
+        assert_eq!(outline.len(), 1, "no POD headings left at top level: {outline:?}");
+        let children: Vec<_> = outline[0].children.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            children.contains(&"NAME") && children.contains(&"SEE ALSO"),
+            "headings nested under the package: {children:?}"
+        );
+    }
+
+    #[test]
+    fn pod_heading_matching_a_child_name_is_dropped() {
+        let mut outline = vec![package_root("Pkg", 9, vec![symbol("get_thing", 5, vec![])])];
+        let pod = pod_heading_document_symbols("=head2 get_thing\n\nDocs.\n\n=cut\n");
+        nest_pod_headings_into_outline(&mut outline, pod);
+        assert_eq!(outline.len(), 1, "no POD headings left at top level: {outline:?}");
+        let children: Vec<_> =
+            outline[0].children.iter().map(|c| (c.name.as_str(), c.kind)).collect();
+        assert_eq!(
+            children,
+            vec![("get_thing", 12)],
+            "same-name POD heading dropped, code sub kept: {children:?}"
+        );
+    }
+
+    #[test]
+    fn pod_heading_outside_every_root_stays_at_top_level() {
+        let mut outline = vec![package_root("Pkg", 9, vec![])];
+        // Simulate a root whose extent starts on line 3 (the `package`
+        // statement), leaving lines 0..2 outside every root.
+        outline[0].range.start = WirePosition::new(3, 0);
+        let pod =
+            pod_heading_document_symbols("=head1 HEADER\n\nstuff\npackage Pkg;\n=head1 INNER\n");
+        nest_pod_headings_into_outline(&mut outline, pod);
+        let top: Vec<_> = outline.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        assert!(top.contains(&("HEADER", 26)), "file-header POD stays a root: {top:?}");
+        assert!(
+            !top.contains(&("INNER", 26)),
+            "heading inside the root extent must not stay a root: {top:?}"
+        );
+        let children: Vec<_> =
+            outline.iter().flat_map(|root| root.children.iter().map(|c| c.name.as_str())).collect();
+        assert!(
+            children.contains(&"INNER"),
+            "heading inside the root extent nests under it: {children:?}"
+        );
+    }
+
+    #[test]
+    fn empty_outline_falls_back_to_the_flat_root_merge() {
+        let mut outline = Vec::new();
+        let pod = pod_heading_document_symbols("=head1 ONLY\n");
+        nest_pod_headings_into_outline(&mut outline, pod);
+        assert_eq!(outline.len(), 1, "heading kept as a root: {outline:?}");
+        assert_eq!(outline[0].name, "ONLY");
     }
 }
