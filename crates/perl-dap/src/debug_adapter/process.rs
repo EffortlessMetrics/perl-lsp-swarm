@@ -4163,13 +4163,14 @@ mod tests {
             let mut arguments = options.clone();
             arguments["host"] = json!("127.0.0.1");
             arguments["port"] = json!(13603);
-            let message = adapter.handle_attach(1, 7, Some(arguments));
-            match message {
-                DapMessage::Response { success, message, .. } => {
-                    assert!(!success, "malformed attach timeout must fail: {options:?}");
-                    assert_eq!(message.as_deref(), Some(expected), "options: {options:?}");
-                }
-                other => panic!("expected failed attach response, got {other:?}"),
+            let response = adapter.handle_attach(1, 7, Some(arguments));
+            assert!(
+                matches!(&response, DapMessage::Response { .. }),
+                "expected a failed attach response, got {response:?}"
+            );
+            if let DapMessage::Response { success, message, .. } = &response {
+                assert!(!*success, "malformed attach timeout must fail: {options:?}");
+                assert_eq!(message.as_deref(), Some(expected), "options: {options:?}");
             }
             assert!(
                 lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
@@ -4179,11 +4180,9 @@ mod tests {
 
         // The launch path keeps the shorter refusal: the attach path owns the
         // JSON-kind diagnostic, the launch path does not (#18027).
-        assert_eq!(
-            DebugAdapter::parse_launch_typed_options(&json!({ "stopOnEntry": "true" }))
-                .map_err(|error| error),
-            Err("Invalid stopOnEntry: expected a boolean".to_string())
-        );
+        let launch_refusal =
+            DebugAdapter::parse_launch_typed_options(&json!({ "stopOnEntry": "true" })).err();
+        assert_eq!(launch_refusal.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
     }
 
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {
