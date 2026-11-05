@@ -14,9 +14,11 @@ compliance.
 
 Confirm the checked-out repository, branch, and current issue or PR before choosing
 work. Preserve unrelated changes and establish the candidate's mutation owner before
-editing. Read the applicable `AGENTS.md` files and the owning package's `CLAUDE.md`;
+editing. Read applicable `AGENTS.md` files and package-local `CLAUDE.md` where present;
 package ownership and architecture guidance apply to both providers. An absent
-package-local `AGENTS.md` does not mean there is no owner guidance.
+package-local `AGENTS.md` does not mean there is no owner guidance. If a package has
+neither local file, establish ownership and focused proof from its manifest, source,
+tests, and any README.
 
 | Need | Read |
 | --- | --- |
