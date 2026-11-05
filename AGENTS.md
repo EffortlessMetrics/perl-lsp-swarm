@@ -10,16 +10,39 @@ Optimize for user-visible closure, semantic ownership, deterministic proof, and
 maintainable current-main behavior—not local component completion or workflow
 compliance.
 
+## Start or resume
+
+Confirm the checked-out repository, branch, and current issue or PR before choosing
+work. Preserve unrelated changes and establish the candidate's mutation owner before
+editing. Read the applicable `AGENTS.md` files and the owning package's `CLAUDE.md`;
+package ownership and architecture guidance apply to both providers. An absent
+package-local `AGENTS.md` does not mean there is no owner guidance.
+
+| Need | Read |
+| --- | --- |
+| Set up a checkout or choose the host shell | [Contributor quick start](CONTRIBUTING.md#quick-start), including the Windows shell guidance |
+| Find the owning crate | [Current repository map](CONTRIBUTING.md#current-repository-map), then its local guidance |
+| Resume an issue, candidate, or review | [Session operations](docs/how-to/SESSION_OPERATIONS.md) |
+| Find tools installed by an earlier setup | [Task-shell activation](docs/how-to/AGENT_CONTRIBUTING.md#activate-tools-in-the-task-shell) |
+| Run compiled proof | [Cargo storage admission](docs/agents/CARGO_STORAGE.md), then the package's focused proof |
+
+Use these task-specific entrypoints as needed; setup and repository maps stay with
+their existing owners. The route below selects the work, and admission applies to the
+exact command that will execute it.
+
 ## Sources of truth
+
+This ordering resolves repository facts and document status. It does not override
+current task instructions, higher-priority runtime instructions, or permissions.
 
 Use the highest applicable current authority:
 
 1. current `origin/main`, live GitHub issues, PRs, reviews, checks, rulesets, and actual
    repository behavior;
 2. accepted specifications, ADRs, policies, generated contracts, and independent proof;
-3. this file, `.agents/skills/`, and nearest package-local `AGENTS.md` guidance;
+3. this file, `.agents/skills/`, and applicable package-local `AGENTS.md`/`CLAUDE.md`;
 4. shared method/reference docs under `docs/agents/`;
-5. runtime plans, workers, worktrees, memory, and conversation.
+5. runtime plans, workers, worktrees, memory, and historical conversation.
 
 Document applicability and status are governed by
 [`docs/agents/AUTHORITY_STATUS.md`](docs/agents/AUTHORITY_STATUS.md) and its
@@ -49,14 +72,18 @@ Detailed cross-provider contracts remain in
 
 Choose the narrowest applicable public flow:
 
-- `$deliver-goal` — durable multi-PR outcome or umbrella;
-- `$deliver-pr` — one issue, PR, branch, candidate, or coherent claim;
-- `$prepare-issue` — problem, owner, scope, proof seam, or plan;
-- `$prepare-proof` — discriminating executable proof;
-- `$build-candidate` — implementation, test hardening, simplification, candidate
-  challenge;
-- `$finish-pr` — publication/resume, repair, substantive review, integration, merge,
-  reconciliation.
+- `$deliver-goal` — [durable multi-PR outcome or umbrella](.agents/skills/deliver-goal/SKILL.md);
+- `$deliver-pr` — [one issue, PR, branch, candidate, or coherent claim](.agents/skills/deliver-pr/SKILL.md);
+- `$prepare-issue` — [problem, owner, scope, proof seam, or plan](.agents/skills/prepare-issue/SKILL.md);
+- `$prepare-proof` — [discriminating executable proof](.agents/skills/prepare-proof/SKILL.md);
+- `$build-candidate` — [implementation, test hardening, simplification, candidate
+  challenge](.agents/skills/build-candidate/SKILL.md);
+- `$finish-pr` — [publication/resume, repair, substantive review, integration, merge,
+  reconciliation](.agents/skills/finish-pr/SKILL.md).
+
+Read the selected skill's `SKILL.md` before executing it. If the runtime has not
+preloaded the repository skills, open the linked file directly and follow its named
+transitions; lack of automatic discovery does not replace the repository procedure.
 
 Enter at the earliest absent or stale useful judgment. Existing coherent work enters
 midstream. Selecting a route is not completion: invoke it, follow its named normal and
@@ -270,9 +297,10 @@ Otherwise detect, explain, repair, and continue.
 
 ## Repository hygiene and local proof
 
-- use direct PowerShell, Git, GitHub, Cargo, and repository commands for local work;
+- use the host shell and direct Git, GitHub, Cargo, and repository commands; do not
+  require a token-saving wrapper or wrapper initialization. Cargo admission below
+  still applies to resource-bearing work;
 - preserve the direct command and its relevant output in evidence and handoffs;
-- read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
 - migrating a test's `.expect("…")` onto the `perl-test-must` helpers uses the
@@ -282,11 +310,31 @@ Otherwise detect, explain, repair, and continue.
 - never use `git stash` in this shared multi-worktree repository; `refs/stash` is
   repository-global, so another worktree can pop or drop your entry without knowing it
   is yours; use scoped restore or a branch-local WIP commit;
-- rewrite published candidate history only with established sole mutation ownership and
-  an explicit expected remote SHA; if exclusivity is unknown, preserve the observed
-  remote head and use a non-rewriting integration or stop;
+- immediately before candidate mutation, establish the exact candidate, head, and
+  mutation owner from live evidence, using checks applicable to that operation.
+  New-candidate admission is not a resume check; an open PR alone does not establish
+  another writer. Missing, stale, or contradictory ownership evidence is `NOT_PROVEN`;
+  read-only research and review need no writer admission;
+- if another current writer is established, stop mutating that candidate; continue as
+  a reviewer or take a different claim;
+- rewrite published candidate history only with established sole mutation ownership,
+  applicable user and repository authorization, and an explicit expected remote SHA.
+  Ownership alone grants no rebase or force-push permission;
+- if commits from multiple contexts have already reached the branch, first establish
+  one writer; that writer preserves the commits through non-rewriting integration,
+  subject to the applicable authorization;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
+- regenerate generated projections only through their owning writer and publication
+  policy; never hand-merge or hand-edit them. Feature branches do not regenerate or
+  stage `docs/policy/NON_RUST_INVENTORY.md`, a default-branch publication. Follow
+  [file policy](docs/FILE_POLICY.md) and [non-Rust policy](docs/policy/NON_RUST_POLICY.md)
+  for current-tree evidence under `target/policy/`;
+- never add temporary workflows that fetch, execute, or push on behalf of a branch
+  (`contents: write` self-repair jobs); apply the edit locally and remove such files
+  when found on a branch;
+- before treating an older branch as an unrelated-history port, check its merge base
+  with current `main`; shared history calls for claim-level comparison;
 - keep both Cargo target and intermediate build paths private to the canonical
   worktree; a shared lock or Git version stamp does not prevent stale sibling
   libraries (#11650). Use the host-admitted `scripts/cargo-admitted` route or an
@@ -298,19 +346,37 @@ Otherwise detect, explain, repair, and continue.
   the merge gate selects it;
 - do not run repository-wide Clippy or tests after every edit.
 
-Useful commands:
+### Choose local proof
+
+Replace `PACKAGE` with the owning Cargo package. Formatting does not compile it:
 
 ```bash
-just doctor
-cargo fmt -p <package> -- --check
-cargo clippy -p <package> --all-targets --locked -- -D warnings
-cargo test -p <package> --all-targets --locked
-just pr-fast
-# Quiet xtask dispatch for agent queries: skips cargo's ~200KB cached-warning
-# replay on stderr (#17240). Fresh build errors still surface; xtask
-# stdout/stderr pass through untouched.
-bash scripts/xtask-quiet.sh ci doctor --help
+cargo fmt -p PACKAGE -- --check
 ```
 
-Choose the smallest command that can falsify the claim. Current GitHub protection
-remains authoritative at merge.
+For compiled proof, choose the smallest package/target command that can falsify the
+claim, then preflight and execute that same request from the same worktree and task
+shell. A package-test example, after host setup:
+
+```bash
+bash scripts/cargo-admitted --preflight test -p PACKAGE --locked &&
+  bash scripts/cargo-admitted test -p PACKAGE --locked
+```
+
+Preserve any selected target, feature, profile, and test filters in both commands.
+Follow the separately supported [staged native Clippy route](docs/agents/CARGO_STORAGE.md#staged-native-clippy)
+for linting; do not mechanically prefix unsupported Cargo commands with the wrapper.
+The `xtask` alias is not admitted: use the documented `run -p xtask --locked -- ...`
+route. `scripts/xtask-quiet.sh` also builds through admission, even for a query ending
+in `--help`; quiet output is not evidence of build-free execution.
+
+`just doctor` diagnoses repository health. `just devex` diagnoses tool setup but can
+bootstrap `xtask`. Neither establishes build admission, and `just pr-fast` still uses
+the legacy `cargo-safe` route. These compatibility commands do not replace the
+[Cargo storage contract](docs/agents/CARGO_STORAGE.md) for new agent work.
+
+For documentation-only changes, check links and run the existing narrow contracts
+that govern the edited surface. Record passed, failed, and unavailable proof honestly.
+Current GitHub protection remains authoritative at merge; the
+[late-qualification contract](docs/agents/DEVELOPMENT_METHOD.md#late-qualification-and-publication)
+distinguishes local authoring proof, staged policy, and live workflow triggers.
