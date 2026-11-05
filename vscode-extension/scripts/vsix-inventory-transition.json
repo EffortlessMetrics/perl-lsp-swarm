@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16585,
-  "reason": "Re-measured from this PR's failing smoke receipt projected_actual (31 files, 1938202 bytes): the PR's extension changes (gate the AI-completion enable journey) shifted the produced package; base is main's current baseline.",
-  "base_baseline_file_sha256": "daa7d4775e6e0aa1aa026b08bf6e2b6f1483004be2da8d8272d211e247ea8d42",
-  "base_inventory_sha256": "4ed08e537a58d83824d48ac7cff1c4aa058516f02d9858333018995ed39c3735",
-  "candidate_baseline_file_sha256": "76ced040e30a4f70d0d55448beceec25475d3c399a06f661c613756ebb8ce4db",
-  "candidate_inventory_sha256": "ba88ea223cd3cee7f5d0ee1d02d246cb805732b19079f4bd99228c257e01e296"
+  "owner_issue": 19061,
+  "reason": "Stacked VS Code fixes: js-yaml devDependency declaration grows package.json, and the catch-binding fix grows the bundled extension.js",
+  "base_baseline_file_sha256": "292d722be60c88ef570ed1ab0ff04a3693b2429e5a888b10aac84009f0bba53d",
+  "candidate_baseline_file_sha256": "88dbd8ee592842af8db272dad51d8074faff18eb36a0e85ad3a5c3e220d7f770",
+  "base_inventory_sha256": "7d2af3584b62f7648c64abde174d11b61b2298660813892177ef38d45a0bc6b8",
+  "candidate_inventory_sha256": "568097ca4eecddd8d70f8b1c3ecc1bbdfff020cf20f70e9f410b2d0f75a4f321"
 }

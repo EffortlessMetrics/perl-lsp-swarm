@@ -8,26 +8,13 @@ void test('publisher CLIs resolve from exact local dependencies without network 
   const tools = verifyPublisherTools();
 
   assert.deepEqual(
-    tools.map(({ packageName, executable, expectedVersion, reportedVersion }) => ({
-      packageName,
-      executable,
-      expectedVersion,
-      reportedVersion,
-    })),
+    tools.map(({ packageName, executable }) => ({ packageName, executable })),
     [
-      {
-        packageName: '@vscode/vsce',
-        executable: '@vscode/vsce',
-        expectedVersion: '3.9.2',
-        reportedVersion: '3.9.2',
-      },
-      {
-        packageName: 'ovsx',
-        executable: 'ovsx',
-        expectedVersion: '1.1.1',
-        reportedVersion: '1.1.1',
-      },
+      { packageName: '@vscode/vsce', executable: '@vscode/vsce' },
+      { packageName: 'ovsx', executable: 'ovsx' },
     ],
   );
+  // `verifyPublisherTools` itself throws when a reported version differs
+  // from the manifest pin, so version equality is enforced there, not here.
   for (const tool of tools) assert.match(tool.packagePath, /node_modules/);
 });

@@ -60,7 +60,7 @@ Survival-disposition vocabulary (package-neutral):
 
 ## 4. Resolved Cargo denominator (live `cargo metadata --all-features --locked` evidence)
 
-Direct declared edges: 7 (2 production, 4 compatibility-gated, 1 dev/test, 0 unclassified). Transitive selecting parents: 26 workspace members (normal-chain vs dev-only-chain below). No external (non-workspace) package resolves the incumbent transitively.
+Direct declared edges: 7 (2 production, 4 compatibility-gated, 1 dev/test, 0 unclassified). Transitive selecting parents: 21 workspace members (normal-chain vs dev-only-chain below). No external (non-workspace) package resolves the incumbent transitively.
 
 Doomed lower edges are assigned to their removal owners and are NOT part of the #11803 migration population.
 
@@ -78,7 +78,6 @@ Doomed lower edges are assigned to their removal owners and are NOT part of the 
 | --- | --- | --- |
 | perl-ast| normal_chain| 2 |
 | perl-ast-v2| normal_chain| 2 |
-| perl-core-harness| dev_only_chain| 2 |
 | perl-core-test-runner| normal_chain| 3 |
 | perl-corpus| dev_only_chain| 2 |
 | perl-dap| normal_chain| 2 |
@@ -86,18 +85,14 @@ Doomed lower edges are assigned to their removal owners and are NOT part of the 
 | perl-lsp-perltidy| normal_chain| 2 |
 | perl-module| normal_chain| 2 |
 | perl-parser-bench| normal_chain| 2 |
-| perl-parser-comparison| normal_chain| 2 |
+| perl-parser-comparison| normal_chain| 3 |
 | perl-parser-core| normal_chain| 2 |
-| perl-parser-pest| dev_only_chain| 2 |
 | perl-pragma| normal_chain| 3 |
-| perl-release-readiness| dev_only_chain| 2 |
 | perl-ripr-facts| normal_chain| 2 |
 | perl-semantic-analyzer| normal_chain| 2 |
-| perl-subprocess-runtime| dev_only_chain| 2 |
 | perl-symbol| normal_chain| 2 |
 | perl-token| dev_only_chain| 3 |
 | perl-tree-sitter-compat| normal_chain| 3 |
-| perl-uri| dev_only_chain| 2 |
 | perl-workspace-core| normal_chain| 3 |
 | perllsp| normal_chain| 2 |
 | tree-sitter-perl-rs| normal_chain| 2 |
@@ -109,7 +104,7 @@ Current snapshots are behavior evidence, not target protocol authority. Classifi
 
 | Row ID | Area | Incumbent 0.97 evidence (verified) | Candidate 0.11.0 evidence (verified) | Classification | Migration note |
 | --- | --- | --- | --- | --- | --- |
-| DELTA-URI-DEFAULT| URI representation: default generated String Uri| 0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result| 0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step| public_api_only_difference| qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire |
+| DELTA-URI-DEFAULT| URI representation: default generated String Uri| 0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result| 0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step| public_api_only_difference| qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire; canonical string→Uri gates live in perl-lsp-rs-core::uri (`parse_uri` with ADR-0037 fallback, `try_parse_uri` for skip-on-invalid workspace folders, `parse_uri_or_err` for strict/test callers — #14292) |
 | DELTA-URI-URL| URI representation: optional `url` feature (url::Url 2.5.8)| n/a - incumbent has no url-backed mode| 0.11.0 Cargo.toml.orig features.url = ["dep:url"]; common.rs:66 type alias| schema_equivalent_representation_difference| alternative only; feature choice deferred to migration lane with adapter-boundary proof, not import-edit minimization |
 | DELTA-URI-FLUENT| URI representation: optional `fluent-uri` feature (fluent_uri 0.4.1)| incumbent pins fluent-uri 0.1.4 internally| 0.11.0 Cargo.toml.orig features.fluent-uri = ["dep:fluent-uri"]; common.rs:68 Uri<String>| schema_equivalent_representation_difference| closest wire behavior to incumbent but still a major fluent-uri version jump; same URI submatrix proof obligations as DELTA-URI-DEFAULT |
 | DELTA-TYPEHIERARCHY-FIELD| ServerCapabilities.type_hierarchy_provider field| verified absent from 0.97 default AND proposed surfaces (only TypeHierarchy request types + client capability exist); repo compensates via JSON patch + experimental injection| typed Option<TypeHierarchyProvider> at structures.rs:6062| incumbent_defect_corrected_by_candidate| PATCH-TYPEHIERARCHY exits when the typed field serializes identically |

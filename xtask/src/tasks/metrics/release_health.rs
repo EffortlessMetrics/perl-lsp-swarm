@@ -572,6 +572,49 @@ mod tests {
         Ok(())
     }
 
+    /// #15369: producer-conformance. Serialize the producer's real
+    /// `BaselineReport` fixture with every envelope field populated and
+    /// prove this consumer accepts it, so a producer field rename or
+    /// removal fails here instead of drifting away undetected.
+    #[test]
+    fn ci_baseline_consumer_accepts_full_producer_envelope() -> Result<()> {
+        let report = crate::tasks::ci_metrics::baseline_report_fixture();
+        let json = serde_json::to_string(&report).context("serialize producer baseline")?;
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
+        for key in [
+            "schema_version",
+            "generated_at",
+            "branch",
+            "days_analyzed",
+            "workflows",
+            "summary",
+            "sample_completeness",
+            "fetched_runs",
+            "oldest_fetched_at",
+            "newest_fetched_at",
+        ] {
+            ensure!(
+                parsed.get(key).is_some(),
+                "producer envelope lost `{key}` - envelope fields move in lockstep with consumers (#15369)"
+            );
+        }
+
+        let tmp = TempDir::new()?;
+        write_raw_ci_baseline(tmp.path(), &json)?;
+        let file = read_ci_baseline(tmp.path())?
+            .ok_or_else(|| eyre!("producer report must be accepted, not treated as absent"))?;
+        ensure!(file.summary.total_runs == 42, "total_runs must round-trip as 42");
+        ensure!(
+            file.summary.total_billable_minutes == 137,
+            "total_billable_minutes must round-trip as 137"
+        );
+        ensure!(
+            file.sample_completeness == SampleCompleteness::Complete,
+            "completeness flag must round-trip through the consumer's envelope"
+        );
+        Ok(())
+    }
+
     fn write_build_timing(root: &Path, measurements_json: &str) -> Result<()> {
         let dir = root.join("artifacts");
         fs::create_dir_all(&dir)?;
