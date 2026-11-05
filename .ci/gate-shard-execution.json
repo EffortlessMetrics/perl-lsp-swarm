@@ -40,6 +40,10 @@
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },
+    "regex_static_ratchet": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
     "release_history_check": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
@@ -49,6 +53,10 @@
       "on_dependency_failure": "blocked_not_proven"
     },
     "perl_token_leaf_contract": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
+    "public_api_baseline_canonical": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },

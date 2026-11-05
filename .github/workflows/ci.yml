@@ -701,10 +701,8 @@ jobs:
 
   semver-pr:
     name: Semver Compatibility (facade PR)
-    # Advisory per #2266: cargo-semver-checks stays continue-on-error until
-    # baseline noise-confidence is established; promote to a blocking verdict
-    # with the same evidence window that hardens public-api-pr.
-    continue-on-error: true
+    # Advisory per #2266: not in the merge-gate required set. Detected breaks
+    # must still fail the job (#17208); continue-on-error hid them as success.
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [draft-pr-check, preflight-latest-check]
@@ -775,26 +773,9 @@ jobs:
         if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
         env:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
-        # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
-        # list `just semver-check-all` and `just public-api-check` read (#14607).
-        run: |
-          mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
-          if [ "${#crates[@]}" -eq 0 ]; then
-            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists no crates; refusing a vacuous semver pass"
-            exit 1
-          fi
-          if [ -n "$(printf '%s\n' "${crates[@]}" | sort | uniq -d)" ]; then
-            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists a crate twice; fix the list rather than checking it twice"
-            exit 1
-          fi
-          for crate in "${crates[@]}"; do
-            if cargo semver-checks check-release -p "${crate}" \
-              --baseline-rev "${SEMVER_BASELINE}"; then
-              echo "semver: ${crate} compatible"
-            else
-              echo "::warning::Breaking changes detected in ${crate}"
-            fi
-          done
+        # Crate set and fail-closed guards live in scripts/ci/semver_pr_check.sh
+        # (#14607 list authority; #17208 truthful step outcome on detection).
+        run: bash scripts/ci/semver_pr_check.sh
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
@@ -964,6 +945,7 @@ jobs:
       # must fail here in seconds instead of dying inside `ld` with SIGBUS
       # disguised as a compile failure 40 minutes in.
       - name: Pre-flight disk budget guard
+        id: pr-smoke-disk-preflight
         shell: bash
         run: |
           python3 "$PR_SMOKE_DISK_GUARD" preflight \
@@ -1082,6 +1064,7 @@ jobs:
           exit "$preparation_status"
 
       - name: Run PR-fast via shared xtask gate runner
+        id: pr-smoke-gate-runner
         env:
           PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
         run: |
@@ -1163,7 +1146,10 @@ jobs:
       # only — the original gate outcome is preserved; this step never exits
       # non-zero.
       - name: Classify PR-fast disk exhaustion
-        if: always() && steps.pr-smoke-disk-guard.outcome == 'success'
+        if: >-
+          always()
+          && steps.pr-smoke-disk-preflight.outcome == 'success'
+          && steps.pr-smoke-gate-runner.outcome != 'skipped'
         shell: bash
         run: |
           python3 "$PR_SMOKE_DISK_GUARD" classify \
@@ -1194,7 +1180,7 @@ jobs:
           cat target/receipts/pr-fast-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PR-fast receipt
-        if: always()
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: pr-fast-receipt-${{ github.sha }}
@@ -1204,6 +1190,22 @@ jobs:
             target/receipts/routed-test-build/logs/*.log
             target/receipts/ci-subject.json
             target/receipts/logs/*.log
+          if-no-files-found: error
+          retention-days: 7
+
+      # When the tier never produced receipt.json, publish diagnostics under a
+      # name that does not impersonate a completed pr-fast run (#17915).
+      - name: Upload PR-fast missing-receipt diagnostics
+        if: always() && hashFiles('target/receipts/receipt.json') == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: pr-fast-missing-receipt-${{ github.sha }}
+          path: |
+            target/receipts/logs/*.log
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
+            target/receipts/ci-subject.json
+            target/receipts/pr-fast-failure-digest.md
           if-no-files-found: warn
           retention-days: 7
 
@@ -1234,7 +1236,7 @@ jobs:
           fi
 
       - name: Convert PR-fast receipt to JUnit
-        if: always()
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
         run: |
           python3 scripts/ci/receipts-to-junit.py \
             --input target/receipts/receipt.json \
@@ -1242,7 +1244,7 @@ jobs:
             --suite-name pr-fast
 
       - name: Upload PR-fast test results to Codecov
-        if: always() && env.CODECOV_TOKEN != ''
+        if: always() && hashFiles('target/receipts/receipt.json') != '' && env.CODECOV_TOKEN != ''
         continue-on-error: true
         uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
         with:
@@ -1256,6 +1258,44 @@ jobs:
       # parallel check-all-targets job (just check-all-targets), which runs
       # cargo check --workspace --all-targets --locked independently of pr-smoke.
       # Adding a redundant fallback here would duplicate that work without gain.
+
+  # ── Source-commit API ledger on the evaluated combined/landed tree (#15965)
+  # The meta shard already runs `source_commit_api_check`, but PR-head
+  # evaluation can stay green while the post-merge tree drifts the
+  # `compatibility_baseline` count (d7d4c5143 / #16011, #17212). This job
+  # reuses that same checker on merge_group (queue combined tree) and push
+  # to main/master (landed tree). It is not a new required GitHub context.
+  source-commit-api-ledger:
+    name: Source-commit API ledger (combined tree)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    if: >-
+      github.event_name == 'merge_group' ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    steps:
+      - name: Checkout evaluated tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Recheck source-commit API ledger counts
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TREE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set +e
+          python3 scripts/ci/check_source_commit_api.py
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=source_commit_api_check::source-commit API ledger check failed on the ${EVENT_NAME} tree (${TREE_SHA}); see checker output for the failure."
+            exit "$status"
+          fi
 
   # ── Merge Gate shards: bounded validation lanes for every PR/push ────
   merge-gate-shards:
@@ -1309,7 +1349,7 @@ jobs:
           # and re-flip `ci_workflow_includes_compile_all_targets_in_matrix`
           # if the dedicated job is ever reverted.
           - name: meta
-            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet release_history_check source_commit_api_check perl_token_leaf_contract clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet regex_static_ratchet release_history_check source_commit_api_check perl_token_leaf_contract public_api_baseline_canonical clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
@@ -1934,15 +1974,17 @@ jobs:
     # UX suite does not consume pr-smoke artifacts/results; parallelize after preflight.
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
-    # Run on every PR push — this is the regression prevention gate.
+    # Run on every PR push — advisory UX regression evidence (not branch-protection
+    # required; see .ci/policies/required-checks.toml for this job).
     # Flakiness note: .ci/ux-flakes.json records quarantine/disposition state for
-    # known-flaky UX scenario tests (currently all of them historical scenario_14 /
-    # @INC conformance rows); any active row must carry the bounded review contract
-    # (issue, owner, expiry) enforced by the quarantine registry contract test,
-    # but the registry is advisory only — it is NOT enforced here. If any
-    # scenario_14 test fails this job fails and merge-gate blocks. Quarantine
-    # enforcement (reading the registry to generate --skip flags) is a follow-up;
-    # see .ci/ux-flakes.json for the current per-row state.
+    # known-flaky UX scenario tests; use its `summary` block for active/total counts
+    # (historical rows are mostly scenario_14 / @INC conformance). Any active row must
+    # carry the bounded review contract (issue, owner, expiry) enforced by
+    # quarantine_registry_contract.rs, but the registry is advisory only — it is NOT
+    # enforced here and does not skip tests in this job. A failing UX test fails this
+    # job, yet branch protection does not require it; failures surface in the advisory
+    # CI aggregate only. Quarantine enforcement (reading the registry to generate --skip
+    # flags) is a follow-up; see .ci/ux-flakes.json for per-row state.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
