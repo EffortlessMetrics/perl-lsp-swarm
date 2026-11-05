@@ -444,6 +444,8 @@ def build_receipt(lines, head, toolchain, expect=None, expect_replay=None):
         # turning a different, empty, extra, or broken run into stable evidence.
         matched = (
             receipt["verdict"] in ("COMPLETE_PASS", "COMPLETE_WITH_FAILURES")
+            and receipt["stream"]["malformed_json_lines"] == 0
+            and receipt["stream"]["events_before_envelope"] == 0
             and _matches_exact_replay(lines, expect_replay)
         )
         if not matched:

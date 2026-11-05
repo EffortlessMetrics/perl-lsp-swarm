@@ -329,6 +329,20 @@ class ExtractFailedTestsTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(json.loads(result.stdout)["success_verdict"])
 
+    def test_outcome_aware_replay_rejects_noise_outside_the_run_envelope(self):
+        for failed in (False, True):
+            for noise in ("{broken", "warning: outside cargo diagnostic"):
+                for position in ("prefix", "suffix"):
+                    with self.subTest(failed=failed, noise=noise, position=position):
+                        records = self.replay_events(failed)
+                        records = [noise] + records if position == "prefix" else records + [noise]
+                        result = self.replay_cli(records)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        receipt = json.loads(result.stdout)
+                        self.assertFalse(receipt["success_verdict"])
+                        self.assertEqual(receipt["stream"]["events_before_envelope"], 1)
+                        self.assertEqual(receipt["stream"]["malformed_json_lines"], int(noise == "{broken"))
+
     def test_flake_workflow_pins_nightly_and_checked_toolchain(self):
         workflow = (
             Path(__file__).parents[2] / ".github" / "workflows" / "flake-detection.yml"
