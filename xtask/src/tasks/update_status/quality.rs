@@ -94,14 +94,14 @@ pub(super) fn format_quality_metrics_bullet(root: &Path) -> String {
             let lower_us = (lower_ns + 500) / 1_000;
             let upper_us = (upper_ns + 500) / 1_000;
             format!(
-                "diagnostics p50 = {p50:.0} ms (receipt: `editor_ux.md`); \
+                "diagnostics p50 = {p50:.0} ms (receipt: [editor_ux.md](editor_ux.md)); \
                  incremental parse median = {lower_us}–{upper_us} µs \
-                 (receipt: `parser_performance_scorecard.json`)"
+                 (receipt: [parser_performance_scorecard.json](parser_performance_scorecard.json))"
             )
         }
         (Some(p50), None) => {
             format!(
-                "diagnostics p50 = {p50:.0} ms (receipt: `editor_ux.md`); \
+                "diagnostics p50 = {p50:.0} ms (receipt: [editor_ux.md](editor_ux.md)); \
                  incremental parse median = unmeasured"
             )
         }
@@ -111,7 +111,7 @@ pub(super) fn format_quality_metrics_bullet(root: &Path) -> String {
             format!(
                 "diagnostics p50 = unmeasured; \
                  incremental parse median = {lower_us}–{upper_us} µs \
-                 (receipt: `parser_performance_scorecard.json`)"
+                 (receipt: [parser_performance_scorecard.json](parser_performance_scorecard.json))"
             )
         }
         (None, None) => "performance metrics unmeasured — run `just ux-tests` and \
@@ -174,13 +174,30 @@ pub(super) fn generate_quality_status(
     tests_by_crate: &PerCrateTestCounts,
 ) -> Result<String> {
     let mutation_by_crate = collect_per_crate_mutation(root);
+    let text = generate_quality_observations(root, original, &mutation_by_crate)?;
+    let crate_table = format_crate_quality_table(&mutation_by_crate, tests_by_crate);
+    replace_block(
+        &text,
+        "<!-- BEGIN: QUALITY_CRATE_TABLE -->",
+        "<!-- END: QUALITY_CRATE_TABLE -->",
+        &crate_table,
+    )
+}
+
+/// Refresh recorded observations without changing the per-crate test inventory.
+/// The caller supplies the collected mutation inventory so a full refresh reads it once.
+pub(super) fn generate_quality_observations(
+    root: &Path,
+    original: &str,
+    mutation_by_crate: &BTreeMap<String, usize>,
+) -> Result<String> {
     let ux_scenarios = count_ux_scenarios(root);
     let flaky = collect_flaky_test_summary(root);
 
     let mutation_note = if mutation_by_crate.is_empty() {
-        "mutation data pending first nightly CI run — run `just mutation-subset` locally to populate"
+        "no mutation inventory entries available — run `just mutation-subset` locally to populate"
     } else {
-        "per-crate data from `mutants.out/mutants.json` (written by nightly CI `cargo mutants` run)"
+        "per-crate data from `mutants.out/mutants.json`"
     };
 
     let quality_metrics = format_quality_metrics_bullet(root);
@@ -190,15 +207,17 @@ pub(super) fn generate_quality_status(
            `just ux-tests` runs the default release-confidence lane and `just ux-tests-full` adds \
            the integration-only 10k-line large-file case; confidence signals (manual smoke, \
            first-5-minutes coverage, issue-burndown regression guards) are tracked in \
-           `docs/project/status/editor_ux.json`\n\
+           [editor_ux.json](editor_ux.json)\n\
          - **Mutation testing**: {mutation_note}\n\
-         - **Lexer performance scorecard**: `cargo bench -p perl-lexer --bench lexer_benchmarks` writes `benchmarks/results/lexer_scorecard.json` for trend comparisons
-\
-         - **Production Status**: LSP server public beta (`just ci-gate` passing)"
+         - **Lexer performance scorecard**: `cargo bench -p perl-lexer --bench lexer_benchmarks` writes `benchmarks/results/lexer_scorecard.json` for trend comparisons\n\
+         - **Evidence scope**: Discovered test and mutation inventories, UX scenario counts, \
+           and recorded performance measurements. Refreshing this page does not execute \
+           the listed tests or establish that `just ci-gate` passed. Check the candidate's \
+           execution receipts and current required checks; the \
+           [verification protocol](../protocols/verification.md) describes verification commands."
     );
 
-    let crate_table = format_crate_quality_table(&mutation_by_crate, tests_by_crate);
-    let flaky_section = format_flaky_tests_section(&flaky);
+    let flaky_section = format_flaky_tests_section(flaky.as_ref());
 
     let mut text = original.to_string();
     text = replace_block(
@@ -206,12 +225,6 @@ pub(super) fn generate_quality_status(
         "<!-- BEGIN: QUALITY_METRICS_BULLETS -->",
         "<!-- END: QUALITY_METRICS_BULLETS -->",
         &bullets,
-    )?;
-    text = replace_block(
-        &text,
-        "<!-- BEGIN: QUALITY_CRATE_TABLE -->",
-        "<!-- END: QUALITY_CRATE_TABLE -->",
-        &crate_table,
     )?;
     text = replace_block(
         &text,

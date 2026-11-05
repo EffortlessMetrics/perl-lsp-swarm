@@ -10,7 +10,7 @@ use std::path::Path;
 // ---------------------------------------------------------------------------
 
 /// Active/resolved counts from `.ci/flaky-tests.json`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct FlakyTestSummary {
     pub active: usize,
     pub resolved: usize,
@@ -21,18 +21,14 @@ pub(super) struct FlakyTestSummary {
 // ---------------------------------------------------------------------------
 
 /// Read `.ci/flaky-tests.json` and return active/resolved counts.
-/// Returns a zero-filled summary if the file is absent or unparseable.
-pub(super) fn collect_flaky_test_summary(root: &Path) -> FlakyTestSummary {
+/// Returns `None` if the file is unavailable or either count is missing or invalid.
+pub(super) fn collect_flaky_test_summary(root: &Path) -> Option<FlakyTestSummary> {
     let path = root.join(".ci/flaky-tests.json");
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return FlakyTestSummary::default();
-    };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return FlakyTestSummary::default();
-    };
-    let active = doc.pointer("/summary/active").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let resolved = doc.pointer("/summary/resolved").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    FlakyTestSummary { active, resolved }
+    let raw = fs::read_to_string(&path).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let active = usize::try_from(doc.pointer("/summary/active")?.as_u64()?).ok()?;
+    let resolved = usize::try_from(doc.pointer("/summary/resolved")?.as_u64()?).ok()?;
+    Some(FlakyTestSummary { active, resolved })
 }
 
 // ---------------------------------------------------------------------------
@@ -40,15 +36,23 @@ pub(super) fn collect_flaky_test_summary(root: &Path) -> FlakyTestSummary {
 // ---------------------------------------------------------------------------
 
 /// Format the flaky-tests summary as a markdown table with a sourcing note.
-pub(super) fn format_flaky_tests_section(summary: &FlakyTestSummary) -> String {
+pub(super) fn format_flaky_tests_section(summary: Option<&FlakyTestSummary>) -> String {
+    let rows = match summary {
+        Some(summary) => {
+            format!("| Active | {} |\n| Resolved | {} |", summary.active, summary.resolved)
+        }
+        None => "| Active | UNVERIFIED |\n\
+                 | Resolved | UNVERIFIED |\n\n\
+                 Registry data is unavailable or invalid."
+            .to_string(),
+    };
     format!(
         "| State | Count |\n\
          |-------|-------|\n\
-         | Active | {} |\n\
-         | Resolved | {} |\n\
+         {rows}\n\
          \n\
-         _Sourced from `.ci/flaky-tests.json`. Run `just status-update --only quality` to refresh._",
-        summary.active, summary.resolved
+         _Source: [.ci/flaky-tests.json](../../../.ci/flaky-tests.json). \
+         Run `just status-update quality` to refresh._"
     )
 }
 
@@ -73,26 +77,96 @@ mod tests {
         }"#;
         fs::write(ci_dir.join("flaky-tests.json"), json)?;
         let summary = collect_flaky_test_summary(dir.path());
-        assert_eq!(summary.active, 1);
-        assert_eq!(summary.resolved, 2);
+        assert_eq!(summary.map(|counts| (counts.active, counts.resolved)), Some((1, 2)));
         Ok(())
     }
 
     #[test]
-    fn test_collect_flaky_test_summary_missing_file_returns_zeros() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn test_collect_flaky_test_summary_missing_file_is_unverified() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let summary = collect_flaky_test_summary(dir.path());
-        assert_eq!(summary.active, 0);
-        assert_eq!(summary.resolved, 0);
+        assert!(summary.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_flaky_test_summary_unreadable_file_is_unverified() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::create_dir_all(dir.path().join(".ci/flaky-tests.json"))?;
+        assert!(collect_flaky_test_summary(dir.path()).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_flaky_test_summary_invalid_data_is_unverified() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ci_dir = dir.path().join(".ci");
+        fs::create_dir_all(&ci_dir)?;
+        let cases = [
+            ("malformed JSON", "{not-json"),
+            ("missing summary", "{}"),
+            ("null summary", r#"{"summary":null}"#),
+            ("missing active", r#"{"summary":{"resolved":2}}"#),
+            ("missing resolved", r#"{"summary":{"active":1}}"#),
+            ("string active", r#"{"summary":{"active":"0","resolved":2}}"#),
+            ("null active", r#"{"summary":{"active":null,"resolved":2}}"#),
+            ("negative active", r#"{"summary":{"active":-1,"resolved":2}}"#),
+            ("fractional active", r#"{"summary":{"active":0.5,"resolved":2}}"#),
+            ("boolean active", r#"{"summary":{"active":false,"resolved":2}}"#),
+            ("string resolved", r#"{"summary":{"active":1,"resolved":"0"}}"#),
+            ("null resolved", r#"{"summary":{"active":1,"resolved":null}}"#),
+            ("negative resolved", r#"{"summary":{"active":1,"resolved":-1}}"#),
+            ("fractional resolved", r#"{"summary":{"active":1,"resolved":0.5}}"#),
+        ];
+        for (case, json) in cases {
+            fs::write(ci_dir.join("flaky-tests.json"), json)?;
+            assert!(collect_flaky_test_summary(dir.path()).is_none(), "{case}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_flaky_test_summary_preserves_explicit_zero() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let ci_dir = dir.path().join(".ci");
+        fs::create_dir_all(&ci_dir)?;
+        fs::write(ci_dir.join("flaky-tests.json"), r#"{"summary":{"active":0,"resolved":0}}"#)?;
+        let summary = collect_flaky_test_summary(dir.path());
+        assert_eq!(summary.as_ref().map(|counts| (counts.active, counts.resolved)), Some((0, 0)));
+        let section = format_flaky_tests_section(summary.as_ref());
+        assert!(section.contains("| Active | 0 |"));
+        assert!(section.contains("| Resolved | 0 |"));
+        assert!(!section.contains("UNVERIFIED"));
+        Ok(())
     }
 
     #[test]
     fn test_format_flaky_tests_section_contains_counts() {
         let summary = FlakyTestSummary { active: 2, resolved: 5 };
-        let section = format_flaky_tests_section(&summary);
+        let section = format_flaky_tests_section(Some(&summary));
         assert!(section.contains("| Active | 2 |"), "missing active count row");
         assert!(section.contains("| Resolved | 5 |"), "missing resolved count row");
-        assert!(section.contains("flaky-tests.json"), "missing source attribution");
+        assert!(
+            section.contains("[.ci/flaky-tests.json](../../../.ci/flaky-tests.json)"),
+            "missing source link"
+        );
+        assert!(
+            section.contains("`just status-update quality`"),
+            "missing supported refresh command"
+        );
+        assert!(!section.contains("just status-update --only quality"));
+    }
+
+    #[test]
+    fn test_format_flaky_tests_section_without_observation_is_unverified() {
+        let section = format_flaky_tests_section(None);
+        assert!(section.contains("| Active | UNVERIFIED |"));
+        assert!(section.contains("| Resolved | UNVERIFIED |"));
+        assert!(section.contains("unavailable or invalid"));
+        assert!(!section.contains("| Active | 0 |"));
+        assert!(!section.contains("| Resolved | 0 |"));
+        assert!(section.contains("[.ci/flaky-tests.json](../../../.ci/flaky-tests.json)"));
+        assert!(section.contains("`just status-update quality`"));
     }
 
     #[test]
