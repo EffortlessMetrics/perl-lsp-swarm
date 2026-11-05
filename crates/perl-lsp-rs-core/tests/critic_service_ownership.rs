@@ -209,12 +209,11 @@ fn path_is_test_gated(path: &Path) -> bool {
         return false;
     }
     for declaring in declaring_candidates(path) {
-        if declaring.is_file() {
-            if let Ok(content) = fs::read_to_string(&declaring) {
-                if gate_decides_by_declaration(&content, stem) {
-                    return true;
-                }
-            }
+        if declaring.is_file()
+            && let Ok(content) = fs::read_to_string(&declaring)
+            && gate_decides_by_declaration(&content, stem)
+        {
+            return true;
         }
     }
     false

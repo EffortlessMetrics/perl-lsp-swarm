@@ -205,7 +205,7 @@ pub use checkpoint::{
 };
 pub use config::LexerConfig;
 pub use error::{LexerError, Result};
-pub use lexer::PerlLexer;
+pub use lexer::{PerlLexer, StrayCutOpen};
 pub use limits::MAX_REGEX_PARSE_STEPS;
 pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
@@ -694,6 +694,10 @@ impl<'a> PerlLexer<'a> {
         let saved_line_start_offset = self.line_start_offset;
         let saved_current_quote_op = self.current_quote_op.clone();
         let saved_eof_emitted = self.eof_emitted;
+        // The peeked `next_token` may cross a stray `=cut` and record it; the
+        // consuming `next_token` must be the one that reports it, so rewind
+        // the record with the rest of the state (#19051 review).
+        let saved_stray_cut_len = self.stray_cut_opens.len();
 
         let token = self.next_token();
 
@@ -716,6 +720,7 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = saved_line_start_offset;
         self.current_quote_op = saved_current_quote_op;
         self.eof_emitted = saved_eof_emitted;
+        self.stray_cut_opens.truncate(saved_stray_cut_len);
 
         token
     }
@@ -733,6 +738,18 @@ impl<'a> PerlLexer<'a> {
             tokens.push(token);
         }
         tokens
+    }
+
+    /// The stray `=cut` directives this lexer has passed so far, in source
+    /// order (#18771).
+    ///
+    /// A stray `=cut` is a line-initial `=cut` that opened a POD block because
+    /// no POD was already open. The block itself is skipped silently — no
+    /// `Pod` token marks it — so this record is the only way to learn which
+    /// text the lexer treated as documentation instead of code. Complete once
+    /// the lexer has been driven to EOF.
+    pub fn stray_cut_opens(&self) -> &[StrayCutOpen] {
+        &self.stray_cut_opens
     }
 
     /// Reset the lexer to the beginning of the input.
@@ -759,6 +776,9 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = 0;
         self.current_quote_op = None;
         self.eof_emitted = false;
+        // Re-lexing the same source must not append a second copy of the
+        // record (#19051 review).
+        self.stray_cut_opens.clear();
     }
 
     /// Switch the lexer into format-body parsing mode.
@@ -899,6 +919,12 @@ impl<'a> PerlLexer<'a> {
                         && self.pod_has_later_cut();
                     if known || generic_pod || cut_opens_pod {
                         let bytes = self.input_bytes;
+                        // Record the amputation decision before the scan moves the
+                        // cursor (#18771): a stray `=cut` (one that opened POD with
+                        // no POD already open) silently removes the following text
+                        // from every downstream model, so the offset is the only
+                        // durable witness a diagnostic can point at.
+                        let stray_cut_offset = cut_opens_pod.then_some(self.position);
                         // Scan forward for \n=cut (end of POD block). A `=cut` that OPENED
                         // the block does not close it: the block runs to the NEXT `=cut`.
                         let search_start = if cut_opens_pod {
@@ -936,6 +962,10 @@ impl<'a> PerlLexer<'a> {
                         if !found_cut {
                             // POD extends to end of file
                             self.position = bytes.len();
+                        }
+                        if let Some(cut_offset) = stray_cut_offset {
+                            self.stray_cut_opens
+                                .push(StrayCutOpen { cut_offset, runs_to_eof: !found_cut });
                         }
                         continue;
                     }
@@ -2013,12 +2043,16 @@ impl<'a> PerlLexer<'a> {
         }
 
         // We have `v` followed by a digit — scan the rest of the v-string.
-        // Pattern: v DIGITS (.DIGITS)*
+        // Pattern: v DIGITS (.DIGITS)* with Perl numeric separators (`_`
+        // between digits, as in `v5.36_1`).
         let mut pos = next_pos;
 
-        // Consume leading digits
+        // Consume leading digits (and digit-separating underscores)
         while pos < bytes.len() && bytes[pos].is_ascii_digit() {
             pos += 1;
+            if pos + 1 < bytes.len() && bytes[pos] == b'_' && bytes[pos + 1].is_ascii_digit() {
+                pos += 1;
+            }
         }
 
         // Consume optional `.DIGITS` segments (require at least one digit after dot)
@@ -2035,6 +2069,9 @@ impl<'a> PerlLexer<'a> {
             // Consume digits after the dot
             while pos < bytes.len() && bytes[pos].is_ascii_digit() {
                 pos += 1;
+                if pos + 1 < bytes.len() && bytes[pos] == b'_' && bytes[pos + 1].is_ascii_digit() {
+                    pos += 1;
+                }
             }
         }
 
@@ -2054,6 +2091,13 @@ impl<'a> PerlLexer<'a> {
             }
         }
 
+        // A bareword in an autoquote context is a string, not a v-string:
+        // a fat-comma key (`v5 => 1`), a package segment (`Foo::v5`), a
+        // method name (`$obj->v5`), or a hash key (`$h{v5}`).
+        if self.vstring_is_autoquoted(start, pos) {
+            return None;
+        }
+
         // `v5` (no dots) is a valid Perl v-string meaning chr(5).
         let text = &self.input[start..pos];
 
@@ -2066,6 +2110,71 @@ impl<'a> PerlLexer<'a> {
             start,
             end: self.position,
         })
+    }
+
+    /// Whether the candidate v-string at `start..end` sits in a position
+    /// where Perl autoquotes a bareword instead of reading a v-string.
+    fn vstring_is_autoquoted(&self, start: usize, end: usize) -> bool {
+        let bytes = self.input_bytes;
+        // Fat-comma key: only whitespace may intervene before `=>`. Perl
+        // autoquotes only single-component candidates there; a dotted
+        // v-string (`v65.66 => 1`) remains a v-string.
+        if !bytes[start..end].contains(&b'.') {
+            let mut after = end;
+            while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
+                after += 1;
+            }
+            if bytes.get(after) == Some(&b'=') && bytes.get(after + 1) == Some(&b'>') {
+                return true;
+            }
+        }
+        // Previous significant byte(s).
+        let mut before = start;
+        while before > 0 && (bytes[before - 1] == b' ' || bytes[before - 1] == b'\t') {
+            before -= 1;
+        }
+        if before >= 2 && &bytes[before - 2..before] == b"::" {
+            return true;
+        }
+        if before >= 2 && &bytes[before - 2..before] == b"->" {
+            return true;
+        }
+        // Hash key: `{` directly after a sigiled variable, a closing
+        // subscript, or a dereference arrow (not after a bare block opener).
+        // A dotted candidate stays a v-string here too (`$h{v65.66}` is
+        // chr(65).chr(66), not the autoquoted string "v65.66").
+        if before >= 1 && bytes[before - 1] == b'{' && !bytes[start..end].contains(&b'.') {
+            let mut inner = before - 1;
+            while inner > 0 && (bytes[inner - 1] == b' ' || bytes[inner - 1] == b'\t') {
+                inner -= 1;
+            }
+            if inner >= 1 {
+                match bytes[inner - 1] {
+                    b'}' | b']' | b'$' | b'@' | b'%' => return true,
+                    b'>' if inner >= 2 && bytes[inner - 2] == b'-' => return true,
+                    c if c.is_ascii_alphanumeric() || c == b'_' => {
+                        // Identifier directly before `{`: a subscript only
+                        // when the identifier itself carries a sigil or a
+                        // dereference (a bare `sub NAME {` or block is not).
+                        let mut name_start = inner - 1;
+                        while name_start > 0
+                            && (bytes[name_start - 1].is_ascii_alphanumeric()
+                                || bytes[name_start - 1] == b'_')
+                        {
+                            name_start -= 1;
+                        }
+                        if name_start >= 1 && matches!(bytes[name_start - 1], b'$' | b'@' | b'%') {
+                            return true;
+                        }
+                        if name_start >= 2 && &bytes[name_start - 2..name_start] == b"->" {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     #[inline]
