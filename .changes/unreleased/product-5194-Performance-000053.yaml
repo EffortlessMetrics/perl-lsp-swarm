@@ -1,9 +1,0 @@
-project: product
-component: Performance and reliability
-kind: Performance
-body: "Completion no longer holds the client-capabilities lock across the full completion-item JSON serialization loop, freeing it for concurrent requests instead of blocking them for the duration of large result sets."
-time: 2026-07-29T00:00:53Z
-custom:
-  PR: "5194"
-  Slug: completion-caps-lock-drop
-  Breaking: "no"
