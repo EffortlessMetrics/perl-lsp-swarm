@@ -2589,7 +2589,10 @@ public-api-check:
 # cargo-public-api instrument (grep/sed/awk only). Merge-time half of
 # public-api-check's canonical-form guard (#18736): a baseline the filter
 # would rewrite hides those lines from the ratchet diff. Runs in the
-# required merge-gate meta shard so a non-canonical baseline cannot merge.
+# merge-gate meta shard, required=true inside the shard policy. That makes
+# the gate fail its shard; ruleset-level merge blocking additionally needs
+# the shard's own context promoted (#17193 / #18736 Step 2), so until then
+# this gate fails the shard, not the merge.
 public-api-baselines-canonical:
     #!/usr/bin/env bash
     set -euo pipefail
