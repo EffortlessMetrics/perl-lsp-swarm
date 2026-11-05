@@ -72,11 +72,16 @@ Release downloads below come from the publication repository,
 To install the code in **this `perl-lsp-swarm` repository**, follow
 [Install From Source](docs/how-to/INSTALLATION.md#install-from-source).
 
-**VS Code** — installs the extension, which downloads the matching `perllsp` binary for you:
+**VS Code** — install the extension. It can download `perllsp` automatically
+when no configured, bundled, or PATH binary is selected:
 
 ```bash
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
+
+Open a Perl file, then run **Perl: Show Server Version** from the Command
+Palette to check which server it selected. An older binary on PATH can take
+precedence over an automatic download.
 
 **Cargo** (supported Linux, macOS, and Windows platforms; Rust 1.95 or newer) —
 installs the `perllsp` language-server binary from crates.io. This installs
@@ -120,10 +125,11 @@ The tap is an independently versioned channel and can lag the GitHub release;
 check `brew info effortlessmetrics/tap/perllsp` to confirm the formula version
 matches the release you expect before installing.
 
-**Windows** (x86_64, plus Windows 11 ARM64 via x64 emulation) — on x86_64,
-download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
-[Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
-and put the folder containing `perllsp.exe` on your `PATH`.
+**Windows** (x86_64, plus Windows 11 ARM64 via x64 emulation) — follow the
+[manual archive steps](docs/how-to/INSTALLATION.md#manual-archive) to download
+the zip and its release's `SHA256SUMS`, verify the complete checksum before
+extraction, and put the directory containing `perllsp.exe` and `perl-dap.exe`
+on your `PATH`.
 
 The published PowerShell installer is usable for x86_64 Windows and Windows 11
 ARM64 under x64 emulation. It selects the current
@@ -159,14 +165,20 @@ to your `PATH`, then open a new terminal and restart your editor. See the
 if the command is missing or resolves to an older copy. An extension-managed
 binary need not be on your shell's PATH.
 
-Then inspect the install before wiring it into an editor. `--doctor` reports
-the local Perl and workspace setup; it is a diagnostic report, not a CI gate.
-`--health` is only a liveness probe that confirms the binary can execute:
+For standalone and Cargo installs, inspect the selected binary before wiring
+it into an editor. `--doctor` reports the local Perl and workspace setup; it
+is a diagnostic report, not a CI gate. `--health` is only a liveness probe
+that confirms the binary can execute:
 
 ```bash
 perllsp --version
 perllsp --doctor
 ```
+
+For an extension-managed install, run **Perl: Show Server Version** from the
+VS Code Command Palette instead of assuming `perllsp` is on your shell's PATH.
+To select a particular local build, follow the
+[VS Code binary-selection steps](docs/how-to/INSTALLATION.md#select-a-development-binary-in-vs-code).
 
 Full options, prebuilt-archive downloads, Windows package managers, and
 build-from-source: [docs/how-to/INSTALLATION.md](docs/how-to/INSTALLATION.md).
@@ -175,7 +187,7 @@ Editor configuration: [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md)
 
 The verified GitHub `v0.17.0` release assets are public beta. Other distribution
 channels are independently versioned and are not proven current by that receipt;
-inspect `perllsp --version` and `perllsp --doctor` before editor use. For CI,
+verify the selected server's version using the checks above. For CI,
 run explicit checks for the Perl, workspace, and module paths your job requires;
 the doctor report's exit status is not a readiness gate. Use `perllsp --health`
 when you only need to confirm that the executable starts; it prints `ok <version>`.

@@ -24,7 +24,7 @@ verify the binary before wiring it into shared automation.
 
 Use one of the public install paths that matches how you work:
 
-- VS Code: install the `EffortlessMetrics.perl-lsp-rs` extension and let it download the matching `perllsp` binary.
+- VS Code: install the `EffortlessMetrics.perl-lsp-rs` extension. It can download `perllsp` automatically when no configured, bundled, or PATH binary is selected; use **Perl: Show Server Version** to check the server it actually runs.
 - macOS or Linux: use the [macOS and Linux manual archive](#macos-and-linux-manual-archive) until the release packet publishes an immutable installer identity and digest. The identity-bound [installer wrapper](#installer-script-macos-and-linux) becomes usable when those values exist.
 - Windows: install from the [manual archive](#manual-archive), or use the [published PowerShell script](#published-powershell-script) for `perllsp.exe` only after reviewing its checksum limitations.
 - Other editors: download a prebuilt binary from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and put it on your `PATH`.
@@ -73,7 +73,13 @@ From a clone, the wrapper executes the sibling `scripts/install.sh` directly:
 git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
 cd perl-lsp-swarm
 bash install.sh --help
+# Review install.sh and scripts/install.sh, then install a published release:
+bash install.sh
 ```
+
+The clone-local installer downloads a published release by default; it does
+not compile the checkout. To run your local source changes, use
+[Install From Source](#install-from-source).
 
 A remote or piped wrapper is deliberately **non-authoritative**. It cannot
 select installer logic from mutable `master`, `main`, `HEAD`, another branch,
@@ -352,11 +358,52 @@ describe the script downloaded from the publication repository above.
 
 ### Manual archive
 
-Download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
-[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases),
-extract it, and put the directory containing `perllsp.exe` and `perl-dap.exe`
-on your `PATH`. This is the path with the fewest moving parts and the one the
-release assets are proven against.
+This route installs both binaries without running an installer script. The
+commands below work in Windows PowerShell 5.1 and PowerShell 7.
+
+1. Open [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases)
+   and choose a release. Download its
+   `perllsp-<version>-x86_64-pc-windows-msvc.zip` and `SHA256SUMS` into a new,
+   empty download directory. Use both files from the same release.
+2. Open PowerShell in that directory. Set the filename to the archive you
+   downloaded; `0.17.0` below is the verified public-beta example:
+
+```powershell
+$Archive = 'perllsp-0.17.0-x86_64-pc-windows-msvc.zip'
+Get-FileHash -LiteralPath $Archive -Algorithm SHA256 -ErrorAction Stop |
+    Format-List Algorithm, Hash, Path
+```
+
+3. Open `SHA256SUMS` in a text editor. Find exactly one row whose complete
+   filename is `$Archive`'s value, allowing the checksum format's optional
+   `*` before the filename. A row for another filename, such as an archive
+   ending in `.zip.bak`, is not a match. Compare the entire 64-character
+   hexadecimal digest in that row with `Hash` above; letter case does not
+   matter. **Do not extract or run the archive** if either download failed,
+   the hash command failed, the row is missing, duplicated or malformed, or
+   the hashes differ. This manual comparison verifies integrity against the
+   co-hosted manifest, not independent publisher provenance. See Microsoft's
+   [`Get-FileHash` reference](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/get-filehash?view=powershell-5.1).
+4. Only after the checksum matches, extract into a new permanent directory.
+   Change the version directory to match your release; choose an unused
+   directory so files from an older installation cannot be mixed in:
+
+```powershell
+$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\perllsp\0.17.0'
+Expand-Archive -LiteralPath $Archive -DestinationPath $InstallDir -ErrorAction Stop
+```
+
+5. After extraction succeeds, verify the binaries by their exact paths:
+
+```powershell
+& "$InstallDir\perllsp.exe" --version
+& "$InstallDir\perl-dap.exe" --version
+```
+
+The Windows zip places both executables directly in the extraction directory.
+Add that directory to PATH using the
+[Windows PATH steps](#add-the-binary-directory-to-path), or configure your
+editor with the absolute path to `perllsp.exe`.
 
 ### Windows package managers
 
