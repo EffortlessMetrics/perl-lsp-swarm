@@ -6,6 +6,11 @@ crates/perl-corpus/fixtures/parser_accuracy/span_bom.pl -text !eol whitespace=-b
 crates/perl-corpus/fixtures/parser_accuracy/span_crlf.pl -text !eol whitespace=-blank-at-eol
 crates/perl-corpus/fixtures/parser_accuracy/span_mixed_newlines.pl -text !eol whitespace=-blank-at-eol
 
+# UTF-16 span seeds intentionally preserve CRLF line endings.
+tests/perl-corpus/position/utf16_crlf_span.pl -text !eol whitespace=-blank-at-eol
+tests/perl-corpus/spans/utf16_crlf_positions.pl -text !eol whitespace=-blank-at-eol
+crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.pl -text !eol whitespace=-blank-at-eol
+
 # Release UX smoke fixture intentionally preserves CRLF line endings.
 testdata/ux/release_smoke/crlf_links/main.pl -text !eol whitespace=-blank-at-eol
 

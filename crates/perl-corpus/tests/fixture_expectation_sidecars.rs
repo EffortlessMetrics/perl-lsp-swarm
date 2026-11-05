@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use perl_corpus::byte_fidelity::{ByteFidelity, Encoding, NewlineStyle};
 use perl_corpus::{ConceptRegistry, SidecarValidationContext, load_and_validate_sidecar};
 use std::path::{Path, PathBuf};
 
@@ -53,5 +54,57 @@ fn seeded_sidecars_parse_and_validate() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_crlf_utf16_seed(bytes: &[u8]) -> Result<()> {
+    let expected = ByteFidelity {
+        newline_style: NewlineStyle::CrLf,
+        final_newline: true,
+        byte_order_mark: false,
+        encoding: Encoding::Utf8,
+    };
+    let actual = ByteFidelity::classify(bytes);
+    anyhow::ensure!(actual == expected, "expected {expected}; found {actual}");
+
+    let source = std::str::from_utf8(bytes)?;
+    anyhow::ensure!(
+        source.chars().any(|character| character.len_utf16() == 2),
+        "expected an astral scalar to exercise UTF-16 code-unit positions",
+    );
+    Ok(())
+}
+
+#[test]
+fn crlf_utf16_span_seeds_preserve_raw_bytes() -> Result<()> {
+    let root = workspace_root()?;
+    for relative_path in [
+        "tests/perl-corpus/position/utf16_crlf_span.pl",
+        "tests/perl-corpus/spans/utf16_crlf_positions.pl",
+        "crates/perl-corpus/tests/perl-corpus/position/crlf_utf16_span.pl",
+    ] {
+        let bytes = std::fs::read(root.join(relative_path))
+            .with_context(|| format!("reading CRLF/UTF-16 span seed {relative_path}"))?;
+        validate_crlf_utf16_seed(&bytes)
+            .with_context(|| format!("CRLF/UTF-16 span seed {relative_path}"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn crlf_utf16_span_seed_guard_rejects_lossy_changes() -> Result<()> {
+    let source = "my $emoji = \"🙂\";\r\nprint $emoji;\r\n";
+    validate_crlf_utf16_seed(source.as_bytes())?;
+
+    for (change, mutated) in [
+        ("LF normalization", source.replace("\r\n", "\n")),
+        ("mixed newlines", source.replacen("\r\n", "\n", 1)),
+        ("BMP-only text", source.replace('🙂', "é")),
+    ] {
+        assert!(
+            validate_crlf_utf16_seed(mutated.as_bytes()).is_err(),
+            "guard should reject {change}",
+        );
+    }
     Ok(())
 }
