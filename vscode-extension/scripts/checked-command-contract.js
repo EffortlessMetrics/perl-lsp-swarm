@@ -43,14 +43,17 @@ const NPM_RUN_STAGE = /^npm\s+run\s+([\w:-]+)$/;
 const NPM_RUN_WITH_TRAILING = /^npm\s+run\s+[\w:-]+\s*\S/;
 
 /**
- * A bare `tsc` command token: `tsc …`, `npx tsc …`, `npm exec … tsc …`, a
- * direct `…/.bin/tsc …` (POSIX or Windows separators and `.cmd`/`.ps1`
- * wrappers), or one glued behind a shell separator (`…;tsc …`). The token
+ * A bare compiler token (`tsc`, `tsgo`, or `tsrs`), including package-runner
+ * invocations, local entrypoints, Windows wrappers/executables, or a command
+ * glued behind a shell separator (`…;tsrs …`). The token
  * must not be part of a longer name: the wrapper filename `governed-tsc.js`
  * (`-` before `tsc`) and words like `tsconfig.json` (`o` after) do not match,
- * while path separators and shell metacharacters do.
+ * while path separators and shell metacharacters do. An `@` after the exact
+ * package name starts a package-runner version/range/dist-tag, so
+ * `tsrs@next` is still a compiler token while `tsrs-lint@next` is not.
  */
-const BARE_TSC_TOKEN = /(^|[^\w.-])tsc(?:\.(?:cmd|ps1))?(?=$|[\s;|&)"'])/;
+const BARE_COMPILER_TOKEN =
+  /(^|[^\w.-])(?:tsc|tsgo|tsrs)(?:\.(?:cmd|ps1|exe|[cm]?js))?(?=$|[@\s;|&)"'])/;
 
 /**
  * @typedef {object} ScriptResolution
@@ -187,10 +190,10 @@ function evaluateCheckedCommandContract(input) {
         );
         continue;
       }
-      if (BARE_TSC_TOKEN.test(stage)) {
+      if (BARE_COMPILER_TOKEN.test(stage)) {
         result.executesTypeScript = true;
         result.violations.push(
-          `script "${name}" stage \`${stage}\` executes TypeScript outside ${GOVERNED_TSC} — every public tsc path must route through the governed seam`,
+          `script "${name}" stage \`${stage}\` executes TypeScript outside ${GOVERNED_TSC} — every public compiler path must route through the governed seam`,
         );
       }
     }
@@ -293,8 +296,10 @@ function evaluateCheckedCommandContract(input) {
     } else if (!governedStages.some((stage) => stage.includes('./tsconfig.json'))) {
       failures.push('script "watch:types" must watch the source config ./tsconfig.json');
     }
-    if (watchTypes.some((stage) => BARE_TSC_TOKEN.test(stage) && !GOVERNED_STAGE.test(stage))) {
-      failures.push('script "watch:types" reaches tsc outside the governed seam');
+    if (
+      watchTypes.some((stage) => BARE_COMPILER_TOKEN.test(stage) && !GOVERNED_STAGE.test(stage))
+    ) {
+      failures.push('script "watch:types" reaches a compiler outside the governed seam');
     }
   }
 

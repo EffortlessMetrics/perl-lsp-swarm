@@ -104,6 +104,71 @@ void test('npx and npm-exec tsc routes are red', () => {
   }
 });
 
+void test('alternative compiler commands and local entrypoints cannot bypass authority', () => {
+  for (const compiler of ['tsc', 'tsgo', 'tsrs']) {
+    for (const invocation of [
+      compiler,
+      `npx ${compiler}`,
+      `npm exec --offline --no -- ${compiler}`,
+      `bunx --no-install ${compiler}`,
+      `node_modules/.bin/${compiler}`,
+      `node_modules\\.bin\\${compiler}.cmd`,
+      `node_modules/.bin/${compiler}.ps1`,
+      `node_modules/.bin/${compiler}.exe`,
+      `node node_modules/compiler/bin/${compiler}.js`,
+      `node node_modules/compiler/bin/${compiler}.cjs`,
+      `node node_modules/compiler/bin/${compiler}.mjs`,
+      `node scripts/prepare.js;${compiler}`,
+      `node scripts/prepare.js||${compiler}`,
+      `node scripts/prepare.js&${compiler}`,
+    ]) {
+      const scripts = realScripts();
+      scripts['typecheck'] = `${invocation} --noEmit -p ./tsconfig.json`;
+      assertFailedWith(evaluate(scripts), /script "typecheck" .* executes TypeScript outside/);
+    }
+  }
+});
+
+void test('version-qualified and dist-tag compiler packages cannot bypass authority', () => {
+  for (const invocation of [
+    'npx tsrs@0.22.0-ts7.1.0-beta',
+    'bunx tsrs@0.22.0-ts7.1.0-beta',
+    'npx tsgo@7.1.0-beta',
+    'npm exec --offline --no -- tsrs@next',
+    'bunx --no-install tsrs@latest',
+    'npx tsc@7.1.0',
+    'npx "tsrs@^0.22.0"',
+    'bunx tsgo@beta',
+  ]) {
+    const scripts = realScripts();
+    scripts['typecheck'] = `${invocation} --noEmit -p ./tsconfig.json`;
+    assertFailedWith(evaluate(scripts), /script "typecheck" .* executes TypeScript outside/);
+  }
+});
+
+void test('version-qualified packages with longer names are not mistaken for compilers', () => {
+  for (const invocation of [
+    'npx tsrs-lint@latest',
+    'bunx tsgo-tools@7.1.0',
+    'npm exec --offline --no -- my-tsrs@next',
+    'npx tsc-helper@beta',
+  ]) {
+    const scripts = realScripts();
+    scripts['inspect:tooling'] = invocation;
+    const result = evaluate(scripts);
+    assert.equal(result.ok, true, `${invocation}: ${JSON.stringify(result.failures)}`);
+  }
+});
+
+void test('compiler-like filenames remain ordinary script paths', () => {
+  const scripts = realScripts();
+  for (const name of ['tsconfig.json', 'governed-tsc.js', 'tsgo-helper.js', 'check-tsrs.js']) {
+    scripts[`inspect:${name}`] = `node scripts/${name}`;
+  }
+  const result = evaluate(scripts);
+  assert.equal(result.ok, true, JSON.stringify(result.failures));
+});
+
 void test('shell separators glued to an npm-run stage cannot smuggle tsc through', () => {
   for (const bypass of [
     // No whitespace after the script name: only the tightened trailing-text

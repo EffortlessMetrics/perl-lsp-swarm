@@ -11,6 +11,7 @@ const {
   evaluateTypeScriptAuthority,
   checkTypeScriptAuthority,
 } = require('./check-typescript-authority');
+const { checkTypeScriptConfigInventory } = require('./check-typescript-config-inventory');
 
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 
@@ -88,10 +89,76 @@ void test('a legitimate bounded range is gated on its floor, not rejected for it
   // `>=7.0.2 <8.0.0` is a valid npm range whose floor is readable. Rejecting it
   // would be a false red on a valid config, which costs the gate the
   // credibility its real failures depend on.
-  for (const range of ['>=7.0.2 <8.0.0', '>= 7.0.2', '=7.0.2', 'v7.0.2', '7.0.2-rc.1']) {
+  for (const range of ['>=7.0.2 <8.0.0', '>= 7.0.2', '=7.0.2', 'v7.0.2']) {
     const result = evaluateTypeScriptAuthority(healthyInput({ declaredRange: range }));
     assert.equal(result.ok, true, `${range} should pass: ${JSON.stringify(result.failures)}`);
   }
+});
+
+/** @param {string} range @param {string} version */
+function versionInput(range, version) {
+  return healthyInput({
+    declaredRange: range,
+    lockEntry: {
+      version,
+      resolved: `https://registry.npmjs.org/typescript/-/typescript-${version}.tgz`,
+    },
+    installedVersion: version,
+    binaryVersionOutput: `Version ${version}\n`,
+  });
+}
+
+void test('the locked compiler must satisfy the complete declared range, not only its major', () => {
+  /** @type {[string, string][]} */
+  const cases = [
+    ['^7.1.0', '7.0.2'],
+    ['~7.0.2', '7.1.0'],
+    ['>=7.0.2 <7.1.0', '7.1.0'],
+    ['7.1.0', '7.1.1'],
+  ];
+  for (const [range, version] of cases) {
+    assertFailedWith(
+      evaluateTypeScriptAuthority(versionInput(range, version)),
+      /does not satisfy the declared typescript range/,
+    );
+  }
+});
+
+void test('explicit beta and nightly versions retain normal semver agreement', () => {
+  /** @type {[string, string][]} */
+  const cases = [
+    ['7.1.0-beta.1', '7.1.0-beta.1'],
+    ['^7.1.0-beta.1', '7.1.0-beta.2'],
+    ['^7.1.0-beta.1', '7.1.0'],
+    ['7.1.0-dev.20260930.4', '7.1.0-dev.20260930.4'],
+  ];
+  for (const [range, version] of cases) {
+    const result = evaluateTypeScriptAuthority(versionInput(range, version));
+    assert.equal(result.ok, true, `${range} / ${version}: ${JSON.stringify(result.failures)}`);
+  }
+});
+
+void test('a different prerelease or an undeclared prerelease cannot supply compiler authority', () => {
+  /** @type {[string, string][]} */
+  const cases = [
+    ['7.1.0-beta.1', '7.1.0-beta.2'],
+    ['7.1.0-dev.20260930.4', '7.1.0-dev.20260930.5'],
+    ['^7.0.2', '7.1.0-beta.1'],
+    ['^7.1.0', '7.1.0-beta.1'],
+  ];
+  for (const [range, version] of cases) {
+    assertFailedWith(
+      evaluateTypeScriptAuthority(versionInput(range, version)),
+      /does not satisfy the declared typescript range/,
+    );
+  }
+});
+
+void test('invalid trailing range syntax cannot be hidden behind a valid major prefix', () => {
+  assertFailedWith(
+    evaluateTypeScriptAuthority(versionInput('>=7.0.2 definitely-not-a-range', '7.0.2')),
+    /semver range/,
+  );
 });
 
 void test('a bounded range whose floor is a pre-authority major is still red', () => {
@@ -492,4 +559,147 @@ void test('an ignoreDeprecations inherited through extends is caught', () => {
 void test('the declared authority major is the one this gate enforces', () => {
   assert.equal(TYPESCRIPT_AUTHORITY_MAJOR, 7);
   assert.equal(TSCONFIG_FILES.length, 5);
+});
+
+/**
+ * A package with a relocated declared compiler and a misleading legacy entrypoint.
+ * The declared compiler reads the fixture configs; the old path always reports the
+ * initial clean options. These fixtures test process routing, not TS semantics.
+ *
+ * @param {import('node:test').TestContext} context
+ */
+function relocatedCompilerFixture(context) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl lsp declared compiler '));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const compilerRoot = path.join(root, 'node_modules', 'typescript');
+  fs.mkdirSync(path.join(compilerRoot, 'cli'), { recursive: true });
+  fs.mkdirSync(path.join(compilerRoot, 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'scripts'));
+
+  const inventory = JSON.parse(
+    fs.readFileSync(
+      path.join(EXTENSION_ROOT, 'scripts', 'typescript-config-inventory.json'),
+      'utf8',
+    ),
+  );
+  fs.writeFileSync(
+    path.join(root, 'scripts', 'typescript-config-inventory.json'),
+    JSON.stringify(inventory),
+  );
+  fs.writeFileSync(
+    path.join(root, 'package.json'),
+    JSON.stringify({
+      devDependencies: { typescript: '7.0.2' },
+      scripts: {
+        'typecheck:all': inventory.configs
+          .map((config) => `npm run ${config.command}`)
+          .join(' && '),
+      },
+    }),
+  );
+  fs.writeFileSync(
+    path.join(root, 'package-lock.json'),
+    JSON.stringify({
+      packages: {
+        'node_modules/typescript': {
+          ...healthyInput().lockEntry,
+          integrity: 'sha512-fixture',
+        },
+      },
+    }),
+  );
+  const manifest = path.join(compilerRoot, 'package.json');
+  fs.writeFileSync(
+    manifest,
+    JSON.stringify({ version: '7.0.2', bin: { tsc: 'cli/compiler.cjs' } }),
+  );
+  const cleanConfigs = Object.fromEntries(
+    inventory.configs.map((config) => [
+      config.path,
+      {
+        compilerOptions: {
+          noEmit: !config.emit,
+          outDir: config.outDir,
+          rootDir: config.rootDir,
+        },
+      },
+    ]),
+  );
+  for (const [file, config] of Object.entries(cleanConfigs)) {
+    fs.writeFileSync(path.join(root, file), JSON.stringify(config));
+  }
+  const declaredEntry = path.join(compilerRoot, 'cli', 'compiler.cjs');
+  fs.writeFileSync(
+    declaredEntry,
+    "const fs = require('node:fs');\n" +
+      "if (process.argv.includes('--version')) process.stdout.write('Version 7.0.2\\n');\n" +
+      "else process.stdout.write(fs.readFileSync(process.argv[process.argv.indexOf('-p') + 1], 'utf8'));\n",
+  );
+  const legacyEntry = path.join(compilerRoot, 'bin', 'tsc');
+  fs.writeFileSync(
+    legacyEntry,
+    `const configs = ${JSON.stringify(cleanConfigs)};\n` +
+      "process.stdout.write(JSON.stringify(configs[process.argv[process.argv.indexOf('-p') + 1]]));\n",
+  );
+  if (process.platform === 'win32') {
+    // Relocated Windows text shims remain unsupported. Config-specific
+    // assertions below must not count that independent rejection as proof.
+    fs.writeFileSync(
+      path.join(root, 'node_modules', '.bin', 'tsc.cmd'),
+      '@ECHO off\r\nnode "%~dp0%\\..\\typescript\\cli\\compiler.cjs" %*\r\n',
+    );
+  } else {
+    fs.symlinkSync(
+      '../typescript/cli/compiler.cjs',
+      path.join(root, 'node_modules', '.bin', 'tsc'),
+    );
+  }
+  return { root, manifest, declaredEntry, legacyEntry };
+}
+
+void test('effective config probes use a relocated declared compiler without a legacy bin/tsc', (t) => {
+  const fixture = relocatedCompilerFixture(t);
+  fs.unlinkSync(fixture.legacyEntry);
+  const authority = checkTypeScriptAuthority(fixture.root);
+  const configFailures = authority.failures.filter((failure) =>
+    TSCONFIG_FILES.some((file) => failure.startsWith(file)),
+  );
+  assert.deepEqual(configFailures, [], JSON.stringify(authority.failures));
+  assert.ok(authority.facts.some((fact) => fact.includes('5 tsconfig authority files')));
+  if (process.platform !== 'win32') assert.equal(authority.ok, true);
+  const inventory = checkTypeScriptConfigInventory(fixture.root);
+  assert.equal(inventory.ok, true, JSON.stringify(inventory.failures));
+});
+
+void test('a stale legacy compiler cannot hide effective deprecation or emit drift', (t) => {
+  const fixture = relocatedCompilerFixture(t);
+  const configPath = path.join(fixture.root, 'tsconfig.test.json');
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  config.compilerOptions.ignoreDeprecations = '6.0';
+  config.compilerOptions.noEmit = true;
+  fs.writeFileSync(configPath, JSON.stringify(config));
+  assertFailedWith(
+    checkTypeScriptAuthority(fixture.root),
+    /tsconfig\.test\.json sets "ignoreDeprecations"/,
+  );
+  assertFailedWith(
+    checkTypeScriptConfigInventory(fixture.root),
+    /tsconfig\.test\.json inventory emit=true.*noEmit=true/,
+  );
+});
+
+void test('missing and broken declared entrypoints never fall back to the legacy compiler', (t) => {
+  for (const bin of [undefined, { tsc: 'cli/missing.cjs' }]) {
+    const fixture = relocatedCompilerFixture(t);
+    fs.writeFileSync(fixture.manifest, JSON.stringify({ version: '7.0.2', bin }));
+    assertFailedWith(
+      checkTypeScriptAuthority(fixture.root),
+      /tsconfig\.json could not be read as a TypeScript configuration/,
+    );
+    assertFailedWith(
+      checkTypeScriptConfigInventory(fixture.root),
+      /tsconfig\.json effective configuration could not be read/,
+    );
+  }
 });

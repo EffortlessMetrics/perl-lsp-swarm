@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createReporter } = require('./reporter');
-const { TSCONFIG_FILES } = require('./check-typescript-authority');
+const { TSCONFIG_FILES, declaredTscBin } = require('./check-typescript-authority');
 
 const INVENTORY_PATH = path.join('scripts', 'typescript-config-inventory.json');
 
@@ -198,13 +198,16 @@ function checkTypeScriptConfigInventory(extensionRoot) {
   const packageJson = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'));
   const rawConfigs = Array.isArray(inventory.configs) ? inventory.configs : [];
   const configFiles = rawConfigs.filter(isInventoryConfig).map((config) => config.path);
-  const tscEntry = path.join(extensionRoot, 'node_modules', 'typescript', 'bin', 'tsc');
+  const declared = declaredTscBin(path.join(extensionRoot, 'node_modules', 'typescript'));
 
   /** @type {Record<string, EffectiveConfig>} */
   const effectiveConfigs = {};
   for (const file of configFiles) {
     try {
-      const shown = execFileSync(process.execPath, [tscEntry, '--showConfig', '-p', file], {
+      if ('reason' in declared) {
+        throw new Error(declared.reason);
+      }
+      const shown = execFileSync(process.execPath, [declared.binPath, '--showConfig', '-p', file], {
         cwd: extensionRoot,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],

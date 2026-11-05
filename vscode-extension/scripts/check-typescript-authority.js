@@ -45,6 +45,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+/** @type {{validRange: (range: string) => string | null, satisfies: (version: string, range: string) => boolean}} */
+const semver = require('semver');
 const { createReporter } = require('./reporter');
 
 /**
@@ -139,6 +141,9 @@ function readRangeFloor(range) {
     return {
       reason: `must begin with an exact or ^/~/>= pinned semver version (e.g. "^${TYPESCRIPT_AUTHORITY_MAJOR}.0.0"), received "${trimmed}"`,
     };
+  }
+  if (semver.validRange(trimmed) === null) {
+    return { reason: `must be a valid registry semver range, received "${trimmed}"` };
   }
   return { major: Number(match[1]) };
 }
@@ -266,6 +271,15 @@ function evaluateTypeScriptAuthority(input) {
       );
     } else {
       facts.push(`lockfile resolves typescript ${String(version)} from the npm registry`);
+    }
+    if (
+      typeof version === 'string' &&
+      typeof input.declaredRange === 'string' &&
+      !semver.satisfies(version, input.declaredRange)
+    ) {
+      failures.push(
+        `package-lock.json resolves typescript ${version}, which does not satisfy the declared typescript range "${input.declaredRange}" — update the lockfile and installed compiler together`,
+      );
     }
   }
 
@@ -579,16 +593,15 @@ function checkTypeScriptAuthority(extensionRoot) {
   // asserted separately so a broken shim is still a red result.
   /** @type {string | undefined} */
   let binaryVersionOutput;
-  const declaredForVersion = declaredTscBin(typescriptDir);
+  const declared = declaredTscBin(typescriptDir);
   try {
-    if ('reason' in declaredForVersion) {
-      throw new Error(declaredForVersion.reason);
+    if ('reason' in declared) {
+      throw new Error(declared.reason);
     }
-    binaryVersionOutput = execFileSync(
-      process.execPath,
-      [declaredForVersion.binPath, '--version'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    binaryVersionOutput = execFileSync(process.execPath, [declared.binPath, '--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   } catch {
     binaryVersionOutput = undefined;
   }
@@ -609,11 +622,14 @@ function checkTypeScriptAuthority(extensionRoot) {
   // make a routine editing mistake look like a broken gate.
   const tsconfigs = TSCONFIG_FILES.map((file) => {
     try {
-      const shown = execFileSync(
-        process.execPath,
-        [path.join(typescriptDir, 'bin', 'tsc'), '--showConfig', '-p', file],
-        { cwd: extensionRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      );
+      if ('reason' in declared) {
+        throw new Error(declared.reason);
+      }
+      const shown = execFileSync(process.execPath, [declared.binPath, '--showConfig', '-p', file], {
+        cwd: extensionRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       const parsed = JSON.parse(shown);
       return { file, ignoreDeprecations: parsed?.compilerOptions?.ignoreDeprecations };
     } catch (error) {
