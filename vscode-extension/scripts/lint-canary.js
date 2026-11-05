@@ -2,8 +2,8 @@
 /**
  * Type-aware lint canary (PREP-2, #3662).
  *
- * Oxlint's type-aware backend (oxlint-tsgolint) is alpha. The dangerous
- * failure mode is NOT "the rule is wrong" — it's "the type-aware engine
+ * The dangerous failure mode in Oxlint's type-aware backend is
+ * NOT "the rule is wrong" — it's "the type-aware engine
  * silently doesn't run and the lint check passes green anyway" (a crash
  * during tsgolint init, an unsupported platform, a version mismatch, or a
  * silent fallback to syntax-only linting would all produce a false green).
@@ -102,15 +102,20 @@ export async function callSite(): Promise<void> {
  * gets a real type-aware run without polluting the extension's own lint
  * scope with the canary fixtures.
  *
- * @returns {{status: number|null, stdout: string, stderr: string}}
+ * @param {string} tmpDir
+ * @param {string} file
+ * @param {0 | 1} expectedStatus
+ * @returns {Array<{code?: string, severity?: string, filename?: string}>}
  */
-function runOxlint(tmpDir, file) {
+function runOxlint(tmpDir, file, expectedStatus) {
   const result = spawnSync(
     process.execPath,
     [
       OXLINT_ENTRY,
       path.join(tmpDir, file),
       '--type-aware',
+      '--format',
+      'json',
       '-c',
       path.join(tmpDir, '.oxlintrc.json'),
       '--tsconfig',
@@ -118,21 +123,39 @@ function runOxlint(tmpDir, file) {
     ],
     { cwd: EXT_ROOT, encoding: 'utf8' },
   );
-  return {
-    status: result.status,
-    stdout: result.stdout || '',
-    stderr: result.stderr || '',
-  };
+  const detail =
+    `exit=${result.status} signal=${result.signal ?? 'none'} error=${result.error?.message ?? 'none'}` +
+    `\nstdout:\n${(result.stdout || '').slice(0, 2000)}\nstderr:\n${(result.stderr || '').slice(0, 2000)}`;
+  if (
+    result.error ||
+    result.signal ||
+    result.status !== expectedStatus ||
+    (result.stderr || '').trim()
+  ) {
+    throw new Error(
+      `${file} did not complete cleanly with the expected exit ${expectedStatus}.\n${detail}`,
+    );
+  }
+
+  let report;
+  try {
+    report = JSON.parse(result.stdout || '');
+  } catch {
+    throw new Error(`${file} did not return JSON diagnostics.\n${detail}`);
+  }
+  // This canary proves one exact file was analyzed. The warning-budget reader
+  // accepts diagnostic arrays without metadata; that is insufficient here.
+  if (!report || !Array.isArray(report.diagnostics) || report.number_of_files !== 1) {
+    throw new Error(`${file} did not return diagnostics for exactly one analyzed file.\n${detail}`);
+  }
+  return report.diagnostics;
 }
 
-function fail(message, detail) {
+function fail(message) {
   reporter.error(`FAIL: ${message}`);
-  if (detail) {
-    reporter.error(detail);
-  }
   reporter.error(
-    'A red result here means type-aware analysis either did not run, ' +
-      'crashed, or silently fell back to syntax-only linting — none of which may pass ' +
+    'This canary could not prove that type-aware analysis completed correctly. ' +
+      'Initialization failures, malformed diagnostics, and syntax-only fallback must not pass ' +
       'as a green lint check. See scripts/lint-canary.js for the invariant this proves.',
   );
   process.exitCode = 1;
@@ -146,13 +169,18 @@ function main() {
     path.join(EXT_ROOT, 'node_modules', 'oxlint-tsgolint', 'package.json'),
   ).version;
 
-  reporter.info(`oxlint@${oxlintVersion}, oxlint-tsgolint@${tsgolintVersion}`);
+  reporter.info(`oxlint@${oxlintVersion}, installed oxlint-tsgolint@${tsgolintVersion}`);
+  if (process.env.OXLINT_TSGOLINT_PATH !== undefined) {
+    reporter.info(
+      `type-aware backend override: ${JSON.stringify(process.env.OXLINT_TSGOLINT_PATH)}`,
+    );
+  }
   reporter.info(
     'asserting type-aware mode is genuinely engaged (not a silent syntax-only fallback)...',
   );
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-oxlint-canary-'));
-  let allPassed = true;
+  let allPassed = false;
 
   try {
     fs.writeFileSync(path.join(tmpDir, 'tsconfig.json'), JSON.stringify(CANARY_TSCONFIG, null, 2));
@@ -162,39 +190,37 @@ function main() {
 
     // Case (a): bare floating promise MUST be flagged. A clean/zero-exit
     // result here means the engine did not really run type-aware analysis.
-    const badResult = runOxlint(tmpDir, 'bad.ts');
-    const badFlagged =
-      badResult.status !== 0 &&
-      (badResult.stdout.includes('no-floating-promises') ||
-        badResult.stderr.includes('no-floating-promises'));
-    if (!badFlagged) {
-      allPassed = false;
-      fail(
-        'case (a) — the deliberate floating promise in bad.ts was NOT flagged by typescript/no-floating-promises.',
-        `exit=${badResult.status}\nstdout:\n${badResult.stdout}\nstderr:\n${badResult.stderr}`,
-      );
-    } else {
-      reporter.info(
-        'OK  case (a): bad.ts flagged by typescript/no-floating-promises (type-aware engine ran).',
+    const badDiagnostics = runOxlint(tmpDir, 'bad.ts', 1);
+    const [badDiagnostic] = badDiagnostics;
+    if (
+      badDiagnostics.length !== 1 ||
+      badDiagnostic?.code !== 'typescript(no-floating-promises)' ||
+      badDiagnostic?.severity !== 'error' ||
+      typeof badDiagnostic?.filename !== 'string' ||
+      path.resolve(EXT_ROOT, badDiagnostic.filename) !== path.join(tmpDir, 'bad.ts')
+    ) {
+      throw new Error(
+        'case (a) — expected exactly one typescript(no-floating-promises) error for bad.ts.\n' +
+          JSON.stringify(badDiagnostics).slice(0, 2000),
       );
     }
+    reporter.info(
+      'OK  case (a): bad.ts flagged by typescript/no-floating-promises (type-aware engine ran).',
+    );
 
     // Case (b): the awaited form MUST pass. A nonzero/error result here
-    // means either a false positive, or (more likely under alpha tooling)
-    // that type-aware initialization itself failed — both are RED.
-    const goodResult = runOxlint(tmpDir, 'good.ts');
-    const goodClean =
-      goodResult.status === 0 && !goodResult.stdout.includes('no-floating-promises');
-    if (!goodClean) {
-      allPassed = false;
-      fail(
-        'case (b) — the properly-awaited good.ts was flagged, or the run failed to complete cleanly ' +
-          '(this includes tsgolint failing to initialize).',
-        `exit=${goodResult.status}\nstdout:\n${goodResult.stdout}\nstderr:\n${goodResult.stderr}`,
+    // means either a false positive or failed analysis — both are RED.
+    const goodDiagnostics = runOxlint(tmpDir, 'good.ts', 0);
+    if (goodDiagnostics.length !== 0) {
+      throw new Error(
+        'case (b) — expected no diagnostics for the properly-awaited good.ts.\n' +
+          JSON.stringify(goodDiagnostics).slice(0, 2000),
       );
-    } else {
-      reporter.info('OK  case (b): good.ts passes cleanly.');
     }
+    reporter.info('OK  case (b): good.ts passes cleanly.');
+    allPassed = true;
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
