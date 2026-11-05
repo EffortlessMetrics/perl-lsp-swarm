@@ -518,6 +518,29 @@ gates:
     planning:
       role: always_on
 
+  # Issue #18736: the canonical-form half of public-api-check, extracted to a
+  # pure grep/sed/awk gate (~4 s, no Rust toolchain) so the required merge-gate
+  # meta shard can block a hand-edited or corrupted baseline at merge time.
+  # The full instrument lane (`Public API Surface (facade PR)`) stays the
+  # owner of additive-drift detection; this gate only proves the committed
+  # baselines are filter-stable canonical form.
+  - name: public_api_baseline_canonical
+    tier: pr_fast
+    description: "Committed .ci/public-api-baselines/*.txt are filter-stable canonical form (#18736)"
+    required: true
+    command: just public-api-baselines-canonical
+    timeout_seconds: 60
+    retry_count: 0
+    budgets:
+      max_duration_ms: 30000
+    quarantine: false
+    tags:
+      - public-api
+      - baseline
+      - ratchet
+    planning:
+      role: always_on
+
   - name: release_history_check
     tier: pr_fast
     description: "Check release-history drift"
