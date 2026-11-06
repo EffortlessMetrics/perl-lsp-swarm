@@ -11,7 +11,9 @@
 use super::lexical_visibility::{admit, select_exact_identities};
 use super::scope_distance::compute_scope_sort_key;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
-use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolKind, SymbolTable};
+use perl_semantic_analyzer::symbol::{
+    SIGNATURE_PARAMETER_SYMBOL_MARKER, ScopeId, Symbol, SymbolKind, SymbolTable,
+};
 use std::borrow::Cow;
 
 fn admitted_symbols<'a>(
@@ -25,6 +27,13 @@ fn admitted_symbols<'a>(
         .filter(|symbol| admit(symbol_table, cursor_scope_id, cursor_position, symbol).is_visible())
         .collect();
     select_exact_identities(symbol_table, admitted)
+}
+
+fn variable_completion_detail(symbol: &Symbol, sigil: &str, name: &str) -> String {
+    if symbol.attributes.iter().any(|attribute| attribute == SIGNATURE_PARAMETER_SYMBOL_MARKER) {
+        return "Signature Parameter".to_string();
+    }
+    format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name).trim().to_string()
 }
 
 fn variable_item(
@@ -124,10 +133,7 @@ pub fn add_variable_completions(
         );
 
         for symbol in selected {
-            let detail =
-                format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name)
-                    .trim()
-                    .to_string();
+            let detail = variable_completion_detail(symbol, sigil, name);
             let mut item = variable_item(context, symbol_table, symbol, name, sigil, '1', detail);
             item.text_edit_range = Some((context.prefix_start, edit_end));
             completions.push(item);
