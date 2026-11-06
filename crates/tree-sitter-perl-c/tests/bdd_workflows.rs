@@ -14,10 +14,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use tree_sitter::{Query, QueryCursor, StreamingIterator};
+use tree_sitter::{QueryCursor, StreamingIterator};
 use tree_sitter_perl_c::{
-    INJECTIONS_QUERY, ParsePerlError, ParsePerlFileError, create_parser, get_scanner_config,
-    language, parse_perl_code, parse_perl_file, try_create_parser, try_parse_perl_file,
+    ParsePerlError, ParsePerlFileError, create_parser, get_scanner_config, language,
+    parse_perl_code, parse_perl_file, try_create_parser, try_parse_perl_file,
 };
 
 struct Scenario {
@@ -268,12 +268,10 @@ fn bdd_typed_file_parse_error_reports_io_failure_variant() {
 fn bdd_injections_query_matches_inline_cpp_heredoc_content() -> Result<(), Box<dyn Error>> {
     let scenario = Scenario::new("injections query matches inline cpp heredoc content");
     let source = "use Inline CPP => <<'END_CPP';\n#include <string>\nclass Greet {};\nEND_CPP\n";
-    let injections_query = INJECTIONS_QUERY;
-
     scenario.given("an Inline::CPP heredoc snippet");
-    scenario.when("the upstream injections query is executed");
+    scenario.when("the packaged injections query loader is executed");
     let tree = parse_perl_code(source)?;
-    let query = Query::new(&language(), injections_query)?;
+    let query = tree_sitter_perl_c::load_injections_query()?;
     let mut cursor = QueryCursor::new();
 
     let mut saw_inline_package = false;
@@ -310,12 +308,10 @@ fn bdd_injections_query_matches_inline_cpp_heredoc_content() -> Result<(), Box<d
 fn bdd_injections_query_matches_inline_c_heredoc_content() -> Result<(), Box<dyn Error>> {
     let scenario = Scenario::new("injections query matches inline c heredoc content");
     let source = "use Inline C => <<'END_C';\n#include <math.h>\ndouble calc(double x) { return sqrt(x); }\nEND_C\n";
-    let injections_query = INJECTIONS_QUERY;
-
     scenario.given("an Inline::C heredoc snippet");
-    scenario.when("the upstream injections query is executed");
+    scenario.when("the packaged injections query loader is executed");
     let tree = parse_perl_code(source)?;
-    let query = Query::new(&language(), injections_query)?;
+    let query = tree_sitter_perl_c::load_injections_query()?;
     let mut cursor = QueryCursor::new();
 
     let mut saw_inline_package = false;
