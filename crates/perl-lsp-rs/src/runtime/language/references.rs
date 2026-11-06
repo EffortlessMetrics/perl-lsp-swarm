@@ -141,6 +141,9 @@ pub(crate) enum SourceBackedReferenceDecline {
     DeclarationSerializationFailed,
     /// The initialized lexical declaration gate rejected the source shape.
     InitializedLexicalGateRejected,
+    /// The cursor or a proposed occurrence is not provably active for the
+    /// selected lexical binding (#18369).
+    LexicalBindingScopeRejected,
     /// An occurrence had no wire location anchor.
     OccurrenceLocationUnavailable,
     /// An occurrence wire location carried a URI that is not a valid protocol URI.
@@ -205,6 +208,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::InitializedLexicalGateRejected => {
                         ("initialized_lexical_gate", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::LexicalBindingScopeRejected => {
+                        ("lexical_binding_scope", false, 0, None)
                     }
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
                         ("occurrence_location", false, 0, None)
@@ -457,6 +463,87 @@ fn line_has_initialized_lexical_declaration(line: &str, sigil: char, name: &str)
         }
     }
     false
+}
+
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+fn hir_binding_for_variable_offset(
+    source: &str,
+    byte_offset: usize,
+    sigil: char,
+    name: &str,
+) -> Option<perl_parser_core::hir::HirBindingId> {
+    use perl_parser_core::Parser;
+    use perl_parser_core::hir::lower_ast;
+    use perl_parser_core::pir::extract_lexical_facts;
+
+    let sigil_str = sigil.to_string();
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+    let receipt = extract_lexical_facts(&hir);
+    let body = receipt.bodies.first()?;
+    for fact in &body.facts {
+        if fact.name.sigil.as_str() != sigil_str || fact.name.name != name {
+            continue;
+        }
+        let Some(range) = fact.source_anchor.range.as_ref() else {
+            continue;
+        };
+        if byte_offset >= range.start && byte_offset < range.end {
+            return fact.binding;
+        }
+    }
+    None
+}
+
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+fn p8_lexical_binding_scope_admits<Q: perl_workspace::semantic::queries::SemanticQueries>(
+    source: &str,
+    request_uri: &str,
+    cursor_byte_offset: usize,
+    sigil: char,
+    name: &str,
+    decl_anchor: perl_semantic_facts::AnchorId,
+    occurrences: &[perl_semantic_facts::OccurrenceFact],
+    queries: &Q,
+) -> bool {
+    let Some(decl_span) = queries.anchor_source_span(decl_anchor) else {
+        return false;
+    };
+    if decl_span.source_uri != request_uri {
+        return false;
+    }
+    let Ok(decl_byte) = usize::try_from(decl_span.start_byte) else {
+        return false;
+    };
+    let Some(decl_binding) = hir_binding_for_variable_offset(source, decl_byte, sigil, name) else {
+        return false;
+    };
+    let cursor_binding = hir_binding_for_variable_offset(source, cursor_byte_offset, sigil, name);
+    if cursor_binding != Some(decl_binding) {
+        return false;
+    }
+
+    let occurrence_anchor_ids: Vec<_> =
+        occurrences.iter().map(|occurrence| occurrence.anchor_id).collect();
+    let spans = queries.anchor_source_spans(&occurrence_anchor_ids);
+    for (occurrence, span) in occurrences.iter().zip(spans) {
+        let Some(span) = span else {
+            return false;
+        };
+        if span.source_uri != request_uri {
+            continue;
+        }
+        let Ok(start_byte) = usize::try_from(span.start_byte) else {
+            return false;
+        };
+        let binding = hir_binding_for_variable_offset(source, start_byte, sigil, name);
+        if binding != Some(decl_binding) {
+            let _ = occurrence;
+            return false;
+        }
+    }
+    true
 }
 
 impl LspServer {
@@ -2113,6 +2200,31 @@ impl LspServer {
                             symbol,
                             entity_id,
                         );
+                        if let Some(sigil) = sigil {
+                            if let perl_lsp_rs_core::providers::navigation::references_shadow::ReferencesCutoverResult::Exact(ref occurrences) =
+                                outcome.result
+                            {
+                                let Some(decl_anchor) = decl_anchor else {
+                                    return Some(Err(
+                                        SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                                    ));
+                                };
+                                if !p8_lexical_binding_scope_admits(
+                                    source,
+                                    uri,
+                                    byte_offset as usize,
+                                    sigil,
+                                    symbol,
+                                    decl_anchor,
+                                    occurrences,
+                                    &queries,
+                                ) {
+                                    return Some(Err(
+                                        SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                                    ));
+                                }
+                            }
+                        }
                         Some(Ok((outcome, decl_anchor)))
                     })
                     .flatten()
@@ -2806,6 +2918,13 @@ mod tests {
             (
                 SourceBackedReferenceDecline::InitializedLexicalGateRejected,
                 "initialized_lexical_gate",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                "lexical_binding_scope",
                 false,
                 0,
                 None,
@@ -4935,6 +5054,139 @@ mod tests {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// #18369: package-variable reference queries must not admit a false-exact
+    /// P8 lexical slice when a same-name lexical exists in the file.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    #[test]
+    fn p8_package_variable_queries_retain_cross_file_uses_without_false_exact()
+    -> Result<(), Box<dyn Error>> {
+        let main_uri = "file:///workspace/p8-binding-18369/main.pl";
+        let noise_uri = "file:///workspace/p8-binding-18369/lib/Noise.pm";
+        let noise_text = "package main;\nour $x;\nmy $alien = $x + 2;\n1;\n";
+
+        let cases: [(&str, u32, u32, u32, u32); 3] = [
+            ("$x = 3;\nmy $x = 1;\nmy $y = $x + 1;\n", 0, 1, 1, 9),
+            ("my $x = $x + 1;\nmy $y = $x + 1;\n", 0, 9, 1, 9),
+            ("{ my $x = 1; my $y = $x + 1; }\nmy $z = $x + 1;\n", 1, 9, 0, 22),
+        ];
+
+        for (case_idx, (main_text, package_line, package_char, lexical_line, lexical_char)) in
+            cases.into_iter().enumerate()
+        {
+            let server = crate::runtime::LspServer::default();
+            let version = i32::try_from(case_idx + 1).map_err(|_| "case index overflow")?;
+            server.test_apply_did_open(main_uri, main_text, version)?;
+            server.test_apply_did_open(noise_uri, noise_text, version)?;
+            for (uri, text) in [(main_uri, main_text), (noise_uri, noise_text)] {
+                server
+                    .test_index_file_in_building_state(uri, text)
+                    .map_err(std::io::Error::other)?;
+            }
+            server.test_simulate_indexing_complete();
+
+            let receipt_for = |line: u32, character: u32, include_declaration: bool| {
+                server.test_handle_references(Some(json!({
+                    "textDocument": {"uri": main_uri, "version": version},
+                    "position": {"line": line, "character": character},
+                    "context": {"includeDeclaration": include_declaration}
+                })))?;
+                server
+                    .handle_execute_command(Some(json!({
+                        "command": "perl.explainProviderDecision",
+                        "arguments": [{"provider": "references"}]
+                    })))?
+                    .and_then(|value| value.get("request_receipt").cloned())
+                    .ok_or_else(|| -> Box<dyn Error> {
+                        "missing references provider receipt".into()
+                    })
+            };
+
+            let locations_for = |line: u32,
+                                 character: u32,
+                                 include_declaration: bool|
+             -> Result<Vec<Value>, Box<dyn Error>> {
+                let (result, ..) = server.handle_references_inner(
+                    Some(json!({
+                        "textDocument": {"uri": main_uri, "version": version},
+                        "position": {"line": line, "character": character},
+                        "context": {"includeDeclaration": include_declaration}
+                    })),
+                    None,
+                    reference_search_deadline(),
+                )?;
+                Ok(result.and_then(|value| value.as_array().cloned()).unwrap_or_default())
+            };
+
+            let package_locations = locations_for(package_line, package_char, false)?;
+            let noise_use = json!({
+                "uri": noise_uri,
+                "range": {
+                    "start": {"line": 2, "character": 12},
+                    "end": {"line": 2, "character": 14}
+                }
+            });
+            assert!(
+                package_locations.iter().any(|location| location == &noise_use),
+                "package query must retain the cross-file package use; got {package_locations:?}"
+            );
+            let package_receipt = receipt_for(package_line, package_char, false)?;
+            let claims_exact = package_receipt.get("answering_tier").and_then(Value::as_str)
+                == Some("semantic_source_backed")
+                && package_receipt.get("source_backed_outcome").and_then(Value::as_str)
+                    == Some("exact");
+            assert!(
+                !claims_exact,
+                "package query must not claim false-exact P8: {package_receipt:?}"
+            );
+
+            let lexical_locations = locations_for(lexical_line, lexical_char, false)?;
+            let lexical_receipt = receipt_for(lexical_line, lexical_char, false)?;
+            if lexical_receipt.get("answering_tier").and_then(Value::as_str)
+                == Some("semantic_source_backed")
+                && lexical_receipt.get("source_backed_outcome").and_then(Value::as_str)
+                    == Some("exact")
+            {
+                assert_eq!(
+                    lexical_locations.len(),
+                    1,
+                    "lexical exact answer must exclude inactive/package occurrences: {lexical_locations:?}"
+                );
+            }
+        }
+
+        let server = crate::runtime::LspServer::default();
+        let positive_main = "my $x = 1;\nmy $y = $x + 1;\n";
+        server.test_apply_did_open(main_uri, positive_main, 10)?;
+        server
+            .test_index_file_in_building_state(main_uri, positive_main)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        server.test_handle_references(Some(json!({
+            "textDocument": {"uri": main_uri, "version": 10},
+            "position": {"line": 1, "character": 9},
+            "context": {"includeDeclaration": false}
+        })))?;
+        let positive_receipt = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .and_then(|value| value.get("request_receipt").cloned())
+            .ok_or("missing positive P8 receipt")?;
+        assert_eq!(
+            positive_receipt.get("answering_tier").and_then(Value::as_str),
+            Some("semantic_source_backed"),
+            "simple initialized lexical must keep P8: {positive_receipt:?}"
+        );
+        assert_eq!(
+            positive_receipt.get("source_backed_outcome").and_then(Value::as_str),
+            Some("exact"),
+            "simple initialized lexical must stay exact: {positive_receipt:?}"
+        );
 
         Ok(())
     }
