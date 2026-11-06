@@ -13,6 +13,8 @@ use perl_lexer::{PerlLexer, TokenType};
 use perl_module::module_name_to_path;
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
+    analysis::generated_member_extractor::GeneratedMemberExtractor,
+    class_model::{ClassModel, Framework},
     receiver_facts::{
         ReceiverFact, ReceiverFactContext, ReceiverFactFreshness, ReceiverFallbackState,
         ReceiverKind, receiver_fact_for_method_call,
@@ -2960,13 +2962,14 @@ fn load_source_package_facts(
     current_document_uri: &str,
 ) -> SourcePackageFacts {
     if let Some(model) = current_models.get(pkg) {
-        let methods = current_methods.get(pkg).cloned().unwrap_or_else(|| {
+        let mut methods = current_methods.get(pkg).cloned().unwrap_or_else(|| {
             model
                 .methods
                 .iter()
                 .filter_map(|method| current_document_method_symbol(&model.name, method))
                 .collect()
         });
+        merge_canonical_generated_member_methods(pkg, model, &mut methods);
         return current_document_facts_with_persisted_edges(
             pkg,
             index,
@@ -3051,6 +3054,34 @@ fn current_document_facts_with_persisted_edges(
         }
     }
     SourcePackageFacts { parents, roles, methods, from_current_document: true }
+}
+
+fn merge_canonical_generated_member_methods(
+    package: &str,
+    model: &ClassModel,
+    methods: &mut Vec<WorkspaceSymbol>,
+) {
+    if model.framework != Framework::ObjectPad {
+        return;
+    }
+    let mut seen: HashSet<String> = methods.iter().map(|method| method.name.clone()).collect();
+    for member in GeneratedMemberExtractor::extract_from_models(std::slice::from_ref(model), package) {
+        if !seen.insert(member.name.clone()) {
+            continue;
+        }
+        let start = member.source_anchor_id.0 as usize;
+        let Some(field) = model.fields.iter().find(|field| field.location.start == start) else {
+            continue;
+        };
+        if let Some(symbol) = current_document_method_symbol_from_parts(
+            package,
+            &member.name,
+            field.location.start,
+            field.location.end,
+        ) {
+            methods.push(symbol);
+        }
+    }
 }
 
 /// Parse the persisted indexed text for `pkg` and return its class model with
@@ -3277,6 +3308,29 @@ with 'Printable';
             stringify.and_then(|member| member.container_name.as_deref()),
             Some("Printable")
         );
+    }
+
+    #[test]
+    fn collect_all_includes_object_pad_reader_from_canonical_generated_members() {
+        let index = Arc::new(WorkspaceIndex::new());
+        let source = r#"
+use Object::Pad;
+
+class Counter {
+    field $count :reader;
+    method inc {
+        1;
+    }
+}
+"#;
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Counter", source, "");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"count"),
+            "Object::Pad :reader must appear in collected package members, got {names:?}"
+        );
+        assert!(names.contains(&"inc"), "explicit methods must remain, got {names:?}");
     }
 
     #[test]
