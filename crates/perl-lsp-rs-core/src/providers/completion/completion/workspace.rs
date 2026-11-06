@@ -2974,6 +2974,9 @@ fn load_source_package_facts(
             model.roles.clone(),
             methods,
             model.parents_explicit(),
+            model.parents_additive(),
+            model.parents_replaces_prior(),
+            model.roles_explicit(),
             current_document_uri,
         );
     }
@@ -2991,6 +2994,9 @@ fn load_source_package_facts(
             Vec::new(),
             methods.clone(),
             false,
+            false,
+            false,
+            false,
             current_document_uri,
         );
     }
@@ -3007,13 +3013,19 @@ fn load_source_package_facts(
 /// only the package header must not erase the persisted chain, so indexed
 /// edges fill the gaps.
 ///
-/// Two boundaries keep that composition honest (#17084):
+/// Three boundaries keep that composition honest (#17084, #17635):
 ///
-/// - **Explicit emptiness.** `parents_stated` is the current model's
-///   `parents_explicit()` marker. An explicit `our @ISA = ();` is a statement,
-///   not an omission, so an empty parent list must not be refilled from the
-///   index. Roles carry no explicit marker, so only the next boundary applies
-///   to them.
+/// - **Explicit replacement.** A buffer assignment that replaces prior
+///   ancestry (`@ISA = (...)`, `extends`, including an explicit empty
+///   `our @ISA = ();` reset) is authoritative: persisted parents must not be
+///   unioned back, or methods of removed parents keep being offered.
+/// - **Additive composition.** `push @ISA`/`use parent` and role `with`
+///   declarations only add edges behind prior package state, so persisted
+///   parents/roles (the prior state) keep precedence and the buffer's
+///   additions append after them: `push @ISA, 'New'` on a package whose
+///   `@ISA` already holds `Old` dispatches shared methods to `Old`, and a
+///   later `with` does not shadow a role composed earlier. A buffer that
+///   states no ancestry restores the persisted chain outright.
 /// - **Same-document freshness.** Indexed edges parsed from the edited
 ///   document's own URI describe an older generation of that document. When
 ///   the buffer supplies the package's facts, the buffer is the newer
@@ -3021,33 +3033,59 @@ fn load_source_package_facts(
 ///   `use parent`/`with` line stays removed. Selection then falls through to
 ///   another file's declaration of the same package, so cross-file persisted
 ///   edges still compose.
+#[allow(clippy::too_many_arguments)]
 fn current_document_facts_with_persisted_edges(
     pkg: &str,
     index: &WorkspaceIndex,
     mut parents: Vec<String>,
     mut roles: Vec<String>,
     methods: Vec<WorkspaceSymbol>,
-    parents_stated: bool,
+    parents_explicit: bool,
+    parents_additive: bool,
+    parents_replaces_prior: bool,
+    roles_explicit: bool,
     current_document_uri: &str,
 ) -> SourcePackageFacts {
-    if parents.is_empty() || roles.is_empty() {
-        // Select the persisted model for `pkg`. With a known document identity
-        // the edited document's own (stale) generation is skipped, so another
-        // file's declaration of the same package can still supply the restored
-        // chain; identity-unknown callers keep the single-candidate lookup
-        // (#17084, #16809).
-        let selected = if current_document_uri.is_empty() {
-            indexed_package_model(pkg, index)
-        } else {
-            indexed_package_model_excluding_current_document(pkg, index, current_document_uri)
-        };
-        if let Some((indexed, _)) = selected {
-            if parents.is_empty() && !parents_stated {
+    // Select the persisted model for `pkg`. With a known document identity
+    // the edited document's own (stale) generation is skipped, so another
+    // file's declaration of the same package can still supply the composed
+    // chain; identity-unknown callers keep the single-candidate lookup
+    // (#17084, #16809).
+    let selected = if current_document_uri.is_empty() {
+        indexed_package_model(pkg, index)
+    } else {
+        indexed_package_model_excluding_current_document(pkg, index, current_document_uri)
+    };
+    if let Some((indexed, _)) = selected {
+        if !parents_replaces_prior {
+            if parents_explicit && parents_additive {
+                // Additive declarations append behind prior @ISA state in
+                // Perl, so persisted parents precede the buffer's additions
+                // and keep precedence for shared methods (#17635 review).
+                let mut merged = indexed.parents.clone();
+                for parent in parents {
+                    if !merged.contains(&parent) {
+                        merged.push(parent);
+                    }
+                }
+                parents = merged;
+            } else if parents.is_empty() && !parents_explicit {
                 parents = indexed.parents;
             }
-            if roles.is_empty() {
-                roles = indexed.roles;
+        }
+        if roles_explicit || !roles.is_empty() {
+            // Sequential `with` composition keeps the first-composed role's
+            // method for a shared name, so persisted (prior) roles precede
+            // the buffer's additions just like additive parents (#17635).
+            let mut merged = indexed.roles.clone();
+            for role in roles {
+                if !merged.contains(&role) {
+                    merged.push(role);
+                }
             }
+            roles = merged;
+        } else {
+            roles = indexed.roles;
         }
     }
     SourcePackageFacts { parents, roles, methods, from_current_document: true }
@@ -3401,6 +3439,166 @@ sub kept { 2 }
         );
         let kept_count = names.iter().filter(|name| **name == "kept").count();
         assert_eq!(kept_count, 1, "unchanged method must not duplicate, got {names:?}");
+    }
+
+    /// Issue #17635: an explicit buffer ancestry assignment replaces the
+    /// persisted parent list instead of unioning with it, while an additive
+    /// `push @ISA` still unions. The index holds `Child` inheriting
+    /// `OldParent` (a different document also declares `Child` with the old
+    /// parent, so the same-document freshness gate alone cannot explain a
+    /// pass); the buffer restates `Child` two ways.
+    #[test]
+    fn explicit_isa_replacement_drops_persisted_parent_methods() {
+        let index = Arc::new(WorkspaceIndex::new());
+        let old_uri = must(Url::parse("file:///workspace/OldParent.pm"));
+        let old_uri_str = old_uri.as_str().to_string();
+        must(
+            index.index_initial_file(
+                old_uri,
+                "package OldParent;\nsub old_method { 1 }\nsub shared_method { 'old' }\n1;\n"
+                    .to_string(),
+            ),
+        );
+        let new_uri = must(Url::parse("file:///workspace/NewParent.pm"));
+        must(
+            index.index_initial_file(
+                new_uri,
+                "package NewParent;\nsub new_method { 1 }\nsub shared_method { 'new' }\n1;\n"
+                    .to_string(),
+            ),
+        );
+        // Persisted cross-file declaration of the same package: the stale
+        // parent lives outside the edited document.
+        let other_uri = must(Url::parse("file:///workspace/OtherChild.pm"));
+        must(index.index_initial_file(
+            other_uri,
+            "package Child;\nour @ISA = ('OldParent');\n1;\n".to_string(),
+        ));
+        let child_uri = must(Url::parse(CHILD_URI));
+        must(index.index_initial_file(
+            child_uri,
+            "package Child;\nour @ISA = ('OldParent');\nsub child_method { 1 }\n1;\n".to_string(),
+        ));
+
+        // Explicit replacement: `@ISA = ('NewParent')` replaces prior
+        // ancestry at runtime, so `old_method` must no longer be offered.
+        let replaced = "package Child;\nour @ISA = ('NewParent');\nsub child_method { 1 }\n";
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", replaced, CHILD_URI);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"new_method"),
+            "replacement parent method must be offered, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"old_method"),
+            "removed parent method must not be offered after explicit @ISA replacement, got {names:?}"
+        );
+        assert!(
+            names.contains(&"child_method"),
+            "current-buffer method must stay offered, got {names:?}"
+        );
+
+        // Additive control: `push @ISA` unions with the persisted chain, so
+        // both the persisted and the pushed parents contribute methods.
+        let pushed = "package Child;\npush @ISA, 'NewParent';\nsub child_method { 1 }\n";
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", pushed, CHILD_URI);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"new_method"),
+            "pushed parent method must be offered, got {names:?}"
+        );
+        assert!(
+            names.contains(&"old_method"),
+            "additive push @ISA must still union the persisted parent, got {names:?}"
+        );
+        // Precedence (#17635 review): `push @ISA, 'NewParent'` appends
+        // behind the pre-existing @ISA in Perl, so a method both parents
+        // define resolves to the persisted (prior) parent, not the pushed
+        // one. Verified against perl: Old,New in @ISA dispatches to Old.
+        let shared: Vec<_> =
+            members.iter().filter(|member| member.name == "shared_method").collect();
+        assert_eq!(shared.len(), 1, "shared method must be offered once, got {names:?}");
+        assert_eq!(
+            shared[0].uri, old_uri_str,
+            "pushed parent must not shadow the prior parent for shared methods"
+        );
+    }
+
+    /// Issue #17635 (roles): `with` composition is additive, so a buffer
+    /// that states a new role still unions the persisted roles behind it,
+    /// and a buffer that states no role restores the persisted list.
+    #[test]
+    fn stated_roles_union_with_persisted_roles() {
+        let index = Arc::new(WorkspaceIndex::new());
+        let old_role_uri = must(Url::parse("file:///workspace/OldRole.pm"));
+        let old_role_uri_str = old_role_uri.as_str().to_string();
+        must(index.index_initial_file(
+            old_role_uri,
+            "package OldRole;\nuse Moo::Role;\nsub old_role_method { 1 }\nsub shared_role_method { 'old' }\n1;\n"
+                .to_string(),
+        ));
+        let new_role_uri = must(Url::parse("file:///workspace/NewRole.pm"));
+        must(index.index_initial_file(
+            new_role_uri,
+            "package NewRole;\nuse Moo::Role;\nsub new_role_method { 1 }\nsub shared_role_method { 'new' }\n1;\n"
+                .to_string(),
+        ));
+        let other_uri = must(Url::parse("file:///workspace/OtherRoleChild.pm"));
+        must(index.index_initial_file(
+            other_uri,
+            "package RoleChild;\nuse Moo;\nwith 'OldRole';\n1;\n".to_string(),
+        ));
+        let child_uri = must(Url::parse("file:///workspace/RoleChild.pm"));
+        must(index.index_initial_file(
+            child_uri.clone(),
+            "package RoleChild;\nuse Moo;\nwith 'OldRole';\nsub own_method { 1 }\n1;\n".to_string(),
+        ));
+        let role_child_uri = child_uri.as_str();
+
+        // Stated `with` is additive: both role method sets are offered.
+        let stated = "package RoleChild;\nuse Moo;\nwith 'NewRole';\nsub own_method { 1 }\n";
+        let members = collect_all_package_members_with_source(
+            index.as_ref(),
+            "RoleChild",
+            stated,
+            role_child_uri,
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"new_role_method"),
+            "buffer-stated role method must be offered, got {names:?}"
+        );
+        assert!(
+            names.contains(&"old_role_method"),
+            "additive with must still union the persisted role, got {names:?}"
+        );
+        // Ordering (#17635 review): sequential `with` composition in Moo
+        // keeps the first-composed role's method for a name both roles
+        // define (verified against perl/Moo in both orders), so the
+        // persisted (prior) role wins over the buffer-stated one.
+        let shared: Vec<_> =
+            members.iter().filter(|member| member.name == "shared_role_method").collect();
+        assert_eq!(shared.len(), 1, "shared role method must be offered once, got {names:?}");
+        assert_eq!(
+            shared[0].uri, old_role_uri_str,
+            "later-composed role must not shadow the prior role for shared methods"
+        );
+
+        // Unstated buffer restores the persisted role chain.
+        let silent = "package RoleChild;\nuse Moo;\nsub own_method { 1 }\n";
+        let members = collect_all_package_members_with_source(
+            index.as_ref(),
+            "RoleChild",
+            silent,
+            role_child_uri,
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"old_role_method"),
+            "silent buffer must restore the persisted role, got {names:?}"
+        );
     }
 
     /// The freshness identity accepts the historical path-form `filepath`:

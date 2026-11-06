@@ -267,6 +267,11 @@ pub struct ClassModel {
     pub(crate) parents_replaces_prior: bool,
     /// Roles consumed via `with 'Role'`
     pub roles: Vec<String>,
+    /// Whether this package segment explicitly composed roles via `with`.
+    /// Role composition has no replacement form in Perl OO frameworks, so
+    /// consumers composing persisted facts treat a stated list as additive
+    /// rather than authoritative (#17635).
+    pub(crate) roles_explicit: bool,
     /// Method modifiers (before/after/around/override/augment)
     pub modifiers: Vec<MethodModifier>,
     /// Names exported by default via `@EXPORT`
@@ -399,6 +404,30 @@ impl ClassModel {
         self.parents_explicit
     }
 
+    /// Returns true when this segment's ancestry declarations are additive
+    /// (`push @ISA`, `use parent`, `use base`) rather than replacing prior
+    /// package state. Composers union persisted parents behind the buffer's
+    /// own list only in this case (#17635).
+    pub fn parents_additive(&self) -> bool {
+        self.parents_additive
+    }
+
+    /// Returns true when this segment contains an assignment that replaces
+    /// prior package ancestry (`@ISA = (...)`, `extends`). The segment's
+    /// parent list — including an explicit empty reset — is authoritative,
+    /// and persisted parents must not be unioned back (#17635).
+    pub fn parents_replaces_prior(&self) -> bool {
+        self.parents_replaces_prior
+    }
+
+    /// Returns true when this package segment explicitly composed roles via
+    /// `with`. Role composition is additive, so composers union persisted
+    /// roles behind the stated list instead of treating it as a replacement
+    /// (#17635).
+    pub fn roles_explicit(&self) -> bool {
+        self.roles_explicit
+    }
+
     /// Return the names of Object::Pad fields that participate in constructor parameters.
     ///
     /// These are the *field* names. Callers building `Class->new(...)` keys
@@ -458,6 +487,7 @@ pub struct ClassModelBuilder {
     current_parents_additive: bool,
     current_parents_replaces_prior: bool,
     current_roles: Vec<String>,
+    current_roles_explicit: bool,
     current_modifiers: Vec<MethodModifier>,
     current_exports: Vec<String>,
     current_export_ok: Vec<String>,
@@ -493,6 +523,7 @@ impl ClassModelBuilder {
             current_parents_additive: false,
             current_parents_replaces_prior: false,
             current_roles: Vec::new(),
+            current_roles_explicit: false,
             current_modifiers: Vec::new(),
             current_exports: Vec::new(),
             current_export_ok: Vec::new(),
@@ -544,6 +575,7 @@ impl ClassModelBuilder {
                 parents_additive: self.current_parents_additive,
                 parents_replaces_prior: self.current_parents_replaces_prior,
                 roles: std::mem::take(&mut self.current_roles),
+                roles_explicit: self.current_roles_explicit,
                 modifiers: std::mem::take(&mut self.current_modifiers),
                 exports: std::mem::take(&mut self.current_exports),
                 export_ok: std::mem::take(&mut self.current_export_ok),
@@ -564,6 +596,7 @@ impl ClassModelBuilder {
             self.current_parents_additive = false;
             self.current_parents_replaces_prior = false;
             self.current_roles.clear();
+            self.current_roles_explicit = false;
             self.current_modifiers.clear();
             self.current_exports.clear();
             self.current_export_ok.clear();
@@ -591,6 +624,7 @@ impl ClassModelBuilder {
                 self.current_parents_explicit = false;
                 self.current_parents_additive = false;
                 self.current_parents_replaces_prior = false;
+                self.current_roles_explicit = false;
                 self.current_uses_exporter = false;
 
                 if let Some(block) = block {
@@ -718,6 +752,7 @@ impl ClassModelBuilder {
                 };
                 self.current_mro = MethodResolutionOrder::Dfs;
                 self.current_mro_explicit = false;
+                self.current_roles_explicit = false;
                 self.framework_map.insert(name.clone(), self.current_framework);
                 self.current_package_aliases.clear();
                 // Populate parent classes from `:isa(Parent)` attributes
@@ -1277,6 +1312,7 @@ impl ClassModelBuilder {
                     self.current_parents.clear();
                     self.current_parents.extend(names);
                 } else {
+                    self.current_roles_explicit = true;
                     self.current_roles.extend(names);
                 }
                 return Some(1);
@@ -1317,6 +1353,7 @@ impl ClassModelBuilder {
             self.current_parents.clear();
             self.current_parents.extend(names);
         } else {
+            self.current_roles_explicit = true;
             self.current_roles.extend(names);
         }
 
@@ -2704,6 +2741,7 @@ has [qw(first_name last_name)] => (is => 'ro');
             parents_additive: false,
             parents_replaces_prior: false,
             roles: Vec::new(),
+            roles_explicit: false,
             modifiers: Vec::new(),
             exports: Vec::new(),
             export_ok: Vec::new(),
