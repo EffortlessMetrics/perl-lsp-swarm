@@ -8,7 +8,7 @@
 
 use perl_subprocess_runtime::mock::{CommandInvocation, MockResponse, MockSubprocessRuntime};
 use perl_subprocess_runtime::{SubprocessError, SubprocessOutput, SubprocessRuntime};
-use perl_tdd_support::must;
+use perl_test_must::must;
 use std::sync::{Arc, Mutex};
 use std::thread;
 

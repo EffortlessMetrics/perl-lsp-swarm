@@ -113,17 +113,23 @@ fn scenario_55_dbi_receiver_inline_completion_quality_stdio() -> Result<()> {
     // fixed sleep: on a cold CI runner the previous 250ms guess let completion
     // queries outrun the first analysis of the just-opened document, starving
     // the DBI semantic context for the whole poll window (#15870).
-    let readiness = harness.wait_for_diagnostics(DBI_HANDLE_PATH, Duration::from_secs(30));
+    let readiness = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", DBI_HANDLE_PATH),
+        harness.wait_for_diagnostics(DBI_HANDLE_PATH, Duration::from_secs(30)),
+    )?;
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
-            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+            "analysis readiness: observed empty diagnostics payload; this scenario requires nonempty diagnostics (#15899)"
         )
         .into());
     }
-    let readiness = harness.wait_for_diagnostics(DBI_STATEMENT_PATH, Duration::from_secs(30));
+    let readiness = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", DBI_STATEMENT_PATH),
+        harness.wait_for_diagnostics(DBI_STATEMENT_PATH, Duration::from_secs(30)),
+    )?;
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
-            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+            "analysis readiness: observed empty diagnostics payload; this scenario requires nonempty diagnostics (#15899)"
         )
         .into());
     }

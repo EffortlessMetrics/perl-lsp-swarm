@@ -307,6 +307,14 @@ impl ClassModel {
         !matches!(self.framework, Framework::None)
     }
 
+    /// Returns true when this package segment explicitly declared ancestry,
+    /// including an explicit empty reset (`our @ISA = ();`). Callers composing
+    /// persisted inheritance facts must treat an explicitly empty parent list
+    /// as authoritative, not as "unspecified" (#17084).
+    pub fn parents_explicit(&self) -> bool {
+        self.parents_explicit
+    }
+
     /// Return the names of Object::Pad fields that participate in constructor parameters.
     ///
     /// These are the *field* names. Callers building `Class->new(...)` keys
@@ -1994,20 +2002,17 @@ fn is_dbix_relationship_name(name: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-fn expand_symbol_list(raw: &str) -> Vec<String> {
-    let raw = raw.trim();
-
-    if raw.starts_with("qw(") && raw.ends_with(')') {
-        let content = &raw[3..raw.len() - 1];
-        return content
-            .split_whitespace()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
+/// Content inside a `qw` list, or `None` when `trimmed` is not a `qw` list.
+///
+/// Delimiters may be multi-byte UTF-8, so slicing advances by the opening
+/// delimiter's `len_utf8()` rather than one byte (#17988).
+fn qw_list_content(trimmed: &str) -> Option<&str> {
+    if trimmed.starts_with("qw(") && trimmed.ends_with(')') {
+        return Some(&trimmed[3..trimmed.len() - 1]);
     }
 
-    if raw.starts_with("qw") && raw.len() > 2 {
-        let open = raw.chars().nth(2).unwrap_or(' ');
+    if trimmed.starts_with("qw") && trimmed.len() > 2 {
+        let open = trimmed.chars().nth(2).unwrap_or(' ');
         let close = match open {
             '(' => ')',
             '{' => '}',
@@ -2015,16 +2020,25 @@ fn expand_symbol_list(raw: &str) -> Vec<String> {
             '<' => '>',
             c => c,
         };
-        if let (Some(start), Some(end)) = (raw.find(open), raw.rfind(close))
-            && start < end
+        if let (Some(start), Some(end)) = (trimmed.find(open), trimmed.rfind(close))
+            && start + open.len_utf8() <= end
         {
-            let content = &raw[start + 1..end];
-            return content
-                .split_whitespace()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect();
+            return Some(&trimmed[start + open.len_utf8()..end]);
         }
+    }
+
+    None
+}
+
+fn expand_symbol_list(raw: &str) -> Vec<String> {
+    let raw = raw.trim();
+
+    if let Some(content) = qw_list_content(raw) {
+        return content
+            .split_whitespace()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
     }
 
     normalize_symbol_name(raw).into_iter().collect()
@@ -2037,36 +2051,13 @@ fn expand_symbol_list(raw: &str) -> Vec<String> {
 /// Plain quoted strings like `"'Parent'"` return `["Parent"]`.
 fn expand_arg_to_names(arg: &str) -> Vec<String> {
     let arg = arg.trim();
-    // qw(...) - any delimiter variant that the parser normalised to qw(...)
-    if arg.starts_with("qw(") && arg.ends_with(')') {
-        let content = &arg[3..arg.len() - 1];
+    // qw(...) and other qw variants: qw{...}, qw[...], qw/.../ etc.
+    if let Some(content) = qw_list_content(arg) {
         return content
             .split_whitespace()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
-    }
-    // Other qw variants: qw{...}, qw[...], qw/.../ etc.
-    if arg.starts_with("qw") && arg.len() > 2 {
-        let open = arg.chars().nth(2).unwrap_or(' ');
-        let close = match open {
-            '(' => ')',
-            '{' => '}',
-            '[' => ']',
-            '<' => '>',
-            c => c,
-        };
-        if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close))
-            && start + open.len_utf8() <= end
-        {
-            // Byte-boundary-safe slice: qw delimiters may be multi-byte UTF-8.
-            let content = &arg[start + open.len_utf8()..end];
-            return content
-                .split_whitespace()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect();
-        }
     }
     // Quoted string or bare identifier
     normalize_symbol_name(arg).into_iter().collect()
@@ -2547,6 +2538,14 @@ has [qw(first_name last_name)] => (is => 'ro');
     #[test]
     fn expand_symbol_list_supports_qw_angle_delimiters() {
         assert_eq!(expand_symbol_list("qw<alpha beta gamma>"), vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn expand_symbol_list_handles_multibyte_qw_delimiters_without_panic() {
+        // Regression for #17988: the qw open delimiter may be a multi-byte
+        // char, so slicing must advance by its UTF-8 length, not one byte.
+        assert_eq!(expand_symbol_list("qw\u{2022}alpha beta\u{2022}"), vec!["alpha", "beta"]);
+        assert_eq!(expand_symbol_list("qw(alpha beta)"), vec!["alpha", "beta"]);
     }
 
     #[test]

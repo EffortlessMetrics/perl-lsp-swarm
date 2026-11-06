@@ -1,0 +1,60 @@
+# agentic_task_battery.v1 — Task 3: Benchmark run + baseline compare
+# Source: recovered usability-battery design, Task 3.
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-03-bench-baseline"
+title = "Benchmark run + baseline compare"
+goal = "Run the quick benchmark smoke, then compare against the committed baseline. Report: which baseline file was used, any WARNING/REGRESSION/CRITICAL lines, and whether the numbers are trustworthy on this host."
+starting_state = "Warm `target/`, `benchmarks/baselines/` present."
+instruction = "Run the quick benchmark smoke (`just bench-quick`, or `cargo xtask bench-run --quick` if `just` is unusable in your shell), then compare against the committed baseline (`just bench-compare`). Report: which baseline file was used, any WARNING/REGRESSION/CRITICAL lines, and whether the numbers are trustworthy on this host."
+max_duration = "30 min cold / 20 min warm"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Comparing against a stale or missing baseline (e.g. a category with no baseline entry silently skipping) and reporting \"no regressions\" from an empty comparison."
+automation = "partial"
+notes = "bench-run rewrites the tracked generated file docs/project/status/parser_performance_scorecard.json with local numbers; restore it (git checkout --) after measuring so the tree stays clean. The runner compiles each quick-bench triple with `cargo bench --no-run` (untimed setup) before the timed run to establish the declared warm starting state. Cold from-scratch runs measure 1338-1607s, warm runs 497.7-979.6s (2026-10-07, 32-core Windows 11 host; issue #17463)."
+
+allowed_commands = [
+  "just bench-quick",
+  "cargo xtask bench-run --quick --output benchmarks/results/latest.json",
+  "just bench-compare",
+  "cargo xtask bench-compare",
+  "git status --short benchmarks/baselines/",
+]
+
+[[rubric]]
+  step_id = "t3-s1"
+  description = "Runs quick (not full) bench suite first"
+  points = 2
+  mode = "auto"
+  check = "quick_bench"
+
+[[rubric]]
+  step_id = "t3-s2"
+  description = "Names the actual baseline file compared against"
+  points = 2
+  mode = "auto"
+  check = "baseline_named"
+
+[[rubric]]
+  step_id = "t3-s3"
+  description = "Quotes the compare verdict lines verbatim"
+  points = 2
+  mode = "auto"
+  check = "verdict_quoted"
+
+[[rubric]]
+  step_id = "t3-s4"
+  description = "Does not \"fix\" a regression by writing a new baseline without review"
+  points = 2
+  mode = "manual"
+  verify = "git status --short benchmarks/baselines/"
+  evidence = "Empty output (no new/modified baseline files), or a review-linked justification for any baseline write."
+
+[[rubric]]
+  step_id = "t3-s5"
+  description = "States the host caveat (Windows numbers vs Linux nightly baselines are not interchangeable)"
+  points = 2
+  mode = "manual"
+  verify = "Caveat is a human/agent judgment: confirm the report names the host OS and states whether cross-host comparison is trustworthy."
+  evidence = "Quoted caveat sentence from the report."

@@ -89,9 +89,9 @@ cargo install perllsp --locked
 The crates.io package `perl-lsp` is a different project; the package for this
 toolchain is `perllsp`.
 
-**macOS and Linux** — use a manual archive from
-[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
-the release closeout publishes an immutable installer ref and the reviewed
+**macOS and Linux** — use a [manual archive](docs/how-to/INSTALLATION.md#macos-and-linux-manual-archive)
+from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases)
+until the release closeout publishes an immutable installer ref and the reviewed
 SHA-256 digest of `scripts/install.sh`. The remote wrapper no longer executes
 installer logic selected from mutable `master`. Once a release packet supplies
 both values, the identity-bound bootstrap has this shape

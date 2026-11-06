@@ -326,12 +326,12 @@ producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
 job = "public-api-pr"
 workflow_result = "propagate"
-events = ["pull_request"]
+events = ["pull_request", "push"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-reason = "#2266 auto-runs the cargo-public-api baseline ratchet when a PR touches a published facade surface or .ci/public-api-baselines/; out-of-scope diffs settle as green scoped-noops so a later ruleset promotion resolves cleanly instead of pending forever."
+reason = "#2266 auto-runs the cargo-public-api baseline ratchet when a PR touches a published facade surface or .ci/public-api-baselines/; out-of-scope diffs settle as green scoped-noops so a later ruleset promotion resolves cleanly instead of pending forever. #16815 also runs the same fail-closed `just public-api-check` on every push to main/master against that landed SHA, including commits outside facade/API scope; skipped or instrument-failed runs are not a passing ratchet."
 
 [[checks]]
 name = "Semver Compatibility (facade PR)"

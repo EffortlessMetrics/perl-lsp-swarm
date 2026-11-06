@@ -373,6 +373,39 @@ sub main {
 }
 
 #[test]
+fn test_folding_ranges_imports_end_line_includes_last_import() -> TestResult {
+    let content = "use strict;\nuse warnings;\nuse POSIX qw(floor);\nmy $x = 1;\n";
+    let ranges = folding_ranges_for("file:///imports-endline.pl", content)?;
+
+    let imports: Vec<&Value> = ranges
+        .iter()
+        .filter(|r| r.get("kind").and_then(|k| k.as_str()) == Some("imports"))
+        .collect();
+    assert_eq!(imports.len(), 1, "expected exactly one imports range: {ranges:?}");
+    assert_eq!(
+        range_lines(imports[0]),
+        Some((0, 2)),
+        "imports fold must include the last import line: {ranges:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_folding_ranges_subroutine_brace_line_excluded() -> TestResult {
+    let content = "sub full {\n    my $x = 1;\n}\n";
+    let ranges = folding_ranges_for("file:///sub-brace.pl", content)?;
+    assert!(
+        ranges
+            .iter()
+            .any(|range| range_lines(range).is_some_and(|(start, end)| start == 0 && end == 1)),
+        "subroutine fold must exclude the closing brace line (0,1): {ranges:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_folding_ranges_empty_document() -> TestResult {
     let server = setup_server();
 

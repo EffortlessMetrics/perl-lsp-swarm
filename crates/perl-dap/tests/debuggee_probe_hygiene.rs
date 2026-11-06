@@ -168,7 +168,16 @@ fn main() {
     let timeout = compile_probe_control(
         controls.path(),
         "probe_timeout",
-        "fn main() { std::thread::sleep(std::time::Duration::from_secs(60)); }\n",
+        r#"
+fn main() {
+    // Capability precondition (`-e require 'perl5db.pl'`) must exit fast;
+    // the pipe probe itself arrives as `-d -- <script>` (#17393).
+    if std::env::args().nth(1).as_deref() == Some("-e") {
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_secs(60));
+}
+"#,
     )?;
     let hanging = compile_probe_control(
         controls.path(),
@@ -177,6 +186,11 @@ fn main() {
 use std::{env, fs, process::Command, thread, time::Duration};
 
 fn main() {
+    // Capability precondition (`-e require 'perl5db.pl'`) must exit fast;
+    // the pipe probe itself arrives as `-d -- <script>` (#17393).
+    if env::args().nth(1).as_deref() == Some("-e") {
+        return;
+    }
     if env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE").is_none()
         && let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE")
     {
@@ -212,6 +226,11 @@ fn main() {
 use std::{env, fs, process::Command};
 
 fn main() {
+    // Capability precondition (`-e require 'perl5db.pl'`) must exit fast;
+    // the pipe probe itself arrives as `-d -- <script>` (#17393).
+    if env::args().nth(1).as_deref() == Some("-e") {
+        return;
+    }
     if env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE").is_none()
         && let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE")
     {
@@ -464,8 +483,15 @@ fn main() {
         Ok(_) => return Err(io::Error::other("termination-command failure was accepted")),
         Err(error) => error,
     };
+    // Unix terminates the owned process GROUP, Windows the owned process: the
+    // same explicit owned-termination failure carries platform wording
+    // ("injected owned process-group termination failure" vs "injected owned
+    // process termination failure"). This test skips on Windows, so Linux
+    // always sees the group wording; accept both so the matrix also holds if
+    // the Windows skip is ever lifted (#17393).
     require!(
-        termination_error.contains("owned process termination failure"),
+        termination_error.contains("owned process termination failure")
+            || termination_error.contains("owned process-group termination failure"),
         "owned termination failure must be explicit: {termination_error}"
     );
     require!(

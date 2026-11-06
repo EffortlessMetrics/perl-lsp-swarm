@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -183,6 +184,86 @@ cc = "1"
             ],
             args,
         )
+
+    def test_main_checks_archive_from_cargos_effective_target_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repository = root / "repository"
+            target = root / "private target"
+            archive = target / "package" / "perl-lsp-rs-core-0.1.0.crate"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"packaged archive")
+            smoke = root / "smoke"
+            extracted = smoke / "perl-lsp-rs-core-0.1.0"
+            extracted.mkdir(parents=True)
+            (extracted / "build_catalog.rs").write_text("// build catalog\n", encoding="utf-8")
+            (extracted / "Cargo.toml").write_text('[package]\nname = "demo"\n', encoding="utf-8")
+
+            def run(command: list[str], *, capture: bool = False) -> str:
+                if command[1] == "metadata":
+                    return json.dumps({"target_directory": str(target)})
+                if "--list" in command:
+                    return "build_catalog.rs\nCargo.toml\n"
+                return ""
+
+            with (
+                patch.object(core_package, "ROOT", repository),
+                patch.object(core_package, "parse_args", return_value=SimpleNamespace(allow_dirty=False)),
+                patch.object(core_package, "workspace_package_version", return_value="0.1.0"),
+                patch.object(core_package, "workspace_patch_args", return_value=[]),
+                patch.object(core_package, "run", side_effect=run) as run_mock,
+                patch.object(core_package, "safe_extract") as extract_mock,
+                patch.object(core_package.tempfile, "mkdtemp", return_value=str(smoke)),
+            ):
+                result = core_package.main()
+
+            self.assertEqual(0, result)
+            extract_mock.assert_called_once_with(archive, smoke)
+            self.assertTrue(any(call.args[0][1] == "check" for call in run_mock.call_args_list))
+
+    def test_workspace_target_directory_uses_cargo_metadata(self) -> None:
+        with patch.object(
+            core_package,
+            "run",
+            return_value=json.dumps({"target_directory": "/custom target"}),
+        ) as run_mock:
+            target = core_package.workspace_target_directory()
+
+        self.assertEqual(Path("/custom target"), target)
+        run_mock.assert_called_once_with(
+            ["cargo", "metadata", "--format-version=1", "--no-deps"],
+            capture=True,
+        )
+
+    def test_main_refuses_missing_custom_archive_despite_stale_default_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stale = root / "target" / "package" / "perl-lsp-rs-core-0.1.0.crate"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"stale default archive")
+            target = root / "private target"
+
+            def run(command: list[str], *, capture: bool = False) -> str:
+                if command[1] == "metadata":
+                    return json.dumps({"target_directory": str(target)})
+                if "--list" in command:
+                    return "build_catalog.rs\n"
+                return ""
+
+            with (
+                patch.object(core_package, "ROOT", root),
+                patch.object(core_package, "parse_args", return_value=SimpleNamespace(allow_dirty=False)),
+                patch.object(core_package, "workspace_package_version", return_value="0.1.0"),
+                patch.object(core_package, "workspace_patch_args", return_value=[]),
+                patch.object(core_package, "run", side_effect=run),
+                patch.object(core_package, "safe_extract") as extract_mock,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                result = core_package.main()
+
+            self.assertEqual(1, result)
+            self.assertIn(str(target / "package"), stderr.getvalue())
+            extract_mock.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -100,6 +100,69 @@ class FormatResultsReceiptGuardTests(unittest.TestCase):
             self.assertIn("Total benchmarks:  1", proc.stdout)
             self.assertIn("STATUS: COMPLETE", proc.stdout)
 
+    def test_partial_category_failure_is_incomplete_and_fails(self) -> None:
+        """A failed category marker (#17218) must survive to the receipt.
+
+        One category produced timings while another failed: the receipt must
+        name the failed category and report INCOMPLETE, never COMPLETE.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            results_file = Path(tmp) / "latest.json"
+            results_file.write_text(
+                json.dumps(
+                    {
+                        "version": "0.9.0",
+                        "timestamp": "2026-07-12T00:00:00Z",
+                        "git_sha": "abc123",
+                        "results": {
+                            "index": {
+                                "incremental update single file": {"mean_ns": 209_000},
+                            },
+                            "ripr": {
+                                "_status": "failed",
+                                "_error": (
+                                    "cargo bench -p perl-ripr-facts "
+                                    "--bench ripr_facts_benchmark failed (exit 101)"
+                                ),
+                                "_category": "ripr",
+                            },
+                        },
+                    }
+                )
+            )
+
+            proc = _run(_FORMAT_RESULTS, [str(results_file), "--receipt"])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Total benchmarks:  1", proc.stdout)
+            self.assertIn("ripr", proc.stdout)
+            self.assertIn("STATUS: INCOMPLETE", proc.stdout)
+            self.assertNotIn("STATUS: COMPLETE", proc.stdout)
+
+    def test_all_categories_failed_is_incomplete_and_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            results_file = Path(tmp) / "latest.json"
+            results_file.write_text(
+                json.dumps(
+                    {
+                        "version": "0.9.0",
+                        "timestamp": "2026-07-12T00:00:00Z",
+                        "git_sha": "abc123",
+                        "results": {
+                            "ripr": {
+                                "_status": "failed",
+                                "_error": "cargo bench failed (exit 101)",
+                                "_category": "ripr",
+                            },
+                        },
+                    }
+                )
+            )
+
+            proc = _run(_FORMAT_RESULTS, [str(results_file), "--receipt"])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("STATUS: INCOMPLETE", proc.stdout)
+            self.assertNotIn("STATUS: COMPLETE", proc.stdout)
+
 
 class CompareMissingBenchmarkGuardTests(unittest.TestCase):
     def _write(self, path: Path, results: dict) -> None:

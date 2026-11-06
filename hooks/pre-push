@@ -6,8 +6,15 @@
 # Bypass policy
 # -------------
 # OK to bypass with `git push --no-verify`:
-#   * Deletion-only push on master (the hook already auto-skips, but if it
-#     doesn't, bypassing is safe — there's nothing to validate).
+#   * Deletion-only push on a non-protected branch (the hook already
+#     auto-skips, but if it doesn't, bypassing is safe — there's nothing
+#     to validate). Deleting a protected branch (main, master) is refused
+#     by the hook's own ref-update check, not bypassable this way in spirit.
+#   * A non-fast-forward push you have proven safe (your own rebased branch,
+#     no teammate work): prefer the admit-list escape hatch
+#     (PERL_LSP_ALLOW_HISTORY_REWRITE="<remote-ref>") over --no-verify,
+#     so the remaining gates still run — and push with the printed
+#     --force-with-lease=<ref>:<inspected-sha>, never plain --force.
 #   * Urgent fixes during incident response, when the gate has a known bug
 #     being tracked (see hint output below for issue numbers).
 #   * The hook is failing for an environmental reason that is out of band of
@@ -19,9 +26,16 @@
 #   * "I just don't want to wait."
 #   * "I just want to push something quick."
 #   * Code-touching changes where you haven't actually run the gate locally.
+#   * A non-fast-forward refusal you have not investigated (fetch and
+#     rebase/merge instead — see the refusal's recovery order).
 #
 # If you find yourself bypassing repeatedly, file an issue and link it here.
 # ============================================================================
+#
+# Hook logic version (#17431 review wave 3): bump the integer below on EVERY
+# guard-logic change. Self-heal only upgrades (checkout > installed) and
+# never downgrades; unmarked legacy hooks count as version 0.
+# pre-push-hook-version: 1
 
 set -euo pipefail
 
@@ -39,15 +53,40 @@ fi
 
 # --- Self-heal stale hook installation (issue #4220) ---
 # When hooks/pre-push is updated in master, .git/hooks/pre-push is only
-# updated when install-githooks is re-run. Auto-copy when drift is detected.
-# Note: exec "$0" "$@" does NOT work here — git stdin is already consumed
-# before the hook executes. Copy and continue; the fresh hook takes effect
-# on the next push.
+# updated when install-githooks is re-run. On drift, UPGRADE only: copy the
+# checkout file over the installed hook solely when its version marker is
+# strictly newer, then REFUSE this push: exec "$0" "$@" does NOT work here —
+# git stdin is already consumed before the hook executes — so continuing
+# would guard this push with stale logic (#17431 review: upgrade barrier).
+# Exactly one aborted push per hook upgrade; re-push runs the fresh guards.
+# When the checkout copy is NOT newer (stale branch/worktree), the installed
+# hook is never downgraded: the push proceeds under the installed guards
+# with a warning (#17431 review wave 3: downgrade barrier).
+hook_version() {
+    # Print the numeric hook-version marker of $1; prints nothing when absent.
+    sed -n 's/^# pre-push-hook-version: *\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+}
 REPO_ROOT_FOR_HOOK="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$REPO_ROOT_FOR_HOOK" ] && [ -f "$REPO_ROOT_FOR_HOOK/hooks/pre-push" ]; then
     if ! diff -q "$0" "$REPO_ROOT_FOR_HOOK/hooks/pre-push" >/dev/null 2>&1; then
-        echo "pre-push hook updated from hooks/pre-push (was stale — takes effect next push)"
-        cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$0" && chmod +x "$0" || true
+        installed_version="$(hook_version "$0")"
+        case "$installed_version" in ''|*[!0-9]*) installed_version=0 ;; esac
+        checkout_version="$(hook_version "$REPO_ROOT_FOR_HOOK/hooks/pre-push")"
+        case "$checkout_version" in ''|*[!0-9]*) checkout_version=0 ;; esac
+        if [ "$checkout_version" -gt "$installed_version" ]; then
+            # Atomic replace (#17431 review wave 4): a failed cp must never
+            # leave $0 truncated, or later pushes run a broken hook.
+            heal_tmp="$0.tmp.$$"
+            if cp "$REPO_ROOT_FOR_HOOK/hooks/pre-push" "$heal_tmp" && chmod +x "$heal_tmp" && mv "$heal_tmp" "$0"; then
+                echo "pre-push hook updated itself from hooks/pre-push (v$installed_version -> v$checkout_version)."
+                echo "This push was refused so stale logic never guards it — re-push to run the fresh guards."
+            else
+                rm -f "$heal_tmp"
+                echo "pre-push hook is stale and could not be self-updated (check permissions on $0); re-run install-githooks to refresh it." >&2
+            fi
+            exit 1
+        fi
+        echo "warning: hooks/pre-push in this checkout (v$checkout_version) is not newer than the installed hook (v$installed_version); keeping the installed hook. Update this branch/worktree to get the latest hook." >&2
     fi
 fi
 
@@ -57,6 +96,86 @@ fi
 PUSH_REFS=()
 while IFS= read -r line; do
     PUSH_REFS+=("$line")
+done
+
+# --- Refuse non-fast-forward updates and protected-ref rewrites (issue #17427) ---
+# A push that would discard remote commits — force-push, reset+push, or
+# deleting a protected branch (main, master) — is refused here, before any
+# gate runs, with a recovery order. Fast-forward updates, new branches, and
+# deletions of non-protected branches are unaffected.
+#
+# Escape hatch: when you have proven the discarded commits are safe to drop
+# (your own rebased branch, no teammate work), name the full remote ref(s)
+# in PERL_LSP_ALLOW_HISTORY_REWRITE (space-separated, as git reports them,
+# e.g. "refs/heads/my-rebased-branch") and push with
+# --force-with-lease=<ref>:<inspected-sha> (printed in the refusal) so a
+# concurrent push after your inspection fails instead of being erased.
+# Prefer this over --no-verify so the remaining gates still run.
+# Protected branches should ~never need it.
+#
+# Implementation note: the protected list holds short branch names on purpose
+# (compared against ${remote_ref#refs/heads/}), so no executable line names a
+# full protected ref — see the T8 trap's hook-gate pin.
+ZERO_SHA="0000000000000000000000000000000000000000"
+PROTECTED_BRANCHES="main master"
+ALLOW_HISTORY_REWRITE="${PERL_LSP_ALLOW_HISTORY_REWRITE:-}"
+
+ref_update_admitted() {
+    case " $ALLOW_HISTORY_REWRITE " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    [ -z "$line" ] && continue
+    read -r _local_ref local_sha remote_ref remote_sha <<< "$line"
+    if ref_update_admitted "$remote_ref"; then
+        continue
+    fi
+    # Pastable forms, computed for every refused ref: a ref name may
+    # legally contain shell syntax (e.g. refs/heads/$(id)), so anything
+    # the refusal prints for copy-paste goes through %q (#17431 review).
+    printf -v RECOVERY_REMOTE '%q' "${1:-origin}"
+    printf -v RECOVERY_REF '%q' "$remote_ref"
+    printf -v RECOVERY_ADMIT '%q' "$remote_ref"
+    printf -v RECOVERY_LEASE '%q' "$remote_ref:$remote_sha"
+    if [ "$local_sha" = "$ZERO_SHA" ]; then
+        remote_short="${remote_ref#refs/heads/}"
+        case " $PROTECTED_BRANCHES " in
+            *" $remote_short "*)
+                echo ""
+                echo "❌ Refusing deletion of protected ref $remote_ref."
+                echo "   Deleting shared branches destroys history other people build on."
+                echo "   If this is genuinely intended (repository decommission, never"
+                echo "   routine work), admit this ref explicitly and re-push:"
+                echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=$RECOVERY_ADMIT git push <remote> --delete <branch>"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+    if [ "$remote_sha" = "$ZERO_SHA" ]; then
+        continue
+    fi
+    if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        continue
+    fi
+    if git cat-file -e "$remote_sha" 2>/dev/null; then
+        UNKNOWN_TIP=""
+    else
+        UNKNOWN_TIP=" (tip $remote_sha is not in your local object store — fetch first)"
+    fi
+    echo ""
+    echo "❌ Refusing non-fast-forward push to $remote_ref$UNKNOWN_TIP."
+    echo "   Your push would discard remote commit(s)."
+    echo "   Recover with: git fetch $RECOVERY_REMOTE $RECOVERY_REF && git rebase FETCH_HEAD (or git merge FETCH_HEAD), then push again."
+    echo "   Only when you have proven the remote commits are safe to discard"
+    echo "   (your own rebased branch, no teammate work), admit this ref explicitly"
+    echo "   and bind the push to the tip you inspected — plain --force could erase"
+    echo "   concurrent work pushed after your inspection:"
+    echo "   PERL_LSP_ALLOW_HISTORY_REWRITE=$RECOVERY_ADMIT git push --force-with-lease=$RECOVERY_LEASE <remote> <branch>"
+    exit 1
 done
 
 # --- Skip CI gate when all refs are being deleted ---

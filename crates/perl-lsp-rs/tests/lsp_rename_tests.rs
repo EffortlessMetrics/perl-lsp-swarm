@@ -14,7 +14,7 @@
 mod support;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -1378,6 +1378,208 @@ fn raw_prepare_rename(harness: &mut LspHarness, uri: &str, line: u64, character:
     }))
 }
 
+fn assert_comment_region_refused(
+    harness: &mut LspHarness,
+    uri: &str,
+    line: u64,
+    character: u64,
+) -> TestResult {
+    for envelope in [
+        raw_prepare_rename(harness, uri, line, character),
+        raw_rename(harness, uri, line, character),
+    ] {
+        assert_eq!(
+            answered_result(&envelope, "rename request in a comment region")?,
+            Value::Null,
+            "non-code position {line}:{character} must carry an explicit null result: {envelope}"
+        );
+    }
+    Ok(())
+}
+
+fn assert_comment_region_code_control(
+    harness: &mut LspHarness,
+    uri: &str,
+    line: u64,
+    start: u64,
+    end: u64,
+    placeholder: &str,
+    expected_edits: Value,
+) -> TestResult {
+    let prepared = answered_result(
+        &raw_prepare_rename(harness, uri, line, start),
+        "prepareRename on real code near comment regions",
+    )?;
+    assert_eq!(
+        prepared,
+        json!({
+            "range": {
+                "start": { "line": line, "character": start },
+                "end": { "line": line, "character": end }
+            },
+            "placeholder": placeholder
+        })
+    );
+    let renamed = answered_result(
+        &raw_rename(harness, uri, line, start),
+        "rename on real code near comment regions",
+    )?;
+    assert_eq!(renamed, json!({ "changes": { uri: expected_edits } }));
+    Ok(())
+}
+
+#[test]
+fn test_comment_regions_refuse_same_name_traps() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("CommentRegions.pl");
+    harness.open(&uri, "my $note = 1;\nsub wave { return $note; }\nwave(); # wave $note isn't \"code\"\n# 😀 wave $note\n=pod\nwave $note\n=cut\nwave();\n__DATA__\nwave $note\n")?;
+
+    for (line, character) in
+        [(2, 10), (2, 15), (2, 16), (3, 5), (3, 10), (5, 0), (5, 5), (9, 0), (9, 5)]
+    {
+        assert_comment_region_refused(&mut harness, &uri, line, character)?;
+    }
+    assert_comment_region_code_control(
+        &mut harness,
+        &uri,
+        0,
+        3,
+        8,
+        "$note",
+        json!([
+            { "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 8 } }, "newText": "$renamed_target" },
+            { "range": { "start": { "line": 1, "character": 18 }, "end": { "line": 1, "character": 23 } }, "newText": "$renamed_target" }
+        ]),
+    )?;
+    assert_comment_region_code_control(
+        &mut harness,
+        &uri,
+        1,
+        4,
+        8,
+        "wave",
+        json!([
+            { "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 8 } }, "newText": "renamed_target" },
+            { "range": { "start": { "line": 2, "character": 0 }, "end": { "line": 2, "character": 4 } }, "newText": "renamed_target" },
+            { "range": { "start": { "line": 7, "character": 0 }, "end": { "line": 7, "character": 4 } }, "newText": "renamed_target" }
+        ]),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn test_comment_regions_refuse_end_payload_with_default_behavior() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({ "textDocument": { "rename": { "prepareSupportDefaultBehavior": 1 } } })),
+    )?;
+    let uri = workspace.uri("EndCommentRegions.pl");
+    harness.open(&uri, "sub wave { 1 }\n# wave\n__END__\nwave\n")?;
+    assert_comment_region_refused(&mut harness, &uri, 1, 2)?;
+    assert_comment_region_refused(&mut harness, &uri, 3, 0)?;
+    let prepared = answered_result(
+        &raw_prepare_rename(&mut harness, &uri, 0, 4),
+        "default behavior code control",
+    )?;
+    assert_eq!(prepared, json!({ "defaultBehavior": true }));
+    Ok(())
+}
+
+#[test]
+fn test_comment_regions_preserve_code_after_hash_literals() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("HashLiteralCommentRegions.pl");
+    harness.open(&uri, "my $mark = \"😀#\"; my $note = 1;\nmy $quoted = '#'; $note++; # $note\nmy $like = q{#}; $note++;\n")?;
+    assert_comment_region_refused(&mut harness, &uri, 1, 29)?;
+    assert_comment_region_code_control(
+        &mut harness,
+        &uri,
+        0,
+        21,
+        26,
+        "$note",
+        json!([
+            { "range": { "start": { "line": 0, "character": 21 }, "end": { "line": 0, "character": 26 } }, "newText": "$renamed_target" },
+            { "range": { "start": { "line": 1, "character": 18 }, "end": { "line": 1, "character": 23 } }, "newText": "$renamed_target" },
+            { "range": { "start": { "line": 2, "character": 17 }, "end": { "line": 2, "character": 22 } }, "newText": "$renamed_target" }
+        ]),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn test_comment_regions_refuse_token_fallback_at_eof() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("EofCommentRegions.pl");
+    for (version, source, line, character) in [
+        (2, "sub wave { 1 }\n# wave", 1, 6),
+        (3, "sub wave { 1 }\n=pod\nwave", 2, 4),
+        (4, "sub wave { 1 }\n__DATA__\nwave", 2, 4),
+        (5, "sub wave { 1 }\n__END__\nwave", 2, 4),
+        (6, "sub wave { 1 }\nwave# wave", 1, 4),
+    ] {
+        if version == 2 {
+            harness.open(&uri, source)?;
+        } else {
+            harness.change_full(&uri, version, source)?;
+        }
+        assert_comment_region_refused(&mut harness, &uri, line, character)?;
+    }
+    harness.change_full(&uri, 7, "my $note = 1;\n$note;")?;
+    let prepared = answered_result(
+        &raw_prepare_rename(&mut harness, &uri, 1, 6),
+        "prepareRename token fallback at real code EOF",
+    )?;
+    assert_eq!(
+        prepared,
+        json!({
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 5 } },
+            "placeholder": "$note"
+        })
+    );
+    assert_comment_region_code_control(
+        &mut harness,
+        &uri,
+        1,
+        0,
+        5,
+        "$note",
+        json!([
+            { "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 8 } }, "newText": "$renamed_target" },
+            { "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 5 } }, "newText": "$renamed_target" }
+        ]),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn test_comment_regions_follow_current_document_edits() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let uri = workspace.uri("EditedCommentRegions.pl");
+    let code = "sub wave { 1 }\n  wave();\n";
+    let edits = json!([
+        { "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 8 } }, "newText": "renamed_target" },
+        { "range": { "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 6 } }, "newText": "renamed_target" }
+    ]);
+    harness.open(&uri, code)?;
+    assert_comment_region_code_control(&mut harness, &uri, 1, 2, 6, "wave", edits.clone())?;
+    harness.change_full(&uri, 2, "sub wave { 1 }\n# wave();\n")?;
+    assert_comment_region_refused(&mut harness, &uri, 1, 2)?;
+    harness.change_full(&uri, 3, code)?;
+    assert_comment_region_code_control(&mut harness, &uri, 1, 2, 6, "wave", edits)?;
+    Ok(())
+}
+
 /// `prepareRename` must not advertise a rename that `rename` will not perform.
 ///
 /// Before #9827 the server answered `prepareRename` on `package Greeter;` with a
@@ -1743,6 +1945,58 @@ fn test_malformed_rename_requests_are_invalid_params_not_refusals() -> TestResul
         answered_result(&refused, "rename on a package name")?,
         Value::Null,
         "a well-formed but unrenameable position must still refuse with null; got: {refused}"
+    );
+
+    Ok(())
+}
+
+/// A native `class` name must refuse at `prepareRename` like a `package` name.
+///
+/// Class rename is not implemented, and before this guard the server answered
+/// `prepareRename` on `class Widget` with a range and a `"Widget"` placeholder
+/// — so the editor opened a rename box — and then answered `rename` itself
+/// with `null`. That is the #9827 mismatch in its class form: an advertised
+/// rename that will not be performed.
+#[test]
+fn test_class_rename_is_refused_rather_than_silently_dropped() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let uri = "file:///Widget.pm";
+    harness.open(
+        uri,
+        "use feature 'class';\nclass Widget {\n  method greet { return 1; }\n}\nmy $w = Widget->new();\n",
+    )?;
+
+    // `Widget` starts at character 6 on line 1 (`class Widget {`).
+    let prepared = answered_result(
+        &raw_prepare_rename(&mut harness, uri, 1, 8),
+        "prepareRename on a class name",
+    )?;
+    assert_eq!(
+        prepared,
+        Value::Null,
+        "prepareRename must not offer a rename box on a class name; got: {prepared}"
+    );
+
+    let renamed = answered_result(&raw_rename(&mut harness, uri, 1, 8), "rename on a class name")?;
+    assert_not_an_empty_successful_edit(&renamed, "rename on a class name")?;
+    assert_eq!(
+        renamed,
+        Value::Null,
+        "rename on a class name must report the position as unavailable; got: {renamed}"
+    );
+
+    // Negative control: the refusal is bound to the class name specifically.
+    // A method in the very same class body still prepares.
+    let prepared_method = answered_result(
+        &raw_prepare_rename(&mut harness, uri, 2, 10),
+        "prepareRename on a method name",
+    )?;
+    assert_eq!(
+        prepared_method.get("placeholder").and_then(Value::as_str),
+        Some("greet"),
+        "method rename must still be advertised; got: {prepared_method}"
     );
 
     Ok(())

@@ -1,0 +1,1 @@
+{"framework": "Test2::V0", "runner_hints": ["yath", "prove"], "expected_oracles": [{"call": "is", "kind": "exact_return_assertion", "strength": "strong_exact"}, {"call": "ok", "kind": "smoke_ok", "strength": "weak_smoke"}, {"call": "like", "kind": "predicate_boundary_assertion", "strength": "weak_broad"}]}

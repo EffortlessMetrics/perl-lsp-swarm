@@ -15,7 +15,7 @@ the loader reconciles it against current source on every run.
 |---|---:|
 | public items (incl. every enum variant) | 39 |
 | public re-export paths | 6 |
-| consumer rows | 37 |
+| consumer rows | 36 |
 | package/release surfaces | 7 |
 | external evidence rows | 5 |
 

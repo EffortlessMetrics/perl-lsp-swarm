@@ -3761,6 +3761,7 @@ fn render_migration_candidates_markdown(candidates: &[MigrationCandidate]) -> St
 mod tests {
     use super::*;
     use color_eyre::eyre::{ensure, eyre};
+    use perl_tdd_support::{must_err_with, must_some_with};
 
     fn make_entry(
         id: &str,
@@ -3829,8 +3830,10 @@ review_after = "2026-06-01"
 
     #[test]
     fn mispaired_provenance_fails_exact_policy_bytes() -> Result<()> {
-        let err =
-            validate_exact_policy_bytes(mispaired_allowlist_fixture().as_bytes()).unwrap_err();
+        let err = must_err_with(
+            validate_exact_policy_bytes(mispaired_allowlist_fixture().as_bytes()),
+            "mispaired provenance must fail",
+        );
         let message = err.to_string();
         assert!(message.contains("provenance is mispaired"), "{message}");
         assert!(message.contains("entry-a") && message.contains("entry-b"), "{message}");
@@ -3862,7 +3865,10 @@ review_after = "2026-06-01"
             "reason = \"Documents the alpha subsystem with its full user contract.\"",
             "reason = \"\"\"\nKeeps the alpha subsystem documented.\n<<<<<<< HEAD\nKeeps the gamma subsystem documented.\n=======\n>>>>>>> feature-branch\n\"\"\"",
         );
-        let err = validate_exact_policy_bytes(policy.as_bytes()).unwrap_err();
+        let err = must_err_with(
+            validate_exact_policy_bytes(policy.as_bytes()),
+            "conflict markers must fail",
+        );
         assert!(err.to_string().contains("conflict markers"), "{}", err);
         Ok(())
     }
@@ -4936,7 +4942,7 @@ review_after = "2026-11-13"
                 escape_markdown_cell(&id),
                 escape_markdown_cell(&owner)
             );
-            let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+            let cells = must_some_with(parse_markdown_cells(&row), "rendered row must parse");
             assert_eq!(cells.len(), 4, "metadata backslashes must not add cells");
             assert_eq!(cells[2], format!("`{id}`"));
             assert_eq!(cells[3], owner);
@@ -4952,13 +4958,13 @@ review_after = "2026-11-13"
             escape_markdown_cell(id),
             escape_markdown_cell(owner)
         );
-        let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+        let cells = must_some_with(parse_markdown_cells(&row), "rendered row must parse");
         assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
 
         // The codec must also preserve a final literal pipe when there is no
         // whitespace before the table delimiter.
         let compact = "| `path.md`|documentation|`id\\|`|owner\\||";
-        let cells = parse_markdown_cells(compact).expect("compact row must parse");
+        let cells = must_some_with(parse_markdown_cells(compact), "compact row must parse");
         assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
     }
 
@@ -5296,7 +5302,7 @@ review_after = "2026-11-13"
                 root_override: Some(temp.path().to_path_buf()),
             },
         );
-        let error = result.expect_err("blocking policy accepted raw conflict marker");
+        let error = must_err_with(result, "blocking policy accepted raw conflict marker");
         assert!(
             error.to_string().contains("violation"),
             "blocking policy did not report a violation: {error:?}"
@@ -6020,7 +6026,8 @@ review_after = "2026-06-01"
             record("archive/a.json", "documentation", true),
         ];
         let markdown = render_markdown(&records);
-        let error = verify_inventory_projection(&markdown).expect_err("duplicate rows must fail");
+        let error =
+            must_err_with(verify_inventory_projection(&markdown), "duplicate rows must fail");
         assert!(
             error.to_string().contains("duplicate file rows for `archive/a.json`"),
             "unexpected error: {error}"
@@ -6049,7 +6056,8 @@ review_after = "2026-06-01"
         let records = vec![record("docs/b.md", "documentation", true)];
         let mut markdown = render_markdown(&records);
         markdown = markdown.replace("| Allowlisted | 1 |", "| Allowlisted | 19 |");
-        let error = verify_inventory_projection(&markdown).expect_err("stale summary must fail");
+        let error =
+            must_err_with(verify_inventory_projection(&markdown), "stale summary must fail");
         assert!(
             error.to_string().contains("allowlisted files but the table projects"),
             "unexpected error: {error}"
@@ -6326,16 +6334,18 @@ jobs:
             .replace("    steps:\n", "      GIT_CONFIG_COUNT: '1'\n    steps:\n");
         write_fixture(temp.path(), ".github/workflows/non-rust-policy.yml", &tampered)?;
         let subject = commit_fixture(temp.path(), "tampered upgrade")?;
-        let error = non_rust_exact_tree(
-            temp.path(),
-            &base,
-            &subject,
-            None,
-            &temp.path().join("tampered.json"),
-            None,
-            None,
-        )
-        .expect_err("extra env key must be rejected on the reachable path");
+        let error = must_err_with(
+            non_rust_exact_tree(
+                temp.path(),
+                &base,
+                &subject,
+                None,
+                &temp.path().join("tampered.json"),
+                None,
+                None,
+            ),
+            "extra env key must be rejected on the reachable path",
+        );
         assert!(
             error.to_string().contains("unapproved variable"),
             "rejection must come from the structural validator, got: {error}"
@@ -6376,8 +6386,10 @@ jobs:
         write_fixture(temp.path(), "notes.txt", "new\n")?;
         let subject = commit_fixture(temp.path(), "unclassified")?;
         let receipt = temp.path().join("receipt.json");
-        let error = non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None)
-            .expect_err("new unclassified path must fail");
+        let error = must_err_with(
+            non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None),
+            "new unclassified path must fail",
+        );
         assert!(error.to_string().contains("notes.txt"));
         let receipt: ExactTreePolicyReceipt = serde_json::from_str(&fs::read_to_string(receipt)?)?;
         assert_eq!(receipt.new_unclassified_paths, vec!["notes.txt"]);
@@ -6415,8 +6427,10 @@ jobs:
         write_fixture(temp.path(), "scripts\\legacy.py", "print('unclassified')\n")?;
         let subject = commit_fixture(temp.path(), "backslash filename")?;
         let receipt = temp.path().join("backslash.json");
-        let error = non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None)
-            .expect_err("literal backslash filename must stay unclassified");
+        let error = must_err_with(
+            non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None),
+            "literal backslash filename must stay unclassified",
+        );
         let message = error.to_string();
         assert!(
             message.contains("scripts\\legacy.py"),
@@ -6437,31 +6451,35 @@ jobs:
         let (temp, base) = exact_fixture()?;
         run_git(temp.path(), &["mv", "README.md", "notes.txt"])?;
         let subject = commit_fixture(temp.path(), "rename")?;
-        let error = non_rust_exact_tree(
-            temp.path(),
-            &base,
-            &subject,
-            None,
-            &temp.path().join("rename.json"),
-            None,
-            None,
-        )
-        .expect_err("rename into an unclassified path must fail");
+        let error = must_err_with(
+            non_rust_exact_tree(
+                temp.path(),
+                &base,
+                &subject,
+                None,
+                &temp.path().join("rename.json"),
+                None,
+                None,
+            ),
+            "rename into an unclassified path must fail",
+        );
         assert!(error.to_string().contains("notes.txt"));
 
         let (temp, base) = exact_fixture()?;
         write_fixture(temp.path(), "policy/non-rust-allowlist.toml", "allow = []\n")?;
         let subject = commit_fixture(temp.path(), "allowlist regression")?;
-        let error = non_rust_exact_tree(
-            temp.path(),
-            &base,
-            &subject,
-            None,
-            &temp.path().join("allowlist.json"),
-            None,
-            None,
-        )
-        .expect_err("removing allowlist coverage must fail");
+        let error = must_err_with(
+            non_rust_exact_tree(
+                temp.path(),
+                &base,
+                &subject,
+                None,
+                &temp.path().join("allowlist.json"),
+                None,
+                None,
+            ),
+            "removing allowlist coverage must fail",
+        );
         assert!(error.to_string().contains("README.md"));
         Ok(())
     }
@@ -6469,45 +6487,51 @@ jobs:
     #[test]
     fn exact_tree_rejects_malformed_and_unrelated_subject_identity() -> Result<()> {
         let (temp, base) = exact_fixture()?;
-        let error = non_rust_exact_tree(
-            temp.path(),
-            "not-a-sha",
-            &base,
-            None,
-            &temp.path().join("bad.json"),
-            None,
-            None,
-        )
-        .expect_err("malformed base must fail");
+        let error = must_err_with(
+            non_rust_exact_tree(
+                temp.path(),
+                "not-a-sha",
+                &base,
+                None,
+                &temp.path().join("bad.json"),
+                None,
+                None,
+            ),
+            "malformed base must fail",
+        );
         assert!(error.to_string().contains("git rev-parse"));
         // An unresolvable PR head cannot prove non-containment: the typed
         // query stays `not_proven_missing_object` and fails closed (#14557)
         // instead of reporting the old "does not contain" verdict.
-        let error = non_rust_exact_tree(
-            temp.path(),
-            &base,
-            &base,
-            Some("deadbeef"),
-            &temp.path().join("head.json"),
-            None,
-            None,
-        )
-        .expect_err("unresolvable PR head must fail closed");
+        let error = must_err_with(
+            non_rust_exact_tree(
+                temp.path(),
+                &base,
+                &base,
+                Some("deadbeef"),
+                &temp.path().join("head.json"),
+                None,
+                None,
+            ),
+            "unresolvable PR head must fail closed",
+        );
         assert!(error.to_string().contains("not_proven_missing_object"));
         // A genuinely present-but-unrelated head still reports non-containment.
         run_git(temp.path(), &["switch", "--orphan", "unrelated"])?;
         write_fixture(temp.path(), "unrelated.txt", "unrelated\n")?;
         let unrelated = commit_fixture(temp.path(), "unrelated head")?;
-        let error = non_rust_exact_tree(
-            temp.path(),
-            &base,
-            &base,
-            Some(unrelated.as_str()),
-            &temp.path().join("unrelated-head.json"),
-            None,
-            None,
-        )
-        .expect_err("unrelated PR head must fail");
+        let error = must_err_with(
+            non_rust_exact_tree(
+                temp.path(),
+                &base,
+                &base,
+                Some(unrelated.as_str()),
+                &temp.path().join("unrelated-head.json"),
+                None,
+                None,
+            ),
+            "unrelated PR head must fail",
+        );
         assert!(error.to_string().contains("does not contain PR head"));
         Ok(())
     }
@@ -6537,11 +6561,13 @@ jobs:
             // exactly one before later checks run; follow that protocol so the
             // injection itself is what gets rejected.
             let version_marker = "# contract-version: ";
-            let version = workflow
-                .lines()
-                .find_map(|line| line.trim().strip_prefix(version_marker))
-                .and_then(|value| value.trim().parse::<u64>().ok())
-                .expect("fixture workflow must carry a contract-version");
+            let version = must_some_with(
+                workflow
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix(version_marker))
+                    .and_then(|value| value.trim().parse::<u64>().ok()),
+                "fixture workflow must carry a contract-version",
+            );
             let workflow = workflow.replacen(
                 &format!("{version_marker}{version}"),
                 &format!("{version_marker}{}", version + 1),
@@ -6554,8 +6580,10 @@ jobs:
             );
             write_fixture(temp.path(), workflow_path, &workflow)?;
             let subject = commit_fixture(temp.path(), "untrusted workflow")?;
-            let error = validate_subject_workflow(temp.path(), &base, &subject)
-                .expect_err("candidate checkout/import must be rejected");
+            let error = must_err_with(
+                validate_subject_workflow(temp.path(), &base, &subject),
+                "candidate checkout/import must be rejected",
+            );
             assert!(
                 error.to_string().contains("must not execute or import candidate-derived content"),
                 "unexpected error: {error}"
@@ -6575,11 +6603,13 @@ jobs:
             1,
         );
         let version_marker = "# contract-version: ";
-        let version = workflow
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(version_marker))
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .expect("fixture workflow must carry a contract-version");
+        let version = must_some_with(
+            workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(version_marker))
+                .and_then(|value| value.trim().parse::<u64>().ok()),
+            "fixture workflow must carry a contract-version",
+        );
         let workflow = workflow.replacen(
             &format!("{version_marker}{version}"),
             &format!("{version_marker}{}", version + 1),
@@ -6592,11 +6622,13 @@ jobs:
         let (temp, base) = exact_fixture()?;
         let workflow_path = ".github/workflows/non-rust-policy.yml";
         let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-        let version = workflow
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(version_marker))
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .expect("fixture workflow must carry a contract-version");
+        let version = must_some_with(
+            workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(version_marker))
+                .and_then(|value| value.trim().parse::<u64>().ok()),
+            "fixture workflow must carry a contract-version",
+        );
         let workflow = workflow.replacen(
             &format!("{version_marker}{version}"),
             &format!("{version_marker}{}", version + 1),
@@ -6609,8 +6641,10 @@ jobs:
         );
         write_fixture(temp.path(), workflow_path, &workflow)?;
         let subject = commit_fixture(temp.path(), "candidate interpolation")?;
-        let error = validate_subject_workflow(temp.path(), &base, &subject)
-            .expect_err("candidate-derived evaluator interpolation must fail closed");
+        let error = must_err_with(
+            validate_subject_workflow(temp.path(), &base, &subject),
+            "candidate-derived evaluator interpolation must fail closed",
+        );
         assert!(
             error.to_string().contains("must not execute candidate source"),
             "unexpected error: {error}"
@@ -6629,11 +6663,13 @@ jobs:
         ] {
             let (temp, base) = exact_fixture()?;
             let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-            let version = workflow
-                .lines()
-                .find_map(|line| line.trim().strip_prefix(version_marker))
-                .and_then(|value| value.trim().parse::<u64>().ok())
-                .expect("fixture workflow must carry a contract-version");
+            let version = must_some_with(
+                workflow
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix(version_marker))
+                    .and_then(|value| value.trim().parse::<u64>().ok()),
+                "fixture workflow must carry a contract-version",
+            );
             let workflow = workflow.replacen(
                 &format!("{version_marker}{version}"),
                 &format!("{version_marker}{}", version + 1),
@@ -6646,8 +6682,10 @@ jobs:
             );
             write_fixture(temp.path(), workflow_path, &workflow)?;
             let subject = commit_fixture(temp.path(), "candidate ref bypass")?;
-            let error = validate_subject_workflow(temp.path(), &base, &subject)
-                .expect_err("candidate-controlled ref must fail closed");
+            let error = must_err_with(
+                validate_subject_workflow(temp.path(), &base, &subject),
+                "candidate-controlled ref must fail closed",
+            );
             assert!(
                 error.to_string().contains("must not execute candidate source"),
                 "unexpected error: {error}"
@@ -6680,8 +6718,10 @@ jobs:
         );
         write_fixture(temp.path(), workflow_path, &workflow)?;
         let subject = commit_fixture(temp.path(), "duplicate reserved workflow id")?;
-        let error = validate_subject_workflow(temp.path(), &base, &subject)
-            .expect_err("duplicate reserved workflow ID must fail closed");
+        let error = must_err_with(
+            validate_subject_workflow(temp.path(), &base, &subject),
+            "duplicate reserved workflow ID must fail closed",
+        );
         assert!(
             error.to_string().contains("exactly one reserved contract-verification step ID"),
             "unexpected error: {error}"

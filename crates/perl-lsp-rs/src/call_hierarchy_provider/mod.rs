@@ -76,6 +76,25 @@ pub(crate) fn synthetic_file_level_caller(uri: &str, range: Range) -> CallHierar
     }
 }
 
+/// True when this node takes a reference to a subroutine's CODE slot
+/// (`\&foo` with no argument parens) instead of calling it (#17370).
+///
+/// The parser shapes the `&foo` inside `\&foo` as `AmperCall` in both
+/// contexts, so the reference-creation form must be excluded at the parent
+/// `Unary { op: "\\" }` before call-site traversal claims it as a call edge.
+/// Bare `&foo` and parenthesized `&foo()` both carry empty `args`, so
+/// argument emptiness cannot distinguish the forms; the operand's source
+/// span can — explicit parentheses mean the ampersand call actually ran.
+/// Genuine call forms keep normal traversal: `&foo(...)` calls through the
+/// sigil, and `\foo()` / `\&foo()` reference the *result* of a real call.
+fn is_code_reference_creation(node: &Node, source: &str) -> bool {
+    let NodeKind::Unary { op, operand } = &node.kind else { return false };
+    if op != "\\" || !matches!(&operand.kind, NodeKind::AmperCall { .. }) {
+        return false;
+    }
+    source.get(operand.location.start..operand.location.end).is_none_or(|text| !text.contains('('))
+}
+
 impl CallHierarchyProvider {
     /// Create a new call hierarchy provider for a source file
     ///
@@ -239,6 +258,11 @@ impl CallHierarchyProvider {
         calls: &mut Vec<CallHierarchyIncomingCall>,
         current_function: Option<&CallHierarchyItem>,
     ) {
+        // `\&foo` creates a code reference; it is not a call site (#17370).
+        if is_code_reference_creation(node, &self.source) {
+            return;
+        }
+
         let uri = &self.uri;
         match &node.kind {
             NodeKind::Subroutine { name: Some(name_str), name_span, .. } => {
@@ -316,6 +340,11 @@ impl CallHierarchyProvider {
         current_package: Option<&str>,
         receiver_packages: &mut HashMap<String, String>,
     ) {
+        // `\&foo` creates a code reference; it is not a call site (#17370).
+        if is_code_reference_creation(node, &self.source) {
+            return;
+        }
+
         let uri = &self.uri;
         match &node.kind {
             NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
@@ -1247,6 +1276,145 @@ sub helper {}
         assert!(
             names.contains(&"Pkg::method"),
             "&Pkg::method() should appear in outgoing calls with full qualified name"
+        );
+        Ok(())
+    }
+
+    /// `\&foo` reference creation must not surface as a call site in either
+    /// direction, while `&foo()` / `indirected()` keep doing so (#17370).
+    #[test]
+    fn test_code_reference_creation_is_not_a_call_site() -> anyhow::Result<()> {
+        let code = r#"sub indirected {
+    print "body\n";
+}
+
+sub call_both {
+    indirected();
+    &indirected();
+    my $cref = \&indirected;
+    $cref->();
+    return 1;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+        let target_item = CallHierarchyItem {
+            name: "indirected".to_string(),
+            kind: "function".to_string(),
+            uri: "file:///test.pl".to_string(),
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 2, character: 1 },
+            },
+            selection_range: Range {
+                start: Position { line: 0, character: 4 },
+                end: Position { line: 0, character: 14 },
+            },
+            detail: None,
+            package_name: None,
+            qualified_name: None,
+        };
+
+        let incoming = provider.incoming_calls(&ast, &target_item);
+        assert_eq!(incoming.len(), 1, "expected one caller, got: {:?}", incoming);
+        assert_eq!(incoming[0].from.name, "call_both");
+        let mut incoming_lines: Vec<u32> =
+            incoming[0].from_ranges.iter().map(|range| range.start.line).collect();
+        incoming_lines.sort_unstable();
+        assert_eq!(
+            incoming_lines,
+            vec![5, 6],
+            "the direct call (line 5) and &indirected() (line 6) are call sites; the \
+             \\&indirected reference creation on line 7 must not be; the dynamic \
+             invocation on line 8 is out of scope for the static provider"
+        );
+
+        let caller_item = CallHierarchyItem {
+            name: "call_both".to_string(),
+            kind: "function".to_string(),
+            uri: "file:///test.pl".to_string(),
+            range: Range {
+                start: Position { line: 3, character: 0 },
+                end: Position { line: 9, character: 1 },
+            },
+            selection_range: Range {
+                start: Position { line: 3, character: 4 },
+                end: Position { line: 3, character: 13 },
+            },
+            detail: None,
+            package_name: None,
+            qualified_name: None,
+        };
+        let outgoing = provider.outgoing_calls(&ast, &caller_item);
+        let indirected_out = outgoing
+            .iter()
+            .find(|call| call.to.name == "indirected")
+            .ok_or_else(|| anyhow::anyhow!("expected indirected outgoing call"))?;
+        let mut outgoing_lines: Vec<u32> =
+            indirected_out.from_ranges.iter().map(|range| range.start.line).collect();
+        outgoing_lines.sort_unstable();
+        assert_eq!(
+            outgoing_lines,
+            vec![5, 6],
+            "outgoing edge must not claim the \\&indirected reference line"
+        );
+        Ok(())
+    }
+
+    /// Bareword class receivers (`Widget->method`) must produce distinct,
+    /// package-qualified callees instead of collapsing by bare method
+    /// name (#17369).
+    #[test]
+    fn test_outgoing_calls_infer_bareword_class_receiver_package() -> anyhow::Result<()> {
+        let code = r#"sub multi_receiver {
+    my $w = Widget->new();
+    my $g = Gadget->new();
+    $w->activate();
+    $g->activate();
+    Widget->activate();
+    return 1;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let provider = CallHierarchyProvider::new(code.to_string(), "file:///test.pl".to_string());
+        let caller_item = CallHierarchyItem {
+            name: "multi_receiver".to_string(),
+            kind: "function".to_string(),
+            uri: "file:///test.pl".to_string(),
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 7, character: 1 },
+            },
+            selection_range: Range {
+                start: Position { line: 0, character: 4 },
+                end: Position { line: 0, character: 18 },
+            },
+            detail: None,
+            package_name: None,
+            qualified_name: None,
+        };
+
+        let outgoing = provider.outgoing_calls(&ast, &caller_item);
+        let keys: Vec<&str> = outgoing
+            .iter()
+            .map(|call| CallHierarchyProvider::outgoing_call_key(&call.to))
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["Widget::new", "Gadget::new", "Widget::activate", "Gadget::activate"],
+            "distinct bareword class receivers must not collapse into one callee"
+        );
+
+        let activate = outgoing
+            .iter()
+            .find(|call| call.to.qualified_name.as_deref() == Some("Widget::activate"))
+            .ok_or_else(|| anyhow::anyhow!("expected Widget::activate outgoing call"))?;
+        assert_eq!(
+            activate.from_ranges.len(),
+            2,
+            "Widget::activate must carry both the $w->activate() and Widget->activate() sites"
         );
         Ok(())
     }

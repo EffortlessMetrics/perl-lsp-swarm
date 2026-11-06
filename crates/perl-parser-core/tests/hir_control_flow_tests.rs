@@ -7,8 +7,8 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     BranchKeyword, BranchShell, ControlTransfer, ControlTransferKind, HirFile, HirItem, HirKind,
-    LoopKind, LoopShell, RecoveryConfidence, StatementModifierKind, StatementModifierShell,
-    lower_ast,
+    LiteralKind, LoopKind, LoopShell, RecoveryConfidence, StatementModifierKind,
+    StatementModifierShell, lower_ast,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -331,4 +331,121 @@ fn control_flow_lowering_does_not_emit_dynamic_boundaries() {
     let boundaries =
         file.items.iter().filter(|item| matches!(item.kind, HirKind::DynamicBoundary(_))).count();
     assert_eq!(boundaries, 0, "static control flow must not be a dynamic boundary");
+}
+
+// =============================================================================
+// #15032: the orphaned-`else` recovery shell fabricates a `1` condition so the
+// recovered block stays visible to consumers. That fabrication must not be
+// laundered into the fact stream as an ordinary parsed literal: a consumer
+// asking "is this condition source-backed?" reads `recovery_confidence`, and
+// only `Parsed` may back an exact source condition/value/control-flow claim.
+//
+// The consumer-facing disposition is the model field, not a shape or a range
+// probe, so a downstream provider never has to recognize the fabricated node
+// by ad hoc inspection. This is the sibling of the `HirRegexTarget::DefaultTopic`
+// treatment, which likewise keeps a parser-invented operand out of the exact
+// facts while leaving the surrounding structure intact.
+// =============================================================================
+
+fn number_literals<'a>(file: &'a HirFile, value: &str) -> Vec<&'a HirItem> {
+    file.items
+        .iter()
+        .filter(|item| {
+            matches!(&item.kind, HirKind::LiteralExpr(lit)
+                if lit.kind == LiteralKind::Number && lit.value.as_deref() == Some(value))
+        })
+        .collect()
+}
+
+fn only_number_literal<'a>(
+    file: &'a HirFile,
+    value: &str,
+) -> Result<&'a HirItem, Box<dyn std::error::Error>> {
+    let mut found = number_literals(file, value);
+    if found.len() != 1 {
+        return Err(format!(
+            "expected exactly one {value:?} number literal, found {}",
+            found.len()
+        )
+        .into());
+    }
+    Ok(found.remove(0))
+}
+
+#[test]
+fn orphaned_else_synthetic_condition_is_recovered_not_parsed() -> TestResult {
+    // `else { 42; }` has no preceding `if`, so recovery synthesizes the whole
+    // shell. The fabricated condition is NOT a literal the author wrote and must
+    // not claim `Parsed` provenance.
+    let file = lower_source("else { 42; }\n");
+    let synthetic = only_number_literal(&file, "1")?;
+    assert_eq!(
+        synthetic.recovery_confidence,
+        RecoveryConfidence::Recovered,
+        "the orphaned-else condition is fabricated by recovery, so it must not claim to be \
+         parsed from source"
+    );
+    Ok(())
+}
+
+#[test]
+fn orphaned_else_synthetic_condition_is_distinguishable_without_inspecting_the_range() -> TestResult
+{
+    // The fabricated condition and a written `1` are the same literal kind with
+    // the same value; only the provenance disposition separates them. Asserting
+    // the contrast here is what makes "without inspecting the source range"
+    // checkable rather than aspirational.
+    let synthetic_source = lower_source("else { 42; }\n");
+    let synthetic = only_number_literal(&synthetic_source, "1")?;
+    let written_source = lower_source("if (1) { 42; }\n");
+    let written = only_number_literal(&written_source, "1")?;
+
+    assert_ne!(
+        synthetic.recovery_confidence, written.recovery_confidence,
+        "a fabricated condition and a written one must carry different provenance"
+    );
+    assert_eq!(written.recovery_confidence, RecoveryConfidence::Parsed);
+    Ok(())
+}
+
+#[test]
+fn written_constant_conditions_stay_parsed() -> TestResult {
+    // Negative control: the repair is scoped to the recovery fabrication. A
+    // genuinely written `if (1)` and a genuinely written `1;` are unchanged.
+    for source in ["if (1) { 42; }\n", "1;\n"] {
+        let lowered = lower_source(source);
+        let literal = only_number_literal(&lowered, "1")?;
+        assert_eq!(
+            literal.recovery_confidence,
+            RecoveryConfidence::Parsed,
+            "a written constant must keep Parsed provenance, source: {source:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn orphaned_else_recovery_keeps_the_block_visible_and_the_error_recorded() -> TestResult {
+    // The recovery strategy itself is deliberate: the block must stay visible and
+    // the syntax error must still be reported. Only the condition's claim to be
+    // source-backed changes.
+    let mut parser = Parser::new("else { 42; }\n");
+    let file = lower_ast(&parser.parse_with_recovery().ast);
+
+    // The recovered block's real contents are still lowered, and still honestly
+    // `Parsed` — they really are in the file.
+    let recovered = only_number_literal(&file, "42")?;
+    assert_eq!(recovered.recovery_confidence, RecoveryConfidence::Parsed);
+    assert!(
+        recovered.range.start < recovered.range.end,
+        "the written literal must keep its real source range, got {:?}",
+        recovered.range
+    );
+
+    let errors = parser.errors();
+    assert!(
+        errors.iter().any(|e| e.to_string().contains("'else' without preceding 'if' or 'unless'")),
+        "the orphaned-else diagnostic must still be recorded, got {errors:?}"
+    );
+    Ok(())
 }

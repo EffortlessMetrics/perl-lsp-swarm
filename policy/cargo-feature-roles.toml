@@ -703,7 +703,7 @@ crate = "perl-workspace"
 name = "workspace"
 role = "build_composition"
 owner = "#8409"
-consumers = ["cfg_gated", "propagated", "required_features"]
+consumers = ["cfg_gated", "propagated"]
 
 [[feature]]
 crate = "tree-sitter-perl-c"

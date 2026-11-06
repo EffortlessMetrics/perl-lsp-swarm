@@ -220,6 +220,85 @@ fn test_e2e_multi_breakpoint_sequence() -> TestResult {
     Ok(())
 }
 
+// ─── Test 2b: suspension inside a called sub reports the suspension line ──────
+
+/// Script with one sub and one call site:
+///
+///   Line 1: use strict;
+///   Line 2: use warnings;
+///   Line 3: (blank)
+///   Line 4: sub add {
+///   Line 5:     my ( $a, $b ) = @_;  <- BP_IN_SUB (breakpoint inside the sub)
+///   Line 6:     return $a + $b;
+///   Line 7: }
+///   Line 8: (blank)
+///   Line 9: my $sum = add( 2, 3 );  <- the call site
+///   Line 10: print "$sum\n";
+const SUB_CALL_SCRIPT: &str = "use strict;\nuse warnings;\n\nsub add {\n    my ( $a, $b ) = @_;\n    return $a + $b;\n}\n\nmy $sum = add( 2, 3 );\nprint \"$sum\\n\";\n";
+const SUB_BODY_LINE: u64 = 5;
+
+/// Regression for #17171: when the debuggee is suspended *inside* a called
+/// sub, `stackTrace` must report the sub's current source position (the line
+/// that will execute next), not the caller's line. perl5db's `T` report
+/// carries the true suspension position on the debugger's own `DB::DB` frame;
+/// the first user frame's `called from` position names the call site
+/// (line 9 here), which is what the adapter used to report.
+#[test]
+fn test_e2e_stack_trace_reports_suspension_line_inside_sub() -> TestResult {
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_e2e_stack_trace_reports_suspension_line_inside_sub")
+    else {
+        return Ok(());
+    };
+
+    let workspace = tempdir()?;
+    let script = workspace.path().join("workflow_sub_call.pl");
+    write(&script, SUB_CALL_SCRIPT)?;
+
+    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
+
+    let timeout = workflow_timeout();
+    let mut session = DapWorkflowSession::new(timeout)?;
+
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
+
+    // DAP ordering: setBreakpoints BEFORE configurationDone. The implicit
+    // first stop of this script is line 9 (the call site), so the `c` from
+    // configurationDone runs into `add` and hits the sub-body breakpoint.
+    let resolved = session.set_breakpoints_checked(&script_str, &[SUB_BODY_LINE])?;
+    let resolved_line =
+        resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
+
+    session.configuration_done()?;
+
+    let stopped = session.wait_stopped()?;
+    assert_eq!(
+        stopped.reason, "breakpoint",
+        "stop reason must be `breakpoint`, got `{}`",
+        stopped.reason
+    );
+
+    // The suspension is inside `add`: the top frame must sit on the
+    // breakpoint line, not on the call site (line 9).
+    let (_frame_id, source_path, frame_line) = session.stack_trace(stopped.thread_id)?;
+    assert!(
+        source_path.contains("workflow_sub_call"),
+        "stack frame source path `{source_path}` should refer to the sub-call fixture"
+    );
+    assert_eq!(
+        frame_line, resolved_line,
+        "top frame must report the suspension line inside the sub \
+         (resolved={resolved_line}, call site=9), got {frame_line}"
+    );
+
+    // Continue to script exit.
+    session.continue_exec(stopped.thread_id)?;
+    let _ = session.drain_until_event("terminated");
+    session.disconnect()?;
+
+    Ok(())
+}
+
 // ─── Test 3: step-over changes line ───────────────────────────────────────────
 
 /// Validates that `next` (step-over) advances execution:

@@ -37,7 +37,7 @@ fn test_mock_runtime() {
     let result = runtime.run_command("perltidy", &["-st"], Some(b"my $x = 1;"));
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert_eq!(output.stdout_lossy(), "formatted code");
 
@@ -58,7 +58,7 @@ fn test_os_runtime_echo() {
     let result = runtime.run_command("echo", &["hello"], None);
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert!(output.stdout_lossy().trim() == "hello");
 }
@@ -102,7 +102,7 @@ fn test_os_runtime_rejects_nul_bytes_in_program_or_args() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let (program, args) = perl_test_must::must(resolve_command_invocation(
         r"C:\Strawberry\perl\bin\perltidy.bat",
         &["-st", "-se"],
     ));
@@ -134,7 +134,7 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_includes_v_off_flag() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let (program, args) = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.bat",
         &["--profile=!TEMP!"],
     ));
@@ -154,7 +154,7 @@ fn test_resolve_command_invocation_includes_v_off_flag() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_preserves_executable_paths() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let (program, args) = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.exe",
         &["--version"],
     ));
@@ -564,7 +564,11 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         let runtime = OsSubprocessRuntime::new();
         let result = runtime.run_command("pwned.bat", &[], None);
         assert!(result.is_err(), "child must fail closed: {result:?}");
-        println!("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
+        // `writeln!` rather than `println!`: the marker must stay on stdout
+        // (the parent asserts the captured child stdout contains it), and the
+        // workspace clippy gate denies `clippy::print_stdout`.
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), "PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
         return;
     }
 
@@ -641,10 +645,8 @@ fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
-    let (program, _args) = perl_tdd_support::must(resolve_command_invocation(
-        r"C:\tools\perltidy.exe",
-        &["--version"],
-    ));
+    let (program, _args) =
+        perl_test_must::must(resolve_command_invocation(r"C:\tools\perltidy.exe", &["--version"]));
     assert_eq!(program, r"C:\tools\perltidy.exe");
 }
 

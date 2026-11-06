@@ -22,6 +22,7 @@ pub use result::{
 };
 
 use crate::native::inferred_line_ending;
+use perl_parser_core::{ParseError, ParseStopCause};
 
 use result::utf16_len;
 
@@ -59,19 +60,13 @@ impl NativeFormatter {
         source: &str,
         gate_kind: counters::ParseGateKind,
     ) -> Result<(), FormatDiagnostic> {
-        if let Some(kind) = literal_preserve_region(source) {
-            return Err(FormatDiagnostic::new(
-                LITERAL_PRESERVE_CODE,
-                FormatDiagnosticSeverity::Warning,
-                None,
-                format!("native formatting skipped because {kind} preservation is not enabled yet"),
-            ));
-        }
-
+        // Documents are no longer refused wholesale for preserve regions
+        // (#17708): preserve-region lines are emitted byte-exact by
+        // `format_safe_subset`, so only parse cleanliness gates the document.
         Self::validate_parse_only(source, gate_kind)
     }
 
-    /// Check parse correctness only — no literal-preserve check.
+    /// Check parse correctness only â€” no literal-preserve check.
     ///
     /// Used by `format_range` where the literal-preserve gate is scoped to the
     /// requested line range rather than the whole document.
@@ -90,9 +85,15 @@ impl NativeFormatter {
             );
         });
 
-        // LCOV_EXCL_START — budget exhaustion on pathologically large/deeply-nested
-        // input; not reachable with the small sources used in formatter tests.
-        if output.terminated_early() {
+        // This definite syntax rejection stops parsing without recovery. It is
+        // still a source error; other terminal causes remain incomplete proof.
+        let terminal_syntax_error =
+            matches!(output.stop_cause(), Some(ParseStopCause::CatastrophicTermination))
+                && output
+                    .diagnostics
+                    .iter()
+                    .any(|error| matches!(error, ParseError::CStyleForContinueBlock { .. }));
+        if output.terminated_early() && !terminal_syntax_error {
             return Err(FormatDiagnostic::new(
                 PARSE_INCOMPLETE_CODE,
                 FormatDiagnosticSeverity::Warning,
@@ -100,7 +101,6 @@ impl NativeFormatter {
                 "native formatting not proven because parsing terminated early",
             ));
         }
-        // LCOV_EXCL_STOP
 
         if let Some(error) = output.diagnostics.first() {
             return Err(FormatDiagnostic::new(
@@ -120,14 +120,97 @@ impl NativeFormatter {
         let mut formatted = String::with_capacity(source.len());
         let mut processed_lines = 0_u64;
         let fallback_line_ending = inferred_line_ending(source);
+        // Block indents from admitted rendered-boundary lines only (#17660).
+        // Each stack entry is the opener line's indent; body lines sit one
+        // unit deeper than their opener, closers return to it. Lines the
+        // boundary recognizer does not admit never move the stack, and
+        // outside any tracked block the original per-line behavior is kept,
+        // so opaque regions (heredocs, POD, regexes, comments) and
+        // intentionally indented top-level code are untouched.
+        let mut indent_stack: Vec<String> = Vec::new();
+        let unit = indent_unit(config);
+        // Physical lines inside a multiline literal (string, regex, qwâ€¦)
+        // are literal bytes, not code: never reindent them and never let
+        // their contents move the block stack.
+        let literal_lines = preserve_region_lines(source);
 
-        for line in source.split_inclusive('\n') {
+        for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
+            if literal_lines.contains(&line_index) {
+                formatted.push_str(body);
+                formatted.push_str(line_ending);
+                continue;
+            }
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body =
-                format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+            let formatted_body = if body.trim().is_empty() {
+                body.to_string()
+            } else if is_rendered_block_boundary_line(body, config) {
+                let role = rendered_boundary_role(body);
+                let popped = if role.closes_block { indent_stack.pop() } else { None };
+                let indent = match popped {
+                    Some(opener) => opener,
+                    None => match indent_stack.last() {
+                        Some(opener) => format!("{opener}{unit}"),
+                        None => body[..body.len() - body.trim_start().len()].to_string(),
+                    },
+                };
+                if role.opens_block {
+                    indent_stack.push(indent.clone());
+                }
+                match format_simple_line(&format!("{indent}{}", body.trim_start()), config) {
+                    Some(formatted) => formatted,
+                    None => format!("{indent}{}", body.trim_start()),
+                }
+            } else {
+                // Non-boundary lines can still open or close a block the
+                // boundary recognizer does not admit (anonymous subs,
+                // `eval {`, `do {`, multiline hashes). Track those from the
+                // comment-stripped source shape so nested bodies are not
+                // flattened to the outer level; lines that neither open
+                // nor close keep the original behavior outside a block.
+                let (code, _comment) = split_trailing_comment(body);
+                // Comment-only lines carry no code: braces in comment
+                // text must not move the block stack.
+                let code = if body.trim_start().starts_with('#') { "" } else { code.trim() };
+                let closes = code.starts_with('}');
+                let opens = code.ends_with('{') && !code.starts_with('{');
+                let popped = if closes { indent_stack.pop() } else { None };
+                let indent =
+                    popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
+                match indent {
+                    Some(indent) => {
+                        let candidate = format!("{indent}{}", body.trim_start());
+                        let formatted = match format_simple_line(&candidate, config) {
+                            Some(formatted) => formatted,
+                            // Structural lines and lines opening a multiline
+                            // literal only move leading whitespace, which
+                            // cannot change meaning.
+                            None if closes
+                                || opens
+                                || literal_lines.contains(&(line_index + 1)) =>
+                            {
+                                candidate
+                            }
+                            None => body.to_string(),
+                        };
+                        if opens {
+                            indent_stack.push(indent);
+                        }
+                        formatted
+                    }
+                    None => {
+                        let formatted =
+                            format_simple_line(body, config).unwrap_or_else(|| body.to_string());
+                        if opens {
+                            let leading = body[..body.len() - body.trim_start().len()].to_string();
+                            indent_stack.push(leading);
+                        }
+                        formatted
+                    }
+                }
+            };
             formatted
                 .push_str(&preserve_generated_line_endings(formatted_body, generated_line_ending));
             formatted.push_str(line_ending);
@@ -146,18 +229,85 @@ impl NativeFormatter {
         let mut edits = Vec::new();
         let mut processed_lines = 0_u64;
         let fallback_line_ending = inferred_line_ending(source);
+        // Same opener-indent stack as document formatting (#17664), tracked
+        // over the whole document so a range starting mid-block indents
+        // relative to its enclosing block; only in-range lines are emitted.
+        let mut indent_stack: Vec<String> = Vec::new();
+        let unit = indent_unit(config);
+        let literal_lines = preserve_region_lines(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
-            let line_index = line_index as u32;
+            let in_range = range_includes_line(range, line_index as u32);
+            let line_index_u32 = line_index as u32;
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if range_includes_line(range, line_index) {
-                format_simple_line(body, config)
-            } else {
+            let formatted_body = if literal_lines.contains(&line_index) || body.trim().is_empty() {
                 None
+            } else if is_rendered_block_boundary_line(body, config) {
+                let role = rendered_boundary_role(body);
+                let popped = if role.closes_block { indent_stack.pop() } else { None };
+                let indent = match popped {
+                    Some(opener) => opener,
+                    None => match indent_stack.last() {
+                        Some(opener) => format!("{opener}{unit}"),
+                        None => body[..body.len() - body.trim_start().len()].to_string(),
+                    },
+                };
+                if role.opens_block {
+                    indent_stack.push(indent.clone());
+                }
+                if in_range {
+                    match format_simple_line(&format!("{indent}{}", body.trim_start()), config) {
+                        Some(formatted) => Some(formatted),
+                        None => Some(format!("{indent}{}", body.trim_start())),
+                    }
+                } else {
+                    None
+                }
+            } else {
+                let (code, _comment) = split_trailing_comment(body);
+                // Comment-only lines carry no code: braces in comment
+                // text must not move the block stack.
+                let code = if body.trim_start().starts_with('#') { "" } else { code.trim() };
+                let closes = code.starts_with('}');
+                let opens = code.ends_with('{') && !code.starts_with('{');
+                let popped = if closes { indent_stack.pop() } else { None };
+                let indent =
+                    popped.or_else(|| indent_stack.last().map(|opener| format!("{opener}{unit}")));
+                match indent {
+                    Some(indent) => {
+                        let candidate = format!("{indent}{}", body.trim_start());
+                        let formatted = if in_range {
+                            match format_simple_line(&candidate, config) {
+                                Some(formatted) => Some(formatted),
+                                None if closes
+                                    || opens
+                                    || literal_lines.contains(&(line_index + 1)) =>
+                                {
+                                    Some(candidate)
+                                }
+                                None => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if opens {
+                            indent_stack.push(indent);
+                        }
+                        formatted
+                    }
+                    None => {
+                        if opens {
+                            indent_stack
+                                .push(body[..body.len() - body.trim_start().len()].to_string());
+                        }
+                        if in_range { format_simple_line(body, config) } else { None }
+                    }
+                }
             };
+            let line_index = line_index_u32;
 
             if let Some(formatted_line) = formatted_body {
                 let formatted_line =
@@ -189,7 +339,7 @@ impl NativeFormatter {
     /// The argument is [`Self::format_safe_subset`]'s output, not the caller's
     /// original document, so the terminator appended here is the line-ending
     /// convention [`inferred_line_ending`] infers from the *formatted* text's
-    /// last LF — not what that text happens to end with, which may be an
+    /// last LF â€” not what that text happens to end with, which may be an
     /// unterminated final line. That convention matches the caller's document
     /// only because `format_safe_subset` preserves each line's existing
     /// terminator; it is not independently guaranteed. Hence `formatted`
@@ -206,10 +356,166 @@ impl NativeFormatter {
     }
 }
 
+/// Line indices (0-based) that belong to a literal-preserve region and must
+/// be emitted byte-exact, excluded from the block stack and from formatting
+/// (#17708). Covers multiline literal continuations, single- and multi-line
+/// regex/substitution/transliteration/quote-like tokens, heredoc bodies
+/// (terminator-tracked), POD blocks, `__DATA__`/`__END__` sections, and
+/// `format` bodies. The heredoc opener line itself is code and stays
+/// formattable; only its body and terminator are preserved.
+pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
+    let mut lines = multiline_literal_lines(source);
+    let line_starts: Vec<usize> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
+
+    // Token-spanned literals (regex, qw, format bodies, ...).
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        match stream.next() {
+            Ok(token) if token.kind() == perl_parser_core::TokenKind::Eof => break,
+            Ok(token) => {
+                use perl_parser_core::TokenKind;
+                if matches!(
+                    token.kind(),
+                    TokenKind::Regex
+                        | TokenKind::Substitution
+                        | TokenKind::Transliteration
+                        | TokenKind::QuoteSingle
+                        | TokenKind::QuoteDouble
+                        | TokenKind::QuoteWords
+                        | TokenKind::QuoteCommand
+                        | TokenKind::FormatBody
+                        | TokenKind::HeredocBody
+                ) {
+                    let end = token.end().saturating_sub(1).max(token.start());
+                    for line in line_of(token.start())..=line_of(end) {
+                        lines.insert(line);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Line-tracked regions: POD, DATA/END, format bodies, heredoc bodies.
+    // Heredoc bodies queue in opener order; an ordinary heredoc closes only
+    // when the delimiter occupies the whole line, an indented (`<<~`)
+    // heredoc allows leading whitespace on its terminator.
+    let mut in_pod = false;
+    let mut in_data = false;
+    let mut in_format = false;
+    let mut heredoc_queue: std::collections::VecDeque<(String, bool)> =
+        std::collections::VecDeque::new();
+    for (index, raw_line) in source.split_inclusive('\n').enumerate() {
+        let (body, _) = split_line_ending(raw_line);
+        let trimmed = body.trim_start();
+        if in_data {
+            lines.insert(index);
+            continue;
+        }
+        if let Some((terminator, indented)) = heredoc_queue.front().cloned() {
+            lines.insert(index);
+            let closes = if indented {
+                body.trim_start().trim_end() == terminator.as_str()
+            } else {
+                !body.starts_with(char::is_whitespace) && body.trim_end() == terminator.as_str()
+            };
+            if closes {
+                heredoc_queue.pop_front();
+            }
+            continue;
+        }
+        if in_pod {
+            lines.insert(index);
+            if trimmed.trim_end() == "=cut" {
+                in_pod = false;
+            }
+            continue;
+        }
+        if in_format {
+            lines.insert(index);
+            if trimmed.trim_end() == "." {
+                in_format = false;
+            }
+            continue;
+        }
+        if is_pod_start(trimmed) {
+            lines.insert(index);
+            in_pod = trimmed.trim_end() != "=cut";
+            continue;
+        }
+        if matches!(trimmed.trim_end(), "__DATA__" | "__END__") {
+            lines.insert(index);
+            in_data = true;
+            continue;
+        }
+        if is_format_declaration_start(trimmed) {
+            lines.insert(index);
+            in_format = true;
+            continue;
+        }
+        // Full-line comments cannot open a heredoc; markers inside them
+        // must not suppress formatting of later code. Real heredoc bodies
+        // are also covered by HeredocBody tokens above.
+        if !trimmed.starts_with('#') && contains_likely_heredoc_start(body) {
+            heredoc_queue.extend(heredoc_openers(body));
+        }
+    }
+    lines
+}
+
+/// Every heredoc opener queued on one code line, in order, as
+/// `(terminator, indented)` pairs.
+fn heredoc_openers(line: &str) -> Vec<(String, bool)> {
+    let mut openers = Vec::new();
+    let mut rest = line;
+    while let Some((_, after_marker)) = rest.split_once("<<") {
+        let after_space = after_marker.trim_start();
+        let (indented, marker) = match after_space.strip_prefix('~') {
+            Some(stripped) => (true, stripped.trim_start()),
+            None => (false, after_space),
+        };
+        let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
+        let name: String =
+            marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+        if !name.is_empty() {
+            openers.push((name, indented));
+        }
+        rest = after_marker;
+    }
+    openers
+}
+
+/// Line indices (0-based) covered by a multiline literal token, excluding
+/// the line the token starts on. Those lines are literal bytes: the block
+/// stack must ignore them and formatting must preserve them exactly.
+pub(super) fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
+    let mut lines = std::collections::HashSet::new();
+    let line_starts: Vec<usize> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        match stream.next() {
+            Ok(token) if token.kind() == perl_parser_core::TokenKind::Eof => break,
+            Ok(token) => {
+                if token.text.contains('\n') {
+                    for line in line_of(token.start()) + 1..=line_of(token.end()) {
+                        lines.insert(line);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    lines
+}
+
 impl PerlFormatter for NativeFormatter {
     fn format_document(&self, source: &str, config: &FormatConfig) -> FormatResult {
-        // Counted inside the pipeline so an adapter double-invoke — even one
-        // that bypasses the counters-aware typed entry — records a second
+        // Counted inside the pipeline so an adapter double-invoke â€” even one
+        // that bypasses the counters-aware typed entry â€” records a second
         // pipeline invocation (NPC-003 mutation control).
         counters::record_with(|counters| counters.observe_pipeline_invocation());
         if matches!(config.mode, FormatterMode::Off) {
@@ -250,13 +556,13 @@ impl PerlFormatter for NativeFormatter {
 
         // Scope the literal-preserve gate to only the requested line range.
         // If the range itself contains a preservable construct (regex, heredoc,
-        // qw, POD, __DATA__/__END__, or format body), bail unchanged — that is
+        // qw, POD, __DATA__/__END__, or format body), bail unchanged â€” that is
         // correct and safe. Constructs that exist *outside* the requested range
         // do not block formatting of the clean range.
         //
         // Overlap detection strategy: line-based constructs are checked only on
         // lines within the range; token-based constructs compare token byte spans
-        // against the byte interval of the requested lines (conservative — a token
+        // against the byte interval of the requested lines (conservative â€” a token
         // that merely starts before the range but ends inside it is considered an
         // overlap and causes a bail-out).
         if let Some(kind) = literal_preserve_region_for_range(source, range) {
@@ -272,7 +578,7 @@ impl PerlFormatter for NativeFormatter {
             return result;
         }
 
-        // Parse-error gate still covers the full document — we cannot safely
+        // Parse-error gate still covers the full document â€” we cannot safely
         // format any range of a document that does not parse.
         if let Err(diagnostic) = Self::validate_parse_only(source, counters::ParseGateKind::Source)
         {
@@ -293,7 +599,7 @@ impl PerlFormatter for NativeFormatter {
         if let Err(diagnostic) =
             Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
         {
-            // LCOV_EXCL_START — genuinely unreachable: format_safe_subset_range
+            // LCOV_EXCL_START â€” genuinely unreachable: format_safe_subset_range
             // only applies spacing rewrites that cannot corrupt a clean parse.
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(FormatDiagnostic::new(
@@ -347,6 +653,277 @@ pub(super) fn format_simple_line(line: &str, config: &FormatConfig) -> Option<St
         .or_else(|| format_simple_module_line(line, config))
         .or_else(|| format_simple_statement_line(line, config))
         .or_else(|| format_simple_lexical_line(line, config))
+}
+
+/// Whether `line` is a block boundary that the native block renderers own,
+/// rather than a statement the formatter failed to understand.
+///
+/// The renderers (`render_simple_block_doc`, `render_simple_continue_doc`,
+/// `render_simple_else_doc`, `render_simple_elsif_doc`) emit headers and tails
+/// on their own lines, and neither can be re-derived from one line: under
+/// `BracePlacement::NextLine` the opening brace moves to its own line, and a
+/// tail carries no header at all. So such a line is never a `format_simple_line`
+/// candidate, which made an already-rendered block classify as
+/// `Refused/UnsupportedSyntax` on a second pass even though the formatter had
+/// produced those exact bytes itself.
+///
+/// Recognition is structural rather than a copied rendering template, and
+/// claims only the shapes the renderers emit, under either `BracePlacement`:
+///
+/// - a tail, opening with a closing brace, optionally carrying a rendered
+///   `else`/`elsif`/`continue` clause or a trailing comment;
+/// - a lone opening brace, the `BracePlacement::NextLine` header form;
+/// - a condition or declaration header, admitted only where it *stops* where
+///   the block opens: at its own closing brace (`SameLine`), or at its
+///   condition's closing paren / declared name (`NextLine`).
+///
+/// That last condition is what keeps a braceless statement modifier such as
+/// `while ($x) print $y;` out: it opens with the same keyword but carries a
+/// body on the same line, so it ends at neither brace nor paren. Malformed
+/// boundaries are unaffected, because `classify` consults this only after a
+/// clean parse with no diagnostics.
+///
+/// A boundary shape is *necessary but not sufficient* for rendered form: a
+/// hand-written block reuses exactly the header and tail shapes the renderers
+/// emit, so line shape alone cannot claim it. The document-level evidence â€”
+/// every `}`-prefixed tail closing the block opened at the same indent, and
+/// every body line sitting one [`indent_unit`] deeper than its block â€” is
+/// established by the target walk in `outcome::target_has_only_supported_lines`,
+/// which consumes [`rendered_boundary_role`] for the admitted lines.
+pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let (body, _trailing_comment) = split_trailing_comment(line);
+    let body = body.trim();
+    if body.is_empty() {
+        return false;
+    }
+    let Some(tokens) = lex_rendered_line(body) else {
+        return false;
+    };
+    let (Some(first), Some(last)) = (tokens.first(), tokens.last()) else {
+        return false;
+    };
+
+    // Rendered tails: `}`, `} else {`, `} elsif (...) {`, `} continue {`, and
+    // their `BracePlacement::NextLine` forms, where the clause header loses
+    // its brace (`} else`, `} elsif (...)`, `} continue`) and the opening
+    // brace becomes its own line â€” and nothing else. A tail carrying tokens
+    // past the clause's opening brace (`} else { stmt; }`) is a shape no
+    // renderer emits, so it stays refused.
+    if first.kind() == TokenKind::RightBrace {
+        return match tokens.get(1).map(|token| token.kind()) {
+            // A bare closing brace; any trailing comment is already split off.
+            None => true,
+            Some(TokenKind::Else) | Some(TokenKind::Continue) => match tokens.len() {
+                // NextLine braces: the clause header ends the line.
+                2 => true,
+                // SameLine braces: the header carries its opening brace.
+                3 => last.kind() == TokenKind::LeftBrace,
+                _ => false,
+            },
+            Some(TokenKind::Elsif) => {
+                let header_end = match last.kind() {
+                    TokenKind::LeftBrace => tokens.len() - 1,
+                    TokenKind::RightParen => tokens.len(),
+                    _ => return false,
+                };
+                rendered_condition_header_is_supported(&tokens[2..header_end], config)
+            }
+            _ => false,
+        };
+    }
+    // `BracePlacement::NextLine` renders the opening brace on its own line.
+    if tokens.len() == 1 && first.kind() == TokenKind::LeftBrace {
+        return true;
+    }
+    // Rendered header: it must stop where the block opens, never carry a body.
+    // A bare `else` is the `ElsePlacement::SeparateLine` + `BracePlacement::
+    // NextLine` clause header and stops at itself.
+    let opens_the_block = matches!(last.kind(), TokenKind::LeftBrace | TokenKind::RightParen)
+        || (first.kind() == TokenKind::Sub && last.kind() == TokenKind::Identifier)
+        || (first.kind() == TokenKind::Else && tokens.len() == 1);
+    if !opens_the_block {
+        return false;
+    }
+    match first.kind() {
+        // A separately rendered clause header under `ElsePlacement::SeparateLine`:
+        // `else {` (SameLine braces) or `else` alone (NextLine braces).
+        TokenKind::Else => {
+            tokens.len() == 1 || (tokens.len() == 2 && last.kind() == TokenKind::LeftBrace)
+        }
+        TokenKind::Elsif => rendered_condition_header_is_supported(&tokens[1..], config),
+        // A declaration header claims nothing about an interior.
+        TokenKind::Sub => true,
+        // A condition header must carry a condition the renderer itself could
+        // have accepted: endpoint lexability alone would also admit
+        // multi-operator conditions `format_simple_condition_tokens` refuses.
+        TokenKind::If | TokenKind::Unless | TokenKind::While | TokenKind::Until => {
+            rendered_condition_header_is_supported(&tokens[1..], config)
+        }
+        // `for` is renderer-owned in two shapes, each with its own interior
+        // validator: the C-style three-clause header and the foreach-style
+        // iterator/list header (`foreach` only ever takes the latter).
+        TokenKind::For | TokenKind::Foreach => {
+            rendered_c_style_for_header_is_supported(&tokens, config)
+                || rendered_foreach_header_is_supported(&tokens, config)
+        }
+        _ => false,
+    }
+}
+
+/// Which sides of a block one admitted rendered boundary line sits on.
+///
+/// Shape facts only â€” this says nothing about rendered form (see
+/// [`is_rendered_block_boundary_line`]). The outcome admission walk uses the
+/// two flags to check the layout the renderers emit: a `closes_block` tail
+/// must match the indent of the block it closes, and an `opens_block` line
+/// opens a block whose body must sit one [`indent_unit`] deeper. Both flags
+/// are derived from the same comment-stripped body the admission arms
+/// validated, so a leading `}` or a trailing `{` here is exactly the token
+/// those arms already recognized.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RenderedBoundaryRole {
+    /// The line starts with the closing brace of the block opened before it
+    /// (`}`, `} else {`, `} elsif (...) {`, `} continue`, ...).
+    pub closes_block: bool,
+    /// The line carries the opening brace of a block whose body follows it
+    /// (a lone `{`, or any same-line-brace header or clause tail).
+    pub opens_block: bool,
+}
+
+/// Classify the boundary role of a line that
+/// [`is_rendered_block_boundary_line`] already admitted.
+pub(super) fn rendered_boundary_role(line: &str) -> RenderedBoundaryRole {
+    let (body, _trailing_comment) = split_trailing_comment(line);
+    let body = body.trim();
+    RenderedBoundaryRole {
+        closes_block: body.starts_with('}'),
+        opens_block: body == "{" || body.ends_with('{'),
+    }
+}
+
+/// Whether `tokens` is one rendered condition header (`if (...) {`,
+/// `elsif (...) {`, or their `BracePlacement::NextLine` form without the
+/// brace), with a condition the simple-condition formatter accepts.
+fn rendered_condition_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(TokenKind::LeftParen) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    let Some((_, condition_end)) = format_simple_condition_tokens(tokens, 1, config) else {
+        return false;
+    };
+    match tokens.get(condition_end + 1) {
+        // `NextLine`: the header ends at the condition's closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && condition_end + 2 == tokens.len(),
+    }
+}
+
+/// Whether `tokens` is a rendered C-style `for` header (`for (init; cond;
+/// update) {`, or the `BracePlacement::NextLine` form without the brace),
+/// validated with the same clause formatters the renderer used.
+fn rendered_c_style_for_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(TokenKind::For) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    let Some(TokenKind::LeftParen) = tokens.get(1).map(|token| token.kind()) else {
+        return false;
+    };
+    let Some((first_semicolon, second_semicolon, header_end)) =
+        find_for_header_boundaries(tokens, 1)
+    else {
+        return false;
+    };
+    if format_simple_for_init_clause(tokens, 2, first_semicolon, config).is_none()
+        || format_simple_for_condition_clause(tokens, first_semicolon + 1, second_semicolon, config)
+            .is_none()
+        || format_simple_for_update_clause(tokens, second_semicolon + 1, header_end, config)
+            .is_none()
+    {
+        return false;
+    }
+    match tokens.get(header_end + 1) {
+        // `NextLine`: the header ends at the closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && header_end + 2 == tokens.len(),
+    }
+}
+
+/// Whether `tokens` is a rendered foreach-style header (`for my $x (@list) {`,
+/// `for (@list) {`, `foreach ...`, or the `BracePlacement::NextLine` form
+/// without the brace), validated with the same iterator and list formatters
+/// the renderer used.
+fn rendered_foreach_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(first_kind) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    if !matches!(first_kind, TokenKind::For | TokenKind::Foreach) {
+        return false;
+    }
+    let Some(second_kind) = tokens.get(1).map(|token| token.kind()) else {
+        return false;
+    };
+    let variable_index = if matches!(second_kind, TokenKind::My | TokenKind::Our | TokenKind::State)
+    {
+        2
+    } else {
+        1
+    };
+    // The renderer always names an iterator variable, lexically declared or not.
+    let Some((_, after_variable)) = format_variable_tokens(tokens, variable_index) else {
+        return false;
+    };
+    let Some(TokenKind::LeftParen) = tokens.get(after_variable).map(|token| token.kind()) else {
+        return false;
+    };
+    let list_start = after_variable + 1;
+    let Some(list_close) = tokens[list_start..]
+        .iter()
+        .position(|token| token.kind() == TokenKind::RightParen)
+        .map(|offset| list_start + offset)
+    else {
+        return false;
+    };
+    if format_simple_expression_tokens(tokens, list_start, list_close, config, 0).is_none() {
+        return false;
+    }
+    match tokens.get(list_close + 1) {
+        // `NextLine`: the header ends at the list's closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && list_close + 2 == tokens.len(),
+    }
+}
+
+/// Collect one line's non-EOF tokens, or None when the line does not lex.
+fn lex_rendered_line(body: &str) -> Option<Vec<perl_parser_core::Token>> {
+    let mut stream = perl_parser_core::TokenStream::new(body);
+    let mut tokens = Vec::new();
+    loop {
+        let token = stream.next().ok()?;
+        if token.kind() == perl_parser_core::TokenKind::Eof {
+            return Some(tokens);
+        }
+        tokens.push(token);
+    }
 }
 
 fn format_simple_module_line(line: &str, config: &FormatConfig) -> Option<String> {
@@ -459,7 +1036,7 @@ fn format_simple_statement_line(line: &str, config: &FormatConfig) -> Option<Str
     Some(format!("{indent}{}", append_trailing_comment(formatted, trailing_comment)))
 }
 
-fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
+pub(super) fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
     let mut in_single = false;
     let mut in_double = false;
     let mut in_backtick = false;
@@ -1079,7 +1656,64 @@ fn format_simple_statement_tokens(
         .or_else(|| format_simple_return_tokens(tokens, config))
         .or_else(|| format_simple_loop_control_tokens(tokens))
         .or_else(|| format_simple_assignment_tokens(tokens, config))
+        .or_else(|| format_simple_list_operator_tokens(tokens, config))
         .or_else(|| format_simple_expression_statement_tokens(tokens, config))
+}
+
+/// Format a bare list-operator statement (`print $x;`, `printf "%d", $n;`,
+/// `say $a, $b;`) whose arguments are simple expressions (#17663).
+/// Parenthesized forms are already handled as simple calls, and the
+/// filehandle form (`print $fh $x;`) stays refused: without parentheses
+/// its first argument would be indistinguishable from a list element here.
+fn format_simple_list_operator_tokens(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> Option<String> {
+    use perl_parser_core::TokenKind;
+
+    let operator = tokens.first()?;
+    if operator.kind() != TokenKind::Identifier
+        || !matches!(operator.text.as_ref(), "print" | "printf" | "say")
+    {
+        return None;
+    }
+    if tokens.last()?.kind() != TokenKind::Semicolon {
+        return None;
+    }
+    let semicolon_index = tokens.len() - 1;
+    if semicolon_index == 1 {
+        return Some(format!("{};", operator.text));
+    }
+    // A second bare identifier/variable argument would be the filehandle
+    // form or a bareword list; only comma-separated expressions are safe.
+    let mut args = Vec::new();
+    let mut index = 1;
+    loop {
+        // Bound the argument at the next top-level comma, then format that
+        // segment as one simple expression.
+        let mut end = index;
+        let mut depth = 0_i32;
+        while end < semicolon_index {
+            match tokens[end].kind() {
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    depth -= 1;
+                }
+                TokenKind::Comma if depth == 0 => break,
+                _ => {}
+            }
+            end += 1;
+        }
+        let arg = format_simple_expression_tokens(tokens, index, end, config, 0)?;
+        args.push(arg);
+        index = end;
+        match tokens.get(index)?.kind() {
+            TokenKind::Comma => index += 1,
+            _ if index == semicolon_index => break,
+            _ => return None,
+        }
+    }
+    Some(format!("{} {};", operator.text, args.join(", ")))
 }
 
 fn format_simple_module_tokens(
@@ -1726,7 +2360,10 @@ fn simple_binary_operator_text(token: &perl_parser_core::Token) -> Option<&str> 
     .then_some(token.text.as_ref())
 }
 
-fn indent_unit(config: &FormatConfig) -> String {
+/// One body-nesting level as the renderers emit it: `push_simple_block_body_docs`
+/// indents every body line at `indent + indent_unit`, so this is also the
+/// document-level unit the outcome admission's rendered-form walk checks for.
+pub(super) fn indent_unit(config: &FormatConfig) -> String {
     if config.use_tabs { "\t".to_string() } else { " ".repeat(config.indent_width as usize) }
 }
 
@@ -1737,7 +2374,7 @@ fn simple_value_text(token: &perl_parser_core::Token) -> Option<&str> {
         .then_some(token.text.as_ref())
 }
 
-fn literal_preserve_region(source: &str) -> Option<&'static str> {
+pub(super) fn literal_preserve_region(source: &str) -> Option<&'static str> {
     for line in source.lines() {
         let trimmed = line.trim_start();
         if is_pod_start(trimmed) {
@@ -1829,7 +2466,7 @@ fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
     }
 
     if !found_start {
-        // Range starts beyond end of file — nothing to check.
+        // Range starts beyond end of file â€” nothing to check.
         return (source.len(), source.len());
     }
 
@@ -2035,7 +2672,7 @@ mod tests {
     fn literal_preserve_region_for_range_ignores_constructs_outside_range()
     -> Result<(), Box<dyn std::error::Error>> {
         // Document: line 0 has a regex, line 1 is clean.
-        // Range covers only line 1 → should not detect the regex.
+        // Range covers only line 1 â†’ should not detect the regex.
         let source = "my $x = $t =~ /pat/;\nmy $y = 2;\n";
         let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
         assert_eq!(literal_preserve_region_for_range(source, range), None);
@@ -2046,7 +2683,7 @@ mod tests {
     #[test]
     fn literal_preserve_region_for_range_detects_constructs_inside_range()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Range covers the line with the regex → should detect it.
+        // Range covers the line with the regex â†’ should detect it.
         let source = "my $y = 2;\nmy $x = $t =~ /pat/;\n";
         let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
         assert_eq!(literal_preserve_region_for_range(source, range), Some("regex literal"));
@@ -2086,7 +2723,7 @@ mod tests {
         Ok(())
     }
 
-    // ── additional inline lib tests for Codecov patch coverage ──
+    // â”€â”€ additional inline lib tests for Codecov patch coverage â”€â”€
 
     #[test]
     fn literal_preserve_region_for_range_detects_data_end_inside_range()
@@ -2128,7 +2765,7 @@ mod tests {
     #[test]
     fn byte_span_for_line_range_returns_whole_len_when_range_starts_beyond_eof()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Range starting beyond end of file → (source.len(), source.len()) defensive return.
+        // Range starting beyond end of file â†’ (source.len(), source.len()) defensive return.
         let source = "my $x = 1;\n";
         // Line 100 doesn't exist in a 1-line source.
         let range = TextRange::new(TextPosition::new(100, 0), TextPosition::new(101, 0));
@@ -2170,7 +2807,7 @@ mod tests {
     #[test]
     fn token_literal_preserve_region_overlapping_detects_quote_like_operators_in_range()
     -> Result<(), Box<dyn std::error::Error>> {
-        // qw() — QuoteWords
+        // qw() â€” QuoteWords
         let source_qw = "my @w = qw(alpha beta);\n";
         let (start, end) = (0, source_qw.len());
         assert_eq!(
@@ -2178,21 +2815,21 @@ mod tests {
             Some("quote-like operator")
         );
 
-        // q() — QuoteSingle
+        // q() â€” QuoteSingle
         let source_q = "my $s = q(hello);\n";
         assert_eq!(
             token_literal_preserve_region_overlapping(source_q, 0, source_q.len()),
             Some("quote-like operator")
         );
 
-        // qq() — QuoteDouble
+        // qq() â€” QuoteDouble
         let source_qq = "my $s = qq(hello $x);\n";
         assert_eq!(
             token_literal_preserve_region_overlapping(source_qq, 0, source_qq.len()),
             Some("quote-like operator")
         );
 
-        // qx() — QuoteCommand
+        // qx() â€” QuoteCommand
         let source_qx = "my $out = qx(ls -la);\n";
         assert_eq!(
             token_literal_preserve_region_overlapping(source_qx, 0, source_qx.len()),
@@ -2282,8 +2919,8 @@ mod tests {
         Ok(())
     }
 
-    /// Exercises validate_clean_parse → validate_parse_only call chain (lines 62-63)
-    /// by calling format_document with clean source (literal_preserve_region → None,
+    /// Exercises validate_clean_parse â†’ validate_parse_only call chain (lines 62-63)
+    /// by calling format_document with clean source (literal_preserve_region â†’ None,
     /// so the call falls through to validate_parse_only).
     #[test]
     fn format_document_calls_validate_parse_only_for_clean_source()
@@ -2293,7 +2930,7 @@ mod tests {
 
         let result = formatter.format_document(source, &FormatConfig::default());
 
-        // Clean source → no diagnostics, parser ran cleanly.
+        // Clean source â†’ no diagnostics, parser ran cleanly.
         assert!(
             result.diagnostics.is_empty(),
             "clean source should produce no diagnostics; got: {:?}",
@@ -2328,7 +2965,7 @@ mod tests {
     /// `token_literal_preserve_region_overlapping`) is not required for normal
     /// format detection: the line-based check in `literal_preserve_region_for_range`
     /// catches `format X =` declaration lines first. This test documents the
-    /// observable behaviour — i.e. that a range covering only the format *body*
+    /// observable behaviour â€” i.e. that a range covering only the format *body*
     /// content (not the declaration line) is currently not detected by the
     /// token-based path (because the lexer requires the declaration line to be
     /// lexed first to enter format mode), and therefore returns `None`.

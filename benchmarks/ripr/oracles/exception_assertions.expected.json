@@ -1,0 +1,1 @@
+{"framework": "Test::Exception", "runner_hints": ["prove"], "expected_oracles": [{"call": "throws_ok", "kind": "exception_observer", "strength": "weak_broad"}, {"call": "dies_ok", "kind": "exception_observer", "strength": "weak_broad"}, {"call": "lives_ok", "kind": "smoke_ok", "strength": "weak_smoke"}]}

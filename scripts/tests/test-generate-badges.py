@@ -946,5 +946,199 @@ class DirectRiprContainmentProof(unittest.TestCase):
         self.assertTrue(job.terminated)
 
 
+class WindowsJobSettlementTests(unittest.TestCase):
+    """Portable contract controls: kernel calls and process launches are fake."""
+
+    def job(self, counts):
+        job = generator.WindowsJob.__new__(generator.WindowsJob)
+        job._handle = 42
+        job.process_handles = mock.Mock(return_value=[])
+        job.total_processes = mock.Mock(return_value=7)
+        job._kernel32 = mock.Mock()
+        job._kernel32.TerminateJobObject.return_value = True
+        job._kernel32.CloseHandle.return_value = True
+
+        def query(handle, kind, pointer, size, returned):
+            self.assertEqual(handle, 42)
+            self.assertEqual(job._handle, 42, "job closed before settlement observation")
+            self.assertEqual(kind, 1)
+            self.assertEqual(size, 48)
+            pointer._obj.ActiveProcesses = next(counts)
+            return True
+        job._kernel32.QueryInformationJobObject.side_effect = query
+        return job
+
+    def test_termination_waits_for_descendants_before_closing_job(self):
+        job = self.job(iter([2, 1, 0]))
+        with mock.patch.object(generator.time, "sleep") as sleep:
+            self.assertEqual(job.terminate(), [])
+        self.assertEqual(job._kernel32.QueryInformationJobObject.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_empty_job_completes_without_sleep(self):
+        job = self.job(iter([0]))
+        with mock.patch.object(generator.time, "sleep") as sleep:
+            self.assertEqual(job.terminate(), [])
+        sleep.assert_not_called()
+
+    def test_lingering_descendant_is_not_settled_at_deadline(self):
+        job = self.job(iter([1]))
+        with mock.patch.object(generator.time, "monotonic", side_effect=[0, 10]):
+            failures = job.terminate()
+        self.assertTrue(any("settlement timed out" in failure for failure in failures), failures)
+        job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_query_failure_is_not_empty_job(self):
+        job = self.job(iter([]))
+        job._kernel32.QueryInformationJobObject.side_effect = None
+        job._kernel32.QueryInformationJobObject.return_value = False
+        with mock.patch.object(generator.WindowsJob, "_raise_last_error", side_effect=OSError("query refused")):
+            failures = job.terminate()
+        self.assertTrue(any("query refused" in failure for failure in failures), failures)
+        job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_post_snapshot_birth_rejects_success_even_after_zero_and_wait(self):
+        job = self.job(iter([0]))
+        job.total_processes.side_effect = [7, 8]
+        job.process_handles.return_value = [123]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        failures = job.terminate()
+        self.assertTrue(any("membership changed" in failure for failure in failures), failures)
+        job._kernel32.WaitForSingleObject.assert_called_once()
+
+    def test_lifetime_baseline_precedes_member_snapshot(self):
+        job = self.job(iter([0]))
+        events = []
+        job.total_processes.side_effect = lambda: events.append("total") or 7
+        job.process_handles.side_effect = lambda: events.append("snapshot") or []
+        self.assertEqual(job.terminate(), [])
+        self.assertEqual(events, ["total", "snapshot", "total"])
+
+    def test_missing_initial_or_terminal_accounting_is_not_success(self):
+        for sequence in ([OSError("initial query refused"), 7], [7, OSError("terminal query refused")]):
+            with self.subTest(sequence=sequence):
+                job = self.job(iter([0]))
+                job.total_processes.side_effect = sequence
+                self.assertTrue(job.terminate())
+                job._kernel32.CloseHandle.assert_called_once_with(42)
+
+    def test_zero_accounting_still_waits_for_bound_member_exit(self):
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [123]
+        job._kernel32.WaitForSingleObject.return_value = 0
+        self.assertEqual(job.terminate(), [])
+        job._kernel32.WaitForSingleObject.assert_called_once()
+        self.assertEqual(job._kernel32.WaitForSingleObject.call_args.args[0], 123)
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
+
+    def test_zero_accounting_cannot_mask_unsignaled_member(self):
+        job = self.job(iter([0]))
+        job.process_handles.return_value = [123]
+        job._kernel32.WaitForSingleObject.return_value = 258
+        failures = job.terminate()
+        self.assertTrue(any("member exit unconfirmed" in failure for failure in failures), failures)
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
+
+    def test_process_handle_snapshot_retries_a_growing_job_list(self):
+        for partial_success in (False, True):
+            with self.subTest(partial_success=partial_success):
+                job = self.job(iter([]))
+                del job.process_handles
+                attempts = []
+                def query(handle, kind, pointer, size, returned):
+                    self.assertEqual(kind, 3)
+                    attempts.append(len(pointer._obj.ProcessIdList))
+                    if len(attempts) == 1:
+                        pointer._obj.NumberOfAssignedProcesses = 17
+                        return partial_success
+                    pointer._obj.NumberOfAssignedProcesses = 1
+                    pointer._obj.NumberOfProcessIdsInList = 1
+                    pointer._obj.ProcessIdList[0] = 111
+                    return True
+                def membership(handle, owner, pointer):
+                    pointer._obj.value = True
+                    return True
+                job._kernel32.QueryInformationJobObject.side_effect = query
+                job._kernel32.OpenProcess.return_value = 101
+                job._kernel32.IsProcessInJob.side_effect = membership
+                with mock.patch.object(generator.ctypes, "get_last_error", return_value=234, create=True):
+                    self.assertEqual(job.process_handles(), [101])
+                self.assertEqual(attempts, [16, 32])
+
+    def test_process_handle_binding_checks_membership_and_closes_partial_bindings(self):
+        job = self.job(iter([]))
+        del job.process_handles
+        def query(handle, kind, pointer, size, returned):
+            self.assertEqual(kind, 3)
+            pointer._obj.NumberOfProcessIdsInList = 2
+            pointer._obj.ProcessIdList[0] = 111
+            pointer._obj.ProcessIdList[1] = 222
+            return True
+        job._kernel32.QueryInformationJobObject.side_effect = query
+        job._kernel32.OpenProcess.side_effect = [101, 102]
+        def membership(handle, owner, pointer):
+            self.assertEqual(owner, 42)
+            pointer._obj.value = handle == 101
+            return True
+        job._kernel32.IsProcessInJob.side_effect = membership
+        with self.assertRaisesRegex(OSError, "no longer belongs"):
+            job.process_handles()
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(101), mock.call(102)])
+
+    def test_interrupted_termination_closes_bound_handles_and_job(self):
+        job = self.job(iter([]))
+        job.process_handles.return_value = [123]
+        job._kernel32.TerminateJobObject.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            job.terminate()
+        self.assertEqual(job._kernel32.CloseHandle.call_args_list, [mock.call(123), mock.call(42)])
+
+    def test_member_binding_failure_is_not_settlement(self):
+        job = self.job(iter([0]))
+        job.process_handles.side_effect = OSError("binding refused")
+        failures = job.terminate()
+        self.assertTrue(any("binding refused" in failure for failure in failures), failures)
+
+    def test_closed_handle_does_not_prove_settlement(self):
+        job = self.job(iter([]))
+        job._handle = None
+        self.assertTrue(job.terminate())
+        job._kernel32.QueryInformationJobObject.assert_not_called()
+
+    def run_successful_leader(self, failures):
+        process = mock.Mock()
+        process.stdout = io.BytesIO(b"valid producer output")
+        process.stderr = io.BytesIO()
+        process.stdin = io.BytesIO()
+        process.returncode = 0
+        process.poll.return_value = 0
+        job = mock.Mock()
+        job.terminate.return_value = failures
+        job.close.return_value = []
+        root = Path(__file__).parents[2]
+        launcher = Path(__file__).resolve()
+        # Resolve host paths before changing os.name; no native launcher runs.
+        with mock.patch.object(generator.os, "name", "nt"), mock.patch.object(
+            generator, "Path", return_value=launcher
+        ), mock.patch.object(generator, "WindowsJob", return_value=job), mock.patch.object(
+            generator.subprocess, "Popen", return_value=process
+        ):
+            if failures:
+                with self.assertRaisesRegex(RuntimeError, "cleanup incomplete.*settlement"):
+                    generator.run_ripr(root, timeout_seconds=1)
+            else:
+                self.assertEqual(generator.run_ripr(root, timeout_seconds=1), "valid producer output")
+        job.assign.assert_called_once_with(process)
+        job.terminate.assert_called_once_with()
+        job.close.assert_not_called()
+
+    def test_leader_exit_and_pipe_eof_still_settle_the_job(self):
+        self.run_successful_leader([])
+
+    def test_leader_success_cannot_mask_unsettled_descendants(self):
+        self.run_successful_leader(["Windows job settlement timed out; descendants may remain"])
+
+
 if __name__ == "__main__":
     unittest.main()

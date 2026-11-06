@@ -43,6 +43,12 @@ def workspace_package_version(crate: str) -> str:
     raise SystemExit(f"workspace package not found: {crate}")
 
 
+def workspace_target_directory() -> Path:
+    """Use Cargo's effective path, including environment and config overrides."""
+    metadata = json.loads(run(["cargo", "metadata", "--format-version=1", "--no-deps"], capture=True))
+    return Path(metadata["target_directory"])
+
+
 def workspace_patch_args(crate: str, *, include_dev_deps: bool) -> list[str]:
     metadata = json.loads(run(["cargo", "metadata", "--format-version=1", "--no-deps"], capture=True))
     workspace_members = set(metadata["workspace_members"])
@@ -144,7 +150,7 @@ def main() -> int:
 
     run(package_args(allow_dirty=args.allow_dirty, patch_args=package_patch_args, no_verify=True))
 
-    crate_archive = ROOT / "target" / "package" / f"{CRATE}-{version}.crate"
+    crate_archive = workspace_target_directory() / "package" / f"{CRATE}-{version}.crate"
     if not crate_archive.exists():
         print(f"ERROR: expected packaged crate not found: {crate_archive}", file=sys.stderr)
         return 1

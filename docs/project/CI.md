@@ -80,8 +80,10 @@ That file is the source of truth for reserved labels such as `ci:lsp`,
 Public-API compatibility is not label-only: the `public-api-pr` and
 advisory `semver-pr` jobs in `ci.yml` auto-run whenever a PR touches a
 published facade crate surface or `.ci/public-api-baselines/`, and settle as
-green scoped-noops otherwise (#2266). The nightly workflow keeps schedule and
-manual-label widening.
+green scoped-noops otherwise (#2266). `public-api-pr` also ratchets every
+push to `main`/`master` against that landed SHA, including commits whose
+changed files sit outside facade/API scope (#16815). The nightly workflow
+keeps schedule and manual-label widening.
 
 ## Release Prep
 

@@ -133,12 +133,16 @@ function classifyInventoryViolations(violations) {
   return sizeOnly ? 'size_only' : 'structural';
 }
 
+/** @param {BundlePlatform | NodeJS.Platform} [platform] */
 function currentSourceBundleFile(platform = process.platform, arch = process.arch) {
   const binaryName = platform === 'win32' ? 'perllsp.exe' : 'perllsp';
   return `bin/${platform}-${arch}/${binaryName}`;
 }
 
-/** @returns {string[]} */
+/**
+ * @param {BundlePlatform | NodeJS.Platform} [platform]
+ * @returns {string[]}
+ */
 function currentSourceBundleFiles(
   platform = process.platform,
   arch = process.arch,

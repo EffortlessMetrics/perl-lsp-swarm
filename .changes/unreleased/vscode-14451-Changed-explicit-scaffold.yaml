@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Changed
+body: "New .pm and .t files are no longer auto-populated. Use Perl: Create Module or Perl: Create Test to choose a new file and create it with starter content. The old perl-lsp.autoPopulateNewFiles setting is retired; existing true/false values have no effect."
+time: 2026-09-26T19:49:40Z
+custom:
+  PR: "16515"
+  Slug: explicit-scaffold
+  Breaking: "yes"

@@ -92,6 +92,7 @@ expect_case "current-change-request-blocks" 1 \
 expect_case "all-resolved-converges" 0 \
     '.converged == true
      and .formal_review.classification == "NO_SUBMITTED_HUMAN_REVIEW"
+     and .non_dismissed_latest_nonbot_review_count == 0
      and .submitted_human_review_count == 0
      and .review_currentness == "NOT_PROVEN"
      and .semantic_currentness_required == true
@@ -192,6 +193,7 @@ run_state_case "formal-review-stale"
 if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '
       .state == "NATIVE_FACTS_CONVERGED"
       and .formal_review_classification == "SUBMITTED_REVIEW_PRESENT"
+      and .non_dismissed_latest_nonbot_review_count >= 1
       and .submitted_human_review_count >= 1
       and .review_currentness == "NOT_PROVEN"
       and .semantic_currentness_required == true
@@ -207,12 +209,62 @@ if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '
       .state == "NATIVE_FACTS_CONVERGED"
       and .state != "REVIEWED"
       and .formal_review_classification == "NO_SUBMITTED_HUMAN_REVIEW"
+      and .non_dismissed_latest_nonbot_review_count == 0
       and .submitted_human_review_count == 0
       and .review_currentness == "NOT_PROVEN"
     ' >/dev/null <<<"$STATE_STDOUT"; then
     pass "zero-review projection never reports REVIEWED"
 else
     fail "state helper zero-review projection — exit=$STATE_EXIT output=$STATE_STDOUT"
+fi
+
+# ── #15035: the count must describe its own derivation ─────────────────────
+# The observed GitHub.com mismatch behind #15035 is that a review submitted by
+# the PR author does not surface in `latestReviews`, even though the submission
+# exists in the PR's review history. This fixture models that state: the
+# projection carries only a Bot review, so the non-bot human count is 0 while
+# the projection itself is non-empty.
+#
+# The honest behavior is to report 0 — because that is what the projection
+# contains — and to say so under a name that describes the derivation. The
+# alternatives this assertion rules out are the two wrong repairs:
+#   * counting every projection entry (would report 1 by including the Bot), and
+#   * widening the source to the full `reviews` history to "catch" the author
+#     review (would also report 1, and would change what the count means).
+expect_case "author-review-absent-from-latest-reviews" 0 \
+    '.converged == true
+     and .human_review_count == 0
+     and .non_dismissed_latest_nonbot_review_count == 0
+     and .submitted_human_review_count == 0
+     and .formal_review.classification == "NO_SUBMITTED_HUMAN_REVIEW"
+     and .review_currentness == "NOT_PROVEN"
+     and .semantic_currentness_required == true' \
+    "author-omitted projection reports the count it actually observed"
+
+# The deprecated alias must never disagree with the honest name. They are one
+# value, so any divergence means a consumer reading either key sees something
+# different from the other.
+for alias_case in all-resolved-converges formal-review-current author-review-absent-from-latest-reviews; do
+    run_case "$alias_case"
+    if jq -e \
+        '.non_dismissed_latest_nonbot_review_count == .submitted_human_review_count' \
+        >/dev/null <<<"$(json_blob "$RUN_STDOUT")"; then
+        pass "alias parity holds for $alias_case"
+    else
+        fail "alias parity for $alias_case — output=$RUN_STDOUT"
+    fi
+done
+
+# The state projection must carry the honest name too, and must not lose the
+# value when read through the new key.
+run_state_case "formal-review-current"
+if [[ "$STATE_EXIT" -eq 0 ]] && jq -e \
+    '.non_dismissed_latest_nonbot_review_count >= 1
+     and .non_dismissed_latest_nonbot_review_count == .submitted_human_review_count' \
+    >/dev/null <<<"$STATE_STDOUT"; then
+    pass "state helper publishes the honestly-named count"
+else
+    fail "state helper count naming — exit=$STATE_EXIT output=$STATE_STDOUT"
 fi
 
 # The retired writer must fail before discovering or invoking gh. This catches

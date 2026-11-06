@@ -567,10 +567,15 @@ fn invalid_value_keeps_the_parser_diagnostic() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A missing value keeps the parser's explanation rather than being flattened
-/// into an "unknown option" claim about a flag that exists.
+/// A missing value keeps an explanation that names the flag, rather than being
+/// flattened into an "unknown option" claim about a flag that exists.
+///
+/// `--diagnostic-debounce-ms` is now prevalidated, so this flag's missing-value
+/// path is a typed `MissingValue` rather than a forwarded `ParserDiagnostic`.
+/// The assertions are deliberately about the rendered text, not the variant, so
+/// this test survives that routing change instead of silently changing subject.
 #[test]
-fn missing_value_keeps_the_parser_diagnostic() -> anyhow::Result<()> {
+fn missing_value_keeps_a_diagnostic_that_names_the_flag() -> anyhow::Result<()> {
     let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms"]);
 
     let Err(err) = result else {
@@ -631,6 +636,66 @@ fn parse_port_invalid_value_returns_invalid_port_error() {
         result,
         Err(LaunchParseError::InvalidPort { raw_port, .. }) if raw_port == "70000"
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Module: parse_args --diagnostic-debounce-ms (#16806)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_diagnostic_debounce_invalid_value_returns_typed_error() {
+    let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms", "abc"]);
+    assert!(
+        matches!(
+            result,
+            Err(LaunchParseError::InvalidDiagnosticDebounceMs { ref raw_value, .. })
+                if raw_value == "abc"
+        ),
+        "expected a typed debounce rejection, got {result:?}"
+    );
+}
+
+#[test]
+fn parse_diagnostic_debounce_overflow_returns_typed_error() {
+    let result = parse_args(["perl-lsp", "--diagnostic-debounce-ms=18446744073709551616"]);
+    assert!(
+        matches!(
+            result,
+            Err(LaunchParseError::InvalidDiagnosticDebounceMs { ref raw_value, .. })
+                if raw_value == "18446744073709551616"
+        ),
+        "expected a typed debounce rejection, got {result:?}"
+    );
+}
+
+#[test]
+fn parse_diagnostic_debounce_missing_value_returns_missing_value_error() {
+    for argv in [
+        ["perl-lsp", "--diagnostic-debounce-ms"].as_slice(),
+        ["perl-lsp", "--diagnostic-debounce-ms="].as_slice(),
+    ] {
+        let result = parse_args(argv.iter().copied());
+        assert!(
+            matches!(
+                result,
+                Err(LaunchParseError::MissingValue { ref option })
+                    if option == "--diagnostic-debounce-ms"
+            ),
+            "expected MissingValue for {argv:?}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_diagnostic_debounce_zero_and_upper_bound_reach_tuning() {
+    for (argv, expected) in [
+        (["perl-lsp", "--diagnostic-debounce-ms", "0"].as_slice(), 0u64),
+        (["perl-lsp", "--diagnostic-debounce-ms=0"].as_slice(), 0),
+        (["perl-lsp", "--diagnostic-debounce-ms", "18446744073709551615"].as_slice(), u64::MAX),
+    ] {
+        let plan = must(parse_args(argv.iter().copied()));
+        assert_eq!(plan.config.runtime_tuning.diagnostic_debounce_ms, expected, "argv={argv:?}");
+    }
 }
 
 #[test]

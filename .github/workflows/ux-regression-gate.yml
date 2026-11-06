@@ -152,7 +152,7 @@ jobs:
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
-          cargo xtask ux-regression-receipt \
+          cargo run -p perl-lsp-ux-tests --bin ux-regression-receipt --locked -- \
             --input target/receipts/ux-regression.log \
             --receipt target/receipts/ux-regression.json \
             --exit-status-file target/receipts/ux-regression.exit \
@@ -229,7 +229,7 @@ jobs:
       - name: Upload test results to Codecov without a repository secret
         if: always() && steps.harness_check.outputs.harness_available == 'true'
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
         with:
           report_type: test_results
           files: target/test-results/ux-regression-gate-junit.xml
@@ -353,6 +353,10 @@ jobs:
 
       - name: Fail UX regression gate on test failures
         if: steps.harness_check.outputs.harness_available == 'true' && steps.ux_tests.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail UX regression gate when harness is unavailable
+        if: always() && steps.harness_check.outputs.harness_available != 'true'
         run: exit 1
 
   extension-jest:

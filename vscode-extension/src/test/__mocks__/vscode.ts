@@ -11,6 +11,8 @@ import { jest } from '@jest/globals';
 export const Uri = {
   parse: (value: string) => ({ toString: () => value, fsPath: value }),
   file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path, scheme: 'file' }),
+  joinPath: (base: { fsPath: string }, ...segments: string[]) =>
+    Uri.file([base.fsPath.replace(/\/$/, ''), ...segments].join('/')),
 };
 
 export class ThemeColor {
@@ -39,6 +41,7 @@ export class Location {
  * a code path actually decided to write to.
  */
 export class WorkspaceEdit {
+  public readonly creates: Array<{ uri: { fsPath: string }; options: unknown }> = [];
   public readonly inserts: Array<{
     uri: { fsPath: string };
     position: Position;
@@ -47,6 +50,10 @@ export class WorkspaceEdit {
 
   insert(uri: { fsPath: string }, position: Position, newText: string): void {
     this.inserts.push({ uri, position, newText });
+  }
+
+  createFile(uri: { fsPath: string }, options: unknown): void {
+    this.creates.push({ uri, options });
   }
 }
 
@@ -258,6 +265,7 @@ export const window = {
   showQuickPick: jest.fn(async () => undefined),
   showInputBox: jest.fn(async () => undefined),
   showTextDocument: jest.fn(async () => undefined),
+  showSaveDialog: jest.fn(async () => undefined),
   withProgress: jest.fn(async (_options: unknown, task: ProgressTask) => {
     const progress = { report: jest.fn() };
     // A real progress token also exposes onCancellationRequested; code under

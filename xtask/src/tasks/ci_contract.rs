@@ -393,7 +393,12 @@ fn classify_repo_hygiene_output(
     let result = match status {
         repo_hygiene::ResultClass::Pass => ContractResultClass::Success,
         repo_hygiene::ResultClass::PolicyFinding => ContractResultClass::PolicyFinding,
-        repo_hygiene::ResultClass::NotProven => ContractResultClass::NotProven,
+        // A tool that could not be obtained is still unproven work, so the
+        // contract verdict is unchanged. The distinction is diagnostic: the
+        // repo-hygiene receipt says which tool was absent (#15235).
+        repo_hygiene::ResultClass::NotProven | repo_hygiene::ResultClass::ToolUnavailable => {
+            ContractResultClass::NotProven
+        }
         repo_hygiene::ResultClass::NotApplicable => ContractResultClass::NotApplicable,
     };
     (result, detail)
