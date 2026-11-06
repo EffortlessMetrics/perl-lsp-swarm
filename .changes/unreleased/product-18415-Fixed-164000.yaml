@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: The `update-status --check` failure now names every out-of-date document instead of only counting them, so the Kwalitee receipt identifies the files to regenerate.
+time: 2026-10-29T16:40:00Z
+custom:
+  PR: 18415
+  Slug: fix-18141-update-status-error-paths
+  Breaking: "no"
