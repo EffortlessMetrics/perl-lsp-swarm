@@ -22,6 +22,10 @@ fn test_variable_completion_mid_token_client_edits() -> Result<(), Box<dyn std::
         ("my @items = (); print ", "@it", "ems", ";", "@items"),
         ("my @items = (); print ", "@it", "ems", "[0];", "@items"),
         ("my $count = 42; print ", "$co", "unté_123", " + $count;", "$count"),
+        // #18462: `"$count's"` is one lexer token — perl interpolates
+        // `"$dog's"` as `$dog::s` — so the folded segment stays inside the
+        // edit and accepting the candidate replaces it whole.
+        ("my $count = 42; print \"the ", "$co", "unt's", " bowl\";", "$count"),
         ("use utf8; my $count = 42; print ", "$co", "unt\u{301}_123", ";", "$count"),
         ("my $count = 42; print ", "$co", "unt𐐀_123", ";", "$count"),
         ("my $count = 42; print \"🦀 ", "$co", "unt", "\";", "$count"),
@@ -54,6 +58,68 @@ fn test_variable_completion_mid_token_client_edits() -> Result<(), Box<dyn std::
         }
     }
     assert!(failures.is_empty(), "incorrect client applications:\n{}", failures.join("\n"));
+    Ok(())
+}
+
+#[test]
+fn test_variable_completion_edit_matches_lexer_token_at_apostrophe()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18462: the replacement end must stop where the lexer's variable token
+    // stops. Real perl (5.42.2) folds `'` into a name only as an old-style
+    // package separator with a further name segment behind it: in a
+    // double-quoted string `"$dog's bowl"` interpolates `$dog::s`, while
+    // `print $dog'9` fails to parse because the apostrophe opens a string.
+    // The extension therefore covers `$count's`/`$count'Bar` whole and ends
+    // before the apostrophe in `$count'9` / `$count'`.
+    for (source, typed, token_tail, why) in [
+        (
+            "my $count = 42; print \"the $count's bowl\";",
+            "$co",
+            "'s",
+            "folded separator segment stays inside the edit",
+        ),
+        (
+            "my $count = 42; print $count'Bar;",
+            "$co",
+            "'Bar",
+            "plain-code old-style separator stays inside the edit",
+        ),
+        (
+            "my $count = 42; print \"the $count'9 bowl\";",
+            "$co",
+            "",
+            "non-separating apostrophe ends the edit",
+        ),
+        (
+            "my $count = 42; print \"the $count' bowl\";",
+            "$co",
+            "",
+            "trailing apostrophe ends the edit",
+        ),
+        // #17935 still holds: non-ASCII continuations extend, and an
+        // apostrophe after them still ends the token.
+        (
+            "my $count = 42; print \"the $counté' x\";",
+            "$co",
+            "é",
+            "unicode continuation extends and the apostrophe ends it",
+        ),
+    ] {
+        let name_start = source.rfind("$count").ok_or("missing $count occurrence")?;
+        let position = name_start + typed.len();
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let provider = CompletionProvider::new(&ast);
+        let items = provider.get_completions(source, position);
+        let item = items
+            .iter()
+            .find(|item| item.label == "$count")
+            .ok_or_else(|| format!("missing $count for {source:?}"))?;
+        let (start, end) = item.text_edit_range.ok_or("missing variable edit")?;
+        let expected_end = name_start + "$count".len() + token_tail.len();
+        assert_eq!(start, name_start, "{why}: wrong edit start for {source:?}");
+        assert_eq!(end, expected_end, "{why}: wrong edit end for {source:?}");
+    }
     Ok(())
 }
 

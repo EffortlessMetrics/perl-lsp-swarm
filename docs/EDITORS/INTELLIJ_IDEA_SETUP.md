@@ -235,7 +235,10 @@ When both are installed, verify:
 - whether diagnostics/actions/formatters are duplicated;
 - debugger ownership separately from LSP ownership.
 
-If coexistence is limited, document the exact winning integration and the specific integration to disable or select. Do not infer comparative quality from the conflict.
+IntelliJ/LSP4IJ does not run the VS Code coexistence detector. For honest limits, doctor
+posture, and manual overlap review, see [Competing Perl tooling (coexistence)](COEXISTENCE.md).
+When coexistence is limited, document the exact winning integration and the specific
+integration to disable or select. Do not infer comparative quality from the conflict.
 
 ## Troubleshooting
 
