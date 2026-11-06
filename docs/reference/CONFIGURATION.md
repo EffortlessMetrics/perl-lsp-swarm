@@ -464,7 +464,7 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
     "limits": {
       "workspaceSymbolCap": 200,
       "referencesCap": 500,
-      "completionCap": 100,
+      "completionCap": 100
     }
   },
 
