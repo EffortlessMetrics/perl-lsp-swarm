@@ -435,10 +435,68 @@ fn classify_failure_mode(block: &str) -> (UxFailureMode, Option<String>) {
         };
         return (mode, Some(line.trim().to_string()));
     }
+    if let Some(evidence) = custom_message_assertion_evidence(block) {
+        let mode = if observation_reads_absent(block) {
+            UxFailureMode::AssertionOnAbsentObservation
+        } else {
+            UxFailureMode::AssertionFailed
+        };
+        return (mode, Some(evidence));
+    }
     if let Some(line) = panic_line {
         return (UxFailureMode::Panic, Some(line.trim().to_string()));
     }
     (UxFailureMode::Unknown, None)
+}
+
+/// True when a panic payload names a runtime failure rather than a scenario assertion.
+fn is_runtime_panic_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("unwrap()")
+        || lower.contains("expect(")
+        || lower.contains("index out of")
+        || lower.contains("attempt to")
+        || lower.contains("integer overflow")
+        || lower.contains("divide by zero")
+        || lower.contains("explicit panic")
+}
+
+/// Collect evidence for modern `assert!` / `ensure!` panics that omit the legacy
+/// `assertion failed:` prefix on the same line as `panicked at`.
+fn custom_message_assertion_evidence(block: &str) -> Option<String> {
+    let lines: Vec<&str> = block.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        if !line.contains("panicked at") {
+            continue;
+        }
+        let trimmed = line.trim();
+        if !(trimmed.ends_with(':')
+            && trimmed.contains("perl-lsp-ux-tests/tests/")
+            && trimmed.contains(".rs:"))
+        {
+            continue;
+        }
+        let mut message_lines = Vec::new();
+        for next in lines.iter().skip(index + 1) {
+            let t = next.trim();
+            if t.is_empty() {
+                break;
+            }
+            if t.starts_with("stack backtrace") || t.starts_with("note: run with") {
+                break;
+            }
+            message_lines.push(*next);
+        }
+        if message_lines.is_empty() {
+            continue;
+        }
+        let message = message_lines.join("\n").trim().to_string();
+        if message.is_empty() || is_runtime_panic_message(&message) {
+            continue;
+        }
+        return Some(format!("{trimmed}\n{message}"));
+    }
+    None
 }
 
 /// True when the block shows the assertion rejecting an empty or missing value.
@@ -574,6 +632,12 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
         return UxFailureClass::Timeout;
     }
 
+    if every_failing_test_is_attributed(failing_tests)
+        && failing_tests.iter().all(|test| test.mode == UxFailureMode::AssertionFailed)
+    {
+        return infer_failure_class(&failing_test_own_input(raw, failing_tests));
+    }
+
     let scanned = infer_failure_class(&classification_input(raw));
 
     if scanned == UxFailureClass::BaselineDrift && no_failing_test_compared_anything(failing_tests)
@@ -691,6 +755,14 @@ fn failing_test_own_input<'a>(raw: &'a str, failing_tests: &[UxFailingTest]) -> 
     strip_diagnostic_detail(&owned.join("\n"))
 }
 
+fn log_shows_custom_message_assertion(lower: &str) -> bool {
+    lower.contains("panicked at")
+        && lower.contains("perl-lsp-ux-tests/tests/")
+        && lower.contains(".rs:")
+        && !lower.contains("unwrap()")
+        && !lower.contains("expect(")
+}
+
 fn infer_failure_class(raw: &str) -> UxFailureClass {
     let lower = raw.to_ascii_lowercase();
     if looks_like_scenario_19_race(&lower) {
@@ -715,6 +787,10 @@ fn infer_failure_class(raw: &str) -> UxFailureClass {
         // so this branch must precede the ServerCrash arm to remain reachable.
         // Note: we do NOT match on bare "expected" because it appears as a substring of
         // unrelated words like "unexpectedly", causing false positives on ServerCrash logs.
+        UxFailureClass::ProviderRegression
+    } else if log_shows_custom_message_assertion(&lower) {
+        // Modern `assert!` / `ensure!` panics carry the message on the line after
+        // `panicked at path.rs:line:col:` without the legacy `assertion failed:` prefix (#17035).
         UxFailureClass::ProviderRegression
     } else if lower.contains("panicked") || lower.contains("server exited") {
         UxFailureClass::ServerCrash
@@ -1888,7 +1964,7 @@ test result: FAILED. 0 passed; 1 failed";
         let log = "failures:\n\n\
 ---- ux_latency_raw_rpc::symbols stdout ----\n\
 thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:352:5:\n\
-assertion failed: workspace/symbol must find alpha from an opened e2e document; got []\n\
+workspace/symbol must find alpha from an opened e2e document; got []\n\
 \n\
 test result: FAILED. 0 passed; 1 failed";
         let receipt = classify(log, None);
@@ -1901,6 +1977,78 @@ test result: FAILED. 0 passed; 1 failed";
             !receipt.failing_tests[0].discriminated,
             "an ambiguous block must not claim to be discriminated"
         );
+    }
+
+    #[test]
+    fn a_custom_message_assert_is_not_reported_as_bare_panic() -> Result<()> {
+        // #17035. Modern `assert!`/`ensure!` panics omit the legacy `assertion failed:` prefix,
+        // so the old same-line substring check classified them as `Panic` and routed live
+        // provider regressions to triage.
+        let log = "running 2 tests\n\
+test scenario_20_completion_module_prefix_surfaces_real_baseline_app_hard_assert ... ok\n\
+test ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape ... FAILED\n\
+\n\
+failures:\n\n\
+---- ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape stdout ----\n\
+thread 'ux_latency_document_symbols_returns_real_process_shape' panicked at \
+crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:422:5:\n\
+documentSymbol must expose the alpha symbol from the opened document\n\
+\n\
+test result: FAILED. 1 passed; 1 failed";
+        let receipt = classify(log, None);
+        ensure!(
+            receipt.failing_tests[0].mode == UxFailureMode::AssertionFailed,
+            "custom-message assertions must not read as bare panics, got {:?}",
+            receipt.failing_tests[0].mode
+        );
+        ensure!(
+            receipt.failing_tests[0].discriminated,
+            "a discriminated assertion must not claim panic-without-assertion"
+        );
+        ensure!(
+            matches!(receipt.failure_class, UxFailureClass::ProviderRegression),
+            "provider-facing assertion failures must not collapse to Unknown, got {:?}",
+            receipt.failure_class
+        );
+        ensure!(
+            receipt.merge_action == "fix_provider",
+            "triage must not win over a proven assertion, got {}",
+            receipt.merge_action
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_custom_message_assert_beats_stray_baseline_prose_for_routing() -> Result<()> {
+        // Same failure class as #17035 when incidental `baseline` warnings share the tee'd log.
+        let log = "warning: missing documentation for a struct field\n\
+ --> crates/perl-lsp-rs-core/src/taxonomy.rs:19:5\n\
+  |\n\
+19 |     BaselineDrift,\n\
+  |     ^^^^^^^^^^^^^\n\
+running 1 test\n\
+test ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols ... FAILED\n\
+\n\
+failures:\n\n\
+---- ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols stdout ----\n\
+thread 'ux_latency_workspace_symbols_sees_open_document_symbols' panicked at \
+crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:535:5:\n\
+documentSymbol must expose the alpha symbol from the opened document\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, None);
+        ensure!(
+            receipt.failing_tests[0].mode == UxFailureMode::AssertionFailed,
+            "got {:?}",
+            receipt.failing_tests[0].mode
+        );
+        ensure!(
+            !matches!(receipt.failure_class, UxFailureClass::Unknown),
+            "stray baseline prose must not withdraw a proven assertion to triage, got {:?}",
+            receipt.failure_class
+        );
+        ensure!(receipt.merge_action == "fix_provider", "got {}", receipt.merge_action);
+        Ok(())
     }
 
     #[test]
