@@ -7,7 +7,13 @@
 
 mod config;
 mod doc;
+pub mod layout_bounds;
 mod result;
+
+pub use layout_bounds::{
+    MAX_INDENT_WIDTH, MAX_LINE_WIDTH, MAX_RENDER_INDENT_COLUMNS, MIN_INDENT_WIDTH, MIN_LINE_WIDTH,
+    effective_indent_width, effective_line_width, render_indent_columns,
+};
 
 #[path = "counters.rs"]
 pub(crate) mod counters;
@@ -2394,7 +2400,12 @@ fn simple_binary_operator_text(token: &perl_parser_core::Token) -> Option<&str> 
 /// indents every body line at `indent + indent_unit`, so this is also the
 /// document-level unit the outcome admission's rendered-form walk checks for.
 pub(super) fn indent_unit(config: &FormatConfig) -> String {
-    if config.use_tabs { "\t".to_string() } else { " ".repeat(config.indent_width as usize) }
+    if config.use_tabs {
+        "\t".to_string()
+    } else {
+        let width = effective_indent_width(config.indent_width) as usize;
+        " ".repeat(width)
+    }
 }
 
 fn simple_value_text(token: &perl_parser_core::Token) -> Option<&str> {
@@ -2616,10 +2627,17 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
 mod tests {
     use super::{
         FinalNewline, FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-        byte_span_for_line_range, literal_preserve_region, literal_preserve_region_for_range,
-        range_includes_line, split_line_ending, split_trailing_comment,
-        token_literal_preserve_region_overlapping,
+        byte_span_for_line_range, indent_unit, literal_preserve_region,
+        literal_preserve_region_for_range, range_includes_line, split_line_ending,
+        split_trailing_comment, token_literal_preserve_region_overlapping,
     };
+    use crate::native::layout_bounds::MAX_INDENT_WIDTH;
+
+    #[test]
+    fn indent_unit_caps_extreme_indent_width() {
+        let config = FormatConfig { indent_width: u32::MAX, ..FormatConfig::default() };
+        assert_eq!(indent_unit(&config).len(), MAX_INDENT_WIDTH as usize);
+    }
 
     /// When the formatted intermediate loses trailing terminators, the synthesized
     /// final newline must still follow the user's document convention (#14276).
