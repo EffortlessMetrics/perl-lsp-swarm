@@ -73,7 +73,9 @@ cargo xtask precommit
             "   The pre-commit hook blocks placeholder identities, formats the staged Rust diff \
              ('cargo xtask fmt --staged'), then runs 'cargo xtask precommit'"
         );
-        println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
+        println!(
+            "   The pre-push hook checks committed publication consistency; qualification is separate"
+        );
         println!(
             "   The pre-push hook also refuses non-fast-forward updates and protected-ref rewrites \
              (escape hatch: PERL_LSP_ALLOW_HISTORY_REWRITE=\"<remote-ref>\")"
@@ -325,85 +327,52 @@ HAS_DIFFABLE_REF=false
 # We use a newline-separated string rather than an array for POSIX compat.
 SINGLE_CRATE_NAMES=""
 SINGLE_CRATE_ALL_UNDER_CRATES=true
+# Reject an unsupported batch before admission/bootstrap or any earlier ref's checks.
+# Peel for checkout comparison, but keep the literal pushed objects below.
+if ! HEAD_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"; then
+    echo "NOT PROVEN: checked-out HEAD does not resolve to a commit." >&2
+    exit 1
+fi
 for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
-    read -r _local_ref local_sha _remote_ref remote_sha <<< "$line"
-    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-        # New branch: there is no known remote SHA to diff against. Resolve
-        # the changed-path set through the single shared #3985 change_set
-        # resolver (`cargo xtask change-set` — main-first: origin/main,
-        # main, HEAD~1; never origin/master, which does not exist on this
-        # remote) instead of a second shell base-resolution algorithm.
-        #
-        # The former fallback here was
-        #   git merge-base "$local_sha" origin/master 2>/dev/null || echo "$local_sha"
-        # which always failed (origin/master is absent on this remote) and
-        # silently fell back to comparing "$local_sha" against itself —
-        # an empty self-diff for every new-branch push (issue #3985
-        # Slice 3A: the pre-push affected-proof was silently degrading to
-        # the broadest/full gate for every new branch instead of running
-        # the intended targeted proof against the real diff).
-        if ! CHANGED_FILES="$(cargo xtask change-set --base auto --head "$local_sha" --format paths)"; then
-            echo ""
-            echo "❌ NOT PROVEN: could not resolve the change set for this new-branch push."
-            echo "   'cargo xtask change-set' failed to resolve a canonical base ref"
-            echo "   (see the error above — e.g. origin/main unreachable, no network, or"
-            echo "   another git error). Refusing to silently treat this as an empty"
-            echo "   change set and skip the affected-scope proof."
-            echo "   Fix the underlying git/network issue, or bypass with:"
-            echo "   git push --no-verify (only for a genuinely environmental failure —"
-            echo "   see the bypass policy at the top of this file)."
-            exit 1
-        fi
-    else
-        CHANGED_FILES="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)"
-    fi
-    if [ -n "$CHANGED_FILES" ]; then
-        HAS_DIFFABLE_REF=true
-    fi
-    while IFS= read -r changed; do
-        [ -z "$changed" ] && continue
-        case "$changed" in
-            *.md|*.txt|LICENSE*|CHANGELOG*|docs/*|.github/ISSUE_TEMPLATE/*|*/LICENSE*)
-                ;;
-            *)
-                DOC_ONLY=false
-                # Track whether this code file lives under crates/<name>/
-                case "$changed" in
-                    crates/*/*)
-                        # Extract the crate directory name: crates/<name>/...
-                        crate_name="${changed#crates/}"
-                        crate_name="${crate_name%%/*}"
-                        # Append to list if not already present
-                        if ! printf '%s\n' "$SINGLE_CRATE_NAMES" | grep -qxF "$crate_name" 2>/dev/null; then
-                            SINGLE_CRATE_NAMES="${SINGLE_CRATE_NAMES}${crate_name}
-"
-                        fi
-                        ;;
-                    *)
-                        # File is outside crates/ — can't be single-crate
-                        SINGLE_CRATE_ALL_UNDER_CRATES=false
-                        ;;
-                esac
-                ;;
-        esac
-    done <<< "$CHANGED_FILES"
-    if echo "$CHANGED_FILES" | grep -qE '^crates/.*/tests/.*\.rs$'; then
-        TEST_FILES_CHANGED=true
+    [ -z "$line" ] && continue
+    read -r local_ref local_sha _remote_ref _remote_sha <<< "$line"
+    [ "$local_sha" = "$ZERO_SHA" ] && continue
+    if ! pushed_commit="$(git rev-parse --verify "$local_sha^{commit}" 2>/dev/null)" ||
+        [ "$pushed_commit" != "$HEAD_COMMIT" ]; then
+        printf 'NOT PROVEN: pushed ref %s (%s) does not match checked-out HEAD %s; push it from a matching checkout.\n' \
+            "$local_ref" "$local_sha" "$HEAD_COMMIT" >&2
+        exit 1
     fi
 done
 
-# If we couldn't compute a diff for any ref (e.g., shallow clone, missing
-# remote), assume code changes and run the full gate to be safe.
-if [ "$HAS_DIFFABLE_REF" != true ]; then
-    DOC_ONLY=false
+# Publication consistency is separate from candidate preparation and late
+# qualification (#17940). Check each exact committed ref without a filename classifier.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "NOT PROVEN: Cargo is unavailable for publication consistency." >&2
+    exit 1
 fi
-
-if [ "$DOC_ONLY" = true ]; then
-    echo "📝 Doc-only push — skipping code gates"
-    echo "   (Skip with: git push --no-verify)"
-    echo "✅ Doc-only fast-path gate passed"
-    exit 0
+if [ ! -f "$REPO_ROOT/scripts/cargo-admitted" ]; then
+    echo "NOT PROVEN: the canonical cargo-admitted front door is unavailable." >&2
+    exit 1
 fi
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    [ -z "$line" ] && continue
+    read -r _local_ref local_sha _remote_ref remote_sha <<< "$line"
+    [ "$local_sha" = "$ZERO_SHA" ] && continue
+    base="$remote_sha"
+    [ "$base" != "$ZERO_SHA" ] || base=auto
+    echo "Checking committed publication consistency for $local_sha (base $base)"
+    # Keep hook Git selectors for ref guards; isolate only the validation child.
+    # --worktree-root is the existing runtime authority for a borrowed binary.
+    (
+        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+        unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+        bash "$REPO_ROOT/scripts/cargo-admitted" run --package xtask --bin xtask --locked -- \
+            --worktree-root "$REPO_ROOT" gates --tier publication \
+            --base "$base" --head "$local_sha" --receipt
+    ) || exit "$?"
+done
 
 # --- Single-crate proportional gate ---
 # If every code change is under a single crates/<name>/ directory, run a
@@ -583,6 +552,10 @@ if [ "$GATE_STATUS" -ne 0 ]; then
     echo "   --no-verify is appropriate."
     exit "$GATE_STATUS"
 fi
+echo "Publication consistency passed; focused proof and required late qualification remain separate."
+# Generated-status inventory remains affected candidate proof (#9559/#17939),
+# not an automatic publishing side effect. Its direct CLI is unchanged.
+exit 0
 "#
 }
 
@@ -871,8 +844,8 @@ mod tests {
         let refusal = hook
             .find("Refusing non-fast-forward")
             .ok_or_else(|| color_eyre::eyre::eyre!("refusal headline must exist in hook script"))?;
-        let gate = hook.find("just pr-fast").ok_or_else(|| {
-            color_eyre::eyre::eyre!("fast gate invocation must exist in hook script")
+        let gate = hook.find("gates --tier publication").ok_or_else(|| {
+            color_eyre::eyre::eyre!("publication gate invocation must exist in hook script")
         })?;
         assert!(
             refusal < gate,

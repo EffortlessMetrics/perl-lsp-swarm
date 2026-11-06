@@ -101,6 +101,8 @@ const EXPANSION_RULES: &[(RequestedProfile, &[&str])] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RequestedProfile {
     Commit,
+    /// Executable publication subset; routed composition is not yet supported.
+    Publication,
     PrFast,
     MergeGate,
     Nightly,
@@ -120,6 +122,7 @@ impl RequestedProfile {
     pub fn as_str(self) -> &'static str {
         match self {
             RequestedProfile::Commit => "commit",
+            RequestedProfile::Publication => "publication",
             RequestedProfile::PrFast => "pr_fast",
             RequestedProfile::MergeGate => "merge_gate",
             RequestedProfile::Nightly => "nightly",
@@ -135,6 +138,7 @@ impl RequestedProfile {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "commit" => Some(RequestedProfile::Commit),
+            "publication" => Some(RequestedProfile::Publication),
             "pr_fast" => Some(RequestedProfile::PrFast),
             "merge_gate" => Some(RequestedProfile::MergeGate),
             "nightly" => Some(RequestedProfile::Nightly),
@@ -152,6 +156,7 @@ impl RequestedProfile {
     pub fn from_gate_tier(tier: &GateTier) -> Self {
         match tier {
             GateTier::Commit => RequestedProfile::Commit,
+            GateTier::Publication => RequestedProfile::Publication,
             GateTier::PrFast => RequestedProfile::PrFast,
             GateTier::MergeGate => RequestedProfile::MergeGate,
             GateTier::Nightly => RequestedProfile::Nightly,
@@ -495,15 +500,17 @@ pub fn expand(
         }
     }
 
-    // Release has no reviewed composition: typed unsupported, never an
-    // alias of all/merge_gate and never tier-string equality.
-    if profile == RequestedProfile::Release {
+    // Publication has a native consistency plan, not a routed qualification
+    // denominator. Release keeps its existing unsupported disposition.
+    if matches!(profile, RequestedProfile::Release | RequestedProfile::Publication) {
         resolution = ExpansionResolution::Unsupported;
-        detail = Some(
+        detail = Some(if profile == RequestedProfile::Publication {
+            "publication uses the native committed consistency plan; it is not a qualification denominator".to_string()
+        } else {
             "release request profile has no reviewed composition; define it through the \
              release authorities before consuming a release denominator"
-                .to_string(),
-        );
+                .to_string()
+        });
     }
 
     let policy_digest = policy_digest(policy);
