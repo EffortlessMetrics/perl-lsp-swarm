@@ -197,12 +197,34 @@ fn strip_comments_and_string_literals(source: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn is_hex_digit_byte(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
 fn char_literal_body_follows(bytes: &[u8], open: usize) -> bool {
     let Some(&first) = bytes.get(open + 1) else {
         return false;
     };
     if first == b'\\' {
-        return bytes.get(open + 2) == Some(&b'\'');
+        let Some(&second) = bytes.get(open + 2) else {
+            return false;
+        };
+        if second == b'x' {
+            return bytes.get(open + 5) == Some(&b'\'')
+                && bytes.get(open + 3).is_some_and(|byte| is_hex_digit_byte(*byte))
+                && bytes.get(open + 4).is_some_and(|byte| is_hex_digit_byte(*byte));
+        }
+        if second == b'u' && bytes.get(open + 3) == Some(&b'{') {
+            let mut j = open + 4;
+            while j < bytes.len() && bytes[j] != b'}' {
+                if !is_hex_digit_byte(bytes[j]) {
+                    return false;
+                }
+                j += 1;
+            }
+            return j < bytes.len() && bytes.get(j + 1) == Some(&b'\'');
+        }
+        return bytes.get(open + 3) == Some(&b'\'');
     }
     if first == b'\'' {
         return false;
@@ -652,6 +674,52 @@ fn lower_tier_consumer_detector_covers_direct_nested_and_aliased_imports() {
         "use perl_parser_core::{ast::Node};\nuse perl_parser_core::{incremental::{IncrementalState}};",
         &paths
     ));
+}
+
+#[test]
+fn lower_tier_consumer_detector_still_finds_consumer_after_escaped_quote_char_literal() {
+    let paths = default_lower_tier_paths();
+    let source = "let c = '\\\"';\nuse perl_parser_core::incremental::IncrementalState;";
+    assert!(uses_lower_tier_incremental(source, &paths));
+}
+
+#[test]
+fn lower_tier_consumer_detector_char_literal_sibling_escapes_do_not_hide_consumer() {
+    let paths = default_lower_tier_paths();
+    for prefix in [
+        "let c = '\\n';",
+        "let c = '\\\\';",
+        "let c = '\\x41';",
+        "let c = '\\u{1F600}';",
+        "let c = '\\'';",
+    ] {
+        let source = format!("{prefix}\nuse perl_parser_core::incremental::IncrementalState;");
+        assert!(
+            uses_lower_tier_incremental(&source, &paths),
+            "consumer must remain visible after char literal: {prefix}"
+        );
+    }
+}
+
+#[test]
+fn perl_parser_core_keys_from_metadata_dependency_honors_cargo_rename() {
+    let renamed = serde_json::json!({
+        "name": "perl-parser-core",
+        "rename": "core_parser"
+    });
+    assert_eq!(
+        perl_parser_core_keys_from_metadata_dependency(&renamed),
+        Some("core_parser".to_string())
+    );
+
+    let default_key = serde_json::json!({ "name": "perl-parser-core" });
+    assert_eq!(
+        perl_parser_core_keys_from_metadata_dependency(&default_key),
+        Some("perl_parser_core".to_string())
+    );
+
+    let other_crate = serde_json::json!({ "name": "perl-lexer", "rename": "lexer" });
+    assert_eq!(perl_parser_core_keys_from_metadata_dependency(&other_crate), None);
 }
 
 #[test]
