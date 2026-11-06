@@ -4,6 +4,6 @@ kind: Fixed
 body: "Six xtask pr_fast portfolio composition tests failed on main because the hardcoded gate-name snapshot in xtask/src/tasks/gates/non_rust_composition_tests.rs predated the regex_static_ratchet (#16334) and public_api_baseline_canonical (#18736) additions to the pr_fast tier; the snapshot now names both gates in policy order."
 time: 2026-11-06T04:05:00Z
 custom:
-  PR: "19131"
+  PR: "19133"
   Slug: pr-fast-portfolio-snapshot
   Breaking: "no"
