@@ -157,6 +157,54 @@ pub(crate) fn set_completion_analysis_started_observer(
     }
 }
 
+/// Test-only wait-entry signal for the #18760 settle loop: fired when a
+/// completion request actually enters the bounded settle wait (inside the
+/// loop body, so a request that never waits -- zero budget, parse already
+/// settled, no worker installed -- never fires it). Lets a test hold a
+/// parse's publication until the request is provably inside the wait:
+/// releasing earlier can publish the settled snapshot before the request
+/// starts, and wait-behavior assertions would then pass through the
+/// already-settled path without exercising the wait at all. Keyed by URI
+/// with the same per-URI ownership as
+/// `COMPLETION_ANALYSIS_STARTED_OBSERVER` so an unrelated concurrent
+/// test's request cannot consume this one's signal.
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+static COMPLETION_SETTLE_WAIT_STARTED_OBSERVER: std::sync::Mutex<
+    Option<(String, std::sync::mpsc::Sender<()>)>,
+> = std::sync::Mutex::new(None);
+
+/// Arms the settle-wait-entry signal for `uri`; the test releases the parse
+/// once the returned receiver observes that the request entered the wait.
+#[cfg(test)]
+pub(crate) fn set_completion_settle_wait_started_observer(
+    uri: &str,
+    sender: std::sync::mpsc::Sender<()>,
+) {
+    if let Ok(mut observer) = COMPLETION_SETTLE_WAIT_STARTED_OBSERVER.lock() {
+        *observer = Some((uri.to_string(), sender));
+    }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn notify_completion_settle_wait_started(uri: &str) {
+    let sender = COMPLETION_SETTLE_WAIT_STARTED_OBSERVER.lock().ok().and_then(|mut observer| {
+        // Only consume the slot for the URI it was armed with -- an
+        // unrelated concurrent test's request must not consume this one's
+        // signal (leaves the slot untouched for its rightful owner).
+        if observer.as_ref().is_some_and(|(armed_uri, _)| armed_uri == uri) {
+            observer.take().map(|(_, tx)| tx)
+        } else {
+            None
+        }
+    });
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+fn notify_completion_settle_wait_started(_uri: &str) {}
+
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 fn notify_completion_analysis_started(uri: &str) {
     let sender = COMPLETION_ANALYSIS_STARTED_OBSERVER.lock().ok().and_then(|mut observer| {
@@ -1611,7 +1659,7 @@ impl LspServer {
             // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let (mut doc_owned, mut captured_generation) = {
+            let (mut doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
                     Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
@@ -1656,16 +1704,22 @@ impl LspServer {
                     && settle_start.elapsed() < settle_budget
                     && doc_owned.as_ref().is_some_and(|doc| Self::completion_parsed_snapshot(doc).1)
                 {
+                    notify_completion_settle_wait_started(uri);
                     std::thread::sleep(Duration::from_millis(2));
                     let documents = self.documents_guard();
                     match self.get_document(&documents, uri) {
-                        // Re-clone the freshest state AND the generation it
-                        // carries: without the generation update,
-                        // `publish_user_answer_value` would suppress the very
-                        // answer this wait just produced as "stale".
+                        // Re-clone only the state the analysis runs against;
+                        // keep the generation the request was captured at. A
+                        // didChange that lands during the wait moved the
+                        // document under the request's position, so mapping
+                        // the original line/character onto the newer text can
+                        // answer the wrong location -- that edit must yield
+                        // the superseded incomplete list (the client re-queries
+                        // at its own mapped position), which
+                        // `publish_user_answer_value` produces precisely when
+                        // the captured generation no longer matches.
                         Some(fresh) => {
                             doc_owned = Some(fresh.clone());
-                            captured_generation = Some(fresh.current_generation());
                         }
                         None => break,
                     }
@@ -2016,7 +2070,7 @@ impl LspServer {
             // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let (mut doc_owned, mut captured_generation) = {
+            let (mut doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
                     Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
@@ -2060,16 +2114,22 @@ impl LspServer {
                             data: None,
                         });
                     }
+                    notify_completion_settle_wait_started(uri);
                     std::thread::sleep(Duration::from_millis(2));
                     let documents = self.documents_guard();
                     match self.get_document(&documents, uri) {
-                        // Re-clone the freshest state AND the generation it
-                        // carries: without the generation update,
-                        // `publish_user_answer_value` would suppress the very
-                        // answer this wait just produced as "stale".
+                        // Re-clone only the state the analysis runs against;
+                        // keep the generation the request was captured at. A
+                        // didChange that lands during the wait moved the
+                        // document under the request's position, so mapping
+                        // the original line/character onto the newer text can
+                        // answer the wrong location -- that edit must yield
+                        // the superseded incomplete list (the client re-queries
+                        // at its own mapped position), which
+                        // `publish_user_answer_value` produces precisely when
+                        // the captured generation no longer matches.
                         Some(fresh) => {
                             doc_owned = Some(fresh.clone());
-                            captured_generation = Some(fresh.current_generation());
                         }
                         None => break,
                     }
@@ -6328,16 +6388,31 @@ our $single_root_var;
         server.test_apply_did_change(uri, v2, 2)?;
         server.test_parse_worker_wait_until_paused();
 
-        // Release the held parse from a helper thread so the request's
-        // bounded settle wait observes publication while inside its budget.
-        let releaser = Arc::clone(&server);
-        std::thread::spawn(move || releaser.test_parse_worker_release_barrier());
-
-        let response = server
-            .handle_completion(Some(json!({
+        // Deterministic rendezvous: the request runs on a helper thread and
+        // signals when it has actually entered the bounded settle wait; only
+        // then does this thread release the held parse. Releasing from a
+        // thread that races `handle_completion`'s start could publish
+        // generation 2 before the request begins, and the assertions below
+        // would then pass through the already-settled path without
+        // exercising the wait loop at all. A signal that never arrives is
+        // itself the failure: the request answered without waiting.
+        let (wait_started_tx, wait_started_rx) = std::sync::mpsc::channel();
+        set_completion_settle_wait_started_observer(uri, wait_started_tx);
+        let requester = Arc::clone(&server);
+        let request = std::thread::spawn(move || {
+            requester.handle_completion(Some(json!({
                 "textDocument": { "uri": uri, "version": 2 },
                 "position": { "line": 3, "character": 3 }
-            })))?
+            })))
+        });
+        wait_started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "completion request never entered the settle wait")?;
+        server.test_parse_worker_release_barrier();
+
+        let response = request
+            .join()
+            .map_err(|_| "completion request thread panicked")??
             .ok_or("completion must answer during the pending-parse window")?;
         let items = response["items"].as_array().ok_or("missing items")?;
         let labels: Vec<&str> = items.iter().filter_map(|item| item["label"].as_str()).collect();
@@ -6349,6 +6424,103 @@ our $single_root_var;
             response["isIncomplete"],
             json!(false),
             "a settled answer must not be marked incomplete: {response}"
+        );
+        Ok(())
+    }
+
+    /// #18760: a didChange that lands *while* a request is inside the settle
+    /// wait moved the document under the request's position. The request
+    /// must answer with the superseded incomplete list -- the client
+    /// re-queries at its own remapped position -- rather than publishing a
+    /// page computed from the original position against the newer text as
+    /// current. Without the keep-request-generation rule, this scenario
+    /// published generation 3's settled page (complete, not incomplete) for
+    /// the stale position.
+    #[test]
+    #[serial_test::serial]
+    fn mid_wait_did_change_yields_superseded_incomplete_list()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = Arc::new(LspServer::default());
+        server.test_install_parse_worker();
+        assert!(server.test_parse_worker_installed());
+
+        let _restore = force_settle_budget(std::time::Duration::from_secs(5));
+
+        let uri = "file:///workspace/settle_midwait.pl";
+        let v1 = "package SettleMidWait;\nsub pred_midwait_marker {}\n1;\n";
+        // Request position is (line 3, character 3): end of the typed "set".
+        let v2 = "package SettleMidWait;\nsub pred_midwait_marker {}\nsub settled_midwait_marker {}\nset\n1;\n";
+        // The mid-wait keystroke extends the same line: generation 3's
+        // settled text would answer the original position as current if the
+        // request generation were refreshed during the wait.
+        let v3 = "package SettleMidWait;\nsub pred_midwait_marker {}\nsub settled_midwait_marker {}\nsett\n1;\n";
+
+        server.test_apply_did_open(uri, v1, 1)?;
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "generation-1 parse must publish before the pending-window scenario starts"
+        );
+
+        // Hold generation 2's parse before publish so the request enters the
+        // settle wait.
+        server.test_parse_worker_arm_barrier(uri, 2);
+        server.test_apply_did_change(uri, v2, 2)?;
+        server.test_parse_worker_wait_until_paused();
+
+        let (wait_started_tx, wait_started_rx) = std::sync::mpsc::channel();
+        set_completion_settle_wait_started_observer(uri, wait_started_tx);
+        let requester = Arc::clone(&server);
+        let request = std::thread::spawn(move || {
+            requester.handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 3, "character": 3 }
+            })))
+        });
+        wait_started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "completion request never entered the settle wait")?;
+
+        // While the request waits, land the next keystroke (generation 3)
+        // and let both the held generation-2 parse and generation 3's parse
+        // publish. The wait keeps running until generation 3 -- the current
+        // generation -- publishes.
+        server.test_apply_did_change(uri, v3, 3)?;
+        server.test_parse_worker_release_barrier();
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "generation-3 parse must publish while the request is still waiting"
+        );
+
+        let response = request
+            .join()
+            .map_err(|_| "completion request thread panicked")??
+            .ok_or("completion must answer during the pending-parse window")?;
+        assert_eq!(
+            response,
+            json!({"isIncomplete": true, "items": []}),
+            "a mid-wait edit must yield the superseded empty list, not a page \
+             computed from the stale position: {response}"
+        );
+
+        // The re-query the incomplete marker triggers lands the settled
+        // generation-3 answer at the client's own position.
+        let settled = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 3 },
+                "position": { "line": 3, "character": 4 }
+            })))?
+            .ok_or("re-queried completion must answer after settling")?;
+        let settled_items = settled["items"].as_array().ok_or("missing settled items")?;
+        let settled_labels: Vec<&str> =
+            settled_items.iter().filter_map(|item| item["label"].as_str()).collect();
+        assert!(
+            settled_labels.contains(&"settled_midwait_marker"),
+            "re-queried completion must offer generation-3's subroutine; got {settled_labels:?}"
+        );
+        assert_eq!(
+            settled["isIncomplete"],
+            json!(false),
+            "the re-queried settled answer must be complete: {settled}"
         );
         Ok(())
     }
