@@ -93,7 +93,7 @@ pub(crate) fn classify_initial_root_input(params: &Value) -> InitialRootInput {
     match params.get("workspaceFolders") {
         // Field present with a JSON array: presence decides the mode. Entry
         // validation stays with the canonical URI policy
-        // (`perl_workspace::folder::extract_workspace_folder_uris`).
+        // (`perl_workspace::folder::admit_workspace_folder_uris`).
         Some(Value::Array(folders)) => {
             if folders.is_empty() {
                 InitialRootInput::ExplicitEmptyWorkspaceFolders
