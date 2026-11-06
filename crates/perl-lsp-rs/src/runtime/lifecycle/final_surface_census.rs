@@ -385,7 +385,7 @@ fn registrations_refreshes_and_compat_rows_are_ledgered() {
             .contains("virtual_content.rs request_text_document_content_refresh")
     );
 
-    // Compatibility branches behave exactly as their rows claim.
+    // Retired compatibility row: name alone must not force-disable watchers (#7710).
     let jetbrains = LspServer::new();
     let params = representative_client_shapes()
         .into_iter()
@@ -394,12 +394,12 @@ fn registrations_refreshes_and_compat_rows_are_ledgered() {
         .1;
     let _ = jetbrains.handle_initialize(Some(params));
     assert!(
-        !jetbrains.client_capabilities.lock().dynamic_registration_support,
-        "compat row compat.client.jetbrains.watcherForceDisable: dynamic registration must be forced off"
+        jetbrains.client_capabilities.lock().dynamic_registration_support,
+        "compat row compat.client.jetbrains.watcherForceDisable is retired: dynamic registration follows declared capabilities"
     );
     assert!(
-        jetbrains.pending_startup_log.lock().is_some(),
-        "compat row compat.client.jetbrains.watcherForceDisable: override logMessage must be queued"
+        jetbrains.pending_startup_log.lock().is_none(),
+        "retired JetBrains watcher override must not queue a startup logMessage"
     );
 }
 
