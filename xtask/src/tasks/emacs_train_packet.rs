@@ -1243,9 +1243,7 @@ pub fn compose_review_packet(
         builder.get("work").and_then(|work| work.get("profile")).and_then(Value::as_str);
     let supplied_id = builder.get("packet_id").and_then(Value::as_str).unwrap_or_default();
     let permitted = supplied_profile
-        .map(|profile| {
-            allowed_profiles_for(node, &disposition).iter().any(|allowed| *allowed == profile)
-        })
+        .map(|profile| allowed_profiles_for(node, &disposition).contains(&profile))
         .unwrap_or(false);
     if !permitted
         || supplied_id

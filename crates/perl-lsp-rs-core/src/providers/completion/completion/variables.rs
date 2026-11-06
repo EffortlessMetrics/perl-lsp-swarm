@@ -51,7 +51,7 @@ fn variable_item(
         // (#5050 item 4)
         filter_text: Some(Cow::Owned(insert_text)),
         additional_edits: vec![],
-        text_edit_range: Some((context.prefix_start, context.position)),
+        text_edit_range: Some((context.prefix_start, context.suffix_end)),
         commit_characters: None,
         insert_text_format: InsertTextFormat::PlainText,
         label_details: None,
@@ -199,7 +199,7 @@ pub fn add_special_variables(
                 sort_text: Some(Cow::Owned(format!("0_{}", var))), // Special vars have highest priority
                 filter_text: Some(Cow::Owned(var.to_string())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,

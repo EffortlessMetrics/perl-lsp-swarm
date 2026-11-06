@@ -200,7 +200,7 @@ struct DomainView {
 }
 
 /// Evidence joined from one validated, current, complete run.
-struct ValidatedBundle {
+pub(crate) struct ValidatedBundle {
     run_id: String,
     head: String,
     dirty: bool,

@@ -1038,6 +1038,19 @@ class PayloadOracleTests(unittest.TestCase):
     def test_clean_payload_validates(self) -> None:
         self.assertEqual([], aggregate_lane_history.validate_history_payload(self.clean_payload()))
 
+    def test_non_integer_schema_version_fails(self) -> None:
+        """bool is an int subclass and 1.0 == 1, so bare equality would admit a
+        JSON `true` or `1.0` envelope as v1; only an exact integer passes."""
+        for forged_version in (True, 1.0):
+            with self.subTest(forged_version=forged_version):
+                payload = self.clean_payload()
+                payload["schema_version"] = forged_version
+                violations = aggregate_lane_history.validate_history_payload(payload)
+                self.assertTrue(
+                    any("schema_version must be 1" in v for v in violations),
+                    violations,
+                )
+
     def test_builder_output_validates(self) -> None:
         history = aggregate_lane_history.build_history(
             samples={"merge_gate_shards": [24.0, 25.0, 26.0, 27.0, 28.0, 24.5]},

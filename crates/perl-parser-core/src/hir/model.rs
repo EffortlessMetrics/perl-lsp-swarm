@@ -281,6 +281,11 @@ pub enum BarewordRole {
     MethodReceiver,
     /// Bareword used as the object in an indirect-object call.
     IndirectObject,
+    /// Sigil-prefixed receiver of a dynamic indirect constructor call, such
+    /// as the `$class` in `new $class`. The receiver is a runtime value, not
+    /// a static class name, so it is distinguishable from the bareword in
+    /// `new Foo` without consumers sniffing the name for a sigil (#15031).
+    DynamicIndirectObject,
     /// Bareword used as an autoquoted hash key.
     HashKey,
 }
