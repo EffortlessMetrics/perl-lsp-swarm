@@ -526,6 +526,16 @@ perllsp --features-json --feature-profile production | python3 -m json.tool
    perllsp --doctor .  # reports whether .perl-lsp.toml loaded
    ```
 
+   Doctor searches the requested directory, then its parents, for the nearest
+   `.perl-lsp.toml`. If loading fails, it exits `1` and names that config on
+   stderr, with line and column context for TOML syntax errors. For example,
+   running from `lib/` can report the project root's `.perl-lsp.toml`; fix the
+   named file and rerun the command.
+
+   `perllsp --doctor . --json` emits its report on stdout after a successful
+   load. A config load failure keeps stdout empty and writes the error to
+   stderr, including when `--json` is requested.
+
 ### Module resolution not finding your modules
 
 1. Add the missing path to `include_paths` (TOML) or `includePaths` (editor).
