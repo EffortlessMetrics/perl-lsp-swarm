@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "query": "diagnostics_check",
+  "input": {
+    "symbol": "defined_sub"
+  },
+  "old_result": {
+    "available": true,
+    "match_count": 1,
+    "identities": [
+      "warn"
+    ]
+  },
+  "new_result": {
+    "available": true,
+    "match_count": 0,
+    "identities": []
+  },
+  "verdict": "regression",
+  "notes": [
+    "suppressed: dynamic boundary scope"
+  ],
+  "fact_source_traces": [
+    {
+      "surface": "Diagnostics",
+      "source": "DynamicBoundary",
+      "provenance": "DynamicBoundary",
+      "confidence": "High",
+      "freshness": "Fresh",
+      "fallback_state": "Blocked",
+      "source_hash": null,
+      "anchor_id": null,
+      "model_version": 1
+    }
+  ]
+}

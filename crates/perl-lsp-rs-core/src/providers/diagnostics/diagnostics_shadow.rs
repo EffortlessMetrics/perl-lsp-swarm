@@ -34,8 +34,11 @@ use perl_semantic_facts::{
 };
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 use perl_workspace::semantic_shadow_compare::{
-    SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, ShadowResultSummary,
-    summarize_identities,
+    SemanticShadowCompareReceipt, ShadowQueryName, ShadowResultSummary, summarize_identities,
+};
+
+use crate::providers::shadow_framework::{
+    ShadowNewPathOutput, ShadowOldPathOutput, run_shadow_compare,
 };
 
 // ── Shadow result ──
@@ -79,36 +82,39 @@ pub fn diagnostics_undefined_symbol_shadow<Q: SemanticQueries>(
     scope_id: Option<ScopeId>,
     byte_offset: u32,
 ) -> DiagnosticsShadowResult {
-    // Legacy path
-    let old_summary = legacy_warn_to_summary(legacy_should_warn);
-
-    // New semantic path
-    let context = QueryContext::new(file_id, scope_id, Some(byte_offset));
-    let candidates = semantic_queries.definitions(symbol, &context);
-    let classification = classify_diagnostic_result(&candidates);
-    let new_summary = classification_to_summary(&classification, symbol);
-
-    // Build receipt
-    let fact_source_traces =
-        diagnostics_fact_source_traces(&classification, &candidates, ProviderFallbackState::Shadow);
-    let receipt = SemanticShadowCompareReceipt::from_summaries_with_fact_source_traces(
+    let compare = run_shadow_compare(
         ShadowQueryName::DiagnosticsCheck,
-        ShadowQueryInput { symbol: symbol.to_string() },
-        old_summary,
-        new_summary,
-        Vec::new(),
-        fact_source_traces,
+        symbol,
+        || ShadowOldPathOutput {
+            value: legacy_should_warn,
+            summary: legacy_warn_to_summary(legacy_should_warn),
+        },
+        || {
+            let context = QueryContext::new(file_id, scope_id, Some(byte_offset));
+            let candidates = semantic_queries.definitions(symbol, &context);
+            let classification = classify_diagnostic_result(&candidates);
+            ShadowNewPathOutput {
+                value: classification,
+                summary: classification_to_summary(&classification, symbol),
+                fact_source_traces: diagnostics_fact_source_traces(
+                    &classification,
+                    &candidates,
+                    ProviderFallbackState::Shadow,
+                ),
+                notes: Vec::new(),
+            }
+        },
     );
 
     tracing::debug!(
         symbol = %symbol,
-        verdict = ?receipt.verdict,
+        verdict = ?compare.receipt.verdict,
         legacy_warn = legacy_should_warn,
-        classification = ?classification,
+        classification = ?compare.new_value,
         "diagnostics undefined-symbol shadow compare"
     );
 
-    DiagnosticsShadowResult { legacy_should_warn, receipt }
+    DiagnosticsShadowResult { legacy_should_warn: compare.old_value, receipt: compare.receipt }
 }
 
 // ── Cutover types ──
@@ -198,69 +204,70 @@ pub fn diagnostics_undefined_symbol_cutover<Q: SemanticQueries>(
     byte_offset: u32,
     is_in_dynamic_scope: bool,
 ) -> DiagnosticsCutoverOutcome {
-    // Dynamic boundary suppression (Req 7.4)
     if is_in_dynamic_scope {
-        let old_summary = legacy_warn_to_summary(legacy_should_warn);
-        let new_summary = summarize_identities(Some(Vec::new()));
-
-        let receipt = SemanticShadowCompareReceipt::from_summaries_with_fact_source_traces(
+        let compare = run_shadow_compare(
             ShadowQueryName::DiagnosticsCheck,
-            ShadowQueryInput { symbol: symbol.to_string() },
-            old_summary,
-            new_summary,
-            vec!["suppressed: dynamic boundary scope".to_string()],
-            vec![diagnostics_trace(
-                ProviderFactSourceKind::DynamicBoundary,
-                Provenance::DynamicBoundary,
-                Confidence::High,
-                ProviderFallbackState::Blocked,
-                None,
-            )],
+            symbol,
+            || ShadowOldPathOutput {
+                value: legacy_should_warn,
+                summary: legacy_warn_to_summary(legacy_should_warn),
+            },
+            || ShadowNewPathOutput {
+                value: DiagnosticClassification::DynamicOrUnavailable,
+                summary: summarize_identities(Some(Vec::new())),
+                fact_source_traces: vec![diagnostics_trace(
+                    ProviderFactSourceKind::DynamicBoundary,
+                    Provenance::DynamicBoundary,
+                    Confidence::High,
+                    ProviderFallbackState::Blocked,
+                    None,
+                )],
+                notes: vec!["suppressed: dynamic boundary scope".to_string()],
+            },
         );
 
         return DiagnosticsCutoverOutcome {
             action: DiagnosticAction::Suppress,
             classification: DiagnosticClassification::DynamicOrUnavailable,
-            receipt,
+            receipt: compare.receipt,
         };
     }
 
-    // Semantic path (primary)
-    let context = QueryContext::new(file_id, scope_id, Some(byte_offset));
-    let candidates = semantic_queries.definitions(symbol, &context);
-    let classification = classify_diagnostic_result(&candidates);
-    let new_summary = classification_to_summary(&classification, symbol);
-
-    // Legacy path (for receipt)
-    let old_summary = legacy_warn_to_summary(legacy_should_warn);
-
-    // Build receipt
-    let notes = match classification {
-        DiagnosticClassification::Exact => vec![],
-        DiagnosticClassification::Ambiguous => {
-            vec!["ambiguous: multiple or mixed-confidence candidates".to_string()]
-        }
-        DiagnosticClassification::DynamicOrUnavailable => {
-            vec!["suppressed: dynamic boundary or symbol defined".to_string()]
-        }
-    };
-
-    let fact_source_traces = diagnostics_fact_source_traces(
-        &classification,
-        &candidates,
-        cutover_fallback_state(&classification, &candidates),
-    );
-    let receipt = SemanticShadowCompareReceipt::from_summaries_with_fact_source_traces(
+    let compare = run_shadow_compare(
         ShadowQueryName::DiagnosticsCheck,
-        ShadowQueryInput { symbol: symbol.to_string() },
-        old_summary,
-        new_summary,
-        notes,
-        fact_source_traces,
+        symbol,
+        || ShadowOldPathOutput {
+            value: legacy_should_warn,
+            summary: legacy_warn_to_summary(legacy_should_warn),
+        },
+        || {
+            let context = QueryContext::new(file_id, scope_id, Some(byte_offset));
+            let candidates = semantic_queries.definitions(symbol, &context);
+            let classification = classify_diagnostic_result(&candidates);
+            let notes = match classification {
+                DiagnosticClassification::Exact => vec![],
+                DiagnosticClassification::Ambiguous => {
+                    vec!["ambiguous: multiple or mixed-confidence candidates".to_string()]
+                }
+                DiagnosticClassification::DynamicOrUnavailable => {
+                    vec!["suppressed: dynamic boundary or symbol defined".to_string()]
+                }
+            };
+            let fact_source_traces = diagnostics_fact_source_traces(
+                &classification,
+                &candidates,
+                cutover_fallback_state(&classification, &candidates),
+            );
+            ShadowNewPathOutput {
+                value: classification,
+                summary: classification_to_summary(&classification, symbol),
+                fact_source_traces,
+                notes,
+            }
+        },
     );
 
-    // Map classification to action
-    let action = match classification {
+    let action = match compare.new_value {
         DiagnosticClassification::Exact => DiagnosticAction::Warn,
         DiagnosticClassification::Ambiguous => DiagnosticAction::WeakWarn,
         DiagnosticClassification::DynamicOrUnavailable => DiagnosticAction::Suppress,
@@ -268,14 +275,18 @@ pub fn diagnostics_undefined_symbol_cutover<Q: SemanticQueries>(
 
     tracing::debug!(
         symbol = %symbol,
-        verdict = ?receipt.verdict,
+        verdict = ?compare.receipt.verdict,
         legacy_warn = legacy_should_warn,
-        classification = ?classification,
+        classification = ?compare.new_value,
         action = ?action,
         "diagnostics undefined-symbol cutover"
     );
 
-    DiagnosticsCutoverOutcome { action, classification, receipt }
+    DiagnosticsCutoverOutcome {
+        action,
+        classification: compare.new_value,
+        receipt: compare.receipt,
+    }
 }
 
 // ── Classification logic ──
