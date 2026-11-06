@@ -93,11 +93,11 @@ impl LspServer {
             let mut parser = perl_parser::Parser::new(code_text);
             let (ast, parse_errors, regex_analysis) = match parser.parse() {
                 Ok(mut ast) => {
-                    let table = regex_session.finish(Some(&mut ast));
+                    let table = regex_session.finish_or_unbound(Some(&mut ast));
                     let parse_errors = parser.errors().to_vec();
                     (Some(Arc::new(ast)), parse_errors, Arc::new(table))
                 }
-                Err(error) => (None, vec![error], Arc::new(regex_session.finish(None))),
+                Err(error) => (None, vec![error], Arc::new(regex_session.finish_or_unbound(None))),
             };
             let snapshot = Arc::new(
                 ParsedSnapshot::from_parse_result(0, &text, ast, parse_errors)
