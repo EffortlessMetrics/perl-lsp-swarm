@@ -16,7 +16,105 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Deprecation guidance for the full legacy workflow facade (#8428).
+pub const LEGACY_TDD_WORKFLOW_DEPRECATION: &str = "Legacy TDD workflow facade (#8428): \
+    cycle semantics move to #8175; test generation to #8154; execution to #4972/#7564; \
+    public-surface removal is governed by #8418.";
+
+/// Phase string returned when execution is unavailable on the generation-only runner.
+pub const EXECUTION_UNSUPPORTED_PHASE: &str = "Unsupported";
+
+/// Error while reading legacy TDD workflow configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TddConfigError {
+    /// JSON could not be parsed into [`TddConfig`].
+    Parse(String),
+    /// `coverage_threshold` is not a finite percentage in `0.0..=100.0`.
+    InvalidCoverageThreshold,
+    /// `test_framework` is empty after trimming.
+    EmptyTestFramework,
+    /// `test_file_pattern` is empty after trimming.
+    EmptyTestFilePattern,
+}
+
+impl std::fmt::Display for TddConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(message) => write!(f, "invalid TDD config JSON: {message}"),
+            Self::InvalidCoverageThreshold => {
+                write!(f, "coverage_threshold must be a finite value between 0 and 100")
+            }
+            Self::EmptyTestFramework => write!(f, "test_framework must not be empty"),
+            Self::EmptyTestFilePattern => write!(f, "test_file_pattern must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for TddConfigError {}
+
+/// Diagnostics emitted while accepting a legacy configuration for compatibility.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TddConfigReadResult {
+    /// Parsed configuration that passed structural validation.
+    pub config: TddConfig,
+    /// Deprecation notes for inactive automation fields present in the input.
+    pub deprecations: Vec<String>,
+}
+
+/// Parse legacy workflow configuration, failing closed on malformed input.
+pub fn read_tdd_config(json: &str) -> Result<TddConfig, TddConfigError> {
+    read_tdd_config_with_diagnostics(json).map(|read| read.config)
+}
+
+/// Parse legacy workflow configuration and collect inactive-field deprecation notes.
+pub fn read_tdd_config_with_diagnostics(json: &str) -> Result<TddConfigReadResult, TddConfigError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|err| TddConfigError::Parse(err.to_string()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| TddConfigError::Parse("TDD config must be a JSON object".to_string()))?;
+    let deprecations = inactive_field_deprecations_for_keys(object.keys().map(String::as_str));
+    let config: TddConfig =
+        serde_json::from_value(value).map_err(|err| TddConfigError::Parse(err.to_string()))?;
+    config.validate()?;
+    Ok(TddConfigReadResult { config, deprecations })
+}
+
+fn inactive_field_deprecations_for_keys<'a>(
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut deprecations = Vec::new();
+    for key in keys {
+        if let Some(message) = inactive_field_deprecation_message(key) {
+            deprecations.push(message.to_string());
+        }
+    }
+    deprecations
+}
+
+fn inactive_field_deprecation_message(key: &str) -> Option<&'static str> {
+    match key {
+        "auto_generate_tests" => {
+            Some("auto_generate_tests is compatibility-ignored; generation is owned by #8154")
+        }
+        "test_on_save" => Some(
+            "test_on_save is compatibility-ignored; save-time execution is unavailable (#4972)",
+        ),
+        "show_inline_coverage" => {
+            Some("show_inline_coverage is compatibility-ignored; inline coverage has no live owner")
+        }
+        "continuous_testing" => Some(
+            "continuous_testing is compatibility-ignored; watcher execution is unavailable (#4972)",
+        ),
+        "auto_suggest_refactorings" => Some(
+            "auto_suggest_refactorings has no reachable effect with the generation-only runner",
+        ),
+        _ => None,
+    }
+}
+
 /// TDD workflow manager
+#[deprecated(note = "Legacy TDD workflow facade (#8428); see LEGACY_TDD_WORKFLOW_DEPRECATION")]
 pub struct TddWorkflow {
     /// Test generator
     generator: TestGenerator,
@@ -33,6 +131,8 @@ pub struct TddWorkflow {
     coverage_tracker: CoverageTracker,
     /// Configuration
     config: TddConfig,
+    /// Whether the last refactoring analysis retained suggestion facts.
+    suggestion_facts_available: bool,
 }
 
 /// Represents the current phase of the TDD (Test-Driven Development) workflow cycle.
@@ -55,7 +155,8 @@ pub enum WorkflowState {
 ///
 /// Customizes how the TDD workflow manager generates tests, runs them, and provides
 /// feedback. All settings have sensible defaults suitable for typical Perl development.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub struct TddConfig {
     /// Automatically generate tests for new code
     pub auto_generate_tests: bool,
@@ -87,6 +188,22 @@ impl Default for TddConfig {
             continuous_testing: true,
             auto_suggest_refactorings: true,
         }
+    }
+}
+
+impl TddConfig {
+    fn validate(&self) -> Result<(), TddConfigError> {
+        if self.test_framework.trim().is_empty() {
+            return Err(TddConfigError::EmptyTestFramework);
+        }
+        if self.test_file_pattern.trim().is_empty() {
+            return Err(TddConfigError::EmptyTestFilePattern);
+        }
+        if !self.coverage_threshold.is_finite() || !(0.0..=100.0).contains(&self.coverage_threshold)
+        {
+            return Err(TddConfigError::InvalidCoverageThreshold);
+        }
+        Ok(())
     }
 }
 
@@ -125,10 +242,12 @@ pub struct BranchCoverage {
     pub hits: usize,
 }
 
+#[allow(deprecated, reason = "deprecated facade remains until #8418 removal")]
 impl TddWorkflow {
     /// Create a new TDD workflow manager with the given configuration
     #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
-    pub fn new(config: TddConfig) -> Self {
+    pub fn new(config: TddConfig) -> Result<Self, TddConfigError> {
+        config.validate()?;
         let framework = match config.test_framework.as_str() {
             "Test2::V0" => TestFramework::Test2V0,
             "Test::Simple" => TestFramework::TestSimple,
@@ -136,7 +255,7 @@ impl TddWorkflow {
             _ => TestFramework::TestMore,
         };
 
-        Self {
+        Ok(Self {
             generator: TestGenerator::new(framework),
             runner: TestRunner::new(),
             suggester: RefactoringSuggester::new(),
@@ -144,15 +263,14 @@ impl TddWorkflow {
             test_cache: HashMap::new(),
             coverage_tracker: CoverageTracker::new(),
             config,
-        }
+            suggestion_facts_available: false,
+        })
     }
 
     /// Start a new TDD cycle
     pub fn start_cycle(&mut self, test_name: &str) -> TddCycleResult {
-        self.state = WorkflowState::Red;
-
         TddCycleResult {
-            phase: "Red".to_string(),
+            phase: "Intent".to_string(),
             message: format!("Starting TDD cycle for '{}'", test_name),
             actions: vec![
                 TddAction::GenerateTest(test_name.to_string()),
@@ -289,9 +407,8 @@ impl TddWorkflow {
         let results = match self.runner.run_tests(&file_strings) {
             Ok(results) => results,
             Err(err) => {
-                self.state = WorkflowState::Red;
                 return TddCycleResult {
-                    phase: format!("{:?}", WorkflowState::Red),
+                    phase: EXECUTION_UNSUPPORTED_PHASE.to_string(),
                     message: err.to_string(),
                     actions: vec![],
                 };
@@ -354,7 +471,9 @@ impl TddWorkflow {
         ast: &Node,
         source: &str,
     ) -> Vec<RefactoringSuggestion> {
-        self.suggester.analyze(ast, source)
+        let suggestions = self.suggester.analyze(ast, source);
+        self.suggestion_facts_available = !suggestions.is_empty();
+        suggestions
     }
 
     /// Get current test coverage
@@ -393,9 +512,14 @@ impl TddWorkflow {
         annotations
     }
 
-    /// Check if coverage meets threshold
-    pub fn check_coverage_threshold(&self) -> bool {
-        self.coverage_tracker.total_coverage >= self.config.coverage_threshold
+    /// Check if measured compatibility coverage meets the configured threshold.
+    ///
+    /// Returns `None` when no coverage facts were supplied.
+    pub fn check_coverage_threshold(&self) -> Option<bool> {
+        if !self.coverage_tracker.has_measured_facts() {
+            return None;
+        }
+        Some(self.coverage_tracker.total_coverage >= self.config.coverage_threshold)
     }
 
     /// Get test file path for a given module
@@ -407,11 +531,21 @@ impl TddWorkflow {
 
     /// Get workflow status
     pub fn get_status(&self) -> WorkflowStatus {
+        let tests_passing = if self.test_cache.is_empty() {
+            None
+        } else {
+            Some(self.test_cache.values().all(|r| r.failed == 0))
+        };
+        let coverage = if self.coverage_tracker.has_measured_facts() {
+            Some(self.coverage_tracker.total_coverage)
+        } else {
+            None
+        };
         WorkflowStatus {
             state: self.state.clone(),
-            coverage: self.coverage_tracker.total_coverage,
-            tests_passing: self.test_cache.values().all(|r| r.failed == 0),
-            suggestions_available: true, // Would check actual suggestions
+            coverage,
+            tests_passing,
+            suggestions_available: self.suggestion_facts_available,
         }
     }
 
@@ -448,6 +582,10 @@ fn repeated_edge_case_args(params: &[String], edge_case: &str) -> String {
 impl CoverageTracker {
     fn new() -> Self {
         Self { line_coverage: HashMap::new(), branch_coverage: HashMap::new(), total_coverage: 0.0 }
+    }
+
+    fn has_measured_facts(&self) -> bool {
+        self.line_coverage.values().any(|lines| !lines.is_empty())
     }
 
     fn calculate_total_coverage(&mut self) {
@@ -540,11 +678,11 @@ pub enum AnnotationSeverity {
 pub struct WorkflowStatus {
     /// Current phase of the TDD cycle
     pub state: WorkflowState,
-    /// Overall code coverage percentage
-    pub coverage: f64,
-    /// Whether all tests are currently passing
-    pub tests_passing: bool,
-    /// Whether refactoring suggestions are available
+    /// Measured coverage percentage when compatibility facts were supplied.
+    pub coverage: Option<f64>,
+    /// Whether cached test runs all passed; `None` when no test facts exist.
+    pub tests_passing: Option<bool>,
+    /// Whether refactoring suggestions are available from retained facts.
     pub suggestions_available: bool,
 }
 
@@ -629,11 +767,16 @@ pub mod lsp_integration {
 
     /// Create status bar message for TDD state
     pub fn create_status_message(status: &WorkflowStatus) -> String {
+        let coverage =
+            status.coverage.map_or("unknown".to_string(), |value| format!("{value:.1}%"));
+        let tests = match status.tests_passing {
+            None => "?",
+            Some(true) => "✓",
+            Some(false) => "✗",
+        };
         format!(
-            "TDD: {:?} | Coverage: {:.1}% | Tests: {} | Refactor: {}",
+            "TDD: {:?} | Coverage: {coverage} | Tests: {tests} | Refactor: {}",
             status.state,
-            status.coverage,
-            if status.tests_passing { "✓" } else { "✗" },
             if status.suggestions_available { "💡" } else { "" }
         )
     }
@@ -641,25 +784,29 @@ pub mod lsp_integration {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated, reason = "unit tests cover the deprecated legacy facade")]
+
     use super::*;
     use crate::ast::NodeKind;
     use crate::ast::SourceLocation;
+    use crate::must;
 
     #[test]
     fn test_tdd_workflow_cycle() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = must(TddWorkflow::new(config));
 
         // Start a new cycle
         let result = workflow.start_cycle("calculate_sum");
-        assert_eq!(workflow.state, WorkflowState::Red);
+        assert_eq!(workflow.state, WorkflowState::Idle);
+        assert_eq!(result.phase, "Intent");
         assert!(result.message.contains("calculate_sum"));
     }
 
     #[test]
     fn test_generate_tests() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config);
+        let workflow = must(TddWorkflow::new(config));
 
         let ast = Node::new(
             NodeKind::Subroutine {
@@ -684,7 +831,7 @@ mod tests {
     #[test]
     fn test_coverage_tracking() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = must(TddWorkflow::new(config));
 
         let coverage = vec![
             LineCoverage { line: 1, hits: 5, covered: true },
@@ -703,25 +850,25 @@ mod tests {
     fn test_coverage_resets_to_zero_when_all_inputs_empty() -> Result<(), Box<dyn std::error::Error>>
     {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = must(TddWorkflow::new(config));
 
         workflow.update_coverage(
             PathBuf::from("a.pl"),
             vec![LineCoverage { line: 1, hits: 1, covered: true }],
         );
-        assert!(workflow.check_coverage_threshold());
+        assert_eq!(workflow.check_coverage_threshold(), Some(true));
 
         workflow.update_coverage(PathBuf::from("a.pl"), vec![]);
 
-        assert!(!workflow.check_coverage_threshold());
-        assert_eq!(workflow.get_status().coverage, 0.0);
+        assert_eq!(workflow.check_coverage_threshold(), None);
+        assert_eq!(workflow.get_status().coverage, None);
         Ok(())
     }
 
     #[test]
     fn test_refactoring_suggestions() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config);
+        let mut workflow = must(TddWorkflow::new(config));
 
         // Create a subroutine with 8 parameters to trigger TooManyParameters suggestion
         let parameters: Vec<Node> = (0..8)
@@ -773,7 +920,7 @@ mod tests {
     #[test]
     fn test_specific_test_generation() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config);
+        let workflow = must(TddWorkflow::new(config));
 
         let test = workflow.generate_test_for_function(
             "validate_email",
@@ -789,7 +936,7 @@ mod tests {
     #[test]
     fn test_edge_case_generation_preserves_signature_arity() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config);
+        let workflow = must(TddWorkflow::new(config));
 
         let test = workflow.generate_test_for_function(
             "validate_contact",

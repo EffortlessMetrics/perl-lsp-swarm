@@ -2,7 +2,7 @@
 //!
 //! Slice 1 of #4948: this runner must never report success for work it did not perform.
 
-#![allow(deprecated, reason = "tests intentionally exercise deprecated test_generator::TestRunner")]
+#![allow(deprecated, reason = "tests intentionally exercise deprecated legacy workflow facades")]
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_tdd_support::must_err;
@@ -50,15 +50,18 @@ fn tdd_workflow_run_tests_stays_red_without_all_tests_pass_message()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, WorkflowState};
+    use perl_tdd_support::tdd_workflow::{
+        EXECUTION_UNSUPPORTED_PHASE, TddConfig, TddWorkflow, WorkflowState,
+    };
 
-    let mut workflow = TddWorkflow::new(TddConfig::default());
+    let mut workflow = TddWorkflow::new(TddConfig::default())?;
     workflow.start_cycle("feature");
 
     let result = workflow.run_tests(&[PathBuf::from("t/feature.t")]);
-    assert_eq!(result.phase, "Red");
+    assert_eq!(result.phase, EXECUTION_UNSUPPORTED_PHASE);
     assert!(!result.message.contains("All tests pass"));
-    assert_eq!(workflow.get_status().state, WorkflowState::Red);
+    assert_eq!(workflow.get_status().state, WorkflowState::Idle);
+    assert_ne!(workflow.get_status().tests_passing, Some(true));
 
     Ok(())
 }

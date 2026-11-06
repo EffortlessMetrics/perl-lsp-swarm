@@ -1,0 +1,22 @@
+{
+  "issue": 8428,
+  "legacy_facades": [
+    {
+      "path": "perl_tdd_support::tdd_workflow::TddWorkflow",
+      "deprecation": "LEGACY_TDD_WORKFLOW_DEPRECATION",
+      "replacements": ["#8175", "#8154", "#4972", "#7564", "#8418"]
+    },
+    {
+      "path": "perl_tdd_support::tdd_basic::TddWorkflow",
+      "deprecation": "LEGACY_TDD_BASIC_WORKFLOW_DEPRECATION",
+      "replacements": ["#8175", "#4972", "#7564", "#8418"]
+    }
+  ],
+  "inactive_config_fields": [
+    "auto_generate_tests",
+    "test_on_save",
+    "show_inline_coverage",
+    "continuous_testing",
+    "auto_suggest_refactorings"
+  ]
+}
