@@ -349,6 +349,23 @@ class RuntimeCompositionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'in-progress'):
                 self.owners.enter_native(event, capture)
 
+    def test_other_run_at_entry_readback_refuses_before_owner_admission(self):
+        original = self.api.get
+        reads = 0
+        def get(path):
+            nonlocal reads
+            row = original(path)
+            if path.endswith('/actions/runs/123'):
+                reads += 1
+                if reads == 2:  # After metadata election, before owner admission.
+                    return dict(row, id=124)
+            return row
+        with mock.patch.object(self.api, 'get', side_effect=get), mock.patch.object(
+                self.owners, 'eligibility', return_value=runtime.Eligibility('READY', 'fixture')) as eligibility:
+            with self.assertRaises(ValueError):
+                self.owners.enter_native({'inputs': {'request': json.dumps(self.plan)}}, lambda *a, **kw: {})
+            eligibility.assert_not_called()
+
     def test_native_late_duplicate_during_capture_refuses_stale_admission(self):
         event = {'inputs': {'request': json.dumps(self.plan)}}
         def capture(environment, **kw):

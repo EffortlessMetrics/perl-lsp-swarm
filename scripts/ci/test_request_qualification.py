@@ -157,6 +157,32 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(sum(c[0] == 'POST' for c in self.api.calls), 1)
 
+    def test_same_subject_other_run_cannot_be_accepted_by_readback(self):
+        self.api.rows = [self.api.run()]
+        original = self.api.get
+        def get(path):
+            row = original(path)
+            return dict(row, id=22) if path.endswith('/actions/runs/21') else row
+        with mock.patch.object(self.api, 'get', side_effect=get), self.assertRaises(adapter.Refused):
+            self.adapter.request()
+        self.assertFalse(any(call[0] == 'POST' for call in self.api.calls))
+
+    def test_inspection_rejects_other_run_at_initial_and_final_readback(self):
+        self.complete()
+        original = self.api.get
+        for changed_read in (1, 2):
+            reads = 0
+            def get(path):
+                nonlocal reads
+                row = original(path)
+                if path.endswith('/actions/runs/21'):
+                    reads += 1
+                    if reads == changed_read:
+                        return dict(row, id=22)
+                return row
+            with self.subTest(changed_read=changed_read), mock.patch.object(self.api, 'get', side_effect=get), self.assertRaises(adapter.Refused):
+                self.adapter.inspect(21, 1)
+
     def test_dispatch_ack_without_readback_is_not_in_flight(self):
         self.api.ack_without_run = True
         self.assertEqual(self.adapter.request()['status'], 'NOT_PROVEN')

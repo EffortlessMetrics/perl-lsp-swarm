@@ -97,5 +97,21 @@ class PublicationTests(unittest.TestCase):
         failure = self.prepare(replace(self.proof, result='product_failure', executed=3, failed=1))
         self.assertEqual(failure['payload']['conclusion'], 'failure')
 
+    def test_other_run_at_either_native_read_cannot_prepare_publication(self):
+        original = self.api.get
+        for changed_read in (1, 2):
+            reads = 0
+            def get(path):
+                nonlocal reads
+                row = original(path)
+                if path.endswith('/actions/runs/21'):
+                    reads += 1
+                    if reads == changed_read:
+                        return dict(row, id=22)
+                return row
+            with self.subTest(changed_read=changed_read), mock.patch.object(self.api, 'get', side_effect=get), self.assertRaises(ValueError):
+                self.prepare()
+        self.assertTrue(all(call[0] == 'GET' for call in self.api.calls))
+
 
 if __name__ == '__main__': unittest.main()
