@@ -230,6 +230,7 @@ mod tests {
             suggestion: None,
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
         }
     }
 
@@ -1077,6 +1078,7 @@ mod tests {
             suggestion: Some("Add a ';' at the end of the statement".to_string()),
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
         };
 
         let actions = provider.get_actions_for_diagnostic(&diagnostic);
@@ -1293,6 +1295,7 @@ mod tests {
             suggestion: None,
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
         };
 
         let actions = provider.get_actions_for_diagnostic(&diagnostic);

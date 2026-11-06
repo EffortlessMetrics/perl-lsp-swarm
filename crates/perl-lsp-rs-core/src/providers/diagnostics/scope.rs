@@ -83,6 +83,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             suggestion,
             fixable: matches!(code, DiagnosticCode::VariableRedeclaration),
             critic_observation: None,
+            parse_error_fix_kind: None,
         });
     }
 
@@ -307,6 +308,7 @@ pub(crate) fn scope_issues_to_diagnostics_with_semantics_ref<Q: SemanticQueries>
             suggestion,
             fixable: matches!(code, DiagnosticCode::VariableRedeclaration),
             critic_observation: None,
+            parse_error_fix_kind: None,
         });
     }
 

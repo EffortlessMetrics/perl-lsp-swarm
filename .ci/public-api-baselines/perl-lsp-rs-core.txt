@@ -3722,6 +3722,11 @@ pub mod perl_lsp_rs_core::providers::diagnostics::version_compat
 pub fn perl_lsp_rs_core::providers::diagnostics::version_compat::check_version_compat(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub fn perl_lsp_rs_core::providers::diagnostics::version_compat::check_version_compat_with_project_version(node: &perl_ast::ast::Node, source: &str, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>, project_version: core::option::Option<&str>)
 pub fn perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(value: &str) -> core::option::Option<perl_pragma::version::PerlVersion>
+pub enum perl_lsp_rs_core::providers::diagnostics::ParseErrorFixKind
+pub perl_lsp_rs_core::providers::diagnostics::ParseErrorFixKind::MissingSemicolon
+pub fn perl_lsp_rs_core::providers::ParseErrorFixKind::clone(&self) -> perl_lsp_rs_core::providers::ParseErrorFixKind
+pub fn perl_lsp_rs_core::providers::ParseErrorFixKind::eq(&self, other: &perl_lsp_rs_core::providers::ParseErrorFixKind) -> bool
+pub fn perl_lsp_rs_core::providers::ParseErrorFixKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::diagnostics::DeadCodeIdentity
 pub perl_lsp_rs_core::providers::diagnostics::DeadCodeIdentity::code: &'static str
 pub perl_lsp_rs_core::providers::diagnostics::DeadCodeIdentity::subject: &'static str
@@ -3733,6 +3738,7 @@ pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::code: core::option::Op
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::critic_observation: core::option::Option<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::fixable: bool
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::message: alloc::string::String
+pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::parse_error_fix_kind: core::option::Option<perl_lsp_rs_core::providers::ParseErrorFixKind>
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::range: (usize, usize)
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::related_information: alloc::vec::Vec<perl_lsp_rs_core::providers::RelatedInformation>
 pub perl_lsp_rs_core::providers::diagnostics::Diagnostic::severity: perl_diagnostics::codes::severity::DiagnosticSeverity
@@ -7839,6 +7845,11 @@ pub const fn perl_lsp_rs_core::providers::OnTypeSuppression::reason(self) -> &'s
 pub fn perl_lsp_rs_core::providers::OnTypeSuppression::clone(&self) -> perl_lsp_rs_core::providers::OnTypeSuppression
 pub fn perl_lsp_rs_core::providers::OnTypeSuppression::eq(&self, other: &perl_lsp_rs_core::providers::OnTypeSuppression) -> bool
 pub fn perl_lsp_rs_core::providers::OnTypeSuppression::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::providers::ParseErrorFixKind
+pub perl_lsp_rs_core::providers::ParseErrorFixKind::MissingSemicolon
+pub fn perl_lsp_rs_core::providers::ParseErrorFixKind::clone(&self) -> perl_lsp_rs_core::providers::ParseErrorFixKind
+pub fn perl_lsp_rs_core::providers::ParseErrorFixKind::eq(&self, other: &perl_lsp_rs_core::providers::ParseErrorFixKind) -> bool
+pub fn perl_lsp_rs_core::providers::ParseErrorFixKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::providers::PreparedInvocationContext
 pub perl_lsp_rs_core::providers::PreparedInvocationContext::NoContext
 pub perl_lsp_rs_core::providers::PreparedInvocationContext::Ready(alloc::boxed::Box<perl_lsp_rs_core::providers::PreparedInlineCompletionContext>)
@@ -8655,6 +8666,7 @@ pub perl_lsp_rs_core::providers::Diagnostic::code: core::option::Option<alloc::s
 pub perl_lsp_rs_core::providers::Diagnostic::critic_observation: core::option::Option<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
 pub perl_lsp_rs_core::providers::Diagnostic::fixable: bool
 pub perl_lsp_rs_core::providers::Diagnostic::message: alloc::string::String
+pub perl_lsp_rs_core::providers::Diagnostic::parse_error_fix_kind: core::option::Option<perl_lsp_rs_core::providers::ParseErrorFixKind>
 pub perl_lsp_rs_core::providers::Diagnostic::range: (usize, usize)
 pub perl_lsp_rs_core::providers::Diagnostic::related_information: alloc::vec::Vec<perl_lsp_rs_core::providers::RelatedInformation>
 pub perl_lsp_rs_core::providers::Diagnostic::severity: perl_diagnostics::codes::severity::DiagnosticSeverity

@@ -1699,6 +1699,7 @@ impl LspServer {
                     tags: Vec::new(),
                     fixable: false,
                     critic_observation: None,
+                    parse_error_fix_kind: None,
                 })
             })
             .collect()

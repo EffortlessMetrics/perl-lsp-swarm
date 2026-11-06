@@ -23,6 +23,7 @@ pub(super) fn duplicate_key_diagnostic(
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(format!("Remove the earlier '{key_text}' entry or rename this key")),
     }
 }

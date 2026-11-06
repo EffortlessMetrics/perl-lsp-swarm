@@ -393,6 +393,7 @@ pub fn check_missing_modules<F>(
             tags: vec![],
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
             suggestion: Some(with_pl701_setup_guidance(format!(
                 "Install with: cpanm {module_str} or add to .perl-lsp.toml: include_paths"
             ))),
@@ -464,6 +465,7 @@ pub fn check_missing_modules_with_search_context<F>(
             tags: vec![],
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
             suggestion: Some(suggestion),
         });
     }

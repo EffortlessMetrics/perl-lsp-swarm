@@ -111,6 +111,7 @@ pub fn detect_dead_code(
             tags: vec![DiagnosticTag::Unnecessary],
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
             suggestion: Some(format!("Remove unused {} '{}'", identity.subject, symbol.name)),
         });
     }
