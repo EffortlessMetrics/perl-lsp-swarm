@@ -394,7 +394,8 @@ fn add_visible_symbol_trust_boundary_related_info(
 /// Build related information for a scope issue (extracted for reuse).
 fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
     match issue.kind {
-        IssueKind::UndeclaredVariable => vec![
+        IssueKind::UndeclaredVariable => {
+            let mut related = vec![
             RelatedInformation {
                 location: issue.range,
                 message: "💡 Declare the variable with 'my', 'our', 'local', or 'state'".to_string(),
@@ -403,7 +404,12 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 location: issue.range,
                 message: "ℹ️ Under 'use strict', all variables must be declared before use. Use 'my' for lexical scope or 'our' for package variables.".to_string(),
             }
-        ],
+            ];
+            if let Some(hint) = format_did_you_mean_related_info(issue) {
+                related.insert(0, hint);
+            }
+            related
+        }
         IssueKind::UnusedVariable => vec![
             RelatedInformation {
                 location: issue.range,
@@ -505,6 +511,22 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
     }
 }
 
+fn format_did_you_mean_clause(issue: &ScopeIssue) -> Option<String> {
+    if issue.similar_names.is_empty() {
+        return None;
+    }
+    Some(if issue.similar_names.len() == 1 {
+        format!(" -- did you mean '{}'", issue.similar_names[0])
+    } else {
+        format!(" -- did you mean one of: {}?", issue.similar_names.join(", "))
+    })
+}
+
+fn format_did_you_mean_related_info(issue: &ScopeIssue) -> Option<RelatedInformation> {
+    let clause = format_did_you_mean_clause(issue)?;
+    Some(RelatedInformation { location: issue.range, message: format!("💡{clause}") })
+}
+
 /// Build an enhanced, more helpful message for a scope issue.
 ///
 /// Augments the analyzer's raw description with the variable name and
@@ -513,10 +535,13 @@ fn build_enhanced_scope_message(issue: &ScopeIssue) -> String {
     let name = &issue.variable_name;
     match issue.kind {
         IssueKind::UndeclaredVariable => {
-            format!(
+            let base = format!(
                 "Variable '{}' is used but not declared -- add 'my {}' to declare it in this scope",
                 name, name
-            )
+            );
+            format_did_you_mean_clause(issue)
+                .map(|clause| format!("{base}{clause}"))
+                .unwrap_or(base)
         }
         IssueKind::UnusedVariable => {
             format!(
@@ -564,7 +589,13 @@ fn build_enhanced_scope_message(issue: &ScopeIssue) -> String {
 fn build_scope_suggestion(issue: &ScopeIssue) -> Option<String> {
     let name = &issue.variable_name;
     match issue.kind {
-        IssueKind::UndeclaredVariable => Some(format!("Add 'my {};' before this line", name)),
+        IssueKind::UndeclaredVariable => {
+            if let Some(candidate) = issue.similar_names.first() {
+                Some(format!("Did you mean '{candidate}'?"))
+            } else {
+                Some(format!("Add 'my {};' before this line", name))
+            }
+        }
         IssueKind::UnusedVariable => Some(format!("Prefix as '_{}'", name.trim_start_matches('$'))),
         IssueKind::UnusedParameter => {
             Some(format!("Rename to '$_{}'", name.trim_start_matches('$')))
@@ -1380,6 +1411,26 @@ mod tests {
         );
         Ok(())
     }
+    #[test]
+    fn undeclared_variable_with_single_candidate_appends_did_you_mean() {
+        let mut issue = undeclared_issue("$cunt", (10, 15));
+        issue.similar_names = vec!["$count".to_string()];
+
+        let diagnostic = must_some_with(
+            scope_issues_to_diagnostics_with_semantics(vec![issue], FileId(1), &NullStubQueries)
+                .into_iter()
+                .next(),
+            "one issue should produce one diagnostic",
+        );
+
+        assert!(
+            diagnostic.message.to_ascii_lowercase().contains("did you mean '$count'"),
+            "message should include nearest-match hint: {}",
+            diagnostic.message
+        );
+        assert_eq!(diagnostic.suggestion.as_deref(), Some("Did you mean '$count'?"));
+    }
+
     #[test]
     fn undeclared_variable_without_candidates_keeps_actionable_fallback() {
         let diagnostic = must_some_with(
