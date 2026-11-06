@@ -2510,6 +2510,9 @@ enum Commands {
         command: StandaloneVectorsCommand,
     },
 
+    /// Verify the standalone install transaction model invariants (#10243 child 1, #11099).
+    StandaloneTransactionCheck,
+
     /// Validate PR intent/title/body against changed paths and closeout evidence.
     IntentDiffGate {
         /// Pull request number to inspect via `gh pr view`.
@@ -7349,6 +7352,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
             StandaloneVectorsCommand::MutationCheck => standalone_vectors::run_mutation_check(),
         },
+        Commands::StandaloneTransactionCheck => tasks::standalone_transaction::run_check(),
         Commands::IntentDiffGate { pr, fixture, receipt } => {
             intent_diff_gate::run(intent_diff_gate::IntentDiffGateConfig { pr, fixture, receipt })
         }

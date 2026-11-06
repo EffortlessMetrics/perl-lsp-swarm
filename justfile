@@ -1526,6 +1526,12 @@ ci-doc-claims:
     @cargo xtask doc-claims
     @echo "✅ Doc claims check passed"
 
+# Verify standalone install transaction model invariants (#10243 child 1, #11099)
+ci-standalone-transaction-check:
+    @echo "🧾 Verifying standalone install transaction model invariants..."
+    @cargo xtask standalone-transaction-check
+    @echo "✅ Standalone transaction check passed"
+
 # Check all registered hook scripts are executable
 hook-check:
     @cargo xtask hook-check
