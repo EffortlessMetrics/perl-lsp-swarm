@@ -109,17 +109,17 @@ pub fn try_convert_c_style_loop(
                         };
 
                         if is_increment {
-                            // Replace array subscripts in body with $item
+                            let array_base = array.trim_start_matches('@');
                             let body_text = &source[body.location.start..body.location.end];
-                            let modified_body = body_text
-                                .replace(
-                                    &format!("${}[${}", array.trim_start_matches('@'), iter_name),
-                                    "$item",
-                                )
-                                .replace(
-                                    &format!("${}[${}]", array.trim_start_matches('@'), iter_name),
-                                    "$item",
-                                );
+                            if !body_only_uses_iter_as_array_subscript(
+                                body_text, array_base, iter_name,
+                            ) {
+                                return None;
+                            }
+
+                            let modified_body = replace_array_subscripts_with_item(
+                                body_text, array_base, iter_name,
+                            );
 
                             return Some(format!("foreach my $item ({}) {}", array, modified_body));
                         }
@@ -130,4 +130,69 @@ pub fn try_convert_c_style_loop(
     }
 
     None
+}
+
+/// Replace `$array[$iter]` (and common whitespace variants) with `$item`.
+fn replace_array_subscripts_with_item(
+    body_text: &str,
+    array_base: &str,
+    iter_name: &str,
+) -> String {
+    let patterns = [
+        format!("${array_base}[${iter_name}]"),
+        format!("${array_base}[ ${iter_name}]"),
+        format!("${array_base}[${iter_name} ]"),
+        format!("${array_base}[ ${iter_name} ]"),
+    ];
+    let mut out = body_text.to_string();
+    for pattern in patterns {
+        out = out.replace(&pattern, "$item");
+    }
+    out
+}
+
+/// Every `$iter` in the loop body must appear only as `$array[$iter]` (optional inner whitespace).
+fn body_only_uses_iter_as_array_subscript(
+    body_text: &str,
+    array_base: &str,
+    iter_name: &str,
+) -> bool {
+    let needle = format!("${iter_name}");
+    let mut search_from = 0;
+    while let Some(rel) = body_text[search_from..].find(&needle) {
+        let dollar = search_from + rel;
+        let after_name = dollar + needle.len();
+        if after_name < body_text.len() {
+            let next = body_text.as_bytes()[after_name];
+            if next.is_ascii_alphanumeric() || next == b'_' {
+                search_from = dollar + 1;
+                continue;
+            }
+        }
+        if !is_array_subscript_occurrence(body_text, dollar, array_base, iter_name) {
+            return false;
+        }
+        search_from = after_name;
+    }
+    true
+}
+
+fn is_array_subscript_occurrence(
+    body_text: &str,
+    iter_dollar: usize,
+    array_base: &str,
+    iter_name: &str,
+) -> bool {
+    let open = format!("${array_base}[");
+    let open_len = open.len();
+    if iter_dollar < open_len {
+        return false;
+    }
+    let bracket_start = iter_dollar - open_len;
+    if &body_text[bracket_start..iter_dollar] != open {
+        return false;
+    }
+    let after_iter = iter_dollar + 1 + iter_name.len();
+    let rest = body_text.get(after_iter..).unwrap_or("");
+    rest.starts_with(']') || rest.trim_start().starts_with(']')
 }
