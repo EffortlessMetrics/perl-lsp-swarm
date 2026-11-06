@@ -84,3 +84,61 @@ fn scenario_08_test_file_t_extension() -> Result<(), String> {
     harness.assert_no_crash();
     Ok(())
 }
+
+fn has_required_static_symbol(symbols: &[serde_json::Value], expected: &str) -> bool {
+    symbols.iter().any(|symbol| {
+        symbol.get("name").and_then(serde_json::Value::as_str) == Some(expected)
+            || symbol
+                .get("children")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|children| has_required_static_symbol(children, expected))
+    })
+}
+
+#[test]
+fn static_symbol_control_rejects_empty_unrelated_and_accepts_named_symbol() {
+    use serde_json::json;
+    assert!(!has_required_static_symbol(&[], "deploy_task"));
+    assert!(!has_required_static_symbol(&[json!({"name":"unrelated"})], "deploy_task"));
+    assert!(!has_required_static_symbol(&[json!({"name":null})], "deploy_task"));
+    assert!(has_required_static_symbol(&[json!({"name":"deploy_task"})], "deploy_task"));
+    assert!(has_required_static_symbol(
+        &[json!({"name":"package","children":[{"name":"deploy_task"}]})],
+        "deploy_task"
+    ));
+}
+
+#[test]
+fn scenario_08_static_symbol_survives_encoding_and_extension_boundary() {
+    use perl_lsp_ux_tests::{UxCiTier, UxComponent, missing_binary_skip, run_ux_scenario};
+    run_ux_scenario(
+        "shebang_detection",
+        "ux_scenario_08_shebang_detection.rs",
+        "scenario_08_static_symbol_survives_encoding_and_extension_boundary",
+        UxCiTier::Pr,
+        Some(UxComponent::Infra),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            let source = "#!/usr/bin/env perl\nuse strict;\nuse warnings;\nsub deploy_task { return 42; }\ndeploy_task();\n";
+            let harness =
+                UxHarness::new(ScenarioConfig::default().with_file("deploy_script", source))?;
+            harness.open_file("deploy_script", &source)?;
+            let uri = harness.workspace.uri("deploy_script");
+            perl_lsp_ux_tests::wait_with_subject(
+                "static symbol active-document readiness",
+                harness.wait_for_active_document_ready(&uri, std::time::Duration::from_secs(20)),
+            )?;
+            recorder.mark_request_start("static_document_symbol");
+            let symbols = harness.document_symbols("deploy_script")?;
+            recorder.check(
+                "static document exposes deploy_task symbol",
+                has_required_static_symbol(&symbols, "deploy_task"),
+            )?;
+            recorder.mark_first_useful_result("static_document_symbol");
+            harness.assert_no_crash();
+            Ok(())
+        },
+    );
+}

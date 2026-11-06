@@ -32,8 +32,7 @@ fn request_timeout(config: &ScenarioConfig) -> std::time::Duration {
     config.timeout
 }
 
-#[test]
-fn scenario_23_prepare_rename_and_rename_do_not_error() -> Result<()> {
+fn source_reconciliation_scenario_23_prepare_rename_and_rename_do_not_error() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_23: perl-lsp binary not found");
         return Ok(());
@@ -75,7 +74,34 @@ fn scenario_23_prepare_rename_and_rename_do_not_error() -> Result<()> {
 }
 
 #[test]
-fn scenario_23_rename_workspace_edit_targets_file_and_multiple_occurrences() -> Result<()> {
+fn scenario_23_prepare_rename_and_rename_do_not_error() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "rename_workflow_core",
+        "ux_scenario_23_rename_workflow.rs",
+        "scenario_23_prepare_rename_and_rename_do_not_error",
+        UxCiTier::Pr,
+        Some(UxComponent::Rename),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_23_prepare_rename_and_rename_do_not_error()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_23_prepare_rename_and_rename_do_not_error completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_23_rename_workspace_edit_targets_file_and_multiple_occurrences()
+-> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_23: perl-lsp binary not found");
         return Ok(());
@@ -114,6 +140,32 @@ fn scenario_23_rename_workspace_edit_targets_file_and_multiple_occurrences() -> 
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_23_rename_workspace_edit_targets_file_and_multiple_occurrences() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "rename_workflow_core",
+        "ux_scenario_23_rename_workflow.rs",
+        "scenario_23_rename_workspace_edit_targets_file_and_multiple_occurrences",
+        UxCiTier::Pr,
+        Some(UxComponent::Rename),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_23_rename_workspace_edit_targets_file_and_multiple_occurrences().map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_23_rename_workspace_edit_targets_file_and_multiple_occurrences completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }
 
 #[test]

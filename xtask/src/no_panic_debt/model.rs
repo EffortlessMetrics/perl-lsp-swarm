@@ -52,6 +52,7 @@ pub struct OwnerState {
 pub enum TargetKind {
     UnitTest,
     IntegrationTest,
+    Doctest,
     Example,
     Bench,
     Build,
@@ -63,6 +64,7 @@ impl TargetKind {
         match self {
             Self::UnitTest => "unit_test",
             Self::IntegrationTest => "integration_test",
+            Self::Doctest => "doctest",
             Self::Example => "example",
             Self::Bench => "bench",
             Self::Build => "build",
@@ -336,6 +338,7 @@ mod tests {
         assert!(owners.closed_or_missing.contains("#13397"));
         assert_eq!(TargetKind::UnitTest.as_str(), "unit_test");
         assert_eq!(TargetKind::IntegrationTest.as_str(), "integration_test");
+        assert_eq!(TargetKind::Doctest.as_str(), "doctest");
         assert_eq!(TargetKind::Example.as_str(), "example");
         assert_eq!(TargetKind::Bench.as_str(), "bench");
         assert_eq!(TargetKind::Build.as_str(), "build");

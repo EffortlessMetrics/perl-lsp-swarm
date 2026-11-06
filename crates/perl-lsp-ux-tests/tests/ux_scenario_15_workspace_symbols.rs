@@ -50,8 +50,8 @@ fn normalized_folder_uris(harness: &UxHarness, symbols: &[Value]) -> BTreeSet<St
         .collect()
 }
 
-#[test]
-fn scenario_15_workspace_symbol_multi_root_disambiguation() -> Result<(), String> {
+fn source_reconciliation_scenario_15_workspace_symbol_multi_root_disambiguation()
+-> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_15: perl-lsp binary not found");
         return Ok(());
@@ -124,4 +124,31 @@ fn scenario_15_workspace_symbol_multi_root_disambiguation() -> Result<(), String
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_15_workspace_symbol_multi_root_disambiguation() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "multi_root_workspace_symbols",
+        "ux_scenario_15_workspace_symbols.rs",
+        "scenario_15_workspace_symbol_multi_root_disambiguation",
+        UxCiTier::Pr,
+        Some(UxComponent::WorkspaceSymbols),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_15_workspace_symbol_multi_root_disambiguation()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_15_workspace_symbol_multi_root_disambiguation completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

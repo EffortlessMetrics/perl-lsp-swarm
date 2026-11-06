@@ -267,3 +267,109 @@ fn scenario_26_code_lens_resolve_does_not_error() -> Result<()> {
     harness.assert_no_crash();
     Ok(())
 }
+
+fn required_module_lenses(response: &Value) -> Result<&[Value]> {
+    anyhow::ensure!(response.get("error").is_none(), "codeLens returned error: {response:?}");
+    let lenses = response
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("static module codeLens must be an array: {response:?}"))?;
+    for expected in ["MyCalc", "new", "add", "subtract", "multiply"] {
+        anyhow::ensure!(
+            lenses
+                .iter()
+                .any(|lens| lens.pointer("/data/name").and_then(Value::as_str) == Some(expected)),
+            "static reference lens missing {expected}: {lenses:?}"
+        );
+    }
+    Ok(lenses)
+}
+
+#[test]
+fn static_reference_lens_control_rejects_null_empty_and_unrelated_lenses() {
+    for response in [
+        json!({"result":null}),
+        json!({"result":[]}),
+        json!({"result":[{"data":{"name":"unrelated"}}]}),
+    ] {
+        assert!(required_module_lenses(&response).is_err());
+    }
+    let response = json!({"result":[{"data":{"name":"MyCalc"}},{"data":{"name":"new"}},{"data":{"name":"add"}},{"data":{"name":"subtract"}},{"data":{"name":"multiply"}}]});
+    assert!(required_module_lenses(&response).is_ok());
+}
+
+#[test]
+fn scenario_26_static_lenses_resolve_and_test_commands_survive() {
+    use perl_lsp_ux_tests::{UxCiTier, UxComponent, missing_binary_skip, run_ux_scenario};
+    run_ux_scenario(
+        "code_lens_core",
+        "ux_scenario_26_code_lens.rs",
+        "scenario_26_static_lenses_resolve_and_test_commands_survive",
+        UxCiTier::Pr,
+        Some(UxComponent::CodeLens),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            let harness = UxHarness::new(
+                ScenarioConfig::default()
+                    .with_file("MyCalc.pm", CODELENS_FIXTURE)
+                    .with_file("mytest.t", TEST_FIXTURE),
+            )?;
+            harness.open_file("MyCalc.pm", CODELENS_FIXTURE)?;
+            harness.open_file("mytest.t", TEST_FIXTURE)?;
+            for path in ["MyCalc.pm", "mytest.t"] {
+                let uri = harness.workspace.uri(path);
+                perl_lsp_ux_tests::wait_with_subject(
+                    "static lens active-document readiness",
+                    harness.wait_for_active_document_ready(&uri, Duration::from_secs(20)),
+                )?;
+            }
+            recorder.mark_request_start("static_reference_lenses");
+            let params = json!({"textDocument":{"uri":harness.workspace.uri("MyCalc.pm")}});
+            let first =
+                harness.client.request("textDocument/codeLens", params.clone(), REQUEST_TIMEOUT)?;
+            let lenses = required_module_lenses(&first)?;
+            let second =
+                harness.client.request("textDocument/codeLens", params, REQUEST_TIMEOUT)?;
+            recorder.check(
+                "static reference lenses retain all known source names and repeated count",
+                required_module_lenses(&second)?.len() == lenses.len(),
+            )?;
+            let lens =
+                lenses.first().ok_or_else(|| anyhow::anyhow!("required reference lens absent"))?;
+            let resolved =
+                harness.client.request("codeLens/resolve", lens.clone(), REQUEST_TIMEOUT)?;
+            recorder.check(
+                "static reference lens resolves to findReferences",
+                resolved.get("error").is_none()
+                    && resolved.pointer("/result/command/command").and_then(Value::as_str)
+                        == Some("editor.action.findReferences"),
+            )?;
+            recorder.mark_first_useful_result("static_reference_lenses");
+            recorder.mark_request_start("static_test_lenses");
+            let tests = harness.client.request(
+                "textDocument/codeLens",
+                json!({"textDocument":{"uri":harness.workspace.uri("mytest.t")}}),
+                REQUEST_TIMEOUT,
+            )?;
+            let test_lenses = tests
+                .get("result")
+                .and_then(Value::as_array)
+                .ok_or_else(|| anyhow::anyhow!("test lenses must be an array"))?;
+            for command in ["perl.runTestFile", "perl.runTest"] {
+                recorder.check(
+                    "named test fixture has executable run-test lens",
+                    tests.get("error").is_none()
+                        && test_lenses.iter().any(|lens| {
+                            lens.pointer("/command/command").and_then(Value::as_str)
+                                == Some(command)
+                        }),
+                )?;
+            }
+            recorder.mark_first_useful_result("static_test_lenses");
+            harness.assert_no_crash();
+            Ok(())
+        },
+    );
+}

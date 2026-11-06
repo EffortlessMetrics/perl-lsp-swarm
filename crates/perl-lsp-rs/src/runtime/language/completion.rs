@@ -1114,8 +1114,23 @@ impl LspServer {
                     Self::qualified_variable_workspace_symbols(index, &prefix);
                 let replace_prefix_range = (offset.saturating_sub(prefix.len()), offset);
                 let qualified_variable_context = qualified_variable_symbols.is_some();
-                let workspace_symbols =
-                    qualified_variable_symbols.unwrap_or_else(|| index.find_symbols(&prefix));
+                let prefix_lower = prefix.to_lowercase();
+                let workspace_symbols = qualified_variable_symbols.unwrap_or_else(|| {
+                    // Workspace symbol search intentionally admits loose matches.
+                    // Completion's retained name fallback must instead start with
+                    // the typed prefix. This does not restore withdrawn callable
+                    // kinds or change the qualified-variable member route.
+                    index
+                        .find_symbols(&prefix)
+                        .into_iter()
+                        .filter(|symbol| {
+                            symbol.name.to_lowercase().starts_with(&prefix_lower)
+                                || symbol.qualified_name.as_ref().is_some_and(|name| {
+                                    name.to_lowercase().starts_with(&prefix_lower)
+                                })
+                        })
+                        .collect()
+                });
                 use std::collections::HashSet;
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
@@ -2460,7 +2475,9 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let Some(mut item) = params else {
-            return Err(crate::protocol::invalid_params("Missing completion item parameters"));
+            return Err(crate::protocol::invalid_params(
+                "Missing completion item parameters: completionItem/resolve expects the CompletionItem object returned by textDocument/completion; retain its label and any data when retrying",
+            ));
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)
@@ -2468,7 +2485,7 @@ impl LspServer {
             .get("label")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                crate::protocol::invalid_params("Missing or invalid completion item label")
+                crate::protocol::invalid_params("Missing or invalid completion item label: completionItem/resolve expects the CompletionItem object returned by textDocument/completion; retain its label and any data when retrying")
             })?
             .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -5885,15 +5902,20 @@ our $single_root_var;
         );
     }
 
-    /// The same escape on a non-sigil prefix: `token` matches both variables by
-    /// name, and neither may come back as a bare cross-file insertion.
+    /// A non-sigil package prefix matches the retained qualified names, and
+    /// package variables may still never return as bare cross-file insertions.
     #[cfg(feature = "workspace")]
     #[test]
     fn cross_file_variable_on_a_bare_word_prefix_is_never_inserted_bare() {
         let items = run_workspace_pass_over_secrets_module(
             "file:///project/bin/app.pl",
-            "use strict;\ntoken",
+            "use strict;\nSecrets",
             None,
+        );
+
+        assert!(
+            items.iter().any(|(label, _, _)| label == "$api_token"),
+            "the qualified-name prefix must still find the package variable: {items:?}"
         );
 
         for (label, insert_text, _) in &items {
@@ -5919,7 +5941,7 @@ our $single_root_var;
     fn cross_file_lexical_variable_is_withdrawn_entirely() {
         let items = run_workspace_pass_over_secrets_module(
             "file:///project/bin/app.pl",
-            "use strict;\ntoken",
+            "use strict;\n$",
             None,
         );
         let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();

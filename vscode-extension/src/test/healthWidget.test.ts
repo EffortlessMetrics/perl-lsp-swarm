@@ -454,3 +454,59 @@ describe('HealthWidget — version display', () => {
     expect(widget.enhancedReadinessAvailable).toBe(true);
   });
 });
+
+describe('HealthWidget — ready tooltip counts', () => {
+  test('shows current files and errors in the ready tooltip', () => {
+    const { item, widget } = makeWidget();
+    widget.setFileCount(847);
+    widget.setErrorCount(12);
+    widget.onStateChange(ClientState.Running);
+    expect(item.tooltip).toContain('847 files');
+    expect(item.tooltip).toContain('12 errors');
+  });
+
+  test('updates ready tooltip counts when providers report newer values', () => {
+    const { item, widget } = makeWidget();
+    widget.onStateChange(ClientState.Running);
+    widget.setFileCount(847);
+    widget.setErrorCount(12);
+    widget.setFileCount(2);
+    widget.setErrorCount(1);
+    expect(item.tooltip).toContain('2 files');
+    expect(item.tooltip).toContain('1 error');
+    expect(item.tooltip).not.toContain('847 files');
+    expect(item.tooltip).not.toContain('12 errors');
+  });
+
+  test('keeps unknown file count unknown while showing known errors', () => {
+    const { item, widget } = makeWidget();
+    widget.onStateChange(ClientState.Running);
+    widget.setErrorCount(3);
+    expect(item.tooltip).toContain('3 errors');
+    expect(item.tooltip).not.toMatch(/\d\+? files?/);
+  });
+
+  test('preserves a known zero file count and omits zero errors', () => {
+    const { item, widget } = makeWidget();
+    widget.setFileCount(0);
+    widget.onStateChange(ClientState.Running);
+    expect(item.tooltip).toContain('0 files');
+    expect(item.tooltip).not.toContain('0 errors');
+  });
+
+  test('preserves the file-count lower-bound marker', () => {
+    const { item, widget } = makeWidget();
+    widget.setFileCount(1, true);
+    widget.onStateChange(ClientState.Running);
+    expect(item.tooltip).toContain('1+ files');
+  });
+
+  test('leaves non-ready lifecycle tooltips free of ready counts', () => {
+    const { item, widget } = makeWidget();
+    widget.setFileCount(847);
+    widget.setErrorCount(12);
+    widget.onStateChange(ClientState.Stopped);
+    expect(item.tooltip).not.toContain('847 files');
+    expect(item.tooltip).not.toContain('12 errors');
+  });
+});

@@ -566,7 +566,13 @@ fn test_dap_scopes_missing_frame() {
         DapMessage::Response { success, command, message, .. } => {
             assert!(!success);
             assert_eq!(command, "scopes");
-            assert_eq!(must_some(message), "Missing frameId");
+            let message = must_some(message);
+            assert!(message.starts_with("Missing frameId for scopes request."));
+            assert!(message.contains("stackTrace"), "missing recovery request: {message}");
+            assert!(
+                message.contains("stackFrames[].id"),
+                "missing returned frame identity: {message}"
+            );
         }
         _ => must(Err::<(), _>("Expected response message")),
     }

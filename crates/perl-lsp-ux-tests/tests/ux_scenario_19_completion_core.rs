@@ -26,8 +26,7 @@ fn create_harness() -> Result<UxHarness> {
     UxHarness::new(ScenarioConfig::default().with_file("completion.pl", COMPLETION_FIXTURE))
 }
 
-#[test]
-fn scenario_19_completion_request_does_not_error() -> Result<()> {
+fn source_reconciliation_scenario_19_completion_request_does_not_error() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_19: perl-lsp binary not found");
         return Ok(());
@@ -55,7 +54,34 @@ fn scenario_19_completion_request_does_not_error() -> Result<()> {
 }
 
 #[test]
-fn scenario_19_completion_items_have_label_or_insert_text_shape() -> Result<()> {
+fn scenario_19_completion_request_does_not_error() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "completion_core",
+        "ux_scenario_19_completion_core.rs",
+        "scenario_19_completion_request_does_not_error",
+        UxCiTier::Pr,
+        Some(UxComponent::Completion),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_19_completion_request_does_not_error()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_19_completion_request_does_not_error completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_19_completion_items_have_label_or_insert_text_shape() -> Result<()>
+{
     if !binary_available() {
         eprintln!("SKIP scenario_19: perl-lsp binary not found");
         return Ok(());
@@ -100,7 +126,33 @@ fn scenario_19_completion_items_have_label_or_insert_text_shape() -> Result<()> 
 }
 
 #[test]
-fn scenario_19_completion_builtin_workflow_surfaces_print() -> Result<()> {
+fn scenario_19_completion_items_have_label_or_insert_text_shape() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "completion_core",
+        "ux_scenario_19_completion_core.rs",
+        "scenario_19_completion_items_have_label_or_insert_text_shape",
+        UxCiTier::Pr,
+        Some(UxComponent::Completion),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_19_completion_items_have_label_or_insert_text_shape()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_19_completion_items_have_label_or_insert_text_shape completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+fn source_reconciliation_scenario_19_completion_builtin_workflow_surfaces_print() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_19: perl-lsp binary not found");
         return Ok(());
@@ -121,4 +173,31 @@ fn scenario_19_completion_builtin_workflow_surfaces_print() -> Result<()> {
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_19_completion_builtin_workflow_surfaces_print() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "completion_core",
+        "ux_scenario_19_completion_core.rs",
+        "scenario_19_completion_builtin_workflow_surfaces_print",
+        UxCiTier::Pr,
+        Some(UxComponent::Completion),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_19_completion_builtin_workflow_surfaces_print()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_19_completion_builtin_workflow_surfaces_print completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

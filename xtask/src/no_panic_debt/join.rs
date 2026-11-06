@@ -134,17 +134,35 @@ pub(crate) fn join(
     let failed_paths: BTreeSet<String> = instruments
         .iter()
         .filter(|instrument| {
-            instrument.kind == "source_parse" && instrument.status == InstrumentStatus::NotProven
+            matches!(
+                instrument.kind.as_str(),
+                "source_parse" | "doc_fence" | "doc_source_parse" | "doc_include_binding"
+            ) && instrument.status == InstrumentStatus::NotProven
         })
-        .map(|instrument| instrument.subject.clone())
+        .map(|instrument| {
+            if matches!(instrument.kind.as_str(), "doc_fence" | "doc_source_parse") {
+                format!("rustdoc:{}", instrument.subject)
+            } else {
+                instrument.subject.clone()
+            }
+        })
         .collect();
 
     for (key, record) in &registry {
         if seen_registry.contains(key) {
             continue;
         }
-        let coverage =
-            source_coverage(request.root, &key.path, &discovered.covered_paths, &failed_paths);
+        let coverage = if key.enclosing_test_or_function.starts_with("rustdoc-fence-") {
+            source_coverage_with_key(
+                request.root,
+                &key.path,
+                &doc_coverage_key(&key.path, &key.enclosing_test_or_function),
+                &discovered.covered_paths,
+                &failed_paths,
+            )
+        } else {
+            source_coverage(request.root, &key.path, &discovered.covered_paths, &failed_paths)
+        };
         let (status, relation, limitations) = match coverage {
             SourceCoverage::Covered => match record.state {
                 RegistryState::Retired => (
@@ -244,13 +262,64 @@ pub(crate) fn join(
             sha256: sha256_hex(&bytes),
         });
     }
+    let mut include_digests = BTreeMap::<String, String>::new();
+    let mut include_failures = Vec::new();
+    for instrument in &instruments {
+        if instrument.kind != "doc_include" || instrument.status != InstrumentStatus::Ok {
+            continue;
+        }
+        let receipt = serde_json::from_str::<Value>(&instrument.detail).ok();
+        let digest =
+            receipt.as_ref().and_then(|value| value.get("sha256")).and_then(Value::as_str).filter(
+                |value| {
+                    value.len() == 64
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                },
+            );
+        let Some(digest) = digest else {
+            include_failures.push(Instrument {
+                kind: "doc_include".to_string(),
+                subject: instrument.subject.clone(),
+                status: InstrumentStatus::NotProven,
+                detail: "include dependency identity receipt malformed".to_string(),
+            });
+            continue;
+        };
+        if let Some(prior) = include_digests.insert(instrument.subject.clone(), digest.to_string())
+            && prior != digest
+        {
+            include_failures.push(Instrument {
+                kind: "doc_include".to_string(),
+                subject: instrument.subject.clone(),
+                status: InstrumentStatus::NotProven,
+                detail: "include dependency changed during observation".to_string(),
+            });
+        }
+    }
+    instruments.extend(include_failures);
+    for (path, sha256) in include_digests {
+        if let Some(prior) = digests.iter().find(|digest| digest.path == path) {
+            if prior.sha256 != sha256 {
+                instruments.push(Instrument {
+                    kind: "doc_include".to_string(),
+                    subject: path,
+                    status: InstrumentStatus::NotProven,
+                    detail: "include identity conflicts with an existing input digest".to_string(),
+                });
+            }
+        } else {
+            digests.push(super::model::SourceDigest { path, sha256 });
+        }
+    }
     digests.sort_by(|left, right| left.path.cmp(&right.path));
 
     let mut limitations = vec![
         "observation only; not a second allowlist".to_string(),
         "ordinary generation does not call GitHub".to_string(),
         "assert!/assert_eq! are not classified as panic-family debt".to_string(),
-        "population is Cargo metadata test=true target roots plus bounded module-edge traversal; handwritten manifest autodiscovery is not the authority".to_string(),
+        "test population is Cargo metadata test=true target roots plus bounded module-edge traversal; doc-fence source observation covers physical .rs inputs in metadata-owned packages without claiming rustdoc reachability or execution".to_string(),
         "expect/unwrap classification is syntactic (panic-message-shaped args), not Clippy typeck".to_string(),
         "cfg(any(test, ...)) and cfg(not(...)) are not required-test context".to_string(),
     ];
@@ -381,10 +450,32 @@ fn source_coverage(
     covered: &BTreeSet<String>,
     failed: &BTreeSet<String>,
 ) -> SourceCoverage {
-    if failed.contains(path) {
+    source_coverage_with_key(root, path, path, covered, failed)
+}
+
+// Include identities bind both documented bytes and the consuming .rs file.
+// A malformed/unsupported consumer cannot borrow another consumer's coverage.
+fn doc_coverage_key(path: &str, entrypoint: &str) -> String {
+    if let Some((_, rest)) = entrypoint.split_once(":include:") {
+        if let Some((consumer, _)) = rest.split_once(".rs:") {
+            return format!("rustdoc-include:{path}:{consumer}.rs");
+        }
+        return format!("rustdoc-invalid-include:{path}:{entrypoint}");
+    }
+    format!("rustdoc:{path}")
+}
+
+fn source_coverage_with_key(
+    root: &Path,
+    path: &str,
+    coverage_key: &str,
+    covered: &BTreeSet<String>,
+    failed: &BTreeSet<String>,
+) -> SourceCoverage {
+    if failed.contains(coverage_key) {
         return SourceCoverage::Failed;
     }
-    if covered.contains(path) {
+    if covered.contains(coverage_key) {
         return SourceCoverage::Covered;
     }
     if root.join(path).is_file() { SourceCoverage::Unscanned } else { SourceCoverage::Absent }
@@ -597,5 +688,28 @@ mod tests {
         assert_eq!(counts.rows, 1);
         assert_eq!(counts.files, 0);
         assert!(counts.observation_complete);
+    }
+    #[test]
+    fn documentation_coverage_does_not_retire_unscanned_unit_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = "source.rs";
+        std::fs::write(temp.path().join(path), "#[test] fn old() { panic!(\"known\"); }\n")?;
+        let covered = BTreeSet::from([format!("rustdoc:{path}")]);
+        let failed = BTreeSet::new();
+        assert_eq!(
+            source_coverage(temp.path(), path, &covered, &failed),
+            SourceCoverage::Unscanned
+        );
+        assert_eq!(
+            source_coverage_with_key(
+                temp.path(),
+                path,
+                &format!("rustdoc:{path}"),
+                &covered,
+                &failed
+            ),
+            SourceCoverage::Covered
+        );
+        Ok(())
     }
 }

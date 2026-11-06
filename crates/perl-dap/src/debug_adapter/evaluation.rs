@@ -20,6 +20,9 @@ use crate::backend::capabilities::{
     HOVER_UNSUPPORTED_MESSAGE, advertises_evaluate_for_hovers, refuse_hover_evaluation,
 };
 
+const EVALUATE_NO_SESSION_GUIDANCE: &str = "No debugger session is active. Start a launch or \
+    attach request first, wait for the debugger to stop at a breakpoint, then retry evaluate.";
+
 impl DebugAdapter {
     /// Handle evaluate request with policy validation and timeout enforcement.
     ///
@@ -166,7 +169,7 @@ impl DebugAdapter {
                         success: false,
                         command: "evaluate".to_string(),
                         body: None,
-                        message: Some("No debugger session".to_string()),
+                        message: Some(EVALUATE_NO_SESSION_GUIDANCE.to_string()),
                     };
                 }
                 Some(ref session) => {
@@ -275,7 +278,7 @@ impl DebugAdapter {
                     success: false,
                     command: "evaluate".to_string(),
                     body: None,
-                    message: Some("No debugger session active".to_string()),
+                    message: Some(EVALUATE_NO_SESSION_GUIDANCE.to_string()),
                 };
             }
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
@@ -297,7 +300,7 @@ impl DebugAdapter {
                 success: false,
                 command: "evaluate".to_string(),
                 body: None,
-                message: Some("No debugger session".to_string()),
+                message: Some(EVALUATE_NO_SESSION_GUIDANCE.to_string()),
             };
         };
 

@@ -237,9 +237,15 @@ impl LspServer {
     }
 
     fn handle_hover_core(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
+        if params.is_none() {
+            return Err(crate::protocol::invalid_params(
+                "textDocument/hover expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.",
+            ));
+        }
+
         if let Some(params) = params {
-            let uri = req_uri(&params)?;
-            let (line, character) = req_position(&params)?;
+            let uri = req_uri(&params).map_err(|error| crate::protocol::invalid_params(&format!("{}; textDocument/hover expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.", error.message)))?;
+            let (line, character) = req_position(&params).map_err(|error| crate::protocol::invalid_params(&format!("{}; textDocument/hover expects params.textDocument.uri plus params.position.line and params.position.character. Send the URI of an open Perl document and a UTF-16 line/character position; retry with that request shape.", error.message)))?;
 
             // Reject stale requests
             let req_version =

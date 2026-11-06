@@ -117,11 +117,7 @@ function countLabel(count: number, singular: string, lowerBound = false): string
   return `${count}${lowerBound ? '+' : ''} ${singular}${count === 1 && !lowerBound ? '' : 's'}`;
 }
 
-function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
-  // The server's self-reported name wins when present (#12705); the built-in
-  // product identity remains the fallback so existing behavior is unchanged.
-  const product = telemetry.name ?? 'perl-lsp';
-  const label = telemetry.version ? `${product} v${telemetry.version}` : product;
+function readyCountLabels(telemetry: WorkspaceExperienceTelemetry): string[] {
   const parts: string[] = [];
   if (telemetry.fileCount !== undefined) {
     parts.push(countLabel(telemetry.fileCount, 'file', telemetry.fileCountLowerBound));
@@ -129,6 +125,15 @@ function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
   if ((telemetry.errorCount ?? 0) > 0) {
     parts.push(countLabel(telemetry.errorCount ?? 0, 'error'));
   }
+  return parts;
+}
+
+function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
+  // The server's self-reported name wins when present (#12705); the built-in
+  // product identity remains the fallback so existing behavior is unchanged.
+  const product = telemetry.name ?? 'perl-lsp';
+  const label = telemetry.version ? `${product} v${telemetry.version}` : product;
+  const parts = readyCountLabels(telemetry);
   return parts.length > 0 ? `${label}: ${parts.join(' | ')}` : label;
 }
 
@@ -254,10 +259,12 @@ export function presentWorkspaceExperience(
     case 'ready': {
       const label = readyLabel(telemetry);
       const versionNote = telemetry.version ? ` v${telemetry.version}` : '';
+      const counts = readyCountLabels(telemetry);
+      const countNote = counts.length > 0 ? ` — ${counts.join(' | ')}` : '';
       return {
         mode: 'running',
         text: `$(check) ${label}`,
-        tooltip: detailTooltip(snapshot, `Perl Language Server${versionNote} is running`),
+        tooltip: `${detailTooltip(snapshot, `Perl Language Server${versionNote} is running`)}${countNote}`,
         background: undefined,
       };
     }

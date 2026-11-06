@@ -120,6 +120,13 @@ pub(crate) fn scan(
         }
     }
 
+    let mut docs = super::doc_fences::scan(root, topology, vocabulary);
+    entrypoints.append(&mut docs.entrypoints);
+    sites.append(&mut docs.sites);
+    declarations.append(&mut docs.declarations);
+    instruments.append(&mut docs.instruments);
+    covered_paths.extend(docs.covered_paths);
+
     entrypoints.sort_by(|left, right| (&left.path, &left.name).cmp(&(&right.path, &right.name)));
     entrypoints.dedup_by(|left, right| left.path == right.path && left.name == right.name);
     sites.sort_by(|left, right| {
@@ -275,6 +282,44 @@ struct ScannedFile {
     declarations: Vec<RawDeclaration>,
     instruments: Vec<Instrument>,
     external_modules: Vec<ModuleWork>,
+}
+
+/// Use the same syntax-family and identity observation for a documented block.
+/// No enclosing source-file suppression or actual rustdoc execution is credited.
+pub(crate) fn scan_documented_block(
+    file: &FileRecord,
+    vocabulary: &Vocabulary,
+    source: &str,
+) -> Result<Discovered, String> {
+    let parsed: syn::Block = syn::parse_str(source).map_err(|err| err.to_string())?;
+    let lines: Vec<&str> = source.lines().collect();
+    let mut visitor = DebtVisitor {
+        file,
+        lines: &lines,
+        vocabulary,
+        follow_modules: false,
+        file_dir: PathBuf::new(),
+        module_dir: PathBuf::new(),
+        inside_inline: false,
+        in_test: true,
+        current_fn: "<rustdoc>".to_string(),
+        current_feature: None,
+        current_platform: None,
+        declaration_stack: Vec::new(),
+        entrypoints: Vec::new(),
+        sites: Vec::new(),
+        declarations: Vec::new(),
+        external_modules: Vec::new(),
+        instruments: Vec::new(),
+    };
+    visitor.visit_block(&parsed);
+    Ok(Discovered {
+        entrypoints: visitor.entrypoints,
+        sites: visitor.sites,
+        declarations: visitor.declarations,
+        instruments: visitor.instruments,
+        covered_paths: BTreeSet::new(),
+    })
 }
 
 fn scan_file(

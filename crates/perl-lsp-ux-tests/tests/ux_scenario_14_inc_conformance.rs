@@ -256,8 +256,7 @@ use warnings;\n\
 use Gre\n\
 ";
 
-#[test]
-fn scenario_14_relative_include_path() -> Result<(), String> {
+fn source_reconciliation_scenario_14_relative_include_path() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_relative_include_path: perl-lsp binary not found");
         return Ok(());
@@ -341,6 +340,33 @@ fn scenario_14_relative_include_path() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn scenario_14_relative_include_path() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_relative_include_path",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_relative_include_path()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_relative_include_path completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 // Removed `scenario_14_include_path_completion_external_module` (was the
 // FIXME(#7570) ignored test). The test asserted goto-definition would
 // resolve on an incomplete prefix `use Gre` — that is not a valid parity
@@ -387,8 +413,7 @@ sub compute {\n\
 1;\n\
 ";
 
-#[test]
-fn scenario_14_use_lib_lexical() -> Result<(), String> {
+fn source_reconciliation_scenario_14_use_lib_lexical() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_use_lib_lexical: perl-lsp binary not found");
         return Ok(());
@@ -459,6 +484,36 @@ fn scenario_14_use_lib_lexical() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn scenario_14_use_lib_lexical() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_use_lib_lexical",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_use_lib_lexical()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check(
+                "current source assertions for scenario_14_use_lib_lexical completed successfully",
+                true,
+            )?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 // =============================================================================
 // Fixture 2b: externalIncludePaths over an unauthorized channel (#4998)
 //
@@ -493,8 +548,8 @@ sub value {\n\
 1;\n\
 ";
 
-#[test]
-fn scenario_14_external_include_paths_unauthorized_zero_visibility() -> Result<(), String> {
+fn source_reconciliation_scenario_14_external_include_paths_unauthorized_zero_visibility()
+-> Result<(), String> {
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_external_include_paths_unauthorized_zero_visibility: \
@@ -591,6 +646,33 @@ fn scenario_14_external_include_paths_unauthorized_zero_visibility() -> Result<(
     Ok(())
 }
 
+#[test]
+fn scenario_14_external_include_paths_unauthorized_zero_visibility() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_external_include_paths_unauthorized_zero_visibility",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_external_include_paths_unauthorized_zero_visibility()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_external_include_paths_unauthorized_zero_visibility completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 // =============================================================================
 // Fixture 3: no lib cancellation (negative case)
 // =============================================================================
@@ -629,8 +711,7 @@ sub gone { return \"I should not be found\" }\n\
 1;\n\
 ";
 
-#[test]
-fn scenario_14_no_lib_cancellation() -> Result<(), String> {
+fn source_reconciliation_scenario_14_no_lib_cancellation() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_no_lib_cancellation: perl-lsp binary not found");
         return Ok(());
@@ -722,6 +803,33 @@ fn scenario_14_no_lib_cancellation() -> Result<(), String> {
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_14_no_lib_cancellation() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_no_lib_cancellation",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_no_lib_cancellation()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_no_lib_cancellation completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }
 
 // =============================================================================
@@ -818,8 +926,7 @@ sub probe {\n\
 1;\n\
 ";
 
-#[test]
-fn scenario_14_findbin_relative() -> Result<(), String> {
+fn source_reconciliation_scenario_14_findbin_relative() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_findbin_relative: perl-lsp binary not found");
         return Ok(());
@@ -996,6 +1103,36 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn scenario_14_findbin_relative() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_findbin_relative",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_findbin_relative()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check(
+                "current source assertions for scenario_14_findbin_relative completed successfully",
+                true,
+            )?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 // =============================================================================
 // Fixture 5: PERL5LIB env var (`usePerl5lib=true`)
 // =============================================================================
@@ -1034,8 +1171,7 @@ use warnings;\n\
 use Sys\n\
 ";
 
-#[test]
-fn scenario_14_perl5lib_env() -> Result<(), String> {
+fn source_reconciliation_scenario_14_perl5lib_env() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_perl5lib_env: perl-lsp binary not found");
         return Ok(());
@@ -1115,6 +1251,36 @@ fn scenario_14_perl5lib_env() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn scenario_14_perl5lib_env() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_perl5lib_env",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_perl5lib_env()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check(
+                "current source assertions for scenario_14_perl5lib_env completed successfully",
+                true,
+            )?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 // =============================================================================
 // Fixture 6: nested module path via includePaths
 // =============================================================================
@@ -1144,8 +1310,7 @@ sub answer {\n\
 1;\n\
 ";
 
-#[test]
-fn scenario_14_nested_module_relative_include_path() -> Result<(), String> {
+fn source_reconciliation_scenario_14_nested_module_relative_include_path() -> Result<(), String> {
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_nested_module_relative_include_path: perl-lsp binary not found"
@@ -1224,6 +1389,33 @@ fn scenario_14_nested_module_relative_include_path() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn scenario_14_nested_module_relative_include_path() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_nested_module_relative_include_path",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_nested_module_relative_include_path()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_nested_module_relative_include_path completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 // =============================================================================
 // Fixture 7: includePaths configured but module missing
 // =============================================================================
@@ -1250,8 +1442,8 @@ use warnings;\n\
 use MissingFro\n\
 ";
 
-#[test]
-fn scenario_14_include_path_missing_module_consistency() -> Result<(), String> {
+fn source_reconciliation_scenario_14_include_path_missing_module_consistency() -> Result<(), String>
+{
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_include_path_missing_module_consistency: perl-lsp binary not found"
@@ -1323,6 +1515,33 @@ fn scenario_14_include_path_missing_module_consistency() -> Result<(), String> {
     harness.assert_no_crash();
 
     Ok(())
+}
+
+#[test]
+fn scenario_14_include_path_missing_module_consistency() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_include_path_missing_module_consistency",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_include_path_missing_module_consistency()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_include_path_missing_module_consistency completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }
 
 #[test]
@@ -1471,8 +1690,8 @@ fn scenario_14_perl5lib_completion_gating_matrix() {
     drop(system_dir);
 }
 
-#[test]
-fn scenario_14_perl5lib_completion_without_system_inc() -> Result<(), String> {
+fn source_reconciliation_scenario_14_perl5lib_completion_without_system_inc() -> Result<(), String>
+{
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_perl5lib_completion_without_system_inc: perl-lsp binary not found"
@@ -1565,6 +1784,33 @@ fn scenario_14_perl5lib_completion_without_system_inc() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn scenario_14_perl5lib_completion_without_system_inc() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_perl5lib_completion_without_system_inc",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_perl5lib_completion_without_system_inc()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_perl5lib_completion_without_system_inc completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 /// Regression guard for the startup-`@INC` env-inheritance leak: with
 /// `usePerl5lib=false` and `useSystemInc=true`, the interpreter startup
 /// `@INC` probe must NOT inherit `PERL5LIB` from the LSP's environment, so a
@@ -1634,8 +1880,7 @@ fn scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled() {
 // After #8537, workspace-index Package symbols are filtered through
 // EffectiveIncContext, so goto-def and completion must still be empty.
 
-#[test]
-fn scenario_14_no_lib_cancellation_workspace_index() -> Result<(), String> {
+fn source_reconciliation_scenario_14_no_lib_cancellation_workspace_index() -> Result<(), String> {
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_no_lib_cancellation_workspace_index: perl-lsp binary not found"
@@ -1709,6 +1954,33 @@ fn scenario_14_no_lib_cancellation_workspace_index() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn scenario_14_no_lib_cancellation_workspace_index() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_no_lib_cancellation_workspace_index",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_no_lib_cancellation_workspace_index()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_no_lib_cancellation_workspace_index completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 // =============================================================================
 // Fixture 10: use lib WITH workspace index (positive control)
 // =============================================================================
@@ -1733,8 +2005,7 @@ use lib 'lib';\n\
 use Gone\n\
 ";
 
-#[test]
-fn scenario_14_use_lib_with_workspace_index() -> Result<(), String> {
+fn source_reconciliation_scenario_14_use_lib_with_workspace_index() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_use_lib_with_workspace_index: perl-lsp binary not found");
         return Ok(());
@@ -1805,4 +2076,31 @@ fn scenario_14_use_lib_with_workspace_index() -> Result<(), String> {
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_14_use_lib_with_workspace_index() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "inc_conformance",
+        "ux_scenario_14_inc_conformance.rs",
+        "scenario_14_use_lib_with_workspace_index",
+        UxCiTier::Pr,
+        Some(UxComponent::ModuleResolution),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_14_use_lib_with_workspace_index()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_14_use_lib_with_workspace_index completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

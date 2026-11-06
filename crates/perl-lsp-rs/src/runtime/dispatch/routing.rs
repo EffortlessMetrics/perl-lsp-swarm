@@ -12,6 +12,12 @@ use super::super::{
 use super::response::RoutedResponse;
 use crate::cancellation::GLOBAL_CANCELLATION_REGISTRY;
 
+fn unsupported_method_message(method: &str) -> String {
+    format!(
+        "Method '{method}' not found or not supported: check the LSP method spelling and the capabilities returned by initialize before retrying"
+    )
+}
+
 impl LspServer {
     pub(super) fn route_request(
         &self,
@@ -315,7 +321,7 @@ impl LspServer {
                     tracing::debug!(method = %method, "Unknown $-prefixed request");
                     Err(JsonRpcError {
                         code: METHOD_NOT_FOUND,
-                        message: format!("Method '{}' not found or not supported", method),
+                        message: unsupported_method_message(&method),
                         data: None,
                     })
                 }
@@ -325,7 +331,7 @@ impl LspServer {
                 // Enhanced error response with comprehensive context
                 Err(enhanced_error(
                     METHOD_NOT_FOUND,
-                    &format!("Method '{}' not found or not supported", method),
+                    &unsupported_method_message(&method),
                     "method_not_found",
                     Some(&method),
                 ))
@@ -367,7 +373,7 @@ impl LspServer {
             }
             _ => Err(enhanced_error(
                 METHOD_NOT_FOUND,
-                &format!("Method '{}' not found or not supported", method),
+                &unsupported_method_message(&method),
                 "method_not_found",
                 Some(&method),
             )),

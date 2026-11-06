@@ -150,3 +150,65 @@ fn assert_signature_help_structure(result: &Value) -> Result<()> {
     }
     Ok(())
 }
+
+fn has_required_builtin_signature(response: &Value, expected: &str) -> bool {
+    response.get("error").is_none()
+        && response.pointer("/result/signatures").and_then(Value::as_array).is_some_and(
+            |signatures| {
+                signatures.iter().any(|signature| {
+                    signature.get("label").and_then(Value::as_str) == Some(expected)
+                })
+            },
+        )
+}
+
+#[test]
+fn builtin_signature_control_rejects_null_empty_and_other_builtin() {
+    for response in [
+        json!({"result":null}),
+        json!({"result":{"signatures":[]}}),
+        json!({"result":{"signatures":[{"label":"join EXPR, LIST"}]}}),
+        json!({"error":{"code":-32602},"result":{"signatures":[{"label":"push ARRAY, LIST"}]}}),
+    ] {
+        assert!(!has_required_builtin_signature(&response, "push ARRAY, LIST"));
+    }
+    assert!(has_required_builtin_signature(
+        &json!({"result":{"signatures":[{"label":"push ARRAY, LIST"}]}}),
+        "push ARRAY, LIST"
+    ));
+}
+
+#[test]
+fn scenario_25_static_builtin_signatures_have_exact_labels() {
+    use perl_lsp_ux_tests::{UxCiTier, UxComponent, missing_binary_skip, run_ux_scenario};
+    run_ux_scenario(
+        "signature_help_core",
+        "ux_scenario_25_signature_help.rs",
+        "scenario_25_static_builtin_signatures_have_exact_labels",
+        UxCiTier::Pr,
+        Some(UxComponent::SignatureHelp),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            let harness = builtin_harness()?;
+            let uri = harness.workspace.uri("builtins.pl");
+            perl_lsp_ux_tests::wait_with_subject(
+                "builtin signature active-document readiness",
+                harness.wait_for_active_document_ready(&uri, Duration::from_secs(20)),
+            )?;
+            for (line, character, label) in [(4, 8, "push ARRAY, LIST"), (5, 15, "join EXPR, LIST")]
+            {
+                recorder.mark_request_start(label);
+                let response = request_signature_help(&harness, line, character)?;
+                recorder.check(
+                    "static builtin signature is non-null and has its exact label",
+                    has_required_builtin_signature(&response, label),
+                )?;
+                recorder.mark_first_useful_result(label);
+            }
+            harness.assert_no_crash();
+            Ok(())
+        },
+    );
+}

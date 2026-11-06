@@ -993,3 +993,49 @@ See L<Data::Dumper>, L<strict>, L</method_name>, L<Local::Doc>, and L<NotAModule
 
     Ok(())
 }
+
+#[test]
+fn malformed_document_links_include_current_recovery_and_valid_links_remain_accepted() -> TestResult
+{
+    let server = initialized_server();
+    let cases = [
+        (None, "DocumentLink object"),
+        (Some(json!({"data": {"type": "unknown"}})), "data.type"),
+        (Some(json!({"data": {"type": "module"}})), "data.module"),
+        (Some(json!({"data": {"type": "file"}})), "data.path"),
+        (Some(json!({"data": {"type": "file", "path": "lib/Module.pm"}})), "data.baseUri"),
+        (Some(json!({"data": {"type": "pod_section"}})), "data.section"),
+    ];
+    for (index, (params, field)) in cases.into_iter().enumerate() {
+        let response = server
+            .handle_request(JsonRpcRequest {
+                _jsonrpc: "2.0".into(),
+                id: Some(perl_lsp::protocol::JsonRpcId::Integer(100 + index as i64)),
+                method: "documentLink/resolve".into(),
+                params,
+            })
+            .ok_or("resolve response required")?;
+        let error = response.error.ok_or("malformed link must fail")?;
+        assert_eq!(error.code, -32602);
+        for expected in
+            [field, "textDocument/documentLink", "request fresh document links", "pod_section"]
+        {
+            assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+        }
+    }
+    for (index, link) in [
+        json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}}),
+        json!({"target": "https://example.com/already", "data": {"type": "unknown"}}),
+        json!({"data": {"type": "url", "url": "https://example.com/docs"}}),
+        json!({"data": {"type": "pod_section", "section": "method_name", "baseUri": "file:///workspace/main.pl"}}),
+    ].into_iter().enumerate() {
+        let response = server.handle_request(JsonRpcRequest { _jsonrpc: "2.0".into(), id: Some(perl_lsp::protocol::JsonRpcId::Integer(200 + index as i64)), method: "documentLink/resolve".into(), params: Some(link.clone()) }).ok_or("resolve response required")?;
+        assert!(response.error.is_none(), "valid current link must remain accepted: {:?}", response.error);
+        let resolved = response.result.ok_or("resolved link required")?;
+        if let Some(data) = link.get("data") { assert_eq!(resolved.get("data"), Some(data)); }
+        if index == 0 || index == 1 { assert_eq!(resolved, link); }
+        if index == 2 { assert_eq!(resolved["target"], "https://example.com/docs"); }
+        if index == 3 { assert_eq!(resolved["target"], "file:///workspace/main.pl#method_name"); }
+    }
+    Ok(())
+}

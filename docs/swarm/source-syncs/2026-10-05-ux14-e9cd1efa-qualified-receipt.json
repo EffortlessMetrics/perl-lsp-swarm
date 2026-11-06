@@ -1,0 +1,502 @@
+{
+  "schemaVersion": 1,
+  "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+  "startedUTC": "2026-10-05T08:39:38.647001+00:00",
+  "profile": "dev binary; default Cargo features; locked serial UX14 target",
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "architecture": "x86_64",
+  "aggregateBudgetSeconds": 900,
+  "identityVerified": true,
+  "allFiveObservedGreen": true,
+  "registryChanged": false,
+  "qualificationLimit": "Five bounded observations, not exhaustion or full UX gate",
+  "preparation": [
+    {
+      "command": [
+        "rustc",
+        "-vV"
+      ],
+      "startedUTC": "2026-10-05T08:39:38.773319+00:00",
+      "exit": 0,
+      "status": "completed",
+      "timeoutSeconds": 15,
+      "endedUTC": "2026-10-05T08:39:38.805121+00:00",
+      "log": "rustc.log",
+      "logSHA256": "4fdff2578428e9c5c08ddd7a0d3079c1a106b1cdaa46e73e46f7cd32b0fb9cad"
+    },
+    {
+      "command": [
+        "cargo",
+        "-vV"
+      ],
+      "startedUTC": "2026-10-05T08:39:38.805558+00:00",
+      "exit": 0,
+      "status": "completed",
+      "timeoutSeconds": 15,
+      "endedUTC": "2026-10-05T08:39:38.837362+00:00",
+      "log": "cargo.log",
+      "logSHA256": "bfd735e736b354adabe72cea24bc1b393488223889b6ab95e974fd8fb963552e"
+    },
+    {
+      "command": [
+        "cargo",
+        "metadata",
+        "--no-deps",
+        "--format-version",
+        "1",
+        "--locked",
+        "--quiet"
+      ],
+      "startedUTC": "2026-10-05T08:39:38.837893+00:00",
+      "exit": 0,
+      "status": "completed",
+      "timeoutSeconds": 30,
+      "endedUTC": "2026-10-05T08:39:38.901642+00:00",
+      "log": "metadata.log",
+      "logSHA256": "610c00c61dc35cfd9856c99b0df2766cbba6f024db6d31a3caaed062dbcc3a1a"
+    },
+    {
+      "command": [
+        "cargo",
+        "build",
+        "-p",
+        "perllsp",
+        "--bin",
+        "perllsp",
+        "--locked"
+      ],
+      "startedUTC": "2026-10-05T08:39:38.909064+00:00",
+      "exit": 0,
+      "status": "completed",
+      "timeoutSeconds": 540,
+      "telemetryLog": "build-telemetry.jsonl",
+      "telemetryStatus": "captured",
+      "endedUTC": "2026-10-05T08:46:25.948770+00:00",
+      "log": "build.log",
+      "logSHA256": "f18635736043a0a2f543826e7b76280209198eca06627d1e229696b1634b4060",
+      "telemetrySHA256": "47834ffc5cb0c34851babbcda08a069b9d1ce8f2ef2f4e3553e06db5750baada",
+      "telemetryRecords": 42
+    },
+    {
+      "command": [
+        "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/perllsp",
+        "--version"
+      ],
+      "startedUTC": "2026-10-05T08:46:26.033482+00:00",
+      "exit": 0,
+      "status": "completed",
+      "timeoutSeconds": 15,
+      "endedUTC": "2026-10-05T08:46:26.037296+00:00",
+      "log": "binary-version.log",
+      "logSHA256": "14ee02883270214ce8a7639b7fdad6b4027166730adb6bc80b6c91c6346e2644"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "perl-lsp-ux-tests",
+        "--test",
+        "ux_scenario_14_inc_conformance",
+        "--locked",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "startedUTC": "2026-10-05T08:46:26.037845+00:00",
+      "exit": 0,
+      "status": "completed",
+      "timeoutSeconds": 180,
+      "endedUTC": "2026-10-05T08:47:02.064836+00:00",
+      "log": "test-prepare.log",
+      "logSHA256": "3f0a08a7bd06c5b75db0e069c503a62b9bb558e54af7e9afc040ca189d60f2bf"
+    }
+  ],
+  "runs": [
+    {
+      "run": 1,
+      "status": "completed",
+      "observedGreen": true,
+      "before": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryBefore": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableBefore": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+      "command": [
+        "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/deps/ux_scenario_14_inc_conformance-c11ad05212e80185",
+        "--test-threads=1",
+        "--show-output",
+        "--color=never"
+      ],
+      "startedUTC": "2026-10-05T08:47:02.499662+00:00",
+      "exit": 0,
+      "timeoutSeconds": 90,
+      "endedUTC": "2026-10-05T08:47:21.385577+00:00",
+      "log": "run-1.log",
+      "logSHA256": "281eda9993f65d7f7ac53121a6345c58bf7cfa953fe691f81c428c209d77ce82",
+      "passed": [
+        "scenario_14_external_include_paths_unauthorized_zero_visibility",
+        "scenario_14_findbin_relative",
+        "scenario_14_include_path_missing_module_completion_consistency",
+        "scenario_14_include_path_missing_module_consistency",
+        "scenario_14_nested_module_relative_include_path",
+        "scenario_14_no_lib_cancellation",
+        "scenario_14_no_lib_cancellation_workspace_index",
+        "scenario_14_perl5lib_completion_gating_matrix",
+        "scenario_14_perl5lib_completion_without_system_inc",
+        "scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled",
+        "scenario_14_perl5lib_env",
+        "scenario_14_relative_include_path",
+        "scenario_14_use_lib_lexical",
+        "scenario_14_use_lib_with_workspace_index"
+      ],
+      "failed": [],
+      "ignored": [],
+      "missingReplacementCases": [],
+      "summaries": [
+        [
+          "ok",
+          "14",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      ],
+      "skipLines": 0,
+      "terminalGreen": true,
+      "after": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryAfter": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableAfter": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1"
+    },
+    {
+      "run": 2,
+      "status": "completed",
+      "observedGreen": true,
+      "before": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryBefore": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableBefore": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+      "command": [
+        "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/deps/ux_scenario_14_inc_conformance-c11ad05212e80185",
+        "--test-threads=1",
+        "--show-output",
+        "--color=never"
+      ],
+      "startedUTC": "2026-10-05T08:47:21.805594+00:00",
+      "exit": 0,
+      "timeoutSeconds": 90,
+      "endedUTC": "2026-10-05T08:47:39.036522+00:00",
+      "log": "run-2.log",
+      "logSHA256": "edbc38405f4d002de8f1e5257370d1807a830b2551f288f7723feeeec4848469",
+      "passed": [
+        "scenario_14_external_include_paths_unauthorized_zero_visibility",
+        "scenario_14_findbin_relative",
+        "scenario_14_include_path_missing_module_completion_consistency",
+        "scenario_14_include_path_missing_module_consistency",
+        "scenario_14_nested_module_relative_include_path",
+        "scenario_14_no_lib_cancellation",
+        "scenario_14_no_lib_cancellation_workspace_index",
+        "scenario_14_perl5lib_completion_gating_matrix",
+        "scenario_14_perl5lib_completion_without_system_inc",
+        "scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled",
+        "scenario_14_perl5lib_env",
+        "scenario_14_relative_include_path",
+        "scenario_14_use_lib_lexical",
+        "scenario_14_use_lib_with_workspace_index"
+      ],
+      "failed": [],
+      "ignored": [],
+      "missingReplacementCases": [],
+      "summaries": [
+        [
+          "ok",
+          "14",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      ],
+      "skipLines": 0,
+      "terminalGreen": true,
+      "after": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryAfter": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableAfter": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1"
+    },
+    {
+      "run": 3,
+      "status": "completed",
+      "observedGreen": true,
+      "before": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryBefore": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableBefore": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+      "command": [
+        "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/deps/ux_scenario_14_inc_conformance-c11ad05212e80185",
+        "--test-threads=1",
+        "--show-output",
+        "--color=never"
+      ],
+      "startedUTC": "2026-10-05T08:47:39.454399+00:00",
+      "exit": 0,
+      "timeoutSeconds": 90,
+      "endedUTC": "2026-10-05T08:47:56.635166+00:00",
+      "log": "run-3.log",
+      "logSHA256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b",
+      "passed": [
+        "scenario_14_external_include_paths_unauthorized_zero_visibility",
+        "scenario_14_findbin_relative",
+        "scenario_14_include_path_missing_module_completion_consistency",
+        "scenario_14_include_path_missing_module_consistency",
+        "scenario_14_nested_module_relative_include_path",
+        "scenario_14_no_lib_cancellation",
+        "scenario_14_no_lib_cancellation_workspace_index",
+        "scenario_14_perl5lib_completion_gating_matrix",
+        "scenario_14_perl5lib_completion_without_system_inc",
+        "scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled",
+        "scenario_14_perl5lib_env",
+        "scenario_14_relative_include_path",
+        "scenario_14_use_lib_lexical",
+        "scenario_14_use_lib_with_workspace_index"
+      ],
+      "failed": [],
+      "ignored": [],
+      "missingReplacementCases": [],
+      "summaries": [
+        [
+          "ok",
+          "14",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      ],
+      "skipLines": 0,
+      "terminalGreen": true,
+      "after": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryAfter": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableAfter": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1"
+    },
+    {
+      "run": 4,
+      "status": "completed",
+      "observedGreen": true,
+      "before": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryBefore": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableBefore": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+      "command": [
+        "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/deps/ux_scenario_14_inc_conformance-c11ad05212e80185",
+        "--test-threads=1",
+        "--show-output",
+        "--color=never"
+      ],
+      "startedUTC": "2026-10-05T08:47:57.053296+00:00",
+      "exit": 0,
+      "timeoutSeconds": 90,
+      "endedUTC": "2026-10-05T08:48:14.184912+00:00",
+      "log": "run-4.log",
+      "logSHA256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b",
+      "passed": [
+        "scenario_14_external_include_paths_unauthorized_zero_visibility",
+        "scenario_14_findbin_relative",
+        "scenario_14_include_path_missing_module_completion_consistency",
+        "scenario_14_include_path_missing_module_consistency",
+        "scenario_14_nested_module_relative_include_path",
+        "scenario_14_no_lib_cancellation",
+        "scenario_14_no_lib_cancellation_workspace_index",
+        "scenario_14_perl5lib_completion_gating_matrix",
+        "scenario_14_perl5lib_completion_without_system_inc",
+        "scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled",
+        "scenario_14_perl5lib_env",
+        "scenario_14_relative_include_path",
+        "scenario_14_use_lib_lexical",
+        "scenario_14_use_lib_with_workspace_index"
+      ],
+      "failed": [],
+      "ignored": [],
+      "missingReplacementCases": [],
+      "summaries": [
+        [
+          "ok",
+          "14",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      ],
+      "skipLines": 0,
+      "terminalGreen": true,
+      "after": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryAfter": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableAfter": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1"
+    },
+    {
+      "run": 5,
+      "status": "completed",
+      "observedGreen": true,
+      "before": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryBefore": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableBefore": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+      "command": [
+        "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/deps/ux_scenario_14_inc_conformance-c11ad05212e80185",
+        "--test-threads=1",
+        "--show-output",
+        "--color=never"
+      ],
+      "startedUTC": "2026-10-05T08:48:14.604526+00:00",
+      "exit": 0,
+      "timeoutSeconds": 90,
+      "endedUTC": "2026-10-05T08:48:31.785419+00:00",
+      "log": "run-5.log",
+      "logSHA256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b",
+      "passed": [
+        "scenario_14_external_include_paths_unauthorized_zero_visibility",
+        "scenario_14_findbin_relative",
+        "scenario_14_include_path_missing_module_completion_consistency",
+        "scenario_14_include_path_missing_module_consistency",
+        "scenario_14_nested_module_relative_include_path",
+        "scenario_14_no_lib_cancellation",
+        "scenario_14_no_lib_cancellation_workspace_index",
+        "scenario_14_perl5lib_completion_gating_matrix",
+        "scenario_14_perl5lib_completion_without_system_inc",
+        "scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled",
+        "scenario_14_perl5lib_env",
+        "scenario_14_relative_include_path",
+        "scenario_14_use_lib_lexical",
+        "scenario_14_use_lib_with_workspace_index"
+      ],
+      "failed": [],
+      "ignored": [],
+      "missingReplacementCases": [],
+      "summaries": [
+        [
+          "ok",
+          "14",
+          "0",
+          "0",
+          "0",
+          "0"
+        ]
+      ],
+      "skipLines": 0,
+      "terminalGreen": true,
+      "after": {
+        "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+        "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+        "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+        "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+        "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+        "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+        "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+      },
+      "binaryAfter": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+      "testExecutableAfter": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1"
+    }
+  ],
+  "identity": {
+    "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+    "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+    "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+    "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+    "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+    "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+    "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+  },
+  "expectedReplacementCases": [
+    "scenario_14_external_include_paths_unauthorized_zero_visibility",
+    "scenario_14_findbin_relative",
+    "scenario_14_include_path_missing_module_completion_consistency",
+    "scenario_14_include_path_missing_module_consistency",
+    "scenario_14_nested_module_relative_include_path",
+    "scenario_14_no_lib_cancellation",
+    "scenario_14_no_lib_cancellation_workspace_index",
+    "scenario_14_perl5lib_completion_gating_matrix",
+    "scenario_14_perl5lib_completion_without_system_inc",
+    "scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled",
+    "scenario_14_perl5lib_env",
+    "scenario_14_relative_include_path",
+    "scenario_14_use_lib_lexical"
+  ],
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+  "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)\nrelease: 1.95.0\ncommit-hash: f2d3ce0bd7f24a49f8f72d9000448f8838c4e850\ncommit-date: 2026-03-21\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.15.0-DEV (sys:0.4.83+curl-8.15.0 vendored ssl:OpenSSL/3.5.4)\nssl: OpenSSL 3.5.4 30 Sep 2025\nos: Ubuntu 24.4.0 (noble) [64-bit]",
+  "binaryPath": "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/perllsp",
+  "binarySHA256": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+  "cargoTargetDirectory": "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target",
+  "cargoBuildTarget": null,
+  "rustFlagsSHA256": null,
+  "rustupToolchainSHA256": null,
+  "binaryVersion": "perllsp 0.17.0\nGit commit: e9cd1ef\nPerl LSP using perl-parser v3",
+  "testExecutablePath": "/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/target/debug/deps/ux_scenario_14_inc_conformance-c11ad05212e80185",
+  "testExecutableSHA256": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+  "endedUTC": "2026-10-05T08:48:32.207081+00:00"
+}

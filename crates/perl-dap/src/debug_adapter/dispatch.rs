@@ -353,7 +353,10 @@ impl DebugAdapter {
         if let Some(suggestion) = Self::suggested_command(command) {
             format!("Unknown command: {command}. Did you mean '{suggestion}'?")
         } else {
-            format!("Unknown command: {command}")
+            format!(
+                "Unknown command: {command}. Supported commands: {}",
+                SUPPORTED_COMMANDS.join(", ")
+            )
         }
     }
 
@@ -480,6 +483,24 @@ mod request_inventory_tests {
             SUPPORTED_COMMANDS.to_vec(),
             "SUPPORTED_COMMANDS must stay a projection of the routed rows"
         );
+    }
+
+    #[test]
+    fn unknown_command_lists_exactly_the_routed_inventory_when_no_suggestion_exists()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let message = super::DebugAdapter::unknown_command_message("frobnicateDebugger");
+        let (_, commands) = message
+            .split_once(". Supported commands: ")
+            .ok_or("no-suggestion error must carry the supported request inventory")?;
+        let from_rows: Vec<&str> = DAP_REQUEST_ROWS.iter().map(|row| row.command).collect();
+        assert_eq!(commands.split(", ").collect::<Vec<_>>(), from_rows);
+        assert!(!message.contains("Did you mean"));
+        assert!(
+            super::DebugAdapter::unknown_command_message("Initialize")
+                .contains("Did you mean 'initialize'?"),
+            "case typo must retain the focused suggestion"
+        );
+        Ok(())
     }
 
     #[test]

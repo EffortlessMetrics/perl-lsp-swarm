@@ -685,6 +685,20 @@ fn references_include_declaration_true_adds_declaration_to_source_backed_result(
 fn definition_runtime_quality_receipt_missing_params_rejects_nominal_compiler_key()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
+    let live_error = server
+        .test_handle_definition(None)
+        .expect_err("missing definition params must remain a client error");
+    assert_eq!(live_error.code, crate::protocol::INVALID_PARAMS);
+    for expected in [
+        "textDocument/definition",
+        "params.textDocument.uri",
+        "params.position.line",
+        "params.position.character",
+        "UTF-16",
+        "retry",
+    ] {
+        assert!(live_error.message.contains(expected), "{live_error:?}");
+    }
     let runtime_receipt = server
         .test_definition_runtime_quality_receipt(None)?
         .ok_or("missing definition runtime receipt")?;
@@ -697,6 +711,10 @@ fn definition_runtime_quality_receipt_missing_params_rejects_nominal_compiler_ke
         runtime_receipt.get("source_backed_receipt").is_some_and(Value::is_null),
         "unavailable definition proof must still name the source-backed receipt key: {runtime_receipt}"
     );
+    assert_eq!(runtime_receipt.get("live_provider_error"), Some(&json!(live_error)));
+    assert_eq!(runtime_receipt.get("live_provider_result"), Some(&Value::Null));
+    assert_eq!(runtime_receipt.get("live_provider_count"), Some(&json!(0)));
+    assert_eq!(runtime_receipt.get("no_live_behavior_change"), Some(&json!(true)));
     Ok(())
 }
 
@@ -704,6 +722,20 @@ fn definition_runtime_quality_receipt_missing_params_rejects_nominal_compiler_ke
 fn references_runtime_quality_receipt_missing_params_rejects_nominal_compiler_key()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
+    let live_error = server
+        .test_handle_references(None)
+        .expect_err("missing references params must remain a client error");
+    assert_eq!(live_error.code, crate::protocol::INVALID_PARAMS);
+    for expected in [
+        "textDocument/references",
+        "params.textDocument.uri",
+        "params.position.line",
+        "params.position.character",
+        "UTF-16",
+        "retry",
+    ] {
+        assert!(live_error.message.contains(expected), "{live_error:?}");
+    }
     let runtime_receipt = server
         .test_references_runtime_quality_receipt(None)?
         .ok_or("missing references runtime receipt")?;
@@ -716,5 +748,33 @@ fn references_runtime_quality_receipt_missing_params_rejects_nominal_compiler_ke
         runtime_receipt.get("source_backed_receipt").is_some_and(Value::is_null),
         "unavailable references proof must still name the source-backed receipt key: {runtime_receipt}"
     );
+    assert_eq!(runtime_receipt.get("live_provider_error"), Some(&json!(live_error)));
+    assert_eq!(runtime_receipt.get("live_provider_result"), Some(&Value::Null));
+    assert_eq!(runtime_receipt.get("live_provider_count"), Some(&json!(0)));
+    assert_eq!(runtime_receipt.get("no_live_behavior_change"), Some(&json!(true)));
     Ok(())
+}
+
+#[test]
+fn navigation_runtime_quality_receipts_preserve_malformed_some_errors() {
+    let server = create_server();
+    for params in [Value::Null, json!({})] {
+        let live_definition_error = server
+            .test_handle_definition(Some(params.clone()))
+            .expect_err("malformed definition params must remain a client error");
+        let receipt_definition_error = server
+            .test_definition_runtime_quality_receipt(Some(params.clone()))
+            .expect_err("malformed Some definition params must not become a receipt");
+        assert_eq!(live_definition_error.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(json!(receipt_definition_error), json!(live_definition_error));
+
+        let live_references_error = server
+            .test_handle_references(Some(params.clone()))
+            .expect_err("malformed references params must remain a client error");
+        let receipt_references_error = server
+            .test_references_runtime_quality_receipt(Some(params))
+            .expect_err("malformed Some references params must not become a receipt");
+        assert_eq!(live_references_error.code, crate::protocol::INVALID_PARAMS);
+        assert_eq!(json!(receipt_references_error), json!(live_references_error));
+    }
 }

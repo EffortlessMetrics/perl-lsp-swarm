@@ -1,0 +1,396 @@
+{
+  "schema": "source-bound-ux14-qualification-v1",
+  "qualifiedSource": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+  "qualifiedTree": "3b748930c198f3ae70969e03be87fadac63e3292",
+  "qualificationScope": "Five bounded executions of the unchanged current UX14 assertions and13 replacement cases; broader printed missing-module completion/hover parity remains NOT_PROVEN",
+  "rawReceiptPath": "docs/swarm/source-syncs/2026-10-05-ux14-e9cd1efa-qualified-receipt.json",
+  "rawReceiptSHA256": "50b6aa72c1ae320a850e1b6391cdc582c93f6556db00cd5f1785490ce50b9cea",
+  "nativeRun": {
+    "id": 37284894403,
+    "event": "workflow_dispatch",
+    "run_attempt": 1,
+    "conclusion": "success",
+    "html_url": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/37284894403"
+  },
+  "nativeJob": {
+    "id": 111681348307,
+    "name": "UX14 Exact-Subject Qualification",
+    "conclusion": "success",
+    "runner_name": "GitHub Actions 1003440685",
+    "labels": [
+      "ubuntu-24.04"
+    ],
+    "html_url": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/37284894403/job/111681348307"
+  },
+  "artifact": {
+    "id": 11335080222,
+    "name": "ux14-five-run-verified-e9cd1efa945e6968369919c6f0f43f83421d4e99",
+    "apiDigest": "sha256:44b0a7bbfb31c43575d2e76f4f0041ba2b9bfe03401d0554924aaad172dda9e1",
+    "archiveSHA256": "44b0a7bbfb31c43575d2e76f4f0041ba2b9bfe03401d0554924aaad172dda9e1",
+    "archiveBytes": 78380,
+    "freshDownload": true,
+    "receiptSHA256": "50b6aa72c1ae320a850e1b6391cdc582c93f6556db00cd5f1785490ce50b9cea"
+  },
+  "serverSHA256": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+  "testExecutableSHA256": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+  "observerLF_SHA256": "4ae3114510ac4830ad573b3561dc6a525db6018a9c4711651101e0da5db04516",
+  "aggregateElapsedSeconds": 533.56008,
+  "rootAuthenticationSHA256": "b19e3fc99cb3de1fed31ea5021f93008dfc504c90d4a8aac4c0b0a48a5b8903b",
+  "independentReturnedReviewSHA256": "4e02b96649de8f72b99ecbc15a464b037eaec89866efa26decf2ea8bc8a2f4fc",
+  "independentReturnedReview": {
+    "schema": "bounded-hosted-evidence-review-v1",
+    "verdict": "PASS",
+    "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+    "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+    "orderedParents": [
+      "53eb55c71e927451fdc928924c62c8faf179af20"
+    ],
+    "reviewer": "/root/perl_540_head_review",
+    "createdUTC": "2026-10-05T08:57:20.823674+00:00",
+    "materialEvidenceFindings": [],
+    "scope": "Independent offline review of authenticated current-subject hosted return, exact committed observer bytes, native preparation/observation provenance, archive/log/telemetry integrity and bounded eleven-row drift rebinding. Execution/binding qualification only; broader consumer parity and full integration remain unproven.",
+    "canonicalRunSnapshot": {
+      "id": 37284894403,
+      "event": "workflow_dispatch",
+      "run_attempt": 1,
+      "conclusion": "success",
+      "html_url": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/37284894403"
+    },
+    "canonicalJobSnapshot": {
+      "id": 111681348307,
+      "name": "UX14 Exact-Subject Qualification",
+      "conclusion": "success",
+      "runner_name": "GitHub Actions 1003440685",
+      "labels": [
+        "ubuntu-24.04"
+      ],
+      "html_url": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/37284894403/job/111681348307"
+    },
+    "artifact": {
+      "id": 11335080222,
+      "name": "ux14-five-run-verified-e9cd1efa945e6968369919c6f0f43f83421d4e99",
+      "apiDigest": "sha256:44b0a7bbfb31c43575d2e76f4f0041ba2b9bfe03401d0554924aaad172dda9e1",
+      "archiveSHA256": "44b0a7bbfb31c43575d2e76f4f0041ba2b9bfe03401d0554924aaad172dda9e1",
+      "archiveBytes": 78380,
+      "freshDownload": true,
+      "receiptSHA256": "50b6aa72c1ae320a850e1b6391cdc582c93f6556db00cd5f1785490ce50b9cea"
+    },
+    "identity": {
+      "source": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+      "tree": "3b748930c198f3ae70969e03be87fadac63e3292",
+      "artifactPath": "crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs",
+      "artifactBlob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+      "artifactSHA256": "b9daf6c260f93494be4985d9be3e5882556d55629b1821f04b898eb733ff6d26",
+      "registryBlob": "86e37cbd8abe53b5eb4a1547d3fc6aeeaaecbb55",
+      "registrySHA256": "f9a07522ae48f31c864215a24075b99fe4f3c597ff2a8bc3969a845cab2c45ab"
+    },
+    "observerLF_SHA256": "4ae3114510ac4830ad573b3561dc6a525db6018a9c4711651101e0da5db04516",
+    "observerCRLFProbeNote": "Archive observer bytes equal exact immutable YAML heredoc LF text. Raw local CRLF probe digest d7933e7d is a different byte encoding and was not substituted for hosted bytes.",
+    "serverExecutableSHA256": "e24660442b519ce8d1bf50e439a9a4b46f3e73360f42e50f7d928fc40acd13e2",
+    "testExecutableSHA256": "8618567bdac98052fcab342cd3a59b7c88409788c47f062d526545c110d006f1",
+    "checks": {
+      "archive": "78380-byte ZIP SHA256 equals canonical artifact API digest in root authenticated snapshot; exactly fourteen allowlisted source/receipt/log entries, unique safe paths, no symlinks or ELF/MZ executable bytes, bounded uncompressed size. No extraction, native download or local native measurement.",
+      "authenticatorReview": "Reviewed authenticate_ux14_540_return.py without executing its API/download/write actions. It pins canonical run/workflow/job/attempt/source, success of identity and hosted verifier, verified artifact provenance/digest, immutable observer text and all source/blob/log/case identities. This review independently recomputes archive/source integrity and parses terminals without executing or importing its producer decoder.",
+      "sourceIdentity": "Cached Git exact commit/tree, UX14 artifact blob/SHA256, registry blob/SHA256 match raw receipt and authenticated report; GIT_NO_LAZY_FETCH=1 and GIT_NO_REPLACE_OBJECTS=1 on every Git read.",
+      "receipt": "Archive raw receipt is byte-identical to local immutable receipt (SHA256 50b6aa72c1ae320a850e1b6391cdc582c93f6556db00cd5f1785490ce50b9cea); parsed receipt equals authenticated report returnedReceipt.",
+      "preparation": "All six expected commands in exact order completed exit0 with matching archived log hashes and admitted caps. Cargo metadata binds debug server path; Cargo JSON compiler artifacts bind exactly one real UX14 test executable. Binary --version log names e9cd1ef.",
+      "fiveObservations": "Five ordered direct executable invocations with exact serial/show-output/no-color argv; distinct increasing UTC intervals after preparation; each status completed/exit0,14 unique passed names, one running14 banner and one terminal14/0/0/0/0 summary. All thirteen replacement cases occur in every run; no SKIP/ignored/failed/missing/filtered/duplicate terminal rows. Independent line parser matches stored passed names and flags.",
+      "identityAndDigests": "All five before/after source identities equal committed subject; before/after server/test executable SHA256s equal recorded hosted measured digests. Exact reviewed observer always spawns a fresh process and creates each run log; equal deterministic run3/4/5 log bytes do not indicate a stale-log path.",
+      "budget": "Preparation and observations are nonoverlapping/increasing; every command interval is within admitted per-command cap, every observation ended before aggregate deadline. Entire receipt elapsed533.56008seconds<900.",
+      "telemetry": "40179-byte JSONL has42rows: start,40progress,end; matching SHA25647834ffc5cb0c34851babbcda08a069b9d1ce8f2ef2f4e3553e06db5750baada, captured status, monotonic elapsed counters and UTC within build interval. One Cargo job,CARGO_INCREMENTAL0,no wrapper; flags/target/toolchain digests null. Numeric bounded kernel counters contain no raw env or argv."
+    },
+    "preparation": [
+      {
+        "log": "rustc.log",
+        "sha256": "4fdff2578428e9c5c08ddd7a0d3079c1a106b1cdaa46e73e46f7cd32b0fb9cad",
+        "elapsedSeconds": 0.031802,
+        "capSeconds": 15
+      },
+      {
+        "log": "cargo.log",
+        "sha256": "bfd735e736b354adabe72cea24bc1b393488223889b6ab95e974fd8fb963552e",
+        "elapsedSeconds": 0.031804,
+        "capSeconds": 15
+      },
+      {
+        "log": "metadata.log",
+        "sha256": "610c00c61dc35cfd9856c99b0df2766cbba6f024db6d31a3caaed062dbcc3a1a",
+        "elapsedSeconds": 0.063749,
+        "capSeconds": 30
+      },
+      {
+        "log": "build.log",
+        "sha256": "f18635736043a0a2f543826e7b76280209198eca06627d1e229696b1634b4060",
+        "elapsedSeconds": 407.039706,
+        "capSeconds": 540
+      },
+      {
+        "log": "binary-version.log",
+        "sha256": "14ee02883270214ce8a7639b7fdad6b4027166730adb6bc80b6c91c6346e2644",
+        "elapsedSeconds": 0.003814,
+        "capSeconds": 15
+      },
+      {
+        "log": "test-prepare.log",
+        "sha256": "3f0a08a7bd06c5b75db0e069c503a62b9bb558e54af7e9afc040ca189d60f2bf",
+        "elapsedSeconds": 36.026991,
+        "capSeconds": 180
+      }
+    ],
+    "observations": [
+      {
+        "run": 1,
+        "startedUTC": "2026-10-05T08:47:02.499662+00:00",
+        "endedUTC": "2026-10-05T08:47:21.385577+00:00",
+        "elapsedSeconds": 18.885915,
+        "passed": 14,
+        "replacementCases": 13,
+        "failed": 0,
+        "ignored": 0,
+        "missing": 0,
+        "skipped": 0,
+        "logSHA256": "281eda9993f65d7f7ac53121a6345c58bf7cfa953fe691f81c428c209d77ce82"
+      },
+      {
+        "run": 2,
+        "startedUTC": "2026-10-05T08:47:21.805594+00:00",
+        "endedUTC": "2026-10-05T08:47:39.036522+00:00",
+        "elapsedSeconds": 17.230928,
+        "passed": 14,
+        "replacementCases": 13,
+        "failed": 0,
+        "ignored": 0,
+        "missing": 0,
+        "skipped": 0,
+        "logSHA256": "edbc38405f4d002de8f1e5257370d1807a830b2551f288f7723feeeec4848469"
+      },
+      {
+        "run": 3,
+        "startedUTC": "2026-10-05T08:47:39.454399+00:00",
+        "endedUTC": "2026-10-05T08:47:56.635166+00:00",
+        "elapsedSeconds": 17.180767,
+        "passed": 14,
+        "replacementCases": 13,
+        "failed": 0,
+        "ignored": 0,
+        "missing": 0,
+        "skipped": 0,
+        "logSHA256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b"
+      },
+      {
+        "run": 4,
+        "startedUTC": "2026-10-05T08:47:57.053296+00:00",
+        "endedUTC": "2026-10-05T08:48:14.184912+00:00",
+        "elapsedSeconds": 17.131616,
+        "passed": 14,
+        "replacementCases": 13,
+        "failed": 0,
+        "ignored": 0,
+        "missing": 0,
+        "skipped": 0,
+        "logSHA256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b"
+      },
+      {
+        "run": 5,
+        "startedUTC": "2026-10-05T08:48:14.604526+00:00",
+        "endedUTC": "2026-10-05T08:48:31.785419+00:00",
+        "elapsedSeconds": 17.180893,
+        "passed": 14,
+        "replacementCases": 13,
+        "failed": 0,
+        "ignored": 0,
+        "missing": 0,
+        "skipped": 0,
+        "logSHA256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b"
+      }
+    ],
+    "aggregateElapsedSeconds": 533.56008,
+    "fiveCurrentObservationsQualified": true,
+    "telemetrySummary": {
+      "records": 42,
+      "bytes": 40179,
+      "sha256": "47834ffc5cb0c34851babbcda08a069b9d1ce8f2ef2f4e3553e06db5750baada",
+      "serverBuildSeconds": 407.039706,
+      "testPreparationSeconds": 36.026991,
+      "compileAnnouncements": 190,
+      "downloadAnnouncements": 170,
+      "lastCompileCrate": [
+        "perllsp",
+        "0.17.0"
+      ],
+      "sampledGroupRSSHighWaterBytes": 1659043840,
+      "finalWaitedChildrenCPUSecondsCumulative": 390.709531,
+      "finalWaitedChildrenMaxRSSKiBCumulative": 1489912,
+      "finalGroupProcesses": 0,
+      "limits": "Sampled live process group excludes exited processes and yields sampled RSS, not exact peak; no per-crate cost/OOM attribution."
+    },
+    "registryRebinding": {
+      "verdict": "SUPPORTED_FOR_EXACT_ELEVEN_ROW_DRIFT_REPAIR",
+      "rowCount": 11,
+      "uniqueReplacementCaseCount": 13,
+      "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+      "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+      "verification_pr": 17238,
+      "authorityBoundary": "Actual authenticated run qualified the e9 subject/current artifact. PR17238 is the root-attested canonical carrier; the registry guard only format-checks PR identity, so root must publish this run/review evidence there. This offline reviewer does not independently query current PR linkage.",
+      "preserve": [
+        "All eleven row identities/states/dispositions/resolved metadata",
+        "All replacement sets and thirteen-case denominator",
+        "FindBin resolved status,resolved_in17042,resolved_at2026-10-01 and historical discharge notes",
+        "Guard and exact standard evidence.command literal PERL_LSP_UX_REQUIRE_BINARY=1 just ux-tests",
+        "Source tests/assertions and the immutable old verification events in Git"
+      ],
+      "protocolNotes": "The actual qualification used one locked serial dev server build, one locked default-feature UX14 --no-run compilation, and five sequential direct retained-executable --test-threads=1 --show-output --color=never runs with PERL_LSP_UX_REQUIRE_BINARY=1 and explicit PERL_LSP_BIN. Each yielded14passed/0failed/0ignored/0filtered/0skipped; all13replacementcases executed, executable digests and source identity stayed stable, aggregate533.56008s. Bounded repetition, not exhaustion or full UX gate.",
+      "notesCorrection": {
+        "test": "ux_scenario_14_inc_conformance::scenario_14_include_path_missing_module_consistency",
+        "currentOverclaim": "Current notes claim the test hard-fails unless missing-module status is consistent across PL701, completion, goto-definition and hover. Source helper only hard-asserts goto-definition empty and PL701 present, plus no crash; completion and hover are diagnostic prints. Hosted output reports hover=FAIL while the Rust test passes.",
+        "proposedConciseCurrentNotes": "The maintained negative test hard-fails if goto-definition resolves MissingFromInclude, PL701 is absent, or the server crashes. Completion and hover are printed as diagnostics; parity for those consumers is not established by this test.",
+        "broaderConsumerParityVerdict": "NOT_PROVEN"
+      },
+      "negativeDiagnosticInterpretation": "Unauthorized external-root output PL701=FAIL is a diagnostic display for the expected refusal; source explicitly asserts PL701 must fire and zero definition/completion/hover visibility. Literal FAIL cells are not equivalent to libtest FAILED terminals, nor are green terminals proof of every diagnostic cell.",
+      "nextAction": "Root may update only the eleven evidence pins and honest protocol notes, carry immutable raw hosted receipt/manifest on the canonical source carrier, preserve current artifact and guards, then let normal CI reverify drift. No new five-run dispatch is needed for metadata-only repair."
+    },
+    "supportingFiles": [
+      {
+        "path": "reconciliation/ux14-hosted-37284894403.zip",
+        "bytes": 78380,
+        "sha256": "44b0a7bbfb31c43575d2e76f4f0041ba2b9bfe03401d0554924aaad172dda9e1"
+      },
+      {
+        "path": "reconciliation/ux14-hosted-37284894403-receipt.json",
+        "bytes": 21803,
+        "sha256": "50b6aa72c1ae320a850e1b6391cdc582c93f6556db00cd5f1785490ce50b9cea"
+      },
+      {
+        "path": "reconciliation/ux14-hosted-37284894403-authenticated-return.json",
+        "bytes": 34668,
+        "sha256": "b19e3fc99cb3de1fed31ea5021f93008dfc504c90d4a8aac4c0b0a48a5b8903b"
+      },
+      {
+        "path": "authenticate_ux14_540_return.py",
+        "bytes": 14331,
+        "sha256": "771ae147a386488e07b14fd62bb297a3e97fe994c5f3ea092a448d5c44730baf"
+      },
+      {
+        "path": "reconciliation/independent-review-ux14-540-e9cd1efa.json",
+        "bytes": 12470,
+        "sha256": "f21b783ceb60f56982832f0b5653fc5af5e35e9e6bac41cbad03a40521d39e83"
+      }
+    ],
+    "archiveEntries": [
+      {
+        "path": "ux14-observer.py",
+        "bytes": 19177,
+        "sha256": "4ae3114510ac4830ad573b3561dc6a525db6018a9c4711651101e0da5db04516"
+      },
+      {
+        "path": "ux14-five-run/binary-version.log",
+        "bytes": 65,
+        "sha256": "14ee02883270214ce8a7639b7fdad6b4027166730adb6bc80b6c91c6346e2644"
+      },
+      {
+        "path": "ux14-five-run/build-telemetry.jsonl",
+        "bytes": 40179,
+        "sha256": "47834ffc5cb0c34851babbcda08a069b9d1ce8f2ef2f4e3553e06db5750baada"
+      },
+      {
+        "path": "ux14-five-run/build.log",
+        "bytes": 13569,
+        "sha256": "f18635736043a0a2f543826e7b76280209198eca06627d1e229696b1634b4060"
+      },
+      {
+        "path": "ux14-five-run/cargo.log",
+        "bytes": 336,
+        "sha256": "bfd735e736b354adabe72cea24bc1b393488223889b6ab95e974fd8fb963552e"
+      },
+      {
+        "path": "ux14-five-run/receipt.json",
+        "bytes": 21803,
+        "sha256": "50b6aa72c1ae320a850e1b6391cdc582c93f6556db00cd5f1785490ce50b9cea"
+      },
+      {
+        "path": "ux14-five-run/metadata.log",
+        "bytes": 723122,
+        "sha256": "610c00c61dc35cfd9856c99b0df2766cbba6f024db6d31a3caaed062dbcc3a1a"
+      },
+      {
+        "path": "ux14-five-run/run-1.log",
+        "bytes": 3452,
+        "sha256": "281eda9993f65d7f7ac53121a6345c58bf7cfa953fe691f81c428c209d77ce82"
+      },
+      {
+        "path": "ux14-five-run/run-2.log",
+        "bytes": 3452,
+        "sha256": "edbc38405f4d002de8f1e5257370d1807a830b2551f288f7723feeeec4848469"
+      },
+      {
+        "path": "ux14-five-run/run-3.log",
+        "bytes": 3452,
+        "sha256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b"
+      },
+      {
+        "path": "ux14-five-run/run-4.log",
+        "bytes": 3452,
+        "sha256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b"
+      },
+      {
+        "path": "ux14-five-run/run-5.log",
+        "bytes": 3452,
+        "sha256": "e247722880b61791074af6762db7c281411ec3296ce4b68b91fbe7c768f1053b"
+      },
+      {
+        "path": "ux14-five-run/rustc.log",
+        "bytes": 196,
+        "sha256": "4fdff2578428e9c5c08ddd7a0d3079c1a106b1cdaa46e73e46f7cd32b0fb9cad"
+      },
+      {
+        "path": "ux14-five-run/test-prepare.log",
+        "bytes": 164674,
+        "sha256": "3f0a08a7bd06c5b75db0e069c503a62b9bb558e54af7e9afc040ca189d60f2bf"
+      }
+    ],
+    "limitations": [
+      "Canonical API/run/job provenance is the root authenticated snapshot and reviewed authenticator; this reviewer made no independent network request. Native digests were measured by the reviewed hosted observer/verifier, not by a local binary hash.",
+      "Five bounded current-subject observations qualify this exact target/case mapping. No claim of exhaustive behavior, full suite, repaired three LSP assertions, public-P/model/required checks or combined main tree acceptance follows.",
+      "Older attempt37272046694 remains an immutable cold480 timeout with0of5/null executable digests. Previously denied diagnostic ZIP remains uninspected; no alternate binary retrieval occurred.",
+      "Broader printed missing-module consumer parity is NOT_PROVEN and requires an independently owned semantic follow-up if desired; binding repair must not retain the false four-consumer assertion claim.",
+      "No cross-repository merge, ancestry containment, package/release acceptance or all-source readiness follows; all normal/main/public-P/model/ref/RIPR blockers remain separate."
+    ],
+    "activityBounds": {
+      "sourceWrites": false,
+      "network": false,
+      "nativeOrCargoExecution": false,
+      "nativeDownload": false,
+      "dispatch": false,
+      "registryMutation": false,
+      "writes": [
+        "reconciliation/independent-review-ux14-return-37284894403.json"
+      ]
+    }
+  },
+  "registryRebinding": {
+    "rows": 11,
+    "verified_sha": "e9cd1efa945e6968369919c6f0f43f83421d4e99",
+    "verified_artifact_blob": "6f30b3dc2f5e2db8e92b9dd0d55635901ffe93ad",
+    "verification_pr": 17238,
+    "preservedReplacementCaseCount": 13,
+    "FindBinResolutionPreserved": true,
+    "guardAndTestSourceUnchanged": true
+  },
+  "nativeExecutablesDownloaded": false,
+  "localCargo": false,
+  "newFocusedDispatch": false,
+  "historicalAttempt": {
+    "run": 37272046694,
+    "source": "1b6782f08ad5cb467cffaeded439238f39be6956",
+    "serverCapSeconds": 480,
+    "planned": 5,
+    "started": 0,
+    "completed": 0,
+    "serverSHA256": null,
+    "testExecutableSHA256": null
+  },
+  "integrationAcceptance": "NOT_PROVEN",
+  "publicP": null,
+  "sourceSyncCompleted": false,
+  "packageReleaseAcceptance": "NOT_PROVEN"
+}

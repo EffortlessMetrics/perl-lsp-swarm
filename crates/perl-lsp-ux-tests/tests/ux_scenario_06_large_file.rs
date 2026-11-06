@@ -25,8 +25,7 @@ fn generate_source(line_count: usize) -> String {
     buf
 }
 
-#[test]
-fn scenario_06_medium_file_open_and_hover() -> Result<(), String> {
+fn source_reconciliation_scenario_06_medium_file_open_and_hover() -> Result<(), String> {
     // Always runs — 1k lines is fast enough for PR gate.
     if !binary_available() {
         eprintln!("SKIP scenario_06: perl-lsp binary not found");
@@ -50,9 +49,35 @@ fn scenario_06_medium_file_open_and_hover() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "integration-test")]
 #[test]
-fn scenario_06_large_file_open_does_not_hang() -> Result<(), String> {
+fn scenario_06_medium_file_open_and_hover() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "large_file_open",
+        "ux_scenario_06_large_file.rs",
+        "scenario_06_medium_file_open_and_hover",
+        UxCiTier::Nightly,
+        Some(UxComponent::Infra),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_06_medium_file_open_and_hover()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_06_medium_file_open_and_hover completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
+#[cfg(feature = "integration-test")]
+fn source_reconciliation_scenario_06_large_file_open_does_not_hang() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_06 (large): perl-lsp binary not found");
         return Ok(());
@@ -73,4 +98,32 @@ fn scenario_06_large_file_open_does_not_hang() -> Result<(), String> {
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[cfg(feature = "integration-test")]
+#[test]
+fn scenario_06_large_file_open_does_not_hang() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "large_file_open",
+        "ux_scenario_06_large_file.rs",
+        "scenario_06_large_file_open_does_not_hang",
+        UxCiTier::Nightly,
+        Some(UxComponent::Infra),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_06_large_file_open_does_not_hang()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_06_large_file_open_does_not_hang completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

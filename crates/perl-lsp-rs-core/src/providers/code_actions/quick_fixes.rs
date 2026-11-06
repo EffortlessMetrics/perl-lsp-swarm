@@ -2737,6 +2737,163 @@ fn printf_format_insert_position(
     }
 }
 
+/// Add a POD stub for a current, exported, undocumented named subroutine (PL304).
+///
+/// Diagnostic prose is not edit authority. Reuse the current POD coverage producer
+/// and require its exact subroutine range plus matching declaration source. Inline
+/// declarations and export-list-only findings have no safe insertion anchor here.
+pub(super) fn fix_missing_pod_coverage(
+    source: &str,
+    ast: &Node,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    if diagnostic.code.as_deref() != Some(DiagnosticCode::MissingPodCoverage.as_str()) {
+        return Vec::new();
+    }
+    let Some((range_start, _)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+    let mut current = Vec::new();
+    crate::providers::diagnostics::lints::pod_coverage::check_pod_coverage(
+        ast,
+        source,
+        &mut current,
+    );
+    if !current.iter().any(|item| item.range == diagnostic.range) {
+        return Vec::new();
+    }
+    let Some(sub_name) = named_sub_at_range(ast, diagnostic.range) else {
+        return Vec::new();
+    };
+    if !is_plain_edit_identifier(sub_name) {
+        return Vec::new();
+    }
+    let Some(after_sub) = source[range_start..].strip_prefix("sub") else {
+        return Vec::new();
+    };
+    if !after_sub.starts_with([' ', '\t']) {
+        return Vec::new();
+    }
+    let Some(after_name) = after_sub.trim_start_matches([' ', '\t']).strip_prefix(sub_name) else {
+        return Vec::new();
+    };
+    if !after_name.starts_with([' ', '\t', '\r', '\n', '(', '{', ':']) {
+        return Vec::new();
+    }
+    let line_start = source[..range_start].rfind('\n').map_or(0, |offset| offset + 1);
+    if !source[line_start..range_start].chars().all(|ch| matches!(ch, ' ' | '\t')) {
+        return Vec::new();
+    }
+    let newline =
+        if source[range_start..].split_once('\n').is_some_and(|(line, _)| line.ends_with('\r'))
+            || source[..range_start].ends_with("\r\n")
+        {
+            "\r\n"
+        } else {
+            "\n"
+        };
+    // Start a fresh command paragraph at column one, and resume Perl after =cut.
+    let stub = format!(
+        "{newline}=head2 {sub_name}{newline}{newline}Description.{newline}{newline}=cut{newline}{newline}"
+    );
+    vec![CodeAction {
+        title: format!("Add '=head2 {sub_name}' POD documentation stub"),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::MissingPodCoverage.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: line_start, end: line_start },
+                new_text: stub,
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+fn named_sub_at_range(node: &Node, range: (usize, usize)) -> Option<&str> {
+    if (node.location.start, node.location.end) == range
+        && let NodeKind::Subroutine { name: Some(name), .. } = &node.kind
+    {
+        return Some(name);
+    }
+    node.children().into_iter().find_map(|child| named_sub_at_range(child, range))
+}
+
+fn is_plain_edit_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+/// Remove a current undefined `goto LABEL;` only when it owns a standalone line.
+///
+/// Reuse the current label diagnostic producer; do not infer undefinedness from
+/// prose or a supplied code alone. Inline code, suffix statements, comments and
+/// modifiers are deliberately refused rather than deleted with the statement.
+pub(super) fn fix_goto_undefined_label(
+    source: &str,
+    ast: &Node,
+    diagnostic: &QuickFixDiagnostic,
+) -> Vec<CodeAction> {
+    if diagnostic.code.as_deref() != Some(DiagnosticCode::GotoUndefinedLabel.as_str()) {
+        return Vec::new();
+    }
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+    let Some(label_name) = goto_label_at_range(ast, diagnostic.range) else {
+        return Vec::new();
+    };
+    if !is_plain_edit_identifier(label_name)
+        || source.get(range_start..range_end) != Some(label_name)
+    {
+        return Vec::new();
+    }
+    let table = perl_semantic_analyzer::analysis::symbol::SymbolExtractor::new_with_source(source)
+        .extract(ast);
+    let mut current = Vec::new();
+    crate::providers::diagnostics::lints::goto_label::check_goto_labels(ast, &table, &mut current);
+    if !current.iter().any(|item| item.range == diagnostic.range) {
+        return Vec::new();
+    }
+    let line_start = source[..range_start].rfind('\n').map_or(0, |offset| offset + 1);
+    let line_end =
+        source[range_end..].find('\n').map_or(source.len(), |offset| range_end + offset + 1);
+    let before = source[line_start..range_start].trim_start_matches([' ', '\t']);
+    let Some(separator) = before.strip_prefix("goto") else {
+        return Vec::new();
+    };
+    if separator.is_empty() || !separator.chars().all(|ch| matches!(ch, ' ' | '\t')) {
+        return Vec::new();
+    }
+    let after = source[range_end..line_end].trim_matches([' ', '\t', '\r', '\n']);
+    if after != ";" {
+        return Vec::new();
+    }
+    vec![CodeAction {
+        title: "Remove goto to undefined label".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![DiagnosticCode::GotoUndefinedLabel.as_str().to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: line_start, end: line_end },
+                new_text: String::new(),
+            }],
+        },
+        is_preferred: true,
+    }]
+}
+
+fn goto_label_at_range(node: &Node, range: (usize, usize)) -> Option<&str> {
+    if let NodeKind::Goto { target, .. } = &node.kind
+        && (target.location.start, target.location.end) == range
+        && let NodeKind::Identifier { name } = &target.kind
+    {
+        return Some(name);
+    }
+    node.children().into_iter().find_map(|child| goto_label_at_range(child, range))
+}
+
 /// Remove an undefined label from a `next`, `last`, or `redo` statement (PL410).
 ///
 /// The diagnostic range is expected to cover the loop-control statement. The

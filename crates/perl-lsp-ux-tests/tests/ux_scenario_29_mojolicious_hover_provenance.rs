@@ -282,6 +282,14 @@ fn scenario_29_mojolicious_hover_provenance_receipt() {
             for probe in &probes {
                 recorder.mark_request_start(probe.name);
                 let report = run_probe(&harness, &fixture_files, probe)?;
+                eprintln!("hover_probe_report={}", serde_json::to_string(&report)?);
+                if !probe.expected_substrings.is_empty() && !probe.category.contains("boundary") {
+                    recorder.check(
+                        "required static probe returns its source-backed known answer",
+                        report.result_state == "content"
+                            && report.missing_expected_substrings.is_empty(),
+                    )?;
+                }
                 if report.result_state == "content" {
                     recorder.mark_first_useful_result(probe.name);
                 }

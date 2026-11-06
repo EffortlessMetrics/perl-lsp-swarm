@@ -39,8 +39,8 @@ sub greet {\n\
 }\n\
 ";
 
-#[test]
-fn scenario_18_diagnostics_republish_after_full_document_edit() -> Result<(), String> {
+fn source_reconciliation_scenario_18_diagnostics_republish_after_full_document_edit()
+-> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_18: perl-lsp binary not found");
         return Ok(());
@@ -104,4 +104,31 @@ fn scenario_18_diagnostics_republish_after_full_document_edit() -> Result<(), St
     );
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_18_diagnostics_republish_after_full_document_edit() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "diagnostics_after_edit_refresh",
+        "ux_scenario_18_diagnostics_after_edit.rs",
+        "scenario_18_diagnostics_republish_after_full_document_edit",
+        UxCiTier::Pr,
+        Some(UxComponent::Diagnostics),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_18_diagnostics_republish_after_full_document_edit()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_18_diagnostics_republish_after_full_document_edit completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }

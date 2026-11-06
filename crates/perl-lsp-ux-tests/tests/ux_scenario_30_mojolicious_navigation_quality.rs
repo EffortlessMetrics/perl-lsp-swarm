@@ -281,6 +281,13 @@ fn scenario_30_mojolicious_navigation_quality_receipt() {
             for probe in &probes {
                 recorder.mark_request_start(probe.name);
                 let report = run_probe(&harness, &fixture_files, probe)?;
+                if !probe.expected_uri_suffixes.is_empty() && !probe.category.contains("boundary") {
+                    recorder.check(
+                        "required static probe returns its source-backed known answer",
+                        !report.fallback_or_empty
+                            && report.missing_expected_uri_suffixes.is_empty(),
+                    )?;
+                }
                 if report.result_count > 0 {
                     recorder.mark_first_useful_result(probe.name);
                 }

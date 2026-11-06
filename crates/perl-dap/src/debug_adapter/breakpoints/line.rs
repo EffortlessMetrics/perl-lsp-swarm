@@ -3,6 +3,9 @@ use crate::breakpoints::BreakpointRecord;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+const SET_BREAKPOINTS_ARGUMENTS_GUIDANCE: &str = "Send `source.path` and a `breakpoints` array \
+    (empty to clear breakpoints), for example `{ \"source\": { \"path\": \"script.pl\" }, \"breakpoints\": [{ \"line\": 1 }] }`.";
+
 impl DebugAdapter {
     pub(in crate::debug_adapter) fn invalidate_ambiguous_breakpoint_session(
         &self,
@@ -115,7 +118,7 @@ impl DebugAdapter {
                 success: false,
                 command: "setBreakpoints".to_string(),
                 body: None,
-                message: Some("Missing arguments".to_string()),
+                message: Some(format!("Missing arguments. {SET_BREAKPOINTS_ARGUMENTS_GUIDANCE}")),
             };
         };
 
@@ -129,7 +132,9 @@ impl DebugAdapter {
                         success: false,
                         command: "setBreakpoints".to_string(),
                         body: None,
-                        message: Some(format!("Invalid arguments: {}", e)),
+                        message: Some(format!(
+                            "Invalid arguments: {e}. {SET_BREAKPOINTS_ARGUMENTS_GUIDANCE}"
+                        )),
                     };
                 }
             };

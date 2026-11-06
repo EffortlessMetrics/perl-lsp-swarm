@@ -393,3 +393,108 @@ fn response_and_event_sequence_numbers_increase_monotonically() {
         "initialized event seq ({event_seq}) must be greater than its triggering response seq ({r1_seq})"
     );
 }
+
+#[test]
+fn supported_breakpoint_requests_explain_missing_and_malformed_arguments()
+-> Result<(), Box<dyn Error>> {
+    let mut adapter = DebugAdapter::new();
+    for command in ["setBreakpoints", "breakpointLocations"] {
+        for arguments in [None, Some(json!({}))] {
+            let response = adapter.handle_request(1, command, arguments);
+            match response {
+                DapMessage::Response { success, command: actual, body, message, .. } => {
+                    assert!(!success);
+                    assert_eq!(actual, command);
+                    assert!(body.is_none());
+                    let message = message.ok_or("malformed request needs guidance")?;
+                    assert!(
+                        message.contains("source.path"),
+                        "required source field missing: {message}"
+                    );
+                    assert!(message.contains("\"line\": 1"), "line example missing: {message}");
+                    if command == "setBreakpoints" {
+                        assert!(message.contains("empty to clear breakpoints"));
+                    }
+                }
+                other => {
+                    return Err(format!("expected failed {command} response, got {other:?}").into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn no_session_evaluate_explains_recovery_with_and_without_frame_context()
+-> Result<(), Box<dyn Error>> {
+    let mut adapter = DebugAdapter::new();
+    for arguments in
+        [json!({ "expression": "$valid_var" }), json!({ "expression": "$valid_var", "frameId": 1 })]
+    {
+        let response = adapter.handle_request(1, "evaluate", Some(arguments));
+        match response {
+            DapMessage::Response { success, command, body, message, .. } => {
+                assert!(!success);
+                assert_eq!(command, "evaluate");
+                assert!(body.is_none());
+                let message = message.ok_or("no-session evaluate must explain recovery")?;
+                assert!(message.contains("No debugger session is active"));
+                assert!(message.contains("Start a launch or attach request"));
+                assert!(message.contains("stop at a breakpoint"));
+                assert!(message.contains("retry evaluate"));
+            }
+            other => return Err(format!("expected failed evaluate response, got {other:?}").into()),
+        }
+    }
+    // Hover refusal has authority before the no-session recovery branch.
+    let response = adapter.handle_request(
+        2,
+        "evaluate",
+        Some(json!({ "expression": "$valid_var", "context": "hover" })),
+    );
+    match response {
+        DapMessage::Response { success, body, message, .. } => {
+            assert!(!success);
+            assert!(body.is_none());
+            let message = message.ok_or("hover floor needs its existing refusal")?;
+            assert!(message.contains("hover"));
+            assert!(
+                !message.contains("retry evaluate"),
+                "session guidance must not replace hover floor"
+            );
+        }
+        other => return Err(format!("expected hover refusal, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn scopes_missing_frame_explains_stack_trace_but_stale_frame_stays_empty()
+-> Result<(), Box<dyn Error>> {
+    let mut adapter = DebugAdapter::new();
+    let response = adapter.handle_request(1, "scopes", None);
+    match response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(!success);
+            assert_eq!(command, "scopes");
+            assert!(body.is_none());
+            let message = message.ok_or("missing frame must explain recovery")?;
+            assert!(message.contains("Missing frameId"));
+            assert!(message.contains("Request stackTrace first"));
+            assert!(message.contains("stackFrames[].id"));
+        }
+        other => return Err(format!("expected missing-frame failure, got {other:?}").into()),
+    }
+    let response = adapter.handle_request(2, "scopes", Some(json!({ "frameId": 1 })));
+    match response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(success, "an unowned frame retains the empty-scopes contract");
+            assert_eq!(command, "scopes");
+            assert!(message.is_none());
+            assert_eq!(body, Some(json!({ "scopes": [] })));
+        }
+        other => return Err(format!("expected empty-scopes response, got {other:?}").into()),
+    }
+    Ok(())
+}

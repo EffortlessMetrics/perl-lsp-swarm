@@ -28,6 +28,8 @@ workspace/project fixture
 
 A different Perl server, a different JetBrains LSP plugin, or the JetBrains Perl plugin cannot satisfy a `perllsp + LSP4IJ` support receipt.
 
+LSP wire positions use UTF-16 code units; `perllsp` converts them to internal offsets before analysis.
+
 ## Template stages
 
 There are three distinct LSP4IJ Perl-template subjects:

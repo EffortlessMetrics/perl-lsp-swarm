@@ -1447,7 +1447,7 @@ impl LspServer {
         // silent empty response.  Return InvalidParams so the client can distinguish
         // "no diagnostics for this file" from "I didn't understand your request".
         let params =
-            params.ok_or_else(|| invalid_params("textDocument/diagnostic requires params"))?;
+            params.ok_or_else(|| invalid_params("textDocument/diagnostic requires params. textDocument/diagnostic expects params.textDocument.uri identifying the document, for example {\"textDocument\":{\"uri\":\"file:///workspace/main.pl\"}}"))?;
         let uri_str = params["textDocument"]["uri"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -1464,7 +1464,7 @@ impl LspServer {
 
         // Parse URI — an unparseable URI is a client-side protocol error (LSP 3.17)
         let uri: Uri =
-            uri_str.parse().map_err(|_| invalid_params("Invalid URI in textDocument.uri"))?;
+            uri_str.parse().map_err(|_| invalid_params("Invalid URI in textDocument.uri. textDocument/diagnostic expects params.textDocument.uri identifying the document, for example {\"textDocument\":{\"uri\":\"file:///workspace/main.pl\"}}"))?;
 
         // Desynchronized document (#17752): a rejected ranged didChange left
         // retained last-good text that no longer claims currentness. Pull
@@ -7788,6 +7788,41 @@ sub after { 2 }
             "push publish must use the current snapshot instead of waiting \
              for index readiness; took {elapsed:?} (the WaitBriefly budget is 2s)"
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod merge_sync_diagnostic_guidance_tests {
+    use crate::runtime::LspServer;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_pull_diagnostic_requests_retain_document_shape_guidance() -> Result<(), String> {
+        let server = LspServer::new();
+        for params in [
+            None,
+            Some(json!({"textDocument": {}})),
+            Some(json!({"textDocument": {"uri": ""}})),
+            Some(json!({"textDocument": {"uri": ":::not a uri:::"}})),
+        ] {
+            let error = server
+                .handle_document_diagnostic(params)
+                .err()
+                .ok_or("malformed pull diagnostic must fail")?;
+            assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+            for expected in
+                ["textDocument/diagnostic", "params.textDocument.uri", "file:///workspace/main.pl"]
+            {
+                assert!(error.message.contains(expected), "missing {expected}: {}", error.message);
+            }
+        }
+        let report = server
+            .handle_document_diagnostic(Some(
+                json!({"textDocument": {"uri": "file:///workspace/no_open_document.pl"}}),
+            ))
+            .map_err(|error| error.to_string())?;
+        assert!(report.is_some(), "a valid URI must retain the current empty/full report contract");
         Ok(())
     }
 }

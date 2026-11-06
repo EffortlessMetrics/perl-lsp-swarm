@@ -515,6 +515,10 @@ function renderLinkCode(inner: string): string {
     if (/^https?:\/\//.test(target)) {
       return `<a href="${escapeAttr(target)}">${renderInline(label)}</a>`;
     }
+    const moduleTarget = /^([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\/.*)?$/.exec(target);
+    if (moduleTarget) {
+      return `<a href="https://perldoc.perl.org/${escapeAttr(moduleTarget[1]!)}">${renderInline(label)}</a>`;
+    }
     return `<a href="#${escapeAttr(target.replace(/\s+/g, '-').toLowerCase())}">${renderInline(label)}</a>`;
   }
 

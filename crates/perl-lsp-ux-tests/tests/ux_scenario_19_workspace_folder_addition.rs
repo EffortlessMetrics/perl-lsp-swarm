@@ -70,8 +70,7 @@ fn contains_symbol_in_folder(symbols: &[Value], symbol_name: &str, folder_fragme
     })
 }
 
-#[test]
-fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
+fn source_reconciliation_scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_19: perl-lsp binary not found");
         return Ok(());
@@ -160,6 +159,33 @@ fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn scenario_19_added_workspace_folder_symbols_appear() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "workspace_folder_addition_freshness",
+        "ux_scenario_19_workspace_folder_addition.rs",
+        "scenario_19_added_workspace_folder_symbols_appear",
+        UxCiTier::Pr,
+        Some(UxComponent::WorkspaceSymbols),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_19_added_workspace_folder_symbols_appear()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_19_added_workspace_folder_symbols_appear completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
+}
+
 fn folder_uris_for(symbols: &[Value], symbol_name: &str) -> BTreeSet<String> {
     symbols
         .iter()
@@ -169,8 +195,8 @@ fn folder_uris_for(symbols: &[Value], symbol_name: &str) -> BTreeSet<String> {
         .collect()
 }
 
-#[test]
-fn scenario_19_workspace_folder_addition_surfaces_new_symbols() -> Result<()> {
+fn source_reconciliation_scenario_19_workspace_folder_addition_surfaces_new_symbols() -> Result<()>
+{
     if !binary_available() {
         eprintln!("SKIP scenario_19: perl-lsp binary not found");
         return Ok(());
@@ -243,4 +269,31 @@ fn scenario_19_workspace_folder_addition_surfaces_new_symbols() -> Result<()> {
 
     harness.assert_no_crash();
     Ok(())
+}
+
+#[test]
+fn scenario_19_workspace_folder_addition_surfaces_new_symbols() {
+    use perl_lsp_ux_tests::{
+        UxCiTier, UxComponent, UxEvidenceClass, missing_binary_skip,
+        run_ux_scenario_with_evidence_class,
+    };
+    run_ux_scenario_with_evidence_class(
+        "workspace_folder_addition_freshness",
+        "ux_scenario_19_workspace_folder_addition.rs",
+        "scenario_19_workspace_folder_addition_surfaces_new_symbols",
+        UxCiTier::Pr,
+        Some(UxComponent::WorkspaceSymbols),
+        UxEvidenceClass::SemanticProof,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+            // Preserve source assertions; their helper does not expose an exact timing boundary.
+            source_reconciliation_scenario_19_workspace_folder_addition_surfaces_new_symbols()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            recorder.check("current source assertions for scenario_19_workspace_folder_addition_surfaces_new_symbols completed successfully", true)?;
+            // Aggregate completion records no request/first-useful timing boundary.
+            Ok(())
+        },
+    );
 }
