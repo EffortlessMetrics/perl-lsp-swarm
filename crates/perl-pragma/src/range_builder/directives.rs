@@ -1,6 +1,6 @@
 use crate::{
-    PragmaState, add_disabled_warning_category, admitted_vstring_version,
-    apply_builtin_imports_if_changed, apply_feature_state, conditional_pragma_target,
+    ConditionalApplyDecision, PragmaState, add_disabled_warning_category, admitted_vstring_version,
+    apply_builtin_imports_if_changed, apply_feature_state, conditional_apply_decision,
     enable_effective_version_semantics, looks_like_version_literal, normalized_pragma_token,
     parse_perl_version, pragma_arg_items,
 };
@@ -134,12 +134,15 @@ fn apply_conditional_use(
     state: &mut PragmaState,
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) -> bool {
-    if !matches!(module, "if" | "unless") {
+    if module != "if" {
         return false;
     }
 
-    if let Some((target, target_args)) = conditional_pragma_target(args) {
-        apply_conditional_use_target(range, target, target_args, state, ranges);
+    match conditional_apply_decision(args) {
+        ConditionalApplyDecision::Apply { target_module, target_args } => {
+            apply_conditional_use_target(range, target_module, target_args, state, ranges);
+        }
+        ConditionalApplyDecision::NoEffect | ConditionalApplyDecision::Unsupported => {}
     }
     true
 }
@@ -151,12 +154,15 @@ fn apply_conditional_no(
     state: &mut PragmaState,
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) -> bool {
-    if !matches!(module, "if" | "unless") {
+    if module != "if" {
         return false;
     }
 
-    if let Some((target, target_args)) = conditional_pragma_target(args) {
-        apply_conditional_no_target(range, target, target_args, state, ranges);
+    match conditional_apply_decision(args) {
+        ConditionalApplyDecision::Apply { target_module, target_args } => {
+            apply_conditional_no_target(range, target_module, target_args, state, ranges);
+        }
+        ConditionalApplyDecision::NoEffect | ConditionalApplyDecision::Unsupported => {}
     }
     true
 }

@@ -31,7 +31,7 @@ pub(crate) use args::{
     add_disabled_warning_category, apply_builtin_imports_if_changed, builtin_import_names,
     normalized_pragma_token, pragma_arg_items,
 };
-pub(crate) use conditional::conditional_pragma_target;
+pub(crate) use conditional::{ConditionalApplyDecision, conditional_apply_decision};
 pub(crate) use features::{apply_feature_state, canonical_feature_query};
 pub(crate) use map::normalize_state;
 pub(crate) use version::enable_effective_version_semantics;
