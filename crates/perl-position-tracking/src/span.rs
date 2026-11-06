@@ -5,9 +5,39 @@
 //! which are efficient for the parser but must be converted to line/character
 //! positions for LSP communication.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 use std::ops::Range;
+use thiserror::Error;
+
+/// Errors from fallible [`ByteSpan`] construction and source-bound validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SpanError {
+    /// `start` exceeds `end` (reversed half-open interval).
+    #[error("byte span start {start} exceeds end {end}")]
+    Reversed {
+        /// Rejected inclusive start offset.
+        start: usize,
+        /// Rejected exclusive end offset.
+        end: usize,
+    },
+    /// Span endpoints exceed the provided source length.
+    #[error("byte span [{start}, {end}) exceeds source length {source_len}")]
+    OutOfBounds {
+        /// Span start offset.
+        start: usize,
+        /// Span end offset.
+        end: usize,
+        /// Length of the source text in bytes.
+        source_len: usize,
+    },
+    /// A span endpoint falls inside a UTF-8 code point.
+    #[error("offset {offset} is not a UTF-8 character boundary")]
+    NotCharBoundary {
+        /// Rejected byte offset.
+        offset: usize,
+    },
+}
 
 /// A byte-based span representing a range in source text.
 ///
@@ -35,7 +65,7 @@ use std::ops::Range;
 /// let text = span.slice(source);
 /// assert_eq!(text, "hello worl");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
 pub struct ByteSpan {
     /// Starting byte offset in the source text (inclusive)
     pub start: usize,
@@ -44,15 +74,49 @@ pub struct ByteSpan {
 }
 
 impl ByteSpan {
+    /// Creates an ordered `ByteSpan`, or returns [`SpanError::Reversed`].
+    #[inline]
+    pub const fn try_new(start: usize, end: usize) -> Result<Self, SpanError> {
+        if start > end { Err(SpanError::Reversed { start, end }) } else { Ok(Self { start, end }) }
+    }
+
     /// Creates a new `ByteSpan` with the given start and end offsets.
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if `start > end`.
+    /// Panics in debug mode if `start > end`. Prefer [`Self::try_new`] for fallible
+    /// construction; invalid values can still be constructed via public fields or
+    /// deserialization bypasses until a future public-surface migration (#8268).
     #[inline]
     pub fn new(start: usize, end: usize) -> Self {
         debug_assert!(start <= end, "ByteSpan: start ({}) > end ({})", start, end);
         Self { start, end }
+    }
+
+    /// Returns the span length when `start <= end`, or `None` for reversed spans.
+    #[inline]
+    pub const fn checked_len(&self) -> Option<usize> {
+        self.end.checked_sub(self.start)
+    }
+
+    /// Validates that this span is ordered, within `source`, and on UTF-8 boundaries.
+    ///
+    /// Checks run in order: reversal, bounds, start boundary, end boundary.
+    pub fn validate_in(&self, source: &str) -> Result<(), SpanError> {
+        if self.start > self.end {
+            return Err(SpanError::Reversed { start: self.start, end: self.end });
+        }
+        let source_len = source.len();
+        if self.end > source_len {
+            return Err(SpanError::OutOfBounds { start: self.start, end: self.end, source_len });
+        }
+        if !source.is_char_boundary(self.start) {
+            return Err(SpanError::NotCharBoundary { offset: self.start });
+        }
+        if !source.is_char_boundary(self.end) {
+            return Err(SpanError::NotCharBoundary { offset: self.end });
+        }
+        Ok(())
     }
 
     /// Creates an empty span at the given position.
@@ -68,9 +132,12 @@ impl ByteSpan {
     }
 
     /// Returns the length of this span in bytes.
+    ///
+    /// Uses saturating subtraction so reversed spans (constructible via public
+    /// fields during the compatibility window) do not underflow in release builds.
     #[inline]
     pub const fn len(&self) -> usize {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 
     /// Returns true if this span is empty (start == end).
@@ -167,6 +234,22 @@ impl From<ByteSpan> for (usize, usize) {
     }
 }
 
+impl<'de> Deserialize<'de> for ByteSpan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct ByteSpanFields {
+            start: usize,
+            end: usize,
+        }
+
+        let fields = ByteSpanFields::deserialize(deserializer)?;
+        Self::try_new(fields.start, fields.end).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Type alias for backward compatibility with `SourceLocation`.
 ///
 /// New code should use [`ByteSpan`] directly.
@@ -175,6 +258,7 @@ pub type SourceLocation = ByteSpan;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::{must_err_with, must_with};
 
     #[test]
     fn test_byte_span_basics() {
@@ -387,5 +471,81 @@ mod tests {
             "union of non-overlapping spans spans the full range"
         );
         assert_eq!(b.union(a), ByteSpan::new(0, 20), "union is commutative");
+    }
+
+    // --- Fallible construction, validation, length, serde (#8827) ---
+
+    #[test]
+    fn try_new_rejects_reversed_span() {
+        assert_eq!(ByteSpan::try_new(10, 5), Err(SpanError::Reversed { start: 10, end: 5 }));
+    }
+
+    #[test]
+    fn try_new_accepts_empty_and_ordered_spans() {
+        assert_eq!(ByteSpan::try_new(0, 0), Ok(ByteSpan::empty(0)));
+        assert_eq!(ByteSpan::try_new(3, 7), Ok(ByteSpan::new(3, 7)));
+    }
+
+    #[test]
+    fn validate_in_accepts_empty_and_full_source() {
+        let source = "café";
+        assert_eq!(source.len(), 5);
+        let empty = ByteSpan::new(5, 5);
+        must_with(empty.validate_in(source), "empty span at EOF boundary should validate");
+
+        let whole = ByteSpan::whole(source);
+        must_with(whole.validate_in(source), "whole source span should validate");
+    }
+
+    #[test]
+    fn validate_in_rejects_mid_utf8_boundary() {
+        // "é" occupies bytes 1..3 in "aéb"; offset 2 is interior to the scalar.
+        let source = "aéb";
+        assert_eq!(source.len(), 4);
+        let span = ByteSpan::new(2, 3);
+        assert_eq!(span.validate_in(source), Err(SpanError::NotCharBoundary { offset: 2 }));
+    }
+
+    #[test]
+    fn validate_in_rejects_end_beyond_source() {
+        let source = "abc";
+        let span = ByteSpan::new(0, 4);
+        assert_eq!(
+            span.validate_in(source),
+            Err(SpanError::OutOfBounds { start: 0, end: 4, source_len: 3 })
+        );
+    }
+
+    #[test]
+    fn validate_in_rejects_reversed_before_other_checks() {
+        let source = "abc";
+        let span = ByteSpan { start: 5, end: 2 };
+        assert_eq!(span.validate_in(source), Err(SpanError::Reversed { start: 5, end: 2 }));
+    }
+
+    #[test]
+    fn len_on_reversed_span_does_not_panic_or_underflow() {
+        let reversed = ByteSpan { start: 10, end: 5 };
+        assert_eq!(reversed.len(), 0);
+        assert_eq!(reversed.checked_len(), None);
+    }
+
+    #[test]
+    fn serde_round_trip_valid_span() {
+        let span = ByteSpan::new(1, 4);
+        let json = must_with(serde_json::to_string(&span), "serialize valid span");
+        assert_eq!(json, r#"{"start":1,"end":4}"#);
+        let decoded: ByteSpan = must_with(serde_json::from_str(&json), "deserialize valid span");
+        assert_eq!(decoded, span);
+    }
+
+    #[test]
+    fn serde_rejects_reversed_span_in_json() {
+        let err = must_err_with(
+            serde_json::from_str::<ByteSpan>(r#"{"start":10,"end":5}"#),
+            "reversed span must fail deserialization",
+        );
+        assert!(err.to_string().contains("10"), "{err}");
+        assert!(err.to_string().contains("5"), "{err}");
     }
 }
