@@ -183,16 +183,6 @@ pub struct DebugAdapter {
     debugger_output_marker: Arc<AtomicU64>,
     /// Test-observable count of framed debugger query writes.
     debugger_query_count: Arc<AtomicU64>,
-    /// Count of reader-published suspension transitions (#18491).
-    ///
-    /// The output reader is the authority that publishes a stop (entry, step,
-    /// breakpoint, exception) or retains the pre-configurationDone startup
-    /// pause. Adapter-internal framed queries that mask the session as
-    /// `Stopped` for their echo window must not clobber a suspension the
-    /// reader published while the query was in flight, so those callers
-    /// snapshot this counter and only restore their masked state when it is
-    /// unchanged.
-    reader_stop_publications: Arc<AtomicU64>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
     /// Legacy retained slot: the #9091 fail-closed request path neither reads
     /// nor writes it; lifecycle cleanup retires it at its own boundary.
@@ -345,7 +335,6 @@ impl DebugAdapter {
             exception_break_on_warn: Arc::new(Mutex::new(false)),
             debugger_output_marker: Arc::new(AtomicU64::new(1)),
             debugger_query_count: Arc::new(AtomicU64::new(0)),
-            reader_stop_publications: Arc::new(AtomicU64::new(0)),
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
@@ -774,8 +763,7 @@ impl DebugAdapter {
     ) -> Result<(), EngineBreakpointAcknowledgeError> {
         let command = Self::engine_breakpoint_probe_command(source_path, line);
         let captured_generation = self.current_session_generation();
-        let prior_stop_publications = self.reader_stop_publications.load(Ordering::Acquire);
-        let (operation, begin, end, prior_state) = {
+        let (operation, begin, end, prior_state, prior_stop_epoch) = {
             let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
             let session = guard.as_mut().ok_or_else(|| {
                 EngineBreakpointAcknowledgeError::Rejected("no active debugger session".to_string())
@@ -790,6 +778,7 @@ impl DebugAdapter {
             // the query's context echo as a user step stop. configurationDone
             // will establish the real running mode afterward.
             let prior_state = session.state.clone();
+            let prior_stop_epoch = session.reader_stop_epoch;
             session.state = DebugState::Stopped;
             let timeout_ms = timeout.as_millis().try_into().unwrap_or(u64::MAX);
             let (operation, begin, end) =
@@ -804,7 +793,7 @@ impl DebugAdapter {
                         });
                     }
                 };
-            (operation, begin, end, prior_state)
+            (operation, begin, end, prior_state, prior_stop_epoch)
         };
         let result = match self.await_framed_debugger_output_for_operation(&operation, &begin, &end)
         {
@@ -841,8 +830,7 @@ impl DebugAdapter {
                 // desynchronized the advertised stopped state from the
                 // debugger, and every subsequent stackTrace answered from the
                 // `Stopped`-gated snapshot path with an empty frame list.
-                let stop_publications = self.reader_stop_publications.load(Ordering::Acquire);
-                if stop_publications == prior_stop_publications {
+                if session.reader_stop_epoch == prior_stop_epoch {
                     session.state = prior_state;
                 }
             }
@@ -1237,6 +1225,7 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Continue,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -1273,6 +1262,7 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -1388,6 +1378,7 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,

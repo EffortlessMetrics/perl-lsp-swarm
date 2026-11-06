@@ -1229,6 +1229,7 @@ impl DebugAdapter {
                     thread_id,
                     debuggee_cwd: debuggee_cwd.clone(),
                     last_resume_mode: ResumeMode::Unknown,
+                    reader_stop_epoch: 0,
                     entry_stop_pending: stop_on_entry,
                     initial_stop_pending: !stop_on_entry,
                     stopped_generation: 0,
@@ -1684,7 +1685,6 @@ impl DebugAdapter {
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
         let event_drain = self.event_drain.clone();
-        let reader_stop_publications = self.reader_stop_publications.clone();
         let session_generation = self.current_session_generation();
         // The reader's session epoch in the broker's own id space. The
         // launch-failure/EOF/read-error settles below are gated on it, so a
@@ -2261,7 +2261,7 @@ impl DebugAdapter {
                                         // configurationDone handler will publish it only after
                                         // correlating the engine installation.
                                         s.state = DebugState::Stopped;
-                                        reader_stop_publications.fetch_add(1, Ordering::Release);
+                                        s.reader_stop_epoch += 1;
                                         s.last_resume_mode = ResumeMode::Unknown;
                                         continue;
                                     }
@@ -2320,8 +2320,7 @@ impl DebugAdapter {
                                         } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
-                                            reader_stop_publications
-                                                .fetch_add(1, Ordering::Release);
+                                            s.reader_stop_epoch += 1;
                                         } else if breakpoint_outcome.matched {
                                             logpoint_messages = breakpoint_outcome.log_messages;
 
@@ -2405,8 +2404,7 @@ impl DebugAdapter {
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
                                                 s.state = DebugState::Stopped;
-                                                reader_stop_publications
-                                                    .fetch_add(1, Ordering::Release);
+                                                s.reader_stop_epoch += 1;
                                             } else {
                                                 if let Some(stdin) = s.process.stdin.as_mut() {
                                                     let _ = stdin.write_all(b"c\n");
@@ -2433,8 +2431,7 @@ impl DebugAdapter {
                                             should_auto_continue = true;
                                         } else {
                                             s.state = DebugState::Stopped;
-                                            reader_stop_publications
-                                                .fetch_add(1, Ordering::Release);
+                                            s.reader_stop_epoch += 1;
                                         }
 
                                         if !should_auto_continue {
@@ -2639,7 +2636,7 @@ impl DebugAdapter {
                                         let entry_stop = s.entry_stop_pending;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
-                                        reader_stop_publications.fetch_add(1, Ordering::Release);
+                                        s.reader_stop_epoch += 1;
                                         should_emit_stopped = true;
                                         if entry_stop {
                                             stop_reason = "entry".to_string();
@@ -4562,6 +4559,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4707,6 +4705,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::RunToBreakpoint,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4856,6 +4855,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -4928,6 +4928,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -5011,6 +5012,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -5467,6 +5469,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -5599,6 +5602,7 @@ mod tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("/tmp"),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 entry_stop_pending: true,
                 initial_stop_pending: false,
                 stopped_generation: 0,
@@ -7577,6 +7581,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
@@ -8054,6 +8059,7 @@ mod tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("."),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 initial_stop_pending,
                 entry_stop_pending,
                 stopped_generation: 0,
@@ -8359,6 +8365,7 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,

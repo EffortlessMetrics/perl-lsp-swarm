@@ -1245,6 +1245,7 @@ mod evaluate_allocation_tests {
                 thread_id: 1,
                 debuggee_cwd: PathBuf::from("."),
                 last_resume_mode: ResumeMode::Unknown,
+                reader_stop_epoch: 0,
                 initial_stop_pending: false,
                 entry_stop_pending: false,
                 stopped_generation: 0,
