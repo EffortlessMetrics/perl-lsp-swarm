@@ -9,6 +9,7 @@ from dap_authority_common import (
     DEBUG_ADAPTER_ROOT,
     DISPATCH_PATH,
     PEER_DISPATCH_PATHS,
+    PRODUCTION_DISPATCH_DISCOVERY_PATTERN,
     RECEIPT_SCHEMA,
     AuthorityError,
     array_value,
@@ -311,10 +312,21 @@ def validate_production_boundary(
                 "availability": row["availability"],
                 "variant": row["variant"],
                 "handler": row["handler"],
+                "request_argument_family": row["request_argument_family"],
                 "routes": _request_routes(row),
             }
             for row in sorted(rows, key=lambda row: row["row_id"])
         ],
+        "dispatch_owner_contract": {
+            "pinned_dispatch_sources": sorted(path.as_posix() for path in expected_owners),
+            "discovery_pattern": PRODUCTION_DISPATCH_DISCOVERY_PATTERN,
+            "undiscoverable_without_contract_extension": (
+                "A production ingress whose routing function does not match the "
+                "discovery pattern must extend the pinned dispatch-source list "
+                "deliberately; convention-named owners are discovered only through "
+                "this contract."
+            ),
+        },
         "commands": sorted(commands),
         "events": sorted(events),
         "project_extensions": [
