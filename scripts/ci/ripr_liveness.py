@@ -10,8 +10,8 @@ active analysis instead of turning an infrastructure cancellation into a false
 red required check.
 
 The cost is that a queued run schedules **no jobs at all**, and GitHub posts a
-check run only for a scheduled job. The required context ``ripr+ New Gap
-Gate`` is therefore not red and not pending on that head: it is absent. Branch
+check run only for a scheduled job. Unless another run supplies it, the required
+context ``ripr+ New Gap Gate`` is therefore absent on that head. Branch
 protection renders that the same way it renders a check still running, so a run
 that will never produce proof and one three minutes from finishing look
 identical to a reader.
@@ -28,6 +28,12 @@ behaviour, not a fault. Reporting it as a failure would red a pull request for
 waiting its turn, which is the defect class this exists to reduce. It is
 reported as an explained wait, naming the predecessor, so the silence is broken
 without inventing a fault.
+
+A cancelled attempt with a confirmed zero job count is terminal, even inside
+the wait floor. It will not produce the gate. That is a fact about this attempt,
+not a permanent claim about its head SHA: another run or a rerun may produce a
+result. Recent cancellations also replace earlier queue/approval observations
+under the same reporter-owned check ids (#19129).
 
 A fork pull request run held for maintainer approval reads ``waiting`` with no
 scheduled jobs. That is a human-actionable gate, not a scheduling fault
@@ -100,8 +106,10 @@ SERIALISED = "serialised_behind_predecessor"
 AWAITING_APPROVAL = "awaiting_approval"
 INFRA_NO_PROOF = "infra-no-proof"
 ALIVE = "alive"
+CANCELLED_BEFORE_SCHEDULING = "cancelled_before_scheduling"
 
-REPORTABLE = frozenset({SERIALISED, AWAITING_APPROVAL, INFRA_NO_PROOF, ALIVE})
+REPORTABLE = frozenset({SERIALISED, AWAITING_APPROVAL, INFRA_NO_PROOF, ALIVE,
+                       CANCELLED_BEFORE_SCHEDULING})
 
 # Never "success": this reports on the absence of proof and must not be able to
 # signal that proof exists. `awaiting_approval` is neutral because the wait is
@@ -117,6 +125,7 @@ CONCLUSIONS = {
     AWAITING_APPROVAL: "neutral",
     INFRA_NO_PROOF: "failure",
     ALIVE: "neutral",
+    CANCELLED_BEFORE_SCHEDULING: "neutral",
 }
 
 # The only conclusion a retraction may carry. A resolution exists to withdraw a
@@ -145,6 +154,19 @@ IN_FLIGHT_STATUSES = frozenset({"in_progress"})
 POSTED_MEMORY_HOURS = 6
 
 
+def is_cancelled(run: dict[str, Any]) -> bool:
+    return run.get("status") == "completed" and run.get("conclusion") == "cancelled"
+
+
+def retains_posted_memory(run: dict[str, Any], as_of: datetime.datetime | None) -> bool:
+    """One retention rule for history reads and terminal cancellation reports."""
+    if as_of is None or as_of.tzinfo is None or run.get("status") != "completed":
+        return True
+    finished_at = parse_time(run.get("updated_at"))
+    return (finished_at is None
+            or (as_of - finished_at).total_seconds() // 60 <= POSTED_MEMORY_HOURS * 60)
+
+
 def posted_memory_heads(runs: list[dict[str, Any]], as_of: datetime.datetime | None) -> set[str]:
     """The heads still worth reading this reporter's own history for.
 
@@ -165,32 +187,38 @@ def posted_memory_heads(runs: list[dict[str, Any]], as_of: datetime.datetime | N
     subtraction below is only defined for an aware value, and this is a public
     seam whose annotation does not say so.
     """
-    heads = {
+    return {
         run["head_sha"]
         for run in runs
         if isinstance(run, dict)
         and isinstance(run.get("head_sha"), str)
         and run["head_sha"]
+        and retains_posted_memory(run, as_of)
     }
-    if as_of is None or as_of.tzinfo is None:
-        return heads
-    age_limit = POSTED_MEMORY_HOURS * 60
-    keep: set[str] = set()
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
-        head = run.get("head_sha")
-        if not isinstance(head, str) or not head:
-            continue
-        if run.get("status") != "completed":
-            keep.add(head)
-            continue
-        # For a completed workflow run, updated_at carries its terminal update.
-        # A missing completion clock must not turn a long run into an old one.
-        finished_at = parse_time(run.get("updated_at"))
-        if finished_at is None or (as_of - finished_at).total_seconds() // 60 <= age_limit:
-            keep.add(head)
-    return keep
+
+
+def job_count_endpoint(repository: str, run: dict[str, Any],
+                       as_of: datetime.datetime | None) -> str | None:
+    """Read cancelled jobs from the observed attempt, never a racing rerun.
+
+    Ordinary queued-run reads retain their existing behavior. Completed runs
+    add reads only for cancellations inside the same bounded history window.
+    Missing attempt identity cannot establish an empty cancelled attempt.
+    """
+    path = f"repos/{repository}/actions/runs/{run['id']}"
+    if run.get("status") in UNSTARTED_STATUSES:
+        return f"{path}/jobs"
+    attempt = run.get("run_attempt")
+    if (is_cancelled(run) and retains_posted_memory(run, as_of)
+            and type(attempt) is int and attempt > 0):
+        return f"{path}/attempts/{attempt}/jobs"
+    return None
+
+
+def cancelled_before_scheduling(run: dict[str, Any]) -> bool:
+    attempt, count = run.get("run_attempt"), run.get("job_count")
+    return (is_cancelled(run) and type(attempt) is int and attempt > 0
+            and type(count) is int and count == 0)
 
 # The one identity a posted check run can be addressed by, across cron fires.
 # The run id is the anchor and the classification is the claim, so a recovery
@@ -680,6 +708,9 @@ def classify_run(
     floor_minutes: int,
 ) -> tuple[str, int | None]:
     job_count = run.get("job_count")
+    # A terminal observation is not a wait, so the wait floor cannot hide it.
+    if cancelled_before_scheduling(run):
+        return CANCELLED_BEFORE_SCHEDULING, None
     # A run with jobs is the case this reporter historically said nothing about,
     # which is the half of the gap that costs an auditor: silence for a working
     # run and a permanent red for a recovered one are the same defect, and only
@@ -725,7 +756,16 @@ def classify_run(
     return INFRA_NO_PROOF, None
 
 
-def check_title(classification: str, waited_minutes: int) -> str:
+def check_title(classification: str, waited_minutes: int,
+                run: dict[str, Any] | None = None) -> str:
+    if classification == CANCELLED_BEFORE_SCHEDULING:
+        run = run or {}
+        attempt = run.get("run_attempt")
+        identity = f" attempt {attempt}" if type(attempt) is int and attempt > 0 else ""
+        state = "cancelled before scheduling" if cancelled_before_scheduling(run) else "cancelled"
+        if identity and type(run.get("job_count")) is int and run["job_count"] > 0:
+            state = "cancelled after scheduling"
+        return f"ripr run {run.get('id')}{identity}: {state}"
     if classification == SERIALISED:
         return f"ripr queued behind an earlier run for {waited_minutes} min"
     if classification == AWAITING_APPROVAL:
@@ -780,6 +820,10 @@ def recovery_reason(
     unreadable count, a run back inside the floor, a run still empty -- is
     silence.
     """
+    if is_cancelled(run):
+        # Cancellation gets its own correction, including unreadable job counts;
+        # a generic completion withdrawal would hide the terminal no-proof state.
+        return None
     if classification == ALIVE:
         return RESOLVED_RUNNING
     if classification == SERIALISED:
@@ -816,31 +860,64 @@ def resolution_summary(run: dict[str, Any], reason: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def cancellation_summary(run: dict[str, Any]) -> str:
+    attempt = run.get("run_attempt")
+    identity = f", attempt `{attempt}`" if type(attempt) is int and attempt > 0 else ""
+    lines = [
+        f"Run `{run.get('id')}`{identity} on `{run.get('head_sha', 'unknown')}` "
+        "was observed as `completed` / `cancelled`.",
+        "",
+    ]
+    if cancelled_before_scheduling(run):
+        lines.append("It was cancelled before any job was scheduled. "
+                     f"This attempt will not produce `{REQUIRED_CONTEXT_NAME}`.")
+    elif identity and type(run.get("job_count")) is int and run["job_count"] > 0:
+        lines.append("This attempt scheduled jobs before cancellation. "
+                     "Cancellation does not establish whether those jobs produced the gate.")
+    else:
+        lines.append("This observation does not establish that the attempt scheduled zero jobs "
+                     "or whether it produced the gate before cancellation.")
+    lines += [
+        "",
+        "A rerun or another run on the same SHA may produce a separate result. "
+        "This advisory does not establish whether that head has a gate result from another attempt.",
+        "",
+        "The shared main-push concurrency group is one known source of cancellation "
+        "(#19128); this observation does not infer the cause of this cancellation. "
+        f"Recovery, if this attempt's evidence is still needed: `gh run rerun {run.get('id')}`.",
+        "",
+        "_This neutral advisory evaluates no candidate, never reports success, "
+        "and is not the required context._",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def check_summary(
     classification: str,
     run: dict[str, Any],
     waited_minutes: int,
     predecessor: int | None,
 ) -> str:
+    if classification == CANCELLED_BEFORE_SCHEDULING:
+        return cancellation_summary(run)
     run_id = run.get("id")
     head = run.get("head_sha", "unknown")
     lines = [
         f"Run `{run_id}` on `{head}` has been waiting {waited_minutes} minutes "
         "with no jobs scheduled.",
         "",
-        "A run with no scheduled job posts no check run, so "
-        f"`{REQUIRED_CONTEXT_NAME}` is **absent** from this head rather than "
-        "red or pending. Branch protection reports that the same way it "
-        "reports a check that is still running.",
+        f"No job in this observed attempt has produced `{REQUIRED_CONTEXT_NAME}`. "
+        "Another attempt or another run on this SHA may have a separate result. "
+        "This report does not establish the head's overall gate status.",
         "",
     ]
     if classification == SERIALISED:
         lines.append(
-            "This is the designed behaviour, not a fault. `ripr.yml` sets "
-            "`cancel-in-progress: false` so a newer head queues behind an "
-            f"active analysis instead of cancelling it, and run `{predecessor}` "
-            "on this pull request is still producing evidence. Nothing to do; "
-            "the gate will report once that run finishes."
+            "This is the designed behaviour, not a fault: the snapshot observes "
+            f"earlier run `{predecessor}` holding the same concurrency group. "
+            "`cancel-in-progress: false` protects the active run, but does not "
+            "guarantee a pending run will start or produce a gate. A later "
+            "cancellation or rerun changes this observation (#19128, #19129)."
         )
     elif classification == AWAITING_APPROVAL:
         lines += [
@@ -856,9 +933,9 @@ def check_summary(
         ]
     else:
         lines += [
-            "No earlier ripr run on this pull request is in progress, so "
-            "nothing explains the wait and nothing is producing proof for this "
-            f"head: `{INFRA_NO_PROOF}`, the class `ripr.yml` already applies to "
+            "No earlier ripr run is observed holding this run's concurrency group, "
+            "so the snapshot does not explain why this attempt has scheduled no "
+            f"jobs: `{INFRA_NO_PROOF}`, the class `ripr.yml` already applies to "
             "a lane killed by the runner.",
             "",
             f"Recovery: `gh run rerun {run_id}`, or push to re-trigger.",
@@ -911,6 +988,10 @@ def classify_snapshot(
                 {"run_id": run.get("id"), "reason": "snapshot carries no readable as_of"}
             )
             continue
+        if is_cancelled(run) and not retains_posted_memory(run, as_of):
+            # Do not create unremembered terminal posts beyond the history read
+            # window. Historical reconciliation is bounded just like recovery.
+            continue
         created_at = parse_time(run.get("created_at"))
         if created_at is None:
             unclassifiable.append(
@@ -928,6 +1009,79 @@ def classify_snapshot(
         # about it.
         run_id = run.get("id")
         head_sha = run.get("head_sha")
+        if is_cancelled(run):
+            title = check_title(CANCELLED_BEFORE_SCHEDULING, waited_minutes, run)
+            attempt, count = run.get("run_attempt"), run.get("job_count")
+            known_attempt = type(attempt) is int and attempt > 0
+            readable_count = type(count) is int and count >= 0
+            for prior_class in (SERIALISED, AWAITING_APPROVAL, INFRA_NO_PROOF,
+                                CANCELLED_BEFORE_SCHEDULING):
+                if prior_class == classification:
+                    # The finding refresh below owns this address when the
+                    # current snapshot can establish the zero-job class.
+                    continue
+                for prior in posted_checks_for(posted, head_sha, run_id, prior_class):
+                    if prior["conclusion"] not in {"neutral", "failure"}:
+                        continue
+                    if prior["conclusion"] == "neutral" and prior.get("title") == title:
+                        continue
+                    prior_title = prior.get("title")
+                    if (prior["conclusion"] == "neutral" and isinstance(prior_title, str)
+                            and (not known_attempt or not readable_count)):
+                        prefix = f"ripr run {run_id} attempt "
+                        same_attempt = (prior_title.startswith(prefix) if not known_attempt else
+                                        prior_title.startswith(f"{prefix}{attempt}: "))
+                        if same_attempt and prior_title.endswith(
+                                (": cancelled before scheduling", ": cancelled after scheduling")):
+                            # A transient failed read does not contradict a
+                            # prior observation of this same immutable attempt.
+                            continue
+                    resolutions.append({
+                        "run_id": run_id,
+                        "head_sha": head_sha,
+                        "check_name": ADVISORY_CHECK_NAME,
+                        "check_run_id": prior["id"],
+                        "external_id": external_id_for(run_id, prior_class),
+                        "classification": prior_class,
+                        "conclusion": RESOLUTION_CONCLUSION,
+                        "now_classification": classification,
+                        "reason": "the observed attempt was cancelled",
+                        "check_title": title,
+                        "check_summary": "The earlier wait observation is no longer current.\n\n"
+                                         + cancellation_summary(run),
+                    })
+        elif (run.get("status") in UNSTARTED_STATUSES | IN_FLIGHT_STATUSES
+              or (run.get("status") == "completed"
+                  and run.get("conclusion") in {"success", "failure", "timed_out", "neutral",
+                                                "skipped", "action_required", "stale"})):
+            # A rerun reuses the workflow run id. Its current state must retire
+            # this reporter's terminal attempt observation, only on that same head.
+            for prior_class in (CANCELLED_BEFORE_SCHEDULING, SERIALISED, AWAITING_APPROVAL,
+                                INFRA_NO_PROOF):
+                if prior_class == classification:
+                    # A new live finding replaces this same check itself. A
+                    # later retirement must not overwrite its current verdict.
+                    continue
+                for prior in posted_checks_for(posted, head_sha, run_id, prior_class):
+                    title = prior.get("title")
+                    if (prior["conclusion"] != "neutral" or not isinstance(title, str)
+                            or not title.startswith(f"ripr run {run_id}") or ": cancelled" not in title):
+                        continue
+                    resolutions.append({
+                        "run_id": run_id,
+                        "head_sha": head_sha,
+                        "check_name": ADVISORY_CHECK_NAME,
+                        "check_run_id": prior["id"],
+                        "external_id": external_id_for(run_id, prior_class),
+                        "classification": prior_class,
+                        "conclusion": RESOLUTION_CONCLUSION,
+                        "now_classification": classification,
+                        "reason": "the run was observed again after cancellation",
+                        "check_title": f"ripr run {run_id}: cancellation observation ended ({run.get('status')})",
+                        "check_summary": f"The earlier cancellation observation is no longer current: "
+                                         f"run `{run_id}` is now `{run.get('status')}`. "
+                                         "This neutral advisory is not a candidate verdict.",
+                    })
         stall_id = external_id_for(run_id, INFRA_NO_PROOF)
         reason = recovery_reason(run, classification)
         for prior in posted_checks_for(posted, head_sha, run_id, INFRA_NO_PROOF):
@@ -1006,29 +1160,35 @@ def classify_snapshot(
 
         if classification not in REPORTABLE:
             continue
-        findings.append(
-            {
-                "run_id": run_id,
-                "head_sha": head_sha,
-                "head_branch": run.get("head_branch"),
-                "pull_requests": pull_numbers(run),
-                "event": run.get("event"),
-                "head_repository": run.get("head_repository"),
-                "status": run.get("status"),
-                "job_count": run.get("job_count"),
-                "waited_minutes": waited_minutes,
-                "classification": classification,
-                "check_name": ADVISORY_CHECK_NAME,
-                "conclusion": CONCLUSIONS[classification],
-                "predecessor_run_id": predecessor,
-                "external_id": external_id_for(run_id, classification),
-                "check_run_id": posted_id_for(posted, head_sha, run_id, classification),
-                "check_title": check_title(classification, waited_minutes),
-                "check_summary": check_summary(
-                    classification, run, waited_minutes, predecessor
-                ),
-            }
-        )
+        finding = {
+            "run_id": run_id,
+            "head_sha": head_sha,
+            "head_branch": run.get("head_branch"),
+            "pull_requests": pull_numbers(run),
+            "event": run.get("event"),
+            "head_repository": run.get("head_repository"),
+            "status": run.get("status"),
+            "job_count": run.get("job_count"),
+            "waited_minutes": waited_minutes,
+            "classification": classification,
+            "check_name": ADVISORY_CHECK_NAME,
+            "conclusion": CONCLUSIONS[classification],
+            "predecessor_run_id": predecessor,
+            "external_id": external_id_for(run_id, classification),
+            "check_run_id": posted_id_for(posted, head_sha, run_id, classification),
+            "check_title": check_title(classification, waited_minutes, run),
+            "check_summary": check_summary(classification, run, waited_minutes, predecessor),
+        }
+        if classification == CANCELLED_BEFORE_SCHEDULING:
+            prior_rows = posted_checks_for(posted, head_sha, run_id, classification)
+            if prior_rows:
+                # Terminal text does not age. Correct every stale duplicate once,
+                # then stop writing until the attempt or its evidence changes.
+                findings.extend({**finding, "check_run_id": prior["id"]} for prior in prior_rows
+                                if prior["conclusion"] != finding["conclusion"]
+                                or prior.get("title") != finding["check_title"])
+                continue
+        findings.append(finding)
 
     return {
         "schema_version": 2,
@@ -1045,6 +1205,7 @@ def classify_snapshot(
             "Reports only that a run has scheduled no jobs; it evaluates no candidate.",
             "Never emits a success conclusion, and never posts under the required context's name.",
             "A run queued behind an earlier run on the same pull request is an explained wait, not a fault.",
+            "A cancelled zero-job attempt will not produce a gate; this is not a permanent claim about its head SHA.",
             "A run held for fork-PR maintainer approval is a human-actionable wait, not a scheduling fault (#16151).",
             "A run whose created_at, the snapshot's as_of, or whose job count is unreadable is reported for neither.",
             "An `alive` line is a progress observation, not a verdict, and is the only class reachable from a run that has jobs.",
