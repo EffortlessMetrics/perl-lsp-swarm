@@ -209,7 +209,20 @@ outcome_owner = "#10230"
 # 41 scanned files, 60 producer rows over 18 candidate classes, the entry routes
 # and the finalizer seam are unchanged. This is a source re-audit of changed
 # insertion geometry, not a claim that completion behavior is unchanged.
-source_digest = "sha256:1a55f6b90bd9db99feb10ecab188178a93f2bf21135d26f7cc84d104b2d0a6f7"
+# Re-anchor 2026-11-06 (#18760): the regex-flag region ends at the closing
+# delimiter — scanned `lexical_context.rs` `is_multi_delim_regex_at_close`
+# additionally requires the flag-stripped body to end at `/`, so a closed
+# `s///`/`tr///` earlier in the buffer no longer claims later cursors; scanned
+# `request/context.rs` and the runtime entry file add tests and #18760's
+# settle-wait in `handle_completion`/`handle_completion_cancellable` plus the
+# `superseded_completion_list` page helper (a stale-generation response value,
+# not a candidate append) and a never-parsed gate on the `lexical_complete`
+# fallback call. Producer rows, candidate classes, entry routes and the
+# finalizer seam are unchanged; the scan counts whole-file bytes, so the
+# in-file test additions in both provider files and the entry file shift the
+# digest even though they add no producer. This is a source re-audit,
+# not a claim that completion behavior is unchanged.
+source_digest = "sha256:6e865702ca0f771ee5bca09a3646fe6565c3b284a0de3ffaff642c515a493636"
 
 [[delegations]]
 module = "dancer2"

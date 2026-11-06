@@ -402,6 +402,10 @@ fn outcome_contract_violation(
 
 #[cfg(test)]
 mod tests {
+    // Fixture assertions read decision payloads via expect; module-scoped
+    // exemption matches the sibling test-module convention.
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use perl_lsp_rs_core::tooling::perltidy::native::{
         FormatChangeSummary, FormatEvidenceState, FormatExecutionStrategy, FormatIdentity,
