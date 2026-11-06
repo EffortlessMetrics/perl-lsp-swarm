@@ -640,7 +640,7 @@
                 {
                     "name": "string.regexp.replace.perl",
                     "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\()",
-                    "end": "\\)\\s*\\((?:[^()\\\\]|\\\\.)*\\)[cgimosxpodualner]*",
+                    "end": "\\)\\s*\\((?:[^()\\\\]|\\\\.)*\\)[cgimosxpodualner]*|\\)",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -650,13 +650,16 @@
                         {
                             "name": "constant.character.escape.perl",
                             "match": "\\\\."
+                        },
+                        {
+                            "include": "#substitution-nested-parens"
                         }
                     ]
                 },
                 {
                     "name": "string.regexp.replace.perl",
                     "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\{)",
-                    "end": "\\}\\s*\\{(?:[^{}\\\\]|\\\\.)*\\}[cgimosxpodualner]*",
+                    "end": "\\}\\s*\\{(?:[^{}\\\\]|\\\\.)*\\}[cgimosxpodualner]*|\\}",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -675,7 +678,7 @@
                 {
                     "name": "string.regexp.replace.perl",
                     "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\[)",
-                    "end": "\\]\\s*\\[(?:[^\\[\\]\\\\]|\\\\.)*\\][cgimosxpodualner]*",
+                    "end": "\\]\\s*\\[(?:[^\\[\\]\\\\]|\\\\.)*\\][cgimosxpodualner]*|\\]",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -691,7 +694,7 @@
                 {
                     "name": "string.regexp.replace.perl",
                     "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(<)",
-                    "end": ">\\s*<(?:[^<>\\\\]|\\\\.)*>[cgimosxpodualner]*",
+                    "end": ">\\s*<(?:[^<>\\\\]|\\\\.)*>[cgimosxpodualner]*|>",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -707,7 +710,7 @@
                 {
                     "name": "string.regexp.replace.perl",
                     "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*([^\\s\\w=}])",
-                    "end": "(?:\\\\.|[^\\\\])*?\\2\\s*(?:\\\\.|[^\\\\])*?\\2[cgimosxpodualner]*",
+                    "end": "(?:\\\\.|[^\\\\])*?\\2\\s*(?:\\\\.|[^\\\\])*?\\2[cgimosxpodualner]*|(?:\\\\.|[^\\\\])*?\\2",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -732,6 +735,19 @@
                 },
                 {
                     "include": "#substitution-nested-braces"
+                }
+            ]
+        },
+        "substitution-nested-parens": {
+            "begin": "\\(",
+            "end": "\\)",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
+                },
+                {
+                    "include": "#substitution-nested-parens"
                 }
             ]
         },

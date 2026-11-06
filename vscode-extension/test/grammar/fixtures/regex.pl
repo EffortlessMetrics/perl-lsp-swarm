@@ -15,6 +15,14 @@ $_ =~ s/^\s+|\s+$//g;
 s{old}{new}g;
 s{a{b}c}{d}g;
 s#foo#bar#g;
+s{a}{$h{x}}e;
+s{a}{${v}};
+s(a)(f(b))e;
+my $x = s{
+    pattern
+}{
+    replacement
+}xe;
 my $u = $text =~ s/x/y/gr;
 my $q = $x / 2;
 map {s/x/y/} @list;
