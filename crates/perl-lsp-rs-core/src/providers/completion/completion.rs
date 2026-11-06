@@ -100,6 +100,7 @@ mod lexical_context;
 pub(crate) mod lexical_visibility;
 mod methods;
 mod packages;
+mod receiver;
 mod regex_patterns;
 mod request;
 pub(crate) mod scope_distance;
@@ -1778,6 +1779,8 @@ pub fn htmx_attribute_name_completion_admitted(source: &str, position: usize) ->
         || CompletionProvider::is_in_pod(source, position))
 }
 
+#[cfg(test)]
+mod defining_class_invocant_tests;
 #[cfg(test)]
 mod keyword_role_tests;
 #[cfg(test)]

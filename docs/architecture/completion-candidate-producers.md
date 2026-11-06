@@ -12,6 +12,8 @@ The dispositions below were audited against the shipped (non-test) surface of th
 
 - Digest: `sha256:1a55f6b90bd9db99feb10ecab188178a93f2bf21135d26f7cc84d104b2d0a6f7`
 - Files (41):
+- Digest: `sha256:0e53699d5624afb8bbe3bb46821a84871053300cd2417be8451dcfee5c38d47b`
+- Files (43):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins/catalog.rs`
@@ -28,6 +30,7 @@ The dispositions below were audited against the shipped (non-test) surface of th
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_visibility.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/methods.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/packages.rs`
+  - `crates/perl-lsp-rs-core/src/providers/completion/completion/receiver.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/regex_patterns.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/request/context.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/request/dispatch.rs`
