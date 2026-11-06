@@ -22,10 +22,10 @@ curl() {
 if [[ "$PERL_LSP_INSTALLER_REF" == v* && "${ACCEPT_TAG:-0}" != 1 ]]; then
     echo 'PERL_LSP_INSTALLER_REF must be a full lowercase commit SHA' >&2; exit 1
 fi
-if [[ "$PERL_LSP_INSTALLER_SHA256" == 0000000000000000000000000000000000000000000000000000000000000000 ]]; then
+if [[ "$PERL_LSP_INSTALLER_SHA256" == 0000000000000000000000000000000000000000000000000000000000000000 && "${ACCEPT_DIGEST:-0}" != 1 ]]; then
     echo 'SHA-256 mismatch' >&2; exit 1
 fi
-if [[ "$PERL_LSP_INSTALLER_REF" == v* ]]; then
+if [[ "$PERL_LSP_INSTALLER_REF" == v* || "$PERL_LSP_INSTALLER_SHA256" == 0000000000000000000000000000000000000000000000000000000000000000 ]]; then
     destination="${INSTALL_DIR:-$HOME/.local/bin}"
     mkdir -p "$destination"
     printf 'attempted write\n' > "$destination/tag-write"
@@ -45,15 +45,21 @@ for dir in "${CLEANUP_DIRS[@]}"; do rm -rf "$dir"; done
 HARNESS
 if ! SECTION="$tmp/section" bash "$tmp/harness" > "$tmp/good"; then cat "$tmp/good"; exit 1; fi
 mkdir -p "$tmp/home"
-if SECTION="$tmp/section" ACCEPT_TAG=1 TMPDIR="$tmp" HOME="$tmp/home" WRITE_RECORD="$tmp/write-record" bash "$tmp/harness" > "$tmp/bad"; then
-    echo 'FAIL: smoke accepted a wrapper that accepts a tag ref'; exit 1
-fi
-grep -q 'accepted a non-dereferenced tag ref' "$tmp/bad" || { cat "$tmp/bad"; exit 1; }
-[[ -f "$tmp/write-record" ]] || { echo 'FAIL: accepting wrapper did not attempt write'; exit 1; }
-mapfile -t write_record < "$tmp/write-record"
-[[ "${write_record[0]}" == "$tmp"/* && "${write_record[0]}" != "$tmp/home"/* && "${write_record[1]}" == v1.2.3 ]] || {
-    printf 'FAIL: unsafe destination or version: %s / %s\n' "${write_record[0]}" "${write_record[1]}"; exit 1;
+check_accepting_wrapper() {
+    local mode="$1" expected="$2" destination version
+    if env SECTION="$tmp/section" "$mode" TMPDIR="$tmp" HOME="$tmp/home" WRITE_RECORD="$tmp/write-record" bash "$tmp/harness" > "$tmp/bad"; then
+        echo "FAIL: smoke accepted $mode"; exit 1
+    fi
+    grep -q "$expected" "$tmp/bad" || { cat "$tmp/bad"; exit 1; }
+    [[ -f "$tmp/write-record" ]] || { echo 'FAIL: accepting wrapper did not attempt write'; exit 1; }
+    { IFS= read -r destination; IFS= read -r version; } < "$tmp/write-record"
+    [[ "$destination" == "$tmp"/* && "$destination" != "$tmp/home"/* && "$version" == v1.2.3 ]] || {
+        printf 'FAIL: unsafe destination or version: %s / %s\n' "$destination" "$version"; exit 1;
+    }
+    [[ ! -e "$destination" ]] || { echo 'FAIL: negative install destination was not cleaned'; exit 1; }
+    [[ ! -e "$tmp/home/.local/bin/tag-write" ]] || { echo 'FAIL: wrote to default destination'; exit 1; }
+    rm -f "$tmp/write-record"
 }
-[[ ! -e "${write_record[0]}" ]] || { echo 'FAIL: negative install destination was not cleaned'; exit 1; }
-[[ ! -e "$tmp/home/.local/bin/tag-write" ]] || { echo 'FAIL: wrote to default destination'; exit 1; }
-echo 'PASS: smoke accepts correct wrapper and rejects tag-accepting wrapper'
+check_accepting_wrapper ACCEPT_TAG=1 'accepted a non-dereferenced tag ref'
+check_accepting_wrapper ACCEPT_DIGEST=1 'accepted wrong PERL_LSP_INSTALLER_SHA256'
+echo 'PASS: smoke rejects tag- and digest-accepting wrappers and confines their writes'
