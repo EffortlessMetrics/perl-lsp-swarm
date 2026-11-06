@@ -4,6 +4,7 @@
 //! (absorbed from `perl-content-length-framing` in Wave Final PR B, #4541)
 //! and the higher-level LSP message reader/writer utilities.
 
+use super::document_symbol_probe;
 use crate::protocol::JsonRpcResponse;
 use std::fmt;
 use std::io::{self, Write};
@@ -78,13 +79,15 @@ impl perl_parser_core::ErrorClass for FramingError {
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct ContentLengthFramer {
     buf: Vec<u8>,
+    probe_stream_offset: u64,
+    probe_frame_sequence: u64,
 }
 
 impl ContentLengthFramer {
     /// Create a new empty framer.
     #[must_use]
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self { buf: Vec::new(), probe_stream_offset: 0, probe_frame_sequence: 0 }
     }
 
     /// Append raw transport bytes.
@@ -124,6 +127,7 @@ impl ContentLengthFramer {
             return Ok(None);
         };
         if start > 0 {
+            self.probe_drain("prefix_discarded", start);
             self.buf.drain(..start);
         }
 
@@ -133,6 +137,7 @@ impl ContentLengthFramer {
             // Once we exceed MAX_HEADER_BYTES we know it is malformed; clear
             // and return an error so the caller can log and continue.
             if self.buf.len() > MAX_HEADER_BYTES {
+                self.probe_drain("oversized_header_discarded", self.buf.len());
                 self.buf.clear();
                 return Err(FramingError::InvalidHeader);
             }
@@ -186,6 +191,22 @@ impl ContentLengthFramer {
         }
 
         let body = self.buf[body_start..body_end].to_vec();
+        if document_symbol_probe::active() {
+            self.probe_frame_sequence += 1;
+            let start = self.probe_stream_offset;
+            let end = start.saturating_add(body_end as u64);
+            document_symbol_probe::emit("body_extracted", || {
+                serde_json::json!({
+                    "frame_sequence": self.probe_frame_sequence,
+                    "stream_start": start,
+                    "stream_end": end,
+                    "body_start": start.saturating_add(body_start as u64),
+                    "header_bytes": body_start,
+                    "body_bytes": length,
+                })
+            });
+            self.probe_stream_offset = end;
+        }
         self.buf.drain(..body_end);
         self.resync_if_needed();
         Ok(Some(body))
@@ -193,6 +214,7 @@ impl ContentLengthFramer {
 
     fn consume_header_block(&mut self, header_end: usize, header_len: usize) {
         let drain_to = (header_end + header_len).min(self.buf.len());
+        self.probe_drain("rejected_header_discarded", drain_to);
         self.buf.drain(..drain_to);
         self.resync_if_needed();
     }
@@ -201,14 +223,33 @@ impl ContentLengthFramer {
         match find_header_start(&self.buf) {
             Some(0) => {}
             Some(prefix_len) => {
+                self.probe_drain("prefix_discarded", prefix_len);
                 self.buf.drain(..prefix_len);
             }
             None => {
                 if self.buf.len() > MAX_DESYNC_BUFFER_BYTES {
                     let keep = RESYNC_TAIL_BYTES.min(self.buf.len());
+                    self.probe_drain("desync_tail_discarded", self.buf.len() - keep);
                     self.buf.drain(..self.buf.len() - keep);
                 }
             }
+        }
+    }
+
+    pub(super) fn probe_frame_sequence(&self) -> u64 {
+        self.probe_frame_sequence
+    }
+
+    fn probe_drain(&mut self, stage: &'static str, bytes: usize) {
+        if document_symbol_probe::active() {
+            let start = self.probe_stream_offset;
+            let end = start.saturating_add(bytes as u64);
+            document_symbol_probe::emit(stage, || {
+                serde_json::json!({
+                    "stream_start": start, "stream_end": end, "discarded_bytes": bytes,
+                })
+            });
+            self.probe_stream_offset = end;
         }
     }
 }
