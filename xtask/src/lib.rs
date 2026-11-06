@@ -35,6 +35,7 @@ pub mod file_identity;
 pub mod git_ancestry;
 pub mod git_environment;
 pub mod import_cleanup_train_manifest;
+pub mod init_environment;
 pub mod install_surface_route_units;
 pub mod lsp_runtime_train_manifest;
 pub mod main_history_event;

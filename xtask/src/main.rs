@@ -54,8 +54,8 @@ use tasks::{
     emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
     forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
     goals, hardening, hook_checks, htmx_catalog_drift, ignored_tests, incremental_proof,
-    inject_sha_assets, inline_completion_quality, inline_completion_smoke, install_surface_check,
-    integration_proof, intent_diff_gate, issue_controllers, issue_plan,
+    init_environment, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_controllers, issue_plan,
     kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
     memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
     native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
@@ -2580,6 +2580,12 @@ enum Commands {
     /// Enforce crate layer-dependency constraints.
     LayerCheck,
 
+    /// Initialize-operation phase and owner ledger (#10040).
+    InitEnvironment {
+        #[command(subcommand)]
+        command: InitEnvironmentCommand,
+    },
+
     /// Scan Cargo topology (tests present, not a direct dep of perl-lsp-rs).
     /// Not product activation; see `activation check`.
     UnwiredScan {
@@ -3195,6 +3201,18 @@ enum CheckFilePolicyCliMode {
     Advisory,
     BlockingAllowlist,
     BlockingStrict,
+}
+
+#[derive(Subcommand)]
+enum InitEnvironmentCommand {
+    /// Validate the ledger against a census derived from current source.
+    Check,
+    /// Render the ledger as deterministic JSON.
+    Render,
+    /// List rows grouped by phase disposition and migration wave.
+    List,
+    /// Dump derived reachability and blocking exposure for the census roots.
+    Census,
 }
 
 #[derive(Subcommand)]
@@ -7406,6 +7424,12 @@ fn run_cli(cli: Cli) -> Result<()> {
         },
         Commands::SrpMicrocrates { args } => srp_microcrates::run(args.output),
         Commands::LayerCheck => layer_check::run(),
+        Commands::InitEnvironment { command } => match command {
+            InitEnvironmentCommand::Check => init_environment::run_check(),
+            InitEnvironmentCommand::Render => init_environment::run_render(),
+            InitEnvironmentCommand::List => init_environment::run_list(),
+            InitEnvironmentCommand::Census => init_environment::run_census(),
+        },
         Commands::UnwiredScan { args } => unwired_scan::run(UnwiredScanConfig {
             lsp_crate: args.lsp_crate,
             json: args.json,
