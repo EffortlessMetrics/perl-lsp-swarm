@@ -14,8 +14,7 @@
 //! Primary CPAN evidence: Dpkg::Conf, Dpkg::Source::BinaryFiles,
 //! Dpkg::Control::HashCore, Dpkg::Shlibs::Objdump::Object, Date::Calc::PP.
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // ── Primary CPAN pattern (Dpkg corpus) ────────────────────────────────
 

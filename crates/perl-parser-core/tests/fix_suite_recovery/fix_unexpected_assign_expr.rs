@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 #[test]
 fn b_deparse_bare_substr_lvalue_assignment_with_trailing_comma() {

@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Regression tests for issue #2404 — unexpected_rbrace_expr
 // These patterns already parse correctly; tests guard against regression.

@@ -4,8 +4,7 @@
 ///   1. After a block statement (e.g. `if (...) { } /re/`)
 ///   2. After `=~` binding operator on complex LHS (method call result)
 ///   3. Bare regex at statement start immediately after `{ }` ends a block
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // ── After =~ with simple variable (baseline — must stay passing) ────────────
 
