@@ -60,6 +60,16 @@ use tasks::{
     memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
     native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     no_publish_side_effects, oneliner_capability_matrix, oracle_fixture_manifest,
+    devex_plan, distribution_spec, distribution_train, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_packet, emacs_train_specs, features, finalize_check,
+    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
+    github, github_preflight, github_review, goals, hardening, hook_checks, htmx_catalog_drift,
+    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
+    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
+    issue_controllers, issue_plan, kwalitee_namespace_inventory, layer_check, lsp_318_claims,
+    lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics,
+    module_train, module_train_live, native_critic, native_format, native_neovim_train,
+    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
     oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
     parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
     pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
@@ -2495,6 +2505,25 @@ enum Commands {
 
     /// Check invariants in features.toml
     DocClaims,
+
+    /// Distribution install-train checked graph operations (#10712): the
+    /// `distribution_train.v1` manifest's fail-closed laws and its
+    /// deterministic `check | graph | explain | next` builder views. Offline
+    /// data-only tooling; live candidate/writer observation belongs to
+    /// #10726.
+    DistributionTrain {
+        #[command(subcommand)]
+        command: distribution_train::TrainCommand,
+    },
+
+    /// Distribution route-projection spec operations (#11164): checked
+    /// per-node spec dispositions, the compiled durable route packets, and
+    /// the deterministic `check | explain | index` projection. Offline and
+    /// second-run clean.
+    DistributionSpec {
+        #[command(subcommand)]
+        command: distribution_spec::SpecCommand,
+    },
 
     /// Check active install docs and release notes for stale install command drift.
     InstallSurfaceCheck,
@@ -7339,6 +7368,8 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::DocClaims => doc_claims::run(),
+        Commands::DistributionTrain { command } => distribution_train::run(command),
+        Commands::DistributionSpec { command } => distribution_spec::run(command),
         Commands::InstallSurfaceCheck => install_surface_check::run(),
         Commands::StandaloneVectors { command } => match command {
             StandaloneVectorsCommand::Check { update_golden } => {
