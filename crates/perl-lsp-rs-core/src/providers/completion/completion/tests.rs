@@ -1731,6 +1731,10 @@ fn test_moo_isa_type_completion_includes_builtins_and_imports() {
         "expected built-in Moose type `ArrayRef` in isa completion"
     );
     assert!(
+        completions.iter().any(|item| item.label == "STRICTNUM"),
+        "expected Types::Standard constant `STRICTNUM` in isa completion"
+    );
+    assert!(
         completions.iter().any(|item| item.label == "UserID"),
         "expected imported custom type `UserID` in isa completion"
     );
