@@ -104,11 +104,31 @@ Candidate title/body, source lines, issue text, shell fragments, workflow expres
 
 ### CP00-013 — exact replacement relation
 
-Each contradiction reports a non-terminal replacement: `Advances #N` for bounded progress or `Refs #N` for historical predecessor evidence.
+Each contradiction reports a non-terminal replacement: `Advances #N` for bounded progress or `Refs #N` for historical predecessor evidence or a negated closing token.
 
 ### CP00-014 — explicit retirement mapping
 
 Every CP00 rule names its CP03 replacement. CP00 fixtures replay against CP03/CP04 before the independent check is removed.
+
+### CP00-015 — locally negated closing token (#15009)
+
+A detected closing keyword immediately preceded on the same line by a supported
+negation (`not`, `never`, `without`, `cannot`, `no longer`, or a supported negative
+contraction) produces `FAIL_NEGATED_TERMINAL_RELATION`. The relation stays present:
+GitHub may still act on its keyword/reference token. The diagnosis recommends
+non-closing `Refs` wording with the same repository/issue identity. It does not
+propagate negation across intervening words, punctuation, lines, or issue lists.
+Positive relations remain independent. Fences and quotes keep their existing
+exclusion, and matched inline examples do not donate this prose contradiction.
+The bounded inline-span window recognizes simple block boundaries, flat list
+items, and established table cells; it is not full Markdown conformance.
+A table requires a header/delimiter pair with matching cell counts; escaped pipes
+remain cell content, and ordinary pipes outside tables retain their inline spans.
+Only a nonempty ordered marker starting with 1 interrupts ordinary prose; later
+numbers can separate established sibling items. These controls follow the
+[GFM table and list rules](https://github.github.com/gfm/), without introducing a
+general Markdown parser or changing the existing relation-extraction grammar.
+Lookup and instrument uncertainty keep their existing precedence.
 
 ## Result vocabulary
 
@@ -121,6 +141,7 @@ FAIL_REMAINING_WORK_SAME_ISSUE
 FAIL_CONTROLLER_PACKET_MISSING
 FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE
 FAIL_PROOF_LEVEL_CONTRADICTION
+FAIL_NEGATED_TERMINAL_RELATION
 NOT_PROVEN_GITHUB
 INSTRUMENT_FAILURE
 ```

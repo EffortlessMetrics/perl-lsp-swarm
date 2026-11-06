@@ -21,6 +21,11 @@ The PR template supplies bounded structured surfaces:
 
 CP00 joins terminal GitHub relations to those sections and exact issue classifications. It does not scan arbitrary prose or ask a model to infer completeness.
 
+The #15009 local-negation diagnostic additionally inspects the immediate prefix of
+an already detected closing token, wherever that token occurs in supported prose.
+It preserves the relation and reports contradictory wording; it infers no completion
+claim from surrounding natural language.
+
 ## Trusted execution boundary
 
 This PR provides the trusted-base-safe standalone validator and its offline proof. It does not add a live workflow. A separate follow-up must add and verify the base-owned `pull_request_target` workflow, which must execute the validator from the exact base SHA. Candidate code must never be checked out or executed. PR and issue bodies are untrusted data.
@@ -47,6 +52,7 @@ The follow-up workflow must preserve these controls and prove the exact candidat
 | `CP00-CONTROLLER-PACKET-MISSING` | A controller/programme is terminally closed without an explicit semantic close packet reference. | Controller fan-in and packet evaluation |
 | `CP00-PREDECESSOR-SUCCESSOR-COLLAPSE` | Historical predecessor/deletion evidence is offered as completion of a surviving successor proposition. | Proposition identity and retirement evaluation |
 | `CP00-PROOF-LEVEL-CONTRADICTION` | The PR excludes installed/public/packaged/presentation proof required by the issue. | Required proof-level evaluation |
+| `CP00-NEGATED-TERMINAL` | Adjacent prose negates a detected automatic closing token; suggest non-closing wording without erasing the relation. | Terminal-relation intent evaluation |
 
 No generic “incomplete” rule exists.
 

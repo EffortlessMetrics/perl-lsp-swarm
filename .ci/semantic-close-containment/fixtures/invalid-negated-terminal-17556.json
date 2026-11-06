@@ -1,0 +1,38 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-10-11",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15009",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/17556"
+    ],
+    "subject_shas": [
+      "23c959ca4d1cb44cd3a0f363b9491fb3a102b5af"
+    ],
+    "boundary": "Exact line 34 from the merged PR body, with surrounding sections omitted and a synthetic issue subject isolating local negation. This is a bounded contradiction regression, not full historical replay or proof of GitHub's causal closing edge."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 17556,
+    "title": "Bounded negated closing-token regression",
+    "body": "## Claim Boundary\n\nThe claim is Git configuration nonmutation and honest failure for this first config check. Other legacy advisory/always-zero semantics, possible Git index refreshes, behind-only advice, typed readiness, hooks, topology models and broad read-only diagnosis remain with their existing owners. This does not close #8639 or #9551. No changes to #16485 or the separate admission-guidance candidate."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 8639,
+      "title": "Synthetic issue subject for local-negation isolation",
+      "body": "## Acceptance\nThe named work is established."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_NEGATED_TERMINAL_RELATION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 8639,
+        "code": "FAIL_NEGATED_TERMINAL_RELATION"
+      }
+    ]
+  }
+}
