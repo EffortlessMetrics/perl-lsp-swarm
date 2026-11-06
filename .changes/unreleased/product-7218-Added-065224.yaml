@@ -1,0 +1,9 @@
+project: product
+component: Language server
+kind: Added
+body: Added a transport-neutral workspace session facade that projects canonical root, configuration, document-source, generation, and readiness facts into the existing provider query context without an LSP handshake or a second lifecycle store.
+time: 2026-11-02T06:52:24Z
+custom:
+  Issue: "7218"
+  Slug: workspace-session-facade
+  Breaking: "no"
