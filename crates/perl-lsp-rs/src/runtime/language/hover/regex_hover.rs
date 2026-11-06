@@ -1,24 +1,33 @@
 use super::{LspServer, Value, json};
+use perl_parser_core::RegexAnalysisTable;
 use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 
 impl LspServer {
-    /// Build a hover response when the cursor is inside a Perl regex literal.
+    /// Build a hover response when the cursor is inside a Perl regex-family construct.
     ///
-    /// Detects `/pattern/`, `m/pattern/`, `s/pattern/repl/`, and `qr/pattern/`
-    /// operators (including paired-delimiter variants) and returns a Markdown
-    /// table explaining each metacharacter in the pattern.
-    ///
-    /// The detection is a whole-line lexical heuristic, so it may only answer
-    /// when the generation-bound source-region index proves the exact claimed
-    /// pattern span is a [`SourceRegionKind::RegexLike`] region (#4967):
-    /// regex-shaped text inside comments, strings, POD, heredocs, or
-    /// recovery-ambiguous input carries no such evidence and fails closed.
-    /// A missing index fails closed as well.
+    /// When parser-retained canonical analysis is available (#7018/#7048), hover is
+    /// rendered from that table with no lexical rescan. Otherwise the legacy
+    /// metacharacter table path remains for compatibility callers without retention.
     pub(super) fn extract_regex_hover(
         text: &str,
         offset: usize,
         region_index: Option<&SourceRegionIndex>,
+        regex_analysis: Option<&RegexAnalysisTable>,
     ) -> Option<Value> {
+        if let Some(table) = regex_analysis {
+            if !table.source_matches(text) {
+                return None;
+            }
+            let markdown =
+                perl_lsp_rs_core::providers::regex::hover_projection_at(text, table, offset)?;
+            return Some(json!({
+                "contents": {
+                    "kind": "markdown",
+                    "value": markdown,
+                },
+            }));
+        }
+
         let Some(index) = region_index else {
             return None; // no generation-bound evidence: fail closed (#4967)
         };
@@ -555,7 +564,7 @@ mod tests {
         for (text, needle, expected_row) in cases {
             let index = SourceRegionIndex::build(text);
             let offset = must_some(text.find(needle));
-            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index)));
+            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index), None));
             let markdown = must_some(card["contents"]["value"].as_str());
             let expected = format!(
                 "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n{expected_row}\n"
@@ -579,7 +588,7 @@ mod tests {
         for (text, needle, expected_token_cell, expected_meaning) in cases {
             let index = SourceRegionIndex::build(text);
             let offset = must_some(text.find(needle));
-            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index)));
+            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index), None));
             let markdown = must_some(card["contents"]["value"].as_str());
             // Data rows start with "| `"; header/separator rows do not.
             let row = must_some(markdown.lines().find(|l| l.starts_with("| `")));
@@ -621,12 +630,12 @@ mod tests {
             let index = SourceRegionIndex::build(text);
             let offset = must_some(text.find("[a|b]"));
             assert!(
-                LspServer::extract_regex_hover(text, offset, Some(&index)).is_none(),
+                LspServer::extract_regex_hover(text, offset, Some(&index), None).is_none(),
                 "{text:?}"
             );
         }
         let text = "my $re = qr{[a|b]};";
         let offset = must_some(text.find("[a|b]"));
-        assert!(LspServer::extract_regex_hover(text, offset, None).is_none());
+        assert!(LspServer::extract_regex_hover(text, offset, None, None).is_none());
     }
 }
