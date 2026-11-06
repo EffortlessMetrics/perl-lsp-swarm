@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: Add the versioned no-publish readiness_rehearsal.v1 receipt, validator, JSON/human projections, and deterministic false-green fixtures.
+time: 2026-09-29T06:20:00Z
+custom:
+  PR: "16887"
+  Slug: readiness-rehearsal-receipts
+  Breaking: "no"
