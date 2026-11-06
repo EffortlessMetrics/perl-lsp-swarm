@@ -52,6 +52,7 @@ pub mod clean;
 pub mod clippy_cost_measure;
 pub mod code_action_generation_ledger;
 pub mod command_evidence;
+pub mod command_line_oneliner_corpus;
 #[path = "commit_checks_facade.rs"]
 pub mod commit_checks;
 pub mod compare;
