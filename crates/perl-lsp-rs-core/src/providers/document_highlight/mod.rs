@@ -639,19 +639,21 @@ impl DocumentHighlightProvider {
             highlights.push(DocumentHighlight { location: node.location, kind });
         }
 
-        // Also check cross-sigil matches (e.g. $arr[0] ↔ @arr) within scope
+        // Cross-sigil matches (e.g. $arr[0] ↔ @arr) within the sub scope — use the
+        // traversal parent like the unscoped collector; require container role so an
+        // unrelated same-named scalar index/key stays excluded (#18312).
         if let NodeKind::Variable { sigil, name } = &node.kind
             && node.location.start >= sub_start
             && node.location.end <= sub_end
+            && !self.node_matches_symbol(node, source, target)
+            && let Some(target_sigil) = &target.sigil
         {
-            // Presence of a subscript parent is the gate; the parent node
-            // itself is not needed here.
-            if self.find_subscript_parent(node, node.location.start).is_some() {
-                let target_sigil_str = target.sigil.as_deref().unwrap_or("");
-                if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
-                    let kind = self.determine_highlight_kind_with_parent(node, parent);
-                    highlights.push(DocumentHighlight { location: node.location, kind });
-                }
+            let cross_match =
+                self.is_cross_sigil_match(sigil, name, target_sigil, &target.name, parent)
+                    && self.is_cross_sigil_container_occurrence(node, parent);
+            if cross_match {
+                let kind = self.determine_highlight_kind_with_parent(node, parent);
+                highlights.push(DocumentHighlight { location: node.location, kind });
             }
         }
 
@@ -855,6 +857,25 @@ impl DocumentHighlightProvider {
                 kind: DocumentHighlightKind::Text,
             });
         }
+    }
+
+    /// Whether a cross-sigil candidate is the container spelling (`$arr` in `$arr[i]`,
+    /// `$#arr`) rather than an unrelated same-named scalar used as an index/key.
+    fn is_cross_sigil_container_occurrence(&self, node: &Node, parent: Option<&Node>) -> bool {
+        if let NodeKind::Variable { sigil, name } = &node.kind
+            && sigil == "$"
+            && name.starts_with('#')
+        {
+            return true;
+        }
+        if let Some(parent_node) = parent
+            && let NodeKind::Binary { op, left, .. } = &parent_node.kind
+            && (op == "[]" || op == "{}")
+        {
+            return node.location.start == left.location.start
+                && node.location.end == left.location.end;
+        }
+        false
     }
 
     /// Check whether a variable occurrence with `(sigil, name)` is a cross-sigil
