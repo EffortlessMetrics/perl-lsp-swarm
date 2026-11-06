@@ -417,6 +417,45 @@ class ConstrainedAdmissionTests(unittest.TestCase):
                     self.assertIn("scripts/cargo-admitted --preflight", hint)
                     self.assertNotIn("lease", hint)
 
+    def test_percent_only_refusal_suggests_preflight_once_without_allocating(self):
+        import json
+        for free_gib, used_pct, additional in ((100, 90.0, 50*self.gib+1), (150, 85.0, 1)):
+            usage = self.Usage(1000*self.gib, (1000-free_gib)*self.gib, free_gib*self.gib)
+            with self.subTest(free_gib=free_gib), \
+                 patch.object(Path, "mkdir", side_effect=AssertionError("refusal must not allocate")) as mkdir:
+                result, output, cargo = self.invoke(self.args, disk=lambda path: usage)
+                preflight_result, preflight_output, preflight_cargo = self.invoke(
+                    ["--preflight", *self.args], disk=lambda path: usage)
+                self.assertEqual(result, 75, output)
+                self.assertEqual(preflight_result, 75, preflight_output)
+                cargo.assert_not_called()
+                preflight_cargo.assert_not_called()
+                mkdir.assert_not_called()
+                self.assert_unallocated()
+                hints = [line for line in output.splitlines() if line.startswith("cargo-admitted: next:")]
+                self.assertEqual(len(hints), 1, output)
+                self.assertIn("scripts/cargo-admitted --preflight", hints[0])
+                self.assertNotIn("cargo-admitted: next:", preflight_output)
+                reason = ("volume used percentage at or above MAX_USED_PCT at " + str(self.slot)
+                          + " free_bytes=" + str(usage.free)
+                          + " used_pct=" + str(used_pct)
+                          + " max_used_pct=85.0"
+                          + " required_free_bytes_for_pct=" + str(float(150*self.gib))
+                          + " additional_free_bytes_needed=" + str(additional))
+                self.assertIn("cargo-admitted: DENY: " + reason, output)
+                report = json.loads(preflight_output.split("cargo-admitted preflight: ", 1)[1])
+                self.assertEqual(report["verdict"], "DENY")
+                self.assertEqual(report["reason"], reason)
+                self.assertIs(report["lease_acquired"], False)
+                observation = report["observation"]
+                self.assertEqual(observation["required_free_bytes"], 40*self.gib)
+                self.assertGreater(observation["headroom_bytes"], 0)
+                self.assertEqual(observation["used_pct"], used_pct)
+                self.assertEqual(observation["max_used_pct"], 85)
+                self.assertEqual(observation["required_free_bytes_for_pct"], 150*self.gib)
+                self.assertEqual(observation["pct_shortfall_bytes"], additional)
+                self.assertEqual(observation["additional_free_bytes_needed"], additional)
+
     def test_noncapacity_refusals_do_not_suggest_capacity_preflight(self):
         def unavailable(path):
             raise OSError("fixture capacity unavailable")
