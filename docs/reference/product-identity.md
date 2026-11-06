@@ -49,9 +49,17 @@ its own final file hash.
 
 ## Repository context
 
-- Public product and release lineage: `EffortlessMetrics/perl-lsp`
-- Active development and evidence: `EffortlessMetrics/perl-lsp-swarm`
+- Active product development and proof: `EffortlessMetrics/perl-lsp-swarm/main`
+- Public contribution ingress, release lineage, and published artifacts:
+  `EffortlessMetrics/perl-lsp/master`
 
-Development links may point to the swarm repository when labeled as development
-evidence. Public installation and support paths must point to the public product
-repository after the reviewed publication-context transformation.
+External issues and pull requests target the public repository. Before integrating a
+shared-product public PR, maintainers first reconcile accepted swarm state into the public
+repository so the contribution is reviewed against the current product projection. After
+the public PR merges, its shared-product effect is reconciled back into swarm. This
+contributor route does not make `perl-lsp` a second independent product-development
+authority.
+
+Development evidence may point to the swarm repository when labeled as development
+evidence. Public installation and support paths must point to the public product repository
+after the reviewed publication-context transformation.

@@ -75,6 +75,17 @@ pub(super) fn load_static_topology(
     if !publication_role.is_match(&protocol) {
         bail!("sync protocol is missing the publication repository role");
     }
+    // The projected issue/PR routes are only honest while the protocol still
+    // declares public contribution ingress on the publication repository, so
+    // anchor them on that statement like every other projected route.
+    let ingress_statement = Regex::new(&format!(
+        r"issues and pull requests against\s+`{}/{}`\.",
+        regex::escape(publication_name),
+        publication_branch
+    ))?;
+    if !ingress_statement.is_match(&protocol) {
+        bail!("sync protocol is missing the public contribution ingress statement");
+    }
     for marker in [
         "#### Mechanics: history-preserving complete-tree merge".to_string(),
         format!("git merge -s ours --no-commit swarm/{development_branch}"),
@@ -90,8 +101,8 @@ pub(super) fn load_static_topology(
         development_default_branch: development_branch,
         publication_repository: publication_repository.to_string(),
         publication_branch,
-        issue_repository: development_repository.to_string(),
-        pull_request_repository: development_repository.to_string(),
+        issue_repository: publication_repository.to_string(),
+        pull_request_repository: publication_repository.to_string(),
         promotion_protocol: PROMOTION_PROTOCOL.to_string(),
         primary_channels,
     };
