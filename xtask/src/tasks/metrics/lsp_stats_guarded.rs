@@ -6,6 +6,7 @@
 //! disappearing from an otherwise green aggregation while preserving other
 //! valid receipt families that share the same directory.
 
+use super::lsp_stats_receipt_set as receipt_set;
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use perl_lsp_ux_tests::recorder::UxScenarioRunReceipt;
@@ -13,7 +14,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
+
+#[cfg(test)]
+#[path = "lsp_stats_receipt_set_tests.rs"]
+mod receipt_set_tests;
 
 pub use super::lsp_stats_impl::{
     LatencyMetric, MeasuredEditorUxScorecard, RateMetric, WorkflowResult,
@@ -70,28 +77,32 @@ struct FixtureWorkflow {
     scenario_file: String,
 }
 
-#[derive(Debug)]
-struct ReceiptCandidate {
-    path: PathBuf,
-    value: Value,
-}
-
-/// Run `cargo xtask metrics lsp-stats` with fail-closed receipt validation.
+/// Run the compatibility command from one admitted, owned receipt set.
 pub fn run_with_receipt_dir(
     json: bool,
     receipt_dir: Option<&Path>,
     output: Option<&Path>,
 ) -> Result<()> {
+    let Some(receipts_dir) = receipt_dir else {
+        return super::lsp_stats_impl::run_with_receipts(json, None, output);
+    };
     let root = project_root()?;
-    validate_run_inputs(&root, receipt_dir)?;
-
-    super::lsp_stats_impl::run_with_receipt_dir(json, receipt_dir, output)
+    let admitted = load_admitted_set(
+        receipts_dir,
+        &root.join(FIXTURE_MATRIX_PATH),
+        &root.join(RECEIPT_SCHEMA_PATH),
+    )?;
+    println!("Compatibility snapshot: {}", admitted.describe());
+    super::lsp_stats_impl::run_with_receipts(
+        json,
+        Some((admitted.root(), admitted.receipts())),
+        output,
+    )
 }
 
+#[cfg(test)]
 fn validate_run_inputs(root: &Path, receipt_dir: Option<&Path>) -> Result<()> {
     let Some(receipts_dir) = receipt_dir else {
-        // The no-argument command intentionally retains the legacy fixture-inventory
-        // behavior. Receipt validation is opt-in through an explicit directory.
         return Ok(());
     };
     validate_scorecard_inputs(
@@ -101,11 +112,6 @@ fn validate_run_inputs(root: &Path, receipt_dir: Option<&Path>) -> Result<()> {
     )
 }
 
-/// Aggregate receipts after validating their schema and fixture identity.
-///
-/// The bin entry point [`run_with_receipt_dir`] validates through
-/// [`validate_run_inputs`] before delegating; this wrapper is exercised
-/// directly only by this module's tests.
 #[cfg(test)]
 pub fn aggregate_from_receipts(
     receipts_dir: &Path,
@@ -113,67 +119,94 @@ pub fn aggregate_from_receipts(
     flake_ledger: Option<&Path>,
 ) -> Result<MeasuredEditorUxScorecard> {
     let root = project_root()?;
-    validate_scorecard_inputs(receipts_dir, fixture_matrix, &root.join(RECEIPT_SCHEMA_PATH))?;
-    super::lsp_stats_impl::aggregate_from_receipts(receipts_dir, fixture_matrix, flake_ledger)
+    let admitted =
+        load_admitted_set(receipts_dir, fixture_matrix, &root.join(RECEIPT_SCHEMA_PATH))?;
+    super::lsp_stats_impl::aggregate_admitted_receipts(
+        admitted.receipts(),
+        fixture_matrix,
+        flake_ledger,
+    )
 }
 
+#[cfg(test)]
 fn validate_scorecard_inputs(
     receipts_dir: &Path,
     fixture_matrix: &Path,
     receipt_schema: &Path,
 ) -> Result<()> {
+    load_admitted_set(receipts_dir, fixture_matrix, receipt_schema).map(|_| ())
+}
+
+fn load_admitted_set(
+    receipts_dir: &Path,
+    fixture_matrix: &Path,
+    receipt_schema: &Path,
+) -> Result<receipt_set::AdmittedLegacyUxReceiptSet> {
     let workflows = load_workflows(fixture_matrix)?;
     let validator = load_receipt_validator(receipt_schema)?;
+    receipt_set::load(receipts_dir, |path, value| {
+        classify_candidate(path, value, &workflows, &validator)
+    })
+}
 
-    for candidate in read_receipt_candidates(receipts_dir)? {
-        let kind = candidate.value.get("kind").and_then(Value::as_str);
-        if kind != Some("ux_scenario_run") {
-            if looks_like_ux_scenario_run(&candidate.value) {
-                bail!(
-                    "editor UX run-shaped JSON {} has unsupported or malformed kind {:?}",
-                    candidate.path.display(),
-                    kind
-                );
-            }
-            continue;
-        }
-
-        if candidate.value.get("schema_version").and_then(Value::as_u64)
-            != Some(u64::from(RECEIPT_SCHEMA_VERSION))
-        {
+fn classify_candidate(
+    path: &Path,
+    value: Value,
+    workflows: &BTreeMap<String, FixtureWorkflow>,
+    validator: &jsonschema::Validator,
+) -> Result<receipt_set::ClassifiedReceipt> {
+    let kind = value.get("kind").and_then(Value::as_str);
+    if kind != Some("ux_scenario_run") {
+        if looks_like_ux_scenario_run(&value) {
             bail!(
-                "unsupported UX scenario receipt schema_version {:?} in {} (expected {RECEIPT_SCHEMA_VERSION})",
-                candidate.value.get("schema_version"),
-                candidate.path.display()
+                "editor UX run-shaped JSON {} has unsupported or malformed kind {:?}",
+                path.display(),
+                kind
             );
         }
-
-        if let Err(error) = validator.validate(&candidate.value) {
-            bail!("invalid UX scenario receipt {}: {error}", candidate.path.display());
-        }
-
-        let receipt: UxScenarioRunReceipt = serde_json::from_value(candidate.value)
-            .with_context(|| format!("deserializing UX receipt: {}", candidate.path.display()))?;
-        let workflow = workflows.get(receipt.workflow_id.as_str()).ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "editor UX matrix drift: receipt {} test `{}` references unknown workflow `{}`",
-                candidate.path.display(),
-                receipt.test_name,
-                receipt.workflow_id
-            )
-        })?;
-        if receipt.scenario_file != workflow.scenario_file {
-            bail!(
-                "editor UX matrix drift: receipt {} workflow `{}` reports scenario `{}`, expected `{}`",
-                candidate.path.display(),
-                receipt.workflow_id,
-                receipt.scenario_file,
-                workflow.scenario_file
-            );
-        }
+        let family = if kind == Some("golden_editor_workload") {
+            receipt_set::ReceiptFamily::GoldenEditorWorkload
+        } else {
+            receipt_set::ReceiptFamily::UnrelatedJson
+        };
+        return Ok(receipt_set::ClassifiedReceipt { family, receipt: None });
     }
-
-    Ok(())
+    if value.get("schema_version").and_then(Value::as_u64)
+        != Some(u64::from(RECEIPT_SCHEMA_VERSION))
+    {
+        bail!(
+            "unsupported UX scenario receipt schema_version {:?} in {} (expected {RECEIPT_SCHEMA_VERSION})",
+            value.get("schema_version"),
+            path.display()
+        );
+    }
+    if let Err(error) = validator.validate(&value) {
+        bail!("invalid UX scenario receipt {}: {error}", path.display());
+    }
+    let receipt: UxScenarioRunReceipt = serde_json::from_value(value)
+        .with_context(|| format!("deserializing UX receipt: {}", path.display()))?;
+    let workflow = workflows.get(receipt.workflow_id.as_str()).ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "editor UX matrix drift: receipt {} test `{}` references unknown workflow `{}`",
+            path.display(),
+            receipt.test_name,
+            receipt.workflow_id
+        )
+    })?;
+    if receipt.scenario_file != workflow.scenario_file {
+        bail!(
+            "editor UX matrix drift: receipt {} workflow `{}` reports scenario `{}`, expected `{}`",
+            path.display(),
+            receipt.workflow_id,
+            receipt.scenario_file,
+            workflow.scenario_file
+        );
+    }
+    super::lsp_stats::validate_timing_semantics(&receipt, path)?;
+    Ok(receipt_set::ClassifiedReceipt {
+        family: receipt_set::ReceiptFamily::UxScenarioRun,
+        receipt: Some(receipt),
+    })
 }
 
 fn load_workflows(fixture_matrix: &Path) -> Result<BTreeMap<String, FixtureWorkflow>> {
@@ -227,7 +260,9 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
     let has_distinctive = UX_RUN_DISTINCTIVE_FIELDS.iter().any(|field| object.contains_key(*field));
     let kind = object.get("kind").and_then(Value::as_str);
     if kind.is_some_and(|kind| KNOWN_NON_UX_COMPANION_KINDS.contains(&kind)) {
-        return false;
+        // Real workload companions may carry timing fields, but must not hide
+        // a scenario-run identity behind their family discriminator.
+        return UX_RUN_IDENTITY_FIELDS.iter().any(|field| object.contains_key(*field));
     }
 
     let has_ux_identity = UX_RUN_IDENTITY_FIELDS.iter().any(|field| object.contains_key(*field));
@@ -307,34 +342,6 @@ fn malformed_operation_timings(value: &Value) -> bool {
     })
 }
 
-fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>> {
-    if !receipts_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(receipts_dir)
-        .with_context(|| format!("reading receipts directory: {}", receipts_dir.display()))?
-    {
-        let path = entry.with_context(|| "reading receipt directory entry")?.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-
-    paths
-        .into_iter()
-        .map(|path| {
-            let raw = fs::read_to_string(&path)
-                .with_context(|| format!("reading receipt candidate: {}", path.display()))?;
-            let value = serde_json::from_str(&raw)
-                .with_context(|| format!("parsing JSON receipt candidate: {}", path.display()))?;
-            Ok(ReceiptCandidate { path, value })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,7 +400,7 @@ mod tests {
             "kind": "ux_scenario_run",
             "schema_version": 1,
             "measured_at": "2026-08-27T00:00:00Z",
-            "run_identity": { "sha": "abcdef12", "branch": "main" },
+            "run_identity": { "sha": "abcdef12", "branch": "main", "platform": "Linux" },
             "workflow_id": workflow_id,
             "scenario_file": scenario_file,
             "test_name": "scorecard_guard_test",

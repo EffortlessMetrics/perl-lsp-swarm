@@ -7,6 +7,7 @@ pub mod hir_coverage;
 pub mod lsp_stats;
 mod lsp_stats_guarded;
 mod lsp_stats_impl;
+mod lsp_stats_receipt_set;
 pub mod memory;
 pub mod parser_accuracy;
 // The safe-point/region registry is consumed in production by the
