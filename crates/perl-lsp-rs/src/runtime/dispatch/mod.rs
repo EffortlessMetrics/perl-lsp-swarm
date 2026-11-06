@@ -139,7 +139,7 @@ mod tests {
             "pre-initialize shutdown must be ServerNotInitialized, not an accepted shutdown"
         );
         assert!(
-            !server.shutdown_received.load(std::sync::atomic::Ordering::Acquire),
+            !server.client_session.shutdown_received.load(std::sync::atomic::Ordering::Acquire),
             "a rejected pre-initialize shutdown must not latch the shutdown state"
         );
 
@@ -190,7 +190,9 @@ mod tests {
             .and_then(|result| result.pointer("/capabilities/positionEncoding"))
             .and_then(Value::as_str);
         assert_eq!(encoding, Some("utf-16"));
-        assert!(server.initialize_requested.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            server.client_session.initialize_requested.load(std::sync::atomic::Ordering::Acquire)
+        );
         assert!(server.initialization_accepted());
 
         let after_accepted = server
@@ -225,7 +227,7 @@ mod tests {
             "malformed encodings must fail InvalidParams: {error:?}"
         );
         assert!(
-            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            server.client_session.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
             "failed initialize must consume the one-shot"
         );
         assert!(
@@ -310,7 +312,7 @@ mod tests {
 
         // Disable several feature flags.
         {
-            let mut features = server.advertised_features.lock();
+            let mut features = server.client_session.advertised_features.lock();
             features.formatting = false;
             features.semantic_tokens = false;
             features.code_action = false;
@@ -318,6 +320,7 @@ mod tests {
             features.document_symbol = false;
         }
         server
+            .client_session
             .advertised_feature_ids
             .lock()
             .retain(|id| *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING);
@@ -351,7 +354,7 @@ mod tests {
 
         // Re-enabling a feature should restore normal behaviour (not the gate error).
         {
-            let mut features = server.advertised_features.lock();
+            let mut features = server.client_session.advertised_features.lock();
             features.folding_range = true;
         }
         let resp = server.handle_request(request(

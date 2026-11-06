@@ -204,7 +204,10 @@ mod tests {
             Box::new(std::io::Cursor::new(Vec::<u8>::new())),
             Box::new(std::io::sink()),
         );
-        server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
+        server
+            .client_session
+            .client_supports_pull_diags
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let uri = "file:///readiness_pull_client.pl";
         open(&server, uri, "sub pull_profile {};\n");
         let key = server.normalize_uri_key(uri);

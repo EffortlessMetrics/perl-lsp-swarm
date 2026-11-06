@@ -21,23 +21,46 @@ impl LspServer {
     /// the common request seam so a future call site cannot silently
     /// reintroduce a frame while `initialize` is still being handled.
     pub(crate) fn send_request(&self, method: &str, params: Value) -> io::Result<ServerRequestId> {
-        if !self.initialized.load(Ordering::Acquire) {
+        if !self.client_session.initialized.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 format!("server request `{method}` is deferred until initialization completes"),
             ));
         }
+        // `initialized` stays true on the terminal connection. Progress create
+        // and other reverse requests must still refuse after shutdown so a
+        // producer paused in I/O cannot emit a frame after drain (#8386).
+        if self.client_session.shutdown_received.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("server request `{method}` refused: session is shut down"),
+            ));
+        }
+        // Test barrier sits between successful admission and enqueue so the
+        // race can finish shutdown, then observe that the enqueue fence
+        // refuses rather than emitting.
+        #[cfg(test)]
+        self.fire_progress_create_outbound_hook();
+        let _enqueue = self.client_session.admit_outbound_enqueue(method)?;
 
         let id = self.next_server_request_id();
         self.outbound_sink().send_request(id, method, params)?;
         Ok(id)
     }
 
+    #[cfg(test)]
+    fn fire_progress_create_outbound_hook(&self) {
+        if let Some(hook) = self.progress_create_outbound_hook.lock().take() {
+            hook();
+        }
+    }
+
     pub(crate) fn next_server_request_id(&self) -> ServerRequestId {
         loop {
-            let current = self.next_request_id.load(Ordering::Relaxed);
+            let current = self.client_session.next_request_id.load(Ordering::Relaxed);
             let next = if current == i32::MAX { 1 } else { current + 1 };
             if self
+                .client_session
                 .next_request_id
                 .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
@@ -55,7 +78,7 @@ impl LspServer {
         edit: Value,
         is_refactoring: bool,
     ) -> io::Result<Option<ServerRequestId>> {
-        let caps = self.client_capabilities.lock();
+        let caps = self.client_session.client_capabilities.lock();
         if !caps.workspace_apply_edit_support || !caps.workspace_edit_metadata_support {
             return Ok(None);
         }
@@ -77,7 +100,7 @@ impl LspServer {
 
     /// Request client to refresh code lenses (workspace/codeLens/refresh)
     pub fn request_code_lens_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().code_lens_refresh_support {
+        if !self.client_session.client_capabilities.lock().code_lens_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/codeLens/refresh", json!(null))?;
@@ -87,7 +110,7 @@ impl LspServer {
 
     /// Request client to refresh semantic tokens (workspace/semanticTokens/refresh)
     pub fn request_semantic_tokens_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().semantic_tokens_refresh_support {
+        if !self.client_session.client_capabilities.lock().semantic_tokens_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/semanticTokens/refresh", json!(null))?;
@@ -97,7 +120,7 @@ impl LspServer {
 
     /// Request client to refresh inlay hints (workspace/inlayHint/refresh)
     pub fn request_inlay_hint_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().inlay_hint_refresh_support {
+        if !self.client_session.client_capabilities.lock().inlay_hint_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/inlayHint/refresh", json!(null))?;
@@ -107,7 +130,7 @@ impl LspServer {
 
     /// Request client to refresh inline values (workspace/inlineValue/refresh)
     pub fn request_inline_value_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().inline_value_refresh_support {
+        if !self.client_session.client_capabilities.lock().inline_value_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/inlineValue/refresh", json!(null))?;
@@ -117,7 +140,7 @@ impl LspServer {
 
     /// Request client to refresh diagnostics (workspace/diagnostic/refresh)
     pub fn request_diagnostic_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().diagnostic_refresh_support {
+        if !self.client_session.client_capabilities.lock().diagnostic_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/diagnostic/refresh", json!(null))?;
@@ -127,7 +150,7 @@ impl LspServer {
 
     /// Request client to refresh folding ranges (workspace/foldingRange/refresh)
     pub fn request_folding_range_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().folding_range_refresh_support {
+        if !self.client_session.client_capabilities.lock().folding_range_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/foldingRange/refresh", json!(null))?;
@@ -192,7 +215,7 @@ mod tests {
     /// exercise the pre-initialization lifecycle boundary itself.
     fn server_with_output_capture() -> (LspServer, OutputCapture) {
         let (server, output) = uninitialized_server_with_output_capture();
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.initialized.store(true, Ordering::Release);
         (server, output)
     }
 
@@ -250,10 +273,48 @@ mod tests {
     }
 
     #[test]
+    fn send_request_after_shutdown_is_refused_and_emits_no_frame() -> TestResult {
+        let (server, output) = server_with_output_capture();
+        if server.client_session.begin_shutdown()
+            != crate::runtime::client_session::ShutdownAdmission::First
+        {
+            return Err("expected first-caller shutdown admission".into());
+        }
+
+        let error = match server.send_request("workspace/configuration", json!({"items": []})) {
+            Ok(id) => {
+                return Err(format!(
+                    "post-shutdown server request must be rejected, got id {id:?}"
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+        if error.kind() != io::ErrorKind::NotConnected {
+            return Err(format!(
+                "exact NotConnected on shutdown send_request boundary, got {:?}",
+                error.kind()
+            )
+            .into());
+        }
+        if !error.to_string().contains("shut down") {
+            return Err(format!("rejection should name the shutdown boundary: {error}").into());
+        }
+        thread::sleep(Duration::from_millis(50));
+        let messages = output.messages()?;
+        if !messages.is_empty() {
+            return Err(
+                format!("no server request frame may escape after shutdown: {messages:?}").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn request_apply_workspace_edit_with_metadata_call_presence_observer() -> TestResult {
         let (server, output) = server_with_output_capture();
         {
-            let mut caps = server.client_capabilities.lock();
+            let mut caps = server.client_session.client_capabilities.lock();
             caps.workspace_apply_edit_support = true;
             caps.workspace_edit_metadata_support = true;
         }
@@ -303,7 +364,7 @@ mod tests {
     #[test]
     fn request_apply_workspace_edit_with_metadata_boundary_discriminator() -> TestResult {
         let (server, output) = server_with_output_capture();
-        server.client_capabilities.lock().workspace_apply_edit_support = true;
+        server.client_session.client_capabilities.lock().workspace_apply_edit_support = true;
         let request_id = server.request_apply_workspace_edit_with_metadata(
             "Safe delete reset",
             "Review source-backed safe-delete edit for reset before applying.",
@@ -320,7 +381,7 @@ mod tests {
         );
 
         let (server, output) = server_with_output_capture();
-        server.client_capabilities.lock().workspace_edit_metadata_support = true;
+        server.client_session.client_capabilities.lock().workspace_edit_metadata_support = true;
         let request_id = server.request_apply_workspace_edit_with_metadata(
             "Safe delete reset",
             "Review source-backed safe-delete edit for reset before applying.",
@@ -350,7 +411,7 @@ mod tests {
         assert!(request_id.is_none(), "the unsupported-client boundary returns Ok(None)");
 
         {
-            let mut caps = server.client_capabilities.lock();
+            let mut caps = server.client_session.client_capabilities.lock();
             caps.workspace_apply_edit_support = true;
             caps.workspace_edit_metadata_support = true;
         }

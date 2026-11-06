@@ -524,7 +524,7 @@ pub(crate) fn next_session_id() -> String {
 impl super::super::LspServer {
     /// The accepted text-sync session, if initialize completed acceptance.
     pub(crate) fn accepted_text_sync_session(&self) -> Option<AcceptedTextSyncSession> {
-        self.text_sync_session.lock().clone()
+        self.client_session.text_sync_session.lock().clone()
     }
 
     /// Single derived serving gate: initialize has ACCEPTED a text-sync
@@ -551,7 +551,7 @@ impl super::super::LspServer {
         contract: TextSyncSessionContract,
         response_digest: String,
     ) -> Result<(), JsonRpcError> {
-        let mut session = self.text_sync_session.lock();
+        let mut session = self.client_session.text_sync_session.lock();
         if session.is_some() {
             return Err(JsonRpcError::new(
                 INTERNAL_ERROR,

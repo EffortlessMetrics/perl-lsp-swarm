@@ -205,7 +205,7 @@ mod call_presence_tests {
     use super::super::{JsonRpcId, LspServer, PROVIDER, Surface, Value, json};
 
     fn advertise(server: &LspServer) {
-        server.advertised_feature_ids.lock().push(Surface::Document.feature_id());
+        server.client_session.advertised_feature_ids.lock().push(Surface::Document.feature_id());
     }
 
     fn receipt(server: &LspServer) -> Result<Value, Box<dyn std::error::Error>> {
@@ -221,7 +221,7 @@ mod call_presence_tests {
     fn handle_formatting_policy_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         advertise(&server);
-        server.config.lock().perltidy_enabled = false;
+        server.client_session.config.lock().perltidy_enabled = false;
         let uri = "file:///call-presence-formatting.pl";
         server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
 
@@ -272,8 +272,8 @@ mod call_presence_tests {
     fn handle_formatting_policy_call_presence_observer_ensure_surface_advertised()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        server.advertised_features.lock().formatting = false;
-        server.advertised_feature_ids.lock().clear();
+        server.client_session.advertised_features.lock().formatting = false;
+        server.client_session.advertised_feature_ids.lock().clear();
         let error = server
             .handle_formatting_policy(None, Some(&JsonRpcId::Integer(301).to_value()))
             .err()

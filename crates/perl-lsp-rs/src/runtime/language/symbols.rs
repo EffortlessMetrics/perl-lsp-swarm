@@ -158,7 +158,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().document_symbol {
+        if !self.client_session.advertised_features.lock().document_symbol {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -283,7 +283,7 @@ impl LspServer {
         &self,
         params: Option<&'a Value>,
     ) -> Result<&'a str, JsonRpcError> {
-        if !self.advertised_features.lock().folding_range {
+        if !self.client_session.advertised_features.lock().folding_range {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1382,7 +1382,7 @@ mod tests {
 
         let server = initialized_folding_range_server();
         {
-            let mut features = server.advertised_features.lock();
+            let mut features = server.client_session.advertised_features.lock();
             features.folding_range = false;
         }
         let gated = request_folding_range(
@@ -1393,7 +1393,7 @@ mod tests {
         assert_folding_range_error(&gated, METHOD_NOT_FOUND, "not advertised")?;
 
         {
-            let mut features = server.advertised_features.lock();
+            let mut features = server.client_session.advertised_features.lock();
             features.folding_range = true;
         }
         open_foldable_document(&server, "file:///unavailable-folds.pl")?;
