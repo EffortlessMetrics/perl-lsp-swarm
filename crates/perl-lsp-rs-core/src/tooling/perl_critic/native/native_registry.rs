@@ -18,9 +18,10 @@ use super::{
     DuplicateParameterRule, ParameterShadowsGlobalRule, PipeOpenRule, PrintfFormatArityRule,
     ProhibitLeadingZerosRule, QxReadpipeRule, RequirePodSectionsRule, RequireUseStrictRule,
     RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule, StringEvalRule,
-    SubTooLongRule, SystemExecRule, TooManyNestedBlocksRule, TooManyParamsRule, TwoArgOpenRule,
-    UncheckedOpenCloseRule, UndeclaredVariableRule, UndefComparisonRule, UninitializedVariableRule,
-    UnquotedBarewordRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
+    SubTooLongRule, SystemExecRule, TooManyBranchesRule, TooManyNestedBlocksRule,
+    TooManyParamsRule, TwoArgOpenRule, UncheckedOpenCloseRule, UndeclaredVariableRule,
+    UndefComparisonRule, UninitializedVariableRule, UnquotedBarewordRule, UnreachableCodeRule,
+    UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
 #[cfg(any(test, feature = "test-instrumentation"))]
@@ -175,6 +176,7 @@ static NATIVE_IDENTITY_DISPOSITIONS: &[NativeCriticIdentityDisposition] = &[
     NativeCriticIdentityDisposition::new("native.documentation.require_pod_sections", GENERAL),
     NativeCriticIdentityDisposition::new("native.syntax.prohibit_leading_zeros", GENERAL),
     NativeCriticIdentityDisposition::new("native.maintainability.sub_too_long", GENERAL),
+    NativeCriticIdentityDisposition::new("native.maintainability.too_many_branches", GENERAL),
     NativeCriticIdentityDisposition::new("native.maintainability.too_many_nested_blocks", GENERAL),
     NativeCriticIdentityDisposition::new("native.maintainability.too_many_params", GENERAL),
 ];
@@ -449,6 +451,7 @@ impl NativeCriticRegistry {
             Box::new(RequirePodSectionsRule),
             Box::new(ProhibitLeadingZerosRule),
             Box::new(SubTooLongRule),
+            Box::new(TooManyBranchesRule),
             Box::new(TooManyNestedBlocksRule),
             Box::new(TooManyParamsRule),
         ])
@@ -540,12 +543,15 @@ impl NativeCriticRegistry {
         };
 
         // Build a context that carries the pre-computed scope results.
-        let rich_ctx = match (scope_issues_ref, pragma_map_ref) {
+        // Preserve caller-supplied parser error spans: with_scope resets them
+        // to None, and rules must not trust a unit overlapping such a span.
+        let mut rich_ctx = match (scope_issues_ref, pragma_map_ref) {
             (Some(si), Some(pm)) => {
                 CriticContext::with_scope(ctx.source, ctx.ast, ctx.config, si, pm)
             }
             _ => CriticContext::new(ctx.source, ctx.ast, ctx.config),
         };
+        rich_ctx.parse_error_spans = ctx.parse_error_spans;
 
         for rule in &self.rules {
             if !rule_enabled(rule.as_ref(), rich_ctx.config) {

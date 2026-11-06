@@ -132,12 +132,17 @@ pub struct CriticContext<'a> {
     pub scope_issues: Option<&'a [perl_semantic_analyzer::scope_analyzer::ScopeIssue]>,
     /// Pre-computed pragma map entries, shared across all scope-based rules.
     pub pragma_map: Option<&'a PragmaEntries>,
+    /// Byte spans of parser-reported errors that produced no error node in
+    /// the AST (recovery via `record_error`). Rules that must not trust a
+    /// unit overlapping such a span read these; `None` when the caller did
+    /// not supply parser errors.
+    pub parse_error_spans: Option<&'a [std::ops::Range<usize>]>,
 }
 
 impl<'a> CriticContext<'a> {
     /// Build a native critic context with pre-computed scope analysis.
     pub fn new(source: &'a str, ast: &'a Node, config: &'a CriticConfig) -> Self {
-        Self { source, ast, config, scope_issues: None, pragma_map: None }
+        Self { source, ast, config, scope_issues: None, pragma_map: None, parse_error_spans: None }
     }
 
     /// Build a native critic context with pre-computed scope analysis results.
@@ -148,7 +153,21 @@ impl<'a> CriticContext<'a> {
         scope_issues: &'a [perl_semantic_analyzer::scope_analyzer::ScopeIssue],
         pragma_map: &'a PragmaEntries,
     ) -> Self {
-        Self { source, ast, config, scope_issues: Some(scope_issues), pragma_map: Some(pragma_map) }
+        Self {
+            source,
+            ast,
+            config,
+            scope_issues: Some(scope_issues),
+            pragma_map: Some(pragma_map),
+            parse_error_spans: None,
+        }
+    }
+
+    /// Attach parser error spans that produced no AST error node.
+    #[must_use]
+    pub fn with_parse_error_spans(mut self, spans: &'a [std::ops::Range<usize>]) -> Self {
+        self.parse_error_spans = Some(spans);
+        self
     }
 }
 
