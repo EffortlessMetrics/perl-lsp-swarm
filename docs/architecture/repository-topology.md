@@ -72,6 +72,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-ripr-facts` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-semantic-analyzer` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-semantic-facts` | _pending_ | published | `workspace_path` | #7400 |
+| `perl-snapshot-store` | swarm-product | private | `workspace_path` | #4911 |
 | `perl-source-identity` | _pending_ | published | `workspace_path` | #7663 |
 | `perl-subprocess-runtime` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-symbol` | _pending_ | published | `workspace_path` | #7400 |

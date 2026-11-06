@@ -889,7 +889,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (38/49 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -999,6 +999,8 @@ gates:
     #     (msrv_authority_sync / gate-policy) requires every workspace package
     #     to carry a clippy all-target disposition, so the crate joins the
     #     cohort in the same PR that adds it to the workspace.
+    #   2026-11-02 batch (#4911): perl-snapshot-store — new cache substrate crate;
+    #     passes `cargo clippy -p perl-snapshot-store --all-targets --locked -D warnings`.
     command: >-
       cargo clippy
       -p perl-token
@@ -1010,6 +1012,7 @@ gates:
       -p perl-symbol
       -p perl-ast
       -p perl-semantic-facts
+      -p perl-snapshot-store
       -p perl-source-identity
       -p perl-line-index
       -p perl-workspace
