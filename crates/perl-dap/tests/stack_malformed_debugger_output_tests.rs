@@ -729,12 +729,17 @@ fn parse_context_package_colon_file_format() {
 }
 
 #[test]
-fn parse_context_package_func_paren_format_not_matched() {
+fn parse_context_package_func_paren_format() {
     let parser = PerlStackParser::new();
-    // Format like My::Mod::handler(file:42): does NOT match CONTEXT_RE
-    // because the regex expects func::(file:line), not func(file:line)
+    // Package::handler(file:line): matches after lazy file capture (#18436 item 1).
     let result = parser.parse_context("My::Mod::handler(lib/My/Mod.pm:42):");
-    assert!(result.is_none());
+    if let Some((func, file, line)) = result {
+        assert_eq!(func, "My::Mod::handler");
+        assert_eq!(file, "lib/My/Mod.pm");
+        assert_eq!(line, 42);
+    } else {
+        panic!("expected handler(file:line) context to parse");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
