@@ -93,6 +93,7 @@ pub mod fix_forward;
 pub mod fmt;
 pub mod forbid_fatal_constructs;
 pub mod forensics;
+pub mod framework_attribute_generation_conformance;
 pub mod freshness_check;
 pub mod gate_policy;
 pub mod gate_receipts;

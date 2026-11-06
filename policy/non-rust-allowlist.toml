@@ -4413,6 +4413,22 @@ created = "2026-08-25"
 review_after = "2026-11-25"
 
 [[allow]]
+id = "non-rust-framework-attribute-generation-schema"
+path = "schemas/framework_attribute_generation_conformance.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "framework-semantic-conformance"
+reason = "JSON Schema for the framework_attribute_generation_conformance.v1 truth manifest (#2373); xtask validates profile separation, fixture digests, matrices, and the ten failure probes."
+covered_by = [
+  "cargo xtask framework-attribute-generation-conformance validate",
+  "cargo test -p xtask --locked --test framework_attribute_generation_conformance",
+]
+created = "2026-11-02"
+review_after = "2027-02-02"
+
+[[allow]]
 id = "non-rust-compiler-lexical-cutline-fixtures"
 glob = "xtask/tests/fixtures/compiler_lexical_cutline/*.json"
 kind = "test_fixture"
