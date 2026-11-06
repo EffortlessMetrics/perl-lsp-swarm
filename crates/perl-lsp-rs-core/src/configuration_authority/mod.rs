@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) mod capability;
 mod catalog;
 mod derived_workspace;
+#[cfg(test)]
+mod high_risk;
 
 pub(crate) use catalog::CONFIGURATION_AUTHORITY;
 pub use derived_workspace::{
