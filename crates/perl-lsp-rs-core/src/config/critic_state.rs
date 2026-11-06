@@ -273,11 +273,27 @@ impl ServerConfig {
 struct RejectedSibling {
     setting: &'static str,
     value: String,
+    /// Human-readable accepted values, set where the rejecting parser knows
+    /// them (`Some` on the project-channel path so the runtime can surface an
+    /// actionable `window/showMessage`, #16598). Client-channel siblings stay
+    /// `None`: that channel already has a dedicated inspection
+    /// (`ServerConfig::invalid_client_setting_values`) owning its wording.
+    valid_options: Option<&'static str>,
 }
 
 impl RejectedSibling {
     fn new(setting: &'static str, value: impl std::fmt::Display) -> Self {
-        Self { setting, value: value.to_string() }
+        Self { setting, value: value.to_string(), valid_options: None }
+    }
+
+    /// A rejection whose accepted values are known and can be shown to the
+    /// editor user (#16598).
+    fn with_valid_options(
+        setting: &'static str,
+        value: impl std::fmt::Display,
+        valid_options: &'static str,
+    ) -> Self {
+        Self { setting, value: value.to_string(), valid_options: Some(valid_options) }
     }
 }
 
@@ -289,6 +305,18 @@ impl RejectedSibling {
 pub(crate) struct CriticCandidateRejection {
     siblings: Vec<RejectedSibling>,
 }
+
+/// Accepted values for the project-channel settings this module can reject,
+/// used in the editor-visible rejection (#16598). The deprecated engine
+/// aliases remain project-trusted selections (see `parse_critic_engine`), so
+/// they are listed where the user writes them.
+const PROJECT_CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)";
+
+/// Fallback for a rejected sibling whose parser did not carry accepted
+/// values. Unreachable today: the project path can only reject the settings
+/// mapped in [`CriticCandidateRejection::rejected_project_values`], and the
+/// client path never consumes this projection.
+const UNMAPPED_SETTING_VALID_OPTIONS: &str = "a supported value (see docs/reference/CONFIG.md)";
 
 impl CriticCandidateRejection {
     pub(crate) fn emit_single_condition(&self) {
@@ -304,6 +332,21 @@ impl CriticCandidateRejection {
             "rejecting complete critic configuration candidate; \
              every critic sibling retained at its prior accepted value",
         );
+    }
+
+    /// Project this rejection into the editor-visible surface (#16598): one
+    /// entry per rejected sibling, carrying the accepted values so the
+    /// runtime's `window/showMessage` is actionable. The tracing-only
+    /// [`Self::emit_single_condition`] disposition stays untouched for logs.
+    pub(crate) fn rejected_project_values(&self) -> Vec<super::RejectedProjectConfigValue> {
+        self.siblings
+            .iter()
+            .map(|sibling| super::RejectedProjectConfigValue {
+                setting: sibling.setting,
+                value: sibling.value.clone(),
+                valid_options: sibling.valid_options.unwrap_or(UNMAPPED_SETTING_VALID_OPTIONS),
+            })
+            .collect()
     }
 }
 
@@ -460,13 +503,21 @@ impl CriticSettingsCandidate {
                     }
                     candidate.engine_raw = Some(parsed);
                 }
-                None => rejected.push(RejectedSibling::new("critic.engine", engine)),
+                None => rejected.push(RejectedSibling::with_valid_options(
+                    "critic.engine",
+                    engine,
+                    PROJECT_CRITIC_ENGINE_VALID_OPTIONS,
+                )),
             }
         }
         if let Some(profile) = &critic.profile {
             match NativeCriticProfile::parse(profile) {
                 Some(parsed) => candidate.profile = Some(parsed),
-                None => rejected.push(RejectedSibling::new("critic.profile", profile)),
+                None => rejected.push(RejectedSibling::with_valid_options(
+                    "critic.profile",
+                    profile,
+                    NativeCriticProfile::VALID_OPTIONS,
+                )),
             }
         }
         candidate.include = critic.include.as_ref().map(|ids| {
