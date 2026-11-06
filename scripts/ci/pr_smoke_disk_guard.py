@@ -49,6 +49,7 @@ the workflow beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 import sys
 from dataclasses import dataclass
@@ -172,11 +173,16 @@ def parse_min_free_bytes(raw: str) -> int:
             raise argparse.ArgumentTypeError(
                 f"invalid GiB value: {raw!r}"
             ) from error
+        byte_value = value * GIB
+        if not math.isfinite(byte_value):
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
         if value < 0:
             raise argparse.ArgumentTypeError(
                 f"min-free value must be non-negative: {raw!r}"
             )
-        return int(value * GIB)
+        return int(byte_value)
     try:
         value = int(text)
     except ValueError as error:

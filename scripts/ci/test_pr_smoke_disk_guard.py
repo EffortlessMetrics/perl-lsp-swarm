@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -96,6 +97,31 @@ class ParseMinFreeBytesTests(unittest.TestCase):
 
     def test_gib_suffix_case_insensitive(self) -> None:
         self.assertEqual(guard.parse_min_free_bytes("2gib"), 2 * guard.GIB)
+
+    def test_finite_gib_controls(self) -> None:
+        for raw, expected in (("0GiB", 0), ("0.5GiB", guard.GIB // 2), ("1e2GiB", 100 * guard.GIB)):
+            with self.subTest(raw=raw):
+                self.assertEqual(guard.parse_min_free_bytes(raw), expected)
+
+    def test_rejects_non_finite_gib_and_byte_conversion_overflow(self) -> None:
+        for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+
+    def test_cli_rejects_non_finite_budgets_without_traceback(self) -> None:
+        for option in ("--footprint-bytes", "--min-free-bytes"):
+            for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
+                with self.subTest(option=option, raw=raw):
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(SCRIPT), "preflight", f"{option}={raw}"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("must be finite", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
 
     def test_rejects_garbage(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):
