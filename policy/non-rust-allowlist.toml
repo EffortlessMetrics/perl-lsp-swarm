@@ -67,6 +67,32 @@ created = "2026-10-05"
 review_after = "2026-11-04"
 
 [[allow]]
+id = "non-rust-standalone-uninstall-helper"
+path = "scripts/standalone_uninstall.py"
+kind = "installer"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "infrastructure/install"
+reason = "POSIX owned-state manifest record and bounded uninstall executor for scripts/install.sh (#8372); removes only manifest-recorded installer-owned rows."
+covered_by = ["bash scripts/tests/test-installer-uninstall.sh", "cargo xtask check-file-policy"]
+created = "2026-11-02"
+review_after = "2026-12-02"
+
+[[allow]]
+id = "non-rust-standalone-uninstall-helper-tests"
+path = "scripts/tests/test-installer-uninstall.sh"
+kind = "installer"
+language = "bash"
+surface = "tooling"
+classification = "test"
+owner = "infrastructure/install"
+reason = "Discriminating owned-state uninstall proof: already-absent, legacy refusal, manifest-backed removal, and idempotent rerun."
+covered_by = ["bash scripts/tests/test-installer-uninstall.sh", "cargo xtask check-file-policy"]
+created = "2026-11-02"
+review_after = "2026-12-02"
+
+[[allow]]
 id = "non-rust-cargo-allow-cadence-capture-tests"
 path = "scripts/tests/test_cargo_allow_cadence.py"
 kind = "ci_tooling"
