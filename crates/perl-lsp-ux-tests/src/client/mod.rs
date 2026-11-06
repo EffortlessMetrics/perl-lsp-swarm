@@ -9,7 +9,7 @@
 #![allow(clippy::print_stderr)]
 
 use crate::observation::{Inbox, StreamEnd, WaitEnd};
-use crate::{ChildExit, FakeWorkspace, ScenarioConfig, poll_child_exit};
+use crate::{ChildExit, FakeWorkspace, ScenarioConfig, poll_child_exit, spawn_executable};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use server_request_script::{
@@ -33,6 +33,46 @@ const STDERR_TAIL_LINES: usize = 20;
 /// Outer bound on an orderly server exit after `shutdown`/`exit` are sent.
 /// Reaching it means the server did not close its stream and is force-killed.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+
+fn initialize_params(
+    workspace: &FakeWorkspace,
+    config: &ScenarioConfig,
+    client_capabilities: &Value,
+) -> Result<Value> {
+    config.validate()?;
+    let workspace_folders = config
+        .workspace_folders
+        .iter()
+        .map(|(relative_path, name)| {
+            Ok(json!({
+                "uri": workspace.dir_uri(relative_path)?,
+                "name": name,
+            }))
+        })
+        .collect::<Result<Vec<Value>>>()?;
+
+    let root_uri = if !config.rootless && workspace_folders.is_empty() {
+        Value::String(workspace.root_uri.clone())
+    } else {
+        Value::Null
+    };
+
+    let mut params = json!({
+        "processId": null,
+        "rootUri": root_uri,
+        "capabilities": client_capabilities.clone(),
+    });
+    if config.rootless || !workspace_folders.is_empty() {
+        // An explicit empty folder array prevents the server's legacy CWD
+        // compatibility fallback when rootUri is null.
+        params["workspaceFolders"] = Value::Array(workspace_folders);
+    }
+    if !config.initialization_options.is_null() {
+        params["initializationOptions"] = config.initialization_options.clone();
+    }
+
+    Ok(params)
+}
 
 fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
@@ -246,11 +286,8 @@ impl UxClient {
     ) -> Result<Self> {
         let mut cmd = build_command(binary_path, config)?;
 
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = spawn_executable(|| cmd.spawn(), Instant::now() + config.timeout)
             .with_context(|| format!("Failed to spawn perl-lsp from {:?}", binary_path))?;
 
         let stdin = child
@@ -398,34 +435,7 @@ impl UxClient {
         client_capabilities: &Value,
         timeout: Duration,
     ) -> Result<Value> {
-        let workspace_folders = config
-            .workspace_folders
-            .iter()
-            .map(|(relative_path, name)| {
-                Ok(json!({
-                    "uri": workspace.dir_uri(relative_path)?,
-                    "name": name,
-                }))
-            })
-            .collect::<Result<Vec<Value>>>()?;
-
-        let root_uri = if workspace_folders.is_empty() {
-            Value::String(workspace.root_uri.clone())
-        } else {
-            Value::Null
-        };
-
-        let mut params = json!({
-            "processId": null,
-            "rootUri": root_uri,
-            "capabilities": client_capabilities.clone(),
-        });
-        if !workspace_folders.is_empty() {
-            params["workspaceFolders"] = Value::Array(workspace_folders);
-        }
-        if !config.initialization_options.is_null() {
-            params["initializationOptions"] = config.initialization_options.clone();
-        }
+        let params = initialize_params(workspace, config, client_capabilities)?;
 
         let init_resp = self.request("initialize", params, timeout)?;
 

@@ -91,6 +91,7 @@ fn e2e_config(timeout: Duration) -> ScenarioConfig {
         ],
         workspace_files: Vec::new(),
         workspace_folders: Vec::new(),
+        rootless: false,
         client_capability_overrides: json!({
             "workspace": {
                 "didChangeWatchedFiles": {

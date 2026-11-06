@@ -23,6 +23,7 @@ name = "ux-regression-receipt"
 path = "src/bin/ux_regression_receipt.rs"
 
 [dependencies]
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -47,3 +48,7 @@ integration-test = []
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "ux_identity_fixture"
+path = "src/bin/ux_identity_fixture.rs"

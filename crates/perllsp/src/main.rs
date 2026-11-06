@@ -32,7 +32,11 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     if let IdentityRequest::Output(format) = identity {
-        let packet = BinaryIdentityPacketV1::embedded_server(env!("CARGO_PKG_VERSION"));
+        let packet = BinaryIdentityPacketV1::embedded_server_with_source(
+            env!("CARGO_PKG_VERSION"),
+            option_env!("PERL_LSP_BUILD_REVISION"),
+            option_env!("PERL_LSP_SOURCE_TREE_DIGEST"),
+        );
         let rendered = match format {
             IdentityOutputFormat::Human => packet.to_human(),
             IdentityOutputFormat::Json => match packet.to_json() {
