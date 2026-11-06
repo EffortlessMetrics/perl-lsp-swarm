@@ -2590,10 +2590,22 @@ impl DebugAdapter {
                                         // location for a fabricated one, so keep it and admit
                                         // the fallback only when no frame for this
                                         // suspension exists yet.
-                                        let same_suspension_frame_present = s
-                                            .stack_frames
-                                            .first()
-                                            .is_some_and(|frame| frame.id == current_frame_id);
+                                        //
+                                        // While the entry stop is pending, ANY admitted frame
+                                        // belongs to this suspension: frames start empty at
+                                        // launch and nothing else admits one inside the
+                                        // pending window. The id comparison alone misses the
+                                        // interleaving where an intervening context-shaped
+                                        // line without source (`func::__ANON__`) re-minted
+                                        // the suspension generation without re-admitting the
+                                        // frame (#18536 review thread on process.rs), so the
+                                        // pending-entry disjunct keeps the authoritative
+                                        // frame regardless of that re-mint.
+                                        let same_suspension_frame_present = (s.entry_stop_pending
+                                            && !s.stack_frames.is_empty())
+                                            || s.stack_frames
+                                                .first()
+                                                .is_some_and(|frame| frame.id == current_frame_id);
                                         if !same_suspension_frame_present {
                                             let frame = StackFrame {
                                                 id: current_frame_id,
@@ -5049,6 +5061,111 @@ mod tests {
                     return Err(format!("context fixture timed out: {observed:?}"));
                 }
                 Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
+            }
+        }
+    }
+
+    /// Deterministic proof for the #18491 same-suspension frame preservation:
+    /// a bare `DB<n>` prompt arriving after the native context's per-stop
+    /// authority was already spent must not downgrade the frame the context
+    /// branch admitted for the pending entry stop to the `<unknown>:1`
+    /// placeholder. The polling e2e (`dap_entry_stop_stack_trace_18491`) can
+    /// pass through a transient downgrade and cannot force a prompt that lost
+    /// its context chunk; this fixture fixes the byte sequence instead.
+    ///
+    /// The intervening line that actually spends `native_context_pending_prompt`
+    /// is a context-shaped line without a file/line capture (`main::__ANON__`,
+    /// native-context block): a warning line does not match `context_re` and
+    /// leaves the pending authority intact, so the bare prompt would still
+    /// carry the native context through the prompt-branch front door. The
+    /// no-source context line also re-mints the suspension generation without
+    /// re-admitting the frame, which is exactly the interleaving the
+    /// pending-entry disjunct of `same_suspension_frame_present` covers.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_entry_frame_survives_contextless_prompt() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/dap-same-suspension-fixture.pl:4):\\tmy $entry = 1;\\nmain::__ANON__\\nDB<1>\\nSUSPENSION_READER_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn same-suspension fixture: {error}"))?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            reader_stop_epoch: 0,
+            entry_stop_pending: true,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        let mut observed = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if reason != Some("entry") {
+                        return Err(format!("expected entry stop, got {reason:?}"));
+                    }
+                    let guard = lock_or_recover(&adapter.session, "test.session");
+                    let session = guard.as_ref().ok_or("reader cleared test session")?;
+                    let frame = session.stack_frames.first().ok_or_else(|| {
+                        format!(
+                            "entry frame missing; observed={observed:?} generation={}",
+                            session.stopped_generation
+                        )
+                    })?;
+                    if frame.source.path != "/tmp/dap-same-suspension-fixture.pl" {
+                        return Err(format!(
+                            "contextless prompt downgraded the native entry frame: path={}, \
+                             line={}, frame_id={}, generation={}, observed={observed:?}",
+                            frame.source.path, frame.line, frame.id, session.stopped_generation
+                        ));
+                    }
+                    if frame.line != 4 {
+                        return Err(format!(
+                            "contextless prompt replaced the native entry line: line={}, \
+                             observed={observed:?}",
+                            frame.line
+                        ));
+                    }
+                    return Ok(());
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
+                    observed.push(format!("{event}:{body:?}"));
+                }
+                Ok(other) => observed.push(format!("message:{other:?}")),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(format!("same-suspension fixture timed out: {observed:?}"));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("same-suspension reader disconnected".into());
+                }
             }
         }
     }

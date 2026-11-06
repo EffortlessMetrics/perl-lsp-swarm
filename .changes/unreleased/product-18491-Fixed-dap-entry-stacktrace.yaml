@@ -10,6 +10,6 @@ body: >-
   placeholder.
 time: 2026-10-31T00:00:00Z
 custom:
-  PR: "18491"
+  PR: "18536"
   Slug: dap-entry-stacktrace
   Breaking: "no"
