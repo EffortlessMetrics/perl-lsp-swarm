@@ -564,8 +564,8 @@ Only takes effect when `usePerl5lib` is `true` and `PERL5LIB` is non-empty.
 |----------|-------|
 | Type | `number` (milliseconds) |
 | Default | `50` |
-| Minimum | `10` |
-| Maximum | `5000` |
+| Minimum | `1` |
+| Maximum | `10000` |
 | Source | `crates/perl-lsp-rs-core/src/config/mod.rs` |
 
 Maximum time to spend resolving a module path. Prevents blocking on slow/network filesystems.
@@ -583,9 +583,9 @@ Maximum time to spend resolving a module path. Prevents blocking on slow/network
 ```
 
 **Validation Rules:**
-- Must be positive integer
+- Must be a positive integer in `1..=10000` (hard envelope `RESOLUTION_TIMEOUT_HARD_CAP_MS`, #16182); out-of-range values are rejected by the configuration authority
 - Values below 10ms may cause resolution failures
-- Values above 5000ms may cause UI lag
+- Values above 10000ms may cause UI lag
 
 ---
 
