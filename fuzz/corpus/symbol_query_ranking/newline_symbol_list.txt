@@ -1,0 +1,5 @@
+alpha
+beta
+gamma
+foobar
+normalize_me
