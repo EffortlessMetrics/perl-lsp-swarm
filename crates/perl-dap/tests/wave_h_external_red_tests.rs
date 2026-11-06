@@ -188,6 +188,7 @@ fn test_dap_server_construction() -> Result<()> {
         launch_authority: perl_dap::LaunchAuthorityStartup {
             trusted_roots: vec![root_path],
             allow_unbounded: None,
+            ..Default::default()
         },
     };
 
