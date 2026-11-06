@@ -1582,6 +1582,59 @@ fn infer_receiver_package(
     None
 }
 
+/// The package a receiver resolves to, extending the ordinary shapes with
+/// chained method-call receivers (#18761).
+///
+/// `infer_receiver_package` has no opinion about a `MethodCall` receiver —
+/// every chain (`$self->order->total`) returned `None` there and was then
+/// attributed to the current package by the old fallback, sending navigation
+/// to a local same-named sub instead of the declaring class. The class model
+/// already proves `(package, accessor) → isa` facts for Moo(se)/Object::Pad
+/// attributes; walk the chain outward: the innermost receiver resolves by the
+/// ordinary rules (constructor binding, `$self`, bareword), and each accessor
+/// hop looks up `(package, accessor)` in the shared accessor-`isa` index. A
+/// hop with no fact yields `None` — never invented.
+fn infer_receiver_package_with_chains(
+    object: &Node,
+    ast: &Node,
+    current_pkg: &str,
+    receiver_packages: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    infer_receiver_package(object, current_pkg, receiver_packages)
+        .or_else(|| infer_chained_receiver_package(object, current_pkg, receiver_packages, ast))
+}
+
+fn infer_chained_receiver_package(
+    object: &Node,
+    current_pkg: &str,
+    receiver_packages: &std::collections::HashMap<String, String>,
+    ast: &Node,
+) -> Option<String> {
+    /// Collect the receiver chain of `object` (a `MethodCall` receiver) from
+    /// the outermost hop inward, plus the innermost non-call receiver.
+    fn unroll(object: &Node) -> (Vec<&str>, &Node) {
+        let mut hops: Vec<&str> = Vec::new();
+        let mut receiver = object;
+        while let NodeKind::MethodCall { object: next, method, .. } = &receiver.kind {
+            hops.push(method.as_str());
+            receiver = next;
+        }
+        (hops, receiver)
+    }
+
+    let (hops, innermost) = unroll(object);
+    if hops.is_empty() {
+        return None;
+    }
+
+    let mut package = infer_receiver_package(innermost, current_pkg, receiver_packages)?;
+    let accessor_index = super::type_inference::accessor_isa_index(ast);
+    for hop in hops.iter().rev() {
+        package = accessor_index.get(&(package.clone(), (*hop).to_string()))?.1.clone();
+    }
+    Some(package)
+}
+
 fn infer_constructor_package(
     rhs: &Node,
     current_pkg: &str,
@@ -1638,6 +1691,113 @@ fn record_receiver_assignment(
     }
 }
 
+/// The innermost `MethodCall` node containing `offset`.
+fn method_call_node_at(node: &Node, offset: usize) -> Option<&Node> {
+    if offset < node.location.start || offset > node.location.end {
+        return None;
+    }
+    for child in get_node_children(node) {
+        if let Some(found) = method_call_node_at(child, offset) {
+            return Some(found);
+        }
+    }
+    matches!(&node.kind, NodeKind::MethodCall { .. }).then_some(node)
+}
+
+/// The `->method` selector a cursor inside a method call names.
+///
+/// Produced by [`method_call_selector_at`] for the navigation tier's enclosing-sub
+/// guard (#18761): the AST classification — not a text regex — decides which
+/// method name (and chain shape) the cursor's call carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodCallSelector {
+    /// The method name the cursor's call selects.
+    pub method: String,
+    /// The call's receiver is itself a method call (`$self->order->total`).
+    /// A same-file answer for such a selector is never the enclosing sub,
+    /// even when the sub's name coincides with the method.
+    pub receiver_is_chain: bool,
+}
+
+/// Which `->method` call — and selector region — the cursor sits on.
+///
+/// Returns the innermost `MethodCall` node's selector when the cursor sits on
+/// the method token itself or on the `->` punctuation connecting receiver and
+/// method (#18761: the arrow bytes name the call as much as the token does;
+/// a cursor there makes `symbol_at_cursor` decline (#17158), and the text
+/// regexes behind the #18110 guard find no identifier to capture, so the
+/// guard needs this AST answer). `None` for every other cursor inside the
+/// node — receiver spans, argument words, quoted literals — which must not
+/// inherit the call's selector identity.
+pub fn method_call_selector_at(
+    ast: &Node,
+    offset: usize,
+    source_text: &str,
+) -> Option<MethodCallSelector> {
+    let call = method_call_node_at(ast, offset)?;
+    let NodeKind::MethodCall { object, method, .. } = &call.kind else {
+        return None;
+    };
+
+    // The method token span, located textually after the receiver's `->` (the
+    // same acceptance geometry `method_call_cursor_names_call` uses, widened to
+    // admit the arrow bytes themselves).
+    let token_start = object.location.end.min(call.location.end);
+    let window = source_text.get(token_start..call.location.end)?;
+    let arrow_at = window.find("->")?;
+    let mut method_start = token_start + arrow_at + 2;
+    let bytes = source_text.as_bytes();
+    while method_start < bytes.len() && bytes[method_start].is_ascii_whitespace() {
+        method_start += 1;
+    }
+    let method_end = method_start.saturating_add(method.len());
+    // Selector region: from the arrow's first byte through the method token.
+    if offset < token_start || offset > method_end {
+        return None;
+    }
+
+    Some(MethodCallSelector {
+        method: method.clone(),
+        receiver_is_chain: matches!(&object.kind, NodeKind::MethodCall { .. }),
+    })
+}
+
+/// The package whose method the cursor's `->method` call names.
+///
+/// Resolution mirrors the definition provider's receiver inference: ordinary
+/// receivers resolve through constructor bindings (`my $x = Pkg->new`),
+/// `$self`/`$this`/`$class`, and bareword package names; a receiver that is
+/// itself a method call resolves through the class model's accessor-`isa`
+/// facts (`infer_chained_receiver_package`, #18761). `None` for an unknown
+/// receiver — callers must answer honestly empty instead of attributing the
+/// method to the current package (#18110 precedent).
+///
+/// This is the shared entry point for the LSP providers (definition, hover)
+/// so their receiver classification cannot drift.
+pub fn method_call_receiver_package_at(ast: &Node, offset: usize) -> Option<String> {
+    let call = method_call_node_at(ast, offset)?;
+    let NodeKind::MethodCall { object, .. } = &call.kind else {
+        return None;
+    };
+    let current_pkg = current_package_at(ast, offset).to_string();
+    let mut receiver_packages = std::collections::HashMap::new();
+    record_receiver_assignment(ast, offset, &current_pkg, &mut receiver_packages);
+    infer_receiver_package_with_chains(object, ast, &current_pkg, &receiver_packages)
+}
+
+/// Whether the cursor's `->method` call chains through a method-call receiver.
+///
+/// Convenience for guards that only need the chain shape
+/// ([`method_call_selector_at`] carries the same fact with the method name).
+pub fn method_call_receiver_is_chain(ast: &Node, offset: usize) -> bool {
+    method_call_node_at(ast, offset).is_some_and(|call| {
+        let NodeKind::MethodCall { object, .. } = &call.kind else {
+            return false;
+        };
+        matches!(&object.kind, NodeKind::MethodCall { .. })
+    })
+}
+
 /// The sub a bareword argument inside a method call may name.
 ///
 /// `Animal->new(name => 'Generic')` spans its argument list with one
@@ -1654,20 +1814,7 @@ pub fn method_argument_bareword_key(
     current_pkg: &str,
     source_text: &str,
 ) -> Option<SymbolKey> {
-    /// The innermost `MethodCall` node containing `offset`.
-    fn method_call_at(node: &Node, offset: usize) -> Option<&Node> {
-        if offset < node.location.start || offset > node.location.end {
-            return None;
-        }
-        for child in get_node_children(node) {
-            if let Some(found) = method_call_at(child, offset) {
-                return Some(found);
-            }
-        }
-        matches!(&node.kind, NodeKind::MethodCall { .. }).then_some(node)
-    }
-
-    let call = method_call_at(ast, offset)?;
+    let call = method_call_node_at(ast, offset)?;
     let NodeKind::MethodCall { object, method, .. } = &call.kind else {
         return None;
     };
@@ -2243,8 +2390,15 @@ fn symbol_at_cursor_internal(
             }
             let mut receiver_packages = std::collections::HashMap::new();
             record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
-            let pkg = infer_receiver_package(object, current_pkg, &receiver_packages)
-                .unwrap_or_else(|| current_pkg.to_string());
+            // #18761: chained receivers resolve through the class model's
+            // accessor-`isa` facts. An unknown receiver yields no key at all —
+            // the old current-package fallback attributed the method to the
+            // caller's own package and navigation landed on a local same-named
+            // sub (or, failing that, an enclosing-sub artifact) instead of an
+            // honest empty answer (#18110 precedent: wrong-target navigation
+            // is strictly worse than empty).
+            let pkg =
+                infer_receiver_package_with_chains(object, ast, current_pkg, &receiver_packages)?;
             Some(SymbolKey {
                 pkg: pkg.into(),
                 name: method.clone().into(),
@@ -3363,5 +3517,217 @@ mod tests {
             subs.is_empty(),
             "collect_subroutine_declarations must NOT collect *foo = \"string\" as a sub"
         );
+    }
+}
+
+// =========================================================================
+// Chained-receiver resolution and honest refusal for method calls (#18761)
+//
+// `infer_receiver_package` understood only four receiver shapes and the
+// MethodCall arm fell back to the current package for everything else, so a
+// chain (`$self->order->total_cents`) was attributed to the caller's own
+// package and navigation landed on a local same-named sub. The class model's
+// accessor-`isa` facts resolve typed chains; every other unknown receiver now
+// yields no key at all (#18110 precedent: wrong-target navigation is strictly
+// worse than empty).
+// =========================================================================
+
+#[cfg(test)]
+mod method_receiver_resolution_tests {
+    use super::*;
+    use crate::Parser;
+    type ProofResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn parse(source: &str) -> ProofResult<Node> {
+        Parser::new(source).parse().map_err(|err| format!("parse failed: {err:?}").into())
+    }
+
+    fn selector_key(source: &str, package: &str, method: &str) -> ProofResult<Option<SymbolKey>> {
+        let ast = parse(source)?;
+        let offset = source.rfind(&format!("->{method}")).ok_or("missing method selector")? + 2;
+        Ok(symbol_at_cursor_with_source(&ast, offset, package, source))
+    }
+
+    fn require_pkg(
+        source: &str,
+        package: &str,
+        method: &str,
+        expected: Option<&str>,
+    ) -> ProofResult {
+        let key = selector_key(source, package, method)?;
+        if let Some(key) = key.as_ref() {
+            assert_eq!(
+                key.name.as_ref(),
+                method,
+                "selector lookup must keep the method name; source={source:?}"
+            );
+        }
+        let actual = key.map(|key| key.pkg.to_string());
+        assert_eq!(
+            actual.as_deref(),
+            expected,
+            "receiver package for ->{method}; source={source:?}"
+        );
+        Ok(())
+    }
+
+    /// Step 1: a typed accessor chain resolves to the accessor's `isa` class
+    /// even though the enclosing package declares a same-named sub.
+    #[test]
+    fn typed_chain_resolves_through_accessor_isa() -> ProofResult {
+        let source = concat!(
+            "package Store::Receipt; use Moo;\n",
+            "has order => (is => 'ro', isa => 'Store::Order');\n",
+            "sub total_cents { my ($self) = @_; return $self->order->total_cents; }\n",
+        );
+        require_pkg(source, "Store::Receipt", "total_cents", Some("Store::Order"))
+    }
+
+    /// Control: a plain `$self` receiver still names the current package.
+    #[test]
+    fn plain_self_receiver_stays_current_package() -> ProofResult {
+        let source = concat!(
+            "package Store::Receipt; use Moo;\n",
+            "sub total_cents { my ($self) = @_; return $self->total_cents; }\n",
+        );
+        require_pkg(source, "Store::Receipt", "total_cents", Some("Store::Receipt"))
+    }
+
+    /// Step 2: an untyped chain (`has` without `isa`) yields no key — never
+    /// the current package.
+    #[test]
+    fn untyped_chain_yields_no_key() -> ProofResult {
+        let source = concat!(
+            "package Store::Receipt; use Moo;\n",
+            "has order => (is => 'ro');\n",
+            "sub total_cents { my ($self) = @_; return $self->order->total_cents; }\n",
+        );
+        require_pkg(source, "Store::Receipt", "total_cents", None)
+    }
+
+    /// Step 2: a sub-param receiver (positional `@_` unpacking) is unknown —
+    /// no current-package fallback.
+    #[test]
+    fn sub_param_receiver_yields_no_key() -> ProofResult {
+        let source = concat!(
+            "package Store::Order;\n",
+            "sub add_item { my ($self, $product) = @_; return $product->in_stock; }\n",
+        );
+        require_pkg(source, "Store::Order", "in_stock", None)
+    }
+
+    /// Step 2: a method-return receiver is unknown — no current-package
+    /// fallback.
+    #[test]
+    fn method_return_receiver_yields_no_key() -> ProofResult {
+        let source = concat!(
+            "package Store::Inventory;\n",
+            "sub check { my ($self) = @_; my $product = $self->find_by_sku('x');",
+            " return $product->quantity; }\n",
+        );
+        require_pkg(source, "Store::Inventory", "quantity", None)
+    }
+
+    /// Retention: constructor-bound receivers keep resolving cross-package.
+    #[test]
+    fn constructor_binding_still_resolves() -> ProofResult {
+        let source = "package Store::Inventory; sub check { my $inv = Store::Cart->new; return $inv->count; }\n";
+        require_pkg(source, "Store::Inventory", "count", Some("Store::Cart"))
+    }
+
+    /// Step 1: a two-hop chain only resolves while every hop carries an
+    /// accessor fact; the second hop's model is not declared in this file, so
+    /// the honest answer is no key.
+    #[test]
+    fn multi_hop_chain_requires_every_isa() -> ProofResult {
+        let source = concat!(
+            "package MyApp::Report; use Moo;\n",
+            "has service => (is => 'ro', isa => 'MyApp::Service');\n",
+            "sub probe { my ($self) = @_; return $self->service->db->connect; }\n",
+        );
+        require_pkg(source, "MyApp::Report", "connect", None)
+    }
+
+    /// Step 1 helper: the selector classification the navigation guard
+    /// consumes — method token and arrow bytes name the call, receiver spans
+    /// do not.
+    #[test]
+    fn selector_at_names_token_arrow_and_chain() -> ProofResult {
+        let source = concat!(
+            "package Store::Receipt; use Moo;\n",
+            "has order => (is => 'ro', isa => 'Store::Order');\n",
+            "sub total_cents { my ($self) = @_; return $self->order->total_cents; }\n",
+        );
+        let ast = parse(source)?;
+        let arrow = source.rfind("->total_cents").ok_or("missing arrow")?;
+        let token = arrow + 2;
+        let self_receiver = source.rfind("$self->order").ok_or("missing inner receiver")?;
+
+        let on_token = method_call_selector_at(&ast, token + 3, source)
+            .ok_or("selector must classify the method token")?;
+        assert_eq!(on_token.method, "total_cents");
+        assert!(on_token.receiver_is_chain, "the receiver of ->total_cents is a call");
+
+        let on_arrow = method_call_selector_at(&ast, arrow + 1, source)
+            .ok_or("selector must classify the arrow bytes")?;
+        assert_eq!(on_arrow.method, "total_cents");
+        assert!(on_arrow.receiver_is_chain);
+
+        let on_receiver = method_call_selector_at(&ast, self_receiver, source);
+        assert!(
+            on_receiver.is_none(),
+            "a receiver cursor must not inherit the call's selector: got {on_receiver:?}"
+        );
+
+        // The inner hop's own token names the inner call — receiver is `$self`,
+        // not a chain.
+        let inner_token = source.rfind("order->").ok_or("missing inner order")?;
+        let on_inner = method_call_selector_at(&ast, inner_token, source)
+            .ok_or("selector must classify the inner method token")?;
+        assert_eq!(on_inner.method, "order");
+        assert!(!on_inner.receiver_is_chain);
+        Ok(())
+    }
+
+    /// Step 1 helper: `method_call_receiver_package_at` agrees with the
+    /// definition arm — typed chain resolves, untyped chain refuses.
+    #[test]
+    fn receiver_package_helper_matches_arm() -> ProofResult {
+        let typed = concat!(
+            "package Store::Receipt; use Moo;\n",
+            "has order => (is => 'ro', isa => 'Store::Order');\n",
+            "sub total_cents { my ($self) = @_; return $self->order->total_cents; }\n",
+        );
+        let ast = parse(typed)?;
+        let offset = typed.rfind("->total_cents").ok_or("missing arrow")? + 2;
+        assert_eq!(
+            method_call_receiver_package_at(&ast, offset).as_deref(),
+            Some("Store::Order"),
+            "helper must resolve the typed chain"
+        );
+
+        let untyped = concat!(
+            "package Store::Receipt; use Moo;\n",
+            "has order => (is => 'ro');\n",
+            "sub total_cents { my ($self) = @_; return $self->order->total_cents; }\n",
+        );
+        let ast = parse(untyped)?;
+        let offset = untyped.rfind("->total_cents").ok_or("missing arrow")? + 2;
+        assert_eq!(
+            method_call_receiver_package_at(&ast, offset),
+            None,
+            "helper must refuse an untyped chain"
+        );
+        Ok(())
+    }
+
+    /// Retention: the same-name exemption is a navigation-tier rule for plain
+    /// variable receivers; the arm still keys `$self->patrol` to the current
+    /// package so genuine recursion keeps navigating.
+    #[test]
+    fn same_name_recursion_key_stays_current_package() -> ProofResult {
+        let source =
+            "package Walker;\nsub patrol { my ($self) = @_; return $self->patrol('again'); }\n";
+        require_pkg(source, "Walker", "patrol", Some("Walker"))
     }
 }

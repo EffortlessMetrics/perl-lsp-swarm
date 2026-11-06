@@ -1461,6 +1461,15 @@ impl LspServer {
     }
 
     fn resolve_receiver_package_name(ast: &Node, offset: usize, raw_receiver: &str) -> String {
+        // #18761: resolve through the same classification the definition
+        // provider uses — constructor-bound variables and accessor-`isa`
+        // chains — so hovering a call site agrees with navigating from it.
+        if let Some(package) = crate::declaration::method_call_receiver_package_at(ast, offset) {
+            return package;
+        }
+
+        // Text-level fallbacks for receivers the AST classification could not
+        // resolve: `$self` synonyms and bareword package-shaped names.
         let bare_receiver = raw_receiver.trim_start_matches(['$', '@', '%']);
         if bare_receiver == "self" || bare_receiver == "this" || bare_receiver == "class" {
             return crate::declaration::current_package_at(ast, offset).to_string();
