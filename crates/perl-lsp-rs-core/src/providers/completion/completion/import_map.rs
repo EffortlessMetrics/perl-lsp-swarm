@@ -126,10 +126,21 @@ fn collect_runtime_import_authority(
     use perl_parser_core::ast::NodeKind;
     use perl_semantic_facts::ImportKind;
 
+    // Same recovery transparency as the import map (#16969): a `require`
+    // inside a body truncated at EOF keeps its adjacent runtime-import
+    // authority.
+    let node = match &node.kind {
+        NodeKind::Error { partial: Some(partial), .. } => partial,
+        _ => node,
+    };
     let statements: &[Node] = match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => statements,
         NodeKind::Package { block: Some(block), .. } => match &block.kind {
             NodeKind::Block { statements } => statements,
+            NodeKind::Error { partial: Some(partial), .. } => match &partial.kind {
+                NodeKind::Block { statements } => statements,
+                _ => &[],
+            },
             _ => &[],
         },
         _ => &[],
@@ -174,6 +185,67 @@ fn unwrap_expression_statement(node: &Node) -> &Node {
         NodeKind::ExpressionStatement { expression } => expression,
         _ => node,
     }
+}
+
+fn collect(node: &Node, map: &mut ImportMap) {
+    // Look through the parser's standard recovery wrapper (#16969): a
+    // statement list truncated at EOF keeps its `use` statements, so the
+    // import map sees exactly what a complete body would have shown.
+    let node = match &node.kind {
+        NodeKind::Error { partial: Some(partial), .. } => partial,
+        _ => node,
+    };
+    match &node.kind {
+        NodeKind::Use { module, args, .. } => collect_use_import(module, args, map),
+        NodeKind::Program { statements } | NodeKind::Block { statements } => {
+            for stmt in statements {
+                collect(stmt, map);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
+    if !is_importable_module(module) || args.is_empty() {
+        return;
+    }
+
+    let mut symbols: HashSet<String> = HashSet::new();
+    let mut has_symbol_args = false;
+    let mut has_unresolved_tag = false;
+
+    // `collect_import_symbols` skips a bare brace token but not the body
+    // between them, so configuration hashes are removed here instead.
+    for arg in arguments_outside_configuration_hashes(args) {
+        if !is_symbol_arg_candidate(arg) {
+            continue;
+        }
+        // The second tuple element signals an unresolvable export tag.  We used
+        // to bail out on any unresolved tag, silently discarding all symbols
+        // collected so far (#1700).  Now we treat it as a partial miss: the
+        // tag-expanded symbols are lost, but explicit symbol names survive.  If
+        // the import only contains unknown tags, leave the module unfiltered.
+        let (has_symbols_in_arg, unresolved_tag) =
+            collect_import_symbols(module, arg, &mut symbols);
+        has_symbol_args |= has_symbols_in_arg;
+        has_unresolved_tag |= unresolved_tag;
+    }
+
+    if has_symbol_args && has_unresolved_tag && symbols.is_empty() {
+        return;
+    }
+
+    if has_symbol_args {
+        map.entry(module.to_string()).or_default().extend(symbols);
+    } else {
+        map.entry(module.to_string()).or_default();
+    }
+}
+
+fn is_symbol_arg_candidate(arg: &str) -> bool {
+    let first_byte = arg.as_bytes().first().copied().unwrap_or(0);
+    !first_byte.is_ascii_digit() && !arg.starts_with('-')
 }
 
 pub(super) use used_modules::collect_used_module_names;

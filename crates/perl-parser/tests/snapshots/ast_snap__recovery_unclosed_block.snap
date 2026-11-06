@@ -1,5 +1,6 @@
 ---
 source: crates/perl-parser/tests/ast_snap.rs
+assertion_line: 222
 expression: "parse_sexp(\"sub foo {\")"
 ---
-(source_file (statements (sub (name foo) (body (block)))))
+(source_file (statements (sub (name foo) (body (ERROR (message "Unclosed block: expected '}' but reached end of input") (partial (block)))))))

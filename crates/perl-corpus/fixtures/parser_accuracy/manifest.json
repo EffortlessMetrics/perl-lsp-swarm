@@ -5114,7 +5114,7 @@
           "line": 4,
           "span_text": "return 1",
           "parent_kind": "Block",
-          "depth": 3,
+          "depth": 4,
           "operator": null,
           "parent_operator": null
         }
@@ -5125,7 +5125,7 @@
           "first_error_line": 3,
           "error_region": {
             "start": 3,
-            "end": 3
+            "end": 4
           },
           "recovery_line": 3
         }

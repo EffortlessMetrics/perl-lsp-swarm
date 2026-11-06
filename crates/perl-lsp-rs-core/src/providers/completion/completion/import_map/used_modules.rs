@@ -21,6 +21,15 @@ pub(in crate::providers::completion::completion) fn collect_used_module_names(
 }
 
 fn walk(node: &Node, modules: &mut HashSet<String>) {
+    // A body the parser truncated travels inside the parser's standard
+    // recovery shape; the bounded fallback reads through that one wrapper so
+    // imports inside a recovered block stay visible (#16969). The wrapper is
+    // positional, not semantic: looking through it restores exactly the
+    // statement walk a complete body would have taken.
+    let node = match &node.kind {
+        NodeKind::Error { partial: Some(partial), .. } => partial,
+        _ => node,
+    };
     match &node.kind {
         NodeKind::Use { module, .. } if is_importable_module(module) => {
             modules.insert(module.clone());
