@@ -22,8 +22,9 @@
 //! instead of reconstructing critic state from mutable settings.
 
 use super::{
-    CriticEngine, CriticRuleIdSource, ProjectCriticConfig, ProjectDiagnosticsConfig, ServerConfig,
-    as_config_u64, normalize_string_list, warn_unknown_rule_ids,
+    CriticEngine, CriticRuleIdSource, ProjectCriticConfig, ProjectDiagnosticsConfig,
+    RejectedSettingValue, ServerConfig, as_config_u64, normalize_string_list,
+    warn_unknown_rule_ids,
 };
 use crate::hashing::fnv1a64_hex;
 use crate::tooling::perl_critic::NativeCriticProfile;
@@ -304,6 +305,19 @@ impl CriticCandidateRejection {
             "rejecting complete critic configuration candidate; \
              every critic sibling retained at its prior accepted value",
         );
+    }
+
+    /// The same rejections [`Self::emit_single_condition`] logs, in a form the
+    /// calling server can show the user (#16598).
+    ///
+    /// One entry per offending sibling, in the order they were discovered, so
+    /// a file that names several bad critic values does not collapse into the
+    /// single deduplicated log condition.
+    pub(crate) fn rejected_setting_values(&self) -> Vec<RejectedSettingValue> {
+        self.siblings
+            .iter()
+            .map(|sibling| RejectedSettingValue::new(sibling.setting, sibling.value.clone()))
+            .collect()
     }
 }
 
