@@ -1729,6 +1729,7 @@ dependencies = [
  "clap",
  "glob",
  "perl-tdd-support",
+ "perl-test-must",
  "proptest",
  "rand 0.10.3",
  "regex",
