@@ -86,6 +86,7 @@ pub mod emacs_train_context;
 pub mod emacs_train_packet;
 pub mod emacs_train_specs;
 pub mod executable_profile;
+pub mod feature_readiness_packets;
 pub mod features;
 pub mod file_policy;
 pub mod finalize_check;
