@@ -2162,6 +2162,7 @@ dependencies = [
 name = "perl-semantic-analyzer"
 version = "0.17.0"
 dependencies = [
+ "criterion",
  "perl-module",
  "perl-parser-core",
  "perl-pod",
