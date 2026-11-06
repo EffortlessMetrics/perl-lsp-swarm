@@ -12,6 +12,14 @@ use toml::Value;
 /// active enforcement still satisfies a level pin. Pinning the status as well is
 /// what makes a promotion non-reversible without an explicit policy change.
 const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
+    // The settled panic/debug policy applies to production and tests (#19093).
+    // Reconciliation alone cannot detect a coordinated Cargo-and-ledger rollback.
+    ("clippy::unwrap_used", Some("deny"), Some("active")),
+    ("clippy::expect_used", Some("deny"), Some("active")),
+    ("clippy::panic", Some("deny"), Some("active")),
+    ("clippy::todo", Some("deny"), Some("active")),
+    ("clippy::unimplemented", Some("deny"), Some("active")),
+    ("clippy::dbg_macro", Some("deny"), Some("active")),
     ("rust::const_item_interior_mutations", None, None),
     ("rust::function_casts_as_integer", None, None),
     ("clippy::same_length_and_capacity", None, None),
