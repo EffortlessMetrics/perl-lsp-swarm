@@ -48,6 +48,7 @@
 )]
 
 pub mod cargo_failure;
+pub mod case_inventory;
 pub mod client;
 pub mod diagnostics;
 pub mod env;
