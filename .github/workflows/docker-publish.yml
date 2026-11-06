@@ -632,7 +632,12 @@ jobs:
             printf -- '- `effortlessmetrics/perl-lsp:%s-perl`\n' "$VERSION"
             echo ""
             echo "### Usage"
+            echo 'Host editor (same-path bind, #8987):'
             echo '```bash'
-            printf 'docker run --rm -i -v "${PWD}:/workspace" effortlessmetrics/perl-lsp:%s-perl\n' "$VERSION"
+            echo 'WORKSPACE_ROOT="$(pwd)" ./scripts/docker/run-perllsp-host-editor.sh'
+            echo '```'
+            echo 'Editor inside container (/workspace namespace):'
+            echo '```bash'
+            printf 'docker run --rm -i --init -v "${PWD}:/workspace:ro" -w /workspace effortlessmetrics/perl-lsp:%s-perl --stdio\n' "$VERSION"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

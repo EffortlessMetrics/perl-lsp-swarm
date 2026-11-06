@@ -335,7 +335,12 @@ docker pull ghcr.io/EffortlessMetrics/perl-lsp-perl:latest
 docker pull effortlessmetrics/perl-lsp:latest-perl
 
 # Run (stdio LSP transport; the entrypoint is perllsp)
-docker run --rm -i -v ${PWD}:/workspace effortlessmetrics/perl-lsp:latest-perl
+#
+# Host editor on Linux/macOS/WSL — preserve client file:// paths (#8987):
+#   WORKSPACE_ROOT="$(pwd)" ./scripts/docker/run-perllsp-host-editor.sh
+#
+# Editor inside container / Dev Container — shared /workspace namespace:
+docker compose run --rm perl-lsp --stdio
 ```
 
 ### VSCode Extension

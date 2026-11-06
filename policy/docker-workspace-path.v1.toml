@@ -1,0 +1,75 @@
+# Machine-owned Docker workspace path / URI namespace contract (#8987).
+# Validates mount topology only — no URI rewriting proxy.
+
+schema_version = 1
+contract = "docker_workspace_path.v1"
+
+[[topology]]
+id = "editor_inside_container"
+description = "Editor and perllsp share the container filesystem; /workspace is valid only when the client uses that root."
+
+[topology.mount]
+kind = "fixed_workspace_root"
+container_path = "/workspace"
+read_only_default = true
+
+[topology.launch]
+stdio = true
+allocate_tty = false
+require_init = true
+
+[[topology]]
+id = "host_editor_same_path_bind"
+description = "Host editor keeps host-visible absolute paths; each root is bind-mounted at the same absolute path inside the container."
+
+[topology.mount]
+kind = "same_path_bind"
+read_only_default = true
+
+[topology.launch]
+stdio = true
+allocate_tty = false
+require_init = true
+explicit_workdir = true
+
+[[platform_cell]]
+id = "linux_host_editor"
+same_path_bind_eligible = true
+topology = "host_editor_same_path_bind"
+
+[[platform_cell]]
+id = "macos_host_editor"
+same_path_bind_eligible = true
+topology = "host_editor_same_path_bind"
+note = "Subject to Docker Desktop file-sharing authorization for the host path."
+
+[[platform_cell]]
+id = "windows_wsl_editor"
+same_path_bind_eligible = true
+topology = "host_editor_same_path_bind"
+
+[[platform_cell]]
+id = "editor_in_container"
+same_path_bind_eligible = false
+topology = "editor_inside_container"
+
+[[platform_cell]]
+id = "native_windows_host_editor"
+same_path_bind_eligible = false
+supported = false
+topology = "host_editor_same_path_bind"
+note = "Not proven; use WSL or Dev Containers unless a separate translation layer is designed."
+
+[host_editor_launcher]
+image_env = "PERLLSP_IMAGE"
+default_image = "ghcr.io/effortlessmetrics/perl-lsp-perl:latest"
+entrypoint = "perllsp"
+default_args = ["--stdio"]
+
+[multi_root]
+host_wrapper = "refuse_if_multiple_roots"
+
+[documentation]
+reference = "docs/reference/docker-workspace-path.md"
+devcontainer_example = ".devcontainer/devcontainer.json"
+host_launcher = "scripts/docker/run-perllsp-host-editor.sh"

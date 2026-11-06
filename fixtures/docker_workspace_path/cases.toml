@@ -1,0 +1,23 @@
+# Deterministic path fixtures for Docker acceptance journeys (#8987).
+
+[[case]]
+id = "host_editor_single_root"
+topology = "host_editor_same_path_bind"
+root_uri = "file:///home/user/project"
+root_path = "/home/user/project"
+unopened_relative = "lib/Target.pm"
+expect_container_path = "/home/user/project/lib/Target.pm"
+expect_returned_uri_contains = "/home/user/project/lib/Target.pm"
+
+[[case]]
+id = "lossy_remap_negative"
+topology = "host_editor_same_path_bind"
+root_path = "/host/project"
+bad_container_mount = "/workspace"
+expect_error = "lossy"
+
+[[case]]
+id = "multi_root_refused"
+topology = "host_editor_same_path_bind"
+roots = ["/root/a", "/root/b"]
+expect_error = "multi_root"
