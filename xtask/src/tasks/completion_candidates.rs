@@ -124,6 +124,7 @@ const SCAN_ROOTS: &[&str] = &[
 const TEST_SURFACE_FILES: &[&str] = &[
     "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
     "crates/perl-lsp-rs-core/src/providers/completion/completion/keyword_role_tests.rs",
+    "crates/perl-lsp-rs-core/src/providers/completion/completion/interpolation_completion_tests.rs",
     "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
 ];
 

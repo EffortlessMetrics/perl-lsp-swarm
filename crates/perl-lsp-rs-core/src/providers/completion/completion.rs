@@ -1737,10 +1737,6 @@ impl CompletionProvider {
         lexical_context::is_in_comment(source, position)
     }
 
-    pub(crate) fn is_in_heredoc(source: &str, position: usize) -> bool {
-        lexical_context::is_in_heredoc(source, position)
-    }
-
     pub(crate) fn is_in_pod(source: &str, position: usize) -> bool {
         lexical_context::is_in_pod(source, position)
     }
@@ -1778,6 +1774,8 @@ pub fn htmx_attribute_name_completion_admitted(source: &str, position: usize) ->
         || CompletionProvider::is_in_pod(source, position))
 }
 
+#[cfg(test)]
+mod interpolation_completion_tests;
 #[cfg(test)]
 mod keyword_role_tests;
 #[cfg(test)]
