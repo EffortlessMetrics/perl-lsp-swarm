@@ -311,11 +311,11 @@ type CallSiteAsts = BTreeMap<String, Option<Node>>;
 /// subroutine and dropped after inference, so a receiver declared inside a sub
 /// resolves to nothing from its global environment.
 ///
-/// Known bound: scoping approximates Perl lexical visibility by source order,
-/// so a receiver whose only same-named binding is a `my` variable inside a
-/// *different, earlier* subroutine would attribute to that binding. The
-/// alternative (the engine's file-global last-write-wins environment) is
-/// strictly coarser; an unresolvable receiver is never rewritten.
+/// Completed subroutine bodies cannot contribute bindings to another call
+/// site. Within the enclosing subroutine path, declarations and simple
+/// assignments replace prior evidence, including clearing it when their value
+/// is unknown. This remains a source-order approximation: ordinary block
+/// lifetimes, parameters, and dynamic/control-flow effects are not inferred.
 fn variable_receiver_package(
     asts: &mut CallSiteAsts,
     idx: &WorkspaceIndex,
@@ -335,25 +335,26 @@ fn variable_receiver_package(
     constructor_assigned_class(ast, receiver_bare, call_offset)
 }
 
-/// The class the nearest preceding constructor assignment binds to
-/// `receiver_bare` before `call_offset`, if any.
+/// The class of the last completed matching binding before `call_offset`,
+/// when that binding is a direct scalar constructor assignment.
 fn constructor_assigned_class(
     ast: &Node,
     receiver_bare: &str,
     call_offset: usize,
 ) -> Option<String> {
     let mut class: Option<String> = None;
-    constructor_assignment_walk(ast, receiver_bare, call_offset, &mut class);
+    constructor_assignment_walk(ast, receiver_bare, call_offset, 0, &mut class);
     class
 }
 
-/// Pre-order DFS collecting constructor-assignment bindings of the receiver
-/// that complete at or before `call_offset`; the last one visited (source
-/// order) wins.
+/// Walk the enclosing subroutine path in source order. Declarations become
+/// visible after their enclosing expression statement, while simple assignments
+/// take effect after their RHS completes.
 fn constructor_assignment_walk(
     node: &Node,
     receiver_bare: &str,
     call_offset: usize,
+    declaration_visible_after: usize,
     class: &mut Option<String>,
 ) {
     // Anything starting at or after the call site cannot be its binding.
@@ -361,29 +362,77 @@ fn constructor_assignment_walk(
         return;
     }
 
+    // A different subroutine's locals (or assignments) are not evidence for
+    // this call, and must not overwrite the file-scope binding either.
+    if matches!(&node.kind, NodeKind::Subroutine { .. }) && node.location.end <= call_offset {
+        return;
+    }
+
+    let declaration_visible_after = match &node.kind {
+        NodeKind::Program { .. } | NodeKind::Block { .. } => 0,
+        NodeKind::ExpressionStatement { .. } | NodeKind::Return { .. } => {
+            declaration_visible_after.max(node.location.end)
+        }
+        // A declaration followed by a word operator is not wrapped in an
+        // ExpressionStatement. Its tail still sees the previous binding.
+        NodeKind::Binary { op, .. } if matches!(op.as_str(), "or" | "and" | "xor") => {
+            declaration_visible_after.max(node.location.end)
+        }
+        _ => declaration_visible_after,
+    };
+
+    // Evaluate nested writes before committing the enclosing binding's value.
+    // For example, the outer constructor still wins in
+    // `$obj = Greeter->new($obj = Logger->create)`.
+    for child in node.children() {
+        constructor_assignment_walk(
+            child,
+            receiver_bare,
+            call_offset,
+            declaration_visible_after,
+            class,
+        );
+    }
+
     match &node.kind {
-        NodeKind::VariableDeclaration { variable, initializer: Some(init), .. }
+        NodeKind::VariableDeclaration { variable, initializer, .. }
             if is_scalar_variable_named(variable, receiver_bare)
-                && init.location.end <= call_offset =>
+                && declaration_visible_after <= call_offset
+                && initializer.as_ref().is_none_or(|init| init.location.end <= call_offset) =>
         {
-            if let Some(pkg) = constructor_call_class(init) {
-                *class = Some(pkg);
-            }
+            *class = initializer.as_deref().and_then(constructor_call_class);
+        }
+        NodeKind::VariableListDeclaration { variables, initializer, .. }
+            if variables
+                .iter()
+                .any(|variable| declaration_binds_receiver(variable, receiver_bare))
+                && declaration_visible_after <= call_offset
+                && initializer.as_ref().is_none_or(|init| init.location.end <= call_offset) =>
+        {
+            // A list binding is not a direct scalar constructor assignment.
+            *class = None;
         }
         NodeKind::Assignment { lhs, rhs, op }
             if op == "="
                 && is_scalar_variable_named(lhs, receiver_bare)
                 && rhs.location.end <= call_offset =>
         {
-            if let Some(pkg) = constructor_call_class(rhs) {
-                *class = Some(pkg);
-            }
+            *class = constructor_call_class(rhs);
         }
         _ => {}
     }
+}
 
-    for child in node.children() {
-        constructor_assignment_walk(child, receiver_bare, call_offset, class);
+/// Match only declaration targets, including nested and attributed list items.
+fn declaration_binds_receiver(node: &Node, receiver_bare: &str) -> bool {
+    match &node.kind {
+        NodeKind::NestedVariableList { items } => {
+            items.iter().any(|item| declaration_binds_receiver(item, receiver_bare))
+        }
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            declaration_binds_receiver(variable, receiver_bare)
+        }
+        _ => is_scalar_variable_named(node, receiver_bare),
     }
 }
 
@@ -812,6 +861,156 @@ mod tests {
         let url = Url::parse(uri)?;
         idx.index_file(url, text.to_string())?;
         Ok(())
+    }
+
+    /// Exercise the workspace planner and compare complete edit sets, including
+    /// the declaration, so dropping all receiver edits cannot pass a control.
+    fn assert_constructor_receiver_edits(
+        caller: &str,
+        expected_call_lines: &[usize],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+        let definition_uri = "file:///Greeter.pm";
+        let caller_uri = "file:///Caller.pm";
+        index_text(&idx, definition_uri, "package Greeter;\nsub greet { return 1; }\n1;\n")?;
+        index_text(&idx, caller_uri, caller)?;
+        let key = SymbolKey {
+            pkg: Arc::from("Greeter"),
+            name: Arc::from("greet"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+        let edits = build_rename_edit(&idx, &key, "salute")?;
+        let mut actual = Vec::new();
+        for document in edits {
+            for edit in document.edits {
+                actual.push((document.uri.clone(), edit.start, edit.end, edit.new_text));
+            }
+        }
+        let mut expected = vec![(definition_uri.to_string(), (1, 4), (1, 9), "salute".to_string())];
+        for &line in expected_call_lines {
+            let source_line = caller.lines().nth(line).ok_or("missing expected call line")?;
+            let column = source_line.find("->greet").ok_or("missing expected method token")? + 2;
+            expected.push((
+                caller_uri.to_string(),
+                (line as u32, column as u32),
+                (line as u32, (column + 5) as u32),
+                "salute".to_string(),
+            ));
+        }
+        actual.sort();
+        expected.sort();
+        assert_eq!(actual, expected, "complete rename edit set for:\n{caller}");
+        Ok(())
+    }
+
+    #[test]
+    fn rename_constructor_binding_does_not_leak_between_subroutines_17447()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_constructor_receiver_edits(
+            "package Caller;\nsub first {\nmy $obj = Greeter->new;\n$obj->greet();\n}\n\
+             sub later {\n$obj->greet();\n}\n",
+            &[3],
+        )
+    }
+
+    #[test]
+    fn rename_constructor_binding_clears_on_rebinding_17447()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for binding in [
+            "$obj = Logger->create;",
+            "my $obj = Logger->create;",
+            "my $obj;",
+            "my ($obj) = @_;",
+            "my ($other, $obj) = @_;",
+            "my ($obj);",
+            "my ($other, ($obj, $last)) = @_;",
+            "my ($obj :shared) = @_;",
+        ] {
+            let caller = format!(
+                "package Caller;\nsub run {{\nmy $obj = Greeter->new;\n$obj->greet();\n\
+                 {binding}\n$obj->greet();\n}}\n"
+            );
+            assert_constructor_receiver_edits(&caller, &[3])?;
+        }
+        assert_constructor_receiver_edits(
+            "package Caller;\nsub run {\nmy $obj = Greeter->new;\n\
+             return consume(my $obj = Logger->create, $obj->greet());\n}\n",
+            &[3],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn rename_constructor_binding_survives_until_declaration_completes_17447()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for binding in [
+            "my $obj = $obj->greet();",
+            "my ($obj) = $obj->greet();",
+            "my $obj = Logger->create or $obj->greet();",
+            "my $obj = Logger->create, $obj->greet();",
+        ] {
+            let caller = format!(
+                "package Caller;\nsub run {{\nmy $obj = Greeter->new;\n\
+                 {binding}\n$obj->greet();\n}}\n"
+            );
+            assert_constructor_receiver_edits(&caller, &[3])?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_outer_constructor_wins_over_nested_rhs_write_17447()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for binding in [
+            "my $obj = Greeter->new($obj = Logger->create);",
+            "$obj = Greeter->new($obj = Logger->create);",
+        ] {
+            let caller = format!(
+                "package Caller;\nsub run {{\nmy $obj = Logger->new;\n\
+                 {binding}\n$obj->greet();\n}}\n"
+            );
+            assert_constructor_receiver_edits(&caller, &[4])?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_unknown_outer_binding_clears_nested_rhs_constructor_17447()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for binding in
+            ["my $obj = factory($obj = Greeter->new);", "$obj = factory($obj = Greeter->new);"]
+        {
+            let caller = format!(
+                "package Caller;\nsub run {{\nmy $obj = Logger->new;\n\
+                 {binding}\n$obj->greet();\n}}\n"
+            );
+            assert_constructor_receiver_edits(&caller, &[])?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_constructor_binding_retains_file_scope_and_updates_17447()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_constructor_receiver_edits(
+            "package Caller;\nmy $obj = Greeter->new;\n\
+             sub first {\nmy $obj = Logger->new;\n$obj->greet();\n}\n\
+             sub later {\n$obj->greet();\n}\n$obj->greet();\n",
+            &[7, 9],
+        )?;
+        assert_constructor_receiver_edits(
+            "package Caller;\nsub run {\nmy $obj = Greeter->new;\n\
+             my ($other) = @_;\n$obj->greet();\n\
+             $obj = Logger->new;\n$obj->greet();\n\
+             $obj = Greeter->new;\n$obj->greet();\n}\n",
+            &[4, 8],
+        )?;
+        assert_constructor_receiver_edits(
+            "package Caller;\nsub run {\nif (my $obj = Greeter->new) {\n\
+             $obj->greet();\n}\n}\n",
+            &[3],
+        )
     }
 
     #[test]
