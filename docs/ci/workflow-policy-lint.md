@@ -24,6 +24,8 @@ PR 11 of the CI economics rollout extends the linter with an opt-in
 | `REQUIRED_STYLE_SELF_FILTERED` | Required-style workflow path-filters itself |
 | `BLANKET_CANCEL_IN_PROGRESS` | `cancel-in-progress` not gated for master/merge_group truth runs |
 | `LABEL_EVENT_CANCELS_PR_RUN` | `pull_request labeled`/`unlabeled` workflow cancels in-progress runs |
+| `INEFFECTIVE_TOKEN_REFERENCE` | Token read via shell expansion or `env.` expression that nothing exports (#16263) |
+| `REST_SCOPE_GAP` | GitHub REST call requires a scope the declared `permissions:` omits (#16263) |
 | `UNPINNED_ACTION` | Third-party action not pinned to a commit SHA (warning) |
 
 ---
