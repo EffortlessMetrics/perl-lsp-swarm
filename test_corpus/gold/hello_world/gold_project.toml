@@ -1,0 +1,26 @@
+schema = "gold_project.v1"
+project_id = "hello_world"
+topology_fingerprint = "96bcd2a859a29b5a09aa5606113d07dd56ea78d3756a250df273b27ba2b0207f"
+content_fingerprint = "2373d8035e5c17a656a07fb1a8a04877fd865a8f1a1af3cacbb7d1fd2ef42f64"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 97
+sha256 = "ee955208b48f2193cd6c162a4a0198299baaf7f27fea1b7f603ac9774738ea85"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 79
+sha256 = "7baf453af1e5a50a5e49b6310cc56302df1bfaf46d03d636c971d518d6e80842"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

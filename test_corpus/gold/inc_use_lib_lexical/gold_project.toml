@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "inc_use_lib_lexical"
+topology_fingerprint = "7c293e04d44d0bc888c1d139a166fc38803d1cd6f4b2c2afbaad050b5faf7442"
+content_fingerprint = "f0bbcca4e6056acd4d903d112317fd969baaf4ebb965572274d1a27e6c143653"
+
+[[members]]
+member_id = "expected_module_json"
+path = "expected_module.json"
+role = "generated_expectation_input"
+byte_length = 450
+sha256 = "c81f2dd08c3074527ddbd693f73ebe16b2a32b52920ca76803abc003905e45e2"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 119
+sha256 = "4cf08ed8102470f5a25d8744f38de10a77f22b8142f977e267ec929f841a3b5f"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "lib__LexicalModule_pm"
+path = "lib/LexicalModule.pm"
+role = "support_source"
+byte_length = 86
+sha256 = "98cbe53c86ccf32505206e3152ab672e069d4328247c41b1f3e9d46892eb2f98"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

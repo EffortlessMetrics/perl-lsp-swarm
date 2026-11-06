@@ -1,0 +1,26 @@
+schema = "gold_project.v1"
+project_id = "good_project_with_lib"
+topology_fingerprint = "ad29340b99ab819a4d6634c4740887661c2628588b5191ce58e8ea8db5c4a67c"
+content_fingerprint = "098271767815f68ce315941f3814ea45d1a7fa215f32b38cc541fb2f51e10cff"
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 86
+sha256 = "dbdce79c5cf0bd4f5064e573072a0199859a61ce3a8dbe78ee620f04433c86bf"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "lib__MyModule_pm"
+path = "lib/MyModule.pm"
+role = "support_source"
+byte_length = 76
+sha256 = "e859f39e4c2b13725ff0878fc6df21f2976e4795174927b8586d72bfa8fa1b97"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

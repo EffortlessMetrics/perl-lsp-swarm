@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "inc_relative_include_path"
+topology_fingerprint = "187b36d25c5971a240aff14145bb13f7d1ef389c4f002736f0d811807f765b1c"
+content_fingerprint = "2d6dc036b64ce20fe3271e2ec3799c935f4c87a7486fd80f601d7b9d312c64c6"
+
+[[members]]
+member_id = "expected_module_json"
+path = "expected_module.json"
+role = "generated_expectation_input"
+byte_length = 464
+sha256 = "5a99d2b1e44f057cd135ba64522466427f06693dea7fc11335690fd871252080"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 92
+sha256 = "4a9a42e464dc294aa6f604d1afb93bcb4c5633dd78eb8299dcc5780342c93254"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "lib__GreetModule_pm"
+path = "lib/GreetModule.pm"
+role = "support_source"
+byte_length = 104
+sha256 = "48f79009f62ac9b37f6f6844288fe1eaf4df53bc63a67d061d483acf6b1ad3c1"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false

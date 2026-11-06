@@ -1,0 +1,37 @@
+schema = "gold_project.v1"
+project_id = "hover_scalar_var"
+topology_fingerprint = "428ab468789c829fb79428d59604f15e048b33be9c976ac7373d973315f2628f"
+content_fingerprint = "2bf5eb7f68399165afd3cda1688bbc31620fffae781a22c5ca6c0864e7ac2330"
+
+[[members]]
+member_id = "expected_json"
+path = "expected.json"
+role = "generated_expectation_input"
+byte_length = 75
+sha256 = "453837f0a8c45790c0989de0e9f48c61fb3e49533437f08b9e68f9d32dc4d9c6"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "expected_hover_json"
+path = "expected_hover.json"
+role = "generated_expectation_input"
+byte_length = 581
+sha256 = "666ef1c4c10feef6f8ac17c83703902526d96611f1214328186bcea01a5d321d"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
+
+[[members]]
+member_id = "fixture_pl"
+path = "fixture.pl"
+role = "entrypoint"
+byte_length = 84
+sha256 = "dd674d27e020356b01f5c9c89ad85f9efbe1f3a595593d63aac2305c3dac0af9"
+encoding = "utf8"
+newline_style = "lf"
+final_newline = true
+byte_order_mark = false
