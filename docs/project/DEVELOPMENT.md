@@ -32,24 +32,11 @@ nothing on this page is installation guidance.
 
 ## Quick start
 
-```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-cd perl-lsp-swarm
-
-# Reproducible environment (recommended)
-nix develop
-
-# Verify tooling and repository health
-just devex
-just doctor
-
-# Fast local proof
-just pr-fast
-```
-
-Without Nix, install the pinned toolchain through [rustup](https://rustup.rs/) and
-`cargo install just`. The repository pins Rust channel `1.95.0` in `rust-toolchain.toml`
-and currently requires MSRV 1.95.
+Clone and branch as described in [CONTRIBUTING.md](../../CONTRIBUTING.md), then
+follow [Development environment](../how-to/DEVELOPMENT_ENVIRONMENT.md). That
+ordered route covers tool acquisition, fresh-shell activation, build-free
+inspection, admitted hook installation/checking, and focused proof for Nix or
+native tools.
 
 ---
 
@@ -60,6 +47,7 @@ This guide deliberately does not duplicate these. Follow the link for the curren
 | Question | Current authority |
 | --- | --- |
 | Contributor workflow, claim shape, PR expectations | [CONTRIBUTING.md](../../CONTRIBUTING.md) |
+| Environment setup and hook readiness | [Development environment](../how-to/DEVELOPMENT_ENVIRONMENT.md) |
 | Command inventory | [COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md), or `just --list` |
 | Ownership seams and dependency direction | [ARCHITECTURE.md](../reference/ARCHITECTURE.md) |
 | Exact workspace membership | [Cargo.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml) |

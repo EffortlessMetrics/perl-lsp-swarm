@@ -523,8 +523,8 @@ doctor:
     # ------------------------------------------------------------------
     # One rev-parse call. --git-common-dir is absolute when run from a worktree,
     # relative (".git") when run from the main checkout.
-    # Avoid `git rev-parse --show-toplevel` — it takes ~10s on Windows with many
-    # registered worktrees. Use $PWD as the fallback for the relative case.
+    # Use shared metadata for the checkout-wide checks below. Check 5 separately
+    # resolves the current worktree's root and effective hook path.
     common_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
     if [ -z "$common_dir" ]; then
         echo "❌ not inside a git repository"
@@ -711,28 +711,38 @@ doctor:
     # ------------------------------------------------------------------
     # Check 5: pre-push hook installed
     # ------------------------------------------------------------------
-    hook_path="$main_git_dir/hooks/pre-push"
-    expected_hook="$main_root/hooks/pre-push"
-    if [ -f "$hook_path" ] && [ -x "$hook_path" ]; then
-        if [ -f "$expected_hook" ] && diff -q \
-            <(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$hook_path") \
-            <(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$expected_hook") >/dev/null; then
-            echo "✅ pre-push hook installed and current"
-        elif [ -f "$expected_hook" ]; then
-            echo "⚠️  pre-push hook installed but stale: $hook_path"
-            echo "   Fix: cargo xtask ci-hygiene install-githooks   # refresh from hooks/pre-push"
-            issues=$((issues + 1))
-        else
-            echo "✅ pre-push hook installed"
-        fi
-    elif [ -f "$hook_path" ]; then
-        echo "⚠️  pre-push hook present but not executable: $hook_path"
-        echo "   Fix: chmod +x \"$hook_path\""
+    # Ask Git for this checkout's effective path, including core.hooksPath.
+    # A linked worktree may also have different checked-in hook bytes from main.
+    if ! checkout_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+        || ! hook_path=$(git rev-parse --path-format=absolute --git-path hooks/pre-push 2>/dev/null) \
+        || [ -z "$checkout_root" ] || [ -z "$hook_path" ]; then
+        echo "⚠️  could not resolve the current checkout's hook paths"
+        echo "   Check: git rev-parse --show-toplevel"
+        echo "   Check: git rev-parse --path-format=absolute --git-path hooks/pre-push"
         issues=$((issues + 1))
     else
-        echo "⚠️  pre-push hook not installed"
-        echo "   Fix: cargo xtask ci-hygiene install-githooks   # or: bash scripts/install-githooks.sh"
-        issues=$((issues + 1))
+        expected_hook="$checkout_root/hooks/pre-push"
+        if [ -f "$hook_path" ] && [ -x "$hook_path" ]; then
+            if [ -f "$expected_hook" ] && diff -q \
+                <(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$hook_path") \
+                <(awk '{ sub(/\r$/, ""); lines[NR]=$0 } END { last=NR; while (last > 0 && lines[last] == "") last--; for (i = 1; i <= last; i++) print lines[i] }' "$expected_hook") >/dev/null; then
+                echo "✅ pre-push hook installed and current"
+            elif [ -f "$expected_hook" ]; then
+                echo "⚠️  pre-push hook installed but stale: $hook_path"
+                echo "   Fix: follow docs/how-to/DEVELOPMENT_ENVIRONMENT.md, step 4 (admitted hook installation/check)"
+                issues=$((issues + 1))
+            else
+                echo "✅ pre-push hook installed"
+            fi
+        elif [ -f "$hook_path" ]; then
+            echo "⚠️  pre-push hook present but not executable: $hook_path"
+            printf '   Fix: chmod +x -- %q\n' "$hook_path"
+            issues=$((issues + 1))
+        else
+            echo "⚠️  pre-push hook not installed"
+            echo "   Fix: follow docs/how-to/DEVELOPMENT_ENVIRONMENT.md, step 4 (admitted hook installation/check)"
+            issues=$((issues + 1))
+        fi
     fi
 
     # ------------------------------------------------------------------
