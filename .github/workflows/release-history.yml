@@ -59,7 +59,9 @@ jobs:
       - name: Read repository toolchain requirements
         id: toolchain
         run: |
-          printf 'RUSTUP_HOME=%s/release-history-rustup-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          # Hosted runners are fresh per job; keep the isolated path stable so
+          # rust-cache's RUST* environment hash can match across runs.
+          printf 'RUSTUP_HOME=%s/release-history-rustup\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           python3 - <<'PY'
           import os
           import re
@@ -87,7 +89,7 @@ jobs:
         env:
           EXPECTED_TOOLCHAIN: ${{ steps.toolchain.outputs.channel }}
         run: |
-          test "$RUSTUP_HOME" = "$RUNNER_TEMP/release-history-rustup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test "$RUSTUP_HOME" = "$RUNNER_TEMP/release-history-rustup"
           rustup show active-toolchain
           test "$(cargo --version | awk '{print $2}')" = "$EXPECTED_TOOLCHAIN"
           test "$(rustc --version | awk '{print $2}')" = "$EXPECTED_TOOLCHAIN"
