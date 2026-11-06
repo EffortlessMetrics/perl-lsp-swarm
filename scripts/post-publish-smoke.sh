@@ -333,9 +333,12 @@ case "$INSTALLER_HOST" in
                         rm -f "$WRAPPER_LOG"
 
                         BAD_DIGEST="0000000000000000000000000000000000000000000000000000000000000000"
+                        NEG_INSTALL_DIR="$(mktemp -d)"
+                        CLEANUP_DIRS+=("$NEG_INSTALL_DIR")
                         NEG_LOG="$(mktemp)"
                         if PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
                             PERL_LSP_INSTALLER_SHA256="$BAD_DIGEST" \
+                            VERSION="$RELEASE_TAG" INSTALL_DIR="$NEG_INSTALL_DIR" \
                             bash "$ISOLATED_WRAPPER" >"$NEG_LOG" 2>&1; then
                             fail "install.sh wrapper accepted wrong PERL_LSP_INSTALLER_SHA256"
                         elif grep -q 'SHA-256 mismatch' "$NEG_LOG"; then
@@ -346,9 +349,12 @@ case "$INSTALLER_HOST" in
                         fi
                         rm -f "$NEG_LOG"
 
+                        TAG_INSTALL_DIR="$(mktemp -d)"
+                        CLEANUP_DIRS+=("$TAG_INSTALL_DIR")
                         TAG_LOG="$(mktemp)"
                         if PERL_LSP_INSTALLER_REF="$RELEASE_TAG" \
                             PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" \
+                            VERSION="$RELEASE_TAG" INSTALL_DIR="$TAG_INSTALL_DIR" \
                             bash "$ISOLATED_WRAPPER" >"$TAG_LOG" 2>&1; then
                             fail "install.sh wrapper accepted a non-dereferenced tag ref"
                         elif grep -q 'must be a full lowercase commit SHA' "$TAG_LOG"; then
