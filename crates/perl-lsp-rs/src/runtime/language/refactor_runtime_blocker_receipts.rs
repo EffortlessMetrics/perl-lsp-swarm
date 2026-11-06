@@ -2,6 +2,10 @@
 
 use super::super::{JsonRpcError, LspServer, Value, json};
 use crate::protocol::{req_position, req_uri};
+use crate::runtime::edit_delivery::{
+    EditDeliveryDisposition, EditDeliverySurface, execute_command_mutation_refusal_message,
+    select_edit_delivery,
+};
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -916,41 +920,77 @@ impl LspServer {
         } else {
             json!({"changes": {}})
         };
-        let apply_edit_metadata_request = source_guard_context
-            .as_ref()
-            .filter(|_| can_return_edit)
-            .and_then(|(_uri, _line, _character, symbol, _byte_offset)| {
+        let formatted_edit = self.to_workspace_edit_format(workspace_edit);
+        let edit_plan_ready =
+            can_return_edit && lsp_workspace_edit_count(Some(&formatted_edit)) > 0;
+        let delivery = {
+            let caps = self.client_capabilities.lock();
+            select_edit_delivery(
+                EditDeliverySurface::ExecuteCommandMutation,
+                &caps,
+                &formatted_edit,
+                edit_plan_ready,
+            )
+        };
+
+        let mut recorded_disposition = delivery;
+        let mut live_delivery_enabled =
+            live_symbol_delete_enabled_for_plan(can_return_edit, edit_plan_ready);
+        let mut edit_for_result = formatted_edit;
+        let mut apply_edit_request_receipt = None;
+
+        if edit_plan_ready && delivery == EditDeliveryDisposition::RequestClientApplyEdit {
+            if let Some((_uri, _line, _character, symbol, _byte_offset)) =
+                source_guard_context.as_ref()
+            {
                 let apply_edit_label = format!("Safe delete {symbol}");
                 let apply_edit_description =
                     format!("Review source-backed safe-delete edit for {symbol} before applying.");
+                let include_metadata =
+                    self.client_capabilities.lock().workspace_edit_metadata_support;
                 match self.request_apply_workspace_edit_with_metadata(
                     &apply_edit_label,
                     &apply_edit_description,
-                    workspace_edit.clone(),
+                    edit_for_result.clone(),
                     true,
                 ) {
-                    Ok(Some(id)) => Some(json!({
-                        "id": id.as_i32(),
-                        "label": &apply_edit_label,
-                        "description": &apply_edit_description,
-                        "metadata": {
+                    Ok(Some(id)) => {
+                        let mut request_receipt = json!({
+                            "id": id.as_i32(),
                             "label": &apply_edit_label,
                             "description": &apply_edit_description,
-                            "isRefactoring": true,
-                        },
-                    })),
-                    Ok(None) => None,
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "Failed to request workspace/applyEdit with metadata"
-                        );
-                        None
+                        });
+                        if include_metadata {
+                            request_receipt["metadata"] = json!({
+                                "label": &apply_edit_label,
+                                "description": &apply_edit_description,
+                                "isRefactoring": true,
+                            });
+                        }
+                        apply_edit_request_receipt = Some(request_receipt);
+                    }
+                    Ok(None) | Err(_) => {
+                        live_delivery_enabled = false;
+                        edit_for_result = json!({"changes": {}});
+                        recorded_disposition = EditDeliveryDisposition::RefusedUnsupportedClient;
                     }
                 }
-            });
-        let returned_workspace_edit_count = lsp_workspace_edit_count(Some(&workspace_edit));
-        let user_message = safe_delete_symbol_live_pilot_message(&receipt, can_return_edit);
+            }
+        } else if edit_plan_ready && delivery == EditDeliveryDisposition::RefusedUnsupportedClient {
+            live_delivery_enabled = false;
+            edit_for_result = json!({"changes": {}});
+        }
+
+        let returned_workspace_edit_count = lsp_workspace_edit_count(Some(&edit_for_result));
+        let user_message = if edit_plan_ready
+            && !live_delivery_enabled
+            && can_return_edit
+            && recorded_disposition == EditDeliveryDisposition::RefusedUnsupportedClient
+        {
+            execute_command_mutation_refusal_message().to_string()
+        } else {
+            safe_delete_symbol_live_pilot_message(&receipt, live_delivery_enabled)
+        };
 
         if let Some(object) = receipt.as_object_mut() {
             object.insert("provider_action".to_string(), json!("perl.safeDeleteSymbol"));
@@ -959,7 +999,7 @@ impl LspServer {
                 json!("narrow_source_backed_symbol_delete_live_pilot"),
             );
             object.insert("edits_applied".to_string(), Value::Bool(false));
-            object.insert("live_symbol_delete_enabled".to_string(), json!(can_return_edit));
+            object.insert("live_symbol_delete_enabled".to_string(), json!(live_delivery_enabled));
             object.insert(
                 "live_pilot_source_guard".to_string(),
                 json!(if source_guard_accepts {
@@ -1005,8 +1045,12 @@ impl LspServer {
             object
                 .insert("workspace_reference_count".to_string(), json!(workspace_reference_count));
             object.insert("workspace_index_stale".to_string(), json!(workspace_index_stale));
-            object.insert("workspace_edit".to_string(), workspace_edit);
-            if let Some(request) = apply_edit_metadata_request {
+            object.insert("workspace_edit".to_string(), edit_for_result);
+            object.insert(
+                "edit_delivery_disposition".to_string(),
+                json!(recorded_disposition.as_str()),
+            );
+            if let Some(request) = apply_edit_request_receipt {
                 object.insert("apply_edit_requested".to_string(), Value::Bool(true));
                 object.insert("apply_edit_request".to_string(), request);
             }
@@ -1017,10 +1061,12 @@ impl LspServer {
                     "narrow safe-delete live pilot only; returns a source-backed symbol-delete WorkspaceEdit when compiler proof, exact source guard, current-source/workspace reference guards, workspace identity guard, and rollback proof all pass"
                 ),
             );
-            object
-                .insert("trace_only_no_live_behavior_change".to_string(), json!(!can_return_edit));
-            object.insert("no_live_behavior_change".to_string(), json!(!can_return_edit));
-            if can_return_edit {
+            object.insert(
+                "trace_only_no_live_behavior_change".to_string(),
+                json!(!live_delivery_enabled),
+            );
+            object.insert("no_live_behavior_change".to_string(), json!(!live_delivery_enabled));
+            if live_delivery_enabled {
                 object.insert("source_backed".to_string(), Value::Bool(true));
                 object.insert(
                     "source_backed_state".to_string(),
@@ -2441,6 +2487,29 @@ fn runtime_blocker_descriptions(blockers: &[PlanBlocker]) -> String {
         return "none".to_string();
     }
     blockers.iter().map(|blocker| blocker.description.as_str()).collect::<Vec<_>>().join(" | ")
+}
+
+/// Live safe-delete success indicator: guards may pass while the computed edit plan is empty.
+pub(crate) fn live_symbol_delete_enabled_for_plan(
+    can_return_edit: bool,
+    edit_plan_ready: bool,
+) -> bool {
+    can_return_edit && edit_plan_ready
+}
+
+#[cfg(test)]
+mod live_symbol_delete_enabled_tests {
+    use super::live_symbol_delete_enabled_for_plan;
+
+    #[test]
+    fn live_flag_false_when_guards_pass_but_edit_plan_empty() {
+        assert!(!live_symbol_delete_enabled_for_plan(true, false));
+    }
+
+    #[test]
+    fn live_flag_true_when_guards_and_nonempty_edit_plan() {
+        assert!(live_symbol_delete_enabled_for_plan(true, true));
+    }
 }
 
 #[cfg(test)]
