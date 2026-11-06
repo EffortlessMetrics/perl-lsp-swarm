@@ -823,10 +823,78 @@ pub enum GeneratedMemberKind {
     Predicate,
     /// Clearer method (`clear_<attr>`).
     Clearer,
-    /// Builder method (`_build_<attr>`).
+    /// Legacy builder classification retained for serde compatibility.
+    ///
+    /// Named attribute builder hooks are modeled as [`AttributeMethodHook`]
+    /// instead of provided generated members (#1649).
     Builder,
     /// Constant value.
     Constant,
+}
+
+// ── Attribute method hooks ───────────────────────────────────────────
+
+/// Kind of method name referenced by a framework attribute option.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttributeMethodHookKind {
+    /// Builder invoked to produce the initial slot value (`_build_<attr>` or explicit name).
+    Builder,
+    /// Trigger callback invoked after assignment (named method reference).
+    Trigger,
+}
+
+/// A method name that generated attribute behavior expects to call, without
+/// claiming the framework installed that method (#1649).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributeMethodHook {
+    /// Deterministic entity ID for this hook fact.
+    pub entity_id: EntityId,
+    /// Owning package for the `has` declaration.
+    pub package: String,
+    /// Attribute slot name from the `has` declaration.
+    pub attribute_name: String,
+    /// Referenced method name (for example `_build_email`).
+    pub method_name: String,
+    /// Hook classification.
+    pub kind: AttributeMethodHookKind,
+    /// Anchor of the `has` declaration that references this hook.
+    pub source_anchor_id: AnchorId,
+    /// Whether the method name came from an explicit option value.
+    pub explicit_name: bool,
+    /// Always `FrameworkSynthesis` for attribute hooks.
+    pub provenance: Provenance,
+    /// Always `Medium` for attribute hooks.
+    pub confidence: Confidence,
+}
+
+impl AttributeMethodHook {
+    /// Construct a new `AttributeMethodHook`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        entity_id: EntityId,
+        package: String,
+        attribute_name: String,
+        method_name: String,
+        kind: AttributeMethodHookKind,
+        source_anchor_id: AnchorId,
+        explicit_name: bool,
+        provenance: Provenance,
+        confidence: Confidence,
+    ) -> Self {
+        Self {
+            entity_id,
+            package,
+            attribute_name,
+            method_name,
+            kind,
+            source_anchor_id,
+            explicit_name,
+            provenance,
+            confidence,
+        }
+    }
 }
 
 // ── Value Shape ─────────────────────────────────────────────────────

@@ -9573,7 +9573,7 @@ sub inspect {
     let labels: Vec<_> =
         provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
 
-    for expected in ["status", "has_status", "_build_status", "clear_status"] {
+    for expected in ["status", "has_status", "clear_status"] {
         assert!(
             labels.iter().any(|label| label == expected),
             "expected inherited generated accessor {} in Child completion, got {:?}",
@@ -9581,6 +9581,10 @@ sub inspect {
             labels
         );
     }
+    assert!(
+        !labels.iter().any(|label| label == "_build_status"),
+        "builder hooks must not appear as generated completion members (#1649), got {labels:?}"
+    );
 }
 
 #[test]
