@@ -17,7 +17,7 @@
     "status"
   ],
   "properties": {
-    "schema_version": { "type": "integer", "minimum": 1 },
+    "schema_version": { "type": "string", "const": "agent_receipt.v1" },
     "task_id": { "type": "string", "minLength": 1 },
     "snapshot_id": { "type": "string", "minLength": 1 },
     "head_sha": { "type": "string", "minLength": 1 },
