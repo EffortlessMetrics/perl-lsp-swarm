@@ -112,6 +112,12 @@ pub enum RegexDiagnosticCode {
     ModifierRequiresPerlVersion,
     /// The requested feature-qualified behavior is unavailable for the profile.
     ModifierRequiresFeature,
+    /// Enhanced `/xx` class comment `#` is not surrounded by horizontal whitespace.
+    EnhancedXxUnspacedCommentIntroducer,
+    /// Unescaped `#` inside an enhanced `/xx` bracketed-class comment.
+    EnhancedXxHashInsideComment,
+    /// Unescaped `]` inside an enhanced `/xx` bracketed-class comment.
+    EnhancedXxBracketInsideComment,
 }
 
 impl RegexDiagnosticCode {
@@ -133,6 +139,9 @@ impl RegexDiagnosticCode {
             Self::ModifierHasNoEffect => "modifier_has_no_effect",
             Self::ModifierRequiresPerlVersion => "modifier_requires_perl_version",
             Self::ModifierRequiresFeature => "modifier_requires_feature",
+            Self::EnhancedXxUnspacedCommentIntroducer => "enhanced_xx_unspaced_comment_introducer",
+            Self::EnhancedXxHashInsideComment => "enhanced_xx_hash_inside_comment",
+            Self::EnhancedXxBracketInsideComment => "enhanced_xx_bracket_inside_comment",
         }
     }
 
@@ -153,7 +162,10 @@ impl RegexDiagnosticCode {
             | Self::ModifierRequiresPerlVersion
             | Self::ModifierRequiresFeature => RegexDiagnosticClass::Syntax,
             // Perl compiles these forms and only warns, so they stay advisory.
-            Self::ModifierHasNoEffect => RegexDiagnosticClass::RiskAdvisory,
+            Self::ModifierHasNoEffect
+            | Self::EnhancedXxUnspacedCommentIntroducer
+            | Self::EnhancedXxHashInsideComment
+            | Self::EnhancedXxBracketInsideComment => RegexDiagnosticClass::RiskAdvisory,
         }
     }
 }
@@ -229,6 +241,15 @@ impl RegexDiagnostic {
             }
             RegexDiagnosticCode::ModifierRequiresFeature => {
                 "Regex modifier requires an unavailable Perl feature".to_string()
+            }
+            RegexDiagnosticCode::EnhancedXxUnspacedCommentIntroducer => {
+                "Enhanced /xx class comment `#` should be surrounded by horizontal whitespace, or escape `#` as \\# for a literal".to_string()
+            }
+            RegexDiagnosticCode::EnhancedXxHashInsideComment => {
+                "Enhanced /xx class comment contains an unescaped `#`; escape or quote it if intentional".to_string()
+            }
+            RegexDiagnosticCode::EnhancedXxBracketInsideComment => {
+                "Enhanced /xx class comment contains an unescaped `]`; escape or quote it if intentional".to_string()
             }
         }
     }

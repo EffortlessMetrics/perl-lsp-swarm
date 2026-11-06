@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode, FeatureState, RegexLanguageProfile},
+    analyzer::{CaptureMode, EffectiveModifiers, FeatureState, RegexLanguageProfile},
     syntax::event::{
-        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexGroupKind,
-        RegexModeState, parse_regex_events,
+        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexGroupKind,
+        mode_state_from_effective_extended, parse_regex_events,
     },
     validator::{RegexAnalysisBudget, RegexRange},
 };
@@ -579,16 +579,11 @@ fn number_confidence(uncertainty: NumberingUncertainty) -> CaptureNumberConfiden
     }
 }
 
-fn initial_mode(modifiers: EffectiveModifiers) -> RegexModeState {
-    let extended = match modifiers.extended {
-        ExtendedMode::Off => RegexExtendedMode::Off,
-        ExtendedMode::Extended => RegexExtendedMode::Extended,
-        ExtendedMode::ExtraExtended { .. } => RegexExtendedMode::ExtraExtended,
-    };
-    RegexModeState {
-        extended,
-        captures_by_default: matches!(modifiers.captures, CaptureMode::CapturingByDefault),
-    }
+fn initial_mode(modifiers: EffectiveModifiers) -> crate::syntax::event::RegexModeState {
+    mode_state_from_effective_extended(
+        modifiers.extended,
+        matches!(modifiers.captures, CaptureMode::CapturingByDefault),
+    )
 }
 
 fn map_budget(budget: RegexEventBudget) -> RegexAnalysisBudget {
