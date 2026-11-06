@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 
 use super::LspServer;
 use super::session_warning_dedup::{
-    PER_FAMILY_ENTRY_CAP, SessionWarningCode, SessionWarningDecision, SessionWarningFamily,
-    SessionWarningIdentity, SessionWarningSubjectTag,
+    CORE_MODULE_NOTICE_CAP, PER_FAMILY_ENTRY_CAP, SessionWarningCode, SessionWarningDecision,
+    SessionWarningFamily, SessionWarningIdentity, SessionWarningSubjectTag,
 };
 
 fn profile_identity(profile: &str) -> SessionWarningIdentity {
@@ -89,6 +89,76 @@ fn many_distinct_subjects_stop_retaining_at_the_hard_bound() {
         note_critic(&server, profile_identity(&format!("/adversarial/profile-{index}")));
     }
     assert_eq!(server.session_warning_dedup_snapshot().critic.entries, PER_FAMILY_ENTRY_CAP);
+}
+
+#[test]
+fn core_module_notice_retains_the_full_closed_module_set() {
+    let server = LspServer::new();
+    // Pin the literal bound: lowering the cap must fail here, not silently
+    // shrink the retention set while the suite stays green.
+    assert_eq!(CORE_MODULE_NOTICE_CAP, 64);
+    // The closed core-module set (34 names, mirrored from
+    // `core_modules::is_core_perl_module`) must fit under the cap with the
+    // production identity, so none re-notifies on later navigation.
+    const CORE_MODULES: [&str; 34] = [
+        "strict",
+        "warnings",
+        "warnings::register",
+        "utf8",
+        "feature",
+        "constant",
+        "vars",
+        "lib",
+        "parent",
+        "base",
+        "overload",
+        "overloading",
+        "Scalar::Util",
+        "List::Util",
+        "Carp",
+        "Exporter",
+        "POSIX",
+        "Data::Dumper",
+        "File::Basename",
+        "File::Path",
+        "File::Spec",
+        "Storable",
+        "Encode",
+        "MIME::Base64",
+        "Digest::MD5",
+        "Digest::SHA",
+        "IO::File",
+        "IO::Handle",
+        "Fcntl",
+        "Socket",
+        "Time::HiRes",
+        "Time::Local",
+        "Getopt::Long",
+        "Pod::Usage",
+    ];
+    for name in CORE_MODULES {
+        let identity = SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::CoreModuleGotoDefNotice,
+            SessionWarningSubjectTag::CoreModuleName,
+            name,
+        );
+        assert_eq!(
+            server.session_warning_dedup.note(SessionWarningFamily::CoreModuleNotice, identity),
+            SessionWarningDecision::EmitFirst,
+            "core module {name}"
+        );
+    }
+    assert_eq!(server.session_warning_dedup_snapshot().core_module_notice.entries, 34);
+    let last = SessionWarningIdentity::fingerprinted(
+        SessionWarningCode::CoreModuleGotoDefNotice,
+        SessionWarningSubjectTag::CoreModuleName,
+        "Pod::Usage",
+    );
+    assert_eq!(
+        server.session_warning_dedup.note(SessionWarningFamily::CoreModuleNotice, last),
+        SessionWarningDecision::Suppress,
+        "the 34th module's repeat must stay suppressed"
+    );
 }
 
 #[test]
