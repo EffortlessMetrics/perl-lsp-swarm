@@ -540,34 +540,293 @@ fn git_ignored_paths(root: &Path, paths: &[PathBuf]) -> HashSet<PathBuf> {
         return HashSet::new();
     }
 
-    let mut child = match std::process::Command::new("git")
+    let (direct_paths, beyond_symlink_paths): (Vec<PathBuf>, Vec<PathBuf>) = relative_paths
+        .into_iter()
+        .partition(|relative| !relative_path_crosses_workspace_symlink(root, relative));
+
+    let mut ignored = git_check_ignore_relative_paths(root, &direct_paths);
+    ignored.extend(git_check_ignore_beyond_symlink_paths(root, &beyond_symlink_paths));
+    ignored
+}
+
+fn relative_path_crosses_workspace_symlink(root: &Path, relative: &Path) -> bool {
+    if !is_safe_relative_git_path(relative) {
+        return false;
+    }
+
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        if std::fs::symlink_metadata(&current)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn git_check_ignore_relative_paths(root: &Path, relative_paths: &[PathBuf]) -> HashSet<PathBuf> {
+    if relative_paths.is_empty() {
+        return HashSet::new();
+    }
+
+    let output = match run_git_check_ignore(root, relative_paths) {
+        Some(output) => output,
+        None => return HashSet::new(),
+    };
+    parse_git_check_ignore_stdout(&output)
+}
+
+/// `git check-ignore` refuses pathspecs beyond a tracked symlink directory.
+/// Materialize the same ignore rules in a temporary repository without symlinks
+/// so linked-directory expansion still honors `.gitignore`.
+fn git_check_ignore_beyond_symlink_paths(
+    root: &Path,
+    relative_paths: &[PathBuf],
+) -> HashSet<PathBuf> {
+    if relative_paths.is_empty() {
+        return HashSet::new();
+    }
+
+    let probe_root = match prepare_gitignore_probe_repo(root, relative_paths) {
+        Ok(probe_root) => probe_root,
+        Err(_) => return HashSet::new(),
+    };
+    let ignored = git_check_ignore_relative_paths(&probe_root, relative_paths);
+    let _ = std::fs::remove_dir_all(&probe_root);
+    ignored
+}
+
+fn run_git_check_ignore(root: &Path, relative_paths: &[PathBuf]) -> Option<std::process::Output> {
+    let mut child = std::process::Command::new("git")
         .args(["check-ignore", "-z", "--stdin", "--no-index"])
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return HashSet::new(),
-    };
+        .ok()?;
     if let Some(mut stdin) = child.stdin.take() {
-        for path in &relative_paths {
+        for path in relative_paths {
             let _ = stdin.write_all(path.to_string_lossy().as_bytes());
             let _ = stdin.write_all(&[0]);
         }
     }
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(_) => return HashSet::new(),
-    };
+    child.wait_with_output().ok()
+}
+
+fn parse_git_check_ignore_stdout(output: &std::process::Output) -> HashSet<PathBuf> {
+    if output.status.code() == Some(128) {
+        return HashSet::new();
+    }
+
     output
         .stdout
         .split(|byte| *byte == b'\0')
         .filter(|entry| !entry.is_empty())
         .map(bytes_to_os_string)
         .map(PathBuf::from)
+        .filter(|relative| is_safe_relative_git_path(relative))
         .collect()
+}
+
+fn prepare_gitignore_probe_repo(
+    root: &Path,
+    relative_paths: &[PathBuf],
+) -> std::io::Result<PathBuf> {
+    let probe_root = create_gitignore_probe_root()?;
+
+    let setup = (|| -> std::io::Result<()> {
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&probe_root)
+            .status()?;
+        if !init.success() {
+            return Err(std::io::Error::other("git init failed for ignore probe"));
+        }
+
+        copy_gitignore_probe_configuration(root, &probe_root)?;
+        copy_gitignore_rules_for_paths(root, &probe_root, relative_paths)?;
+
+        for relative in relative_paths {
+            if !is_safe_relative_git_path(relative) {
+                continue;
+            }
+            let path = probe_root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            // Linked-directory expansion only supplies regular files; materialize each
+            // candidate as a file so directory-only ignore rules cannot misfire.
+            std::fs::write(path, b"")?;
+        }
+
+        Ok(())
+    })();
+
+    if let Err(error) = setup {
+        let _ = std::fs::remove_dir_all(&probe_root);
+        return Err(error);
+    }
+
+    Ok(probe_root)
+}
+
+fn create_gitignore_probe_root() -> std::io::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    for attempt in 0..32 {
+        let candidate = base.join(format!(
+            "perl-workspace-gitignore-probe-{}-{}-{}",
+            std::process::id(),
+            seed,
+            attempt
+        ));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique gitignore probe directory",
+    ))
+}
+
+fn copy_gitignore_probe_configuration(
+    source_root: &Path,
+    probe_root: &Path,
+) -> std::io::Result<()> {
+    const KEYS: &[&str] = &["core.excludesfile", "core.ignorecase", "core.quotepath"];
+    for key in KEYS {
+        let Some(value) = git_local_config_value(source_root, key) else {
+            continue;
+        };
+        if *key == "core.excludesfile" {
+            let source_excludes = resolve_git_path(source_root, &value);
+            if source_excludes.is_file() {
+                let dest = probe_root.join(".git").join("info").join("probe-excludes");
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(source_excludes, &dest)?;
+                git_set_local_config(probe_root, key, &path_to_git_config_value(&dest))?;
+            } else {
+                git_set_local_config(probe_root, key, &value)?;
+            }
+            continue;
+        }
+        git_set_local_config(probe_root, key, &value)?;
+    }
+
+    copy_git_info_exclude(source_root, probe_root)
+}
+
+fn git_local_config_value(root: &Path, key: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["config", "--local", "--get", key])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+fn git_set_local_config(root: &Path, key: &str, value: &str) -> std::io::Result<()> {
+    let status = std::process::Command::new("git")
+        .args(["config", "--local", key, value])
+        .current_dir(root)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("git config --local {key} failed for ignore probe")))
+    }
+}
+
+fn resolve_git_path(root: &Path, git_path: &str) -> PathBuf {
+    let path = Path::new(git_path);
+    if path.is_absolute() { path.to_path_buf() } else { root.join(path) }
+}
+
+fn path_to_git_config_value(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn copy_git_info_exclude(source_root: &Path, probe_root: &Path) -> std::io::Result<()> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--git-path", "info/exclude"])
+        .current_dir(source_root)
+        .output()?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let source = resolve_git_path(source_root, String::from_utf8_lossy(&output.stdout).trim());
+    if !source.is_file() {
+        return Ok(());
+    }
+    let dest = probe_root.join(".git").join("info").join("exclude");
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(source, dest)?;
+    Ok(())
+}
+
+fn copy_gitignore_rules_for_paths(
+    root: &Path,
+    probe_root: &Path,
+    relative_paths: &[PathBuf],
+) -> std::io::Result<()> {
+    let mut copied = HashSet::new();
+    copy_gitignore_if_present(root, probe_root, Path::new(""), &mut copied)?;
+
+    for relative in relative_paths {
+        let Some(parent) = relative.parent() else {
+            continue;
+        };
+        let mut dir = PathBuf::new();
+        for component in parent.components() {
+            let Component::Normal(name) = component else {
+                continue;
+            };
+            dir.push(name);
+            copy_gitignore_if_present(root, probe_root, &dir, &mut copied)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn copy_gitignore_if_present(
+    root: &Path,
+    probe_root: &Path,
+    relative_dir: &Path,
+    copied: &mut HashSet<PathBuf>,
+) -> std::io::Result<()> {
+    if !copied.insert(relative_dir.to_path_buf()) {
+        return Ok(());
+    }
+
+    let source = root.join(relative_dir).join(".gitignore");
+    if !source.is_file() {
+        return Ok(());
+    }
+
+    let dest_dir = probe_root.join(relative_dir);
+    std::fs::create_dir_all(&dest_dir)?;
+    std::fs::copy(source, dest_dir.join(".gitignore"))?;
+    Ok(())
 }
 
 fn is_allowed_link_target(root: &Path, link: &Path, allowlist: &DiscoveryIncludeAllowlist) -> bool {
@@ -1022,6 +1281,62 @@ mod tests {
             Ok(super::GitDiscoveryOutcome::Complete(result)) => {
                 assert_eq!(result.method, DiscoveryMethod::Git);
                 assert!(result.files.iter().any(|path| path.ends_with("lib/One.pm")));
+            }
+            other => panic!("expected a complete git discovery, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    /// Git refuses `check-ignore` for paths beyond a tracked directory symlink;
+    /// linked-library expansion must still honor `.gitignore` (see #13795).
+    #[cfg(unix)]
+    #[test]
+    fn try_git_discovery_honors_gitignore_under_tracked_symlinked_directory() -> TestResult {
+        if !git_on_path() {
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+        create_file(root, "shared/Module.pm")?;
+        create_file(root, "shared/ignored/Hidden.pm")?;
+        fs::write(root.join(".gitignore"), "linked_lib/ignored/\n")?;
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .status()?;
+        assert!(init.success(), "git init must succeed for the fixture");
+        std::os::unix::fs::symlink(root.join("shared"), root.join("linked_lib"))?;
+        let add = std::process::Command::new("git")
+            .args(["add", "linked_lib"])
+            .current_dir(root)
+            .status()?;
+        assert!(add.success(), "git add must succeed for the fixture");
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "linked library", "--quiet"])
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .current_dir(root)
+            .status()?;
+        assert!(commit.success(), "git commit must succeed for the fixture");
+
+        let outcome = super::try_git_discovery(
+            root,
+            Instant::now(),
+            &DiscoveryIncludeAllowlist::default(),
+            &DiscoveryConfig::default(),
+            &|| false,
+        );
+
+        match outcome {
+            Ok(super::GitDiscoveryOutcome::Complete(result)) => {
+                assert_eq!(result.method, DiscoveryMethod::Git);
+                assert!(result.files.iter().any(|path| path.ends_with("linked_lib/Module.pm")));
+                assert!(
+                    !result.files.iter().any(|path| path.ends_with("linked_lib/ignored/Hidden.pm"))
+                );
             }
             other => panic!("expected a complete git discovery, got {other:?}"),
         }
