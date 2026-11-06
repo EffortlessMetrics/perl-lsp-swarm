@@ -1,0 +1,1 @@
+Enterprise::Example::AdvancedExporter::Database::Connection::Pool::Manager
