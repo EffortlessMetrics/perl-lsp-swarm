@@ -40,7 +40,7 @@ use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
     activation, active_goal_manifest, agent_capability_policy, agent_flow,
-    agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
+    agent_implementation_packet, agent_lease, agent_packet_dogfood, agent_receipt, agent_review_packet,
     aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
     check, check_agent_context, check_configuration_authority, check_lint_policy, check_tautology,
     check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows,
@@ -201,6 +201,18 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Validate the shared domain-neutral agent packet dogfood core contract
+    /// (agent_packet_dogfood.core.v1, #11024 family): identity digests that
+    /// are always recomputed, required subject metadata, bounded observable
+    /// event/result records, closed dispositions, human-intervention ledger
+    /// fields, mutated-packet negative controls, deterministic advisory
+    /// reports, and commit-hygiene guards over retained evidence.
+    #[command(name = "agent-dogfood")]
+    AgentDogfood {
+        #[command(subcommand)]
+        command: tasks::agent_packet_dogfood::AgentDogfoodCommand,
     },
 
     /// Check, explain, and project the standalone diagnostic reason/action
@@ -5645,6 +5657,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::AgentDogfood { command } => agent_packet_dogfood::run(command),
         Commands::StandaloneDiagnostics { command } => standalone_diagnostics::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),

@@ -1,0 +1,17 @@
+{
+  "report": "agent-packet-dogfood.core.report.v1",
+  "runs": [
+    {
+      "disposition": "transferred",
+      "findings": [],
+      "run_id": "synthetic-analysis-train-transfer-002",
+      "validity": "valid"
+    },
+    {
+      "disposition": "completed",
+      "findings": [],
+      "run_id": "synthetic-parser-p05-run-001",
+      "validity": "valid"
+    }
+  ]
+}
