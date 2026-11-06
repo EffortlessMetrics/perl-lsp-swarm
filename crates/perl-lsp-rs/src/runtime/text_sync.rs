@@ -497,6 +497,19 @@ impl LspServer {
                 ParsedSnapshot::from_parse_result(doc_generation, text, ast_arc.clone(), errors)
                     .with_regex_analysis(regex_analysis),
             );
+            if crate::runtime::text_sync_work::is_enabled() {
+                let tail = uri_tail(uri);
+                let byte_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
+                crate::runtime::text_sync_work::record_full_source_bytes_copied(
+                    tail.clone(),
+                    Some(version),
+                    doc_generation,
+                    byte_len,
+                    "did_open_document_state_owned_string",
+                    "document_state",
+                    "sync",
+                );
+            }
             doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
 
             {
@@ -757,9 +770,32 @@ impl LspServer {
                 // Phase-1 latency instrumentation (opt-in via PERL_LSP_TIMING).
                 // Instrumentation only — no behavior change to the mutation path.
                 let timing_on = crate::runtime::timing::is_enabled();
+                let sync_path: &'static str =
+                    if !self.incremental_eager_enabled() && self.parse_worker().is_some() {
+                        "async"
+                    } else {
+                        "sync_fallback"
+                    };
                 let t_did_change_start = std::time::Instant::now();
 
                 // Get current document state or create new one
+                let work_uri_tail = uri_tail(uri);
+                let work_gen_hint = if crate::runtime::text_sync_work::is_enabled() {
+                    let docs = self.documents.lock();
+                    docs.get(&self.normalize_uri_key(uri))
+                        .or_else(|| docs.get(uri))
+                        .map(|d| d.current_generation())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let _work_lock_scope = crate::runtime::text_sync_work::DocumentsLockScope::enter(
+                    work_uri_tail.clone(),
+                    incoming_version,
+                    work_gen_hint,
+                    "did_change_mutation",
+                    sync_path,
+                );
                 let t_lock_start = std::time::Instant::now();
                 let mut documents = self.documents.lock();
                 let lock_wait_ms = crate::runtime::timing::elapsed_ms(t_lock_start);
@@ -960,6 +996,32 @@ impl LspServer {
                 let t_rope_start = std::time::Instant::now();
                 let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
+                if crate::runtime::text_sync_work::is_enabled() {
+                    let byte_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
+                    crate::runtime::text_sync_work::record_full_source_materialized(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        byte_len,
+                        "did_change_materialize",
+                        sync_path,
+                    );
+                    crate::runtime::text_sync_work::record_full_source_allocation(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        byte_len,
+                        "did_change_arc_str",
+                        "parse_job_transport",
+                        sync_path,
+                    );
+                    crate::runtime::text_sync_work::record_rope_edit_applied(
+                        work_uri_tail.clone(),
+                        incoming_version,
+                        next_gen,
+                        sync_path,
+                    );
+                }
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
                 #[cfg(feature = "incremental")]
@@ -1165,6 +1227,18 @@ impl LspServer {
                     // docs and the #3589 pending-parse provider
                     // policies.
                     doc_state.replace_text_state(doc.rope.clone(), text_arc.to_string(), version);
+                    if crate::runtime::text_sync_work::is_enabled() {
+                        let byte_len = u64::try_from(text_arc.len()).unwrap_or(u64::MAX);
+                        crate::runtime::text_sync_work::record_full_source_bytes_copied(
+                            work_uri_tail.clone(),
+                            incoming_version,
+                            next_gen,
+                            byte_len,
+                            "replace_text_state_owned_string",
+                            "document_state",
+                            sync_path,
+                        );
+                    }
                     #[cfg(feature = "incremental")]
                     {
                         doc_state.incremental_doc = None;
@@ -1188,6 +1262,22 @@ impl LspServer {
                         allow_same_version,
                     );
                     if enqueue_result.is_ok() {
+                        if crate::runtime::text_sync_work::is_enabled() {
+                            crate::runtime::text_sync_work::record_source_buffer_share(
+                                work_uri_tail.clone(),
+                                next_gen,
+                                "parse_worker_enqueue",
+                                "parse_worker",
+                                sync_path,
+                            );
+                            let byte_len = u64::try_from(text_arc.len()).unwrap_or(u64::MAX);
+                            crate::runtime::text_sync_work::record_parse_worker_enqueue(
+                                work_uri_tail,
+                                next_gen,
+                                byte_len,
+                                sync_path,
+                            );
+                        }
                         documents.insert(normalized_uri.clone(), doc_state);
                         drop(documents);
 
