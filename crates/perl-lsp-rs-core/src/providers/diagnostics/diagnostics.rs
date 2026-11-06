@@ -38,7 +38,9 @@ use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
 use super::lints::version_compat::check_version_compat_with_pragma_map;
 use super::lints::wantarray_branch::check_irrelevant_wantarray_branches;
-use super::parse_errors::{parse_error_code, parse_error_severity};
+use super::parse_errors::{
+    parse_error_code, parse_error_severity, resolved_parse_diagnostic_byte_offset,
+};
 use super::regex_canonical::project_canonical_regex_diagnostics;
 use super::scope::scope_issues_to_diagnostics_with_semantics_ref;
 
@@ -590,7 +592,6 @@ impl DiagnosticsProvider {
         analysis: Option<&DocumentDiagnosticAnalysis>,
     ) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
-        let source_len = source.len();
 
         // Convert parse errors to diagnostics
         for error in parse_errors {
@@ -606,22 +607,10 @@ impl DiagnosticsProvider {
                 other => other.to_string(),
             };
 
-            // The parser owns error positions: `ParseError::location` is the single
-            // authority for which variants carry a byte offset. Deriving the position
-            // here from a second per-variant match is what previously pinned
-            // `Recovered` (and every other unlisted variant) to offset 0 — i.e.
-            // line 1, column 1 — regardless of where the error actually was.
-            //
-            // `UnexpectedEof` stores no offset and is anchored at end-of-input.
-            // Variants that genuinely carry no position (`LexerError`,
-            // `RecursionLimit`, `NestingTooDeep`, `Cancelled`, ...) still fall back
-            // to the start of the file.
-            let location = match error {
-                ParseError::UnexpectedEof => source.len(),
-                other => other.location().unwrap_or(0),
-            };
-
-            let range_start = location.min(source_len);
+            // Parser-owned placement via `resolved_diagnostic_anchor` (#6886 / #6941).
+            // A second per-variant `location()` match cannot stay in sync when
+            // `ParseError` grows and previously pinned unlisted variants to byte 0.
+            let range_start = resolved_parse_diagnostic_byte_offset(error, source);
             let range_end = source
                 .get(range_start..)
                 .and_then(|suffix| suffix.chars().next())

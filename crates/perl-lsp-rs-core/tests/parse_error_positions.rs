@@ -132,6 +132,22 @@ fn advisory_still_reports_its_location() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+#[test]
+fn utf8_interior_anchor_is_rejected_to_end_of_source() -> Result<(), Box<dyn std::error::Error>> {
+    // Discriminates `resolved_diagnostic_anchor` from the old
+    // `location().unwrap_or(0).min(source_len)` path: pr-base would pin this at
+    // byte 1 inside the scalar, while parser-owned rejection lands at EOF.
+    let source = "💖";
+    let error = ParseError::syntax("bad syntax", 1);
+    assert_eq!(
+        parse_diagnostic_start(source, error),
+        Some(source.len()),
+        "a UTF-8 interior anchor must reject to end-of-source, not raw location().min(len)"
+    );
+
+    Ok(())
+}
+
 // ---- variants that carry no location --------------------------------------
 
 #[test]
@@ -173,13 +189,12 @@ fn nesting_too_deep_stays_anchored_at_start_of_file() -> Result<(), Box<dyn std:
 // ---- location is clamped to the source ------------------------------------
 
 #[test]
-fn out_of_range_location_is_clamped_to_the_source_length() -> Result<(), Box<dyn std::error::Error>>
-{
+fn out_of_range_location_is_rejected_to_end_of_source() -> Result<(), Box<dyn std::error::Error>> {
     let error = ParseError::syntax("stale offset from a previous revision", SOURCE.len() + 500);
     assert_eq!(
         parse_diagnostic_start(SOURCE, error),
         Some(SOURCE.len()),
-        "an offset past end-of-source must clamp rather than produce an invalid range"
+        "an out-of-range exact anchor must not silently clamp to an interior byte"
     );
 
     Ok(())

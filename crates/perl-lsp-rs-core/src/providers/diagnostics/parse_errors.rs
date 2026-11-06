@@ -9,9 +9,38 @@
 //! | `syntax-error` | Error | Generic syntax error from the parser |
 
 use perl_diagnostics::codes::DiagnosticCode;
-use perl_parser_core::error::ParseError;
+use perl_parser_core::error::{ParseError, ResolvedParseDiagnosticAnchor};
 
 use perl_diagnostics::codes::DiagnosticSeverity;
+
+/// Map a parser-owned diagnostic anchor to a byte offset for editor ranges.
+///
+/// Downstream code must not match `ParseError` variants to guess placement.
+/// Unknown future variants inherit whatever anchor `perl-parser-core` assigns
+/// in its exhaustive `diagnostic_anchor` match.
+pub(crate) fn resolved_parse_diagnostic_byte_offset(error: &ParseError, source: &str) -> usize {
+    match error.resolved_diagnostic_anchor(source) {
+        ResolvedParseDiagnosticAnchor::Exact(offset) => offset,
+        ResolvedParseDiagnosticAnchor::EndOfInput(offset) => offset,
+        ResolvedParseDiagnosticAnchor::NoSource => 0,
+        ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned an out-of-range diagnostic anchor"
+            );
+            source_len
+        }
+        ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned a UTF-8 interior diagnostic anchor"
+            );
+            source_len
+        }
+    }
+}
 
 /// Derive the canonical diagnostic code for a parser error.
 pub fn parse_error_code(error: &ParseError) -> DiagnosticCode {
