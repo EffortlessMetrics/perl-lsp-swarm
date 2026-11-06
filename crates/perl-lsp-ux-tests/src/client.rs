@@ -898,6 +898,7 @@ fn registration_capability_path(method: &str) -> Option<&'static str> {
         "workspace/willDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
         "textDocument/completion" => "textDocument.completion.dynamicRegistration",
         "textDocument/didOpen"
+        | "textDocument/didClose"
         | "textDocument/didChange"
         | "textDocument/willSave"
         | "textDocument/willSaveWaitUntil"
@@ -1023,6 +1024,7 @@ mod tests {
         let mut reader = BufReader::new(server_stdout.as_slice());
         let stdin = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(VecDeque::new()));
+        let server_requests = Arc::new(Mutex::new(Vec::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
         let violations = Arc::new(Mutex::new(Vec::new()));
         let capabilities = capabilities_with(json!({
@@ -1056,7 +1058,11 @@ mod tests {
 
         let observed: Vec<Value> =
             events.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
-        assert_eq!(observed, vec![server_request]);
+        assert_eq!(observed, vec![server_request.clone()]);
+        let recorded = server_requests.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if recorded != vec![server_request] {
+            return Err(anyhow!("server request evidence was not preserved separately"));
+        }
 
         let queued: Vec<Value> =
             responses.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
@@ -1078,6 +1084,7 @@ mod tests {
         let mut reader = BufReader::new(server_stdout.as_slice());
         let stdin = Arc::new(Mutex::new(BrokenWriter));
         let events = Arc::new(Mutex::new(VecDeque::new()));
+        let server_requests = Arc::new(Mutex::new(Vec::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
         let violations = Arc::new(Mutex::new(Vec::new()));
         let capabilities = capabilities_with(json!({
@@ -1383,7 +1390,6 @@ mod tests {
         assert!(response.get("error").is_none());
     }
 
-
     #[test]
     fn standard_dynamic_registration_paths_are_admitted() {
         let request = json!({
@@ -1439,9 +1445,9 @@ mod tests {
 
         assert_eq!(response["id"], "files-without-parent-support");
         assert_eq!(response["error"]["code"], -32601);
-        assert!(response["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("workspace.fileOperations.dynamicRegistration")));
+        assert!(response["error"]["message"].as_str().is_some_and(|message| {
+            message.contains("workspace.fileOperations.dynamicRegistration")
+        }));
     }
 
     #[test]
