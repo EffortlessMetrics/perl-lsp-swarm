@@ -16,6 +16,8 @@
 #   5. perl-parser public API compiles and produces non-empty ASTs
 #   6. scripts/install.sh downloads, SHA256SUM-verifies, and installs the
 #      GitHub release archive (Linux/macOS hosts; skipped elsewhere)
+#   7. Root install.sh wrapper: ref+digest bootstrap as GETTING_STARTED Option 2,
+#      plus wrong-digest refusal (Linux/macOS; skipped elsewhere)
 #
 # Scope: top-10 highest-value crates (binaries + key libraries).  Not every
 # crate in the publish allowlist — that would take too long.
@@ -257,6 +259,100 @@ case "$INSTALLER_HOST" in
         ;;
     *)
         pass "install.sh release-archive path skipped (installer supports Linux/macOS, host is $INSTALLER_HOST)"
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Section 1c: Root install.sh wrapper — identity-bound bootstrap (#16390)
+# ---------------------------------------------------------------------------
+
+section "Root install.sh wrapper (identity-bound bootstrap)"
+
+# Section 1b runs scripts/install.sh from the checkout. New users run the root
+# wrapper with PERL_LSP_INSTALLER_REF / PERL_LSP_INSTALLER_SHA256 instead. Copy
+# the wrapper alone so clone-local exec does not bypass identity bootstrap.
+
+case "$INSTALLER_HOST" in
+    Linux|Darwin)
+        if [[ "$SKIP_INSTALL" == "1" ]]; then
+            pass "install.sh wrapper path skipped (SKIP_INSTALL=1)"
+        else
+            RELEASE_TAG="v$VERSION"
+            INSTALLER_REF="$(git ls-remote https://github.com/EffortlessMetrics/perl-lsp.git "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
+            if [[ -z "$INSTALLER_REF" || "${#INSTALLER_REF}" -ne 40 ]]; then
+                fail "install.sh wrapper: could not resolve tag-dereferenced INSTALLER_REF for $RELEASE_TAG"
+            elif ! [[ "$INSTALLER_REF" =~ ^[0-9a-f]{40}$ ]]; then
+                fail "install.sh wrapper: INSTALLER_REF is not a 40-char lowercase commit SHA (got: $INSTALLER_REF)"
+            else
+                if command -v sha256sum >/dev/null 2>&1; then
+                    SHA_TOOL="sha256sum"
+                elif command -v shasum >/dev/null 2>&1; then
+                    SHA_TOOL="shasum -a 256"
+                else
+                    fail "install.sh wrapper: sha256sum or shasum is required to generate the installer digest"
+                    SHA_TOOL=""
+                fi
+
+                if [[ -n "${SHA_TOOL:-}" ]]; then
+                    WRAPPER_DIGEST_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/scripts/install.sh"
+                    # shellcheck disable=SC2086
+                    if ! INSTALLER_SHA256="$(curl -fsSL "$WRAPPER_DIGEST_URL" | $SHA_TOOL | cut -d' ' -f1)"; then
+                        fail "install.sh wrapper: failed to fetch or digest scripts/install.sh at $INSTALLER_REF"
+                    elif [[ "${#INSTALLER_SHA256}" -ne 64 ]]; then
+                        fail "install.sh wrapper: generated INSTALLER_SHA256 has unexpected length"
+                    else
+                        WRAPPER_ONLY_DIR="$(mktemp -d)"
+                        CLEANUP_DIRS+=("$WRAPPER_ONLY_DIR")
+                        PUBLISHED_WRAPPER_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/install.sh"
+                        ISOLATED_WRAPPER="$WRAPPER_ONLY_DIR/install.sh"
+                        if ! curl -fsSL "$PUBLISHED_WRAPPER_URL" -o "$ISOLATED_WRAPPER"; then
+                            fail "install.sh wrapper: failed to fetch root install.sh at $INSTALLER_REF"
+                        elif [[ ! -s "$ISOLATED_WRAPPER" ]]; then
+                            fail "install.sh wrapper: fetched root install.sh at $INSTALLER_REF is empty"
+                        else
+                            chmod +x "$ISOLATED_WRAPPER"
+
+                        WRAPPER_INSTALL_DIR="$(mktemp -d)"
+                        CLEANUP_DIRS+=("$WRAPPER_INSTALL_DIR")
+                        WRAPPER_LOG="$(mktemp)"
+                        if PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+                            PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" \
+                            VERSION="$RELEASE_TAG" \
+                            INSTALL_DIR="$WRAPPER_INSTALL_DIR" \
+                            bash "$ISOLATED_WRAPPER" >"$WRAPPER_LOG" 2>&1; then
+                            WRAPPER_VERSION_OUTPUT="$("$WRAPPER_INSTALL_DIR/perllsp" --version 2>&1 | head -n 1)"
+                            if [[ "$WRAPPER_VERSION_OUTPUT" =~ $VERSION ]]; then
+                                pass "install.sh wrapper installed perllsp and --version reports $VERSION (got: $WRAPPER_VERSION_OUTPUT)"
+                            else
+                                fail "install.sh wrapper finished but perllsp --version did not report $VERSION (got: $WRAPPER_VERSION_OUTPUT)"
+                            fi
+                        else
+                            fail "install.sh wrapper bootstrap install failed for $RELEASE_TAG; log:"
+                            cat "$WRAPPER_LOG" >&2
+                        fi
+                        rm -f "$WRAPPER_LOG"
+
+                        BAD_DIGEST="0000000000000000000000000000000000000000000000000000000000000000"
+                        NEG_LOG="$(mktemp)"
+                        if PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+                            PERL_LSP_INSTALLER_SHA256="$BAD_DIGEST" \
+                            bash "$ISOLATED_WRAPPER" >"$NEG_LOG" 2>&1; then
+                            fail "install.sh wrapper accepted wrong PERL_LSP_INSTALLER_SHA256"
+                        elif grep -q 'SHA-256 mismatch' "$NEG_LOG"; then
+                            pass "install.sh wrapper refuses wrong installer digest (SHA-256 mismatch)"
+                        else
+                            fail "install.sh wrapper wrong-digest refusal missing expected SHA-256 mismatch message"
+                            cat "$NEG_LOG" >&2
+                        fi
+                        rm -f "$NEG_LOG"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+        ;;
+    *)
+        pass "install.sh wrapper path skipped (installer supports Linux/macOS, host is $INSTALLER_HOST)"
         ;;
 esac
 
