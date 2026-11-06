@@ -206,9 +206,10 @@ sub probe_def {
 "#;
     workspace.write("lib/Scale00/Mod00.pm", caller_code)?;
 
-    // The target exists only as an open buffer, never on disk: while it is
-    // open the workspace index is deterministically stale for it (it was
-    // never indexed), which is exactly the flip state observed in #17252.
+    // The target exists only as an open buffer, never on disk. While it is
+    // open without a matching indexed generation, cross-file index consumers
+    // treat the workspace as stale and cannot answer for symbols that exist
+    // only in other open buffers — the flip state observed in #17252.
     let target_text = r#"package Scale03::Mod00;
 sub compute_0 {
     my ($n) = @_;
@@ -252,12 +253,12 @@ sub compute_0 {
 /// `sub Scale03::Mod00::helper` names its package explicitly without a
 /// `package` statement, so a `Scale03::Mod00::helper()` call in the same file
 /// (whose ambient package is `Scale00::Mod00`) must resolve to that same-file
-/// declaration — whichever tier answers (the didOpen commit feeds the buffer
-/// into the index, so the qualified index lookup may answer directly; the
-/// same-file fallback decision itself is pinned deterministically by
-/// `same_file_answer_package_matches_reads_final_qualifier` in
-/// navigation.rs). The range assertion proves the answer lands on the
-/// declaration, not just anywhere in the caller file (review on PR #17280).
+/// declaration when the workspace index cannot answer. The fixture leaves the
+/// index on an on-disk stub while the buffer holds the qualified declaration,
+/// and keeps a never-on-disk open buffer so index lookups stay gated off —
+/// forcing the same-file tier guarded by `same_file_answer_package_matches`
+/// (#17302). The range assertion proves the answer lands on the declaration,
+/// not just anywhere in the caller file (review on PR #17280).
 #[test]
 fn explicitly_qualified_same_file_decl_resolves() -> TestResult {
     let mut harness = LspHarness::new();
@@ -279,24 +280,37 @@ sub probe_def {
 
 1;
 "#;
-    // Disk version without the helper: the startup index cannot answer for
-    // Scale03::Mod00::helper, whatever the staleness window does.
-    workspace.write(
-        "lib/Scale00/Mod00.pm",
-        r#"package Scale00::Mod00;
+    // On-disk stub without the helper: the initial workspace scan cannot
+    // answer for `Scale03::Mod00::helper`.
+    let disk_stub = r#"package Scale00::Mod00;
 use strict;
 use warnings;
 
 sub probe_def_shim { 0 }
 
 1;
-"#,
-    )?;
+"#;
+    workspace.write("lib/Scale00/Mod00.pm", disk_stub)?;
 
     harness.initialize_with_root(&workspace.root_uri, None)?;
     let caller_uri = workspace.uri("lib/Scale00/Mod00.pm");
-    harness.open(&caller_uri, caller_code)?;
+    harness.open(&caller_uri, disk_stub)?;
     harness.barrier();
+
+    // Advance the buffer to the real fixture while leaving the workspace index
+    // on the on-disk stub (no Scale03::Mod00::helper symbol). Cross-file index
+    // consumers stay stale until the edited buffer is re-indexed (#17302).
+    harness.change_full(&caller_uri, 2, caller_code)?;
+
+    // A second package file that exists only as an open buffer (never written
+    // to disk) keeps the workspace index stale, so the qualified call cannot
+    // be answered from the index and must reach the same-file predicate (#17302).
+    let stale_anchor_text = r#"package Scale03::Mod00;
+sub index_anchor { 0 }
+1;
+"#;
+    let stale_anchor_uri = workspace.uri("lib/Scale03/Mod00.pm");
+    harness.open(&stale_anchor_uri, stale_anchor_text)?;
 
     let call_line = caller_code
         .lines()
