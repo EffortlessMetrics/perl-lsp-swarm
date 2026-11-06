@@ -3262,6 +3262,33 @@
       "notes": "Prove the compiler performance receipt contract discriminates — the falsifiers for every schema, typed, and cross-field rule — then validate the committed schema and every receipt fixture against it"
     },
     {
+      "surface_id": "gate:snapshot_warm_start_receipt_contract",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#snapshot_warm_start_receipt_contract",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Prove snapshot_warm_start_receipt.v1 discriminates missing instrumentation, work avoidance, correctness admission, and comparison laws (#16992)"
+    },
+    {
       "surface_id": "gate:compiler_proof_policy",
       "class": "gate",
       "class_authority": {

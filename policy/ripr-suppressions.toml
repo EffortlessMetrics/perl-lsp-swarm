@@ -4271,6 +4271,18 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-12-31"
 removal_criteria = "Remove when the module gains a production caller, when ripr gains a non-production classification for xtask automation modules, or when compiler_performance_receipt_contract is retired. Narrow immediately if any seam outside this module's automation scope is attributed to this entry."
+[[suppress]]
+id = "ripr-suppress-snapshot-warm-start-receipt-automation"
+kind = "generated_or_non_production_surface"
+paths = ["xtask/src/tasks/snapshot_warm_start_receipt.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#16992"
+reason = "xtask/src/tasks/snapshot_warm_start_receipt.rs (#16992) is repository automation for the snapshot_warm_start_receipt.v1 contract validator and merge-gate command, with no production caller by design."
+created = "2026-11-02"
+review_after = "2027-02-02"
+expires = "2027-06-30"
+removal_criteria = "Remove when the module gains a production caller or when snapshot_warm_start_receipt_contract is retired."
 # Compiler upstream conformance status packet declaration probes (#12532,
 # PR #15604): the same declaration-line ripr#1429 class accepted for this
 # crate's siblings (ripr-suppress-14958-startup-inc-snapshot-declarations,
