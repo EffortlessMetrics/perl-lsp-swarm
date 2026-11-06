@@ -7,13 +7,16 @@
 //! - Timeout/hang risk detection
 //! - Machine-readable report generation
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tempfile::NamedTempFile;
 
+mod check_authority;
 mod corpus;
 mod ga_alignment;
 mod nodekind_analysis;
@@ -157,17 +160,19 @@ pub fn run(config: AuditConfig) -> Result<()> {
         fs::create_dir_all(parent).context("Failed to create output directory")?;
     }
 
-    // Check if report already exists and not in fresh mode
-    if !config.fresh && config.output_path.exists() && config.check {
-        println!("ℹ️  Using existing report (use --fresh to regenerate)");
-        let report_content =
-            fs::read_to_string(&config.output_path).context("Failed to read existing report")?;
-        let report: AuditReport =
-            serde_json::from_str(&report_content).context("Failed to parse existing report")?;
-
-        // In check mode, validate the report and exit
-        return validate_report_for_ci(&report);
-    }
+    let stored_report_for_check = if config.check {
+        if !config.output_path.exists() {
+            bail!("{} {}", check_authority::MISSING_REPORT_PREFIX, config.output_path.display());
+        }
+        let report_content = fs::read_to_string(&config.output_path).with_context(|| {
+            format!("Failed to read stored report at {}", config.output_path.display())
+        })?;
+        Some(serde_json::from_str(&report_content).with_context(|| {
+            format!("Failed to parse stored report at {}", config.output_path.display())
+        })?)
+    } else {
+        None
+    };
 
     // Step 1: Parse corpus files with timeout protection
     println!("\n📂 Step 1: Parsing corpus files...");
@@ -197,10 +202,16 @@ pub fn run(config: AuditConfig) -> Result<()> {
         start_time.elapsed(),
     );
 
-    // Write report to file
+    if config.check {
+        let stored = stored_report_for_check.expect("check mode loads stored report before audit");
+        check_authority::compare_stored_report_for_check(&stored, &report)?;
+        validate_report_for_ci(&report)?;
+    }
+
+    // Write report to file after check authority and CI validation succeed.
     let report_json =
         serde_json::to_string_pretty(&report).context("Failed to serialize report")?;
-    fs::write(&config.output_path, report_json).context("Failed to write report file")?;
+    write_report_atomically(&config.output_path, report_json.as_bytes())?;
 
     println!("\n✅ Corpus audit completed successfully!");
     println!("   Report written to: {}", config.output_path.display());
@@ -208,11 +219,30 @@ pub fn run(config: AuditConfig) -> Result<()> {
     // Print summary
     print_audit_summary(&report);
 
-    // In check mode, validate and exit with appropriate code
-    if config.check {
-        return validate_report_for_ci(&report);
-    }
+    Ok(())
+}
 
+fn write_report_atomically(path: &Path, content: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create output directory {}", parent.display()))?;
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary report for {}", path.display()))?;
+    temporary
+        .write_all(content)
+        .with_context(|| format!("writing temporary report for {}", path.display()))?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .with_context(|| format!("syncing temporary report for {}", path.display()))?;
+    temporary.persist(path).map_err(|error| {
+        color_eyre::eyre::eyre!("atomically replacing {}: {}", path.display(), error.error)
+    })?;
     Ok(())
 }
 
