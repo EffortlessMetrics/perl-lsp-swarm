@@ -11,6 +11,7 @@ pub mod artifacts;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
 pub mod critic_oracle;
+pub mod critic_oracle_plan;
 mod git;
 #[path = "target_contracts/io.rs"]
 pub mod io;
