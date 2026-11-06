@@ -11,7 +11,16 @@ const WORKFLOW_POLICY_COMMAND: &str =
     "        run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint";
 const WORKFLOW_POLICY_STEP: &str =
     "      - name: Workflow policy CLI wiring (required merge surface)";
-const REQUIRED_JOB_IF: &str = "    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+const REQUIRED_JOB_IF: &str = r"    if: >-
+      always() &&
+      (
+        needs.draft-pr-check.result != 'success' ||
+        (needs.draft-pr-check.outputs.run_ci != 'true' && needs.draft-pr-check.outputs.run_ci != 'false') ||
+        (
+          needs.draft-pr-check.outputs.run_ci == 'true' &&
+          (needs.preflight-latest-check.result != 'success' || needs.preflight-latest-check.outputs.is_latest != 'false')
+        )
+      )";
 
 use serde_yaml_ng::Value;
 
@@ -80,7 +89,7 @@ fn required_step_wiring(
     expected_command: &str,
 ) -> Result<(), &'static str> {
     let job = job_block(workflow, "check-all-targets").ok_or("required job is absent")?;
-    if job.lines().filter(|line| *line == REQUIRED_JOB_IF).count() != 1 {
+    if job.matches(REQUIRED_JOB_IF).count() != 1 {
         return Err("required job reachability changed");
     }
     if job.lines().any(|line| {

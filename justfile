@@ -126,19 +126,25 @@ check-all-targets:
 # Scan every tracked file for committed git conflict marker lines.
 # Catches accidental conflict-marker commits before they break compilation or CI.
 # Historically caused: broken reconciler (3 cron cycles, #6869), corrupted docs (#7042).
-# Cost: <1s. Zero false positives for lines starting with exactly 7 < / > chars or =======$
+# Default-or-longer Git opener/closer/base markers; retain exact-seven separators
+# because longer bare '=' lines are valid Markdown headings and example dividers.
 check-conflict-markers:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Search tracked files only; avoid binary files and .git
-    matches=$(git ls-files -z | xargs -0 grep -lP '^(<{7} |>{7} |={7}$)' 2>/dev/null || true)
-    if [ -n "$matches" ]; then
+    # Search tracked text files only, and propagate scanner errors.
+    if matches=$(git grep -Il -E '^(<{7,} |>{7,} |\|{7,} |={7}$)' -- .); then
         echo "❌ Conflict markers found in committed files:"
         echo "$matches"
         echo ""
-        echo "Run: grep -rn -P '^(<{7} |>{7} |={7}\$)' \$(git ls-files)"
+        echo "Run: git grep -n -I -E '^(<{7,} |>{7,} |\|{7,} |={7}\$)' -- ."
         echo "to locate exact lines, then resolve and re-commit."
         exit 1
+    else
+        status=$?
+        if [ "$status" -ne 1 ]; then
+            echo "Conflict marker scan failed with status $status" >&2
+            exit "$status"
+        fi
     fi
     echo "✅ No conflict markers found"
 
