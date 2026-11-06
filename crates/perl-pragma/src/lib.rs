@@ -10,6 +10,9 @@
 use perl_ast::ast::Node;
 use std::ops::Range;
 
+/// Versioned compile-environment schema; no directive interpreter.
+pub mod compile_environment;
+
 mod args;
 mod conditional;
 mod features;

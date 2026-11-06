@@ -1,0 +1,204 @@
+{
+  "dispositions": [
+    "exact_applied",
+    "exact_no_effect",
+    "conditional",
+    "limited",
+    "unsupported",
+    "unavailable",
+    "stale",
+    "resource_or_instrument_failure"
+  ],
+  "source_kinds": [
+    "package_decl",
+    "sub_decl",
+    "method_decl",
+    "variable_decl",
+    "use_directive",
+    "no_directive",
+    "require_directive",
+    "phase_block",
+    "symbolic_reference_deref",
+    "assignment",
+    "typeglob_assignment",
+    "scope_graph",
+    "stash_graph",
+    "compile_environment"
+  ],
+  "reasons": [
+    {
+      "token": "dynamic_conditional_effect",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": "DynamicValue",
+      "fact": "features"
+    },
+    {
+      "token": "ambiguous_conditional_target",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "import_visibility"
+    },
+    {
+      "token": "dynamic_import",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": null,
+      "fact": "import_visibility"
+    },
+    {
+      "token": "unknown_warning_name",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "warnings"
+    },
+    {
+      "token": "unknown_feature_name",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "features"
+    },
+    {
+      "token": "dynamic_warning_arguments",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": "DynamicValue",
+      "fact": "warnings"
+    },
+    {
+      "token": "dynamic_feature_arguments",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": "DynamicValue",
+      "fact": "features"
+    },
+    {
+      "token": "source_filter",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "encoding"
+    },
+    {
+      "token": "generated_source",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "encoding"
+    },
+    {
+      "token": "eval_string",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "generated_members"
+    },
+    {
+      "token": "dynamic_require",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": "DynamicRequire",
+      "fact": "module_graph"
+    },
+    {
+      "token": "dynamic_include_root",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": "DynamicIncludePath",
+      "fact": "include_roots"
+    },
+    {
+      "token": "malformed_directive",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "provider_exactness"
+    },
+    {
+      "token": "recovery_ambiguous_directive",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "provider_exactness"
+    },
+    {
+      "token": "dynamic_stash",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": null,
+      "fact": "package_bindings"
+    },
+    {
+      "token": "dynamic_typeglob",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": null,
+      "fact": "package_bindings"
+    },
+    {
+      "token": "dynamic_inheritance",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": null,
+      "fact": "inheritance"
+    },
+    {
+      "token": "dynamic_generated_member",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": null,
+      "fact": "generated_members"
+    },
+    {
+      "token": "phase_block_execution",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "provider_exactness"
+    },
+    {
+      "token": "ambient_input",
+      "semantic_reason": null,
+      "boundary_kind": "ExternalEnvironment",
+      "fact": "provider_exactness"
+    },
+    {
+      "token": "native_capability",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "call_resolution"
+    },
+    {
+      "token": "stale_profile",
+      "semantic_reason": "StaleDependency",
+      "boundary_kind": null,
+      "fact": "profile"
+    },
+    {
+      "token": "stale_source",
+      "semantic_reason": "StaleDependency",
+      "boundary_kind": null,
+      "fact": "provider_exactness"
+    },
+    {
+      "token": "stale_dependency",
+      "semantic_reason": "StaleDependency",
+      "boundary_kind": null,
+      "fact": "module_graph"
+    },
+    {
+      "token": "resource_exhaustion",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "provider_exactness"
+    },
+    {
+      "token": "instrument_failure",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "provider_exactness"
+    },
+    {
+      "token": "dynamic_unimport",
+      "semantic_reason": "DynamicValue",
+      "boundary_kind": null,
+      "fact": "import_visibility"
+    },
+    {
+      "token": "custom_import",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "import_visibility"
+    },
+    {
+      "token": "custom_unimport",
+      "semantic_reason": null,
+      "boundary_kind": null,
+      "fact": "import_visibility"
+    }
+  ]
+}
