@@ -55,7 +55,7 @@ import uuid
 from pathlib import Path
 
 # Statuses meaning a gate ran and did not pass.
-BLOCKING_STATUSES = ("fail", "timeout", "error")
+BLOCKING_STATUSES = ("fail", "timeout", "error", "not_evaluated")
 # Statuses meaning a gate ran and passed; anything else is listed in the table.
 PASSING_STATUSES = ("pass", "passed", "success")
 MAX_ANNOTATIONS = 10
