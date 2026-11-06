@@ -7,6 +7,8 @@
 use perl_lexer::{PerlLexer, TokenType};
 use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
 
+mod policy;
+
 /// Extracts folding ranges from a Perl AST
 pub struct FoldingRangeExtractor {
     /// Accumulated folding ranges during extraction
@@ -185,219 +187,55 @@ impl FoldingRangeExtractor {
 
     /// Visit a node and extract folding ranges
     fn visit_node(&mut self, node: &Node) {
-        match &node.kind {
-            NodeKind::Program { statements } => {
-                // Group consecutive use/require statements
-                let mut import_start: Option<usize> = None;
-                let mut import_end: Option<usize> = None;
+        if let NodeKind::Program { statements } = &node.kind {
+            self.extract_program_import_folds(statements);
+            for stmt in statements {
+                self.visit_node(stmt);
+            }
+            return;
+        }
 
-                for (i, stmt) in statements.iter().enumerate() {
-                    match &stmt.kind {
-                        NodeKind::Use { .. } | NodeKind::No { .. } => {
-                            if import_start.is_none() {
-                                import_start = Some(i);
-                            }
-                            import_end = Some(i);
-                        }
-                        _ => {
-                            // End of import block
-                            if let (Some(start_idx), Some(end_idx)) = (import_start, import_end)
-                                && end_idx > start_idx
-                            {
-                                // Multiple imports - create folding range
-                                let start_loc = &statements[start_idx].location;
-                                let end_loc = &statements[end_idx].location;
-                                self.add_range_from_locations(
-                                    start_loc,
-                                    end_loc,
-                                    Some(FoldingRangeKind::Imports),
-                                );
-                            }
-                            import_start = None;
-                            import_end = None;
-                        }
+        self.apply_fold_policy(node);
+        node.for_each_child_with_field(|_, child| self.visit_node(child));
+    }
+
+    fn extract_program_import_folds(&mut self, statements: &[Node]) {
+        // Group consecutive use/require statements
+        let mut import_start: Option<usize> = None;
+        let mut import_end: Option<usize> = None;
+
+        for (i, stmt) in statements.iter().enumerate() {
+            match &stmt.kind {
+                NodeKind::Use { .. } | NodeKind::No { .. } => {
+                    if import_start.is_none() {
+                        import_start = Some(i);
                     }
-
-                    // Visit each statement
-                    self.visit_node(stmt);
+                    import_end = Some(i);
                 }
-
-                // Handle trailing imports
-                if let (Some(start_idx), Some(end_idx)) = (import_start, import_end)
-                    && end_idx > start_idx
-                {
-                    let start_loc = &statements[start_idx].location;
-                    let end_loc = &statements[end_idx].location;
-                    self.add_range_from_locations(
-                        start_loc,
-                        end_loc,
-                        Some(FoldingRangeKind::Imports),
-                    );
-                }
-            }
-
-            NodeKind::Package { name: _, block, name_span: _ } => {
-                // Package with block is foldable
-                if let Some(block_node) = block {
-                    self.add_range_from_node(node, None);
-                    self.visit_node(block_node);
-                } else {
-                    // Even packages without explicit blocks could be foldable
-                    // if they span multiple lines (e.g., package Foo; ... package Bar;)
-                    self.add_range_from_node(node, None);
+                _ => {
+                    if let (Some(start_idx), Some(end_idx)) = (import_start, import_end)
+                        && end_idx > start_idx
+                    {
+                        let start_loc = &statements[start_idx].location;
+                        let end_loc = &statements[end_idx].location;
+                        self.add_range_from_locations(
+                            start_loc,
+                            end_loc,
+                            Some(FoldingRangeKind::Imports),
+                        );
+                    }
+                    import_start = None;
+                    import_end = None;
                 }
             }
+        }
 
-            NodeKind::Subroutine { name: _, prototype: _, signature: _, body, .. }
-            | NodeKind::Method { name: _, signature: _, body, .. } => {
-                // Subroutines and methods are foldable
-                self.add_range_from_node(node, None);
-                self.visit_node(body);
-            }
-
-            NodeKind::Block { statements } => {
-                // Blocks are foldable if they contain statements
-                if !statements.is_empty() {
-                    self.add_range_from_node(node, None);
-                }
-                for stmt in statements {
-                    self.visit_node(stmt);
-                }
-            }
-
-            NodeKind::If { condition: _, then_branch, elsif_branches, else_branch, .. } => {
-                // If statements with blocks are foldable
-                self.add_range_from_node(node, None);
-                self.visit_node(then_branch);
-                for (_, branch) in elsif_branches {
-                    self.visit_node(branch);
-                }
-                if let Some(else_br) = else_branch {
-                    self.visit_node(else_br);
-                }
-            }
-
-            NodeKind::While { condition: _, body, continue_block, .. } => {
-                self.add_range_from_node(node, None);
-                self.visit_node(body);
-                if let Some(cont) = continue_block {
-                    self.visit_node(cont);
-                }
-            }
-
-            NodeKind::For { init: _, condition: _, update: _, body, continue_block: _ }
-            | NodeKind::Foreach { variable: _, list: _, body, continue_block: _ } => {
-                self.add_range_from_node(node, None);
-                self.visit_node(body);
-            }
-
-            NodeKind::Do { block } | NodeKind::Eval { block } | NodeKind::Defer { block } => {
-                self.add_range_from_node(node, None);
-                self.visit_node(block);
-            }
-
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                self.add_range_from_node(node, None);
-                self.visit_node(body);
-                for (_, catch_block) in catch_blocks {
-                    self.visit_node(catch_block);
-                }
-                if let Some(finally) = finally_block {
-                    self.visit_node(finally);
-                }
-            }
-
-            NodeKind::Given { expr: _, body } => {
-                self.add_range_from_node(node, None);
-                self.visit_node(body);
-            }
-
-            NodeKind::PhaseBlock { phase: _, phase_span: _, block } => {
-                // BEGIN, END, CHECK, INIT blocks
-                self.add_range_from_node(node, None);
-                self.visit_node(block);
-            }
-
-            NodeKind::Class { body, .. } => {
-                self.add_range_from_node(node, None);
-                self.visit_node(body);
-            }
-
-            // POD is typically inside strings or special constructs, not a separate NodeKind
-            NodeKind::Heredoc { body_span, .. } => {
-                // Heredocs are always foldable as regions. Fold the body span
-                // rather than the declaration node location: the `<<'END'`
-                // declaration sits on a single line, so the node location can
-                // never produce a multiline range, while the body span does.
-                // Single-line bodies still drop out later via the
-                // multiline-only LSP filter.
-                if let Some(body) = body_span.as_ref() {
-                    self.add_range_from_content_span(body, Some(FoldingRangeKind::Region));
-                }
-            }
-
-            NodeKind::StatementModifier { statement, modifier: _, condition } => {
-                self.visit_node(statement);
-                self.visit_node(condition);
-            }
-
-            NodeKind::ArrayLiteral { elements } => {
-                // Arrays are foldable if they have elements
-                // (They'll be filtered out later if too small)
-                if !elements.is_empty() {
-                    self.add_range_from_node(node, None);
-                }
-                for elem in elements {
-                    self.visit_node(elem);
-                }
-            }
-
-            NodeKind::HashLiteral { pairs } => {
-                // Hashes with elements are foldable
-                if !pairs.is_empty() {
-                    self.add_range_from_node(node, None);
-                }
-                for (key, value) in pairs {
-                    self.visit_node(key);
-                    self.visit_node(value);
-                }
-            }
-
-            // ArrayRef and HashRef don't exist as separate NodeKinds, they're handled via references
-            NodeKind::VariableDeclaration { initializer: Some(init), .. } => {
-                self.visit_node(init);
-            }
-
-            NodeKind::DataSection { marker: _, body, .. }
-                // Fold the data section body as a comment
-                if body.is_some() =>
-            {
-                self.add_range_from_node(node, Some(FoldingRangeKind::Comment));
-            }
-
-            NodeKind::LabeledStatement { label: _, statement } => {
-                // Labeled loops (LABEL: while/for/foreach) fold the inner statement
-                self.add_range_from_node(node, None);
-                self.visit_node(statement);
-            }
-
-            NodeKind::Format { .. } => {
-                // Format declarations fold as regions (like heredocs)
-                self.add_range_from_node(node, Some(FoldingRangeKind::Region));
-            }
-
-            NodeKind::Tie { variable, package, args } => {
-                // Tie expressions with arguments are foldable when multi-line
-                self.add_range_from_node(node, None);
-                self.visit_node(variable);
-                self.visit_node(package);
-                for arg in args {
-                    self.visit_node(arg);
-                }
-            }
-
-            // Other node types - visit children if any
-            _ => {}
+        if let (Some(start_idx), Some(end_idx)) = (import_start, import_end)
+            && end_idx > start_idx
+        {
+            let start_loc = &statements[start_idx].location;
+            let end_loc = &statements[end_idx].location;
+            self.add_range_from_locations(start_loc, end_loc, Some(FoldingRangeKind::Imports));
         }
     }
 
@@ -902,5 +740,82 @@ mod tests {
         let ranges = FoldingRangeExtractor::extract_region_markers(source);
         assert_eq!(ranges.len(), 1);
         assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 30));
+    }
+
+    fn parse_folds(source: &str) -> Result<Vec<FoldingRange>, String> {
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse().map_err(|e| format!("parse failed: {e:?}"))?;
+        let mut extractor = FoldingRangeExtractor::new();
+        Ok(extractor.extract(&ast))
+    }
+
+    #[test]
+    fn package_without_block_does_not_fold() -> Result<(), String> {
+        let source = "package Foo;\nmy $x = 1;\nmy $y = 2;\n";
+        let ranges = parse_folds(source)?;
+        let package_line_end = source.find('\n').unwrap_or(source.len());
+        assert!(
+            !ranges
+                .iter()
+                .any(|range| { range.start_offset == 0 && range.end_offset >= package_line_end }),
+            "blockless package must not produce a region fold: {ranges:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn foreach_continue_block_is_traversed_for_nested_folds() -> Result<(), String> {
+        let source = r#"foreach my $i (1..2) {
+    1;
+} continue {
+    sub nested_continue { 1; }
+}
+"#;
+        let ranges = parse_folds(source)?;
+        let sub_start =
+            source.find("sub nested_continue").ok_or("fixture must contain sub".to_string())?;
+        assert!(
+            ranges
+                .iter()
+                .any(|range| range.start_offset <= sub_start && range.end_offset > sub_start),
+            "continue block must be visited so nested subs fold: {ranges:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn given_when_and_default_arms_are_foldable() -> Result<(), String> {
+        let source = r#"given ($value) {
+    when (1) { say 'one'; }
+    default { say 'other'; }
+}
+"#;
+        let ranges = parse_folds(source)?;
+        let when_start = source.find("when (1)").ok_or("when arm".to_string())?;
+        let default_start = source.find("default").ok_or("default arm".to_string())?;
+        assert!(
+            ranges
+                .iter()
+                .any(|range| range.start_offset <= when_start && range.end_offset > when_start),
+            "when arm must fold: {ranges:?}"
+        );
+        assert!(
+            ranges.iter().any(|range| {
+                range.start_offset <= default_start && range.end_offset > default_start
+            }),
+            "default arm must fold: {ranges:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn variable_declaration_does_not_fold() -> Result<(), String> {
+        let source = "my $value =\n    1;\n";
+        let ranges = parse_folds(source)?;
+        assert!(
+            ranges.is_empty(),
+            "variable declarations bind names and must not fold: {ranges:?}"
+        );
+        Ok(())
     }
 }
