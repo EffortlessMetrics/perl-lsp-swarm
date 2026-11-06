@@ -21,6 +21,7 @@ perl-test-must = { workspace = true }
 proptest = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
