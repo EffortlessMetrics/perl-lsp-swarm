@@ -1,7 +1,7 @@
 //! Line-oriented literal/comment scanner lifted from completion `lexical_context`.
 //!
-//! Emits line-comment regions with quote/heredoc awareness so `#` inside string
-//! literals is not classified as comment.
+//! Emits comments, POD, and heredoc regions in one pass so opaque bodies do not
+//! create boundaries belonging to another source family.
 
 use std::cmp::Ordering;
 
@@ -15,22 +15,39 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
     let mut literal_state = LiteralScanState::default();
     let mut in_pod_block = false;
     let mut pod_start: Option<usize> = None;
+    let mut active_heredoc: Option<(usize, String, bool)> = None;
+    let mut open_literal = ScanCarry::Clear;
     let mut line_start = 0usize;
 
     for raw_line in source.split_inclusive('\n') {
         let line_end = line_start + raw_line.len();
         let line = strip_line_ending(raw_line);
 
-        if is_pod_end_marker(line) {
-            if let Some(start) = pod_start.take() {
-                push_region(&mut regions, start, line_end, SourceRegionKind::Pod);
+        if let Some((body_start, label, allow_indented)) = active_heredoc.take() {
+            // Keep the existing padded-terminator recovery policy. A quoted
+            // label may itself end in whitespace, so the trimmed comparison
+            // is additive rather than replacing the exact comparison.
+            let candidate =
+                if allow_indented { line.trim_start_matches([' ', '\t']) } else { line };
+            let closes = candidate == label || candidate.trim_end_matches([' ', '\t']) == label;
+            if closes {
+                push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);
+            } else {
+                active_heredoc = Some((body_start, label, allow_indented));
             }
-            in_pod_block = false;
+            // Neither POD directives nor quotes/comments in a real heredoc
+            // body (or its terminator line) update the code-level states.
             line_start = line_end;
             continue;
         }
 
         if in_pod_block {
+            if is_pod_end_marker(line) {
+                if let Some(start) = pod_start.take() {
+                    push_region(&mut regions, start, line_end, SourceRegionKind::Pod);
+                }
+                in_pod_block = false;
+            }
             line_start = line_end;
             continue;
         }
@@ -49,8 +66,17 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
             push_region(&mut regions, comment_start, line_end, SourceRegionKind::LineComment);
         }
 
+        let (opener, carry) = heredoc_opener_on_line_from(line, open_literal);
+        open_literal = carry;
+        if let Some((label, allow_indented)) = opener {
+            active_heredoc = Some((line_end, label, allow_indented));
+        }
         literal_state.scan_segment(source.as_bytes(), line_start, line_end);
         line_start = line_end;
+    }
+
+    if let Some((body_start, _, _)) = active_heredoc {
+        push_region(&mut regions, body_start, source.len(), SourceRegionKind::Heredoc);
     }
 
     if literal_state.is_active() {
@@ -71,53 +97,13 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
     regions
 }
 
-/// Heredoc body regions between opener line and closing delimiter line.
-pub(super) fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
-    let mut regions = Vec::new();
-    let mut active: Option<(usize, String, bool)> = None;
-    let mut line_start = 0usize;
-    // Literal state left open by the previous *code* line: a string delimiter,
-    // or a quote-like literal still being consumed. A heredoc body is not
-    // code, so this is deliberately frozen while one is being consumed.
-    let mut open_literal = ScanCarry::Clear;
-
-    for raw_line in source.split_inclusive('\n') {
-        let line_end = line_start + raw_line.len();
-        let line = strip_line_ending(raw_line);
-
-        if let Some((body_start, label, allow_indented)) = active.take() {
-            // Trailing spaces/tabs after the delimiter still close the region.
-            // `PerlLexer` rejects that line (Perl 5.38.2 agrees); the collector
-            // consumes the padding when deciding the *region* closed so
-            // following source is not reclassified as recovery (#14864).
-            //
-            // The trimmed comparison is an *additional* way to close, never a
-            // replacement: a quoted label may itself end in whitespace
-            // (`<<"EOF "`), and trimming alone would stop that line matching.
-            let candidate =
-                if allow_indented { line.trim_start_matches([' ', '\t']) } else { line };
-            let closes = candidate == label || candidate.trim_end_matches([' ', '\t']) == label;
-            if closes {
-                push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);
-            } else {
-                active = Some((body_start, label, allow_indented));
-            }
-        } else {
-            let (opener, carry) = heredoc_opener_on_line_from(line, open_literal);
-            open_literal = carry;
-            if let Some((label, allow_indented)) = opener {
-                active = Some((line_end, label, allow_indented));
-            }
-        }
-
-        line_start = line_end;
-    }
-
-    if let Some((body_start, _, _)) = active {
-        push_region(&mut regions, body_start, source.len(), SourceRegionKind::Heredoc);
-    }
-
-    regions
+/// Keep the focused heredoc tests on the same producer used by the collector.
+#[cfg(test)]
+fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
+    scan_line_comments_and_open_literals(source)
+        .into_iter()
+        .filter(|region| region.kind == SourceRegionKind::Heredoc)
+        .collect()
 }
 
 /// Opener on `line`, given the string delimiter (if any) left open by the
