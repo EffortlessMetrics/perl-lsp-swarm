@@ -33,9 +33,10 @@ pub mod decl;
 pub mod facts;
 pub mod r#ref;
 
-pub use decl::{SymbolDecl, extract_symbol_decls};
+pub use decl::{SymbolDecl, extract_lexical_scope_regions, extract_symbol_decls};
 pub use facts::{
     SymbolDeclSemanticFacts, SymbolRefSemanticFacts, UnsupportedDeclFact,
     symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts,
+    symbol_refs_to_semantic_facts_with_declarations,
 };
 pub use r#ref::{SymbolRef, SymbolRefKind, extract_symbol_refs};

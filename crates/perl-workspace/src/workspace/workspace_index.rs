@@ -108,8 +108,10 @@ use crate::workspace_symbol_query::{
     legacy_index_match_rank, match_searchable_key,
 };
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
-use perl_symbol::surface::decl::{SymbolDecl, extract_symbol_decls};
-use perl_symbol::surface::facts::{symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts};
+use perl_symbol::surface::decl::{SymbolDecl, extract_lexical_scope_regions, extract_symbol_decls};
+use perl_symbol::surface::facts::{
+    symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts_with_declarations,
+};
 // Only used by `build_canonical_fact_shard_for_ast`, which is now
 // `#[cfg(test)]`-gated (shadow/parity-harness-only as of the 1711-B cutover).
 #[cfg(test)]
@@ -3576,17 +3578,16 @@ impl WorkspaceIndex {
         let refs = extract_symbol_refs(ast);
         #[cfg(test)]
         reindex_metrics::record_ref_extract(ref_start.elapsed());
+        let lexical_scope_regions = extract_lexical_scope_regions(ast);
 
         // Run the canonical adapters.
         let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
 
-        // Build an entity lookup map for reference resolution.
-        let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
-            decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
-        let ref_facts = symbol_refs_to_semantic_facts(
+        let ref_facts = symbol_refs_to_semantic_facts_with_declarations(
             &refs,
             file_id,
-            &entity_ids_by_name,
+            &decls,
+            &lexical_scope_regions,
             &std::collections::BTreeMap::new(),
         );
 
@@ -3751,19 +3752,13 @@ impl WorkspaceIndex {
         let file_id = Self::hash_uri_to_file_id(uri);
 
         let decl_facts = symbol_decls_to_semantic_facts(decls, file_id);
+        let lexical_scope_regions = extract_lexical_scope_regions(ast);
 
-        // Own declarations rank above inherited aliases (#812: own overrides
-        // rank above inherited methods): the declaration map wins the lookup
-        // and the alias map is only consulted when it misses. Aliases are
-        // dispatch-only entries -- a `Child::name()` call or `\&Child::name`
-        // coderef names a concrete subroutine and must not silently bind the
-        // parent's method entity.
-        let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
-            decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
-        let ref_facts = symbol_refs_to_semantic_facts(
+        let ref_facts = symbol_refs_to_semantic_facts_with_declarations(
             refs,
             file_id,
-            &entity_ids_by_name,
+            decls,
+            &lexical_scope_regions,
             inherited_method_aliases,
         );
 
@@ -15490,6 +15485,78 @@ sub bar { return $greeting; }
     /// `test_corpus/` lives.
     fn corpus_root(rel: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel)
+    }
+
+    #[test]
+    fn dancer2_initialized_lexicals_resolve_to_their_own_declaration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path =
+            corpus_root("test_corpus/real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm");
+        let text = std::fs::read_to_string(&path)?;
+        let uri =
+            url::Url::from_file_path(&path).map_err(|()| "fixture path cannot become file URI")?;
+        let mut parser = Parser::new(&text);
+        let ast = must(parser.parse());
+        let bundle = build_bundle_unified(uri.as_str(), &text, &ast);
+
+        let mut variable_entities: Vec<_> = bundle
+            .canonical_shard
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.kind == EntityKind::Variable && entity.canonical_name.ends_with("::method")
+            })
+            .collect();
+        variable_entities.sort_by_key(|entity| {
+            entity
+                .anchor_id
+                .and_then(|anchor_id| {
+                    bundle
+                        .canonical_shard
+                        .anchors
+                        .iter()
+                        .find(|anchor| anchor.id == anchor_id)
+                        .map(|anchor| anchor.span_start_byte)
+                })
+                .unwrap_or(u32::MAX)
+        });
+        assert_eq!(variable_entities.len(), 2, "fixture must retain both `$method` declarations");
+
+        for (line_index, expected_entity) in
+            [(27, variable_entities[0]), (37, variable_entities[1])]
+        {
+            let line_start =
+                text.lines().take(line_index).map(|line| line.len() + 1).sum::<usize>();
+            let line = text.lines().nth(line_index).ok_or("fixture line missing")?;
+            let usage_start = line_start + line.find("$method").ok_or("fixture usage missing")?;
+            let offset = u32::try_from(usage_start)?;
+            let anchor = bundle
+                .canonical_shard
+                .anchors
+                .iter()
+                .filter(|anchor| anchor.span_start_byte <= offset && offset < anchor.span_end_byte)
+                .min_by_key(|anchor| {
+                    (
+                        anchor.span_end_byte.saturating_sub(anchor.span_start_byte),
+                        anchor.span_start_byte,
+                    )
+                })
+                .ok_or("usage anchor missing")?;
+            let occurrence = bundle
+                .canonical_shard
+                .occurrences
+                .iter()
+                .find(|occurrence| occurrence.anchor_id == anchor.id)
+                .ok_or("usage occurrence missing")?;
+            assert_eq!(
+                occurrence.entity_id,
+                Some(expected_entity.id),
+                "line {} must resolve to its own lexical declaration",
+                line_index + 1
+            );
+        }
+
+        Ok(())
     }
 
     fn perl_files(root: &Path) -> Vec<PathBuf> {

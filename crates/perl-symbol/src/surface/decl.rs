@@ -118,6 +118,52 @@ pub fn extract_symbol_decls(root: &Node, current_package: Option<&str>) -> Vec<S
     out
 }
 
+/// Byte spans `(start, end)` of lexical scopes formed by blocks and named
+/// subroutines/methods. Used to bind `my`/`state` references to the declaration
+/// visible at a use site rather than by bare-name file order alone.
+pub fn extract_lexical_scope_regions(root: &Node) -> Vec<(usize, usize)> {
+    let mut regions = Vec::new();
+    collect_lexical_scope_regions(root, &mut regions);
+    regions
+}
+
+fn collect_lexical_scope_regions(node: &Node, out: &mut Vec<(usize, usize)>) {
+    match &node.kind {
+        NodeKind::Block { statements } => {
+            out.push((node.location.start, node.location.end));
+            for stmt in statements {
+                collect_lexical_scope_regions(stmt, out);
+            }
+        }
+        NodeKind::Subroutine { body, .. } => {
+            out.push((node.location.start, node.location.end));
+            collect_lexical_scope_regions(body, out);
+        }
+        NodeKind::Method { body, .. } => {
+            out.push((node.location.start, node.location.end));
+            collect_lexical_scope_regions(body, out);
+        }
+        NodeKind::Program { statements } => {
+            for stmt in statements {
+                collect_lexical_scope_regions(stmt, out);
+            }
+        }
+        NodeKind::Package { block: Some(block), .. } => {
+            collect_lexical_scope_regions(block, out);
+        }
+        NodeKind::Class { body, .. } => {
+            collect_lexical_scope_regions(body, out);
+        }
+        NodeKind::ExpressionStatement { expression } => {
+            collect_lexical_scope_regions(expression, out);
+        }
+        NodeKind::LabeledStatement { statement, .. } => {
+            collect_lexical_scope_regions(statement, out);
+        }
+        _ => node.for_each_child(|child| collect_lexical_scope_regions(child, out)),
+    }
+}
+
 // ── Internal walker ───────────────────────────────────────────────────────────
 
 struct WalkCtx {
