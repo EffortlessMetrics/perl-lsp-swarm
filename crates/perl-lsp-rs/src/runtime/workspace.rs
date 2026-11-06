@@ -114,20 +114,9 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "workspace")]
-use crate::util::{decode_text_bytes, read_text_file_with_encoding};
+use crate::util::decode_text_bytes;
 #[cfg(feature = "workspace")]
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
-
-#[cfg(feature = "workspace")]
-pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
-    uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
-        Ok(content) => Some(content),
-        Err(e) => {
-            tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
-            None
-        }
-    })
-}
 
 /// Read a discovered object's raw bytes for indexing without blocking on
 /// non-regular objects (#14074 review).
@@ -170,23 +159,42 @@ pub(crate) fn read_perl_source_file(
     path: &Path,
     admission: &super::file_discovery::DiscoveryConfig,
 ) -> std::io::Result<Option<String>> {
+    read_perl_source_file_with_byte_limit(path, admission, None)
+}
+
+/// The same admitted source read with an optional ingress byte ceiling.
+///
+/// Existing scan/watcher callers retain their read policy. Close uses its
+/// configured document-size ceiling on metadata and the opened reader, so
+/// growth during a read cannot allocate an unbounded replacement snapshot.
+#[cfg(feature = "workspace")]
+pub(crate) fn read_perl_source_file_with_byte_limit(
+    path: &Path,
+    admission: &super::file_discovery::DiscoveryConfig,
+    byte_limit: Option<usize>,
+) -> std::io::Result<Option<String>> {
     // Screen non-regular objects before opening: opening a FIFO for reading
     // can block on Unix, and watcher/discovery threads call this helper
     // directly. Classification still decides from actual bytes below, so an
     // object swapped into this screen window stays fail-closed.
     if let Ok(metadata) = std::fs::metadata(path)
-        && !metadata.is_file()
+        && (!metadata.is_file() || byte_limit.is_some_and(|limit| metadata.len() > limit as u64))
     {
         return Ok(None);
     }
-    let mut file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     // Re-check the OPENED handle (#14074 review): an object swapped into the
     // stat-to-open window fails closed here instead of feeding classification
     // from a non-regular object, and on platforms whose non-regular opens do
     // not block this is the rejection point.
-    if !file.metadata()?.is_file() {
+    let opened_metadata = file.metadata()?;
+    if !opened_metadata.is_file()
+        || byte_limit.is_some_and(|limit| opened_metadata.len() > limit as u64)
+    {
         return Ok(None);
     }
+    let read_limit = byte_limit.map_or(u64::MAX, |limit| (limit as u64).saturating_add(1));
+    let mut reader = file.take(read_limit);
     // Classify from a bounded prefix before paying for an unbounded read of a
     // large extensionless non-Perl artifact. The admission authority inspects
     // only the shebang window for extensionless paths, so the prefix is
@@ -194,12 +202,15 @@ pub(crate) fn read_perl_source_file(
     // short-circuits on the path.
     const CLASSIFICATION_PROBE_BYTES: u64 = 4096;
     let mut prefix = Vec::new();
-    (&mut file).take(CLASSIFICATION_PROBE_BYTES).read_to_end(&mut prefix)?;
+    (&mut reader).take(CLASSIFICATION_PROBE_BYTES).read_to_end(&mut prefix)?;
     if !admission.admits_bytes(path, &prefix) {
         return Ok(None);
     }
     let mut bytes = prefix;
-    file.read_to_end(&mut bytes)?;
+    reader.read_to_end(&mut bytes)?;
+    if byte_limit.is_some_and(|limit| bytes.len() > limit) {
+        return Ok(None);
+    }
     Ok(Some(decode_text_bytes(&bytes)))
 }
 
