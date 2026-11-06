@@ -7,14 +7,15 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_symbol::{
-    MIN_LOOSE_MATCH_QUERY_CHARS, SymbolDecl, SymbolDeclSemanticFacts, SymbolIndex, SymbolKind,
-    SymbolRef, SymbolRefKind, SymbolRefSemanticFacts, VarKind,
+    FrameworkKind, MIN_LOOSE_MATCH_QUERY_CHARS, SymbolDecl, SymbolDeclSemanticFacts, SymbolIndex,
+    SymbolKind, SymbolRef, SymbolRefKind, SymbolRefSemanticFacts, VarKind,
+    classify_framework_module,
     cursor::{
         CursorSymbolKind, byte_offset_utf16, extract_symbol_from_source,
         get_symbol_range_at_position, is_modchar, is_word_boundary, token_under_cursor,
     },
-    extract_symbol_decls, extract_symbol_refs, symbol_decls_to_semantic_facts,
-    symbol_refs_to_semantic_facts,
+    extract_symbol_decls, extract_symbol_refs, namespace_symbol_kind_for_framework,
+    symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts,
 };
 
 #[test]
@@ -33,6 +34,12 @@ fn min_loose_match_query_chars_accessible_at_crate_root() {
     // Verifying it is accessible and has the expected value here ensures the
     // re-export path from perl_symbol::types through api.rs is intact. (#5407)
     assert_eq!(MIN_LOOSE_MATCH_QUERY_CHARS, 2);
+}
+
+#[test]
+fn framework_activation_accessible_at_crate_root() {
+    assert_eq!(classify_framework_module("Moo::Role"), Some(FrameworkKind::MooRole));
+    assert_eq!(namespace_symbol_kind_for_framework(FrameworkKind::MooRole), SymbolKind::Role);
 }
 
 #[test]
