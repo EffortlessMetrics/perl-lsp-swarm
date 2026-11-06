@@ -11,6 +11,7 @@
 //! | `missing-warnings` | Warning | `use warnings` pragma not found |
 //! | `misspelled-pragma` | Warning | Pragma name appears misspelled |
 
+use crate::tooling::perl_critic::{BuiltInCriticObservation, Severity};
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_pragma::{PragmaState, PragmaTracker};
@@ -217,48 +218,66 @@ pub(crate) fn check_strict_warnings_with_pragma_map(
 
     // Add diagnostics if missing
     if !has_strict {
+        let message = "Consider adding 'use strict;' for better error checking".to_string();
+        let suggestion = "Add 'use strict;' at the top of the file".to_string();
+        let related_information = vec![
+            RelatedInformation { location: (0, 0), message: "Suggestion: Add 'use strict;' at the beginning of your script".to_string() },
+            RelatedInformation { location: (0, 0), message: "Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references.".to_string() },
+        ];
+        let mut observation = BuiltInCriticObservation::pl100_missing_strict(
+            Severity::Harsh,
+            (0, 0),
+            message.clone(),
+            None,
+        )
+        .with_suggestion(suggestion.clone())
+        .with_fix_availability(true);
+        for information in &related_information {
+            observation = observation
+                .with_related_information(information.location, information.message.clone());
+        }
         diagnostics.push(Diagnostic {
             range: (0, 0),
             severity: DiagnosticSeverity::Warning,
             code: Some(DiagnosticCode::MissingStrict.as_str().to_string()),
-            message: "Consider adding 'use strict;' for better error checking".to_string(),
-            related_information: vec![
-                RelatedInformation {
-                    location: (0, 0),
-                    message: "Suggestion: Add 'use strict;' at the beginning of your script".to_string(),
-                },
-                RelatedInformation {
-                    location: (0, 0),
-                    message: "Note: The 'use strict' pragma enforces good coding practices by requiring variable declarations, disabling barewords, and preventing symbolic references.".to_string(),
-                }
-            ],
+            message,
+            related_information,
             tags: Vec::new(),
             fixable: true,
-            critic_observation: None,
-            suggestion: Some("Add 'use strict;' at the top of the file".to_string()),
+            critic_observation: Some(observation),
+            suggestion: Some(suggestion),
         });
     }
 
     if !has_warnings {
+        let message = "Consider adding 'use warnings;' for better error detection".to_string();
+        let suggestion = "Add 'use warnings;' at the top of the file".to_string();
+        let related_information = vec![
+            RelatedInformation { location: (0, 0), message: "Suggestion: Add 'use warnings;' at the beginning of your script".to_string() },
+            RelatedInformation { location: (0, 0), message: "Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features.".to_string() },
+        ];
+        let mut observation = BuiltInCriticObservation::pl101_missing_warnings(
+            Severity::Harsh,
+            (0, 0),
+            message.clone(),
+            None,
+        )
+        .with_suggestion(suggestion.clone())
+        .with_fix_availability(false);
+        for information in &related_information {
+            observation = observation
+                .with_related_information(information.location, information.message.clone());
+        }
         diagnostics.push(Diagnostic {
             range: (0, 0),
             severity: DiagnosticSeverity::Warning,
             code: Some(DiagnosticCode::MissingWarnings.as_str().to_string()),
-            message: "Consider adding 'use warnings;' for better error detection".to_string(),
-            related_information: vec![
-                RelatedInformation {
-                    location: (0, 0),
-                    message: "Suggestion: Add 'use warnings;' at the beginning of your script".to_string(),
-                },
-                RelatedInformation {
-                    location: (0, 0),
-                    message: "Note: The 'use warnings' pragma enables helpful warning messages about questionable constructs, uninitialized values, and deprecated features.".to_string(),
-                }
-            ],
+            message,
+            related_information,
             tags: Vec::new(),
             fixable: false,
-            critic_observation: None,
-            suggestion: Some("Add 'use warnings;' at the top of the file".to_string()),
+            critic_observation: Some(observation),
+            suggestion: Some(suggestion),
         });
     }
 }
@@ -424,6 +443,193 @@ mod tests {
         let mut diags = vec![];
         check_strict_warnings(&ast, &mut diags);
         diags
+    }
+
+    /// Exercise the real emitter rather than synthetic alias candidates (#6965).
+    #[test]
+    fn pragma_observations_preserve_both_producers_and_remediation() {
+        use crate::providers::diagnostics::internal_types::critic_overlap_observations;
+        use crate::tooling::perl_critic::{
+            CriticConfig, CriticContext, CriticFindingOrigin, CriticSourceIdentity,
+            NativeCriticRegistry, RequireUseStrictRule, RequireUseWarningsRule, Severity,
+            built_in_observation_candidates, native_finding_candidates, normalize_critic_findings,
+        };
+        for (source, codes) in [
+            ("print \"hello\\n\";\n", vec!["PL100", "PL101"]),
+            ("use strict;\nprint \"hello\\n\";\n", vec!["PL101"]),
+            ("use warnings;\nprint \"hello\\n\";\n", vec!["PL100"]),
+            ("use strict;\nuse warnings;\nprint \"hello\\n\";\n", vec![]),
+        ] {
+            let diagnostics = strict_warnings_diags(source);
+            let observations = critic_overlap_observations(&diagnostics);
+            assert_eq!(
+                observations.len(),
+                codes.len(),
+                "real pragma emitters must declare observations: {source}"
+            );
+            for (diagnostic, observation) in diagnostics.iter().zip(&observations) {
+                assert_eq!(
+                    observation.identity().code(),
+                    diagnostic.code.as_deref().unwrap_or_default()
+                );
+                assert_eq!(observation.severity(), Severity::Harsh);
+                assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
+                assert_eq!(observation.byte_range(), diagnostic.range);
+                assert_eq!(observation.message(), diagnostic.message);
+                assert_eq!(observation.suggestion(), diagnostic.suggestion.as_deref());
+                assert_eq!(
+                    observation.related_information(),
+                    diagnostic
+                        .related_information
+                        .iter()
+                        .map(|info| (info.location, info.message.clone()))
+                        .collect::<Vec<_>>()
+                );
+            }
+            let ast = must(Parser::new(source).parse());
+            let config = CriticConfig::default();
+            let context = CriticContext::new(source, &ast, &config);
+            let registry = NativeCriticRegistry::with_rules(vec![
+                Box::new(RequireUseStrictRule),
+                Box::new(RequireUseWarningsRule),
+            ]);
+            let subject = CriticSourceIdentity::new([7; 16], 1);
+            let (native, unresolved) = native_finding_candidates(registry.check(&context), subject);
+            assert!(unresolved.is_empty());
+            let core = built_in_observation_candidates(observations, source, subject);
+            // Either independently active producer must remain visible.
+            assert_eq!(normalize_critic_findings(core.clone()).len(), codes.len());
+            assert_eq!(normalize_critic_findings(native.clone()).len(), codes.len());
+            let rows = normalize_critic_findings(core.into_iter().chain(native));
+            assert_eq!(rows.iter().map(|row| row.public_code()).collect::<Vec<_>>(), codes);
+            for row in rows {
+                assert_eq!(
+                    row.contributors().len(),
+                    2,
+                    "same-range strict and warnings must each retain both producers"
+                );
+                assert!(
+                    row.contributors()
+                        .iter()
+                        .any(|item| item.identity().origin()
+                            == CriticFindingOrigin::BuiltInDiagnostic)
+                );
+                assert!(
+                    row.contributors()
+                        .iter()
+                        .any(|item| item.identity().origin() == CriticFindingOrigin::NativeCritic)
+                );
+                assert!(!row.has_severity_conflict());
+                assert!(row.remediation_suggestion().is_some());
+                assert!(row.has_available_fix(), "each active native pragma rule owns a safe fix");
+                assert!(
+                    row.approved_aliases()
+                        .iter()
+                        .any(|alias| alias.code().starts_with("native.testing.require_use_"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pragma_observations_preserve_core_policy_and_alias_suppression() {
+        use crate::providers::diagnostics::internal_types::critic_overlap_observations;
+        use crate::tooling::perl_critic::{
+            CriticConfig, CriticContext, CriticFindingOrigin, CriticSourceIdentity,
+            CriticSuppressionMap, NativeCriticPolicy, NativeCriticRegistry, RequireUseStrictRule,
+            RequireUseWarningsRule, built_in_observation_candidates, native_finding_candidates,
+            normalize_with_native_policy,
+        };
+        let source = "print \"hello\\n\";\n";
+        let diagnostics = strict_warnings_diags(source);
+        let subject = CriticSourceIdentity::new([8; 16], 1);
+        let core = built_in_observation_candidates(
+            critic_overlap_observations(&diagnostics),
+            source,
+            subject,
+        );
+        let ast = must(Parser::new(source).parse());
+        let config = CriticConfig::default();
+        let registry = NativeCriticRegistry::with_rules(vec![
+            Box::new(RequireUseStrictRule),
+            Box::new(RequireUseWarningsRule),
+        ]);
+        let (native, unresolved) = native_finding_candidates(
+            registry.check(&CriticContext::new(source, &ast, &config)),
+            subject,
+        );
+        assert!(unresolved.is_empty());
+        let suppressions = CriticSuppressionMap::from_source(source);
+        for (threshold, include, exclude) in [
+            (5, vec![], vec![]),
+            (3, vec!["native.unrelated".to_string()], vec![]),
+            (
+                3,
+                vec![],
+                vec!["PL100".to_string(), "native.testing.require_use_warnings".to_string()],
+            ),
+        ] {
+            let policy = NativeCriticPolicy::new(threshold, &include, &exclude, &suppressions);
+            assert!(
+                normalize_with_native_policy(native.clone(), &policy).is_empty(),
+                "native-only policy must not be bypassed"
+            );
+            let rows = normalize_with_native_policy(
+                core.clone().into_iter().chain(native.clone()),
+                &policy,
+            );
+            assert_eq!(
+                rows.len(),
+                2,
+                "Critic policy cannot revoke independent core findings (#13798)"
+            );
+            for (row, diagnostic) in rows.iter().zip(&diagnostics) {
+                assert_eq!(row.contributors().len(), 1);
+                assert_eq!(
+                    row.contributors()[0].identity().origin(),
+                    CriticFindingOrigin::BuiltInDiagnostic
+                );
+                assert_eq!(
+                    row.has_available_fix(),
+                    diagnostic.fixable,
+                    "core fix availability must survive native rejection"
+                );
+                assert_eq!(row.remediation_suggestion(), diagnostic.suggestion.as_deref());
+                let mut actual_notes: Vec<_> = row
+                    .remediation_related_information()
+                    .iter()
+                    .map(|info| info.message.as_str())
+                    .collect();
+                let mut expected_notes: Vec<_> = diagnostic
+                    .related_information
+                    .iter()
+                    .map(|info| info.message.as_str())
+                    .collect();
+                actual_notes.sort_unstable();
+                expected_notes.sort_unstable();
+                assert_eq!(
+                    actual_notes, expected_notes,
+                    "normalization may sort notes, but cannot lose their content"
+                );
+            }
+        }
+        // Both compatibility and native selectors suppress the same logical
+        // finding, while the other same-range pragma remains visible.
+        for selector in ["PL100", "native.testing.require_use_strict"] {
+            let suppressed_source = format!("## no critic {selector}\n{source}");
+            let suppressions = CriticSuppressionMap::from_source(&suppressed_source);
+            let policy = NativeCriticPolicy::new(3, &[], &[], &suppressions);
+            let rows = normalize_with_native_policy(
+                core.clone().into_iter().chain(native.clone()),
+                &policy,
+            );
+            assert_eq!(rows.iter().map(|row| row.public_code()).collect::<Vec<_>>(), ["PL101"]);
+            assert_eq!(rows[0].contributors().len(), 2);
+            assert!(
+                rows[0].has_available_fix(),
+                "the native safe fix remains available under open policy"
+            );
+        }
     }
 
     #[test]

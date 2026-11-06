@@ -980,7 +980,7 @@ impl PullDiagnosticsProvider {
                     take_critic_overlap_observations(&mut pending.core);
                 }
                 pending.projected.extend(critic.run.findings().iter().map(|finding| {
-                    self.normalized_finding_to_lsp_diagnostic(uri, content, finding)
+                    self.normalized_finding_to_lsp_diagnostic(uri, content, finding, context)
                 }));
             }
         }
@@ -1005,7 +1005,28 @@ impl PullDiagnosticsProvider {
         uri: &Uri,
         text: &str,
         finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
+        context: &PullDiagnosticsContext,
     ) -> LspDiagnostic {
+        use perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin;
+
+        // Preserve the retiring pragma rows' catalog/markup contract (#6965).
+        // Other cohorts keep their existing projection until their own cutover.
+        if finding.contributors().iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+                && matches!(
+                    DiagnosticCode::parse_code(contributor.identity().code()),
+                    Some(DiagnosticCode::MissingStrict | DiagnosticCode::MissingWarnings)
+                )
+        }) {
+            let core =
+                crate::runtime::diagnostics::normalized_critic_finding_to_diagnostic(finding);
+            let mut diagnostic = self.to_lsp_diagnostic_with_context(uri, text, core, context);
+            if let Some(data) = diagnostic.data.as_mut() {
+                data["suppressionKey"] = serde_json::json!(finding.public_code());
+                data["explanation"] = serde_json::json!(finding.explanation());
+            }
+            return diagnostic;
+        }
         let range =
             lsp_range_from_offsets(text, finding.range().start.byte, finding.range().end.byte);
         let severity = Some(native_critic_severity_to_lsp(finding.severity()));
@@ -2029,6 +2050,73 @@ mod tests {
         assert!(is_fixable_diagnostic("native.common.undef_comparison"));
         assert!(is_fixable_diagnostic("InputOutput::RequireThreeArgOpen"));
         assert!(is_fixable_diagnostic("Variables::ProhibitUnusedVariables"));
+    }
+
+    #[test]
+    fn pragma_pull_preserves_markup_docs_and_filtered_core_action_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///pragma-markup.pl".parse()?;
+        for excluded in [false, true] {
+            let mut context = PullDiagnosticsContext::new();
+            context.markup_message_support = true;
+            context.accepted_critic_snapshot = accepted_state(
+                "recommended",
+                3,
+                vec![],
+                if excluded { vec!["PL100".into(), "PL101".into()] } else { vec![] },
+            );
+            let items = get_full_items(provider.get_document_diagnostics_with_context(
+                &uri,
+                "print \"hello\\n\";\n",
+                None,
+                &context,
+                None,
+            ));
+            assert_eq!(items.len(), 2);
+            for code in ["PL100", "PL101"] {
+                let diagnostic = items
+                    .iter()
+                    .find(|item| item.code == Some(NumberOrString::String(code.into())))
+                    .ok_or("missing logical pragma diagnostic")?;
+                assert_eq!(diagnostic.severity, Some(LspDiagnosticSeverity::WARNING));
+                let data = diagnostic.data.as_ref().ok_or("missing structured data")?;
+                assert_eq!(data["category"], "StrictWarnings");
+                assert_eq!(data["fixable"], !excluded || code == "PL100");
+                assert_eq!(data["messageMarkup"]["kind"], "markdown");
+                let markup =
+                    data["messageMarkup"]["value"].as_str().ok_or("missing markup message")?;
+                assert!(markup.starts_with(&format!("**{code}**:")));
+                assert!(markup.contains("Consider adding") && markup.contains("Suggestion:"));
+                assert_eq!(
+                    diagnostic
+                        .code_description
+                        .as_ref()
+                        .ok_or("missing catalog docs")?
+                        .href
+                        .to_string(),
+                    format!("https://docs.perl-lsp.org/errors/{code}")
+                );
+                assert_eq!(
+                    diagnostic
+                        .related_information
+                        .as_ref()
+                        .ok_or("missing remediation notes")?
+                        .len(),
+                    2
+                );
+            }
+        }
+        // Selector aliases suppress the whole finding; the same-range sibling
+        // still survives through the actual pull collection/finalization path.
+        for selector in ["PL100", "native.testing.require_use_strict"] {
+            let source = format!("## no critic {selector}\nprint \"hello\\n\";\n");
+            let items =
+                get_full_items(provider.get_document_diagnostics(&uri, &source, None, None));
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].code, Some(NumberOrString::String("PL101".into())));
+        }
+        Ok(())
     }
 
     #[test]

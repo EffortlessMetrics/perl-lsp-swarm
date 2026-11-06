@@ -766,7 +766,7 @@ impl LspServer {
 
             // Deduplicate diagnostics appended after the provider's own dedup pass
             // (critic, dead-code).  The native critic's `recommended` profile
-            // overlaps with built-in lints (RequireUseStrict↔PL100, etc.) — both
+            // overlaps with still-unmigrated built-in lints — both
             // fire on the same range with the same severity but different codes.
             // Collapse them, preferring built-in PL* codes over native-critic codes.
             // (#5088)
@@ -2591,7 +2591,7 @@ impl LspServer {
 
 /// Deduplicate diagnostics that share the same `(range, severity)`, which occurs
 /// when the native perlcritic engine and built-in lints report the same finding
-/// (e.g. `RequireUseStrictRule` ↔ PL100).  When collapsing, prefer built-in PL*
+/// (e.g. assignment-in-condition ↔ PL403). When collapsing, prefer built-in PL*
 /// codes over native-critic codes.  (#5088)
 ///
 /// The reviewed overlap pairs migrated into the normalized critic seam
@@ -2599,17 +2599,31 @@ impl LspServer {
 /// producer-owned emission, so a regression that re-splits those rows must
 /// surface as duplicate diagnostics instead of being silently hidden here.
 fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::providers::Diagnostic>) {
-    // Sort so that PL* codes come before native.* codes at the same (range, severity).
-    diagnostics.sort_by(|a, b| {
-        (a.range, a.severity, is_native_critic_code(a.code.as_deref())).cmp(&(
-            b.range,
-            b.severity,
-            is_native_critic_code(b.code.as_deref()),
-        ))
-    });
+    // Remove the migrated cohort before the legacy pass. Merely exempting
+    // adjacent alias pairs can still discard a pragma against PL101/PL200,
+    // or let a protected pragma interrupt an older pair's fallback (#6965).
+    // This is migration membership only; canonical identity/merge stays in
+    // the shared Critic registry and normalization service.
+    let pragmas: Vec<_> = diagnostics
+        .extract_if(.., |diagnostic| {
+            matches!(
+                diagnostic.code.as_deref(),
+                Some(
+                    "PL100"
+                        | "PL101"
+                        | "native.testing.require_use_strict"
+                        | "native.testing.require_use_warnings"
+                )
+            )
+        })
+        .collect();
+    let sort_key = |diagnostic: &InternalDiagnostic| {
+        (diagnostic.range, diagnostic.severity, is_native_critic_code(diagnostic.code.as_deref()))
+    };
+    diagnostics.sort_by_key(sort_key);
     // Only collapse pairs where exactly one is a native-critic code — this
     // eliminates the native-critic↔built-in-lint overlap (e.g.
-    // native.testing.require_use_strict vs PL100) without collapsing two
+    // native.common.assignment_in_condition vs PL403) without collapsing two
     // distinct PL* codes that happen to share range+severity (e.g. PL100
     // MissingStrict vs PL101 MissingWarnings, both at (0,0) Warning).
     diagnostics.dedup_by(|a, b| {
@@ -2617,6 +2631,10 @@ fn dedup_overlapping_diagnostics(diagnostics: &mut Vec<perl_lsp_rs_core::provide
             && a.severity == b.severity
             && codes_collapse_pair(a.code.as_deref(), b.code.as_deref())
     });
+    if !pragmas.is_empty() {
+        diagnostics.extend(pragmas);
+        diagnostics.sort_by_key(sort_key);
+    }
 }
 
 /// Determine the diagnostic source based on the code.
@@ -2693,7 +2711,7 @@ impl FinalizedWorkspaceCriticIdentity {
     }
 }
 
-fn normalized_critic_finding_to_diagnostic(
+pub(crate) fn normalized_critic_finding_to_diagnostic(
     finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
 ) -> InternalDiagnostic {
     let related_information = finding
@@ -5501,14 +5519,14 @@ system($path);
 
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.testing.require_use_strict")
+                diag["code"].as_str() == Some("PL100")
                     && diag["source"].as_str() == Some("perl-lsp")
             }),
             "native critic engine should add native strict finding to workspace diagnostics: {report}"
         );
         assert!(
             diagnostics.iter().any(|diag| {
-                diag["code"].as_str() == Some("native.testing.require_use_warnings")
+                diag["code"].as_str() == Some("PL101")
                     && diag["source"].as_str() == Some("perl-lsp")
             }),
             "native critic engine should add native warnings finding to workspace diagnostics: {report}"
@@ -6570,13 +6588,27 @@ system($path);
         let has_pl603 =
             |rows: &[InternalDiagnostic]| rows.iter().any(|d| d.code.as_deref() == Some("PL603"));
 
+        let assert_pragmas = |rows: &[InternalDiagnostic]| {
+            for code in ["PL100", "PL101"] {
+                assert_eq!(
+                    rows.iter().filter(|row| row.code.as_deref() == Some(code)).count(),
+                    1,
+                    "current, disabled, or withheld Critic runs must retain exactly one core {code}"
+                );
+            }
+        };
+
         // Row 1: publishable native + current subject -> commit.
         let server = open("file:///fin_a.pl", true);
         let mut rows = core_rows(&server, "file:///fin_a.pl");
         assert!(has_pl603(&rows), "fixture must emit the core PL603 carrier");
         let pending = evaluate(&server, "file:///fin_a.pl", &rows);
         assert!(server.finalize_pending_critic(&mut rows, pending), "current subject is reusable");
-        assert!(has_native(&rows), "a current publishable run must commit its rows");
+        assert!(
+            rows.iter().all(|row| row.critic_observation.is_none()),
+            "a current publishable run must replace overlap carriers"
+        );
+        assert_pragmas(&rows);
 
         // Row 2: publishable native, subject moves before the boundary -> withhold.
         let server = open("file:///fin_b.pl", true);
@@ -6589,6 +6621,7 @@ system($path);
         );
         assert!(!has_native(&rows), "a moved subject must commit no native rows");
         assert!(has_pl603(&rows), "core rows must survive a moved subject");
+        assert_pragmas(&rows);
 
         // Row 3: disabled accepted state, current -> commits nothing, keeps core
         // rows, and remains a reusable subject. This is the PL603 regression row.
@@ -6601,6 +6634,7 @@ system($path);
         );
         assert!(!has_native(&rows), "a disabled run evaluates nothing");
         assert!(has_pl603(&rows), "a disabled critic must not delete core security rows");
+        assert_pragmas(&rows);
 
         // Row 4: disabled, then the subject moves -> not reusable, core intact.
         let server = open("file:///fin_d.pl", false);
@@ -6612,6 +6646,7 @@ system($path);
             "enabling the critic must invalidate a disabled subject"
         );
         assert!(has_pl603(&rows), "core rows must survive a moved disabled subject");
+        assert_pragmas(&rows);
 
         // Row 5: the subject is current at the boundary, but the run itself is
         // unpublishable. Arranged without touching production: move the policy
@@ -6634,6 +6669,7 @@ system($path);
         );
         assert!(!has_native(&rows), "an unpublishable run must commit no native rows");
         assert!(has_pl603(&rows), "an unpublishable run must surrender no core carriers");
+        assert_pragmas(&rows);
     }
 
     /// Full-range code-action params for a freshly opened perl document.
@@ -6734,7 +6770,7 @@ system($path);
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": "my $path = 'f.txt';\nmy $out = `ls`;\nmy $u;\nif ($u == undef) { print $u; }\nsystem($path);\nprint $out;\n"
+                    "text": "my $path = 'f.txt';\nmy $out = `ls`;\nmy $u;\nif ($u == undef) { print $u; }\nsystem($path);\nprint $out;\nsub helper {\nreturn 1;\nprint \"dead\";\n}\n"
                 }
             })))
             .expect("did_open must succeed");
@@ -6783,7 +6819,7 @@ system($path);
                     embedded["source"], matching["source"],
                     "action and published source must agree for {code}"
                 );
-                compared += 1;
+                compared.insert(code.to_string());
             }
         }
         assert!(
@@ -6852,12 +6888,15 @@ system($path);
         let native_action = actions.iter().any(|action| {
             action["diagnostics"].as_array().is_some_and(|diags| {
                 diags.iter().any(|d| {
-                    d["code"].as_str().is_some_and(|c| c.starts_with("native."))
+                    d["code"].as_str() == Some("native.common.unreachable_code")
                         && d["source"].as_str() == Some("perl-lsp")
                 })
             })
         });
-        assert!(native_action, "the native service must still supply the action rows; got: {text}");
+        assert!(
+            native_action,
+            "the native-only unreachable control must supply an action; got: {text}"
+        );
     }
 
     fn native_critic_quickfixes_for_code<'a>(actions: &'a [Value], code: &str) -> Vec<&'a Value> {
@@ -6961,6 +7000,39 @@ unambiguous_builtin_alias_code("native.testing.require_use_strict")
             quickfixes[0].get("edit").is_some(),
             "require_use_strict quickfix must include a workspace edit: {result}"
         );
+    }
+
+    #[test]
+    fn pragma_core_action_survives_native_exclusion() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _buffer) = make_server_with_capture();
+        server.test_configure_native_critic_filters(
+            vec![],
+            vec!["native.testing.require_use_strict".into()],
+        );
+        let uri = "file:///pragma-filtered-action.pl";
+        server.test_apply_did_open(uri, "use warnings;\nprint \"hello\\n\";\n", 1)?;
+        let report = server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": uri}})))?
+            .ok_or("missing diagnostic report")?;
+        let diagnostics = report["items"].as_array().ok_or("missing diagnostics")?;
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["code"], "PL100");
+        assert_eq!(diagnostics[0]["data"]["fixable"], true);
+        let mut params = code_action_params(uri);
+        params["context"]["diagnostics"] = json!(diagnostics);
+        let result = server.test_handle_code_action(Some(params))?.ok_or("missing actions")?;
+        let actions = result.as_array().ok_or("missing action array")?;
+        assert!(
+            actions.iter().any(|action| action["edit"]["changes"][uri].as_array().is_some_and(
+                |edits| {
+                    edits.iter().any(|edit| {
+                        edit["newText"].as_str().is_some_and(|text| text.contains("use strict;"))
+                    })
+                }
+            )),
+            "the independently owned core strict action must remain available: {result}"
+        );
+        Ok(())
     }
 
     #[cfg(feature = "workspace")]

@@ -10,6 +10,18 @@ use serde_json::{Value, json};
 mod support;
 use support::lsp_harness::LspHarness;
 
+// Keep background indexing inside this suite's own empty fixture root. The
+// harness default `/workspace` may be a real, large shared workspace on a
+// developer machine; snapshot documents intentionally retain stable URIs.
+fn snapshot_harness() -> Result<(tempfile::TempDir, LspHarness), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let root = url::Url::from_directory_path(workspace.path())
+        .map_err(|()| "invalid snapshot workspace URI")?;
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(root.as_str(), Some(json!({})))?;
+    Ok((workspace, harness))
+}
+
 fn scrub_result_ids(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -40,8 +52,7 @@ my $x = 1;
 print $y;  # Undefined variable
 "#;
 
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let (_workspace, mut harness) = snapshot_harness()?;
     harness.open_document(uri, content)?;
 
     let mut report = harness.request(
@@ -63,8 +74,7 @@ fn snapshot_document_diagnostic_unchanged_report() -> Result<(), Box<dyn std::er
 print "Hello, World!\\n";
 "#;
 
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let (_workspace, mut harness) = snapshot_harness()?;
     harness.open_document(uri, content)?;
 
     let first = harness.request(
@@ -105,8 +115,7 @@ my $x = 1;
 print $y;  # Undefined variable after change
 "#;
 
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let (_workspace, mut harness) = snapshot_harness()?;
     harness.open_document(uri, initial_content)?;
 
     let first = harness.request(
@@ -137,8 +146,7 @@ print $y;  # Undefined variable after change
 
 #[test]
 fn snapshot_workspace_diagnostic_reports() -> Result<(), Box<dyn std::error::Error>> {
-    let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({})))?;
+    let (_workspace, mut harness) = snapshot_harness()?;
 
     harness.open_document(
         "file:///workspace-diagnostic-a.pl",
