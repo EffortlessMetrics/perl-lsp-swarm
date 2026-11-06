@@ -41,6 +41,10 @@ use perl_ast::{Node, NodeKind};
 ///   declarator is present, including package subs, packages, and constants.
 ///   `"our"` variables are package-scoped and visible across files; `"my"`
 ///   variables are lexically-scoped and file-local.
+/// - `declarator` — the scope keyword used to declare variables
+///   (`"my"`, `"our"`, `"local"`, `"state"`) or named subroutines
+///   (`"my"`, `"our"`, `"state"`), or `None` when no scope keyword applies.
+///   `"my"` and `"state"` bindings are lexical.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolDecl {
     /// Symbol classification.
@@ -58,6 +62,9 @@ pub struct SymbolDecl {
     /// Scope declarator for variable declarations and subroutines: `"my"`,
     /// `"our"`, `"local"`, or `"state"`.  `None` when no scope declarator is
     /// present, including package subs, packages, constants, and classes.
+    /// Scope declarator: variables support `"my"`, `"our"`, `"local"`, and
+    /// `"state"`; named subroutines support `"my"`, `"our"`, and `"state"`.
+    /// `None` when no scope keyword applies.
     ///
     /// `"our"` variables are package-scoped and reachable from other files in
     /// the same package.  `"my"` variables are lexically-scoped and invisible

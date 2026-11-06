@@ -56,6 +56,7 @@ perl-lsp-perltidy.workspace = true
 perl-diagnostics.workspace = true
 perl-uri.workspace = true
 perl-workspace.workspace = true
+perl-uri.workspace = true
 perl-pragma.workspace = true
 perl-symbol.workspace = true
 perl-parser.workspace = true

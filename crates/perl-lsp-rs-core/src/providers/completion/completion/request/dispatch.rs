@@ -144,6 +144,7 @@ fn complete_use_or_structural_context(
             // the same-document freshness seam; absent identity keeps the
             // index-only behavior (#17084).
             filepath.unwrap_or(""),
+            filepath,
         );
         return true;
     }
@@ -516,6 +517,7 @@ fn complete_indirect_method_context(
         source,
         &provider.symbol_table,
         provider.type_engine.as_ref(),
+        filepath,
     );
     if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_ref())) {
         return false;
@@ -538,6 +540,7 @@ fn complete_indirect_method_context(
         &provider.workspace_index,
         &provider.used_modules,
         filepath.unwrap_or(""),
+        filepath,
     );
 
     // The arrow-form providers emit parenthesized insert text (`run()`), which is

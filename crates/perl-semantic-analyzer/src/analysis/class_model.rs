@@ -442,6 +442,47 @@ impl ClassModel {
     }
 }
 
+/// Combine repeated package segments in source order using Perl's package-state rules.
+///
+/// Later explicit ancestry replaces earlier ancestry, while additive parent
+/// declarations extend it. Role composition is additive across segments, so
+/// roles accumulate without duplicates. Methods with the same name use their
+/// last declaration.
+pub fn merge_reopened_class_models(models: &[ClassModel]) -> Vec<ClassModel> {
+    let mut merged: Vec<ClassModel> = Vec::new();
+    for model in models {
+        let Some(existing) = merged.iter_mut().find(|candidate| candidate.name == model.name)
+        else {
+            merged.push(model.clone());
+            continue;
+        };
+
+        if model.parents_explicit {
+            if model.parents_replaces_prior {
+                existing.parents = model.parents.clone();
+            } else if model.parents_additive {
+                existing.parents.extend(model.parents.iter().cloned());
+            } else {
+                existing.parents = model.parents.clone();
+            }
+        }
+        for role in &model.roles {
+            if !existing.roles.contains(role) {
+                existing.roles.push(role.clone());
+            }
+        }
+        for method in &model.methods {
+            existing.methods.retain(|candidate| candidate.name != method.name);
+            existing.methods.push(method.clone());
+        }
+        existing.modifiers.extend(model.modifiers.iter().cloned());
+        if model.mro_explicit {
+            existing.mro = model.mro;
+        }
+    }
+    merged
+}
+
 /// Builds `ClassModel` instances by walking an AST.
 pub struct ClassModelBuilder {
     models: Vec<ClassModel>,
@@ -2540,6 +2581,25 @@ use mro 'dfs';
             .expect("expected retained reopened Child MRO model");
         assert_eq!(child.mro, MethodResolutionOrder::Dfs);
         assert!(child.mro_explicit);
+    }
+
+    #[test]
+    fn reopened_package_roles_merge_additively_without_duplicates() {
+        let models = build_models(
+            r#"
+package P;
+use Moo;
+with 'R1';
+
+package P;
+use Moo;
+with 'R2', 'R1';
+"#,
+        );
+
+        let merged = merge_reopened_class_models(&models);
+        let model = find_model(&merged, "P").expect("expected merged ClassModel for P");
+        assert_eq!(model.roles, vec!["R1".to_string(), "R2".to_string()]);
     }
 
     #[test]
