@@ -295,7 +295,7 @@ fn check_pre_push_hook() {
     let expected_hook = Path::new(&repo_root).join("hooks").join("pre-push");
 
     if !hook_path.is_file() {
-        warn("pre-push hook not installed (fix: cargo xtask ci-hygiene install-githooks)");
+        warn("pre-push hook not installed (fix: bash scripts/install-githooks.sh)");
         return;
     }
 
@@ -313,7 +313,7 @@ fn check_pre_push_hook() {
                     pass("pre-push hook installed and current");
                 } else {
                     warn(&format!(
-                        "pre-push hook installed but stale: {} (fix: cargo xtask ci-hygiene install-githooks)",
+                        "pre-push hook installed but stale: {} (fix: bash scripts/install-githooks.sh)",
                         hook_path.display()
                     ));
                 }
@@ -344,15 +344,13 @@ fn check_pre_commit_hook() {
     let hook_path = Path::new(&hooks_dir).join("pre-commit");
 
     if !hook_path.is_file() {
-        warn(
-            "pre-commit hook missing or not executable (run: cargo xtask ci-hygiene install-githooks)",
-        );
+        warn("pre-commit hook missing or not executable (run: bash scripts/install-githooks.sh)");
         return;
     }
 
     if !is_executable(&hook_path) {
         warn(&format!(
-            "pre-commit hook present but not executable: {} (run: cargo xtask ci-hygiene install-githooks)",
+            "pre-commit hook present but not executable: {} (run: bash scripts/install-githooks.sh)",
             hook_path.display()
         ));
         return;

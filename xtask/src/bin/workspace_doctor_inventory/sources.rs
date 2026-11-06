@@ -53,7 +53,7 @@ pub(super) fn inspect_sources(root: &Path) -> Result<SourceFacts> {
             "git worktree prune; rm -rf <dir>",
             "pre-push hook installed",
             "pre-push hook installed but stale",
-            "cargo xtask ci-hygiene install-githooks",
+            "bash scripts/install-githooks.sh",
             "--untracked-files=no",
             "workspace has $dirty_count uncommitted changes",
             "HEAD is $behind commits behind $default_remote_ref",

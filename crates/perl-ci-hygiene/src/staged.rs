@@ -32,24 +32,34 @@ use color_eyre::eyre::{Context, ContextCompat, Result, bail, eyre};
 use std::path::Path;
 use std::process::Command;
 
+// Bind every child Git invocation to current_dir, independently of inherited
+// repository selectors. This does not alter the calling hook's environment.
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    command.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_COMMON_DIR");
+    command
+}
+
 /// One entry from `git ls-tree -r` over the staged tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedEntry {
     /// Octal mode string as recorded by git, e.g. `"100644"` or `"100755"`.
     pub mode: String,
+    /// Git object identity of this entry's blob.
     pub blob_oid: String,
     /// Repo-relative path, forward-slash separated (git's native form).
     pub path: String,
 }
 
 impl StagedEntry {
+    /// Whether the staged mode records executable permission.
     pub fn is_executable(&self) -> bool {
         self.mode == "100755"
     }
 }
 
 fn run_git_ok(root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .current_dir(root)
         .args(args)
         .output()
@@ -110,7 +120,7 @@ fn staged_path_exists_in(root: &Path, tree_oid: Option<&str>, path: &str) -> Res
             Ok(parse_ls_tree_paths(&raw)?.iter().any(|entry| entry == path))
         }
         None => {
-            let output = Command::new("git")
+            let output = git_command()
                 .current_dir(root)
                 .args(["--literal-pathspecs", "ls-files", "-z", "--", path])
                 .output()
@@ -243,7 +253,7 @@ fn derive_empty_tree_oid(root: &Path) -> Result<String> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut child = Command::new("git")
+    let mut child = git_command()
         .current_dir(root)
         .args(["hash-object", "-t", "tree", "--stdin"])
         .stdin(Stdio::piped())
@@ -276,12 +286,12 @@ fn derive_empty_tree_oid(root: &Path) -> Result<String> {
 /// `HEAD`), matching what `git diff --cached` already handles implicitly
 /// for the live-index path.
 ///
-/// `pub(crate)`: also used directly by `commit_checks::whitespace_check_at`,
+/// Also used directly by `commit_checks::whitespace_check_at`,
 /// which needs the same base to run `git diff <base> <oid> --check` against
 /// the pinned tree object instead of `git diff --cached --check` (the live
 /// index) — see that function's doc comment for the TOCTOU this closes.
-pub(crate) fn diff_base(root: &Path) -> Result<String> {
-    let resolves = Command::new("git")
+pub fn diff_base(root: &Path) -> Result<String> {
+    let resolves = git_command()
         .current_dir(root)
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
         .output()
@@ -355,7 +365,7 @@ pub fn read_staged_path_text(
         Some(oid) => format!("{oid}:{path}"),
         None => format!(":{path}"),
     };
-    let output = Command::new("git")
+    let output = git_command()
         .current_dir(root)
         .args(["show", &spec])
         .output()
@@ -1131,10 +1141,10 @@ mod tests {
     /// instrument failure, never a silently discarded entry: output drift
     /// must not be able to turn a staged path into a clean absence.
     #[test]
-    fn malformed_ls_tree_records_are_instrument_failures_not_absence() {
-        assert!(parse_ls_tree_paths("").unwrap().is_empty());
+    fn malformed_ls_tree_records_are_instrument_failures_not_absence() -> Result<()> {
+        assert!(parse_ls_tree_paths("")?.is_empty());
         let well_formed = "100644 blob 4f1c3f0d4bc31cf1a5e4d13d314a4a1c31d0225d\tok.rs\0";
-        assert_eq!(parse_ls_tree_paths(well_formed).unwrap(), vec!["ok.rs"]);
+        assert_eq!(parse_ls_tree_paths(well_formed)?, vec!["ok.rs"]);
 
         for malformed in [
             // No TAB separator at all.
@@ -1151,6 +1161,7 @@ mod tests {
                 "malformed record {malformed:?} must be rejected, not skipped"
             );
         }
+        Ok(())
     }
 
     /// A type-changed (symlink) entry is PRESENT for content reads — its

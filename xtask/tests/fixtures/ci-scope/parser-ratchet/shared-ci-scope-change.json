@@ -1,0 +1,11 @@
+{
+  "name": "shared classifier owner selects parser-ratchet",
+  "changed_files": [
+    "crates/perl-ci-hygiene/src/ci_scope.rs"
+  ],
+  "risk_tags": [],
+  "expected": {
+    "selected": true,
+    "selection_reason": "path matched crates/perl-ci-hygiene/src/ci_scope.rs"
+  }
+}

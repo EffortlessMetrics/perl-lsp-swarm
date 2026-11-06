@@ -60,7 +60,7 @@ Included scenarios:
 - docs-only fixture -> `selected: false`
 - parser crate change -> `selected: true`
 - lexer/token change -> `selected: true`
-- `ci_scope.rs` change -> `selected: true`
+- `ci_scope.rs` change in the shared owner or xtask delegate -> `selected: true`
 - workflow change -> `selected: true`
 
 ## Out of scope in this change
