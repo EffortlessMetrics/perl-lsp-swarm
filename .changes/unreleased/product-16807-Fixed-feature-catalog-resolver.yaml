@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: "Fail closed when a package-isolated feature catalog fallback is missing, stale, malformed, the wrong projection or package, or has no advertised rows, instead of silently compiling DEFAULT_DAP_FEATURES or rediscovering a workspace checkout; workspace vs generated fallback selection is now identity-recorded (source kind and SHA-256 digest) and FEATURES_TOML_OVERRIDE stays test/tooling-only."
+time: 2026-09-29T02:30:00Z
+custom:
+  PR: "16807"
+  Slug: feature-catalog-resolver-9201
+  Breaking: "no"

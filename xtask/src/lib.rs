@@ -10,6 +10,7 @@ pub mod ast_v2_lifecycle_audit;
 pub mod authority_transfer_closeout;
 pub mod branch_deletion_admission;
 pub mod cargo_rustc_wrappers;
+pub mod catalog_source;
 pub mod ci_route_plan;
 pub mod client_compat_fixture;
 pub mod clippy_repair_corpus;
