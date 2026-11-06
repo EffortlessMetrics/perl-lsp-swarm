@@ -1,0 +1,146 @@
+# Package documentation topology and evidence contract (#14122).
+#
+# Denominator: every root workspace member from `cargo metadata`, classified by
+# this contract plus derived rules. Do not record hand-written package counts here.
+#
+# Controller: #14122 (docs(packages): govern crate README and public API documentation coverage)
+# Parent: #14105 (docs(program))
+
+schema_version = "package_documentation.v1"
+contract = "package_documentation.v1"
+
+[root_readme]
+# Root README crate tables are curated narrative; published counts must still match
+# `[workspace.metadata.publish.allow]` via perl-ci-hygiene doc-drift checks.
+crate_table = "curated"
+owner = "#14122"
+
+[[package_class]]
+id = "published_library"
+description = "Crates.io-published library in `[workspace.metadata.publish.allow]`."
+repair_cohort = 1
+required = [
+    "package_readme",
+    "crate_root_docs",
+    "manifest_description",
+    "manifest_documentation",
+    "manifest_repository",
+    "readme_path_resolves",
+]
+optional = ["examples_surface", "docs_rs_metadata"]
+observations = [
+    "builds_rustdoc",
+    "public_api_documented",
+    "docs_rs_build",
+    "usable_from_docs",
+]
+
+[[package_class]]
+id = "published_binary"
+description = "Published executable surface (allowlisted with a primary bin target)."
+repair_cohort = 1
+required = [
+    "package_readme",
+    "crate_root_docs",
+    "manifest_description",
+    "manifest_repository",
+    "readme_path_resolves",
+]
+optional = ["manifest_documentation", "examples_surface", "docs_rs_metadata"]
+observations = [
+    "builds_rustdoc",
+    "public_api_documented",
+    "docs_rs_build",
+    "usable_from_docs",
+]
+
+[[package_class]]
+id = "internal_product_crate"
+description = "Workspace-private product or domain crate (not allowlisted)."
+repair_cohort = 3
+required = ["manifest_description"]
+optional = ["package_readme", "crate_root_docs", "contributor_guidance"]
+observations = ["builds_rustdoc", "public_api_documented"]
+
+[[package_class]]
+id = "internal_tooling_test"
+description = "Harness, xtask, bench, comparison, or hygiene crates."
+repair_cohort = 5
+required = []
+optional = ["package_readme", "contributor_guidance"]
+observations = ["builds_rustdoc"]
+
+[[package_class]]
+id = "generated_vendored_binding"
+description = "Generated or vendored binding crate with reduced prose obligations."
+repair_cohort = 4
+required = ["manifest_description", "readme_path_resolves"]
+optional = ["package_readme", "crate_root_docs"]
+observations = ["builds_rustdoc", "docs_rs_build"]
+
+[[package_class]]
+id = "compatibility_shim"
+description = "Thin compatibility or re-export shim."
+repair_cohort = 2
+required = ["manifest_description", "crate_root_docs"]
+optional = ["package_readme", "manifest_documentation"]
+observations = ["builds_rustdoc", "public_api_documented"]
+
+[[package_class]]
+id = "explicitly_excluded"
+description = "Workspace member intentionally excluded from product documentation claims."
+repair_cohort = 9
+required = ["exclusion_rationale"]
+optional = []
+observations = []
+
+# Explicit dispositions override derived classification.
+[[package_disposition]]
+name = "xtask"
+class = "internal_tooling_test"
+notes = "Workspace task runner; contributor-facing, not a product crate."
+
+[[package_disposition]]
+name = "perl-ci-hygiene"
+class = "internal_tooling_test"
+
+[[package_disposition]]
+name = "perl-core-harness"
+class = "internal_tooling_test"
+
+[[package_disposition]]
+name = "perl-core-harness-types"
+class = "internal_tooling_test"
+
+[[package_disposition]]
+name = "perl-core-test-runner"
+class = "internal_tooling_test"
+
+[[package_disposition]]
+name = "perl-lsp-ux-tests"
+class = "internal_tooling_test"
+
+[[package_disposition]]
+name = "perl-parser-bench"
+class = "internal_tooling_test"
+
+[[package_disposition]]
+name = "perl-parser-comparison"
+class = "internal_tooling_test"
+
+[[package_disposition]]
+name = "tree-sitter-perl-c"
+class = "generated_vendored_binding"
+notes = "Native parser bindings; upstream-adjacent surface."
+
+[[package_disposition]]
+name = "perl-evidence-envelope"
+class = "internal_product_crate"
+
+[[package_disposition]]
+name = "perl-operation-trace"
+class = "internal_product_crate"
+
+[[package_disposition]]
+name = "perl-incremental-parsing"
+class = "internal_product_crate"
