@@ -9,12 +9,12 @@ use crate::syntax::regex_analysis::RegexAnalysisFamily;
 
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
-    HirExprId, HirLiteral, HirLiteralKind, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch,
-    HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution, HirTransliteration,
-    HirVariable, LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
-    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
-    strip_string_quotes,
+    DeclStorageClass, DeclarationVerdict, HirBlock, HirBlockId, HirBody, HirBodyId,
+    HirCatchHandler, HirExpr, HirExprId, HirLiteral, HirLiteralKind, HirLoopLabel, HirLoopRegionId,
+    HirRegex, HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
+    HirTransliteration, HirVariable, LoopControlResolution, RegexAnalysisAnchor,
+    ReplacementEvaluation, Sigil, SubscriptKind, UnaryMode, VariableKind, classify_declaration,
+    diamond_expr, glob_expr, heredoc_expr, readline_expr, strip_string_quotes,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -1131,6 +1131,11 @@ impl Lowerer {
                         attribute_count: attributes.len(),
                         has_initializer: initializer.is_some(),
                         initializer_range: initializer.map(|initializer| initializer.location),
+                        compound_operator: declaration_target_compound_op(
+                            variable,
+                            initializer,
+                            variables.first().map(|binding| binding.range),
+                        ),
                         is_list: false,
                     }),
                     self.package_context.clone(),
@@ -1138,12 +1143,14 @@ impl Lowerer {
                 );
                 let is_class_field_decl =
                     self.class_field_decls.contains(&(node.location.start, node.location.end));
-                // A legacy `field` call declares nothing and records no stash
-                // effects — body lowering owns the argument's resolved
+                // One shared verdict decides binding and stash effects (#14798):
+                // a declaration-shaped call declares nothing and records no
+                // stash effects — body lowering owns the argument's resolved
                 // read/write effects instead. A *class-body* `field`
-                // declaration is the one exception: it is real per-object
-                // storage, so it binds class-field storage here (#13817).
-                if declarator != "field" || is_class_field_decl {
+                // declaration is real per-object storage, so it binds
+                // class-field storage here (#13817).
+                let verdict = classify_declaration(declarator, is_class_field_decl);
+                if verdict.creates_binding() {
                     self.record_declaration_bindings(
                         declarator,
                         &variables,
@@ -1151,7 +1158,7 @@ impl Lowerer {
                         is_class_field_decl,
                     );
                 }
-                if declarator != "field" {
+                if verdict.records_stash_effects() {
                     self.record_variable_stash_effects(
                         declarator,
                         &variables,
@@ -1182,17 +1189,27 @@ impl Lowerer {
                         initializer_range: initializer
                             .as_deref()
                             .map(|initializer| initializer.location),
+                        // List targets never carry their own assignment
+                        // operator; the shared initializer is a separate node.
+                        compound_operator: None,
                         is_list: true,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(
-                    declarator,
-                    &bindings,
-                    item_id,
-                    self.class_field_decls.contains(&(node.location.start, node.location.end)),
-                );
+                // List declarations consult the same shared verdict (#14798):
+                // only a real declaration binds. A declaration-shaped call in
+                // list position (or any future form) creates no binding.
+                let is_class_field_decl =
+                    self.class_field_decls.contains(&(node.location.start, node.location.end));
+                if classify_declaration(declarator, is_class_field_decl).creates_binding() {
+                    self.record_declaration_bindings(
+                        declarator,
+                        &bindings,
+                        item_id,
+                        is_class_field_decl,
+                    );
+                }
                 self.visit_declaration_list_entries(variables, confidence);
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
@@ -2932,16 +2949,25 @@ fn class_field_is_visible(in_named_sub: bool, outside_its_class: bool) -> bool {
 /// storage; everywhere else `field` keeps the ordinary unknown-declarator
 /// fallback it had before (#13817).
 fn storage_class_for_declarator(declarator: &str, is_class_field_decl: bool) -> StorageClass {
-    match declarator {
-        "my" => StorageClass::LexicalMy,
-        "our" => StorageClass::PackageOur,
-        "state" => StorageClass::LexicalState,
-        "local" => StorageClass::LocalizedPackage,
-        // A `field` in a class body is per-object storage. Without this arm it
-        // fell to `PackageGlobal` below, which made `field $x`
-        // indistinguishable from an undeclared package global (#13817).
-        "field" if is_class_field_decl => StorageClass::ClassField,
-        _ => StorageClass::PackageGlobal,
+    // The declarator keyword list lives in exactly one place — the shared
+    // [`classify_declaration`] verdict (#14798). This is a pure storage-enum
+    // translation over that verdict, with no keyword matching of its own: a
+    // future form can never earn binding-grade storage by default.
+    match classify_declaration(declarator, is_class_field_decl) {
+        DeclarationVerdict::RealDeclaration(DeclStorageClass::My) => StorageClass::LexicalMy,
+        DeclarationVerdict::RealDeclaration(DeclStorageClass::Our) => StorageClass::PackageOur,
+        DeclarationVerdict::RealDeclaration(DeclStorageClass::State) => StorageClass::LexicalState,
+        DeclarationVerdict::RealDeclaration(DeclStorageClass::Local) => {
+            StorageClass::LocalizedPackage
+        }
+        // A `field` in a class body is per-object storage (#13817).
+        DeclarationVerdict::RealDeclaration(DeclStorageClass::Field) => StorageClass::ClassField,
+        // Unreachable through the guarded callers: only real declarations
+        // bind, so a declaration-shaped call never arrives here. Preserves the
+        // historical package-global degradation rather than inventing
+        // binding-grade storage for a call.
+        DeclarationVerdict::RealDeclaration(DeclStorageClass::Unknown)
+        | DeclarationVerdict::DeclarationShapedCall { .. } => StorageClass::PackageGlobal,
     }
 }
 
@@ -3548,6 +3574,37 @@ fn declaration_initializer_node<'a>(
         }
         _ => None,
     })
+}
+
+/// Compound-assignment operator carried by the declaration target itself.
+///
+/// `local`-shaped targets (`local $x .= ...`) carry the operator on the
+/// target node; otherwise it lives on the initializer (`field $Foo::bar +=
+/// 2`). A simple `=` is never compound. An initializer operator counts only
+/// when its assignment LHS is the declared target token — the same join the
+/// body arena applies — so an operator nested anywhere else
+/// (`field $x = ($y += 1)`) is never attributed to this declaration.
+fn declaration_target_compound_op(
+    variable: &Node,
+    initializer: Option<&Node>,
+    target_range: Option<SourceLocation>,
+) -> Option<String> {
+    let target = match &variable.kind {
+        NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
+        _ => variable,
+    };
+    if let NodeKind::Assignment { op, .. } = &target.kind {
+        return if op != "=" { Some(op.clone()) } else { None };
+    }
+    let range = target_range?;
+    match initializer.map(|node| &node.kind) {
+        Some(NodeKind::Assignment { op, lhs, .. })
+            if op != "=" && lhs.location.start == range.start && lhs.location.end == range.end =>
+        {
+            Some(op.clone())
+        }
+        _ => None,
+    }
 }
 
 /// Peel an embedded `Assignment` so the localized lvalue is the declaration target.
@@ -4233,20 +4290,20 @@ impl<'a> BodyBuilder2<'a> {
     /// A `field` that the first pass recorded as a class-field binding lowers
     /// with `DeclStorageClass::Field`. The scope graph is the shared
     /// authority, so the arena agrees with it by construction. Any other
-    /// `field`-shaped node is a legacy call and keeps
-    /// `DeclStorageClass::Unknown`.
+    /// declaration-shaped call keeps `DeclStorageClass::Unknown`.
+    ///
+    /// Decided by the shared [`classify_declaration`] verdict (#14798), not a
+    /// second keyword list.
     fn body_storage_for_decl(
         &self,
         declarator: &str,
         binding: Option<HirBindingId>,
     ) -> DeclStorageClass {
-        if declarator == "field" {
-            if binding.is_some_and(|id| self.is_class_field_binding(id)) {
-                return DeclStorageClass::Field;
-            }
-            return DeclStorageClass::Unknown;
+        let is_class_field = binding.is_some_and(|id| self.is_class_field_binding(id));
+        match classify_declaration(declarator, is_class_field) {
+            DeclarationVerdict::RealDeclaration(storage) => storage,
+            DeclarationVerdict::DeclarationShapedCall { .. } => DeclStorageClass::Unknown,
         }
-        storage_class_for_decl(declarator)
     }
 
     /// Coarse lexical/package classification for an occurrence.
@@ -5861,16 +5918,6 @@ fn binary_op_from_str(s: &str) -> BinaryOp {
 #[inline]
 fn to_u32_saturating(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
-}
-
-fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
-    match declarator {
-        "my" => DeclStorageClass::My,
-        "our" => DeclStorageClass::Our,
-        "local" => DeclStorageClass::Local,
-        "state" => DeclStorageClass::State,
-        _ => DeclStorageClass::Unknown,
-    }
 }
 
 #[cfg(test)]

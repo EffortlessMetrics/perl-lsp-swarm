@@ -3256,6 +3256,13 @@ pub struct VariableDecl {
     pub has_initializer: bool,
     /// Source range of the initializer expression, when one was parsed.
     pub initializer_range: Option<SourceLocation>,
+    /// Compound-assignment operator carried by the declaration target itself
+    /// (`field $Foo::bar += 2`); `None` for simple `=` and bare declarations.
+    /// Only the target's own operator counts — an operator inside the
+    /// initializer (`field $x = ($y += 1)`) belongs to another place. Flat
+    /// PIR uses this to keep a read-modify-write instead of degrading it to
+    /// a plain write.
+    pub compound_operator: Option<String>,
     /// Whether this came from a list declaration.
     pub is_list: bool,
 }

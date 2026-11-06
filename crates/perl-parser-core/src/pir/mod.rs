@@ -46,7 +46,7 @@ pub use lexical_contribution::{
 };
 pub use lower::{
     lower_hir, lower_hir_bodies, lower_hir_bodies_with_identity, lower_hir_with_identity,
-    lower_single_body,
+    lower_single_body, lower_single_body_with_unsupported,
 };
 pub use model::{
     LexicalName, PIR_RECEIPT_VERSION, PirAccessMode, PirAnchorCoverage, PirAnchorKind, PirCallee,

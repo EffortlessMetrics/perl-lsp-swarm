@@ -19,7 +19,10 @@ pub use body::{
     HirTransliteration, HirVariable, LoopControlResolution, LoopControlVerb, RegexAnalysisAnchor,
     ReplacementEvaluation, Sigil, SubscriptKind, UnaryMode, VariableKind,
 };
-pub(crate) use body::{hir_quote_kind, strip_string_quotes};
+pub(crate) use body::{
+    DeclarationVerdict, classify_declaration, declaration_call_unsupported_key, hir_quote_kind,
+    strip_string_quotes,
+};
 pub use body_entry::lower_body;
 pub use lower::lower_ast;
 pub use model::{

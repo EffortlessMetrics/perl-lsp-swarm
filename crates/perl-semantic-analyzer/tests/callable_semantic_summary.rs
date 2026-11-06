@@ -691,9 +691,11 @@ fn callable_semantic_summary_counts_field_accesses() -> TestResult {
 
 /// A declaration-shaped legacy call (`field $x`) parses as a declaration but
 /// invokes an arbitrary subroutine whose behaviour PIR does not model. PIR
-/// records the callee as unsupported, but `lower_single_body` returns nodes
-/// only, so that receipt never reached the facet ledger and the body could
-/// report every facet `Complete` over a call it had not modelled at all.
+/// records the callee as unsupported, and that receipt slice travels with the
+/// nodes through `lower_single_body_with_unsupported` into the facet
+/// ledger's unmodeled evidence (#14798, R2) — so the body can never report
+/// `Complete` facets over a call it has not modelled at all. If that bridge
+/// breaks, the legacy case below collapses to the control's `Complete`.
 ///
 /// The two sources are a minimal pair — identical but for the legacy call —
 /// so the control proves the assertion discriminates rather than naming a

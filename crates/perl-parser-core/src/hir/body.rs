@@ -1087,17 +1087,92 @@ pub enum DeclStorageClass {
 }
 
 impl DeclStorageClass {
-    /// Classify a declarator keyword. `pub(crate)` so flat PIR lowering can
-    /// ask the same question body lowering does, rather than keeping a second
-    /// list of which keywords are real declarators.
+    /// Classify a declarator keyword without class context. `pub(crate)` so
+    /// flat PIR lowering can ask the same question body lowering does, rather
+    /// than keeping a second list of which keywords are real declarators.
+    ///
+    /// Implemented through [`classify_declaration`]: this is the same single
+    /// decision with class context unknown, so a `field` here is a legacy
+    /// call, never a field declaration.
     pub(crate) fn from_str(s: &str) -> Self {
-        match s {
-            "my" => DeclStorageClass::My,
-            "our" => DeclStorageClass::Our,
-            "local" => DeclStorageClass::Local,
-            "state" => DeclStorageClass::State,
-            _ => DeclStorageClass::Unknown,
+        match classify_declaration(s, false) {
+            DeclarationVerdict::RealDeclaration(storage) => storage,
+            DeclarationVerdict::DeclarationShapedCall { .. } => DeclStorageClass::Unknown,
         }
+    }
+}
+
+/// Verdict of the single shared declaration-shaped-node classifier.
+///
+/// First-pass binding/stash collection, body lowering, and both PIR lowerings
+/// consume this decision; no pass keeps an independent declarator allow/deny
+/// list or a literal `field` binding exception (#14798).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeclarationVerdict {
+    /// A real declaration with this body-arena storage. Creates a binding.
+    RealDeclaration(DeclStorageClass),
+    /// A declaration-shaped call: a legacy `field` call outside class bodies,
+    /// or any future parser-recognized form. Never creates a binding; the
+    /// declarator text travels with the verdict so unsupported evidence can
+    /// identify the actual construct instead of reusing the legacy label.
+    DeclarationShapedCall {
+        /// Source keyword as written (`field`, or a future form's keyword).
+        declarator: String,
+    },
+}
+
+impl DeclarationVerdict {
+    /// Whether the node introduces a binding into the scope graph.
+    pub(crate) fn creates_binding(&self) -> bool {
+        matches!(self, DeclarationVerdict::RealDeclaration(_))
+    }
+
+    /// Whether first-pass collection records package stash effects for the
+    /// node. Real per-object field storage is neither a lexical pad slot nor
+    /// a package stash slot, so only lexical/package/dynamic declarators
+    /// record stash effects here.
+    pub(crate) fn records_stash_effects(&self) -> bool {
+        matches!(
+            self,
+            DeclarationVerdict::RealDeclaration(
+                DeclStorageClass::My
+                    | DeclStorageClass::Our
+                    | DeclStorageClass::Local
+                    | DeclStorageClass::State
+            )
+        )
+    }
+}
+
+/// Receipt key for a declaration-shaped call's unsupported boundary.
+///
+/// The centralized mapping every PIR path applies (#14798, R1): the legacy
+/// `field` call keeps the established `LegacyFieldCall` key for receipt
+/// stability, while any future form renders the generic
+/// `DeclarationShapedCall` key and can never inherit the field label. Static
+/// keys keep `unsupported_construct_counts` (`BTreeMap<&'static str, usize>`)
+/// unchanged; spending public-API surface on a per-declarator key for a
+/// second form that does not exist yet was reviewed and declined.
+pub(crate) fn declaration_call_unsupported_key(declarator: &str) -> &'static str {
+    if declarator == "field" { "LegacyFieldCall" } else { "DeclarationShapedCall" }
+}
+
+/// Decide whether a declaration-shaped AST node creates a binding.
+///
+/// `my`, `our`, `local`, and `state` keep their exact storage semantics in
+/// any context. `field` is a real per-object declaration only when the caller
+/// proves class-body context; anywhere else — and for every other keyword the
+/// parser may recognize in this shape in the future — the node is a
+/// declaration-shaped call that creates no binding unless a later authority
+/// positively proves a declaration.
+pub(crate) fn classify_declaration(declarator: &str, is_class_field: bool) -> DeclarationVerdict {
+    match declarator {
+        "my" => DeclarationVerdict::RealDeclaration(DeclStorageClass::My),
+        "our" => DeclarationVerdict::RealDeclaration(DeclStorageClass::Our),
+        "local" => DeclarationVerdict::RealDeclaration(DeclStorageClass::Local),
+        "state" => DeclarationVerdict::RealDeclaration(DeclStorageClass::State),
+        "field" if is_class_field => DeclarationVerdict::RealDeclaration(DeclStorageClass::Field),
+        other => DeclarationVerdict::DeclarationShapedCall { declarator: other.to_string() },
     }
 }
 
@@ -1689,5 +1764,101 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
             let kind_name = node.kind.kind_name().to_string();
             builder.alloc_expr(HirExpr::Opaque { ast_kind: kind_name }, range)
         }
+    }
+}
+
+#[cfg(test)]
+mod declaration_verdict_tests {
+    use super::{
+        DeclStorageClass, DeclarationVerdict, classify_declaration,
+        declaration_call_unsupported_key,
+    };
+
+    /// Real declarators keep exact storage semantics in any context.
+    #[test]
+    fn real_declarators_are_context_independent() {
+        for in_class in [false, true] {
+            assert_eq!(
+                classify_declaration("my", in_class),
+                DeclarationVerdict::RealDeclaration(DeclStorageClass::My)
+            );
+            assert_eq!(
+                classify_declaration("our", in_class),
+                DeclarationVerdict::RealDeclaration(DeclStorageClass::Our)
+            );
+            assert_eq!(
+                classify_declaration("local", in_class),
+                DeclarationVerdict::RealDeclaration(DeclStorageClass::Local)
+            );
+            assert_eq!(
+                classify_declaration("state", in_class),
+                DeclarationVerdict::RealDeclaration(DeclStorageClass::State)
+            );
+        }
+    }
+
+    /// `field` is a real per-object declaration only with proven class
+    /// context; anywhere else it is the legacy declaration-shaped call.
+    #[test]
+    fn field_needs_class_context() {
+        assert_eq!(
+            classify_declaration("field", true),
+            DeclarationVerdict::RealDeclaration(DeclStorageClass::Field)
+        );
+        assert_eq!(
+            classify_declaration("field", false),
+            DeclarationVerdict::DeclarationShapedCall { declarator: "field".to_string() }
+        );
+    }
+
+    /// A future parser-recognized form is a shaped call in both contexts: it
+    /// never earns a binding, and its declarator travels with the verdict so
+    /// evidence can identify it. The parser cannot produce such nodes, so
+    /// this unit level is the proof seam for future expansion (#14798 T4).
+    #[test]
+    fn future_form_is_a_shaped_call_without_binding() {
+        for in_class in [false, true] {
+            let verdict = classify_declaration("frobnicate", in_class);
+            assert_eq!(
+                verdict,
+                DeclarationVerdict::DeclarationShapedCall { declarator: "frobnicate".to_string() }
+            );
+            assert!(!verdict.creates_binding());
+            assert!(!verdict.records_stash_effects());
+        }
+    }
+
+    /// Only real declarations bind; only lexical/package/dynamic storage
+    /// records first-pass stash effects. Per-object field storage does
+    /// neither pad nor stash work here.
+    #[test]
+    fn verdict_policies() {
+        let real_field = classify_declaration("field", true);
+        assert!(real_field.creates_binding());
+        assert!(!real_field.records_stash_effects());
+        let real_my = classify_declaration("my", false);
+        assert!(real_my.creates_binding());
+        assert!(real_my.records_stash_effects());
+        let call = classify_declaration("field", false);
+        assert!(!call.creates_binding());
+        assert!(!call.records_stash_effects());
+    }
+
+    /// Centralized receipt mapping (#14798 T5, R1): the legacy call keeps its
+    /// stable key; any other declarator renders the generic key and can never
+    /// inherit the field label.
+    #[test]
+    fn unsupported_keys() {
+        assert_eq!(declaration_call_unsupported_key("field"), "LegacyFieldCall");
+        assert_eq!(declaration_call_unsupported_key("frobnicate"), "DeclarationShapedCall");
+    }
+
+    /// The context-free `from_str` spelling is the same decision with class
+    /// context unknown: `field` there is a call, never a declaration.
+    #[test]
+    fn from_str_matches_classifier_without_class_context() {
+        assert_eq!(DeclStorageClass::from_str("my"), DeclStorageClass::My);
+        assert_eq!(DeclStorageClass::from_str("field"), DeclStorageClass::Unknown);
+        assert_eq!(DeclStorageClass::from_str("frobnicate"), DeclStorageClass::Unknown);
     }
 }
