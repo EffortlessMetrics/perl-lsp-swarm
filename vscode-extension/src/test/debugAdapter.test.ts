@@ -1810,6 +1810,7 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
     resetDebugConfigPromptFlag();
     jest.clearAllMocks();
     vscode.workspace.workspaceFolders = undefined;
+    vscode.workspace.getWorkspaceFolder.mockReset();
   });
 
   afterEach(() => {
@@ -1817,25 +1818,44 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
   });
 
   test('does nothing for non-perl documents', async () => {
-    const doc = { languageId: 'javascript' };
+    const doc = { languageId: 'javascript', uri: { fsPath: '/x.js', scheme: 'file' } };
     await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
-  test('does nothing when no workspace folders are open', async () => {
-    vscode.workspace.workspaceFolders = [];
-    const doc = { languageId: 'perl' };
+  test('does nothing for out-of-workspace file documents', async () => {
+    vscode.workspace.getWorkspaceFolder.mockReturnValue(undefined);
+    const doc = { languageId: 'perl', uri: { fsPath: '/outside/foo.pl', scheme: 'file' } };
     await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
+
+  test('does nothing for untitled perl buffers', async () => {
+    const wsFolder = { uri: { fsPath: '/ws' }, name: 'ws' };
+    vscode.workspace.getWorkspaceFolder.mockReturnValue(wsFolder);
+    const doc = { languageId: 'perl', uri: { fsPath: 'Untitled-1', scheme: 'untitled' } };
+    await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  function mockFolderForDoc(tmpDir: string): void {
+    const folder = { uri: { fsPath: tmpDir }, name: 'test' };
+    vscode.workspace.workspaceFolders = [folder];
+    vscode.workspace.getWorkspaceFolder.mockImplementation((uri: { fsPath: string }) =>
+      uri.fsPath.startsWith(tmpDir) ? folder : undefined,
+    );
+  }
 
   test('shows the same onboarding prompt for a perl5 alias document (#7699)', async () => {
     // Runs before any test that trips the once-per-session prompt flag, so the
     // alias itself must pass the language gate for the prompt to appear.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-perl5-'));
     try {
-      vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir }, name: 'test' }];
-      const doc = { languageId: 'perl5' };
+      mockFolderForDoc(tmpDir);
+      const doc = {
+        languageId: 'perl5',
+        uri: { fsPath: path.join(tmpDir, 'script.pl'), scheme: 'file' },
+      };
       await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
       expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
         expect.stringContaining('debug configuration'),
@@ -1850,8 +1870,11 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
   test('shows onboarding prompt for perl document in workspace without launch.json', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-test-'));
     try {
-      vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir }, name: 'test' }];
-      const doc = { languageId: 'perl' };
+      mockFolderForDoc(tmpDir);
+      const doc = {
+        languageId: 'perl',
+        uri: { fsPath: path.join(tmpDir, 'script.pl'), scheme: 'file' },
+      };
       await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
       expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
         expect.stringContaining('debug configuration'),
@@ -1869,8 +1892,11 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
       const vscodDir = path.join(tmpDir, '.vscode');
       fs.mkdirSync(vscodDir);
       fs.writeFileSync(path.join(vscodDir, 'launch.json'), '{}');
-      vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir }, name: 'test' }];
-      const doc = { languageId: 'perl' };
+      mockFolderForDoc(tmpDir);
+      const doc = {
+        languageId: 'perl',
+        uri: { fsPath: path.join(tmpDir, 'script.pl'), scheme: 'file' },
+      };
       await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
       expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
     } finally {
@@ -1878,16 +1904,135 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
     }
   });
 
-  test('shows prompt only once per session even with multiple perl opens', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-once-'));
+  test('checks launch.json in the document workspace folder, not the first root (#16499)', async () => {
+    const tmpFirst = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-first-'));
+    const tmpDoc = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-doc-'));
     try {
-      vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir }, name: 'test' }];
-      const doc = { languageId: 'perl' };
+      const vscodDir = path.join(tmpFirst, '.vscode');
+      fs.mkdirSync(vscodDir);
+      fs.writeFileSync(path.join(vscodDir, 'launch.json'), '{}');
+      const folderFirst = { uri: { fsPath: tmpFirst }, name: 'first' };
+      const folderDoc = { uri: { fsPath: tmpDoc }, name: 'doc-root' };
+      vscode.workspace.workspaceFolders = [folderFirst, folderDoc];
+      vscode.workspace.getWorkspaceFolder.mockImplementation((uri: { fsPath: string }) =>
+        uri.fsPath.startsWith(tmpDoc) ? folderDoc : folderFirst,
+      );
+      const doc = {
+        languageId: 'perl',
+        uri: { fsPath: path.join(tmpDoc, 'lib', 'Foo.pm'), scheme: 'file' },
+      };
       await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(tmpFirst, { recursive: true, force: true });
+      fs.rmSync(tmpDoc, { recursive: true, force: true });
+    }
+  });
+
+  test('does not prompt when the document folder already has launch.json (#16499)', async () => {
+    const tmpFirst = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-noprompt-'));
+    const tmpDoc = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-haslaunch-'));
+    try {
+      const vscodDir = path.join(tmpDoc, '.vscode');
+      fs.mkdirSync(vscodDir);
+      fs.writeFileSync(path.join(vscodDir, 'launch.json'), '{}');
+      const folderFirst = { uri: { fsPath: tmpFirst }, name: 'first' };
+      const folderDoc = { uri: { fsPath: tmpDoc }, name: 'doc-root' };
+      vscode.workspace.workspaceFolders = [folderFirst, folderDoc];
+      vscode.workspace.getWorkspaceFolder.mockImplementation((uri: { fsPath: string }) =>
+        uri.fsPath.startsWith(tmpDoc) ? folderDoc : folderFirst,
+      );
+      const doc = {
+        languageId: 'perl',
+        uri: { fsPath: path.join(tmpDoc, 'script.pl'), scheme: 'file' },
+      };
       await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
+      expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmpFirst, { recursive: true, force: true });
+      fs.rmSync(tmpDoc, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// activateDebugger debug onboarding wiring (#16499)
+// ---------------------------------------------------------------------------
+describe('activateDebugger debug config onboarding (#16499)', () => {
+  const vscode = require('vscode');
+
+  beforeEach(() => {
+    resetDebugConfigPromptFlag();
+    jest.clearAllMocks();
+    vscode.workspace.workspaceFolders = undefined;
+    vscode.workspace.getWorkspaceFolder.mockReset();
+    vscode.window.activeTextEditor = undefined;
+  });
+
+  function perlDoc(tmpDir: string, fileName = 'script.pl'): vscode.TextDocument {
+    return {
+      languageId: 'perl',
+      uri: { fsPath: path.join(tmpDir, fileName), scheme: 'file' },
+    } as vscode.TextDocument;
+  }
+
+  function mockFolderForDoc(tmpDir: string): { uri: { fsPath: string }; name: string } {
+    const folder = { uri: { fsPath: tmpDir }, name: 'test' };
+    vscode.workspace.workspaceFolders = [folder];
+    vscode.workspace.getWorkspaceFolder.mockImplementation((uri: { fsPath: string }) =>
+      uri.fsPath.startsWith(tmpDir) ? folder : undefined,
+    );
+    return folder;
+  }
+
+  function openListenerFromActivation(): (document: vscode.TextDocument) => void {
+    const calls = jest.mocked(vscode.workspace.onDidOpenTextDocument).mock.calls;
+    const listener = calls[calls.length - 1]?.[0] as
+      | ((document: vscode.TextDocument) => void)
+      | undefined;
+    expect(listener).toBeDefined();
+    return listener as (document: vscode.TextDocument) => void;
+  }
+
+  test('restored active editor plus document open prompt at most once per session', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-activate-'));
+    try {
+      mockFolderForDoc(tmpDir);
+      const doc = perlDoc(tmpDir);
+      vscode.window.activeTextEditor = { document: doc };
+      activateDebugger(makeContext(tmpDir));
+      const onOpen = openListenerFromActivation();
+      await settleDebugPrompt();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+      onOpen(doc);
+      await settleDebugPrompt();
       expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  test('document open listener offers onboarding when no restored editor', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-listener-'));
+    try {
+      mockFolderForDoc(tmpDir);
+      activateDebugger(makeContext(tmpDir));
+      const onOpen = openListenerFromActivation();
+      onOpen(perlDoc(tmpDir));
+      await settleDebugPrompt();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+        expect.stringContaining('debug configuration'),
+        expect.any(String),
+        expect.any(String),
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
+
+async function settleDebugPrompt(): Promise<void> {
+  for (let index = 0; index < 20; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
