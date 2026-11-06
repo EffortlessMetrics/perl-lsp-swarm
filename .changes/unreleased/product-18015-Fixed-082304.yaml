@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Reject native critic check severities outside 1..=5 before reading sources or writing receipts."
+time: 2026-10-16T08:23:04Z
+custom:
+  PR: "18015"
+  Slug: native-critic-severity-range
+  Breaking: "no"
