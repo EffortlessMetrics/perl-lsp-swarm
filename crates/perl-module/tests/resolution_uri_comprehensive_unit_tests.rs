@@ -833,7 +833,7 @@ fn include_path_traversal_is_blocked() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-fn absolute_include_path_outside_workspace_is_honored() -> Result<(), Box<dyn std::error::Error>> {
+fn absolute_include_path_outside_workspace_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let workspace = temp.path().join("workspace");
     std::fs::create_dir_all(&workspace)?;
@@ -854,12 +854,7 @@ fn absolute_include_path_outside_workspace_is_honored() -> Result<(), Box<dyn st
         Duration::from_millis(100),
     );
 
-    match result {
-        ModuleUriResolution::Resolved(uri) => {
-            assert!(uri.ends_with("External/Util.pm"));
-        }
-        other => return Err(format!("expected Resolved, got {other:?}").into()),
-    }
+    assert_eq!(result, ModuleUriResolution::NotFound);
     Ok(())
 }
 
