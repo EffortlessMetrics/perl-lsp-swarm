@@ -76,6 +76,8 @@
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
+/// Typed `use` / `no` directive syntax with legacy compatibility projections.
+pub mod compile_directive_syntax;
 /// Owner-neutral source syntax for declaration attributes.
 pub mod declaration;
 /// Field-level authority for independent source-geometry payload fields.
@@ -119,6 +121,11 @@ pub use ast::{
 };
 /// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
 pub use ast::{GotoTargetForm, RegexSurfaceForm};
+/// Byte-offset span indicating where a node appears in source text.
+pub use compile_directive_syntax::{
+    CompileDirectiveSubject, CompileDirectiveSyntax, ImportArgumentItem, ImportArgumentList,
+    ImportListPresence, ModuleNameSyntax, VersionRequirementSyntax,
+};
 /// Owner-neutral declaration-attribute source contracts.
 pub use declaration::{
     DeclarationAttributeArgumentDisposition, DeclarationAttributeArgumentSyntax,
@@ -144,7 +151,6 @@ pub use invariant_policy::{
 pub use invariants::{
     AstInvariantCode, AstInvariantFinding, AstInvariantOptions, AstInvariantReport, validate_ast,
 };
-/// Byte-offset span indicating where a node appears in source text.
 pub use perl_position_tracking::SourceLocation;
 /// Source-backed string and heredoc payload types.
 pub use source_syntax::{

@@ -1288,8 +1288,8 @@ mod tests {
                 negated: false,
             },
             NodeKind::Package { name: "Foo".to_string(), name_span: loc(), block: None },
-            NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: false },
-            NodeKind::No { module: "strict".to_string(), args: vec![], has_filter_risk: false },
+            NodeKind::use_directive("strict".to_string(), vec![], false),
+            NodeKind::no_directive("strict".to_string(), vec![], false),
             NodeKind::PhaseBlock {
                 phase: "BEGIN".to_string(),
                 phase_span: None,
@@ -1866,16 +1866,8 @@ mod tests {
                 name_span: loc(),
                 block: Some(Box::new(block_node())),
             }),
-            n(NodeKind::Use {
-                module: "strict".to_string(),
-                args: vec!["foo".to_string()],
-                has_filter_risk: false,
-            }),
-            n(NodeKind::No {
-                module: "strict".to_string(),
-                args: vec!["foo".to_string()],
-                has_filter_risk: false,
-            }),
+            n(NodeKind::use_directive("strict".to_string(), vec!["foo".to_string()], false)),
+            n(NodeKind::no_directive("strict".to_string(), vec!["foo".to_string()], false)),
             n(NodeKind::PhaseBlock {
                 phase: "BEGIN".to_string(),
                 phase_span: None,

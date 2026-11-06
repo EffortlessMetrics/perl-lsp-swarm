@@ -665,6 +665,7 @@ impl<'a> Parser<'a> {
 }
 
 include!("helpers.rs");
+include!("directive_syntax.rs");
 include!("heredoc.rs");
 include!("statements.rs");
 include!("variables.rs");
