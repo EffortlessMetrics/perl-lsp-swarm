@@ -1,4 +1,4 @@
-﻿//! Memory profiling infrastructure for large workspace symbol resolution.
+//! Memory profiling infrastructure for large workspace symbol resolution.
 //!
 //! This module provides pure-Rust memory estimation for the workspace index,
 //! enabling baseline documentation and scaling analysis without external
@@ -27,6 +27,18 @@
 //!
 //! This module is only compiled when the `memory-profiling` feature is enabled.
 
+pub use super::memory_inventory::{
+    RetainedDisposition, RetainedOwnerInventoryRow, WORKSPACE_INDEX_RETAINED_INVENTORY,
+};
+pub use super::memory_snapshot_v2::{
+    MemoryEvidenceCompleteness, WORKSPACE_INDEX_MEMORY_SCHEMA_V2, WorkspaceIndexMemorySnapshotV2,
+};
+pub use super::memory_weight::{CollectionWeight, MemoryWeightError};
+pub use super::workspace_index::memory_falsifiers::{
+    leak_fact_shard, leak_import_row, leak_package_graph_row, leak_search_index_bucket,
+    leak_semantic_reference_row,
+};
+
 use super::workspace_index::WorkspaceIndex;
 use std::fmt;
 
@@ -38,26 +50,55 @@ use std::fmt;
 /// not included.
 ///
 /// Use [`MemorySnapshot::capture`] to snapshot a live [`WorkspaceIndex`].
-#[derive(Clone, Debug, Default)]
+/// Legacy and versioned workspace memory snapshot (`memory-profiling` only).
+#[derive(Clone, Debug)]
 pub struct MemorySnapshot {
-    /// Number of indexed files at capture time.
+    /// Indexed file count at capture time.
     pub file_count: usize,
-
-    /// Total number of symbols across all files at capture time.
+    /// Indexed symbol count at capture time.
     pub symbol_count: usize,
-
-    /// Estimated bytes used by the per-file data (symbols, references,
-    /// dependencies, content hashes).
+    /// Logical bytes in the per-file projection (legacy receipt field).
     pub files_bytes: usize,
-
-    /// Estimated bytes used by the global qualified-name to URI symbol map.
+    /// Logical bytes in the definition-symbol map (legacy receipt field).
     pub symbols_bytes: usize,
-
-    /// Estimated bytes used by the global reference index.
+    /// Logical bytes in the global reference map (legacy receipt field).
     pub global_refs_bytes: usize,
-
-    /// Estimated bytes used by the document store (raw source texts).
+    /// Document source plus line-geometry logical bytes (legacy aggregate).
     pub document_store_bytes: usize,
+    /// Authoritative complete retained denominator.
+    pub v2: WorkspaceIndexMemorySnapshotV2,
+}
+
+impl Default for MemorySnapshot {
+    fn default() -> Self {
+        Self {
+            file_count: 0,
+            symbol_count: 0,
+            files_bytes: 0,
+            symbols_bytes: 0,
+            global_refs_bytes: 0,
+            document_store_bytes: 0,
+            v2: WorkspaceIndexMemorySnapshotV2 {
+                schema_id: WORKSPACE_INDEX_MEMORY_SCHEMA_V2,
+                completeness: MemoryEvidenceCompleteness::Complete,
+                file_count: 0,
+                symbol_count: 0,
+                file_projection: CollectionWeight::empty(),
+                definition_symbols: CollectionWeight::empty(),
+                search_index: CollectionWeight::empty(),
+                global_references: CollectionWeight::empty(),
+                fact_shards: CollectionWeight::empty(),
+                semantic_reference_index: CollectionWeight::empty(),
+                semantic_import_export_index: CollectionWeight::empty(),
+                semantic_package_graph_index: CollectionWeight::empty(),
+                document_source: CollectionWeight::empty(),
+                document_line_geometry: CollectionWeight::empty(),
+                document_map_capacity: CollectionWeight::empty(),
+                workspace_folders: CollectionWeight::empty(),
+                lifecycle_guards: CollectionWeight::empty(),
+            },
+        }
+    }
 }
 
 impl MemorySnapshot {
@@ -67,12 +108,27 @@ impl MemorySnapshot {
     /// contents to estimate heap usage. Intended for offline profiling;
     /// do not call on the LSP hot path.
     pub fn capture(index: &WorkspaceIndex) -> Self {
-        index.memory_snapshot()
+        let v2 = index.memory_snapshot_v2();
+        Self {
+            file_count: v2.file_count,
+            symbol_count: v2.symbol_count,
+            files_bytes: v2.file_projection.logical_bytes,
+            symbols_bytes: v2.definition_symbols.logical_bytes,
+            global_refs_bytes: v2.global_references.logical_bytes,
+            document_store_bytes: v2.document_source.logical_bytes
+                + v2.document_line_geometry.logical_bytes,
+            v2,
+        }
     }
 
-    /// Total estimated bytes across all components.
+    /// Total estimated logical retained bytes across all measured families.
     pub fn total_estimated_bytes(&self) -> usize {
-        self.files_bytes + self.symbols_bytes + self.global_refs_bytes + self.document_store_bytes
+        self.v2.total_logical_retained_bytes().unwrap_or(0)
+    }
+
+    /// Family-aware scaling denominator for bytes-per-symbol guards.
+    pub fn scaling_denominator_bytes(&self) -> usize {
+        self.total_estimated_bytes()
     }
 
     /// Estimated bytes per indexed symbol.
@@ -82,7 +138,7 @@ impl MemorySnapshot {
         if self.symbol_count == 0 {
             return 0;
         }
-        self.total_estimated_bytes() / self.symbol_count
+        self.scaling_denominator_bytes() / self.symbol_count
     }
 
     /// Estimated bytes per indexed file.
@@ -92,7 +148,7 @@ impl MemorySnapshot {
         if self.file_count == 0 {
             return 0;
         }
-        self.total_estimated_bytes() / self.file_count
+        self.scaling_denominator_bytes() / self.file_count
     }
 
     /// Format this snapshot as a human-readable report string.
@@ -216,12 +272,41 @@ impl fmt::Display for ScaleReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemorySnapshot, ScaleReport};
+    use super::{
+        CollectionWeight, MemoryEvidenceCompleteness, MemorySnapshot, ScaleReport,
+        WORKSPACE_INDEX_MEMORY_SCHEMA_V2, WorkspaceIndexMemorySnapshotV2,
+    };
 
     #[test]
     fn memory_snapshot_derived_metrics_handle_zero_counts() -> Result<(), Box<dyn std::error::Error>>
     {
-        let snap = MemorySnapshot::default();
+        let snap = MemorySnapshot {
+            file_count: 0,
+            symbol_count: 0,
+            files_bytes: 0,
+            symbols_bytes: 0,
+            global_refs_bytes: 0,
+            document_store_bytes: 0,
+            v2: WorkspaceIndexMemorySnapshotV2 {
+                schema_id: WORKSPACE_INDEX_MEMORY_SCHEMA_V2,
+                completeness: MemoryEvidenceCompleteness::Complete,
+                file_count: 0,
+                symbol_count: 0,
+                file_projection: CollectionWeight::empty(),
+                definition_symbols: CollectionWeight::empty(),
+                search_index: CollectionWeight::empty(),
+                global_references: CollectionWeight::empty(),
+                fact_shards: CollectionWeight::empty(),
+                semantic_reference_index: CollectionWeight::empty(),
+                semantic_import_export_index: CollectionWeight::empty(),
+                semantic_package_graph_index: CollectionWeight::empty(),
+                document_source: CollectionWeight::empty(),
+                document_line_geometry: CollectionWeight::empty(),
+                document_map_capacity: CollectionWeight::empty(),
+                workspace_folders: CollectionWeight::empty(),
+                lifecycle_guards: CollectionWeight::empty(),
+            },
+        };
 
         assert_eq!(snap.total_estimated_bytes(), 0);
         assert_eq!(snap.bytes_per_symbol(), 0);
@@ -240,6 +325,45 @@ mod tests {
             symbols_bytes: 20,
             global_refs_bytes: 60,
             document_store_bytes: 20,
+            v2: WorkspaceIndexMemorySnapshotV2 {
+                schema_id: WORKSPACE_INDEX_MEMORY_SCHEMA_V2,
+                completeness: MemoryEvidenceCompleteness::Complete,
+                file_count: 2,
+                symbol_count: 4,
+                file_projection: CollectionWeight {
+                    live_entries: 2,
+                    logical_bytes: 100,
+                    capacity_bytes: 0,
+                },
+                definition_symbols: CollectionWeight {
+                    live_entries: 0,
+                    logical_bytes: 20,
+                    capacity_bytes: 0,
+                },
+                search_index: CollectionWeight::empty(),
+                global_references: CollectionWeight {
+                    live_entries: 0,
+                    logical_bytes: 60,
+                    capacity_bytes: 0,
+                },
+                fact_shards: CollectionWeight::empty(),
+                semantic_reference_index: CollectionWeight::empty(),
+                semantic_import_export_index: CollectionWeight::empty(),
+                semantic_package_graph_index: CollectionWeight::empty(),
+                document_source: CollectionWeight {
+                    live_entries: 0,
+                    logical_bytes: 15,
+                    capacity_bytes: 0,
+                },
+                document_line_geometry: CollectionWeight {
+                    live_entries: 0,
+                    logical_bytes: 5,
+                    capacity_bytes: 0,
+                },
+                document_map_capacity: CollectionWeight::empty(),
+                workspace_folders: CollectionWeight::empty(),
+                lifecycle_guards: CollectionWeight::empty(),
+            },
         };
 
         assert_eq!(snap.total_estimated_bytes(), 200);

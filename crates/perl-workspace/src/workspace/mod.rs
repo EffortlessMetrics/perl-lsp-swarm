@@ -18,6 +18,13 @@ pub mod document_store;
 #[cfg(feature = "memory-profiling")]
 /// Optional memory-profiling utilities for workspace index internals.
 pub mod memory;
+#[cfg(feature = "memory-profiling")]
+mod memory_inventory;
+#[cfg(feature = "memory-profiling")]
+mod memory_snapshot_v2;
+#[cfg(feature = "memory-profiling")]
+/// Checked arithmetic and collection-weight helpers.
+pub mod memory_weight;
 /// Index lifecycle instrumentation and production readiness monitoring helpers.
 pub mod monitoring;
 /// Process-local root-generation and publication-eligibility authority.

@@ -269,6 +269,88 @@ impl ReferenceIndex {
         self.references_by_entity.len()
     }
 
+    /// Conservative retained logical/capacity weight for memory evidence.
+    #[cfg(feature = "memory-profiling")]
+    pub(crate) fn memory_retained_weight(
+        &self,
+    ) -> Result<
+        crate::workspace::memory_weight::CollectionWeight,
+        crate::workspace::memory_weight::MemoryWeightError,
+    > {
+        use crate::workspace::memory_weight::{
+            CollectionWeight, MemoryWeightError, checked_add, hashmap_capacity_slack,
+            string_logical, vec_capacity, vec_logical,
+        };
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        let mut logical = 0usize;
+        let mut capacity = 0usize;
+        let mut live_entries = 0usize;
+        let mut shared_payloads: HashSet<usize> = HashSet::new();
+
+        fn edge_logical(edge: &ReferenceEdge) -> Result<usize, MemoryWeightError> {
+            let mut bytes = string_logical(&edge.symbol_key);
+            bytes = checked_add(bytes, vec_logical(&edge.target_candidates)?)?;
+            bytes = checked_add(bytes, std::mem::size_of::<ReferenceEdge>())?;
+            Ok(bytes)
+        }
+
+        fn absorb_map<K: std::hash::Hash + Eq>(
+            map: &HashMap<K, Vec<Arc<ReferenceEdge>>>,
+            shared_payloads: &mut HashSet<usize>,
+            logical: &mut usize,
+            capacity: &mut usize,
+            live_entries: &mut usize,
+        ) -> Result<(), MemoryWeightError> {
+            *capacity = checked_add(*capacity, hashmap_capacity_slack(map)?)?;
+            for (key, edges) in map {
+                *logical = checked_add(*logical, std::mem::size_of_val(key))?;
+                *capacity = checked_add(*capacity, vec_capacity(edges)?)?;
+                for edge in edges {
+                    *live_entries += 1;
+                    let payload_ptr = Arc::as_ptr(edge) as usize;
+                    if shared_payloads.insert(payload_ptr) {
+                        *logical = checked_add(*logical, edge_logical(edge)?)?;
+                    }
+                    *logical = checked_add(*logical, std::mem::size_of::<Arc<ReferenceEdge>>())?;
+                }
+            }
+            Ok(())
+        }
+
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.indexed_files)?)?;
+        for (uri, file_id) in &self.indexed_files {
+            logical = checked_add(logical, string_logical(uri))?;
+            logical = checked_add(logical, std::mem::size_of_val(file_id))?;
+            live_entries += 1;
+        }
+
+        absorb_map(
+            &self.references_by_name,
+            &mut shared_payloads,
+            &mut logical,
+            &mut capacity,
+            &mut live_entries,
+        )?;
+        absorb_map(
+            &self.references_by_entity,
+            &mut shared_payloads,
+            &mut logical,
+            &mut capacity,
+            &mut live_entries,
+        )?;
+        absorb_map(
+            &self.unresolved_by_occurrence,
+            &mut shared_payloads,
+            &mut logical,
+            &mut capacity,
+            &mut live_entries,
+        )?;
+
+        Ok(CollectionWeight { live_entries, logical_bytes: logical, capacity_bytes: capacity })
+    }
+
     // ── Private helpers ──
 
     /// Derive the canonical name for an occurrence, if one is available.
