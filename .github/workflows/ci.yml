@@ -435,7 +435,9 @@ jobs:
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perllsp "* ]]; then
             cargo test -p perllsp --test powershell_completion --locked -- --exact generated_powershell_completion_works_without_profile_namespace_imports --test-threads=1
           fi
-          cargo test $WINDOWS_TEST_CRATES --locked --lib
+          # Bound concurrent Perl fixture startups and reader/reaper work on Windows.
+          # Keep each test's deadlines and internal cancellation/replacement concurrency.
+          cargo test $WINDOWS_TEST_CRATES --locked --lib -- --test-threads=1
           cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
             python_bin="$(command -v python3 || command -v python)"
