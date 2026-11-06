@@ -840,15 +840,21 @@ fn validate_kind_coverage(ledger: &Ledger, orchestrator_text: &str, violations: 
     }
 }
 
+fn kind_segment_is_well_formed(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
 /// LSP kind literals appearing in the handler.
 fn emitted_kinds(handler: &str) -> BTreeSet<String> {
     const ROOTS: [&str; 3] = ["quickfix", "refactor", "source"];
     let mut kinds = BTreeSet::new();
     for raw in handler.split('"').skip(1).step_by(2) {
-        let is_kind = ROOTS.iter().any(|root| {
+        let has_known_root = ROOTS.iter().any(|root| {
             raw == *root || raw.strip_prefix(root).is_some_and(|rest| rest.starts_with('.'))
-        }) && raw.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.');
-        if is_kind {
+        });
+        let segments_well_formed = raw.split('.').all(kind_segment_is_well_formed);
+        if has_known_root && segments_well_formed {
             kinds.insert(raw.to_string());
         }
     }
@@ -1820,6 +1826,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn emitted_kinds_collects_hyphen_and_underscore_segments() {
+        let source = handler(
+            "let _ = \"refactor.extract_variable\"; let _ = \"source.fix-all\"; let _ = \"not a kind\";",
+        );
+        let kinds = emitted_kinds(&source);
+        assert!(kinds.contains("refactor.extract_variable"));
+        assert!(kinds.contains("source.fix-all"));
+        assert!(!kinds.contains("not a kind"));
+    }
+
+    #[test]
+    fn emitted_kinds_rejects_malformed_kind_literals() {
+        let source =
+            handler("let _ = \"refactor.\"; let _ = \"refactorx\"; let _ = \"quickfix is handy\";");
+        let kinds = emitted_kinds(&source);
+        assert!(!kinds.contains("refactor."));
+        assert!(!kinds.contains("refactorx"));
+        assert!(!kinds.contains("quickfix is handy"));
+    }
+
     /// A new CodeActionKind must be classified, not silently uninventoried.
     #[test]
     fn rejects_an_emitted_kind_that_no_family_or_exception_claims() {
@@ -1838,6 +1865,26 @@ mod tests {
         assert!(
             violations.iter().any(|violation| violation.contains("source.brandNew")),
             "expected unclassified kind violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_emitted_kind_with_underscore_when_unclaimed() {
+        let mut ledger = ledger(
+            vec![generation("gen", Some("THE_CALL"))],
+            vec![route("gen", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+        ledger.unreachable_kinds = Vec::new();
+
+        let mut violations = Vec::new();
+        let source = handler(&format!(
+            "let _ = \"quickfix\"; let _ = \"refactor.extract_variable\"; THE_CALL\n{NO_AST_MARKER}"
+        ));
+        validate_kind_coverage(&ledger, &source, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("refactor.extract_variable")),
+            "expected unclassified underscore kind violation, got {violations:?}"
         );
     }
 
