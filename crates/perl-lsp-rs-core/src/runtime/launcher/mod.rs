@@ -2410,6 +2410,7 @@ mod tests {
                 Result::<(), String>::Err(format!("{other:?}")),
                 "expected RiprFacts action for --ripr-facts --ripr-diff",
             ),
+            other => unreachable!("expected RiprFacts action, got {other:?}"),
         }
         let plan = must(parse_args(["perl-lsp", "--ripr-facts"]));
         match plan.action {
@@ -2420,6 +2421,7 @@ mod tests {
                 Result::<(), String>::Err(format!("{other:?}")),
                 "expected RiprFacts action for --ripr-facts",
             ),
+            other => unreachable!("expected RiprFacts action, got {other:?}"),
         }
     }
 

@@ -102,6 +102,7 @@ mod tests {
             }
             FullDocumentAdmission::Violation { reason, .. } => {
                 return Err(anyhow::anyhow!("expected admission, got {reason}"));
+                unreachable!("expected admission, got {reason}")
             }
         }
         Ok(())

@@ -1595,6 +1595,8 @@ fn pod_directive(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some;
+
     use super::*;
     use perl_test_must::must_some;
 

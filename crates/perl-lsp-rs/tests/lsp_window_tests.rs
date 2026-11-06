@@ -76,6 +76,10 @@ fn output_capture_parses_two_coalesced_frames() -> Result<(), Box<dyn std::error
         ),
         "capture accepts coalesced frames",
     );
+    writer.write_all(
+        &[lsp_frame(br#"{"id":1,"result":"first"}"#), lsp_frame(br#"{"id":2,"result":"second"}"#)]
+            .concat(),
+    )?;
 
     assert_eq!(
         output.get_messages(),
@@ -94,6 +98,10 @@ fn output_capture_waits_for_split_frame() -> Result<(), Box<dyn std::error::Erro
     assert!(output.get_messages().is_empty(), "truncated frame must not parse");
 
     must_with(writer.write_all(&frame[split..]), "capture accepts frame suffix");
+    writer.write_all(&frame[..split])?;
+    assert!(output.get_messages().is_empty(), "truncated frame must not parse");
+
+    writer.write_all(&frame[split..])?;
     assert_eq!(output.get_messages(), vec![json!({"id": 3, "result": "split"})]);
     Ok(())
 }
@@ -104,6 +112,7 @@ fn output_capture_preserves_crlf_in_frame_body() -> Result<(), Box<dyn std::erro
     let mut writer = output.clone();
     let body = b"{\r\n\"id\":4,\r\n\"result\":\"body\"\r\n}\r\n\r\n";
     must_with(writer.write_all(&lsp_frame(body)), "capture accepts CRLF body");
+    writer.write_all(&lsp_frame(body))?;
 
     assert_eq!(output.get_messages(), vec![json!({"id": 4, "result": "body"})]);
     Ok(())
@@ -118,6 +127,7 @@ fn output_capture_rejects_malformed_and_truncated_lengths() -> Result<(), Box<dy
         writer.write_all(b"Content-Length: nope\r\n\r\n{}"),
         "capture accepts malformed frame",
     );
+    writer.write_all(b"Content-Length: nope\r\n\r\n{}")?;
     assert!(output.get_messages().is_empty(), "malformed length must not parse");
 
     output.clear();
@@ -127,6 +137,10 @@ fn output_capture_rejects_malformed_and_truncated_lengths() -> Result<(), Box<dy
     assert!(output.get_messages().is_empty(), "truncated body must not parse");
 
     must_with(writer.write_all(&frame[frame.len() - 1..]), "capture accepts final byte");
+    writer.write_all(&frame[..frame.len() - 1])?;
+    assert!(output.get_messages().is_empty(), "truncated body must not parse");
+
+    writer.write_all(&frame[frame.len() - 1..])?;
     assert_eq!(output.get_messages(), vec![json!({"id": 5, "result": "truncated"})]);
     Ok(())
 }

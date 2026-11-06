@@ -17,7 +17,7 @@
 
 use super::framing::{ContentLengthFramer, FramingError, MAX_FRAME_SIZE};
 use crate::protocol::{JSONRPC_VERSION, JsonRpcId, JsonRpcRequest};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::fmt;
 use std::io::{self, BufRead, Read};
 
@@ -282,17 +282,25 @@ fn decode_jsonrpc_object(
     // JSON-RPC response to a server-initiated request. Convert to the current
     // internal pseudo-notification so the runtime can route it (#7626 owns
     // first-class response direction).
+    //
+    // A JSON-RPC response carries `result` (success) or `error` (failure),
+    // never both; the internal params must preserve that shape (#17338).
+    // Stamping `"error": null` onto every success made the runtime's
+    // key-presence failure check discard every successful
+    // `workspace/configuration` response, so the configuration pull channel
+    // could never apply.
     if let Some(id) = value.get("id") {
-        let params = json!({
-            "id": id,
-            "result": value.get("result").cloned().unwrap_or(Value::Null),
-            "error": value.get("error").cloned(),
-        });
+        let mut params = serde_json::Map::new();
+        params.insert("id".to_owned(), id.clone());
+        params.insert("result".to_owned(), value.get("result").cloned().unwrap_or(Value::Null));
+        if let Some(error) = value.get("error") {
+            params.insert("error".to_owned(), error.clone());
+        }
         return Ok(JsonRpcRequest {
             _jsonrpc: JSONRPC_VERSION.to_string(),
             id: None,
             method: CLIENT_RESPONSE_METHOD.to_string(),
-            params: Some(params),
+            params: Some(Value::Object(params)),
         });
     }
 

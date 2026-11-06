@@ -401,6 +401,11 @@ mod tests {
             server.handle_initialized_dispatch().map(|_| ()).map_err(|e| e.code),
             "initialized without an accepted contract must be refused",
         );
+        let err = server
+            .handle_initialized_dispatch()
+            .map_err(|e| e.code)
+            .err()
+            .ok_or("expected initialized to fail, but it succeeded".to_string())?;
         assert_eq!(err, -32002, "initialized without an accepted contract is ServerNotInitialized");
 
         // Then

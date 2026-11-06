@@ -1,0 +1,10 @@
+---
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Warn the editor when `critic.severity` is out of range instead of clamping silently. The invalid-setting `window/showMessage` family now covers the severity threshold and states that the clamped value is applied."
+time: 2026-10-05T00:00:00Z
+custom:
+  PR: "17386"
+  Slug: fix-critic-severity-clamp-warning-17341
+  Breaking: "no"

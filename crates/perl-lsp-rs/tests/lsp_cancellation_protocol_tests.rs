@@ -313,6 +313,74 @@ fn test_enhanced_cancel_request_with_provider_context_ac1() -> Result<(), Box<dy
             "cleanup_context": "completion_provider"
         }),
     )?;
+    // Registration order between the completion request and its cancellation is
+    // scheduling-dependent (#15913): a cancel handled while the request is
+    // registered-but-incomplete yields a cancel error (enhanced when the
+    // registry path wins, generic when the server-flag short-circuit wins),
+    // while a request that completes first answers with a result and no error
+    // ever follows for that id. Asserting on whichever same-id response
+    // arrives first is timing-dependent, so retry the back-to-back
+    // request-then-cancel stimulus with a fresh id until the enhanced shape
+    // is observed.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut attempt: i64 = 0;
+    let mut seen_results = 0;
+    let mut seen_timeouts = 0;
+    let response = loop {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "AC1 attempts exhausted: {attempt} attempts, {seen_results} settled non-error,                  {seen_timeouts} timed out"
+            )
+            .into());
+        }
+        let completion_id = fixture.track_request_id(1001 + attempt * 100);
+        attempt += 1;
+        // Request-first: only a cancel handled while the request is
+        // registered-but-incomplete can produce a cancel error (a pre-cancel
+        // for an unknown id is a no-op and the request then completes
+        // normally). Send back-to-back so the cancel usually lands in the
+        // in-flight window; a lost race settles this id and the next attempt
+        // uses a fresh one.
+        send_request_no_wait(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": completion_id,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": "file:///main.pl" },
+                    "position": { "line": 5, "character": 10 }
+                }
+            }),
+        );
+        send_notification(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": {
+                    "id": completion_id,
+                    "context": {
+                        "provider": "textDocument/completion",
+                        "workspace_symbols": true,
+                        "cross_file": true,
+                        "cleanup_context": "completion_provider"
+                    }
+                }
+            }),
+        );
+        match read_response_matching_outcome(
+            &fixture.server,
+            &json!(completion_id),
+            Duration::from_secs(1),
+        ) {
+            ReadResponseOutcome::Response(resp) if is_enhanced_cancel_error(&resp) => {
+                break Some(resp);
+            }
+            ReadResponseOutcome::Response(_) => seen_results += 1,
+            _ => seen_timeouts += 1,
+        }
+    };
 
     // The probe only returns once the response for the id carried -32800.
     let error = response.get("error").ok_or("Cancelled request should carry an error")?;

@@ -473,6 +473,53 @@ mod tests {
         Ok(())
     }
 
+    /// A standard JSON-RPC success response carries no `error` member, so the
+    /// internal pseudo-notification must not carry one either (#17338): the
+    /// runtime classifies the response by error-key presence.
+    #[test]
+    fn read_next_success_response_params_omit_error_key() -> io::Result<()> {
+        let payload = framed_response(2, r#"[{"workspace":{"includePaths":["site_lib"]}}]"#);
+        let mut cursor = Cursor::new(payload);
+        let mut reader = ContentLengthMessageReader::new();
+
+        let request = reader.read_next(&mut cursor)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "expected response conversion")
+        })?;
+
+        assert_eq!(request.method, "$/perl-lsp/clientResponse");
+        let params = request
+            .params
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "expected params"))?;
+        assert_eq!(params["id"], 2);
+        assert!(
+            params.get("error").is_none(),
+            "success params must not carry an error key: {params}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_next_error_response_params_preserve_error_object() -> io::Result<()> {
+        let body = r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"nope"}}"#;
+        let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        frame.extend_from_slice(body.as_bytes());
+        let mut cursor = Cursor::new(frame);
+        let mut reader = ContentLengthMessageReader::new();
+
+        let request = reader.read_next(&mut cursor)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "expected response conversion")
+        })?;
+
+        assert_eq!(request.method, "$/perl-lsp/clientResponse");
+        let params = request
+            .params
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "expected params"))?;
+        assert_eq!(params["id"], 3);
+        assert_eq!(params["error"]["code"], -32601);
+        assert_eq!(params["error"]["message"], "nope");
+        Ok(())
+    }
+
     #[test]
     fn read_message_returns_none_for_truncated_body() -> io::Result<()> {
         // Claim 1000 bytes but only provide 5

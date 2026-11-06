@@ -1,0 +1,10 @@
+---
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Publish config-triggered diagnostics under the URI spelling the client opened the document with. Settings-change republishes no longer land under a lowercased drive-letter identity on Windows, which left open buffers with stale diagnostics."
+time: 2026-10-05T00:00:00Z
+custom:
+  PR: "17386"
+  Slug: fix-config-republish-uri-spelling-17339
+  Breaking: "no"

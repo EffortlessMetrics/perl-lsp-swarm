@@ -2223,6 +2223,7 @@ mod tests {
             }
             // Unreachable: the `matches!` assert above fails hard first.
             (_, _) => {}
+            other => unreachable!("unexpected concurrent initialize outcomes: {other:?}"),
         }
     }
 
@@ -2393,6 +2394,10 @@ mod tests {
             let second = scope.spawn(|| server.handle_initialize(Some(malformed.clone())));
             let first = must_with(first.join(), "first initialize thread");
             let second = must_with(second.join(), "second initialize thread");
+            let Ok(first) = first.join() else { unreachable!("first initialize thread panicked") };
+            let Ok(second) = second.join() else {
+                unreachable!("second initialize thread panicked")
+            };
 
             let outcomes = [first, second];
             let owners = outcomes
