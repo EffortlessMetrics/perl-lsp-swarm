@@ -23,6 +23,7 @@ mod hover_extracted;
 #[cfg(test)]
 mod hover_tests;
 mod live_compiler_hover;
+mod presentation;
 mod qualified_token;
 mod regex_hover;
 mod signature_help;
