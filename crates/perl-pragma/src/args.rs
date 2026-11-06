@@ -1,6 +1,7 @@
 use crate::PragmaState;
 
 const MAX_DISABLED_WARNING_CATEGORIES: usize = 256;
+const MAX_ENABLED_WARNING_CATEGORIES: usize = 256;
 
 pub(crate) fn builtin_import_names(arg: &str) -> Vec<String> {
     let trimmed = normalized_pragma_token(arg);
@@ -37,6 +38,22 @@ pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[
 /// Categories beyond the cap are silently dropped. In valid Perl code this is never reached
 /// (Perl's own warning hierarchy has ~30 leaf categories); the cap is a safety guard against
 /// pathological or adversarial AST input that would otherwise cause O(n²) clone cost.
+pub(crate) fn add_enabled_warning_category(state: &mut PragmaState, category: &str) {
+    if category.is_empty() || category == "all" {
+        return;
+    }
+
+    if state.enabled_warning_categories.iter().any(|c| c == category) {
+        return;
+    }
+
+    if state.enabled_warning_categories.len() >= MAX_ENABLED_WARNING_CATEGORIES {
+        return;
+    }
+
+    state.enabled_warning_categories.push(category.to_string());
+}
+
 pub(crate) fn add_disabled_warning_category(state: &mut PragmaState, category: &str) {
     if category.is_empty() {
         return;
