@@ -15,7 +15,7 @@ use clap::Parser;
 use color_eyre::eyre::{Context, Result};
 use regex::Regex;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -2385,7 +2385,64 @@ fn cmd_check_parser_matrix(repo_root: &Path) -> Result<i32> {
     Ok(1)
 }
 
-fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
+/// Stable `path:line` key for one counted production-unsafe site.
+pub(crate) fn unsafe_prod_site_key(rel_path: &str, line_no: usize) -> String {
+    format!("{}:{line_no}", rel_path.replace('\\', "/"))
+}
+
+fn parse_unsafe_prod_site_key_line(trimmed: &str) -> Option<String> {
+    let (path, line_no) = trimmed.rsplit_once(':')?;
+    if path.is_empty() || !line_no.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Read the committed per-site expected set from `ci/unsafe_prod_baseline.txt`.
+pub(crate) fn read_unsafe_prod_expected_sites(path: &Path) -> Result<BTreeSet<String>> {
+    if !path.is_file() {
+        return Err(color_eyre::eyre::eyre!(
+            "missing production-unsafe baseline {:?}; expected one sorted path:line entry per counted site",
+            path
+        ));
+    }
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {:?}", path))?;
+    let trimmed_all = raw.trim();
+    if !trimmed_all.is_empty() && trimmed_all.parse::<usize>().is_ok() && !trimmed_all.contains(':')
+    {
+        return Err(color_eyre::eyre::eyre!(
+            "{:?} is a bare integer ratchet; replace it with one path:line entry per counted production unsafe site",
+            path
+        ));
+    }
+    let mut expected = BTreeSet::new();
+    for (idx, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(key) = parse_unsafe_prod_site_key_line(trimmed) else {
+            return Err(color_eyre::eyre::eyre!(
+                "invalid production-unsafe baseline line {} in {:?}: {line:?}",
+                idx + 1,
+                path
+            ));
+        };
+        if expected.contains(&key) {
+            return Err(color_eyre::eyre::eyre!(
+                "duplicate production-unsafe baseline entry in {:?}: {key}",
+                path
+            ));
+        }
+        expected.insert(key);
+    }
+    if expected.is_empty() {
+        return Err(color_eyre::eyre::eyre!("{:?} contains no path:line entries", path));
+    }
+    Ok(expected)
+}
+
+pub(crate) fn scan_unsafe_prod_sites(repo_root: &Path) -> Result<(BTreeSet<String>, Vec<String>)> {
     // Matches real unsafe constructs; comment_re filters comment-only lines so
     // that doc-comment prose containing "unsafe impl …" isn't counted.
     let unsafe_re = Regex::new(
@@ -2396,8 +2453,8 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     let attr_re = Regex::new(r"^\s*#\[")?;
     let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl")?;
 
-    let mut all_matches: Vec<String> = Vec::new();
-    let mut bare_unsafe: Vec<String> = Vec::new();
+    let mut current = BTreeSet::new();
+    let mut bare_unsafe = Vec::new();
 
     let sources = production_source_files_for_ci_checks(repo_root)?;
 
@@ -2415,8 +2472,9 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
                 continue;
             }
             if unsafe_re.is_match(line) {
-                let location = format!("{rel}:{line_no}:{line}");
-                all_matches.push(location.clone());
+                let site_key = unsafe_prod_site_key(&rel, line_no);
+                let location = format!("{site_key}:{line}");
+                current.insert(site_key);
 
                 if !has_adjacent_safety_comment(
                     &lines,
@@ -2432,16 +2490,38 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
         }
     }
 
-    let baseline = read_usize_file(&repo_root.join("ci/unsafe_prod_baseline.txt"), 0)?;
-    println!("unsafe syntax in production: {} (baseline: {baseline})", all_matches.len());
+    Ok((current, bare_unsafe))
+}
+
+fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
+    let baseline_path = repo_root.join("ci/unsafe_prod_baseline.txt");
+    let expected = read_unsafe_prod_expected_sites(&baseline_path)?;
+    let (current, bare_unsafe) = scan_unsafe_prod_sites(repo_root)?;
+
+    println!("unsafe syntax in production: {} (expected sites: {})", current.len(), expected.len());
 
     let mut exit_code = 0;
 
-    if all_matches.len() > baseline {
-        println!("FAIL: unsafe syntax count ({}) exceeds baseline ({baseline})", all_matches.len());
-        println!("New or uncounted offenders:");
-        for item in &all_matches {
-            println!("  {item}");
+    if current != expected {
+        let unexpected: Vec<&str> = current.difference(&expected).map(String::as_str).collect();
+        let missing: Vec<&str> = expected.difference(&current).map(String::as_str).collect();
+        println!(
+            "FAIL: production-unsafe site set differs from {:?} (unexpected={}, missing={})",
+            baseline_path,
+            unexpected.len(),
+            missing.len()
+        );
+        if !unexpected.is_empty() {
+            println!("Unexpected sites (present in code, absent from baseline):");
+            for &item in &unexpected {
+                println!("  {item}");
+            }
+        }
+        if !missing.is_empty() {
+            println!("Missing sites (listed in baseline, absent from code):");
+            for &item in &missing {
+                println!("  {item}");
+            }
         }
         exit_code = 1;
     }
@@ -2458,12 +2538,12 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     }
 
     if exit_code == 0 {
-        if all_matches.is_empty() {
+        if current.is_empty() {
             println!("No unsafe syntax in production scopes");
         } else {
             println!(
-                "✓ All {} unsafe block(s) carry SAFETY comments and count ≤ baseline",
-                all_matches.len()
+                "✓ All {} unsafe block(s) carry SAFETY comments and match the expected site set",
+                current.len()
             );
         }
     }
@@ -3127,6 +3207,14 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 mod tests {
     use super::*;
     use color_eyre::eyre::ensure;
+
+    #[test]
+    fn unsafe_prod_site_key_normalizes_windows_path_separators() {
+        assert_eq!(
+            unsafe_prod_site_key("crates\\demo\\src\\lib.rs", 42),
+            "crates/demo/src/lib.rs:42"
+        );
+    }
 
     #[test]
     fn display_path_repository_relative_text_uses_forward_slashes() {
