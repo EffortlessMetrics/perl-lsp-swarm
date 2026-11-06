@@ -1,0 +1,13 @@
+{
+  "behavior": "as_is",
+  "setup": "One file has been successfully indexed and IndexCoordinator::transition_to_ready has been explicitly called.",
+  "environment": [
+    "max_files is 1; other resource limits do not reject the supplied snippets",
+    "at most one distinct new-file rejection and one accepted-file update",
+    "API calls are serial and individually atomic in this abstraction",
+    "no external lifecycle transition, remove, reload, cancellation, shutdown or root replacement after setup",
+    "parser success for the supplied valid Perl snippets is observed by the production test, not proved by TLC"
+  ],
+  "fairness": "none; safety-only model checking",
+  "known_target_gap": "IndexCoordinator::state currently mutates state while consuming resource rejection (WSI-COORD-002). Pure observations belong to #10799; checking this as-is model does not satisfy that target."
+}

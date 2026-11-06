@@ -1,0 +1,20 @@
+{
+  "id": "resource-rejection-is-partial-and-nonpublishing",
+  "invariants": [
+    "TypeOK",
+    "AcceptedPreserved",
+    "NoRejectedPublication",
+    "NoFullQueryAfterRejection",
+    "SingleDrain"
+  ],
+  "claim": "In the serial one-slot fixture, a rejected new file is not published, the accepted file remains available, query observes the pending rejection before dispatching, and repeated observations drain that rejection only once.",
+  "not_claimed": [
+    "observation purity",
+    "operation-ticket settlement",
+    "snapshot or root-generation currentness",
+    "concurrent linearizability",
+    "unbounded capacity",
+    "liveness",
+    "all LSP provider routing"
+  ]
+}

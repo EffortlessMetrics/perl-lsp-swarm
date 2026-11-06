@@ -1,0 +1,56 @@
+{
+  "schema_id": "perllsp.workspace-index-model.v1",
+  "machine_id": "perllsp.workspace-index-lifecycle",
+  "property_id": "resource-rejection-is-partial-and-nonpublishing",
+  "behavior": "as_is",
+  "authority_ledger": "policy/workspace-index-lifecycle-propositions.v1.tsv",
+  "authority_rows": [
+    "WSI-COORD-002",
+    "WSI-COORD-004",
+    "WSI-RES-001",
+    "WSI-INSTR-001"
+  ],
+  "model": "crates/perl-workspace/tests/formal/WorkspaceIndexResourceRejection.tla",
+  "config": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection.cfg",
+  "property": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection.property.json",
+  "assumptions": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection.assumptions.json",
+  "toolchain": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection.toolchain.json",
+  "negative_controls": [
+    {
+      "config": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection_bypass.cfg",
+      "invariant": "NoFullQueryAfterRejection"
+    },
+    {
+      "config": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection_publish.cfg",
+      "invariant": "NoRejectedPublication"
+    },
+    {
+      "config": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection_repeat.cfg",
+      "invariant": "SingleDrain"
+    },
+    {
+      "config": "crates/perl-workspace/tests/formal/workspace_index_resource_rejection_evict.cfg",
+      "invariant": "AcceptedPreserved"
+    }
+  ],
+  "implementation_sources": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "crates/perl-workspace/Cargo.toml",
+    "crates/perl-workspace/src/lib.rs",
+    "crates/perl-workspace/src/workspace/workspace_index.rs",
+    "crates/perl-workspace/src/workspace/document_store.rs",
+    "crates/perl-workspace/src/monitoring/mod.rs"
+  ],
+  "adapter_sources": [
+    "scripts/ci/workspace_index_model.py",
+    "scripts/cargo_admitted.py",
+    "crates/perl-workspace/tests/workspace_index_resource_model.rs"
+  ],
+  "conformance_target": "workspace_index_resource_model",
+  "conformance_cases": [
+    "first_resource_rejection_observer_routes_partial_and_preserves_accepted_file",
+    "quiescent_observations_do_not_repeat_degradation_or_block_existing_file_update"
+  ]
+}

@@ -2382,6 +2382,50 @@ jobs:
       - name: Index lifecycle ownership ledger (required merge surface)
         run: cargo test -p xtask --test workspace_index_lifecycle_ledger --locked -- --nocapture
 
+      # A permanent, bounded pilot on this existing qualification surface. This
+      # does not turn Draft/Ready publication into a qualification request.
+      - name: Workspace index model adapter controls
+        run: python3 scripts/ci/test_workspace_index_model.py
+
+      - name: Select affected workspace index model inputs
+        id: workspace-index-model-scope
+        env:
+          STATE_MODEL_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 scripts/ci/workspace_index_model.py select \
+            --base "$STATE_MODEL_BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Workspace index resource model (bounded native TLC)
+        id: workspace-index-model
+        if: steps.workspace-index-model-scope.outputs.needed == 'true'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          model_tool_dir=$(mktemp -d "$RUNNER_TEMP/workspace-index-tlc.XXXXXX")
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 1 --max-time 60 \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
+            --output "$model_tool_dir/tla2tools.jar"
+          # The adapter verifies size and the reviewed SHA256 before Java runs.
+          python3 scripts/ci/workspace_index_model.py model \
+            --jar "$model_tool_dir/tla2tools.jar"
+
+      - name: Workspace index production correspondence (focused target)
+        id: workspace-index-conformance
+        if: steps.workspace-index-model-scope.outputs.needed == 'true'
+        timeout-minutes: 5
+        run: python3 scripts/ci/workspace_index_model.py conformance
+
+      - name: Upload exact workspace index model evidence
+        if: always() && steps.workspace-index-model-scope.outputs.needed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: workspace-index-model-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.workspace-index-model.outputs.receipt_dir }}
+            ${{ steps.workspace-index-conformance.outputs.receipt_dir }}
+          if-no-files-found: warn
+          retention-days: 7
+
       # Same reasoning as the contracts above: the #11382 TDD-facade
       # recurrence guard otherwise only executes through diff-routed advisory
       # lanes, so stale facade imports could merge without it ever running.

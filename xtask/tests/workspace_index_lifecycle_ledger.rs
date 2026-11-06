@@ -31,6 +31,8 @@ const GENERATED_PATH: &str = "docs/generated/workspace_index_lifecycle_propositi
 const RUNTIME_OWNERSHIP_PATH: &str = "policy/workspace-runtime-ownership.v1.tsv";
 const UPDATE_ENV: &str = "WSI_LIFECYCLE_MAP_UPDATE";
 const COLUMN_COUNT: usize = 18;
+const RESOURCE_MODEL_BINDING: &str =
+    "crates/perl-workspace/tests/formal/workspace_index_resource_rejection.binding.json";
 
 /// Module *directories* that exist solely to define index lifecycle vocabulary.
 /// EVERY public enum or struct in EVERY `.rs` file beneath them must carry a
@@ -1945,5 +1947,111 @@ fn the_module_walk_reaches_nested_directories() -> Result<()> {
         "the module walk did not reach a nested directory: {names:?}"
     );
     ensure!(names.contains(&"top.rs".to_string()), "the module walk missed a top-level file");
+    Ok(())
+}
+
+/// A proof binding joins the existing authority; it never elects another owner.
+/// This is a structural ratchet, not execution evidence for either model or Rust.
+fn validate_resource_model_join(
+    binding: &serde_json::Value,
+    rows: &[PropositionRow],
+) -> Result<()> {
+    ensure!(binding["authority_ledger"] == LEDGER_PATH, "pilot changed authority ledger");
+    ensure!(binding["behavior"] == "as_is", "pilot must preserve as-is behavior");
+    ensure!(
+        binding["machine_id"] == "perllsp.workspace-index-lifecycle",
+        "pilot changed machine identity"
+    );
+    let authority_rows = binding["authority_rows"].as_array().context("pilot authority rows")?;
+    let expected = ["WSI-COORD-002", "WSI-COORD-004", "WSI-RES-001", "WSI-INSTR-001"];
+    let actual: Vec<&str> = authority_rows
+        .iter()
+        .map(|value| value.as_str().context("pilot authority row must be a string"))
+        .collect::<Result<_>>()?;
+    ensure!(actual == expected, "pilot changed its proposition denominator");
+    let mut selected = Vec::new();
+    for id in expected {
+        let row = rows.iter().find(|row| row.id == id).with_context(|| format!("missing {id}"))?;
+        ensure!(
+            row.current_state == "live" && row.reachability == "production",
+            "{id}: pilot cannot certify a non-production owner"
+        );
+        ensure!(
+            row.identity_sufficient_today == "false",
+            "{id}: target-identity cutover requires reviewing the as-is pilot"
+        );
+        ensure!(
+            row.source_path == MIXED_MODULE
+                || row.source_path == "crates/perl-workspace/src/monitoring/mod.rs",
+            "{id}: pilot cannot bind the separate state_machine implementation"
+        );
+        selected.push(row.clone());
+    }
+    validate_source_markers(&selected)
+}
+
+fn load_resource_model_binding() -> Result<serde_json::Value> {
+    let source = fs::read_to_string(repo_root()?.join(RESOURCE_MODEL_BINDING))
+        .with_context(|| format!("read {RESOURCE_MODEL_BINDING}"))?;
+    serde_json::from_str(&source).context("parse resource-model binding")
+}
+
+#[test]
+fn resource_model_joins_live_propositions_without_replacing_authority() -> Result<()> {
+    validate_resource_model_join(&load_resource_model_binding()?, &load_rows()?)
+}
+
+#[test]
+fn resource_model_refuses_shadow_owner_or_target_completion() -> Result<()> {
+    let binding = load_resource_model_binding()?;
+    let rows = load_rows()?;
+    for shadow_owner in [false, true] {
+        let mut wrong = rows.clone();
+        let row = wrong.iter_mut().find(|row| row.id == "WSI-COORD-002").context("observation row")?;
+        if shadow_owner {
+            row.reachability = "test_or_doctest_only".to_string();
+            assert_rejected_because(
+                validate_resource_model_join(&binding, &wrong),
+                "non-production owner",
+            )?;
+        } else {
+            row.identity_sufficient_today = "true".to_string();
+            assert_rejected_because(
+                validate_resource_model_join(&binding, &wrong),
+                "target-identity cutover",
+            )?;
+        }
+    }
+    let mut wrong = binding;
+    wrong["authority_rows"] = serde_json::json!(["WSI-COORD-002"]);
+    assert_rejected_because(
+        validate_resource_model_join(&wrong, &rows),
+        "proposition denominator",
+    )
+}
+
+#[test]
+fn resource_model_cases_target_operational_coordinator_apis() -> Result<()> {
+    let binding = load_resource_model_binding()?;
+    ensure!(
+        binding["conformance_target"] == "workspace_index_resource_model",
+        "pilot changed production target"
+    );
+    let path = "crates/perl-workspace/tests/workspace_index_resource_model.rs";
+    let source = fs::read_to_string(repo_root()?.join(path)).with_context(|| format!("read {path}"))?;
+    ensure!(
+        source.contains("workspace::workspace_index::{IndexCoordinator, IndexState}"),
+        "pilot must use operational IndexCoordinator"
+    );
+    ensure!(!source.contains("state_machine::"), "pilot must not exercise the shadow machine");
+    let cases = binding["conformance_cases"].as_array().context("pilot conformance cases")?;
+    ensure!(cases.len() == 2, "pilot must retain both API cases");
+    for case in cases {
+        let name = case.as_str().context("pilot case name")?;
+        ensure!(source.contains(&format!("fn {name}()")), "pilot case {name} is absent");
+    }
+    for marker in [".index_file(", "coordinator.query(", ".state()", ".instrumentation_snapshot()"] {
+        ensure!(source.contains(marker), "pilot lost API correspondence anchor {marker}");
+    }
     Ok(())
 }

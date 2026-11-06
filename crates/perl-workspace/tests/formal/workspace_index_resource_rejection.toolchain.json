@@ -1,0 +1,25 @@
+{
+  "producer": "TLC",
+  "version": "1.7.4",
+  "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
+  "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "size_bytes": 2274532,
+  "pin_sources": [
+    "https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4",
+    "https://api.github.com/repos/NixOS/nixpkgs/git/blobs/ac8c01557736fd2d89d137d07ada03b86dbd40a6"
+  ],
+  "java_options": [
+    "-Xms32m",
+    "-Xmx256m",
+    "-XX:+UseSerialGC"
+  ],
+  "tlc_options": [
+    "-tool",
+    "-workers",
+    "1"
+  ],
+  "timeout_seconds": 30,
+  "max_output_bytes": 1048576,
+  "settlement_timeout_seconds": 10,
+  "platform": "Linux CPython with the existing cargo_admitted.ClippyTree child-discovery capability"
+}

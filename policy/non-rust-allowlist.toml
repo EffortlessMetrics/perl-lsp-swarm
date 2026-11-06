@@ -26,6 +26,45 @@ broad_globs_require_reason = true
 coverage_required_for_production_surfaces = true
 
 [[allow]]
+id = "non-rust-workspace-index-native-model"
+path = "crates/perl-workspace/tests/formal/*"
+kind = "test_fixture"
+language = "tla-json"
+surface = "tooling"
+classification = "test"
+owner = "workspace/index-lifecycle"
+reason = "Bounded native TLA+ resource-rejection model, exact TLC configurations and proof-binding inputs join the existing WSI ledger without introducing production code or another ownership registry."
+covered_by = ["python3 scripts/ci/workspace_index_model.py check", "python3 scripts/ci/test_workspace_index_model.py", "cargo test -p xtask --locked --test workspace_index_lifecycle_ledger"]
+created = "2026-11-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-workspace-index-native-evidence"
+path = "scripts/ci/workspace_index_model.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "workspace/index-lifecycle"
+reason = "Narrow standard-library adapter captures pinned native TLC and actual Cargo test-binary evidence through the existing process owner and qualification job; it does not replace Cargo admission or implement a verifier."
+covered_by = ["python3 scripts/ci/test_workspace_index_model.py", "cargo xtask check-file-policy"]
+created = "2026-11-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-workspace-index-native-evidence-controls"
+path = "scripts/ci/test_workspace_index_model.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "workspace/index-lifecycle"
+reason = "Discriminating adapter controls reject stale bindings, weakened model configurations, malformed or unrelated native outcomes and unknown process ownership instead of accepting a false-green proof."
+covered_by = ["python3 scripts/ci/test_workspace_index_model.py", "cargo xtask check-file-policy"]
+created = "2026-11-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-xtask-ai-dependency-proof"
 path = "scripts/tests/test_xtask_ai_dependencies.py"
 kind = "ci_tooling"
