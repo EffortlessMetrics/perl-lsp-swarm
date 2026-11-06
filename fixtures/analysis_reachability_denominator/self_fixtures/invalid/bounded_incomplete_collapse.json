@@ -1,0 +1,49 @@
+{
+  "schema": "analysis_reachability_fixture_manifest.v1",
+  "schema_version": 1,
+  "manifest": "analysis-reachability-fixture-denominator",
+  "owner_issue": 10998,
+  "status": "declaration-only",
+  "claim_boundary": "declaration only; no analysis execution; no claim promotion; generated views derive from this manifest",
+  "digest_algorithm": "sha256-lf-normalized",
+  "allowed_fixture_roots": ["crates", "test_corpus"],
+  "authorities": ["#8062"],
+  "contracts": { "operation_stage_and_work": 11553, "product_profile_budget": 11590, "closed_world_policy": 8101, "diagnostic_result_identity": 10941, "diagnostic_item_composition": 8142, "push_transport": 10953, "pull_currentness": 10957, "compatibility_projection": 9777 },
+  "proof_owners": { "A_local_flow": 11004, "W_workspace_facts": 11006, "G_graph_structure": 11006, "R_operation_terminal": 11006, "B_profile_budget": 11006, "P_closed_world_policy": 11006, "D_diagnostic_identity": 11012, "T_transport_currentness": 11012, "C_compatibility_recurrence": 11018, "X_proof_closeout": 11018 },
+  "denominator": [],
+  "declared_row_count": 2,
+  "rows": [
+    {
+      "row_id": "sf-collapse-both-views",
+      "fixture": { "id": "graph-shapes", "path": "crates/perl-corpus/fixtures/reachability_denominator/lib/GraphShapes.pm", "digest_sha256_lf": "19217102262c50898832666003003486b1b3341777c328869a7c42b0ff50edda", "role": "positive" },
+      "subjects": ["subject://self-fixture"],
+      "source_roles": ["proof-inputs"],
+      "train": { "node": "N.denominator", "component": "self-fixture", "family": "A_local_flow", "claim_profile": "reachability-v1" },
+      "controls": { "opposite": "sf-collapse-control" },
+      "expectations": {
+        "operation": {
+          "proposition": "one row claiming both a complete bounded view and an incomplete semantic computation",
+          "stage": "semantic_proof",
+          "work_dimensions": [],
+          "checkpoints": [],
+          "terminal_outcome": "bounded_view_complete"
+        }
+      },
+      "terminal": "incomplete_semantic_never_bounded_complete",
+      "limitation": { "support_class": "partial", "exit_owner_issue": 11004 },
+      "oracle": { "oracle_type": "independent_expected_authority", "independence_class": "independent", "proof_ceiling": "internal_semantic" }
+    },
+    {
+      "row_id": "sf-collapse-control",
+      "fixture": { "id": "graph-shapes-collapse", "path": "crates/perl-corpus/fixtures/reachability_denominator/lib/GraphShapes.pm", "digest_sha256_lf": "19217102262c50898832666003003486b1b3341777c328869a7c42b0ff50edda", "role": "control_opposite" },
+      "subjects": ["subject://self-fixture-control"],
+      "source_roles": ["sub-declarations"],
+      "train": { "node": "N.denominator", "component": "self-fixture", "family": "A_local_flow", "claim_profile": "reachability-v1" },
+      "controls": {},
+      "expectations": { "local_flow_facts": { "proposition": "opposite direction control", "fact_class": "absent_fact_non_edge" } },
+      "terminal": "dynamic_or_unsupported",
+      "limitation": { "support_class": "supported" },
+      "oracle": { "oracle_type": "independent_expected_authority", "independence_class": "independent", "proof_ceiling": "internal_semantic" }
+    }
+  ]
+}
