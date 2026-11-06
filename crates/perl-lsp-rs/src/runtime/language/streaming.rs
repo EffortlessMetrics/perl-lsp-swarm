@@ -476,7 +476,10 @@ impl LspServer {
                 //
                 // The empty final still goes out so the client drops the partial
                 // ghost text it is already displaying instead of stranding it.
-                (StreamTerminalOutcome::ProtocolEndedWithoutFinal, Vec::new())
+                // Its acceptance records `TruncatedByDelivery`; a refused final
+                // leaves the session unsettled for `release` to record
+                // `ProtocolEndedWithoutFinal`.
+                (StreamTerminalOutcome::TruncatedByDelivery, Vec::new())
             } else {
                 // A clean end-of-stream without an explicit final chunk:
                 // evaluate the terminal cumulative text through the same shared

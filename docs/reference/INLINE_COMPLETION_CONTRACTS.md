@@ -327,6 +327,12 @@ already-recorded outcome rather than requiring a new successful settlement.
   so the terminal is attempted once more by the tail owner. If no attempt is
   accepted and no cancellation already settled the session, release records
   `ProtocolEndedWithoutFinal` rather than a successful completion.
+- **Delivery truncation is a distinct outcome.** When an intermediate frame is
+  refused under backpressure, the backend stops before producing a final value,
+  and the tail owner emits the empty final that revokes the partial ghost text.
+  Acceptance of that terminal records `TruncatedByDelivery`;
+  `ProtocolEndedWithoutFinal` stays reserved for endings where no terminal
+  enqueue was accepted and nothing further reached the client.
 - **Contiguous queue-accepted sequences.** A sequence value is consumed only
   after the outbound queue accepts its frame. A frame suppressed by
   `updateDebounceMs` pacing, skipped because its cumulative text was filtered, or
@@ -431,8 +437,6 @@ nonempty final value before its response acknowledgement. Manager-level
 `admission_tests` in `stream_session.rs` cover ticket identity, retirement, and
 the retained admission watermark.
 
-The candidate's owning-library serial run passed 2,033 tests. The default-parallel
-run failed two tests and is not claimed green or attributed to the baseline.
 These scheduler/manager fixtures do not establish actual-editor rendering,
 transport delivery, or separately executed panic/unwind behavior.
 

@@ -35,9 +35,11 @@ pub struct SessionKey {
 ///
 /// Exactly one of these is recorded per session. The variant is what
 /// distinguishes "the backend produced nothing" from "the backend failed after
-/// producing partial text" — a distinction the previous cancellation-only state
-/// could not express, which let a partial failure present as a successful
-/// final candidate.
+/// producing partial text", and a transport-truncated generation whose empty
+/// final revoked the partial text from an ending where nothing reached the
+/// client — a distinction the previous cancellation-only state could not
+/// express, which let a partial failure present as a successful final
+/// candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamTerminalOutcome {
     /// A safe, policy-compatible candidate was emitted as the final value.
@@ -54,8 +56,14 @@ pub enum StreamTerminalOutcome {
     SupersededByNewRequest,
     /// The document changed, was saved at a newer version, or was closed.
     DocumentChangedOrClosed,
+    /// An intermediate frame was refused, so the backend stopped before
+    /// producing a final value and the successfully enqueued empty final
+    /// revoked the partial text.
+    TruncatedByDelivery,
     /// The handler returned before any backend stream could produce a final
-    /// value (unready context, no backend, notification failure).
+    /// value (unready context, no backend, notification failure). Unlike
+    /// [`StreamTerminalOutcome::TruncatedByDelivery`], no terminal frame was
+    /// accepted on this path.
     ProtocolEndedWithoutFinal,
 }
 
