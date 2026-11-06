@@ -176,7 +176,7 @@
 # before reading the rest of the object. A bump from "convergence_core.v1" to
 # a higher version (or any change to the field set) is a breaking change and
 # must be flagged loudly in scripts/reviews/state and every other consumer.
-# See issue #15278.
+# See issue #15278 and docs/reference/REVIEW_CONVERGENCE_OUTPUT_V1.md.
 # ("stale_reviews" is human reviewers only — BLOCKING. "stale_bot_reviews" is
 # auto-review-app reviewers whose latest review predates HEAD — ADVISORY,
 # never blocking; see the bot-exclusion note above. "unresolved_active" and
@@ -861,7 +861,7 @@ if [[ "$CONVERGED" == "true" ]]; then
     fi
     echo "OK   PR #$PR: review convergence achieved at $HEAD_REF_OID (0 pending reviewers, 0 stale human reviews, 0 unresolved threads [$UNRESOLVED_ACTIVE_COUNT active + $UNRESOLVED_OUTDATED_COUNT outdated], $RESOLVED_THREAD_COUNT resolved [0 without disposition], 0 independent review pending, $STALE_BOT_REVIEW_COUNT stale-bot-advisory$advisory_note)"
 else
-    # Per the documented output contract (script header + review-convergence.md):
+    # Per the documented output contract (script header + docs/reference/REVIEW_CONVERGENCE_OUTPUT_V1.md):
     # stdout always carries a human-readable summary line + the JSON verdict,
     # on BOTH the converged and not-converged paths. This line previously went
     # to stderr only, so a caller reading stdout for the summary got just the
