@@ -28,6 +28,7 @@ on:
       - 'Cargo.lock'
       - 'scripts/tests/test_cargo_cohort.py'
       - 'scripts/tests/test_cargo_admitted_storage.py'
+      - 'scripts/tests/test_cargo_admitted_discovery_gate.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/storage-doctor'
       - 'scripts/storage_observation.py'
