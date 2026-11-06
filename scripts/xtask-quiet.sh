@@ -40,11 +40,11 @@
 # Arguments are forwarded verbatim. `XTASK_QUIET_BUILD_FLAGS` (word-split) is
 # inserted into the admitted build invocation, e.g.
 # `XTASK_QUIET_BUILD_FLAGS="--features parser-tasks"`. Unsupported flags are
-# refused by cargo-admitted; this wrapper does not retry them as raw Cargo.
-# Requires the default dev profile (`<admitted-target>/debug`), which is what
-# this invocation builds; an explicit cross-compilation target
-# (`CARGO_BUILD_TARGET` or `--target`) is refused before building, because the
-# dispatch would only ever find the default-profile binary.
+# refused here or by cargo-admitted; this wrapper does not retry them as raw Cargo.
+# Requires the default dev profile (`<admitted-target>/debug`). Explicit profile
+# selection (`-r`, `--release`, or either form of `--profile`, even `--profile dev`)
+# and cross-compilation targets (`CARGO_BUILD_TARGET` or `--target`) are refused
+# before building, because dispatch would only ever find the default-profile binary.
 #
 # Remaining #17292 follow-up (not this wrapper): compiler-artifact JSON
 # identity, immutable capture/custody, nested-operation reuse, and exact-pin
@@ -81,6 +81,19 @@ if [ -n "${CARGO_BUILD_TARGET:-}" ] || [[ "$build_flags" == *"--target"* ]]; the
   printf 'xtask-quiet: CARGO_BUILD_TARGET, --target or --target-dir is unsupported; the dispatch expects the default dev-profile binary; run `cargo xtask` instead\n' >&2
   exit 70
 fi
+
+# A selected profile can build outside debug and leave a stale debug binary to
+# dispatch. Match the same word-split tokens passed to the producer so flag text
+# inside a feature or output-format value does not become a profile selector.
+# shellcheck disable=SC2086
+for build_flag in $build_flags; do
+  case "$build_flag" in
+    -r|--release|--profile|--profile=*)
+      printf 'xtask-quiet: explicit profile selection in XTASK_QUIET_BUILD_FLAGS is unsupported; the dispatch expects the default dev-profile binary; run `cargo xtask` instead\n' >&2
+      exit 70
+      ;;
+  esac
+done
 
 # Production always uses this repository's admitted producer. Tests may bind
 # XTASK_QUIET_CARGO_ADMITTED to a fake that preserves the same argv/descriptor

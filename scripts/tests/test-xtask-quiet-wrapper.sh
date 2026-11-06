@@ -105,22 +105,23 @@ FAKE
 # argv, and exits with FAKE_XTASK_EXIT. Both spellings are provided because
 # the wrapper prefers `xtask.exe` on Windows.
 write_fake_xtask() {
-  local fake_target_dir="$1" argv_log="$2"
+  local fake_binary_dir="$1" argv_log="$2" stdout_marker="${3:-xtask-stdout-marker}"
 
-  mkdir -p "${fake_target_dir}/debug"
+  mkdir -p "$fake_binary_dir"
   for name in xtask xtask.exe; do
-    cat > "${fake_target_dir}/debug/${name}" <<FAKE
+    cat > "${fake_binary_dir}/${name}" <<FAKE
 #!/usr/bin/env bash
 rendered=""
 for arg in "\$@"; do
   rendered+="[\${arg}]"
 done
 printf '%s\n' "\${rendered}" >> "${argv_log}"
-printf 'xtask-stdout-marker\n'
+pwd > "${argv_log}.cwd"
+printf '%s\n' "${stdout_marker}"
 printf 'xtask-stderr-marker\n' >&2
 exit "\${FAKE_XTASK_EXIT:-0}"
 FAKE
-    chmod +x "${fake_target_dir}/debug/${name}"
+    chmod +x "${fake_binary_dir}/${name}"
   done
 }
 
@@ -130,7 +131,7 @@ make_scenario_dir() {
   mkdir -p "${dir}/bin"
   write_fake_cargo "${dir}/bin" "${dir}/cargo.log"
   write_fake_admitted "${dir}/bin" "${dir}/target" "${dir}/admitted.log"
-  write_fake_xtask "${dir}/target" "${dir}/argv.log"
+  write_fake_xtask "${dir}/target/debug" "${dir}/argv.log"
   printf '%s' "$dir"
 }
 
@@ -225,14 +226,15 @@ scenario_failure_path() {
 }
 
 # Scenario 3 (build-flag passthrough): XTASK_QUIET_BUILD_FLAGS reaches the
-# admitted build invocation, and only the build invocation.
+# admitted build invocation, and only the build invocation. Fixture-only feature
+# names contain selector text; validating feature names belongs to the producer.
 scenario_build_flags_passthrough() {
   local dir status admitted_args
   dir="$(make_scenario_dir)"
   register_scenario_dir "$dir"
 
   status=0
-  XTASK_QUIET_BUILD_FLAGS="--features parser-tasks" \
+  XTASK_QUIET_BUILD_FLAGS="--features parser-tasks --features=fixture--release,fixture--profile --message-format=json-render-diagnostics" \
     run_wrapper "$dir" ci doctor --help \
     >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
 
@@ -243,6 +245,12 @@ scenario_build_flags_passthrough() {
   admitted_args="$(cat "${dir}/admitted.log")"
   assert_contains "build flags passthrough: XTASK_QUIET_BUILD_FLAGS forwarded" \
     "$admitted_args" "[--features][parser-tasks]"
+  assert_contains "build flags passthrough: profile text inside feature values is preserved" \
+    "$admitted_args" "[--features=fixture--release,fixture--profile]"
+  assert_contains "build flags passthrough: -r inside a value is not a profile selector" \
+    "$admitted_args" "[--message-format=json-render-diagnostics]"
+  assert_contains "build flags passthrough: default xtask executes" \
+    "$(cat "${dir}/out.txt")" "xtask-stdout-marker"
 }
 
 # Scenario 4 (xtask exit status): a nonzero xtask exit must survive the exec
@@ -298,14 +306,19 @@ scenario_missing_resources_does_not_exec() {
   fi
 }
 
-# Scenario 6: argv with spaces and Unicode must reach the tool unchanged.
+# Scenario 6: application arguments, including profile spellings, spaces and
+# Unicode, must reach the tool unchanged in the caller's working directory.
 scenario_argv_spaces_and_unicode() {
-  local dir status argv
+  local dir status argv expected_argv caller_dir
   dir="$(make_scenario_dir)"
   register_scenario_dir "$dir"
+  mkdir -p "${dir}/caller"
+  caller_dir="$(cd "${dir}/caller" && pwd)"
 
   status=0
-  run_wrapper "$dir" "arg with space" "unicodé-Δ" \
+  (cd "$caller_dir" && XTASK_QUIET_BUILD_FLAGS="" \
+    run_wrapper "$dir" "arg with space" "unicodé-Δ" \
+      --release -r --profile agent --profile=dev) \
     >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
 
   if [[ "$status" -ne 0 ]]; then
@@ -313,8 +326,17 @@ scenario_argv_spaces_and_unicode() {
     return
   fi
   argv="$(cat "${dir}/argv.log")"
-  assert_contains "argv spaces/unicode: exact tokens reach xtask" \
-    "$argv" "[arg with space][unicodé-Δ]"
+  expected_argv="[arg with space][unicodé-Δ][--release][-r][--profile][agent][--profile=dev]"
+  if [[ "$argv" == "$expected_argv" ]]; then
+    pass "argv spaces/unicode/profile flags: exact tokens reach xtask"
+  else
+    fail "argv spaces/unicode/profile flags: expected ${expected_argv}, got ${argv}"
+  fi
+  if [[ "$(cat "${dir}/argv.log.cwd")" == "$caller_dir" ]]; then
+    pass "argv: xtask runs in the caller's working directory"
+  else
+    fail "argv: xtask did not run in the caller's working directory"
+  fi
 }
 
 # Scenario 7: source pin — the production wrapper names cargo-admitted and
@@ -335,6 +357,55 @@ scenario_source_pins_admitted_producer() {
   fi
 }
 
+# Scenario 8: every explicit build-profile selector is unsupported, including
+# redundant dev selections. Existing executables make a skipped build visible:
+# refusal must occur before either the producer or any xtask binary executes.
+scenario_profile_flags_are_refused() {
+  local flags dir status err
+  for flags in \
+    "--release" \
+    "-r" \
+    "--profile agent" \
+    "--profile=agent" \
+    "--profile dev" \
+    "--profile=dev" \
+    "--features parser-tasks --profile=agent"; do
+    dir="$(make_scenario_dir)"
+    register_scenario_dir "$dir"
+    write_fake_xtask "${dir}/target/debug" "${dir}/argv.log" "stale-debug-marker"
+    write_fake_xtask "${dir}/target/release" "${dir}/argv.log" "alternate-release-marker"
+    write_fake_xtask "${dir}/target/agent" "${dir}/argv.log" "alternate-agent-marker"
+
+    status=0
+    XTASK_QUIET_BUILD_FLAGS="$flags" run_wrapper "$dir" ci doctor --help \
+      >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
+    err="$(cat "${dir}/err.txt")"
+
+    if [[ "$status" -eq 70 ]]; then
+      pass "profile ${flags}: wrapper exits 70"
+    else
+      fail "profile ${flags}: wrapper exit (expected 70, got ${status}; stdout: $(cat "${dir}/out.txt"))"
+    fi
+    assert_contains "profile ${flags}: diagnostic explains the supported profile" \
+      "$err" "default dev-profile"
+    if [[ ! -s "${dir}/admitted.log" ]]; then
+      pass "profile ${flags}: admitted producer is not invoked"
+    else
+      fail "profile ${flags}: admitted producer was invoked"
+    fi
+    if [[ ! -s "${dir}/argv.log" ]]; then
+      pass "profile ${flags}: no xtask executable runs"
+    else
+      fail "profile ${flags}: an xtask executable ran"
+    fi
+    if [[ ! -s "${dir}/cargo.log" ]]; then
+      pass "profile ${flags}: raw cargo is not invoked for the build"
+    else
+      fail "profile ${flags}: raw cargo was invoked for the build"
+    fi
+  done
+}
+
 scenario_success_path
 scenario_failure_path
 scenario_build_flags_passthrough
@@ -342,6 +413,7 @@ scenario_xtask_exit_status
 scenario_missing_resources_does_not_exec
 scenario_argv_spaces_and_unicode
 scenario_source_pins_admitted_producer
+scenario_profile_flags_are_refused
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
