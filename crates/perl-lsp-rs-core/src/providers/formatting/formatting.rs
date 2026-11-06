@@ -1107,7 +1107,7 @@ mod decision_projection_tests {
                 parse_after: FormatEvidenceState::Proven,
                 literal_preservation: FormatEvidenceState::Proven,
                 utf8: FormatEvidenceState::Proven,
-                line_endings: FormatLineEndingDisposition::NotChecked,
+                line_endings: FormatLineEndingDisposition::ChangedByFormatter,
             },
             next_action: None,
         }
@@ -1246,6 +1246,43 @@ mod decision_projection_tests {
             first.outcome.change, second.outcome.change,
             "repeated projection of identical bytes must be deterministic"
         );
+    }
+
+    #[test]
+    fn withheld_outcomes_discard_rejected_line_ending_evidence() -> Result<(), String> {
+        for source in ["my $x = 1;\n", "my $x = 1;\r\n"] {
+            for (disposition, reason) in [
+                (FormatDisposition::Refused, FormatReasonCode::UnsafeRange),
+                (FormatDisposition::FailedOrNotProven, FormatReasonCode::InstrumentFailure),
+            ] {
+                let mut outcome = stale_outcome();
+                outcome.disposition = disposition;
+                outcome.reason = reason;
+                outcome.next_action = Some("inspect the rejected formatter result".to_string());
+                let mut expected = outcome.clone();
+                expected.change = FormatChangeSummary {
+                    edit_count: 0,
+                    source_bytes_changed: 0,
+                    rendered_bytes_changed: 0,
+                    changed_lines: 0,
+                };
+                expected.safety.line_endings = FormatLineEndingDisposition::Preserved;
+
+                let decision = withheld_decision(outcome, source);
+
+                if decision.outcome != expected {
+                    return Err(format!(
+                        "withheld {disposition:?} must describe retained bytes without changing \
+                         other evidence or next action: {:?}",
+                        decision.outcome
+                    ));
+                }
+                if decision.document.text != source || !decision.document.edits.is_empty() {
+                    return Err("a withheld result must retain source bytes without edits".into());
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]

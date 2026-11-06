@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Formatting decisions derive change evidence from the final returned edits. Withheld formatting retains zero applied-change counts and preserved line-ending evidence, while byte-for-byte no-op edits are omitted (#7585).
+time: 2026-09-07T15:29:49Z
+custom:
+  PR: "13872"
+  Slug: formatting-final-change-evidence
+  Breaking: "no"

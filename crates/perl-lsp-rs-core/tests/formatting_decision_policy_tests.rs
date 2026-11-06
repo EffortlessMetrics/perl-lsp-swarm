@@ -3,7 +3,8 @@ use perl_lsp_rs_core::providers::formatting::{
 };
 use perl_lsp_rs_core::tooling::perltidy::FormatterMode;
 use perl_lsp_rs_core::tooling::perltidy::native::{
-    FormatContext, FormatDisposition, FormatEngine, FormatReasonCode, FormatRequestTarget,
+    FormatContext, FormatDisposition, FormatEngine, FormatLineEndingDisposition, FormatReasonCode,
+    FormatRequestTarget,
 };
 use perl_lsp_rs_core::tooling::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 use std::sync::{
@@ -633,6 +634,9 @@ fn every_terminal_decision_keeps_a_consistent_change_envelope()
     )?;
     assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
     assert_envelope_is_consistent("my$x=1;\n", &decision);
+    if decision.outcome.safety.line_endings != FormatLineEndingDisposition::Preserved {
+        return Err("containment rejection must report the retained source line endings".into());
+    }
 
     // The external adapter is the fourth terminal entry point. Drive it to a
     // real change and to a byte-for-byte no-op so both arms of its envelope
