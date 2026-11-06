@@ -18,6 +18,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 SUPPORTED_POLICY_VERSION = 2
 SUPPORTED_POLICY_SOURCE = "github-enforcement-union"
 CONTRACT_SCHEMA_VERSION = 2
+QUALIFICATION_ENTRY_EVENTS = frozenset({"workflow_dispatch", "merge_group"})
 ROLES = {"required", "advisory", "informational", "local"}
 APPLICABILITY = {
     "always-or-scoped-noop",
@@ -88,6 +89,7 @@ class Workflow(NamedTuple):
     jobs: dict[str, Job]
     source_shape_supported: bool = True
     dispatch_lines: tuple[int, ...] = ()
+    merge_group_types: tuple[str, ...] | None = None
 
 
 def _indent(line: str) -> int:
@@ -411,6 +413,75 @@ def _parse_events(lines: list[str]) -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(events), frozenset(filtered)
 
 
+def _merge_group_types(lines: list[str]) -> tuple[str, ...] | None:
+    """Read explicit queue activities within the existing bounded block syntax.
+
+    None means absent or unsupported, not GitHub's default activity selection.
+    Flow mappings, aliases, duplicate keys, filters and ambiguous indentation
+    cannot establish this bounded queue-entry contract. Reject unhandled shapes
+    rather than certify an event whose full configuration was not assessed.
+    """
+    # Escaped/explicit YAML keys can spell a second `on` without the literal
+    # header. This bounded reader must refuse them rather than ignore them.
+    top_level_key = re.compile(r"^(?:[A-Za-z0-9_.-]+|'[A-Za-z0-9_.-]+'|\"[A-Za-z0-9_.-]+\") *:")
+    if any(line.strip() and not line.lstrip().startswith("#")
+           and _indent(line) == 0 and not top_level_key.match(line)
+           for line in lines):
+        return None
+    on = [index for index, line in enumerate(lines)
+          if re.match(r"^(?:on|'on'|\"on\")\s*:", line)]
+    if len(on) != 1 or _strip_inline_comment(lines[on[0]].split(":", 1)[1]).strip():
+        return None
+    end = next((index for index in range(on[0] + 1, len(lines))
+                if lines[index].strip() and not lines[index].lstrip().startswith("#")
+                and _indent(lines[index]) == 0), len(lines))
+    if end < len(lines) and lines[end].startswith("\t"):
+        return None
+    entries = [index for index in range(on[0] + 1, end)
+               if _indent(lines[index]) == 2 and ":" in lines[index]
+               and _unquote(lines[index].strip().split(":", 1)[0]) == "merge_group"]
+    if len(entries) != 1:
+        return None
+    start = entries[0]
+    if _strip_inline_comment(lines[start].split(":", 1)[1]).strip():
+        return None
+    stop = next((index for index in range(start + 1, end)
+                 if lines[index].strip() and not lines[index].lstrip().startswith("#")
+                 and _indent(lines[index]) <= 2), end)
+    fields: dict[str, int] = {}
+    for index in range(start + 1, stop):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        leading = line[:len(line) - len(line.lstrip())]
+        if "\t" in leading or _indent(line) < 4:
+            return None
+        if _indent(line) == 4:
+            if ":" not in line:
+                return None
+            key = _unquote(line.strip().split(":", 1)[0])
+            if key != "types" or key in fields:
+                return None
+            fields[key] = index
+    if "types" not in fields:
+        return None
+    index = fields["types"]
+    raw = _strip_inline_comment(lines[index].split(":", 1)[1]).strip()
+    stop = min((position for position in fields.values() if position > index), default=stop)
+    children = [line for line in lines[index + 1:stop]
+                if line.strip() and not line.lstrip().startswith("#")]
+    if raw.startswith("[") and raw.endswith("]") and not children:
+        values = [_unquote(item.strip()) for item in raw[1:-1].split(",")]
+    elif not raw and children and all(_indent(line) == 6 and line.strip().startswith("- ")
+                                      for line in children):
+        values = [_unquote(line.strip()[2:].strip()) for line in children]
+    else:
+        return None
+    if not values or any(not EVENT_NAME.fullmatch(value) for value in values):
+        return None
+    return tuple(values)
+
+
 def read_workflow(root: Path, raw_path: str) -> Workflow:
     path, relative = _safe_repo_path(root, raw_path, subject="workflow")
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -462,6 +533,7 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
         # unresolved even behind an if/false guard; arbitrary helpers remain
         # outside the proof ceiling of this static diagnostic.
         dispatch_lines=dispatch_lines,
+        merge_group_types=_merge_group_types(lines),
     )
 
 
@@ -682,17 +754,24 @@ def _canonical_context(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def qualification_source_findings(
-    workflows: dict[str, Workflow], selected: Iterable[str]
+    workflows: dict[str, Workflow], selected: Iterable[str], *,
+    entry_event: str = "workflow_dispatch",
 ) -> list[Finding]:
     """Staged entry-source diagnostic, never trusted runtime admission.
 
     Reuse the complete catalog for incoming reusable edges. Neither conditions
     nor a manual caller establish request provenance. Executable helpers are
-    not interpreted, and static success is never runtime admission.
+    not interpreted, and static success is never runtime admission. The
+    opt-in merge_group profile requires queue-only roots; the default retains
+    dispatch-only rehearsal compatibility, not permission to dispatch proof.
     """
+    if entry_event not in QUALIFICATION_ENTRY_EVENTS:
+        raise ValueError(f"unsupported qualification entry event: {entry_event!r}")
     findings: list[Finding] = []
     selected = set(selected)
     if not selected:
+        if entry_event != "workflow_dispatch":
+            raise ValueError("queue-entry diagnostic requires at least one qualification source")
         return findings
     # Reverse closure catches a caller of a caller, even if only the final
     # qualification entry was selected. Cycles terminate without hiding edges.
@@ -712,8 +791,16 @@ def qualification_source_findings(
         if workflow is None:
             findings.append(Finding("qualification_source_missing", path, "selected source is absent from the tracked workflow catalog"))
             continue
-        if workflow.events != frozenset({"workflow_dispatch"}):
-            findings.append(Finding("qualification_automatic_entry", path, "expected only explicit workflow_dispatch; observed " + repr(sorted(workflow.events))))
+        if workflow.events != frozenset({entry_event}):
+            code = ("qualification_automatic_entry" if entry_event == "workflow_dispatch"
+                    else "qualification_non_queue_entry")
+            expected = ("expected only explicit workflow_dispatch; observed "
+                        if entry_event == "workflow_dispatch"
+                        else "expected only merge_group; observed ")
+            findings.append(Finding(code, path, expected + repr(sorted(workflow.events))))
+        if entry_event == "merge_group" and workflow.merge_group_types != ("checks_requested",):
+            findings.append(Finding("qualification_merge_group_types", path,
+                                    "queue entry requires explicit types: [checks_requested] in supported block syntax"))
         if not workflow.source_shape_supported or not workflow.jobs or any(
             not job.source_shape_supported for job in workflow.jobs.values()
         ):
@@ -745,7 +832,8 @@ def qualification_source_findings(
     return findings
 
 
-def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[str] = ()) -> dict[str, Any]:
+def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[str] = (),
+             qualification_entry_event: str = "workflow_dispatch") -> dict[str, Any]:
     root = root.resolve(strict=True)
     repository_sha, repository_dirty = _repository_state(root)
     if repository_dirty:
@@ -767,7 +855,8 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
     producer_index = build_producer_index(workflows)
 
     selected_sources = sorted(set(qualification_sources))
-    findings = qualification_source_findings(workflows, selected_sources)
+    findings = qualification_source_findings(workflows, selected_sources,
+                                             entry_event=qualification_entry_event)
     names: set[str] = set()
     mapped = 0
     canonical_contexts: list[dict[str, Any]] = []
@@ -813,6 +902,11 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
     if selected_sources:
         semantic_subject["qualification_sources"] = selected_sources
         exact_source_subject["qualification_sources"] = selected_sources
+        # Keep legacy default receipts stable; queue receipts must not be
+        # interchangeable with dispatch-only assessments of the same source.
+        if qualification_entry_event != "workflow_dispatch":
+            semantic_subject["qualification_entry_event"] = qualification_entry_event
+            exact_source_subject["qualification_entry_event"] = qualification_entry_event
     subjects = {
         **exact_source_subject,
         "contexts": canonical_contexts,
@@ -863,6 +957,8 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
             ],
             "qualification_status": "NOT_PROVEN",
         })
+        if qualification_entry_event != "workflow_dispatch":
+            result["qualification_entry_event"] = qualification_entry_event
     return result
 
 
@@ -893,17 +989,24 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--qualification-source", action="append", default=[], metavar="WORKFLOW",
                         help="opt-in staged entry/edge diagnostic for a tracked catalog workflow; repeat for each selected source; never runtime qualification")
+    parser.add_argument("--qualification-entry-event", choices=sorted(QUALIFICATION_ENTRY_EVENTS),
+                        default="workflow_dispatch",
+                        help="source-only entry contract: merge_group requires queue-only checks_requested roots; does not dispatch, enqueue, publish checks or change protection")
     args = parser.parse_args(list(argv) if argv is not None else None)
     root = args.root.resolve()
     policy = args.policy if args.policy.is_absolute() else root / args.policy
     try:
-        result = validate(root, policy, qualification_sources=args.qualification_source)
+        result = validate(root, policy, qualification_sources=args.qualification_source,
+                          qualification_entry_event=args.qualification_entry_event)
     except (OSError, subprocess.CalledProcessError, tomllib.TOMLDecodeError, ValueError) as error:
         result = _not_proven(policy, error)
 
     if args.qualification_source:
         result.update({"qualification_sources": sorted(set(args.qualification_source)),
                        "qualification_status": "NOT_PROVEN"})
+    if args.qualification_entry_event != "workflow_dispatch":
+        result["qualification_entry_event"] = args.qualification_entry_event
+        result["qualification_status"] = "NOT_PROVEN"
     if args.receipt:
         receipt = args.receipt if args.receipt.is_absolute() else root / args.receipt
         receipt.parent.mkdir(parents=True, exist_ok=True)
