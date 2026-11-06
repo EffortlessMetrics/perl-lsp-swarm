@@ -21,6 +21,29 @@ H, B, S, TREE = 'a' * 40, 'b' * 40, 'c' * 40, 'd' * 40
 SUBJECT = adapter.Subject('owner/repo', 7, 3, H, B, S, 'e' * 64, 'f' * 64, 15368, 'Qualified proof')
 
 
+def run_fixture_cli(arguments, fake_gh, **kwargs):
+    """Keep the real child CLI while binding gh without platform PATH lookup."""
+    bootstrap = '''
+import runpy
+import subprocess
+import sys
+
+fake_gh = sys.argv[1]
+sys.argv = sys.argv[2:]
+native_run = subprocess.run
+
+def fixture_run(argv, *args, **kwargs):
+    if argv[0] == 'gh':
+        argv = [sys.executable, '-B', fake_gh, *argv[1:]]
+    return native_run(argv, *args, **kwargs)
+
+subprocess.run = fixture_run
+runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+    return subprocess.run([sys.executable, '-B', '-c', bootstrap, str(fake_gh),
+                           str(SCRIPT), *arguments], **kwargs)
+
+
 def ready(plan):
     return adapter.Eligibility('READY', 'injected reviewed producer; no future CI requirement')
 
@@ -370,20 +393,19 @@ class TransportAndEntryTests(unittest.TestCase):
             fixture = root / 'responses.json'
             fixture.write_text(json.dumps(payloads))
             sentinel = root / 'mutation'
-            gh = root / 'gh'
-            gh.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
+            gh = root / 'fake_gh.py'
+            gh.write_text('import json,os,sys\n'
                           'if sys.argv[3] != "GET":\n'
                           ' open(os.environ["MUTATION"],"w").write("unexpected")\n'
                           ' sys.exit(99)\n'
                           'print(json.dumps(json.load(open(os.environ["RESPONSES"]))[sys.argv[4]]))\n')
-            gh.chmod(0o755)
-            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
-                       RESPONSES=str(fixture), MUTATION=str(sentinel), CANDIDATE_READY='true')
-            args = [sys.executable, '-B', str(SCRIPT), 'request', '--repository', 'owner/repo',
+            env = dict(os.environ, RESPONSES=str(fixture), MUTATION=str(sentinel),
+                       CANDIDATE_READY='true')
+            args = ['request', '--repository', 'owner/repo',
                     '--repository-id', '7', '--pr', '3', '--app-id', '15368', '--check-name', 'Qualified proof',
                     '--expected-head', H, '--expected-base', B, '--expected-control', S,
                     '--portfolio-sha256', 'e' * 64, '--policy-sha256', 'f' * 64]
-            result = subprocess.run(args, capture_output=True, text=True, env=env, timeout=10)
+            result = run_fixture_cli(args, gh, capture_output=True, text=True, env=env, timeout=10)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('#10057', json.loads(result.stdout)['reason'])
             self.assertFalse(sentinel.exists())
@@ -404,17 +426,15 @@ class TransportAndEntryTests(unittest.TestCase):
             responses.write_text(json.dumps({path: api.get(path) for path in paths}))
             event = root / 'event.json'
             event.write_text(json.dumps({'inputs': {'request': json.dumps(plan)}}))
-            gh = root / 'gh'
-            gh.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
+            gh = root / 'fake_gh.py'
+            gh.write_text('import json,os,sys\n'
                           'assert sys.argv[3] == "GET", "rehearsal attempted mutation"\n'
                           'print(json.dumps(json.load(open(os.environ["RESPONSES"]))[sys.argv[4]]))\n')
-            gh.chmod(0o755)
-            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
-                       RESPONSES=str(responses), GITHUB_EVENT_PATH=str(event),
+            env = dict(os.environ, RESPONSES=str(responses), GITHUB_EVENT_PATH=str(event),
                        GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='owner/repo',
                        GITHUB_SHA=S, GITHUB_RUN_ID='21', GITHUB_RUN_ATTEMPT='1')
-            result = subprocess.run([sys.executable, '-B', str(SCRIPT), 'rehearse-event'],
-                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            result = run_fixture_cli(['rehearse-event'], gh, cwd=root, env=env,
+                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout)['qualification_result'], 'NOT_PROVEN')
             manifest_path = root / 'rehearsal-result/qualification-result.json'
