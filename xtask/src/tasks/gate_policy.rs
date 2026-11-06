@@ -20,6 +20,9 @@ const CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES: &[(&str, &str)] = &[
     ("perl-lsp-ux-tests", "#15613"),
     ("perl-dap", "#15677"),
     ("xtask", "#15677"),
+    // The bootstrap compiles xtask's canonical producer source; strict
+    // all-target admission still requires its own measured zero-residual proof.
+    ("routed-test-cohorts-bootstrap", "#15677"),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -557,13 +560,17 @@ mod tests {
         // these integers consciously, together with the gate description's
         // "(strict/workspace crates)" denominator (checked mechanically in
         // validate_clippy_all_targets_partition).
-        assert_eq!(partition.workspace.len(), 48);
+        assert_eq!(partition.workspace.len(), 49);
         assert_eq!(partition.strict.len(), 37);
-        assert_eq!(partition.residual.len(), 11);
+        assert_eq!(partition.residual.len(), 12);
         let residual_names: BTreeSet<_> = partition.residual.keys().cloned().collect();
         assert!(partition.strict.is_disjoint(&residual_names));
         assert_eq!(partition.strict.len() + residual_names.len(), partition.workspace.len());
         assert_eq!(partition.residual.get("perl-lsp-ux-tests").map(String::as_str), Some("#15613"));
+        assert_eq!(
+            partition.residual.get("routed-test-cohorts-bootstrap").map(String::as_str),
+            Some("#15677")
+        );
         Ok(())
     }
 
