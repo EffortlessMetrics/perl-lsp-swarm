@@ -2,6 +2,20 @@
 
 `merge-ready` is bound to a receipt for an exact PR head, exact base lineage, and exact gate graph version.
 
+## October 21 queue transition
+
+The selected future integration route is documented in
+[native queue cutover](native-queue-cutover.md). Queue ruleset 17372329 was
+observed disabled on October 21; this document and its existing commands do
+not activate it. The sections below describe current receipt semantics and
+installed behavior, not proof that queue-only qualification is deployed.
+
+All five required contexts need a valid G producer before activation. In
+particular, #18255 owns the title-metadata gap. Preserve the current protected
+route until #10065 qualifies and reads back the coordinated replacement;
+never change protected PR success to cheap admission while direct landing
+can consume it. The existing subject classes below remain authoritative.
+
 ## Receipt
 
 Receipt JSON uses `.ci/receipts/schemas/merge-readiness.schema.json` and includes:
