@@ -345,6 +345,19 @@ case "$INSTALLER_HOST" in
                             cat "$NEG_LOG" >&2
                         fi
                         rm -f "$NEG_LOG"
+
+                        TAG_LOG="$(mktemp)"
+                        if PERL_LSP_INSTALLER_REF="$RELEASE_TAG" \
+                            PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" \
+                            bash "$ISOLATED_WRAPPER" >"$TAG_LOG" 2>&1; then
+                            fail "install.sh wrapper accepted a non-dereferenced tag ref"
+                        elif grep -q 'must be a full lowercase commit SHA' "$TAG_LOG"; then
+                            pass "install.sh wrapper refuses a non-dereferenced tag ref"
+                        else
+                            fail "install.sh wrapper tag-ref refusal missing expected commit SHA message"
+                            cat "$TAG_LOG" >&2
+                        fi
+                        rm -f "$TAG_LOG"
                         fi
                     fi
                 fi
