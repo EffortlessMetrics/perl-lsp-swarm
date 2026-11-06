@@ -51,6 +51,25 @@ fn command_candidate_name(command: &str) -> String {
     }
 }
 
+/// Write a PATH-search fixture file that satisfies the platform probe policy.
+fn write_path_search_candidate(path: &Path, contents: &[u8]) -> TestResult {
+    fs::write(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_path_search_candidate_with_mode(path: &Path, contents: &[u8], mode: u32) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, contents)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
 fn joined_path(paths: &[&Path]) -> TestResult<OsString> {
     Ok(env::join_paths(paths.iter().copied())?)
 }
@@ -70,7 +89,7 @@ fn command_exists_in_path_rejects_directory_candidate() -> TestResult {
 fn command_exists_in_path_accepts_regular_file_candidate() -> TestResult {
     let temp = TempDir::new("regular-file")?;
     let command = "ci-hygiene-probe";
-    fs::write(temp.path().join(command_candidate_name(command)), b"")?;
+    write_path_search_candidate(&temp.path().join(command_candidate_name(command)), b"")?;
     let path = joined_path(&[temp.path()])?;
 
     assert!(command_exists_in_path(command, Some(path.as_os_str())));
@@ -83,7 +102,10 @@ fn command_exists_in_path_skips_missing_path_entry() -> TestResult {
     let regular_file_candidate = TempDir::new("file-after-missing")?;
     let command = "ci-hygiene-probe";
     let missing_entry = missing_entry_root.path().join("not-created");
-    fs::write(regular_file_candidate.path().join(command_candidate_name(command)), b"")?;
+    write_path_search_candidate(
+        &regular_file_candidate.path().join(command_candidate_name(command)),
+        b"",
+    )?;
     let path = joined_path(&[missing_entry.as_path(), regular_file_candidate.path()])?;
 
     assert!(command_exists_in_path(command, Some(path.as_os_str())));
@@ -101,12 +123,114 @@ fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
     let candidate_name = command_candidate_name(command);
     fs::create_dir(directory_candidate.path().join(&candidate_name))?;
     let regular_file = regular_file_candidate.path().join(candidate_name);
-    fs::write(&regular_file, b"")?;
+    write_path_search_candidate(&regular_file, b"")?;
     let path = joined_path(&[directory_candidate.path(), regular_file_candidate.path()])?;
 
     assert!(command_exists_in_path(command, Some(path.as_os_str())));
     fs::remove_file(regular_file)?;
     assert!(!command_exists_in_path(command, Some(path.as_os_str())));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn command_exists_in_path_rejects_non_executable_regular_file() -> TestResult {
+    let temp = TempDir::new("non-executable-file")?;
+    let command = "ci-hygiene-probe";
+    write_path_search_candidate_with_mode(
+        &temp.path().join(command_candidate_name(command)),
+        b"",
+        0o000,
+    )?;
+    let path = joined_path(&[temp.path()])?;
+
+    assert!(!command_exists_in_path(command, Some(path.as_os_str())));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn command_exists_in_path_unix_execute_permission_matrix() -> TestResult {
+    let command = "ci-hygiene-exec-matrix";
+    let candidate_name = command_candidate_name(command);
+
+    let non_exec = TempDir::new("exec-matrix-000")?;
+    write_path_search_candidate_with_mode(&non_exec.path().join(&candidate_name), b"", 0o000)?;
+    assert!(!command_exists_in_path(command, Some(joined_path(&[non_exec.path()])?.as_os_str())));
+
+    for (label, mode) in [("owner", 0o100_u32), ("group", 0o010), ("other", 0o001)] {
+        let temp = TempDir::new(&format!("exec-matrix-{label}"))?;
+        write_path_search_candidate_with_mode(&temp.path().join(&candidate_name), b"", mode)?;
+        assert!(
+            command_exists_in_path(command, Some(joined_path(&[temp.path()])?.as_os_str())),
+            "mode {mode:o} must be admissible when the matching class can execute"
+        );
+    }
+
+    let directory_candidate = TempDir::new("exec-matrix-directory")?;
+    fs::create_dir(directory_candidate.path().join(&candidate_name))?;
+    assert!(!command_exists_in_path(
+        command,
+        Some(joined_path(&[directory_candidate.path()])?.as_os_str())
+    ));
+
+    let executable_target = TempDir::new("exec-matrix-symlink-target")?;
+    let exec_file = executable_target.path().join("target-bin");
+    write_path_search_candidate(&exec_file, b"#!/bin/sh\n")?;
+    let symlink_root = TempDir::new("exec-matrix-symlink-exec")?;
+    std::os::unix::fs::symlink(&exec_file, symlink_root.path().join(&candidate_name))?;
+    assert!(command_exists_in_path(
+        command,
+        Some(joined_path(&[symlink_root.path()])?.as_os_str())
+    ));
+
+    let non_exec_target = TempDir::new("exec-matrix-symlink-nonexec-target")?;
+    write_path_search_candidate_with_mode(
+        &non_exec_target.path().join("target-plain"),
+        b"",
+        0o000,
+    )?;
+    let symlink_non_exec = TempDir::new("exec-matrix-symlink-nonexec")?;
+    std::os::unix::fs::symlink(
+        non_exec_target.path().join("target-plain"),
+        symlink_non_exec.path().join(&candidate_name),
+    )?;
+    assert!(!command_exists_in_path(
+        command,
+        Some(joined_path(&[symlink_non_exec.path()])?.as_os_str())
+    ));
+
+    let dir_target = TempDir::new("exec-matrix-symlink-dir-target")?;
+    fs::create_dir(dir_target.path().join("target-dir"))?;
+    let symlink_dir = TempDir::new("exec-matrix-symlink-dir")?;
+    std::os::unix::fs::symlink(
+        dir_target.path().join("target-dir"),
+        symlink_dir.path().join(&candidate_name),
+    )?;
+    assert!(!command_exists_in_path(
+        command,
+        Some(joined_path(&[symlink_dir.path()])?.as_os_str())
+    ));
+
+    let broken_symlink_root = TempDir::new("exec-matrix-broken-symlink")?;
+    std::os::unix::fs::symlink(
+        broken_symlink_root.path().join("missing-target"),
+        broken_symlink_root.path().join(&candidate_name),
+    )?;
+    assert!(!command_exists_in_path(
+        command,
+        Some(joined_path(&[broken_symlink_root.path()])?.as_os_str())
+    ));
+
+    let earlier = TempDir::new("exec-matrix-earlier-nonexec")?;
+    write_path_search_candidate_with_mode(&earlier.path().join(&candidate_name), b"", 0o000)?;
+    let later = TempDir::new("exec-matrix-later-exec")?;
+    write_path_search_candidate(&later.path().join(&candidate_name), b"")?;
+    assert!(command_exists_in_path(
+        command,
+        Some(joined_path(&[earlier.path(), later.path()])?.as_os_str())
+    ));
+
     Ok(())
 }
 
@@ -600,7 +724,7 @@ fn command_exists_in_path_rejects_explicit_paths_on_every_platform() -> TestResu
     let temp = TempDir::new("explicit-path")?;
     let command = "ci-hygiene-probe";
     let candidate = temp.path().join(command_candidate_name(command));
-    fs::write(&candidate, b"")?;
+    write_path_search_candidate(&candidate, b"")?;
     let path = joined_path(&[temp.path()])?;
 
     assert!(command_exists_in_path(command, Some(path.as_os_str())));
