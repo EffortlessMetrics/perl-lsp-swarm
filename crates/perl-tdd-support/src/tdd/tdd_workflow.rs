@@ -6,6 +6,10 @@
 use crate::ast::Node;
 
 // Re-use Diagnostic from tdd_basic to avoid duplication
+use crate::tdd::generated_test_artifact::{
+    GeneratedTestReadiness, emit_subtest_close, emit_subtest_draft_fail, emit_subtest_open,
+    emit_test_more_draft_fail,
+};
 use crate::tdd_basic::{Diagnostic, DiagnosticSeverity};
 #[allow(deprecated, reason = "workflow still wraps generation runner until #4972")]
 use crate::test_generator::TestRunner;
@@ -176,7 +180,7 @@ impl TddWorkflow {
         let test_name = format!("test_{}_{:?}", function_name, test_type);
         let description = format!("{:?} test for {}", test_type, function_name);
 
-        let code = match test_type {
+        let (code, readiness) = match test_type {
             TestType::Basic => self.generate_basic_test(function_name, params),
             TestType::EdgeCase => self.generate_edge_case_test(function_name, params),
             TestType::ErrorHandling => self.generate_error_test(function_name, params),
@@ -184,101 +188,75 @@ impl TddWorkflow {
             TestType::Integration => self.generate_integration_test(function_name, params),
         };
 
-        TestCase {
-            name: test_name,
-            description,
-            code,
-            is_todo: matches!(test_type, TestType::Integration | TestType::Performance),
-        }
+        TestCase { name: test_name, description, code, is_todo: readiness.is_todo(), readiness }
     }
 
-    fn generate_basic_test(&self, name: &str, params: &[String]) -> String {
-        let args = params
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("'test_value_{}'", i))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        format!(
-            "use Test::More;\n\n\
-             subtest '{}' => sub {{\n    \
-             my $result = {}({});\n    \
-             ok(defined $result, 'Returns defined value');\n    \
-             # PENDING: Add specific assertions\n\
-             }};\n\n\
-             done_testing();\n",
-            name, name, args
-        )
+    fn generate_basic_test(
+        &self,
+        name: &str,
+        _params: &[String],
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = format!("behavioral oracle required for {name}");
+        let mut code = String::new();
+        code.push_str("use Test::More;\n\n");
+        code.push_str(&emit_subtest_open(name));
+        code.push_str(&emit_subtest_draft_fail(&reason));
+        code.push_str(emit_subtest_close());
+        code.push_str("done_testing();\n");
+        (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
 
-    fn generate_edge_case_test(&self, name: &str, params: &[String]) -> String {
-        let undef_args = repeated_edge_case_args(params, "undef");
-        let empty_args = repeated_edge_case_args(params, "''");
-        let special_args = repeated_edge_case_args(params, "\"\\n\\t\\0\"");
-
-        format!(
-            "use Test::More;\n\n\
-             subtest '{} edge cases' => sub {{\n    \
-             # Test with undef\n    \
-             eval {{ {}({}) }};\n    \
-             ok(!$@, 'Handles undef');\n    \n    \
-             # Test with empty values\n    \
-             eval {{ {}({}) }};\n    \
-             ok(!$@, 'Handles empty string');\n    \n    \
-             # Test with special characters\n    \
-             eval {{ {}({}) }};\n    \
-             ok(!$@, 'Handles special characters');\n\
-             }};\n\n\
-             done_testing();\n",
-            name, name, undef_args, name, empty_args, name, special_args
-        )
+    fn generate_edge_case_test(
+        &self,
+        name: &str,
+        _params: &[String],
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = format!("edge acceptance oracle required for {name}");
+        let mut code = String::new();
+        code.push_str("use Test::More;\n\n");
+        code.push_str(&emit_subtest_open(&format!("{name} edge cases")));
+        code.push_str(&emit_subtest_draft_fail(&reason));
+        code.push_str(emit_subtest_close());
+        code.push_str("done_testing();\n");
+        (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
 
-    fn generate_error_test(&self, name: &str, _params: &[String]) -> String {
-        format!(
-            "use Test::More;\n\
-             use Test::Exception;\n\n\
-             subtest '{} error handling' => sub {{\n    \
-             # Test that errors are caught\n    \
-             dies_ok {{ {}(undef, undef, undef) }} 'Dies on invalid input';\n    \n    \
-             # Test error message\n    \
-             throws_ok {{ {}() }} qr/required/, 'Correct error message';\n\
-             }};\n\n\
-             done_testing();\n",
-            name, name, name
-        )
+    fn generate_error_test(
+        &self,
+        name: &str,
+        _params: &[String],
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = format!("error handling oracle required for {name}");
+        let mut code = String::new();
+        code.push_str("use Test::More;\n\n");
+        code.push_str(&emit_subtest_open(&format!("{name} error handling")));
+        code.push_str(&emit_subtest_draft_fail(&reason));
+        code.push_str(emit_subtest_close());
+        code.push_str("done_testing();\n");
+        (code, GeneratedTestReadiness::DraftNeedsOracle)
     }
 
-    fn generate_performance_test(&self, name: &str) -> String {
-        format!(
-            "use Test::More;\n\
-             use Benchmark qw(timethis);\n\n\
-             subtest '{} performance' => sub {{\n    \
-             my $iterations = 10000;\n    \
-             my $result = timethis($iterations, sub {{ {}() }});\n    \
-             \n    \
-             # Check performance threshold\n    \
-             my $rate = $result->iters / $result->cpu_a;\n    \
-             cmp_ok($rate, '>', 1000, 'Performance exceeds 1000 ops/sec');\n\
-             }};\n\n\
-             done_testing();\n",
-            name, name
-        )
+    fn generate_performance_test(&self, name: &str) -> (String, GeneratedTestReadiness) {
+        let reason = format!("performance oracle required for {name}");
+        (emit_test_more_draft_fail(&reason), GeneratedTestReadiness::DraftNeedsOracle)
     }
 
-    fn generate_integration_test(&self, name: &str, _params: &[String]) -> String {
-        format!(
-            "use Test::More;\n\n\
-             subtest '{} integration' => sub {{\n    \
-             # PENDING: Set up test environment\n    \
-             # PENDING: Call {} with real dependencies\n    \
-             # PENDING: Verify integration points\n    \
-             pass('Integration test placeholder');\n\
-             }};\n\n\
-             done_testing();\n",
-            name, name
-        )
+    fn generate_integration_test(
+        &self,
+        name: &str,
+        _params: &[String],
+    ) -> (String, GeneratedTestReadiness) {
+        let reason = format!("integration setup/call/verification required for {name}");
+        let mut code = String::new();
+        code.push_str("use Test::More;\n\n");
+        code.push_str(&emit_subtest_open(&format!("{name} integration")));
+        code.push_str("    # PENDING: Set up test environment\n");
+        code.push_str("    # PENDING: Call with real dependencies\n");
+        code.push_str("    # PENDING: Verify integration points\n");
+        code.push_str(&emit_subtest_draft_fail(&reason));
+        code.push_str(emit_subtest_close());
+        code.push_str("done_testing();\n");
+        (code, GeneratedTestReadiness::DraftNeedsSetup)
     }
 
     /// Run tests and update state
@@ -435,13 +413,6 @@ impl TddWorkflow {
         }
 
         diagnostics
-    }
-}
-
-fn repeated_edge_case_args(params: &[String], edge_case: &str) -> String {
-    match params.len() {
-        0 => String::new(),
-        len => std::iter::repeat_n(edge_case, len).collect::<Vec<_>>().join(", "),
     }
 }
 
@@ -782,8 +753,7 @@ mod tests {
         );
 
         assert!(test.code.contains("edge cases"));
-        assert!(test.code.contains("undef"));
-        assert!(test.code.contains("empty"));
+        assert!(test.code.contains("TODO:"));
     }
 
     #[test]
@@ -797,7 +767,7 @@ mod tests {
             TestType::EdgeCase,
         );
 
-        assert!(test.code.contains("validate_contact(undef, undef)"));
-        assert!(test.code.contains("validate_contact('', '')"));
+        assert!(test.code.contains("edge cases"));
+        assert!(test.code.contains("TODO:"));
     }
 }
