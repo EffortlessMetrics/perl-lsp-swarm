@@ -157,8 +157,12 @@ pub struct Parser<'a> {
     /// Closers inferred for an unterminated quote-like token whose real
     /// closer still follows a later statement. The statement-list loops
     /// consume a matching token as this already-reported closer instead of
-    /// emitting a stray-closer cascade for it.
-    deferred_orphan_closers: Vec<TokenKind>,
+    /// emitting a stray-closer cascade for it. Each entry is scoped to the
+    /// `block_depth` of the frame that created it: it may only be consumed
+    /// at that same depth, and it is dropped when that frame's block (or
+    /// the top-level program) finishes without consuming it, so a stale
+    /// entry cannot swallow a later genuine stray closer.
+    deferred_orphan_closers: Vec<(TokenKind, usize)>,
     /// Custom attributes registered by Attribute::Handlers declarations in this file.
     custom_attribute_handlers: HashSet<String>,
     /// Whether `use Attribute::Handlers;` has been seen in this file.
@@ -498,6 +502,7 @@ impl<'a> Parser<'a> {
     fn begin_operation(&mut self) {
         self.operation.begin();
         self.block_depth = 0;
+        self.deferred_orphan_closers.clear();
         // #8786: the retained diagnostics are operation-scoped too. `begin`
         // zeroes the charge counters, so leaving the vector behind would let a
         // second operation return the first operation's diagnostics while

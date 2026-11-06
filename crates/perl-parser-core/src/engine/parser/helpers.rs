@@ -1275,7 +1275,7 @@ impl<'a> Parser<'a> {
                         // declarations and references survive in the AST.
                         if self.is_delimiter_recovery_point() {
                             self.record_inserted_closer(kind);
-                            self.deferred_orphan_closers.push(kind);
+                            self.deferred_orphan_closers.push((kind, self.block_depth));
                             return Ok(());
                         }
                         self.consume_token()?;
@@ -1300,12 +1300,27 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// Drop deferred orphan closers scoped to `depth` or deeper. Called
+    /// when a block (or the top-level program) finishes: an entry created
+    /// inside that frame whose real closer never arrived is stale, and
+    /// retaining it would let it swallow a later genuine stray closer.
+    fn drop_deferred_orphan_closers_for_frame(&mut self, depth: usize) {
+        self.deferred_orphan_closers.retain(|&(_, entry_depth)| entry_depth < depth);
+    }
+
     /// Consume the current token when it is the real closer for a frame
     /// whose closer was already inferred at a later statement boundary.
+    /// Only an entry created at the current `block_depth` may consume a
+    /// token here; entries from a frame that has already exited are stale
+    /// and are dropped rather than matched.
     fn consume_deferred_orphan_closer(&mut self) -> ParseResult<bool> {
+        let depth = self.block_depth;
+        self.deferred_orphan_closers.retain(|&(_, entry_depth)| entry_depth <= depth);
         let Some(kind) = self.peek_kind() else { return Ok(false) };
-        let Some(position) =
-            self.deferred_orphan_closers.iter().rposition(|&pending| pending == kind)
+        let Some(position) = self
+            .deferred_orphan_closers
+            .iter()
+            .rposition(|&(pending, entry_depth)| pending == kind && entry_depth == depth)
         else {
             return Ok(false);
         };

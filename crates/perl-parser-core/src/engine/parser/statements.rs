@@ -79,6 +79,9 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // The program frame is finished: drop any unconsumed deferred
+        // closers scoped to it so no stale entry outlives this parse.
+        self.drop_deferred_orphan_closers_for_frame(0);
         let end = self.previous_position();
         self.charge_node(NodeKind::Program { statements }, SourceLocation { start, end })
     }
@@ -2020,12 +2023,13 @@ impl<'a> Parser<'a> {
             // Handle unclosed block at EOF: emit error but return partial block
             if s.peek_kind() == Some(TokenKind::RightBrace) {
                 // This brace may be the real closer deferred from an
-                // unterminated quote-like frame inside the block.
-                if let Some(position) = s
-                    .deferred_orphan_closers
-                    .iter()
-                    .rposition(|&pending| pending == TokenKind::RightBrace)
-                {
+                // unterminated quote-like frame inside this block.
+                let frame_depth = s.block_depth;
+                if let Some(position) = s.deferred_orphan_closers.iter().rposition(
+                    |&(pending, entry_depth)| {
+                        pending == TokenKind::RightBrace && entry_depth == frame_depth
+                    },
+                ) {
                     s.deferred_orphan_closers.remove(position);
                 }
                 s.expect(TokenKind::RightBrace)?;
@@ -2040,6 +2044,11 @@ impl<'a> Parser<'a> {
                     start,
                 ));
             }
+            // This block is finished: any deferred closer created inside
+            // it that was never consumed is stale and must not swallow a
+            // later genuine stray closer outside the block.
+            let frame_depth = s.block_depth;
+            s.drop_deferred_orphan_closers_for_frame(frame_depth);
             let end = s.previous_position();
 
             s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })

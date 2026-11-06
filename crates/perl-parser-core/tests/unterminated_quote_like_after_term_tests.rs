@@ -350,3 +350,41 @@ fn bounded_qw_after_term_bare_array_recovers_to_real_bracket() {
         source.find("qw").unwrap_or(0),
     );
 }
+
+#[test]
+fn deferred_closer_inside_block_still_consumes_real_bracket_before_block_end() {
+    // The real `]` arrives while the creating block is still open, so the
+    // deferred entry scoped to that block must still consume it silently.
+    let source = "{\n    my @x = ['a' qw(foo bar\n    my $y = 1;];\n}\n";
+    assert_terminator(
+        source,
+        "Can't find string terminator \")\" anywhere before EOF",
+        source.find("qw").unwrap_or(0),
+    );
+}
+
+#[test]
+fn stale_deferred_closer_inside_block_does_not_swallow_later_stray_bracket() {
+    // The unterminated `qw(` inside the block infers the array `]` and defers
+    // its real closer, but that closer never arrives before `}` ends the
+    // block. The entry is scoped to the block, so the `]` after the block is
+    // a genuine stray closer and must surface a blocking diagnostic instead
+    // of being silently swallowed by the stale deferred entry.
+    let source = "{\n    my @x = ['a' qw(foo bar\n    my $y = 1;\n}\n]\n";
+    let diagnostics = diagnostics(source);
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .to_string()
+            .contains("Can't find string terminator \")\" anywhere before EOF")),
+        "unterminated qw terminator must still be reported for {source:?}, got {diagnostics:?}"
+    );
+    let blocking: Vec<&ParseError> = diagnostics
+        .iter()
+        .filter(|diagnostic| !matches!(diagnostic, ParseError::Recovered { .. }))
+        .collect();
+    assert!(
+        blocking.len() >= 2,
+        "stale deferred `]` must not swallow the stray `]` after the block for {source:?}, \
+         got {diagnostics:?}"
+    );
+}
