@@ -33,6 +33,7 @@ mod moniker;
 mod navigation;
 mod reference_text;
 mod references;
+mod regex_capture_navigation;
 mod rename;
 mod semantic_tokens;
 mod streaming;
