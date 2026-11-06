@@ -1,0 +1,21 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: >-
+  `perllsp --doctor [dir]` now names the workspace path the user actually
+  passed. The report still leads with the canonicalized workspace, because that
+  is the identity every detail line resolves against, but when the supplied path
+  resolves to a different directory — a Windows junction, or a POSIX symlinked
+  directory root — the substituted path is disclosed on a
+  `Workspace path as requested:` line. Previously a report invoked through a
+  junction described only the target, so two junctions aliasing one workspace
+  produced byte-identical output and the actionable guidance referenced a path
+  spelling the user's editor never shows. The disclosure is comparison-only
+  against the Windows verbatim (`\\?\`) prefix, so an ordinary directory is
+  unaffected, and the JSON report gains the same `requested_workspace` field
+  (#16664).
+time: 2026-09-28T22:15:00Z
+custom:
+  PR: "16664"
+  Slug: doctor-requested-workspace-identity
+  Breaking: "no"
