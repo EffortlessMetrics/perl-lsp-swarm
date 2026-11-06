@@ -13,94 +13,54 @@
 // way it does to production code.
 #![allow(clippy::print_stdout)]
 
-use perl_lsp::{JsonRpcRequest, LspServer};
-use serde_json::json;
-
 mod support;
+
+use serde_json::json;
+use std::time::Duration;
+use support::lsp_harness::LspHarness;
 use support::test_helpers::apply_text_edits;
 
 #[test]
 fn test_complete_workflow_from_messy_to_clean() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
+    let mut harness = LspHarness::new();
 
-    // Step 1: Initialize the LSP server
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {
-                "textDocument": {
-                    "codeAction": {
-                        "codeActionLiteralSupport": {
-                            "codeActionKind": {
-                                "valueSet": ["source.organizeImports", "quickfix"]
-                            }
+    let init = harness.initialize_with_root(
+        "file:///workspace",
+        Some(json!({
+            "textDocument": {
+                "codeAction": {
+                    "codeActionLiteralSupport": {
+                        "codeActionKind": {
+                            "valueSet": ["source.organizeImports", "quickfix"]
                         }
                     }
                 }
-            },
-            "rootUri": "file:///workspace"
+            }
         })),
-    };
+    )?;
+    assert!(init.get("capabilities").is_some(), "Initialize should return capabilities");
 
-    let response = srv.handle_request(init_req).ok_or("Failed to initialize server")?;
-
-    assert!(response.result.is_some(), "Initialize should return capabilities");
-
-    // Step 2: Send initialized notification
-    let initialized = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "initialized".to_string(),
-        params: Some(json!({})),
-    };
-    let _ = srv.handle_request(initialized);
-
-    // Step 3: Open a messy Perl file (no pragmas, unused imports, poor formatting)
     let uri = "file:///workspace/messy.pl";
     let messy_code = r#"sub calculate{my$x=shift;my$y=shift;return$x+$y;}
 my$result=calculate(5,3);
 "#;
 
-    let open_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "textDocument/didOpen".to_string(),
-        params: Some(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": messy_code
-            }
-        })),
-    };
-    let _ = srv.handle_request(open_req);
+    harness.open(uri, messy_code)?;
+    harness.barrier();
 
-    // Step 4: Get diagnostics - should show missing pragmas and other issues
-    let diag_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
-        method: "textDocument/diagnostic".to_string(),
-        params: Some(json!({
+    let diag_result = harness.request_with_timeout(
+        "textDocument/diagnostic",
+        json!({
             "textDocument": {"uri": uri}
-        })),
-    };
+        }),
+        Duration::from_secs(10),
+    )?;
 
-    let diag_response = srv.handle_request(diag_req).ok_or("Failed to get diagnostics")?;
-
-    let diag_result = diag_response.result.ok_or("Expected diagnostic result")?;
-
-    // Verify we got diagnostics (built-in analyzer should catch missing pragmas)
     println!("Diagnostics: {:?}", diag_result);
 
-    // Step 5: Request code actions to fix issues
-    let actions_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(3_i64)),
-        method: "textDocument/codeAction".to_string(),
-        params: Some(json!({
+    let actions_result = harness.request_with_timeout(
+        "textDocument/codeAction",
+        json!({
             "textDocument": {"uri": uri},
             "range": {
                 "start": {"line": 0, "character": 0},
@@ -109,14 +69,11 @@ my$result=calculate(5,3);
             "context": {
                 "diagnostics": []
             }
-        })),
-    };
+        }),
+        Duration::from_secs(10),
+    )?;
 
-    let actions_response = srv.handle_request(actions_req).ok_or("Failed to get code actions")?;
-
-    if let Some(actions_result) = actions_response.result
-        && let Some(actions) = actions_result.as_array()
-    {
+    if let Some(actions) = actions_result.as_array() {
         println!("Available code actions: {} actions", actions.len());
         for action in actions {
             if let Some(title) = action.get("title").and_then(|t| t.as_str()) {
@@ -125,35 +82,20 @@ my$result=calculate(5,3);
         }
     }
 
-    // Step 6: Request native-default formatting.
-    let format_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(4_i64)),
-        method: "textDocument/formatting".to_string(),
-        params: Some(json!({
+    let format_result = harness.request_with_timeout(
+        "textDocument/formatting",
+        json!({
             "textDocument": {"uri": uri},
             "options": {
                 "tabSize": 4,
                 "insertSpaces": true
             }
-        })),
-    };
-
-    let format_response = srv.handle_request(format_req).ok_or("Formatting response missing")?;
-    assert!(
-        format_response.error.is_none(),
-        "native default formatting should not shell out or return an external-tool error: {:?}",
-        format_response.error
-    );
-    let format_result = format_response.result.ok_or("Formatting result missing")?;
+        }),
+        Duration::from_secs(10),
+    )?;
     let edits = format_result.as_array().ok_or("formatting result must be edit array")?;
     assert!(!edits.is_empty(), "native default formatting should return edits");
     let formatted = apply_text_edits(messy_code, edits);
-    // True-EOF policy (#8048/#11873): whole-document replace edits extend through
-    // true EOF, so the formatted result is byte-exact formatter output ending in a
-    // single terminal newline. The previously expected extra trailing "\n" was an
-    // edit-range artifact of pre-#11873 whole-document ranges, not formatter
-    // semantics (stale oracle tracked by #11949).
     assert_eq!(
         formatted,
         concat!(
@@ -166,46 +108,26 @@ my$result=calculate(5,3);
         )
     );
 
-    // Step 7: Verify server state remains healthy
-    let final_diag_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(5_i64)),
-        method: "textDocument/diagnostic".to_string(),
-        params: Some(json!({
+    harness.request_with_timeout(
+        "textDocument/diagnostic",
+        json!({
             "textDocument": {"uri": uri}
-        })),
-    };
-
-    let final_diag_response = srv.handle_request(final_diag_req);
-    assert!(final_diag_response.is_some(), "Server should remain responsive after full workflow");
+        }),
+        Duration::from_secs(10),
+    )?;
 
     Ok(())
 }
 
 #[test]
 fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::Error>> {
-    let srv = LspServer::new();
+    let mut harness = LspHarness::new();
 
-    let init_req = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(json!({
-            "capabilities": {},
-            "rootUri": "file:///test"
-        })),
-    };
+    let init = harness.initialize_with_root("file:///test", Some(json!({})))?;
+    let capabilities = init.get("capabilities").ok_or("Expected capabilities")?;
 
-    let response = srv.handle_request(init_req).ok_or("Failed to initialize")?;
-
-    let result = response.result.ok_or("Expected initialization result")?;
-
-    let capabilities = result.get("capabilities").ok_or("Expected capabilities")?;
-
-    // Document all "batteries included" features available
     println!("\n=== Perl LSP 'Batteries Included' Features ===\n");
 
-    // Formatting
     if capabilities.get("documentFormattingProvider").is_some() {
         println!("✓ Document Formatting (native by default; Perl::Tidy compatibility is optional)");
     }
@@ -213,12 +135,10 @@ fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::
         println!("✓ Range Formatting");
     }
 
-    // Diagnostics
     if capabilities.get("diagnosticProvider").is_some() {
         println!("✓ Pull Diagnostics (built-in analyzer for strict/warnings)");
     }
 
-    // Code Actions
     if let Some(code_action) = capabilities.get("codeActionProvider") {
         println!("✓ Code Actions:");
         if let Some(kinds) = code_action.get("codeActionKinds").and_then(|k| k.as_array()) {
@@ -234,7 +154,6 @@ fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::
         }
     }
 
-    // Execute Commands
     if let Some(exec_cmd) = capabilities.get("executeCommandProvider")
         && let Some(commands) = exec_cmd.get("commands").and_then(|c| c.as_array())
     {
@@ -246,7 +165,6 @@ fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::
         }
     }
 
-    // Navigation
     if capabilities.get("definitionProvider").is_some() {
         println!("✓ Go to Definition");
     }
@@ -257,7 +175,6 @@ fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::
         println!("✓ Find Implementations");
     }
 
-    // Code Intelligence
     if capabilities.get("hoverProvider").is_some() {
         println!("✓ Hover Documentation");
     }
@@ -268,7 +185,6 @@ fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::
         println!("✓ Signature Help");
     }
 
-    // Symbols
     if capabilities.get("documentSymbolProvider").is_some() {
         println!("✓ Document Symbols (Outline)");
     }
@@ -276,12 +192,10 @@ fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::
         println!("✓ Workspace Symbols");
     }
 
-    // Refactoring
     if capabilities.get("renameProvider").is_some() {
         println!("✓ Rename Symbol");
     }
 
-    // Advanced Features
     if capabilities.get("semanticTokensProvider").is_some() {
         println!("✓ Semantic Syntax Highlighting");
     }
