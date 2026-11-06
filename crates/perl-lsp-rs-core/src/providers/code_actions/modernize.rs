@@ -232,8 +232,7 @@ fn find_missing_strict_warnings(source: &str, ast: &Node) -> Vec<CodeAction> {
     // version pragmas, and lexical scope, exactly as the diagnostic path does.
     let pragma_map = PragmaTracker::build(ast);
     let state = PragmaTracker::final_state(&pragma_map);
-    let mut has_strict =
-        state.strict_vars || state.strict_subs || state.strict_refs || state.signatures_strict;
+    let mut has_strict = state.strict_enabled();
     let mut has_warnings = state.warnings;
 
     // A file-scope implicit-strict module implies both strict and warnings.
@@ -1225,5 +1224,31 @@ mod tests {
         // File of only newlines: no patterns to detect, must not panic.
         let actions = get_modernize_actions("\n\n\n", &parse("\n\n\n"));
         drop(actions);
+    }
+
+    // ---- Issue #8422: modernization action matches missing-strict diagnostic ----
+
+    fn offers_add_strict(source: &str) -> bool {
+        find_missing_strict_warnings(source, &parse(source))
+            .iter()
+            .any(|a| a.title.contains("use strict"))
+    }
+
+    #[test]
+    fn signatures_only_offers_add_strict_action() {
+        let source = "use feature 'signatures';\nsub f ($x) { $x }\n";
+        assert!(offers_add_strict(source), "signatures-only must offer add-strict (#8422)");
+    }
+
+    #[test]
+    fn selective_strict_offers_add_strict_action() {
+        let source = "use strict 'refs';\nmy $x = 1;\n";
+        assert!(offers_add_strict(source), "selective strict must offer add-strict (#8422)");
+    }
+
+    #[test]
+    fn full_strict_suppresses_modernize_action() {
+        let source = "use strict;\nuse warnings;\nmy $x = 1;\n";
+        assert!(!offers_add_strict(source));
     }
 }

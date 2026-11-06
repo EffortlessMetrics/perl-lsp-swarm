@@ -157,23 +157,11 @@ impl PragmaMap {
     }
 }
 
-fn normalize_snapshot(mut snapshot: PragmaSnapshot) -> PragmaSnapshot {
-    if snapshot.state.signatures_strict {
-        snapshot.state.strict_vars = true;
-        snapshot.state.strict_subs = true;
-        snapshot.state.strict_refs = true;
-    }
-
+fn normalize_snapshot(snapshot: PragmaSnapshot) -> PragmaSnapshot {
     snapshot
 }
 
-pub(crate) fn normalize_state(mut state: PragmaState) -> PragmaState {
-    if state.signatures_strict {
-        state.strict_vars = true;
-        state.strict_subs = true;
-        state.strict_refs = true;
-    }
-
+pub(crate) fn normalize_state(state: PragmaState) -> PragmaState {
     state
 }
 

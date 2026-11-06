@@ -182,12 +182,10 @@ pub(crate) fn check_strict_warnings_with_pragma_map(
 
     // Query the top-level pragma state (after all scoped blocks have exited).
     // This avoids the false-negative from .any() which sees eval-interior ranges.
-    // signatures_strict is included to honour `use feature 'signatures'` (#4038).
+    // Full strict requires all three categories (#8422); selective strict does not
+    // suppress the missing-strict diagnostic.
     let top_level_state = PragmaTracker::final_state(pragma_map);
-    let mut has_strict = top_level_state.strict_vars
-        || top_level_state.strict_subs
-        || top_level_state.strict_refs
-        || top_level_state.signatures_strict;
+    let mut has_strict = top_level_state.strict_enabled();
     let mut has_warnings = top_level_state.warnings;
 
     for (module, args) in collect_file_scope_use_modules(node) {
@@ -918,5 +916,35 @@ mod tests {
                 "top-level `use {module}` should suppress both missing strict/warnings diagnostics"
             );
         }
+    }
+
+    // ---- Issue #8422: full strict requires all three categories ----
+
+    fn missing_strict(source: &str) -> bool {
+        strict_warnings_diags(source).iter().any(|d| d.code.as_deref() == Some("PL100"))
+    }
+
+    #[test]
+    fn signatures_only_still_emits_missing_strict() {
+        let source = "use feature 'signatures';\nsub f ($x) { $x }\n";
+        assert!(missing_strict(source), "signatures-only file must still receive PL100 (#8422)");
+    }
+
+    #[test]
+    fn selective_strict_still_emits_missing_strict() {
+        let source = "use strict 'refs';\nmy $x = 1;\n";
+        assert!(missing_strict(source), "partial strict must not suppress PL100 (#8422)");
+    }
+
+    #[test]
+    fn full_strict_suppresses_missing_strict() {
+        let source = "use strict;\nuse warnings;\nmy $x = 1;\n";
+        assert!(!missing_strict(source));
+    }
+
+    #[test]
+    fn v5_36_version_implied_strict_stays_silent() {
+        let source = "use v5.36;\nsub f ($x) { $x }\n";
+        assert!(!missing_strict(source));
     }
 }
