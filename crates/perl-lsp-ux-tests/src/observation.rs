@@ -79,6 +79,46 @@ impl ObservationId {
     }
 }
 
+/// One decoded server JSON-RPC frame as captured at the reader boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapturedMessage {
+    /// Monotonic capture identity; never reused for the owning [`Inbox`].
+    pub id: ObservationId,
+    /// Raw JSON-RPC payload routed to the event or response queue.
+    pub value: Value,
+}
+
+/// Opaque checkpoint over immutable capture order for one [`Inbox`].
+///
+/// Compare with strict `id > cursor` semantics via [`Inbox::captured_events_since`].
+/// Cursors from different inboxes must not be compared; use
+/// [`Inbox::validate_cursor`].
+#[derive(Debug, Clone)]
+pub struct ServerMessageCursor {
+    owner: Arc<InboxInner>,
+    /// Greatest capture identity allocated when the cursor was taken, if any.
+    after: Option<ObservationId>,
+}
+
+/// A cursor was not issued by the inbox it was used with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorOwnerMismatch;
+
+impl std::fmt::Display for CursorOwnerMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("server message cursor belongs to a different inbox")
+    }
+}
+
+impl std::error::Error for CursorOwnerMismatch {}
+
+fn capture_id_is_after(id: ObservationId, cursor: &ServerMessageCursor) -> bool {
+    match cursor.after {
+        None => true,
+        Some(after) => id > after,
+    }
+}
+
 /// Why the server's output stream ended.
 ///
 /// This is the discriminator between an orderly shutdown and a corrupted
@@ -185,6 +225,41 @@ struct InboxState {
     seq: u64,
     next_id: u64,
     terminal: Option<StreamEnd>,
+}
+
+/// Per-waiter captured-event projection for [`Inbox::wait_for_events_after`].
+#[derive(Default)]
+struct CapturedEventWaitProjection {
+    events: Vec<CapturedMessage>,
+    last_id: Option<ObservationId>,
+}
+
+impl CapturedEventWaitProjection {
+    fn sync(&mut self, state: &InboxState, cursor: &ServerMessageCursor) -> usize {
+        let front_id =
+            state.events.iter().find(|(id, _)| capture_id_is_after(*id, cursor)).map(|(id, _)| *id);
+        let reset = match (self.events.first().map(|message| message.id), front_id) {
+            (Some(cached), Some(front)) => cached != front,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if reset {
+            self.events.clear();
+            self.last_id = None;
+        }
+        let new_from = self.events.len();
+        for (id, value) in &state.events {
+            if !capture_id_is_after(*id, cursor) {
+                continue;
+            }
+            if self.last_id.is_some_and(|last| *id <= last) {
+                continue;
+            }
+            self.events.push(CapturedMessage { id: *id, value: value.clone() });
+            self.last_id = Some(*id);
+        }
+        new_from
+    }
 }
 
 /// The shared observation buffer every harness wait consumes.
@@ -297,6 +372,14 @@ impl Inbox {
     fn push(&self, message: Value, is_response: bool) -> ObservationId {
         let id = {
             let mut state = self.lock();
+            if state.next_id == u64::MAX {
+                if state.terminal.is_none() {
+                    state.terminal = Some(StreamEnd::TransportFailure {
+                        detail: "observation identity exhausted".to_string(),
+                    });
+                }
+                return ObservationId(u64::MAX);
+            }
             let id = ObservationId(state.next_id);
             state.next_id += 1;
             state.seq += 1;
@@ -311,6 +394,133 @@ impl Inbox {
         // on a mutex this thread still holds.
         self.inner.signal.notify_all();
         id
+    }
+
+    /// Record the newest capture identity allocated on this inbox so far.
+    ///
+    /// Uses the allocator (`next_id - 1`), not queue tails, so a checkpoint
+    /// taken after partial drains still excludes already-captured messages that
+    /// remain buffered.
+    #[must_use]
+    pub fn server_message_cursor(&self) -> ServerMessageCursor {
+        let state = self.lock();
+        ServerMessageCursor {
+            owner: Arc::clone(&self.inner),
+            after: state.next_id.checked_sub(1).map(ObservationId),
+        }
+    }
+
+    /// Alias for [`Self::server_message_cursor`].
+    #[must_use]
+    pub fn checkpoint(&self) -> ServerMessageCursor {
+        self.server_message_cursor()
+    }
+
+    /// A cursor before any message has been captured on this inbox.
+    #[must_use]
+    pub fn origin_cursor(&self) -> ServerMessageCursor {
+        ServerMessageCursor { owner: Arc::clone(&self.inner), after: None }
+    }
+
+    /// Ensure `cursor` was issued by this inbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CursorOwnerMismatch`] when the cursor owner differs.
+    pub fn validate_cursor(
+        &self,
+        cursor: &ServerMessageCursor,
+    ) -> std::result::Result<(), CursorOwnerMismatch> {
+        if Arc::ptr_eq(&self.inner, &cursor.owner) { Ok(()) } else { Err(CursorOwnerMismatch) }
+    }
+
+    /// Buffered server-initiated messages with capture identity strictly after
+    /// `cursor`, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CursorOwnerMismatch`] when `cursor` belongs to another inbox.
+    pub fn captured_events_since(
+        &self,
+        cursor: &ServerMessageCursor,
+    ) -> std::result::Result<Vec<CapturedMessage>, CursorOwnerMismatch> {
+        self.validate_cursor(cursor)?;
+        let state = self.lock();
+        Ok(state
+            .events
+            .iter()
+            .filter(|(id, _)| capture_id_is_after(*id, cursor))
+            .map(|(id, value)| CapturedMessage { id: *id, value: value.clone() })
+            .collect())
+    }
+
+    /// Remove and return raw server-initiated messages captured strictly after
+    /// `cursor`, oldest first.
+    ///
+    /// Draining removes payloads but cannot renumber capture identities; a
+    /// later wait after the same cursor therefore observes timeout/not-proven
+    /// rather than replaying drained evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CursorOwnerMismatch`] when `cursor` belongs to another inbox.
+    pub fn drain_events_after(
+        &self,
+        cursor: &ServerMessageCursor,
+    ) -> std::result::Result<Vec<Value>, CursorOwnerMismatch> {
+        self.validate_cursor(cursor)?;
+        let drained = {
+            let mut state = self.lock();
+            state.seq += 1;
+            let mut out = Vec::new();
+            state.events.retain(|(id, value)| {
+                if capture_id_is_after(*id, cursor) {
+                    out.push(value.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            out
+        };
+        self.inner.signal.notify_all();
+        Ok(drained)
+    }
+
+    /// Block until `select` matches over captured events strictly after
+    /// `cursor`, the stream ends, or `timeout` expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CursorOwnerMismatch`] when `cursor` belongs to another inbox,
+    /// or [`WaitEnd`] when the wait ends without a match.
+    pub fn wait_for_events_after<T>(
+        &self,
+        cursor: &ServerMessageCursor,
+        timeout: Duration,
+        mut select: impl FnMut(&[CapturedMessage]) -> Option<T>,
+    ) -> std::result::Result<T, WaitEnd> {
+        self.validate_cursor(cursor).map_err(|_| {
+            WaitEnd::Ended(StreamEnd::TransportFailure { detail: CursorOwnerMismatch.to_string() })
+        })?;
+        let cursor = cursor.clone();
+        let projection = Rc::new(RefCell::new(CapturedEventWaitProjection::default()));
+        let for_project = Rc::clone(&projection);
+        let for_select = Rc::clone(&projection);
+        self.wait_projected(
+            timeout,
+            move |state| for_project.borrow_mut().sync(state, &cursor),
+            move |new_from: &usize| {
+                let _ = new_from;
+                select(&for_select.borrow().events)
+            },
+        )
+    }
+
+    /// For tests: set the next capture identity without publishing a message.
+    #[cfg(test)]
+    pub(crate) fn test_only_set_next_capture_id(&self, next_id: u64) {
+        self.lock().next_id = next_id;
     }
 
     /// Record why the stream ended and wake every waiter.
@@ -1160,5 +1370,110 @@ mod tests {
         anyhow::ensure!(saw_stale_before_drain, "pre-drain view must contain the stale event");
         anyhow::ensure!(matched == 1, "post-drain wait must observe only the fresh event");
         Ok(())
+    }
+
+    mod captured_event {
+        use super::*;
+
+        fn notification(method: &str) -> Value {
+            json!({ "jsonrpc": "2.0", "method": method })
+        }
+
+        #[test]
+        fn drain_after_checkpoint_cannot_renumber_old_events() -> anyhow::Result<()> {
+            let inbox = Inbox::new();
+            inbox.push_event(notification("window/logMessage"));
+            inbox.push_event(notification("window/showMessage"));
+            let cursor = inbox.checkpoint();
+            let _ = inbox.drain_events();
+            inbox.push_event(notification("perl-lsp/index-ready"));
+            let after = inbox.captured_events_since(&cursor)?;
+            anyhow::ensure!(after.len() == 1, "expected one post-checkpoint event, got {after:?}");
+            anyhow::ensure!(
+                after[0].value["method"] == "perl-lsp/index-ready",
+                "post-checkpoint event must be the newly captured one"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn replacement_preserving_count_still_advances_capture_identity() -> anyhow::Result<()> {
+            let inbox = Inbox::new();
+            inbox.push_event(notification("wanted/first"));
+            let after_first = inbox.checkpoint();
+            inbox.push_event(notification("wanted/second"));
+            let cursor = inbox.checkpoint();
+            let _ = inbox.drain_events_after(&after_first)?;
+            inbox.push_event(notification("wanted/replacement"));
+            let restored_count = inbox.captured_events_since(&inbox.origin_cursor())?.len();
+            anyhow::ensure!(
+                restored_count == 2,
+                "queue length can match while capture identity still advances, got {restored_count}"
+            );
+            let after = inbox.captured_events_since(&cursor)?;
+            anyhow::ensure!(
+                after.len() == 1 && after[0].value["method"] == "wanted/replacement",
+                "cursor must observe the replacement, not a renumbered old event: {after:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn capture_id_increases_across_notifications_and_responses() -> anyhow::Result<()> {
+            let inbox = Inbox::new();
+            let n1 = inbox.push_event(notification("window/logMessage"));
+            let r1 = inbox.push_response(response(json!(1)));
+            let n2 = inbox.push_event(notification("window/showMessage"));
+            anyhow::ensure!(
+                n1 < r1 && r1 < n2,
+                "expected strictly increasing ids: {n1:?}, {r1:?}, {n2:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn cross_inbox_cursor_is_rejected() -> anyhow::Result<()> {
+            let left = Inbox::new();
+            let right = Inbox::new();
+            left.push_event(notification("left"));
+            let cursor = left.checkpoint();
+            anyhow::ensure!(
+                matches!(right.validate_cursor(&cursor), Err(CursorOwnerMismatch)),
+                "cursor from another inbox must not validate"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn checkpoint_tracks_last_allocated_not_queue_tail() -> anyhow::Result<()> {
+            let inbox = Inbox::new();
+            inbox.push_event(notification("keep/buffered"));
+            let after_first = inbox.checkpoint();
+            inbox.push_event(notification("remove/me"));
+            let _ = inbox.drain_events_after(&after_first)?;
+            let cursor = inbox.checkpoint();
+            let after = inbox.captured_events_since(&cursor)?;
+            anyhow::ensure!(
+                after.is_empty(),
+                "checkpoint must not treat buffered pre-checkpoint events as post-cursor: {after:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn capture_identity_exhaustion_fails_closed() -> anyhow::Result<()> {
+            let inbox = Inbox::new();
+            inbox.test_only_set_next_capture_id(u64::MAX);
+            let id = inbox.push_event(notification("window/logMessage"));
+            anyhow::ensure!(id.get() == u64::MAX, "exhausted push must not reuse a live id");
+            anyhow::ensure!(
+                matches!(
+                    inbox.stream_end(),
+                    Some(StreamEnd::TransportFailure { detail }) if detail.contains("exhausted")
+                ),
+                "exhaustion must close the stream fail-closed"
+            );
+            Ok(())
+        }
     }
 }

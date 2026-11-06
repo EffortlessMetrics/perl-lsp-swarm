@@ -119,14 +119,14 @@ fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
         symbols_before_ext
     );
 
-    let ready_events_before_add = harness.index_ready_event_count();
+    let ready_cursor = harness.server_message_cursor();
     harness
         .change_workspace_folders(&[("svc-ext", "svc-ext")], &[])
         .context("workspace folder addition notification failed")?;
     // The symbol query below is the success predicate; retain this observation
     // for a useful failure message without making it a separate readiness gate.
     let index_ready_after_add =
-        harness.wait_for_index_ready_event_after(ready_events_before_add, Duration::from_secs(20));
+        harness.wait_for_index_ready_after(ready_cursor, Duration::from_secs(20));
 
     let after_deadline = Instant::now() + Duration::from_secs(20);
     let mut symbols_after = Vec::new();
@@ -211,11 +211,11 @@ fn scenario_19_workspace_folder_addition_surfaces_new_symbols() -> Result<()> {
     // When: a second workspace folder is added and populated.
     harness.workspace.ensure_dir("svc-b")?;
     harness.workspace.write("svc-b/lib/ServiceB.pm", SERVICE_B)?;
-    let ready_events_before_add = harness.index_ready_event_count();
+    let ready_cursor = harness.server_message_cursor();
     harness.change_workspace_folders(&[("svc-b", "svc-b")], &[])?;
     // The symbol query below is the success predicate; retain the observation.
     let index_ready_after_add =
-        harness.wait_for_index_ready_event_after(ready_events_before_add, Duration::from_secs(20));
+        harness.wait_for_index_ready_after(ready_cursor, Duration::from_secs(20));
 
     // Then: workspace/symbol eventually includes both workspace roots.
     let after = harness.wait_for_workspace_symbols(
