@@ -542,6 +542,184 @@ pub(super) fn multiline_literal_lines(source: &str) -> std::collections::HashSet
     lines
 }
 
+/// Line indices that belong to a literal-preserve region (regex,
+/// substitution, transliteration, quote-like and format-body tokens, plus
+/// line-detected heredoc/POD/`__DATA__`/`__END__`/format regions).
+/// Formatting emits these lines byte-exact and never lets them move the
+/// block stack (#17708).
+fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
+    token_preserve_lines(source).into_iter().chain(line_preserve_lines(source)).collect()
+}
+
+/// Public preserve-region line indices for downstream consumers that apply
+/// whitespace policy after formatting (#17710-6).
+#[must_use]
+pub fn preserve_region_line_indices(source: &str) -> std::collections::HashSet<usize> {
+    preserve_region_lines(source)
+}
+
+fn token_preserve_lines(source: &str) -> std::collections::HashSet<usize> {
+    use perl_parser_core::TokenKind;
+
+    let mut lines = std::collections::HashSet::new();
+    let line_starts: Vec<usize> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
+
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        match stream.next() {
+            Ok(token) if token.kind() == TokenKind::Eof => break,
+            Ok(token) => {
+                if matches!(
+                    token.kind(),
+                    TokenKind::Regex
+                        | TokenKind::Substitution
+                        | TokenKind::Transliteration
+                        | TokenKind::QuoteSingle
+                        | TokenKind::QuoteDouble
+                        | TokenKind::QuoteWords
+                        | TokenKind::QuoteCommand
+                        | TokenKind::FormatBody
+                ) {
+                    for line in line_of(token.start())..=line_of(token.end()) {
+                        lines.insert(line);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    lines
+}
+
+fn line_preserve_lines(source: &str) -> std::collections::HashSet<usize> {
+    let mut lines = std::collections::HashSet::new();
+    let source_lines: Vec<&str> = source.lines().collect();
+    let mut heredoc_queue: std::collections::VecDeque<HeredocMarker> =
+        std::collections::VecDeque::new();
+    let mut index = 0;
+    while index < source_lines.len() {
+        let line = source_lines[index];
+        if let Some(front) = heredoc_queue.front() {
+            lines.insert(index);
+            let done = if front.allow_indent {
+                line.trim_start_matches([' ', '\t']) == front.label
+            } else {
+                line == front.label
+            };
+            if done {
+                heredoc_queue.pop_front();
+            }
+            index += 1;
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if is_pod_start(trimmed) {
+            lines.insert(index);
+            index += 1;
+            while index < source_lines.len() {
+                lines.insert(index);
+                // POD ends only at an exact `=cut` token (#17710-3).
+                let done = source_lines[index].split_whitespace().next() == Some("=cut");
+                index += 1;
+                if done {
+                    break;
+                }
+            }
+            continue;
+        }
+        if matches!(trimmed.trim_end(), "__DATA__" | "__END__") {
+            for rest in index..source_lines.len() {
+                lines.insert(rest);
+            }
+            break;
+        }
+        if is_format_declaration_start(trimmed) {
+            lines.insert(index);
+            index += 1;
+            while index < source_lines.len() {
+                lines.insert(index);
+                let done = source_lines[index].trim() == ".";
+                index += 1;
+                if done {
+                    break;
+                }
+            }
+            continue;
+        }
+        let markers = heredoc_markers(line);
+        if !markers.is_empty() {
+            lines.insert(index);
+            heredoc_queue.extend(markers);
+            index += 1;
+            continue;
+        }
+        index += 1;
+    }
+    lines
+}
+
+#[derive(Debug, Clone)]
+struct HeredocMarker {
+    label: String,
+    allow_indent: bool,
+}
+
+/// All heredoc markers on a line, in order (`print <<A, <<B;` queues both,
+/// FIFO). Quoted labels accept any characters up to the closing quote, per
+/// lexer rules (`<<"="` is valid); bare labels are identifier tokens.
+fn heredoc_markers(line: &str) -> Vec<HeredocMarker> {
+    let mut markers = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = line[search_from..].find("<<") {
+        let start = search_from + rel;
+        search_from = start + 2;
+        let after = &line[start + 2..];
+        if after.starts_with('<') {
+            continue;
+        }
+        let (allow_indent, after) =
+            if let Some(rest) = after.strip_prefix('~') { (true, rest) } else { (false, after) };
+        let after = after.trim_start_matches([' ', '\t']);
+        let after = after.strip_prefix('\\').unwrap_or(after);
+        let Some(first) = after.chars().next() else { continue };
+        if matches!(first, '\'' | '"' | '`') {
+            let mut label = String::new();
+            let mut rest = &after[first.len_utf8()..];
+            let mut closed = false;
+            while let Some(ch) = rest.chars().next() {
+                if ch == first {
+                    closed = true;
+                    break;
+                }
+                if ch == '\\' {
+                    rest = &rest[ch.len_utf8()..];
+                    let Some(escaped) = rest.chars().next() else { break };
+                    if first == '\'' && !matches!(escaped, '\'' | '\\') {
+                        label.push('\\');
+                    }
+                    label.push(escaped);
+                    rest = &rest[escaped.len_utf8()..];
+                    continue;
+                }
+                label.push(ch);
+                rest = &rest[ch.len_utf8()..];
+            }
+            if closed && !label.is_empty() {
+                markers.push(HeredocMarker { label, allow_indent });
+            }
+        } else if first == '_' || first.is_ascii_alphabetic() {
+            let label: String =
+                after.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+            if !label.is_empty() {
+                markers.push(HeredocMarker { label, allow_indent });
+            }
+        }
+    }
+    markers
+}
+
 impl PerlFormatter for NativeFormatter {
     fn format_document(&self, source: &str, config: &FormatConfig) -> FormatResult {
         // Counted inside the pipeline so an adapter double-invoke â€” even one
@@ -552,7 +730,10 @@ impl PerlFormatter for NativeFormatter {
             return FormatResult::unchanged(source);
         }
 
-        if let Err(diagnostic) = Self::validate_clean_parse(source, counters::ParseGateKind::Source)
+        // Literal-preserve regions no longer refuse the whole document
+        // (#17708): their lines are emitted byte-exact by
+        // `format_safe_subset`, so only parse correctness gates here.
+        if let Err(diagnostic) = Self::validate_parse_only(source, counters::ParseGateKind::Source)
         {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
@@ -562,7 +743,7 @@ impl PerlFormatter for NativeFormatter {
         let safe_subset = Self::format_safe_subset(source, config);
         let formatted = Self::apply_final_newline(&safe_subset, source, config);
         if let Err(diagnostic) =
-            Self::validate_clean_parse(&formatted, counters::ParseGateKind::FormattedOutput)
+            Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
         {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(FormatDiagnostic::new(
@@ -2543,6 +2724,7 @@ fn token_literal_preserve_region_overlapping(
     }
 }
 
+#[cfg(test)]
 fn token_literal_preserve_region(source: &str) -> Option<&'static str> {
     use perl_parser_core::TokenKind;
 
@@ -2588,17 +2770,7 @@ fn is_pod_start(trimmed_line: &str) -> bool {
 }
 
 fn contains_likely_heredoc_start(line: &str) -> bool {
-    let Some((_, after_marker)) = line.split_once("<<") else {
-        return false;
-    };
-    if after_marker.starts_with('<') {
-        return false;
-    }
-
-    let after_indent = after_marker.trim_start();
-    let marker = after_indent.strip_prefix('~').unwrap_or(after_indent).trim_start();
-    let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
-    marker.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    !heredoc_markers(line).is_empty()
 }
 
 fn is_format_declaration_start(trimmed_line: &str) -> bool {

@@ -730,6 +730,7 @@ fn target_has_only_supported_lines(
     target: FormatRequestTarget,
 ) -> bool {
     let body_indent = indent_unit(config);
+    let preserve_lines = preserve_region_line_indices(source);
     let mut open_blocks: Vec<&str> = Vec::new();
     // Physical lines inside a multiline literal are literal bytes, not
     // code: exactly as in `format_safe_subset`, they never move the block
