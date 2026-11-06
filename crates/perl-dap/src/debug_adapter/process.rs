@@ -1314,7 +1314,7 @@ impl DebugAdapter {
 
                 Ok(thread_id)
             }
-            Err(e) => Err(format_perl_spawn_error(perl_interpreter, &e)),
+            Err(e) => Err(format_perl_spawn_error(perl_interpreter, Some(&debuggee_cwd), &e)),
         }
     }
 
@@ -6852,6 +6852,30 @@ mod tests {
         Ok(())
     }
 
+    /// Build an adapter that passes launch-authority validation so a test
+    /// launch reaches the real program/interpreter paths under test (#16552).
+    fn launch_test_adapter() -> Result<DebugAdapter, String> {
+        let adapter = DebugAdapter::new();
+        // Install an explicitly unbounded startup authority (#8656): these
+        // tests target the launch-failure wrapper, not boundary validation.
+        let authority = crate::security::launch_authority::LaunchAuthority::resolve(
+            &crate::security::launch_authority::LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(
+                    crate::security::launch_authority::UnboundedAcknowledgement::new(
+                        crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
+                        "test: reach the launch failure wrapper",
+                    ),
+                ),
+            },
+        )
+        .map_err(|e| format!("authority resolution failed: {e}"))?;
+        adapter.set_launch_authority(authority);
+        // Initialize first (required by state machine validation).
+        let _ = adapter.handle_initialize(1, 1, None);
+        Ok(adapter)
+    }
+
     /// Verify that a failed launch returns a response whose message mentions Perl.
     ///
     /// We construct a temporary file so that the file-exists check passes, then
@@ -6990,7 +7014,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_includes_custom_interpreter_name() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("/custom/perl", &error);
+        let message = format_perl_spawn_error("/custom/perl", None, &error);
 
         assert!(
             message.contains("/custom/perl"),
@@ -7000,7 +7024,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_for_missing_perl_is_actionable() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("perl", &error);
+        let message = format_perl_spawn_error("perl", None, &error);
 
         assert!(message.contains("Install Perl"), "expected install guidance, got: {message}");
         assert!(
@@ -7016,7 +7040,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_preserves_non_not_found_error_detail() {
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
-        let message = format_perl_spawn_error("/secure/perl", &error);
+        let message = format_perl_spawn_error("/secure/perl", None, &error);
 
         assert!(message.contains("/secure/perl"), "expected interpreter path, got: {message}");
         assert!(
