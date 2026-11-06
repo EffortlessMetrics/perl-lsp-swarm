@@ -639,16 +639,36 @@ impl DocumentHighlightProvider {
             highlights.push(DocumentHighlight { location: node.location, kind });
         }
 
-        // Also check cross-sigil matches (e.g. $arr[0] ↔ @arr) within scope
+        // Cross-sigil element spellings (e.g. `$items[0]` ↔ `@items`) use the
+        // traversal parent, like the unscoped collector (#18312). When the parent
+        // is a subscript Binary, require this node to be the container (left)
+        // child so a same-named scalar index/key stays excluded.
         if let NodeKind::Variable { sigil, name } = &node.kind
             && node.location.start >= sub_start
             && node.location.end <= sub_end
+            && !self.node_matches_symbol(node, source, target)
         {
-            // Presence of a subscript parent is the gate; the parent node
-            // itself is not needed here.
-            if self.find_subscript_parent(node, node.location.start).is_some() {
-                let target_sigil_str = target.sigil.as_deref().unwrap_or("");
-                if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
+            let target_sigil_str = target.sigil.as_deref().unwrap_or("");
+            if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
+                let on_subscript = parent.is_some_and(|parent_node| {
+                    matches!(
+                        &parent_node.kind,
+                        NodeKind::Binary { op, .. } if op == "[]" || op == "{}"
+                    )
+                });
+                let include = if on_subscript {
+                    parent.is_some_and(|parent_node| {
+                        if let NodeKind::Binary { left, .. } = &parent_node.kind {
+                            left.location.start == node.location.start
+                                && left.location.end == node.location.end
+                        } else {
+                            false
+                        }
+                    })
+                } else {
+                    true
+                };
+                if include {
                     let kind = self.determine_highlight_kind_with_parent(node, parent);
                     highlights.push(DocumentHighlight { location: node.location, kind });
                 }
