@@ -8,6 +8,10 @@
 //! - **Ready state**: Full workspace index search with cooperative yielding
 //! - **Building/Degraded state**: Open document search only (partial results)
 
+#[cfg(test)]
+#[path = "workspace/critic_transition_tests.rs"]
+mod critic_transition_tests;
+
 use super::{
     AtomicBool, AtomicI32, BackingFileTransition, DocumentState, GLOBAL_CANCELLATION_REGISTRY,
     IndexCoordinator, JsonRpcError, JsonRpcId, LspServer, LspWorkspaceSymbol, Mutex, Ordering,
