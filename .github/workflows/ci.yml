@@ -521,7 +521,7 @@ jobs:
           exit "$status"
       - name: Upload Repository Contract receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: repository-contract-${{ env.CONTRACT_HEAD }}
           path: |
@@ -1191,7 +1191,7 @@ jobs:
       # so the related evidence cannot drift apart in lifetime.
       - name: Upload PR-fast receipt
         if: always() && hashFiles('target/receipts/receipt.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: pr-fast-receipt-${{ github.sha }}
           path: |
@@ -1207,7 +1207,7 @@ jobs:
       # name that does not impersonate a completed pr-fast run (#17915).
       - name: Upload PR-fast missing-receipt diagnostics
         if: always() && hashFiles('target/receipts/receipt.json') == ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: pr-fast-missing-receipt-${{ github.sha }}
           path: |
@@ -1617,7 +1617,7 @@ jobs:
 
       - name: Upload gate receipt
         if: always() && steps.verify-receipt-freshness.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: gate-receipt-${{ matrix.name }}-${{ github.sha }}
           path: |
@@ -1657,7 +1657,7 @@ jobs:
 
       - name: Upload non-Rust inventory evidence
         if: always() && matrix.name == 'policy' && steps.inventory-evidence.outputs.ready == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: non-rust-inventory-${{ steps.inventory-source.outputs.sha }}
           path: |
@@ -1669,7 +1669,7 @@ jobs:
 
       - name: Upload parser integration receipt
         if: always() && matrix.name == 'parser_stack'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: parser-integration-receipt-${{ github.sha }}
           path: target/receipts/parser-integration.json
@@ -1703,7 +1703,7 @@ jobs:
       - name: Upload CI actuals
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: ci-actuals-${{ matrix.name }}-${{ github.sha }}
           path: target/ci/ci-actuals-${{ matrix.name }}.json
@@ -2114,7 +2114,7 @@ jobs:
 
       - name: Upload UX regression evidence
         if: always() && steps.verify_receipt.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: ux-regression-receipt-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: |
@@ -2128,7 +2128,7 @@ jobs:
 
       - name: Upload unverified UX diagnostics
         if: always() && steps.verify_receipt.outcome != 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: ux-regression-unverified-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -2723,7 +2723,7 @@ jobs:
 
       - name: Upload memory smoke artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: lsp-memory-smoke-${{ github.sha }}
           path: |
@@ -2801,7 +2801,7 @@ jobs:
 
       - name: Upload candidate-bound rustfmt receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         with:
           name: rustfmt-check-${{ env.SUBJECT_SHA }}
           path: ${{ env.RECEIPT_PATH }}
