@@ -7,6 +7,7 @@ use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::builtins::builtin_signatures::{
     BuiltinSignature as ImportedBuiltinSignature, create_builtin_signatures,
 };
+use perl_parser_core::prototype_shape::{PrototypeShape, PrototypeSlotKind};
 use perl_semantic_analyzer::symbol::{Symbol, SymbolExtractor, SymbolKind, SymbolTable};
 use std::collections::HashMap;
 
@@ -315,41 +316,18 @@ impl SignatureHelpProvider {
 
         // If no AST signature found, fall back to extended prototype parsing
         if params.is_empty() {
-            let prototype = symbol
-                .attributes
-                .iter()
-                .find_map(|attr| attr.strip_prefix("prototype(").and_then(|s| s.strip_suffix(")")));
+            // Last `:prototype(...)` wins, matching HIR `prototype_payload` and Perl.
+            let prototype =
+                symbol.attributes.iter().rev().find_map(|attr| {
+                    attr.strip_prefix("prototype(").and_then(|s| s.strip_suffix(")"))
+                });
 
             if let Some(proto) = prototype {
                 label.push_str(proto);
-
-                // Attribute bodies retain source trivia and separators. Count
-                // emitted parameters without changing the original label text.
-                for ch in proto.chars() {
-                    match ch {
-                        '$' => {
-                            let number = params.len() + 1;
-                            params.push(ParameterInfo {
-                                label: format!("$arg{number}"),
-                                documentation: Some(format!("Scalar parameter {number}")),
-                            });
-                        }
-                        '@' => params.push(ParameterInfo {
-                            label: "@args".to_string(),
-                            documentation: Some("Array (slurps remaining arguments)".to_string()),
-                        }),
-                        '%' => params.push(ParameterInfo {
-                            label: "%args".to_string(),
-                            documentation: Some(
-                                "Hash (slurps remaining named arguments)".to_string(),
-                            ),
-                        }),
-                        '&' => params.push(ParameterInfo {
-                            label: "&code".to_string(),
-                            documentation: Some("Code reference parameter".to_string()),
-                        }),
-                        _ => {}
-                    }
+                // Slot classification is owned by the canonical projector (#16810).
+                let shape = PrototypeShape::project(proto);
+                for slot in shape.slots() {
+                    params.push(parameter_info_from_prototype_slot(slot.kind(), params.len()));
                 }
             }
         }
@@ -403,6 +381,56 @@ impl SignatureHelpProvider {
         }
 
         actual_comma_count
+    }
+}
+
+fn parameter_info_from_prototype_slot(
+    kind: &PrototypeSlotKind,
+    existing_params: usize,
+) -> ParameterInfo {
+    match kind {
+        PrototypeSlotKind::Scalar => {
+            let number = existing_params + 1;
+            ParameterInfo {
+                label: format!("$arg{number}"),
+                documentation: Some(format!("Scalar parameter {number}")),
+            }
+        }
+        PrototypeSlotKind::TopicDefaultScalar => {
+            let number = existing_params + 1;
+            ParameterInfo {
+                label: format!("$arg{number}"),
+                documentation: Some(format!(
+                    "Scalar parameter {number} (defaults to $_ if omitted)"
+                )),
+            }
+        }
+        PrototypeSlotKind::ArraySlurpy => ParameterInfo {
+            label: "@args".to_string(),
+            documentation: Some("Array (slurps remaining arguments)".to_string()),
+        },
+        PrototypeSlotKind::HashSlurpy => ParameterInfo {
+            label: "%args".to_string(),
+            documentation: Some("Hash (slurps remaining named arguments)".to_string()),
+        },
+        PrototypeSlotKind::Code => ParameterInfo {
+            label: "&code".to_string(),
+            documentation: Some("Code reference parameter".to_string()),
+        },
+        PrototypeSlotKind::Glob => ParameterInfo {
+            label: "*glob".to_string(),
+            documentation: Some("Typeglob parameter".to_string()),
+        },
+        PrototypeSlotKind::ScalarOrReference => ParameterInfo {
+            label: "+arg".to_string(),
+            documentation: Some("Scalar or array/hash reference parameter".to_string()),
+        },
+        PrototypeSlotKind::ReferenceTo(_) | PrototypeSlotKind::GroupedReference(_) => {
+            ParameterInfo {
+                label: "\\ref".to_string(),
+                documentation: Some("Reference parameter".to_string()),
+            }
+        }
     }
 }
 
@@ -512,6 +540,37 @@ mod tests {
                 Some("Scalar parameter 2")
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn topic_default_slot_documents_the_omitted_argument() -> Result<(), String> {
+        let source = "sub foo :prototype(_) {}";
+        let ast = Parser::new(source).parse().map_err(|error| error.to_string())?;
+        let provider = SignatureHelpProvider::new(&ast);
+        let signatures = provider.get_signatures("foo");
+        let signature = signatures.first().ok_or("missing prototype signature")?;
+        assert_eq!(signature.parameters.len(), 1);
+        assert_eq!(
+            signature.parameters[0].documentation.as_deref(),
+            Some("Scalar parameter 1 (defaults to $_ if omitted)")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn last_prototype_attribute_wins_in_signature_help() -> Result<(), String> {
+        let source = "sub last_attr :prototype($) :prototype(@) {}";
+        let ast = Parser::new(source).parse().map_err(|error| error.to_string())?;
+        let provider = SignatureHelpProvider::new(&ast);
+        let signatures = provider.get_signatures("last_attr");
+        let signature = signatures.first().ok_or("missing prototype signature")?;
+        assert_eq!(signature.parameters.len(), 1);
+        assert_eq!(signature.parameters[0].label, "@args");
+        assert_eq!(
+            signature.parameters[0].documentation.as_deref(),
+            Some("Array (slurps remaining arguments)")
+        );
         Ok(())
     }
 
