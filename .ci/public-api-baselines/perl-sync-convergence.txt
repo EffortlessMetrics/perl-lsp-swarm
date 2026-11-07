@@ -1,0 +1,1065 @@
+pub mod perl_sync_convergence
+pub mod perl_sync_convergence::event
+pub enum perl_sync_convergence::event::ConvergenceEvent
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationStarted
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationStarted::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationStarted::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationStarted::started_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationStarted::swarm_parent_sha: alloc::string::String
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationStarted::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationSuperseded
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationSuperseded::old_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationSuperseded::reason_digest: alloc::string::String
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationSuperseded::successor_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationSuperseded::superseded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::GenerationSuperseded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::InvalidationRecorded
+pub perl_sync_convergence::event::ConvergenceEvent::InvalidationRecorded::record: perl_sync_convergence::InvalidationRecord
+pub perl_sync_convergence::event::ConvergenceEvent::InvalidationRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseClaimed
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseClaimed::lease: perl_sync_convergence::Lease
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseClaimed::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseHeartbeat
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseHeartbeat::claimed_by: alloc::string::String
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseHeartbeat::heartbeat_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseHeartbeat::new_expires_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::LeaseHeartbeat::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::NoOpRecorded
+pub perl_sync_convergence::event::ConvergenceEvent::NoOpRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::event::ConvergenceEvent::NoOpRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::event::ConvergenceEvent::NoOpRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::NoOpRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::RejectionRecorded
+pub perl_sync_convergence::event::ConvergenceEvent::RejectionRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::event::ConvergenceEvent::RejectionRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::event::ConvergenceEvent::RejectionRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::RejectionRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::TakeoverRecorded
+pub perl_sync_convergence::event::ConvergenceEvent::TakeoverRecorded::new_lease: perl_sync_convergence::Lease
+pub perl_sync_convergence::event::ConvergenceEvent::TakeoverRecorded::takeover: perl_sync_convergence::Takeover
+pub perl_sync_convergence::event::ConvergenceEvent::TakeoverRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::TransactionOpened
+pub perl_sync_convergence::event::ConvergenceEvent::TransactionOpened::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::event::ConvergenceEvent::TransactionOpened::opened_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::TransactionOpened::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::event::ConvergenceEvent::TransactionOpened::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::event::ConvergenceEvent::TransactionOpened::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::event::ConvergenceEvent::TransitionRecorded
+pub perl_sync_convergence::event::ConvergenceEvent::TransitionRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::event::ConvergenceEvent::TransitionRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::event::ConvergenceEvent::TransitionRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::event::ConvergenceEvent::TransitionRecorded::to: perl_sync_convergence::TransitionState
+pub perl_sync_convergence::event::ConvergenceEvent::TransitionRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceEvent::transaction_id(&self) -> &perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceEvent::clone(&self) -> perl_sync_convergence::event::ConvergenceEvent
+pub fn perl_sync_convergence::event::ConvergenceEvent::eq(&self, other: &perl_sync_convergence::event::ConvergenceEvent) -> bool
+pub fn perl_sync_convergence::event::ConvergenceEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::event::ConvergenceEvent::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::event::ConvergenceEvent::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::event::ReplayErrorKind
+pub perl_sync_convergence::event::ReplayErrorKind::ConcurrentActiveGeneration
+pub perl_sync_convergence::event::ReplayErrorKind::ConcurrentActiveGeneration::existing: alloc::string::String
+pub perl_sync_convergence::event::ReplayErrorKind::DuplicateGeneration
+pub perl_sync_convergence::event::ReplayErrorKind::DuplicateOpen
+pub perl_sync_convergence::event::ReplayErrorKind::ForeignTransaction
+pub perl_sync_convergence::event::ReplayErrorKind::HeartbeatMismatch
+pub perl_sync_convergence::event::ReplayErrorKind::IllegalTransition
+pub perl_sync_convergence::event::ReplayErrorKind::IllegalTransition::from: &'static str
+pub perl_sync_convergence::event::ReplayErrorKind::IllegalTransition::to: &'static str
+pub perl_sync_convergence::event::ReplayErrorKind::InvalidLease(alloc::string::String)
+pub perl_sync_convergence::event::ReplayErrorKind::InvalidSupersession
+pub perl_sync_convergence::event::ReplayErrorKind::InvalidTakeover(alloc::string::String)
+pub perl_sync_convergence::event::ReplayErrorKind::LiveLeaseExists
+pub perl_sync_convergence::event::ReplayErrorKind::MissingOpen
+pub perl_sync_convergence::event::ReplayErrorKind::RejectionConflict
+pub perl_sync_convergence::event::ReplayErrorKind::TerminalGeneration
+pub perl_sync_convergence::event::ReplayErrorKind::UnknownGeneration
+pub fn perl_sync_convergence::event::ReplayErrorKind::clone(&self) -> perl_sync_convergence::event::ReplayErrorKind
+pub fn perl_sync_convergence::event::ReplayErrorKind::eq(&self, other: &perl_sync_convergence::event::ReplayErrorKind) -> bool
+pub fn perl_sync_convergence::event::ReplayErrorKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::event::ReplayErrorKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::event::ConvergenceView
+pub perl_sync_convergence::event::ConvergenceView::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::event::ConvergenceView::generations: alloc::collections::btree::map::BTreeMap<perl_sync_convergence::GenerationId, perl_sync_convergence::event::GenerationRuntime>
+pub perl_sync_convergence::event::ConvergenceView::invalidations: alloc::vec::Vec<perl_sync_convergence::InvalidationRecord>
+pub perl_sync_convergence::event::ConvergenceView::lease: core::option::Option<perl_sync_convergence::Lease>
+pub perl_sync_convergence::event::ConvergenceView::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::event::ConvergenceView::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::event::ConvergenceView::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceView::active_generation(&self) -> core::option::Option<&perl_sync_convergence::event::GenerationRuntime>
+pub fn perl_sync_convergence::event::ConvergenceView::lease_expired_at(&self, now: perl_sync_convergence::TimestampMs) -> bool
+pub fn perl_sync_convergence::event::ConvergenceView::clone(&self) -> perl_sync_convergence::event::ConvergenceView
+pub fn perl_sync_convergence::event::ConvergenceView::eq(&self, other: &perl_sync_convergence::event::ConvergenceView) -> bool
+pub fn perl_sync_convergence::event::ConvergenceView::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::event::GenerationRuntime
+pub perl_sync_convergence::event::GenerationRuntime::last_evidence_digest: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::event::GenerationRuntime::rejection_evidence_digest: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::event::GenerationRuntime::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::event::GenerationRuntime::state: perl_sync_convergence::TransitionState
+pub perl_sync_convergence::event::GenerationRuntime::successor: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::event::GenerationRuntime::swarm_parent_sha: alloc::string::String
+pub fn perl_sync_convergence::event::GenerationRuntime::next_actions(&self) -> alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::event::GenerationRuntime::clone(&self) -> perl_sync_convergence::event::GenerationRuntime
+pub fn perl_sync_convergence::event::GenerationRuntime::eq(&self, other: &perl_sync_convergence::event::GenerationRuntime) -> bool
+pub fn perl_sync_convergence::event::GenerationRuntime::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::event::ReplayError
+pub perl_sync_convergence::event::ReplayError::kind: perl_sync_convergence::event::ReplayErrorKind
+pub perl_sync_convergence::event::ReplayError::line: usize
+pub fn perl_sync_convergence::event::ReplayError::clone(&self) -> perl_sync_convergence::event::ReplayError
+pub fn perl_sync_convergence::event::ReplayError::eq(&self, other: &perl_sync_convergence::event::ReplayError) -> bool
+pub fn perl_sync_convergence::event::ReplayError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::event::ReplayError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_sync_convergence::event::JOURNAL_SCHEMA_VERSION: u32
+pub fn perl_sync_convergence::event::is_legal_transition(from: perl_sync_convergence::TransitionState, to: perl_sync_convergence::TransitionState) -> bool
+pub fn perl_sync_convergence::event::permitted_writer_actions(state: perl_sync_convergence::TransitionState) -> alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::event::replay(events: &[perl_sync_convergence::event::ConvergenceEvent]) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::event::ReplayError>
+pub mod perl_sync_convergence::prelude
+pub enum perl_sync_convergence::prelude::ConvergenceEvent
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationStarted
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationStarted::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationStarted::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationStarted::started_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationStarted::swarm_parent_sha: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationStarted::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationSuperseded
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationSuperseded::old_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationSuperseded::reason_digest: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationSuperseded::successor_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationSuperseded::superseded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::GenerationSuperseded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::InvalidationRecorded
+pub perl_sync_convergence::prelude::ConvergenceEvent::InvalidationRecorded::record: perl_sync_convergence::InvalidationRecord
+pub perl_sync_convergence::prelude::ConvergenceEvent::InvalidationRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseClaimed
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseClaimed::lease: perl_sync_convergence::Lease
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseClaimed::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseHeartbeat
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseHeartbeat::claimed_by: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseHeartbeat::heartbeat_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseHeartbeat::new_expires_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::LeaseHeartbeat::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::NoOpRecorded
+pub perl_sync_convergence::prelude::ConvergenceEvent::NoOpRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceEvent::NoOpRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::ConvergenceEvent::NoOpRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::NoOpRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::RejectionRecorded
+pub perl_sync_convergence::prelude::ConvergenceEvent::RejectionRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceEvent::RejectionRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::ConvergenceEvent::RejectionRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::RejectionRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::TakeoverRecorded
+pub perl_sync_convergence::prelude::ConvergenceEvent::TakeoverRecorded::new_lease: perl_sync_convergence::Lease
+pub perl_sync_convergence::prelude::ConvergenceEvent::TakeoverRecorded::takeover: perl_sync_convergence::Takeover
+pub perl_sync_convergence::prelude::ConvergenceEvent::TakeoverRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransactionOpened
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransactionOpened::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransactionOpened::opened_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransactionOpened::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransactionOpened::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransactionOpened::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransitionRecorded
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransitionRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransitionRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransitionRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransitionRecorded::to: perl_sync_convergence::TransitionState
+pub perl_sync_convergence::prelude::ConvergenceEvent::TransitionRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceEvent::transaction_id(&self) -> &perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceEvent::clone(&self) -> perl_sync_convergence::event::ConvergenceEvent
+pub fn perl_sync_convergence::event::ConvergenceEvent::eq(&self, other: &perl_sync_convergence::event::ConvergenceEvent) -> bool
+pub fn perl_sync_convergence::event::ConvergenceEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::event::ConvergenceEvent::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::event::ConvergenceEvent::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::prelude::Direction
+pub perl_sync_convergence::prelude::Direction::SourceToSwarm
+pub perl_sync_convergence::prelude::Direction::SwarmToSource
+pub fn perl_sync_convergence::Direction::as_str(self) -> &'static str
+pub fn perl_sync_convergence::Direction::clone(&self) -> perl_sync_convergence::Direction
+pub fn perl_sync_convergence::Direction::eq(&self, other: &perl_sync_convergence::Direction) -> bool
+pub fn perl_sync_convergence::Direction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Direction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Direction::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::Direction::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::Direction::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::prelude::DurableCopyState
+pub perl_sync_convergence::prelude::DurableCopyState::ExpiringOnly
+pub perl_sync_convergence::prelude::DurableCopyState::Missing
+pub perl_sync_convergence::prelude::DurableCopyState::RetainedDurable
+pub fn perl_sync_convergence::DurableCopyState::clone(&self) -> perl_sync_convergence::DurableCopyState
+pub fn perl_sync_convergence::DurableCopyState::eq(&self, other: &perl_sync_convergence::DurableCopyState) -> bool
+pub fn perl_sync_convergence::DurableCopyState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::DurableCopyState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::DurableCopyState::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::prelude::InvalidationCause
+pub perl_sync_convergence::prelude::InvalidationCause::CandidateHeadMovement
+pub perl_sync_convergence::prelude::InvalidationCause::ProductProofMovement
+pub perl_sync_convergence::prelude::InvalidationCause::ProjectionLedgerMovement
+pub perl_sync_convergence::prelude::InvalidationCause::ProtectionDrift
+pub perl_sync_convergence::prelude::InvalidationCause::PublicationSourceAdmissionMovement
+pub perl_sync_convergence::prelude::InvalidationCause::ReleaseSpecificOverlap
+pub perl_sync_convergence::prelude::InvalidationCause::RetentionFailure
+pub perl_sync_convergence::prelude::InvalidationCause::SourceMasterMovement
+pub perl_sync_convergence::prelude::InvalidationCause::SwarmMainMovement
+pub fn perl_sync_convergence::InvalidationCause::as_str(self) -> &'static str
+pub fn perl_sync_convergence::InvalidationCause::clone(&self) -> perl_sync_convergence::InvalidationCause
+pub fn perl_sync_convergence::InvalidationCause::eq(&self, other: &perl_sync_convergence::InvalidationCause) -> bool
+pub fn perl_sync_convergence::InvalidationCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::InvalidationCause::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::InvalidationCause::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::prelude::InvalidationError
+pub perl_sync_convergence::prelude::InvalidationError::MissingEvidenceDigest
+pub fn perl_sync_convergence::InvalidationError::clone(&self) -> perl_sync_convergence::InvalidationError
+pub fn perl_sync_convergence::InvalidationError::eq(&self, other: &perl_sync_convergence::InvalidationError) -> bool
+pub fn perl_sync_convergence::InvalidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::prelude::LeaseError
+pub perl_sync_convergence::prelude::LeaseError::AlreadyExpired
+pub perl_sync_convergence::prelude::LeaseError::AlreadyExpired::expires_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::LeaseError::AlreadyExpired::now: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::LeaseError::EmptyClaimant
+pub perl_sync_convergence::prelude::LeaseError::MissingReconciliationEvidence
+pub perl_sync_convergence::prelude::LeaseError::NonPositiveDuration
+pub fn perl_sync_convergence::LeaseError::clone(&self) -> perl_sync_convergence::LeaseError
+pub fn perl_sync_convergence::LeaseError::eq(&self, other: &perl_sync_convergence::LeaseError) -> bool
+pub fn perl_sync_convergence::LeaseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::LeaseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::prelude::ModelError
+pub perl_sync_convergence::prelude::ModelError::EmptyRequiredField
+pub perl_sync_convergence::prelude::ModelError::IdentityMismatch
+pub perl_sync_convergence::prelude::ModelError::IdentityMismatch::declared: alloc::string::String
+pub perl_sync_convergence::prelude::ModelError::IdentityMismatch::derived: alloc::string::String
+pub fn perl_sync_convergence::ModelError::clone(&self) -> perl_sync_convergence::ModelError
+pub fn perl_sync_convergence::ModelError::eq(&self, other: &perl_sync_convergence::ModelError) -> bool
+pub fn perl_sync_convergence::ModelError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ModelError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::prelude::PermittedAction
+pub perl_sync_convergence::prelude::PermittedAction::AwaitAdmission
+pub perl_sync_convergence::prelude::PermittedAction::MaterializeCandidate
+pub perl_sync_convergence::prelude::PermittedAction::ObserveInputs
+pub perl_sync_convergence::prelude::PermittedAction::PlanCandidate
+pub perl_sync_convergence::prelude::PermittedAction::PublishCandidate
+pub perl_sync_convergence::prelude::PermittedAction::RecordNoOp
+pub perl_sync_convergence::prelude::PermittedAction::RecordRejection
+pub perl_sync_convergence::prelude::PermittedAction::StartSuccessorGeneration
+pub perl_sync_convergence::prelude::PermittedAction::TakeoverAfterReconciliation
+pub perl_sync_convergence::prelude::PermittedAction::VerifyLanding
+pub fn perl_sync_convergence::PermittedAction::as_str(self) -> &'static str
+pub fn perl_sync_convergence::PermittedAction::clone(&self) -> perl_sync_convergence::PermittedAction
+pub fn perl_sync_convergence::PermittedAction::eq(&self, other: &perl_sync_convergence::PermittedAction) -> bool
+pub fn perl_sync_convergence::PermittedAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::PermittedAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::PermittedAction::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::PermittedAction::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::PermittedAction::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::prelude::ReleaseContextMode
+pub perl_sync_convergence::prelude::ReleaseContextMode::OrdinaryContinuous
+pub perl_sync_convergence::prelude::ReleaseContextMode::ReleaseSpecific
+pub fn perl_sync_convergence::ReleaseContextMode::as_str(self) -> &'static str
+pub fn perl_sync_convergence::ReleaseContextMode::clone(&self) -> perl_sync_convergence::ReleaseContextMode
+pub fn perl_sync_convergence::ReleaseContextMode::eq(&self, other: &perl_sync_convergence::ReleaseContextMode) -> bool
+pub fn perl_sync_convergence::ReleaseContextMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ReleaseContextMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ReleaseContextMode::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::ReleaseContextMode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ReleaseContextMode::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::prelude::ReplayErrorKind
+pub perl_sync_convergence::prelude::ReplayErrorKind::ConcurrentActiveGeneration
+pub perl_sync_convergence::prelude::ReplayErrorKind::ConcurrentActiveGeneration::existing: alloc::string::String
+pub perl_sync_convergence::prelude::ReplayErrorKind::DuplicateGeneration
+pub perl_sync_convergence::prelude::ReplayErrorKind::DuplicateOpen
+pub perl_sync_convergence::prelude::ReplayErrorKind::ForeignTransaction
+pub perl_sync_convergence::prelude::ReplayErrorKind::HeartbeatMismatch
+pub perl_sync_convergence::prelude::ReplayErrorKind::IllegalTransition
+pub perl_sync_convergence::prelude::ReplayErrorKind::IllegalTransition::from: &'static str
+pub perl_sync_convergence::prelude::ReplayErrorKind::IllegalTransition::to: &'static str
+pub perl_sync_convergence::prelude::ReplayErrorKind::InvalidLease(alloc::string::String)
+pub perl_sync_convergence::prelude::ReplayErrorKind::InvalidSupersession
+pub perl_sync_convergence::prelude::ReplayErrorKind::InvalidTakeover(alloc::string::String)
+pub perl_sync_convergence::prelude::ReplayErrorKind::LiveLeaseExists
+pub perl_sync_convergence::prelude::ReplayErrorKind::MissingOpen
+pub perl_sync_convergence::prelude::ReplayErrorKind::RejectionConflict
+pub perl_sync_convergence::prelude::ReplayErrorKind::TerminalGeneration
+pub perl_sync_convergence::prelude::ReplayErrorKind::UnknownGeneration
+pub fn perl_sync_convergence::event::ReplayErrorKind::clone(&self) -> perl_sync_convergence::event::ReplayErrorKind
+pub fn perl_sync_convergence::event::ReplayErrorKind::eq(&self, other: &perl_sync_convergence::event::ReplayErrorKind) -> bool
+pub fn perl_sync_convergence::event::ReplayErrorKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::event::ReplayErrorKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::prelude::StaleDisposition
+pub perl_sync_convergence::prelude::StaleDisposition::NotProven
+pub perl_sync_convergence::prelude::StaleDisposition::Rejected
+pub perl_sync_convergence::prelude::StaleDisposition::Stale
+pub perl_sync_convergence::prelude::StaleDisposition::Superseded
+pub fn perl_sync_convergence::StaleDisposition::as_str(self) -> &'static str
+pub fn perl_sync_convergence::StaleDisposition::clone(&self) -> perl_sync_convergence::StaleDisposition
+pub fn perl_sync_convergence::StaleDisposition::eq(&self, other: &perl_sync_convergence::StaleDisposition) -> bool
+pub fn perl_sync_convergence::StaleDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::StaleDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::StaleDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::StaleDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::StaleDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::prelude::StoreError
+pub perl_sync_convergence::prelude::StoreError::ForeignEvent
+pub perl_sync_convergence::prelude::StoreError::ImmutableReceiptViolation
+pub perl_sync_convergence::prelude::StoreError::ImmutableReceiptViolation::generation_id: alloc::string::String
+pub perl_sync_convergence::prelude::StoreError::Io(alloc::string::String)
+pub perl_sync_convergence::prelude::StoreError::Malformed(alloc::string::String)
+pub perl_sync_convergence::prelude::StoreError::ReleaseModeConflict
+pub perl_sync_convergence::prelude::StoreError::ReleaseModeConflict::generation_id: alloc::string::String
+pub perl_sync_convergence::prelude::StoreError::Replay(perl_sync_convergence::event::ReplayError)
+pub perl_sync_convergence::prelude::StoreError::UnregisteredTransaction
+pub perl_sync_convergence::prelude::StoreError::UnregisteredTransaction::transaction_id: alloc::string::String
+pub perl_sync_convergence::prelude::StoreError::UnsafeTransactionId(alloc::string::String)
+pub perl_sync_convergence::prelude::StoreError::UnsupportedIndexVersion
+pub perl_sync_convergence::prelude::StoreError::UnsupportedIndexVersion::found: u32
+pub perl_sync_convergence::prelude::StoreError::UnsupportedJournalVersion
+pub perl_sync_convergence::prelude::StoreError::UnsupportedJournalVersion::found: u32
+pub perl_sync_convergence::prelude::StoreError::UnsupportedReceiptVersion
+pub perl_sync_convergence::prelude::StoreError::UnsupportedReceiptVersion::found: u32
+pub fn perl_sync_convergence::store::StoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::StoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::prelude::TransitionState
+pub perl_sync_convergence::prelude::TransitionState::AdmissionPending
+pub perl_sync_convergence::prelude::TransitionState::Admitted
+pub perl_sync_convergence::prelude::TransitionState::InstrumentFailure
+pub perl_sync_convergence::prelude::TransitionState::Materialized
+pub perl_sync_convergence::prelude::TransitionState::MergePending
+pub perl_sync_convergence::prelude::TransitionState::Merged
+pub perl_sync_convergence::prelude::TransitionState::Noop
+pub perl_sync_convergence::prelude::TransitionState::NotProven
+pub perl_sync_convergence::prelude::TransitionState::Observed
+pub perl_sync_convergence::prelude::TransitionState::Planned
+pub perl_sync_convergence::prelude::TransitionState::PostMergeVerified
+pub perl_sync_convergence::prelude::TransitionState::Published
+pub perl_sync_convergence::prelude::TransitionState::Rejected
+pub perl_sync_convergence::prelude::TransitionState::Superseded
+pub fn perl_sync_convergence::TransitionState::as_str(self) -> &'static str
+pub fn perl_sync_convergence::TransitionState::is_terminal(self) -> bool
+pub fn perl_sync_convergence::TransitionState::is_unresolved_or_failed(self) -> bool
+pub fn perl_sync_convergence::TransitionState::clone(&self) -> perl_sync_convergence::TransitionState
+pub fn perl_sync_convergence::TransitionState::eq(&self, other: &perl_sync_convergence::TransitionState) -> bool
+pub fn perl_sync_convergence::TransitionState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransitionState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransitionState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::TransitionState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::TransitionState::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::ArtifactDigest
+pub perl_sync_convergence::prelude::ArtifactDigest::digest: alloc::string::String
+pub perl_sync_convergence::prelude::ArtifactDigest::durable_copy: perl_sync_convergence::DurableCopyState
+pub perl_sync_convergence::prelude::ArtifactDigest::kind: alloc::string::String
+pub perl_sync_convergence::prelude::ArtifactDigest::retention_class: alloc::string::String
+pub fn perl_sync_convergence::ArtifactDigest::clone(&self) -> perl_sync_convergence::ArtifactDigest
+pub fn perl_sync_convergence::ArtifactDigest::eq(&self, other: &perl_sync_convergence::ArtifactDigest) -> bool
+pub fn perl_sync_convergence::ArtifactDigest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ArtifactDigest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ArtifactDigest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::ConvergenceGeneration
+pub perl_sync_convergence::prelude::ConvergenceGeneration::candidate_commit: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::prelude::ConvergenceGeneration::candidate_tree: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::prelude::ConvergenceGeneration::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::prelude::ConvergenceGeneration::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::ConvergenceGeneration::imported_commits: alloc::vec::Vec<perl_sync_convergence::ImportedCommit>
+pub perl_sync_convergence::prelude::ConvergenceGeneration::landing_merge: core::option::Option<perl_sync_convergence::LandingMerge>
+pub perl_sync_convergence::prelude::ConvergenceGeneration::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::prelude::ConvergenceGeneration::projection_digests: alloc::vec::Vec<perl_sync_convergence::ArtifactDigest>
+pub perl_sync_convergence::prelude::ConvergenceGeneration::published_candidate: core::option::Option<perl_sync_convergence::PublishedCandidate>
+pub perl_sync_convergence::prelude::ConvergenceGeneration::release_context_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::prelude::ConvergenceGeneration::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceGeneration::source_parent_tree: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceGeneration::source_repository: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceGeneration::swarm_parent_sha: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceGeneration::swarm_parent_tree: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceGeneration::swarm_repository: alloc::string::String
+pub perl_sync_convergence::prelude::ConvergenceGeneration::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::ConvergenceGeneration::expected_id(&self) -> perl_sync_convergence::GenerationId
+pub fn perl_sync_convergence::ConvergenceGeneration::validate(&self) -> core::result::Result<(), perl_sync_convergence::ModelError>
+pub fn perl_sync_convergence::ConvergenceGeneration::clone(&self) -> perl_sync_convergence::ConvergenceGeneration
+pub fn perl_sync_convergence::ConvergenceGeneration::eq(&self, other: &perl_sync_convergence::ConvergenceGeneration) -> bool
+pub fn perl_sync_convergence::ConvergenceGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ConvergenceGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ConvergenceGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ConvergenceGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::ConvergenceStore
+pub fn perl_sync_convergence::store::ConvergenceStore::append_event(&self, tx: &perl_sync_convergence::TransactionId, event: &perl_sync_convergence::event::ConvergenceEvent) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_index(&self) -> core::result::Result<perl_sync_convergence::store::StoreIndexFile, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_journal(&self, tx: &perl_sync_convergence::TransactionId) -> core::result::Result<alloc::vec::Vec<perl_sync_convergence::event::ConvergenceEvent>, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_view(&self, tx: &perl_sync_convergence::TransactionId) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::open(root: impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::read_receipt(&self, tx: &perl_sync_convergence::TransactionId, generation_id: &perl_sync_convergence::GenerationId) -> core::result::Result<perl_sync_convergence::ConvergenceGeneration, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::register_transaction(&self, entry: perl_sync_convergence::store::TransactionIndexEntry) -> core::result::Result<(), perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::write_receipt(&self, receipt: &perl_sync_convergence::ConvergenceGeneration) -> core::result::Result<std::path::PathBuf, perl_sync_convergence::store::StoreError>
+pub struct perl_sync_convergence::prelude::ConvergenceView
+pub perl_sync_convergence::prelude::ConvergenceView::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::prelude::ConvergenceView::generations: alloc::collections::btree::map::BTreeMap<perl_sync_convergence::GenerationId, perl_sync_convergence::event::GenerationRuntime>
+pub perl_sync_convergence::prelude::ConvergenceView::invalidations: alloc::vec::Vec<perl_sync_convergence::InvalidationRecord>
+pub perl_sync_convergence::prelude::ConvergenceView::lease: core::option::Option<perl_sync_convergence::Lease>
+pub perl_sync_convergence::prelude::ConvergenceView::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::prelude::ConvergenceView::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::prelude::ConvergenceView::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceView::active_generation(&self) -> core::option::Option<&perl_sync_convergence::event::GenerationRuntime>
+pub fn perl_sync_convergence::event::ConvergenceView::lease_expired_at(&self, now: perl_sync_convergence::TimestampMs) -> bool
+pub fn perl_sync_convergence::event::ConvergenceView::clone(&self) -> perl_sync_convergence::event::ConvergenceView
+pub fn perl_sync_convergence::event::ConvergenceView::eq(&self, other: &perl_sync_convergence::event::ConvergenceView) -> bool
+pub fn perl_sync_convergence::event::ConvergenceView::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::prelude::GenerationId(_)
+pub fn perl_sync_convergence::GenerationId::as_str(&self) -> &str
+pub fn perl_sync_convergence::GenerationId::from_inputs(inputs: &perl_sync_convergence::GenerationInputs<'_>) -> Self
+pub fn perl_sync_convergence::GenerationId::parse(value: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, perl_sync_convergence::ids::IdentityError>
+pub fn perl_sync_convergence::GenerationId::clone(&self) -> perl_sync_convergence::GenerationId
+pub fn perl_sync_convergence::GenerationId::cmp(&self, other: &perl_sync_convergence::GenerationId) -> core::cmp::Ordering
+pub fn perl_sync_convergence::GenerationId::eq(&self, other: &perl_sync_convergence::GenerationId) -> bool
+pub fn perl_sync_convergence::GenerationId::partial_cmp(&self, other: &perl_sync_convergence::GenerationId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_sync_convergence::GenerationId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::GenerationId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::GenerationId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::GenerationId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::GenerationId::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::GenerationInputs<'a>
+pub perl_sync_convergence::prelude::GenerationInputs::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::prelude::GenerationInputs::prior_accepted_generation: &'a str
+pub perl_sync_convergence::prelude::GenerationInputs::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::prelude::GenerationInputs::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::prelude::GenerationInputs::source_parent_tree: alloc::string::String
+pub perl_sync_convergence::prelude::GenerationInputs::source_repository: alloc::string::String
+pub perl_sync_convergence::prelude::GenerationInputs::swarm_parent_sha: alloc::string::String
+pub perl_sync_convergence::prelude::GenerationInputs::swarm_parent_tree: alloc::string::String
+pub perl_sync_convergence::prelude::GenerationInputs::swarm_repository: alloc::string::String
+pub fn perl_sync_convergence::GenerationInputs<'a>::clone(&self) -> perl_sync_convergence::GenerationInputs<'a>
+pub fn perl_sync_convergence::GenerationInputs<'a>::eq(&self, other: &perl_sync_convergence::GenerationInputs<'a>) -> bool
+pub fn perl_sync_convergence::GenerationInputs<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::prelude::GenerationReceiptFile
+pub perl_sync_convergence::prelude::GenerationReceiptFile::receipt: perl_sync_convergence::ConvergenceGeneration
+pub perl_sync_convergence::prelude::GenerationReceiptFile::schema_version: u32
+pub fn perl_sync_convergence::GenerationReceiptFile::clone(&self) -> perl_sync_convergence::GenerationReceiptFile
+pub fn perl_sync_convergence::GenerationReceiptFile::eq(&self, other: &perl_sync_convergence::GenerationReceiptFile) -> bool
+pub fn perl_sync_convergence::GenerationReceiptFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::GenerationReceiptFile::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::GenerationReceiptFile::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::GenerationRuntime
+pub perl_sync_convergence::prelude::GenerationRuntime::last_evidence_digest: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::prelude::GenerationRuntime::rejection_evidence_digest: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::prelude::GenerationRuntime::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::prelude::GenerationRuntime::state: perl_sync_convergence::TransitionState
+pub perl_sync_convergence::prelude::GenerationRuntime::successor: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::prelude::GenerationRuntime::swarm_parent_sha: alloc::string::String
+pub fn perl_sync_convergence::event::GenerationRuntime::next_actions(&self) -> alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::event::GenerationRuntime::clone(&self) -> perl_sync_convergence::event::GenerationRuntime
+pub fn perl_sync_convergence::event::GenerationRuntime::eq(&self, other: &perl_sync_convergence::event::GenerationRuntime) -> bool
+pub fn perl_sync_convergence::event::GenerationRuntime::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::prelude::ImportedCommit
+pub perl_sync_convergence::prelude::ImportedCommit::commit_sha: alloc::string::String
+pub perl_sync_convergence::prelude::ImportedCommit::product_proof_digest: alloc::string::String
+pub perl_sync_convergence::prelude::ImportedCommit::pull_request: core::option::Option<u64>
+pub fn perl_sync_convergence::ImportedCommit::new(commit_sha: impl core::convert::Into<alloc::string::String>, pull_request: core::option::Option<u64>, product_proof_digest: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, perl_sync_convergence::ModelError>
+pub fn perl_sync_convergence::ImportedCommit::clone(&self) -> perl_sync_convergence::ImportedCommit
+pub fn perl_sync_convergence::ImportedCommit::eq(&self, other: &perl_sync_convergence::ImportedCommit) -> bool
+pub fn perl_sync_convergence::ImportedCommit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ImportedCommit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ImportedCommit::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::InvalidationRecord
+pub perl_sync_convergence::prelude::InvalidationRecord::cause: perl_sync_convergence::InvalidationCause
+pub perl_sync_convergence::prelude::InvalidationRecord::invalidated_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::InvalidationRecord::movement_evidence_digest: alloc::string::String
+pub perl_sync_convergence::prelude::InvalidationRecord::observed_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::InvalidationRecord::stale_descendants: alloc::vec::Vec<perl_sync_convergence::StaleDescendant>
+pub fn perl_sync_convergence::InvalidationRecord::new(invalidated_generation: perl_sync_convergence::GenerationId, cause: perl_sync_convergence::InvalidationCause, observed_at: perl_sync_convergence::TimestampMs, movement_evidence_digest: impl core::convert::Into<alloc::string::String>, stale_descendants: alloc::vec::Vec<perl_sync_convergence::StaleDescendant>) -> core::result::Result<Self, perl_sync_convergence::InvalidationError>
+pub fn perl_sync_convergence::InvalidationRecord::stale_generation_ids(&self) -> alloc::vec::Vec<&perl_sync_convergence::GenerationId>
+pub fn perl_sync_convergence::InvalidationRecord::clone(&self) -> perl_sync_convergence::InvalidationRecord
+pub fn perl_sync_convergence::InvalidationRecord::eq(&self, other: &perl_sync_convergence::InvalidationRecord) -> bool
+pub fn perl_sync_convergence::InvalidationRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationRecord::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::InvalidationRecord::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::LandingMerge
+pub perl_sync_convergence::prelude::LandingMerge::merge_sha: alloc::string::String
+pub perl_sync_convergence::prelude::LandingMerge::merge_tree: alloc::string::String
+pub fn perl_sync_convergence::LandingMerge::clone(&self) -> perl_sync_convergence::LandingMerge
+pub fn perl_sync_convergence::LandingMerge::eq(&self, other: &perl_sync_convergence::LandingMerge) -> bool
+pub fn perl_sync_convergence::LandingMerge::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::LandingMerge::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::LandingMerge::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::Lease
+pub perl_sync_convergence::prelude::Lease::claimed_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::Lease::claimed_by: alloc::string::String
+pub perl_sync_convergence::prelude::Lease::heartbeat_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::Lease::input_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::Lease::last_completed_transition: core::option::Option<perl_sync_convergence::TransitionState>
+pub perl_sync_convergence::prelude::Lease::lease_expires_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::Lease::next_permitted_actions: alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::Lease::complete_transition(&mut self, completed: perl_sync_convergence::TransitionState, next_permitted_actions: alloc::vec::Vec<perl_sync_convergence::PermittedAction>)
+pub fn perl_sync_convergence::Lease::heartbeat(&mut self, now: perl_sync_convergence::TimestampMs, lease_duration_ms: u64) -> core::result::Result<(), perl_sync_convergence::LeaseError>
+pub fn perl_sync_convergence::Lease::is_expired(&self, now: perl_sync_convergence::TimestampMs) -> bool
+pub fn perl_sync_convergence::Lease::new(claimed_by: impl core::convert::Into<alloc::string::String>, claimed_at: perl_sync_convergence::TimestampMs, lease_duration_ms: u64, input_generation: perl_sync_convergence::GenerationId, next_permitted_actions: alloc::vec::Vec<perl_sync_convergence::PermittedAction>) -> core::result::Result<Self, perl_sync_convergence::LeaseError>
+pub fn perl_sync_convergence::Lease::clone(&self) -> perl_sync_convergence::Lease
+pub fn perl_sync_convergence::Lease::eq(&self, other: &perl_sync_convergence::Lease) -> bool
+pub fn perl_sync_convergence::Lease::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Lease::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::Lease::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::PublishedCandidate
+pub perl_sync_convergence::prelude::PublishedCandidate::branch: alloc::string::String
+pub perl_sync_convergence::prelude::PublishedCandidate::head_sha: alloc::string::String
+pub perl_sync_convergence::prelude::PublishedCandidate::pull_request: u64
+pub fn perl_sync_convergence::PublishedCandidate::clone(&self) -> perl_sync_convergence::PublishedCandidate
+pub fn perl_sync_convergence::PublishedCandidate::eq(&self, other: &perl_sync_convergence::PublishedCandidate) -> bool
+pub fn perl_sync_convergence::PublishedCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::PublishedCandidate::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::PublishedCandidate::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::ReplayError
+pub perl_sync_convergence::prelude::ReplayError::kind: perl_sync_convergence::event::ReplayErrorKind
+pub perl_sync_convergence::prelude::ReplayError::line: usize
+pub fn perl_sync_convergence::event::ReplayError::clone(&self) -> perl_sync_convergence::event::ReplayError
+pub fn perl_sync_convergence::event::ReplayError::eq(&self, other: &perl_sync_convergence::event::ReplayError) -> bool
+pub fn perl_sync_convergence::event::ReplayError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::event::ReplayError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::prelude::StaleDescendant
+pub perl_sync_convergence::prelude::StaleDescendant::disposition: perl_sync_convergence::StaleDisposition
+pub perl_sync_convergence::prelude::StaleDescendant::generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::StaleDescendant::reason: alloc::string::String
+pub fn perl_sync_convergence::StaleDescendant::clone(&self) -> perl_sync_convergence::StaleDescendant
+pub fn perl_sync_convergence::StaleDescendant::eq(&self, other: &perl_sync_convergence::StaleDescendant) -> bool
+pub fn perl_sync_convergence::StaleDescendant::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::StaleDescendant::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::StaleDescendant::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::StoreIndexFile
+pub perl_sync_convergence::prelude::StoreIndexFile::schema_version: u32
+pub perl_sync_convergence::prelude::StoreIndexFile::transactions: alloc::vec::Vec<perl_sync_convergence::store::TransactionIndexEntry>
+pub fn perl_sync_convergence::store::StoreIndexFile::clone(&self) -> perl_sync_convergence::store::StoreIndexFile
+pub fn perl_sync_convergence::store::StoreIndexFile::eq(&self, other: &perl_sync_convergence::store::StoreIndexFile) -> bool
+pub fn perl_sync_convergence::store::StoreIndexFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::StoreIndexFile::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::store::StoreIndexFile::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::Takeover
+pub perl_sync_convergence::prelude::Takeover::displaced_claimant: alloc::string::String
+pub perl_sync_convergence::prelude::Takeover::input_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::prelude::Takeover::reclaimed_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::prelude::Takeover::reclaimed_by: alloc::string::String
+pub perl_sync_convergence::prelude::Takeover::reconciled_observations: alloc::vec::Vec<alloc::string::String>
+pub fn perl_sync_convergence::Takeover::validate(&self) -> core::result::Result<(), perl_sync_convergence::LeaseError>
+pub fn perl_sync_convergence::Takeover::clone(&self) -> perl_sync_convergence::Takeover
+pub fn perl_sync_convergence::Takeover::eq(&self, other: &perl_sync_convergence::Takeover) -> bool
+pub fn perl_sync_convergence::Takeover::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Takeover::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::Takeover::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::TimestampMs(_)
+pub const fn perl_sync_convergence::TimestampMs::as_u64(self) -> u64
+pub const fn perl_sync_convergence::TimestampMs::from_millis(millis: u64) -> Self
+pub fn perl_sync_convergence::TimestampMs::clone(&self) -> perl_sync_convergence::TimestampMs
+pub fn perl_sync_convergence::TimestampMs::cmp(&self, other: &perl_sync_convergence::TimestampMs) -> core::cmp::Ordering
+pub fn perl_sync_convergence::TimestampMs::eq(&self, other: &perl_sync_convergence::TimestampMs) -> bool
+pub fn perl_sync_convergence::TimestampMs::partial_cmp(&self, other: &perl_sync_convergence::TimestampMs) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_sync_convergence::TimestampMs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TimestampMs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TimestampMs::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::TimestampMs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::TimestampMs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::TransactionId(_)
+pub fn perl_sync_convergence::TransactionId::as_str(&self) -> &str
+pub fn perl_sync_convergence::TransactionId::new(value: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, perl_sync_convergence::ids::IdentityError>
+pub fn perl_sync_convergence::TransactionId::clone(&self) -> perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::TransactionId::cmp(&self, other: &perl_sync_convergence::TransactionId) -> core::cmp::Ordering
+pub fn perl_sync_convergence::TransactionId::eq(&self, other: &perl_sync_convergence::TransactionId) -> bool
+pub fn perl_sync_convergence::TransactionId::partial_cmp(&self, other: &perl_sync_convergence::TransactionId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_sync_convergence::TransactionId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransactionId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransactionId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::TransactionId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::TransactionId::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::prelude::TransactionIndexEntry
+pub perl_sync_convergence::prelude::TransactionIndexEntry::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::prelude::TransactionIndexEntry::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::prelude::TransactionIndexEntry::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::store::TransactionIndexEntry::clone(&self) -> perl_sync_convergence::store::TransactionIndexEntry
+pub fn perl_sync_convergence::store::TransactionIndexEntry::eq(&self, other: &perl_sync_convergence::store::TransactionIndexEntry) -> bool
+pub fn perl_sync_convergence::store::TransactionIndexEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::TransactionIndexEntry::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::store::TransactionIndexEntry::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_sync_convergence::prelude::GENERATION_RECEIPT_SCHEMA_VERSION: u32
+pub const perl_sync_convergence::prelude::INDEX_SCHEMA_VERSION: u32
+pub const perl_sync_convergence::prelude::JOURNAL_SCHEMA_VERSION: u32
+pub fn perl_sync_convergence::prelude::is_legal_transition(from: perl_sync_convergence::TransitionState, to: perl_sync_convergence::TransitionState) -> bool
+pub fn perl_sync_convergence::prelude::permitted_writer_actions(state: perl_sync_convergence::TransitionState) -> alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::prelude::replay(events: &[perl_sync_convergence::event::ConvergenceEvent]) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::event::ReplayError>
+pub mod perl_sync_convergence::store
+pub enum perl_sync_convergence::store::StoreError
+pub perl_sync_convergence::store::StoreError::ForeignEvent
+pub perl_sync_convergence::store::StoreError::ImmutableReceiptViolation
+pub perl_sync_convergence::store::StoreError::ImmutableReceiptViolation::generation_id: alloc::string::String
+pub perl_sync_convergence::store::StoreError::Io(alloc::string::String)
+pub perl_sync_convergence::store::StoreError::Malformed(alloc::string::String)
+pub perl_sync_convergence::store::StoreError::ReleaseModeConflict
+pub perl_sync_convergence::store::StoreError::ReleaseModeConflict::generation_id: alloc::string::String
+pub perl_sync_convergence::store::StoreError::Replay(perl_sync_convergence::event::ReplayError)
+pub perl_sync_convergence::store::StoreError::UnregisteredTransaction
+pub perl_sync_convergence::store::StoreError::UnregisteredTransaction::transaction_id: alloc::string::String
+pub perl_sync_convergence::store::StoreError::UnsafeTransactionId(alloc::string::String)
+pub perl_sync_convergence::store::StoreError::UnsupportedIndexVersion
+pub perl_sync_convergence::store::StoreError::UnsupportedIndexVersion::found: u32
+pub perl_sync_convergence::store::StoreError::UnsupportedJournalVersion
+pub perl_sync_convergence::store::StoreError::UnsupportedJournalVersion::found: u32
+pub perl_sync_convergence::store::StoreError::UnsupportedReceiptVersion
+pub perl_sync_convergence::store::StoreError::UnsupportedReceiptVersion::found: u32
+pub fn perl_sync_convergence::store::StoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::StoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::store::ConvergenceStore
+pub fn perl_sync_convergence::store::ConvergenceStore::append_event(&self, tx: &perl_sync_convergence::TransactionId, event: &perl_sync_convergence::event::ConvergenceEvent) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_index(&self) -> core::result::Result<perl_sync_convergence::store::StoreIndexFile, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_journal(&self, tx: &perl_sync_convergence::TransactionId) -> core::result::Result<alloc::vec::Vec<perl_sync_convergence::event::ConvergenceEvent>, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_view(&self, tx: &perl_sync_convergence::TransactionId) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::open(root: impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::read_receipt(&self, tx: &perl_sync_convergence::TransactionId, generation_id: &perl_sync_convergence::GenerationId) -> core::result::Result<perl_sync_convergence::ConvergenceGeneration, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::register_transaction(&self, entry: perl_sync_convergence::store::TransactionIndexEntry) -> core::result::Result<(), perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::write_receipt(&self, receipt: &perl_sync_convergence::ConvergenceGeneration) -> core::result::Result<std::path::PathBuf, perl_sync_convergence::store::StoreError>
+pub struct perl_sync_convergence::store::StoreIndexFile
+pub perl_sync_convergence::store::StoreIndexFile::schema_version: u32
+pub perl_sync_convergence::store::StoreIndexFile::transactions: alloc::vec::Vec<perl_sync_convergence::store::TransactionIndexEntry>
+pub fn perl_sync_convergence::store::StoreIndexFile::clone(&self) -> perl_sync_convergence::store::StoreIndexFile
+pub fn perl_sync_convergence::store::StoreIndexFile::eq(&self, other: &perl_sync_convergence::store::StoreIndexFile) -> bool
+pub fn perl_sync_convergence::store::StoreIndexFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::StoreIndexFile::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::store::StoreIndexFile::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::store::TransactionIndexEntry
+pub perl_sync_convergence::store::TransactionIndexEntry::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::store::TransactionIndexEntry::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::store::TransactionIndexEntry::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::store::TransactionIndexEntry::clone(&self) -> perl_sync_convergence::store::TransactionIndexEntry
+pub fn perl_sync_convergence::store::TransactionIndexEntry::eq(&self, other: &perl_sync_convergence::store::TransactionIndexEntry) -> bool
+pub fn perl_sync_convergence::store::TransactionIndexEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::TransactionIndexEntry::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::store::TransactionIndexEntry::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_sync_convergence::store::INDEX_SCHEMA_VERSION: u32
+pub enum perl_sync_convergence::ConvergenceEvent
+pub perl_sync_convergence::ConvergenceEvent::GenerationStarted
+pub perl_sync_convergence::ConvergenceEvent::GenerationStarted::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::ConvergenceEvent::GenerationStarted::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::ConvergenceEvent::GenerationStarted::started_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::GenerationStarted::swarm_parent_sha: alloc::string::String
+pub perl_sync_convergence::ConvergenceEvent::GenerationStarted::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::GenerationSuperseded
+pub perl_sync_convergence::ConvergenceEvent::GenerationSuperseded::old_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::ConvergenceEvent::GenerationSuperseded::reason_digest: alloc::string::String
+pub perl_sync_convergence::ConvergenceEvent::GenerationSuperseded::successor_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::ConvergenceEvent::GenerationSuperseded::superseded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::GenerationSuperseded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::InvalidationRecorded
+pub perl_sync_convergence::ConvergenceEvent::InvalidationRecorded::record: perl_sync_convergence::InvalidationRecord
+pub perl_sync_convergence::ConvergenceEvent::InvalidationRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::LeaseClaimed
+pub perl_sync_convergence::ConvergenceEvent::LeaseClaimed::lease: perl_sync_convergence::Lease
+pub perl_sync_convergence::ConvergenceEvent::LeaseClaimed::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::LeaseHeartbeat
+pub perl_sync_convergence::ConvergenceEvent::LeaseHeartbeat::claimed_by: alloc::string::String
+pub perl_sync_convergence::ConvergenceEvent::LeaseHeartbeat::heartbeat_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::LeaseHeartbeat::new_expires_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::LeaseHeartbeat::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::NoOpRecorded
+pub perl_sync_convergence::ConvergenceEvent::NoOpRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::ConvergenceEvent::NoOpRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::ConvergenceEvent::NoOpRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::NoOpRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::RejectionRecorded
+pub perl_sync_convergence::ConvergenceEvent::RejectionRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::ConvergenceEvent::RejectionRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::ConvergenceEvent::RejectionRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::RejectionRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::TakeoverRecorded
+pub perl_sync_convergence::ConvergenceEvent::TakeoverRecorded::new_lease: perl_sync_convergence::Lease
+pub perl_sync_convergence::ConvergenceEvent::TakeoverRecorded::takeover: perl_sync_convergence::Takeover
+pub perl_sync_convergence::ConvergenceEvent::TakeoverRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::TransactionOpened
+pub perl_sync_convergence::ConvergenceEvent::TransactionOpened::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::ConvergenceEvent::TransactionOpened::opened_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::TransactionOpened::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::ConvergenceEvent::TransactionOpened::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::ConvergenceEvent::TransactionOpened::transaction_id: perl_sync_convergence::TransactionId
+pub perl_sync_convergence::ConvergenceEvent::TransitionRecorded
+pub perl_sync_convergence::ConvergenceEvent::TransitionRecorded::evidence_digest: alloc::string::String
+pub perl_sync_convergence::ConvergenceEvent::TransitionRecorded::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::ConvergenceEvent::TransitionRecorded::recorded_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::ConvergenceEvent::TransitionRecorded::to: perl_sync_convergence::TransitionState
+pub perl_sync_convergence::ConvergenceEvent::TransitionRecorded::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceEvent::transaction_id(&self) -> &perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceEvent::clone(&self) -> perl_sync_convergence::event::ConvergenceEvent
+pub fn perl_sync_convergence::event::ConvergenceEvent::eq(&self, other: &perl_sync_convergence::event::ConvergenceEvent) -> bool
+pub fn perl_sync_convergence::event::ConvergenceEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::event::ConvergenceEvent::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::event::ConvergenceEvent::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::Direction
+pub perl_sync_convergence::Direction::SourceToSwarm
+pub perl_sync_convergence::Direction::SwarmToSource
+pub fn perl_sync_convergence::Direction::as_str(self) -> &'static str
+pub fn perl_sync_convergence::Direction::clone(&self) -> perl_sync_convergence::Direction
+pub fn perl_sync_convergence::Direction::eq(&self, other: &perl_sync_convergence::Direction) -> bool
+pub fn perl_sync_convergence::Direction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Direction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Direction::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::Direction::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::Direction::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::DurableCopyState
+pub perl_sync_convergence::DurableCopyState::ExpiringOnly
+pub perl_sync_convergence::DurableCopyState::Missing
+pub perl_sync_convergence::DurableCopyState::RetainedDurable
+pub fn perl_sync_convergence::DurableCopyState::clone(&self) -> perl_sync_convergence::DurableCopyState
+pub fn perl_sync_convergence::DurableCopyState::eq(&self, other: &perl_sync_convergence::DurableCopyState) -> bool
+pub fn perl_sync_convergence::DurableCopyState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::DurableCopyState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::DurableCopyState::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::InvalidationCause
+pub perl_sync_convergence::InvalidationCause::CandidateHeadMovement
+pub perl_sync_convergence::InvalidationCause::ProductProofMovement
+pub perl_sync_convergence::InvalidationCause::ProjectionLedgerMovement
+pub perl_sync_convergence::InvalidationCause::ProtectionDrift
+pub perl_sync_convergence::InvalidationCause::PublicationSourceAdmissionMovement
+pub perl_sync_convergence::InvalidationCause::ReleaseSpecificOverlap
+pub perl_sync_convergence::InvalidationCause::RetentionFailure
+pub perl_sync_convergence::InvalidationCause::SourceMasterMovement
+pub perl_sync_convergence::InvalidationCause::SwarmMainMovement
+pub fn perl_sync_convergence::InvalidationCause::as_str(self) -> &'static str
+pub fn perl_sync_convergence::InvalidationCause::clone(&self) -> perl_sync_convergence::InvalidationCause
+pub fn perl_sync_convergence::InvalidationCause::eq(&self, other: &perl_sync_convergence::InvalidationCause) -> bool
+pub fn perl_sync_convergence::InvalidationCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::InvalidationCause::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::InvalidationCause::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::InvalidationError
+pub perl_sync_convergence::InvalidationError::MissingEvidenceDigest
+pub fn perl_sync_convergence::InvalidationError::clone(&self) -> perl_sync_convergence::InvalidationError
+pub fn perl_sync_convergence::InvalidationError::eq(&self, other: &perl_sync_convergence::InvalidationError) -> bool
+pub fn perl_sync_convergence::InvalidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::LeaseError
+pub perl_sync_convergence::LeaseError::AlreadyExpired
+pub perl_sync_convergence::LeaseError::AlreadyExpired::expires_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::LeaseError::AlreadyExpired::now: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::LeaseError::EmptyClaimant
+pub perl_sync_convergence::LeaseError::MissingReconciliationEvidence
+pub perl_sync_convergence::LeaseError::NonPositiveDuration
+pub fn perl_sync_convergence::LeaseError::clone(&self) -> perl_sync_convergence::LeaseError
+pub fn perl_sync_convergence::LeaseError::eq(&self, other: &perl_sync_convergence::LeaseError) -> bool
+pub fn perl_sync_convergence::LeaseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::LeaseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::ModelError
+pub perl_sync_convergence::ModelError::EmptyRequiredField
+pub perl_sync_convergence::ModelError::IdentityMismatch
+pub perl_sync_convergence::ModelError::IdentityMismatch::declared: alloc::string::String
+pub perl_sync_convergence::ModelError::IdentityMismatch::derived: alloc::string::String
+pub fn perl_sync_convergence::ModelError::clone(&self) -> perl_sync_convergence::ModelError
+pub fn perl_sync_convergence::ModelError::eq(&self, other: &perl_sync_convergence::ModelError) -> bool
+pub fn perl_sync_convergence::ModelError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ModelError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::PermittedAction
+pub perl_sync_convergence::PermittedAction::AwaitAdmission
+pub perl_sync_convergence::PermittedAction::MaterializeCandidate
+pub perl_sync_convergence::PermittedAction::ObserveInputs
+pub perl_sync_convergence::PermittedAction::PlanCandidate
+pub perl_sync_convergence::PermittedAction::PublishCandidate
+pub perl_sync_convergence::PermittedAction::RecordNoOp
+pub perl_sync_convergence::PermittedAction::RecordRejection
+pub perl_sync_convergence::PermittedAction::StartSuccessorGeneration
+pub perl_sync_convergence::PermittedAction::TakeoverAfterReconciliation
+pub perl_sync_convergence::PermittedAction::VerifyLanding
+pub fn perl_sync_convergence::PermittedAction::as_str(self) -> &'static str
+pub fn perl_sync_convergence::PermittedAction::clone(&self) -> perl_sync_convergence::PermittedAction
+pub fn perl_sync_convergence::PermittedAction::eq(&self, other: &perl_sync_convergence::PermittedAction) -> bool
+pub fn perl_sync_convergence::PermittedAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::PermittedAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::PermittedAction::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::PermittedAction::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::PermittedAction::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::ReleaseContextMode::OrdinaryContinuous
+pub perl_sync_convergence::ReleaseContextMode::ReleaseSpecific
+pub fn perl_sync_convergence::ReleaseContextMode::as_str(self) -> &'static str
+pub fn perl_sync_convergence::ReleaseContextMode::clone(&self) -> perl_sync_convergence::ReleaseContextMode
+pub fn perl_sync_convergence::ReleaseContextMode::eq(&self, other: &perl_sync_convergence::ReleaseContextMode) -> bool
+pub fn perl_sync_convergence::ReleaseContextMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ReleaseContextMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ReleaseContextMode::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::ReleaseContextMode::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ReleaseContextMode::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::StaleDisposition
+pub perl_sync_convergence::StaleDisposition::NotProven
+pub perl_sync_convergence::StaleDisposition::Rejected
+pub perl_sync_convergence::StaleDisposition::Stale
+pub perl_sync_convergence::StaleDisposition::Superseded
+pub fn perl_sync_convergence::StaleDisposition::as_str(self) -> &'static str
+pub fn perl_sync_convergence::StaleDisposition::clone(&self) -> perl_sync_convergence::StaleDisposition
+pub fn perl_sync_convergence::StaleDisposition::eq(&self, other: &perl_sync_convergence::StaleDisposition) -> bool
+pub fn perl_sync_convergence::StaleDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::StaleDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::StaleDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::StaleDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::StaleDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_sync_convergence::StoreError
+pub perl_sync_convergence::StoreError::ForeignEvent
+pub perl_sync_convergence::StoreError::ImmutableReceiptViolation
+pub perl_sync_convergence::StoreError::ImmutableReceiptViolation::generation_id: alloc::string::String
+pub perl_sync_convergence::StoreError::Io(alloc::string::String)
+pub perl_sync_convergence::StoreError::Malformed(alloc::string::String)
+pub perl_sync_convergence::StoreError::ReleaseModeConflict
+pub perl_sync_convergence::StoreError::ReleaseModeConflict::generation_id: alloc::string::String
+pub perl_sync_convergence::StoreError::Replay(perl_sync_convergence::event::ReplayError)
+pub perl_sync_convergence::StoreError::UnregisteredTransaction
+pub perl_sync_convergence::StoreError::UnregisteredTransaction::transaction_id: alloc::string::String
+pub perl_sync_convergence::StoreError::UnsafeTransactionId(alloc::string::String)
+pub perl_sync_convergence::StoreError::UnsupportedIndexVersion
+pub perl_sync_convergence::StoreError::UnsupportedIndexVersion::found: u32
+pub perl_sync_convergence::StoreError::UnsupportedJournalVersion
+pub perl_sync_convergence::StoreError::UnsupportedJournalVersion::found: u32
+pub perl_sync_convergence::StoreError::UnsupportedReceiptVersion
+pub perl_sync_convergence::StoreError::UnsupportedReceiptVersion::found: u32
+pub fn perl_sync_convergence::store::StoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::StoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_sync_convergence::TransitionState
+pub perl_sync_convergence::TransitionState::AdmissionPending
+pub perl_sync_convergence::TransitionState::Admitted
+pub perl_sync_convergence::TransitionState::InstrumentFailure
+pub perl_sync_convergence::TransitionState::Materialized
+pub perl_sync_convergence::TransitionState::MergePending
+pub perl_sync_convergence::TransitionState::Merged
+pub perl_sync_convergence::TransitionState::Noop
+pub perl_sync_convergence::TransitionState::NotProven
+pub perl_sync_convergence::TransitionState::Observed
+pub perl_sync_convergence::TransitionState::Planned
+pub perl_sync_convergence::TransitionState::PostMergeVerified
+pub perl_sync_convergence::TransitionState::Published
+pub perl_sync_convergence::TransitionState::Rejected
+pub perl_sync_convergence::TransitionState::Superseded
+pub fn perl_sync_convergence::TransitionState::as_str(self) -> &'static str
+pub fn perl_sync_convergence::TransitionState::is_terminal(self) -> bool
+pub fn perl_sync_convergence::TransitionState::is_unresolved_or_failed(self) -> bool
+pub fn perl_sync_convergence::TransitionState::clone(&self) -> perl_sync_convergence::TransitionState
+pub fn perl_sync_convergence::TransitionState::eq(&self, other: &perl_sync_convergence::TransitionState) -> bool
+pub fn perl_sync_convergence::TransitionState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransitionState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransitionState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::TransitionState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::TransitionState::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::ArtifactDigest
+pub perl_sync_convergence::ArtifactDigest::digest: alloc::string::String
+pub perl_sync_convergence::ArtifactDigest::durable_copy: perl_sync_convergence::DurableCopyState
+pub perl_sync_convergence::ArtifactDigest::kind: alloc::string::String
+pub perl_sync_convergence::ArtifactDigest::retention_class: alloc::string::String
+pub fn perl_sync_convergence::ArtifactDigest::clone(&self) -> perl_sync_convergence::ArtifactDigest
+pub fn perl_sync_convergence::ArtifactDigest::eq(&self, other: &perl_sync_convergence::ArtifactDigest) -> bool
+pub fn perl_sync_convergence::ArtifactDigest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ArtifactDigest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ArtifactDigest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::ConvergenceGeneration
+pub perl_sync_convergence::ConvergenceGeneration::candidate_commit: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::ConvergenceGeneration::candidate_tree: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::ConvergenceGeneration::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::ConvergenceGeneration::generation_id: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::ConvergenceGeneration::imported_commits: alloc::vec::Vec<perl_sync_convergence::ImportedCommit>
+pub perl_sync_convergence::ConvergenceGeneration::landing_merge: core::option::Option<perl_sync_convergence::LandingMerge>
+pub perl_sync_convergence::ConvergenceGeneration::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::ConvergenceGeneration::projection_digests: alloc::vec::Vec<perl_sync_convergence::ArtifactDigest>
+pub perl_sync_convergence::ConvergenceGeneration::published_candidate: core::option::Option<perl_sync_convergence::PublishedCandidate>
+pub perl_sync_convergence::ConvergenceGeneration::release_context_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::ConvergenceGeneration::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::ConvergenceGeneration::source_parent_tree: alloc::string::String
+pub perl_sync_convergence::ConvergenceGeneration::source_repository: alloc::string::String
+pub perl_sync_convergence::ConvergenceGeneration::swarm_parent_sha: alloc::string::String
+pub perl_sync_convergence::ConvergenceGeneration::swarm_parent_tree: alloc::string::String
+pub perl_sync_convergence::ConvergenceGeneration::swarm_repository: alloc::string::String
+pub perl_sync_convergence::ConvergenceGeneration::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::ConvergenceGeneration::expected_id(&self) -> perl_sync_convergence::GenerationId
+pub fn perl_sync_convergence::ConvergenceGeneration::validate(&self) -> core::result::Result<(), perl_sync_convergence::ModelError>
+pub fn perl_sync_convergence::ConvergenceGeneration::clone(&self) -> perl_sync_convergence::ConvergenceGeneration
+pub fn perl_sync_convergence::ConvergenceGeneration::eq(&self, other: &perl_sync_convergence::ConvergenceGeneration) -> bool
+pub fn perl_sync_convergence::ConvergenceGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ConvergenceGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ConvergenceGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ConvergenceGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::ConvergenceStore
+pub fn perl_sync_convergence::store::ConvergenceStore::append_event(&self, tx: &perl_sync_convergence::TransactionId, event: &perl_sync_convergence::event::ConvergenceEvent) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_index(&self) -> core::result::Result<perl_sync_convergence::store::StoreIndexFile, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_journal(&self, tx: &perl_sync_convergence::TransactionId) -> core::result::Result<alloc::vec::Vec<perl_sync_convergence::event::ConvergenceEvent>, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::load_view(&self, tx: &perl_sync_convergence::TransactionId) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::open(root: impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::read_receipt(&self, tx: &perl_sync_convergence::TransactionId, generation_id: &perl_sync_convergence::GenerationId) -> core::result::Result<perl_sync_convergence::ConvergenceGeneration, perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::register_transaction(&self, entry: perl_sync_convergence::store::TransactionIndexEntry) -> core::result::Result<(), perl_sync_convergence::store::StoreError>
+pub fn perl_sync_convergence::store::ConvergenceStore::write_receipt(&self, receipt: &perl_sync_convergence::ConvergenceGeneration) -> core::result::Result<std::path::PathBuf, perl_sync_convergence::store::StoreError>
+pub struct perl_sync_convergence::ConvergenceView
+pub perl_sync_convergence::ConvergenceView::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::ConvergenceView::generations: alloc::collections::btree::map::BTreeMap<perl_sync_convergence::GenerationId, perl_sync_convergence::event::GenerationRuntime>
+pub perl_sync_convergence::ConvergenceView::invalidations: alloc::vec::Vec<perl_sync_convergence::InvalidationRecord>
+pub perl_sync_convergence::ConvergenceView::lease: core::option::Option<perl_sync_convergence::Lease>
+pub perl_sync_convergence::ConvergenceView::prior_accepted_generation: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::ConvergenceView::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::ConvergenceView::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::event::ConvergenceView::active_generation(&self) -> core::option::Option<&perl_sync_convergence::event::GenerationRuntime>
+pub fn perl_sync_convergence::event::ConvergenceView::lease_expired_at(&self, now: perl_sync_convergence::TimestampMs) -> bool
+pub fn perl_sync_convergence::event::ConvergenceView::clone(&self) -> perl_sync_convergence::event::ConvergenceView
+pub fn perl_sync_convergence::event::ConvergenceView::eq(&self, other: &perl_sync_convergence::event::ConvergenceView) -> bool
+pub fn perl_sync_convergence::event::ConvergenceView::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::GenerationId(_)
+pub fn perl_sync_convergence::GenerationId::as_str(&self) -> &str
+pub fn perl_sync_convergence::GenerationId::from_inputs(inputs: &perl_sync_convergence::GenerationInputs<'_>) -> Self
+pub fn perl_sync_convergence::GenerationId::parse(value: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, perl_sync_convergence::ids::IdentityError>
+pub fn perl_sync_convergence::GenerationId::clone(&self) -> perl_sync_convergence::GenerationId
+pub fn perl_sync_convergence::GenerationId::cmp(&self, other: &perl_sync_convergence::GenerationId) -> core::cmp::Ordering
+pub fn perl_sync_convergence::GenerationId::eq(&self, other: &perl_sync_convergence::GenerationId) -> bool
+pub fn perl_sync_convergence::GenerationId::partial_cmp(&self, other: &perl_sync_convergence::GenerationId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_sync_convergence::GenerationId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::GenerationId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::GenerationId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::GenerationId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::GenerationId::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::GenerationInputs<'a>
+pub perl_sync_convergence::GenerationInputs::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::GenerationInputs::prior_accepted_generation: &'a str
+pub perl_sync_convergence::GenerationInputs::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::GenerationInputs::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::GenerationInputs::source_parent_tree: alloc::string::String
+pub perl_sync_convergence::GenerationInputs::source_repository: alloc::string::String
+pub perl_sync_convergence::GenerationInputs::swarm_parent_sha: alloc::string::String
+pub perl_sync_convergence::GenerationInputs::swarm_parent_tree: alloc::string::String
+pub perl_sync_convergence::GenerationInputs::swarm_repository: alloc::string::String
+pub fn perl_sync_convergence::GenerationInputs<'a>::clone(&self) -> perl_sync_convergence::GenerationInputs<'a>
+pub fn perl_sync_convergence::GenerationInputs<'a>::eq(&self, other: &perl_sync_convergence::GenerationInputs<'a>) -> bool
+pub fn perl_sync_convergence::GenerationInputs<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::GenerationReceiptFile
+pub perl_sync_convergence::GenerationReceiptFile::receipt: perl_sync_convergence::ConvergenceGeneration
+pub perl_sync_convergence::GenerationReceiptFile::schema_version: u32
+pub fn perl_sync_convergence::GenerationReceiptFile::clone(&self) -> perl_sync_convergence::GenerationReceiptFile
+pub fn perl_sync_convergence::GenerationReceiptFile::eq(&self, other: &perl_sync_convergence::GenerationReceiptFile) -> bool
+pub fn perl_sync_convergence::GenerationReceiptFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::GenerationReceiptFile::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::GenerationReceiptFile::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::GenerationRuntime
+pub perl_sync_convergence::GenerationRuntime::last_evidence_digest: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::GenerationRuntime::rejection_evidence_digest: core::option::Option<alloc::string::String>
+pub perl_sync_convergence::GenerationRuntime::source_parent_sha: alloc::string::String
+pub perl_sync_convergence::GenerationRuntime::state: perl_sync_convergence::TransitionState
+pub perl_sync_convergence::GenerationRuntime::successor: core::option::Option<perl_sync_convergence::GenerationId>
+pub perl_sync_convergence::GenerationRuntime::swarm_parent_sha: alloc::string::String
+pub fn perl_sync_convergence::event::GenerationRuntime::next_actions(&self) -> alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::event::GenerationRuntime::clone(&self) -> perl_sync_convergence::event::GenerationRuntime
+pub fn perl_sync_convergence::event::GenerationRuntime::eq(&self, other: &perl_sync_convergence::event::GenerationRuntime) -> bool
+pub fn perl_sync_convergence::event::GenerationRuntime::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_sync_convergence::ImportedCommit
+pub perl_sync_convergence::ImportedCommit::commit_sha: alloc::string::String
+pub perl_sync_convergence::ImportedCommit::product_proof_digest: alloc::string::String
+pub perl_sync_convergence::ImportedCommit::pull_request: core::option::Option<u64>
+pub fn perl_sync_convergence::ImportedCommit::new(commit_sha: impl core::convert::Into<alloc::string::String>, pull_request: core::option::Option<u64>, product_proof_digest: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, perl_sync_convergence::ModelError>
+pub fn perl_sync_convergence::ImportedCommit::clone(&self) -> perl_sync_convergence::ImportedCommit
+pub fn perl_sync_convergence::ImportedCommit::eq(&self, other: &perl_sync_convergence::ImportedCommit) -> bool
+pub fn perl_sync_convergence::ImportedCommit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::ImportedCommit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::ImportedCommit::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::InvalidationRecord
+pub perl_sync_convergence::InvalidationRecord::cause: perl_sync_convergence::InvalidationCause
+pub perl_sync_convergence::InvalidationRecord::invalidated_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::InvalidationRecord::movement_evidence_digest: alloc::string::String
+pub perl_sync_convergence::InvalidationRecord::observed_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::InvalidationRecord::stale_descendants: alloc::vec::Vec<perl_sync_convergence::StaleDescendant>
+pub fn perl_sync_convergence::InvalidationRecord::new(invalidated_generation: perl_sync_convergence::GenerationId, cause: perl_sync_convergence::InvalidationCause, observed_at: perl_sync_convergence::TimestampMs, movement_evidence_digest: impl core::convert::Into<alloc::string::String>, stale_descendants: alloc::vec::Vec<perl_sync_convergence::StaleDescendant>) -> core::result::Result<Self, perl_sync_convergence::InvalidationError>
+pub fn perl_sync_convergence::InvalidationRecord::stale_generation_ids(&self) -> alloc::vec::Vec<&perl_sync_convergence::GenerationId>
+pub fn perl_sync_convergence::InvalidationRecord::clone(&self) -> perl_sync_convergence::InvalidationRecord
+pub fn perl_sync_convergence::InvalidationRecord::eq(&self, other: &perl_sync_convergence::InvalidationRecord) -> bool
+pub fn perl_sync_convergence::InvalidationRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::InvalidationRecord::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::InvalidationRecord::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::LandingMerge
+pub perl_sync_convergence::LandingMerge::merge_sha: alloc::string::String
+pub perl_sync_convergence::LandingMerge::merge_tree: alloc::string::String
+pub fn perl_sync_convergence::LandingMerge::clone(&self) -> perl_sync_convergence::LandingMerge
+pub fn perl_sync_convergence::LandingMerge::eq(&self, other: &perl_sync_convergence::LandingMerge) -> bool
+pub fn perl_sync_convergence::LandingMerge::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::LandingMerge::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::LandingMerge::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::Lease
+pub perl_sync_convergence::Lease::claimed_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::Lease::claimed_by: alloc::string::String
+pub perl_sync_convergence::Lease::heartbeat_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::Lease::input_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::Lease::last_completed_transition: core::option::Option<perl_sync_convergence::TransitionState>
+pub perl_sync_convergence::Lease::lease_expires_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::Lease::next_permitted_actions: alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::Lease::complete_transition(&mut self, completed: perl_sync_convergence::TransitionState, next_permitted_actions: alloc::vec::Vec<perl_sync_convergence::PermittedAction>)
+pub fn perl_sync_convergence::Lease::heartbeat(&mut self, now: perl_sync_convergence::TimestampMs, lease_duration_ms: u64) -> core::result::Result<(), perl_sync_convergence::LeaseError>
+pub fn perl_sync_convergence::Lease::is_expired(&self, now: perl_sync_convergence::TimestampMs) -> bool
+pub fn perl_sync_convergence::Lease::new(claimed_by: impl core::convert::Into<alloc::string::String>, claimed_at: perl_sync_convergence::TimestampMs, lease_duration_ms: u64, input_generation: perl_sync_convergence::GenerationId, next_permitted_actions: alloc::vec::Vec<perl_sync_convergence::PermittedAction>) -> core::result::Result<Self, perl_sync_convergence::LeaseError>
+pub fn perl_sync_convergence::Lease::clone(&self) -> perl_sync_convergence::Lease
+pub fn perl_sync_convergence::Lease::eq(&self, other: &perl_sync_convergence::Lease) -> bool
+pub fn perl_sync_convergence::Lease::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Lease::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::Lease::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::PublishedCandidate
+pub perl_sync_convergence::PublishedCandidate::branch: alloc::string::String
+pub perl_sync_convergence::PublishedCandidate::head_sha: alloc::string::String
+pub perl_sync_convergence::PublishedCandidate::pull_request: u64
+pub fn perl_sync_convergence::PublishedCandidate::clone(&self) -> perl_sync_convergence::PublishedCandidate
+pub fn perl_sync_convergence::PublishedCandidate::eq(&self, other: &perl_sync_convergence::PublishedCandidate) -> bool
+pub fn perl_sync_convergence::PublishedCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::PublishedCandidate::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::PublishedCandidate::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::StaleDescendant
+pub perl_sync_convergence::StaleDescendant::disposition: perl_sync_convergence::StaleDisposition
+pub perl_sync_convergence::StaleDescendant::generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::StaleDescendant::reason: alloc::string::String
+pub fn perl_sync_convergence::StaleDescendant::clone(&self) -> perl_sync_convergence::StaleDescendant
+pub fn perl_sync_convergence::StaleDescendant::eq(&self, other: &perl_sync_convergence::StaleDescendant) -> bool
+pub fn perl_sync_convergence::StaleDescendant::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::StaleDescendant::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::StaleDescendant::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::StoreIndexFile
+pub perl_sync_convergence::StoreIndexFile::schema_version: u32
+pub perl_sync_convergence::StoreIndexFile::transactions: alloc::vec::Vec<perl_sync_convergence::store::TransactionIndexEntry>
+pub fn perl_sync_convergence::store::StoreIndexFile::clone(&self) -> perl_sync_convergence::store::StoreIndexFile
+pub fn perl_sync_convergence::store::StoreIndexFile::eq(&self, other: &perl_sync_convergence::store::StoreIndexFile) -> bool
+pub fn perl_sync_convergence::store::StoreIndexFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::StoreIndexFile::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::store::StoreIndexFile::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::Takeover
+pub perl_sync_convergence::Takeover::displaced_claimant: alloc::string::String
+pub perl_sync_convergence::Takeover::input_generation: perl_sync_convergence::GenerationId
+pub perl_sync_convergence::Takeover::reclaimed_at: perl_sync_convergence::TimestampMs
+pub perl_sync_convergence::Takeover::reclaimed_by: alloc::string::String
+pub perl_sync_convergence::Takeover::reconciled_observations: alloc::vec::Vec<alloc::string::String>
+pub fn perl_sync_convergence::Takeover::validate(&self) -> core::result::Result<(), perl_sync_convergence::LeaseError>
+pub fn perl_sync_convergence::Takeover::clone(&self) -> perl_sync_convergence::Takeover
+pub fn perl_sync_convergence::Takeover::eq(&self, other: &perl_sync_convergence::Takeover) -> bool
+pub fn perl_sync_convergence::Takeover::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::Takeover::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::Takeover::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::TimestampMs(_)
+pub const fn perl_sync_convergence::TimestampMs::as_u64(self) -> u64
+pub const fn perl_sync_convergence::TimestampMs::from_millis(millis: u64) -> Self
+pub fn perl_sync_convergence::TimestampMs::clone(&self) -> perl_sync_convergence::TimestampMs
+pub fn perl_sync_convergence::TimestampMs::cmp(&self, other: &perl_sync_convergence::TimestampMs) -> core::cmp::Ordering
+pub fn perl_sync_convergence::TimestampMs::eq(&self, other: &perl_sync_convergence::TimestampMs) -> bool
+pub fn perl_sync_convergence::TimestampMs::partial_cmp(&self, other: &perl_sync_convergence::TimestampMs) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_sync_convergence::TimestampMs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TimestampMs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TimestampMs::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::TimestampMs::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::TimestampMs::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::TransactionId(_)
+pub fn perl_sync_convergence::TransactionId::as_str(&self) -> &str
+pub fn perl_sync_convergence::TransactionId::new(value: impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, perl_sync_convergence::ids::IdentityError>
+pub fn perl_sync_convergence::TransactionId::clone(&self) -> perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::TransactionId::cmp(&self, other: &perl_sync_convergence::TransactionId) -> core::cmp::Ordering
+pub fn perl_sync_convergence::TransactionId::eq(&self, other: &perl_sync_convergence::TransactionId) -> bool
+pub fn perl_sync_convergence::TransactionId::partial_cmp(&self, other: &perl_sync_convergence::TransactionId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_sync_convergence::TransactionId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransactionId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::TransactionId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_sync_convergence::TransactionId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::TransactionId::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct perl_sync_convergence::TransactionIndexEntry
+pub perl_sync_convergence::TransactionIndexEntry::direction: perl_sync_convergence::Direction
+pub perl_sync_convergence::TransactionIndexEntry::release_mode: perl_sync_convergence::ReleaseContextMode
+pub perl_sync_convergence::TransactionIndexEntry::transaction_id: perl_sync_convergence::TransactionId
+pub fn perl_sync_convergence::store::TransactionIndexEntry::clone(&self) -> perl_sync_convergence::store::TransactionIndexEntry
+pub fn perl_sync_convergence::store::TransactionIndexEntry::eq(&self, other: &perl_sync_convergence::store::TransactionIndexEntry) -> bool
+pub fn perl_sync_convergence::store::TransactionIndexEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_sync_convergence::store::TransactionIndexEntry::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_sync_convergence::store::TransactionIndexEntry::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_sync_convergence::GENERATION_RECEIPT_SCHEMA_VERSION: u32
+pub const perl_sync_convergence::INDEX_SCHEMA_VERSION: u32
+pub const perl_sync_convergence::JOURNAL_SCHEMA_VERSION: u32
+pub fn perl_sync_convergence::is_legal_transition(from: perl_sync_convergence::TransitionState, to: perl_sync_convergence::TransitionState) -> bool
+pub fn perl_sync_convergence::permitted_writer_actions(state: perl_sync_convergence::TransitionState) -> alloc::vec::Vec<perl_sync_convergence::PermittedAction>
+pub fn perl_sync_convergence::replay(events: &[perl_sync_convergence::event::ConvergenceEvent]) -> core::result::Result<perl_sync_convergence::event::ConvergenceView, perl_sync_convergence::event::ReplayError>
