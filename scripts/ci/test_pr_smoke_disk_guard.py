@@ -126,6 +126,10 @@ class ParseMinFreeBytesTests(unittest.TestCase):
                     guard.parse_min_free_bytes(raw)
         self.assertEqual(guard.parse_min_free_bytes("1e-999999999GiB"), 0)
 
+    def test_zero_with_extreme_exponent_parses_to_zero(self) -> None:
+        self.assertEqual(guard.parse_min_free_bytes("0e500GiB"), 0)
+        self.assertEqual(guard.parse_min_free_bytes("-0e500GiB"), 0)
+
     def test_rejects_nonfinite_gib(self) -> None:
         for raw in ("NaNGiB", "sNaNGiB", "infGiB", "-InfinityGiB"):
             with self.subTest(raw=raw):

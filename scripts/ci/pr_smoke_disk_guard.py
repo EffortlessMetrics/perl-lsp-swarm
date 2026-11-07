@@ -190,6 +190,10 @@ def parse_min_free_bytes(raw: str) -> int:
         # 1e300 GiB always overflow binary64 as bytes (1e300 * GIB > 1e309),
         # so rejecting them here is exact; values below 1e-10 GiB always
         # truncate to zero bytes.
+        # short-circuit: zero is zero regardless of its decimal exponent
+        # (e.g. 0e500GiB), and adjusted() reflects the exponent, not the value.
+        if value.is_zero():
+            return 0
         if value.adjusted() >= 300:
             raise argparse.ArgumentTypeError(
                 f"GiB value and its byte conversion must be finite: {raw!r}"
