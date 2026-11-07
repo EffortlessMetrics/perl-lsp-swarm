@@ -1,0 +1,38 @@
+{
+  "schema_version": "standalone_path_plan.v1",
+  "plan_id": "path-plan-invalid-session-only-installer",
+  "transaction_id": "txn-standalone-install-0001",
+  "subject": {
+    "candidate_id": "perllsp-0.18.0-x86_64-unknown-linux-gnu",
+    "selection_generation": 7,
+    "confirmation_state": "confirmed_current",
+    "executable_path": "/home/operator/.local/share/perl-lsp/versions/0.18.0/bin/perllsp",
+    "executable_sha256": "b100000000000000000000000000000000000000000000000000000000000000",
+    "command_name": "perllsp"
+  },
+  "environment": {
+    "platform": "posix",
+    "shell_family": "bash",
+    "install_root": {
+      "path": "/home/operator/.local/share/perl-lsp",
+      "role": "user_install_root"
+    }
+  },
+  "path_policy": {
+    "policy": "installer_owned_entry",
+    "mutation_owner": "installer",
+    "scope": "session_only",
+    "owned_entry": {
+      "entry_kind": "profile_line",
+      "entry_location": "/home/operator/.profile",
+      "entry_value": "/home/operator/.local/share/perl-lsp/bin",
+      "marker": "perl-lsp-installer-owned-path-entry"
+    },
+    "new_session_requirement": "new_shell"
+  },
+  "prior_state": {
+    "identity_kind": "sha256_content",
+    "sha256": "d300000000000000000000000000000000000000000000000000000000000000"
+  },
+  "redaction_policy": "bounded_typed_fields_only"
+}
