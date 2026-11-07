@@ -267,6 +267,7 @@ where
                         &region_index,
                         line_offset + byte_pos,
                         line_offset + match_end,
+                        sigil,
                     )
                     && keep_callable_declaration(
                         declarations,
@@ -303,21 +304,32 @@ where
 /// A text-tier hit is reportable only inside proven executable code, or inside
 /// a string literal — where the line-local interpolation rules in
 /// [`keep_text_reference_match`] remain the authority for interpolated
-/// variables (#16638). POD blocks, heredoc bodies, `__DATA__` tails,
-/// quote-like and regex bodies, comments, and recovery regions are not
-/// references regardless of word shape, and a range straddling region kinds is
-/// not proven either (#18762).
+/// variables (#16638). POD blocks, heredoc bodies, `__DATA__` tails, comments,
+/// and recovery regions are not references regardless of word shape, and a
+/// range straddling region kinds is not proven either (#18762).
+///
+/// Interpolating quote-like and regex bodies (`qq{hello $name}`, `/^$name/`)
+/// stay reportable for **sigiled variable** queries only: the interpolation
+/// binds the variable at runtime, and the pre-gate line-local logic kept those
+/// occurrences because it did not model quote-like bodies (#18762 review).
+/// Literal words and sigil-less (sub) queries inside them stay excluded, as do
+/// all queries in POD, heredoc, and `__DATA__` regions.
 fn text_match_region_is_reportable(
     region_index: &SourceRegionIndex,
     start: usize,
     end: usize,
+    sigil: Option<char>,
 ) -> bool {
-    matches!(
-        region_index.classify_range(start, end),
+    let interpolating_variable = matches!(sigil, Some('$' | '@' | '%'));
+    match region_index.classify_range(start, end) {
         RangeClassification::Proven {
-            kind: SourceRegionKind::Code | SourceRegionKind::StringLiteral
-        }
-    )
+            kind: SourceRegionKind::Code | SourceRegionKind::StringLiteral,
+        } => true,
+        RangeClassification::Proven {
+            kind: SourceRegionKind::QuoteLike | SourceRegionKind::RegexLike,
+        } => interpolating_variable,
+        _ => false,
+    }
 }
 
 // Only proven declaration anchors participate. Unknown/parser-error regions keep
@@ -1112,14 +1124,14 @@ mod tests {
             "sub total_cents { return 0 }\n",                         // 1 declaration
             "my $sum = $self->total_cents + $other->total_cents;\n",  // 2 two real calls
             "my $z = $order->total_cents;\n",                         // 3 real call
-            "__DATA__\n",                                             // 4
-            "hint: $inventory->total_cents to refill\n",              // 5 data tail
-            "=pod\n",                                                 // 6
-            "Sum of C<< $order->total_cents >> across all orders.\n", // 7 POD
-            "=cut\n",                                                 // 8
-            "my $body = <<\"END_DOC\";\n",                            // 9
-            "Total: @{[ format_money($self->total_cents) ]}\n",       // 10 heredoc body
-            "END_DOC\n",                                              // 11
+            "=pod\n",                                                 // 4 POD block
+            "Sum of C<< $order->total_cents >> across all orders.\n", // 5 POD mention
+            "=cut\n",                                                 // 6
+            "my $body = <<\"END_DOC\";\n",                            // 7
+            "Total: @{[ format_money($self->total_cents) ]}\n",       // 8 heredoc body
+            "END_DOC\n",                                              // 9
+            "__DATA__\n",                                             // 10
+            "hint: $inventory->total_cents to refill\n",              // 11 data tail
         );
         let hits = scan(&[("file:///regions.pm", doc)], "total_cents", None, 50);
         let lines: Vec<u64> = hits
@@ -1130,6 +1142,45 @@ mod tests {
             lines,
             vec![1, 2, 2, 3],
             "POD, heredoc-body, and __DATA__ mentions must not answer as references: {hits:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Sigiled variable mentions inside interpolating quote-like and regex
+    /// bodies stay references: the interpolation binds the variable at
+    /// runtime, and the pre-gate line-local logic kept them because it did not
+    /// model quote-like bodies (#18762 review). Literal words and sigil-less
+    /// (sub) queries inside those bodies stay excluded.
+    #[test]
+    fn text_tier_keeps_interpolated_variables_in_quote_like_and_regex_bodies()
+    -> Result<(), Box<dyn Error>> {
+        let doc = concat!(
+            "package Store::Order;\n",          // 0
+            "my $message = qq{hello $name};\n", // 1 quote-like, interpolated
+            "my $pattern = qr{^$name$};\n",     // 2 regex, interpolated
+            "my $label = qq{order status};\n",  // 3 quote-like, literal word
+            "my $docs = <<\"END_QQ\";\n",       // 4 heredoc
+            "usage: print $banner; quiet\n",    // 5 heredoc body
+            "END_QQ\n",                         // 6
+        );
+        // Variable query: interpolated quote-like and regex mentions survive…
+        let hits = scan(&[("file:///qq.pm", doc)], "$name", Some('$'), 50);
+        let lines: Vec<u64> = hits
+            .iter()
+            .map(|hit| start_of(hit).map(|(line, _)| line))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            lines,
+            vec![1, 2],
+            "interpolated variables in qq//qr bodies must stay references: {hits:?}"
+        );
+        // …while a sub query for the same word shape inside qq{} stays
+        // excluded, and heredoc bodies stay excluded for both.
+        let sub_hits = scan(&[("file:///qq.pm", doc)], "banner", None, 50);
+        assert!(
+            sub_hits.is_empty(),
+            "heredoc-body mentions must not answer as references: {sub_hits:?}"
         );
 
         Ok(())

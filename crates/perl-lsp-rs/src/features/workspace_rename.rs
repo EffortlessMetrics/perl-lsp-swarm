@@ -121,8 +121,10 @@ pub fn build_rename_edit(
     // `rename_arrow_method_call_with_unrelated_receiver_is_not_rewritten`.
     let mut known: HashSet<(String, u32, u32, u32, u32)> =
         locs.iter().map(location_dedup_key).collect();
+    let mut call_site_asts: CallSiteAsts = BTreeMap::new();
+    let mut own_sub_packages: BTreeMap<(String, String), bool> = BTreeMap::new();
     let (attributed_sites, receiver_attributed) =
-        receiver_attributed_arrow_sites(idx, key, &mut known);
+        receiver_attributed_arrow_sites(idx, key, &mut known, &mut call_site_asts);
     locs.extend(attributed_sites);
 
     // 2) Also include the definition itself
@@ -151,7 +153,13 @@ pub fn build_rename_edit(
         // the caller-package heuristic below.
         if !receiver_attributed.contains(&location_dedup_key(&loc)) {
             match arrow_span_disposition(
-                idx, key, &loc.uri, start_line, start_char, end_line, end_char,
+                idx,
+                key,
+                &mut call_site_asts,
+                &mut own_sub_packages,
+                &loc.uri,
+                start_line,
+                start_char,
             ) {
                 ArrowSpanDisposition::ForeignOwnSelfMethod => {
                     // `$self->name` inside a foreign package that declares the
@@ -308,11 +316,12 @@ enum ArrowSpanDisposition {
     /// same-named sub: that sub owns the dispatch, so the site is not `key`'s
     /// and must be skipped — neither renamed nor treated as ambiguous.
     ForeignOwnSelfMethod,
-    /// `$self->attr->name` (exactly two arrows, `$self`/`$this` first
-    /// receiver): the conventional single association hop. The index admitted
-    /// the span as `key`'s reference via `method_reference_has_self_receiver`,
-    /// so it is exempt from the caller-package ambiguity refusal and renamed
-    /// at the method-name token. Deeper chains stay fail-closed (#9814).
+    /// `$self->attr->name` (an AST chain of exactly two arrows rooted at a
+    /// `$self`/`$this` variable): the conventional single association hop. The
+    /// index admitted the span as `key`'s reference via
+    /// `method_reference_has_self_receiver`, so it is exempt from the
+    /// caller-package ambiguity refusal and renamed at the method-name token.
+    /// Deeper chains stay fail-closed (#9814).
     DispatchesThroughSelfChain,
     /// Everything else keeps the existing ambiguity behavior.
     Unclassified,
@@ -323,17 +332,19 @@ enum ArrowSpanDisposition {
 ///
 /// `find_refs` admits arrow spans whose *first* arrow receiver is
 /// `$self`/`$this` (`bare_reference_matches_package` →
-/// `method_reference_has_self_receiver`). Two refinements of that admission
-/// keep rename honest without re-opening #6110/#17448 wrong-symbol edits:
+/// `method_reference_has_self_receiver`). The chain shape is read from the
+/// call-site AST — never the span text, whose arrows include argument lists
+/// (#18762 review). Two refinements of the index's admission keep rename
+/// honest without re-opening #6110/#17448 wrong-symbol edits:
 ///
-/// - A **two-arrow** span (`$self->order->total_cents`) dispatches on the
+/// - A **two-hop** chain (`$self->order->total_cents`) dispatches on the
 ///   intermediate value, not on `$self`. The index already asserted the span
 ///   belongs to `key`'s dispatch chain, so refusing the whole rename because
 ///   the caller package differs (the pre-#18762 behavior) contradicted the
 ///   index's own admission and made every chained call site unrenamable.
 ///   Deeper chains (`$self->app->dispatcher->name`) are dispatcher-style
 ///   dynamics and keep the fail-closed refusal.
-/// - A **single-arrow** span in a foreign package that declares the same-named
+/// - A **single-hop** span in a foreign package that declares the same-named
 ///   sub dispatches to that package's own definition (own definitions beat
 ///   inherited ones), so the span belongs to a different symbol entirely and
 ///   must be skipped rather than refused.
@@ -345,31 +356,18 @@ enum ArrowSpanDisposition {
 fn arrow_span_disposition(
     idx: &WorkspaceIndex,
     key: &SymbolKey,
+    asts: &mut CallSiteAsts,
+    own_sub_packages: &mut BTreeMap<(String, String), bool>,
     uri: &str,
     start_line: u32,
     start_char: u32,
-    end_line: u32,
-    end_char: u32,
 ) -> ArrowSpanDisposition {
     let Some(doc) = idx.document_store().get(uri) else {
         return ArrowSpanDisposition::Unclassified;
     };
-    let (Some(start_off), Some(end_off)) = (
-        doc.line_index.position_to_offset(start_line, start_char),
-        doc.line_index.position_to_offset(end_line, end_char),
-    ) else {
+    let Some(start_off) = doc.line_index.position_to_offset(start_line, start_char) else {
         return ArrowSpanDisposition::Unclassified;
     };
-    let Some(expression) = doc.text().get(start_off..end_off) else {
-        return ArrowSpanDisposition::Unclassified;
-    };
-
-    let Some((receiver, _)) = expression.split_once("->") else {
-        return ArrowSpanDisposition::Unclassified;
-    };
-    if !matches!(receiver.trim(), "$self" | "$this") {
-        return ArrowSpanDisposition::Unclassified;
-    }
 
     let caller_package = package_name_for_line(doc.text(), start_line);
     if caller_package == key.pkg.as_ref() {
@@ -379,21 +377,89 @@ fn arrow_span_disposition(
         return ArrowSpanDisposition::Unclassified;
     }
 
-    if expression.matches("->").count() == 2 {
+    // #18762 review: the chain shape comes from the call-site AST, never the
+    // span text. The indexed span covers the full call expression, so arrows
+    // inside the argument list (`$self->name($other->foo)`) must not count as
+    // chain hops.
+    let shape = call_site_ast(asts, idx, uri)
+        .and_then(|ast| self_chain_shape_at(ast, start_off, key.name.as_ref()));
+    match shape {
+        Some(SelfChainShape::SelfReceiver) => {
+            // `$self->name` in a foreign package: that package's own
+            // same-named sub owns the dispatch, so the site is skipped;
+            // otherwise the existing ambiguity classification applies
+            // (explicit inheritance accepts, unrelated receivers refuse).
+            if own_package_defines_sub(
+                idx,
+                own_sub_packages,
+                uri,
+                caller_package,
+                key.name.as_ref(),
+            ) {
+                ArrowSpanDisposition::ForeignOwnSelfMethod
+            } else {
+                ArrowSpanDisposition::Unclassified
+            }
+        }
         // `$self->attr->name` — the conventional single association hop. The
         // index asserted the span as `key`'s reference; the caller package
         // owning the name is irrelevant because dispatch happens on the
-        // intermediate value. Deeper chains (`$self->app->dispatcher->name`)
-        // stay fail-closed: they are dispatcher-style dynamics, not
-        // association dereferences (#9814).
-        return ArrowSpanDisposition::DispatchesThroughSelfChain;
+        // intermediate value. Deeper chains (`$self->a->b->name`) stay
+        // fail-closed: they are dispatcher-style dynamics, not association
+        // dereferences (#9814).
+        Some(SelfChainShape::SelfTwoHops) => ArrowSpanDisposition::DispatchesThroughSelfChain,
+        // Non-`$self` receivers and deeper chains keep the pre-existing
+        // classification (unrelated receivers refuse fail-closed).
+        Some(SelfChainShape::Other) | None => ArrowSpanDisposition::Unclassified,
     }
+}
 
-    if package_defines_sub(doc.text(), caller_package, key.name.as_ref()) {
-        return ArrowSpanDisposition::ForeignOwnSelfMethod;
+/// Chain shape of the `MethodCall` node that starts exactly at the indexed
+/// span start, classified from the AST (#18762 review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfChainShape {
+    /// `$self->name` — a single arrow whose receiver is a `$self`/`$this`
+    /// variable.
+    SelfReceiver,
+    /// `$self->attr->name` — exactly two arrows: the conventional single
+    /// association hop.
+    SelfTwoHops,
+    /// A deeper `$self` chain, or any other receiver shape.
+    Other,
+}
+
+/// Classify the chain shape of the arrow call whose span starts exactly at
+/// `call_offset`. Mirrors [`attributed_receiver_at`]'s node-location
+/// contract: an index/parser mismatch, a parse-less document, or a span whose
+/// node carries a different method name yields `None`, and the caller keeps
+/// the pre-existing ambiguity classification.
+fn self_chain_shape_at(
+    ast: &Node,
+    call_offset: usize,
+    method_name: &str,
+) -> Option<SelfChainShape> {
+    if call_offset < ast.location.start || call_offset >= ast.location.end {
+        return None;
     }
-
-    ArrowSpanDisposition::Unclassified
+    let is_self_receiver = |node: &Node| {
+        matches!(&node.kind, NodeKind::Variable { sigil, name }
+            if sigil == "$" && matches!(name.as_str(), "self" | "this"))
+    };
+    if let NodeKind::MethodCall { object, method, .. } = &ast.kind
+        && ast.location.start == call_offset
+        && method == method_name
+    {
+        return Some(match &object.kind {
+            NodeKind::Variable { .. } if is_self_receiver(object) => SelfChainShape::SelfReceiver,
+            NodeKind::MethodCall { object: inner, .. } if is_self_receiver(inner) => {
+                SelfChainShape::SelfTwoHops
+            }
+            _ => SelfChainShape::Other,
+        });
+    }
+    ast.children()
+        .into_iter()
+        .find_map(|child| self_chain_shape_at(child, call_offset, method_name))
 }
 
 /// True when `package` (as declared in `text`) declares `sub name`.
@@ -410,6 +476,30 @@ fn package_defines_sub(text: &str, package: &str, name: &str) -> bool {
         }
     }
     false
+}
+
+/// Memoized [`package_defines_sub`] per caller document and caller package;
+/// the renamed sub name is constant across one [`build_rename_edit`] call, so
+/// the grouping loop's per-site classification stays linear in the site count
+/// instead of rescanning the document per site (#18762 review).
+fn own_package_defines_sub(
+    idx: &WorkspaceIndex,
+    memo: &mut BTreeMap<(String, String), bool>,
+    uri: &str,
+    caller_package: &str,
+    name: &str,
+) -> bool {
+    let memo_key = (uri.to_string(), caller_package.to_string());
+    if let Some(defined) = memo.get(&memo_key) {
+        return *defined;
+    }
+    let defined = idx
+        .document_store()
+        .get(uri)
+        .map(|doc| package_defines_sub(doc.text(), caller_package, name))
+        .unwrap_or(false);
+    memo.insert(memo_key, defined);
+    defined
 }
 
 /// Deduplication key for a reference location (mirrors `find_refs`).
@@ -573,10 +663,10 @@ fn receiver_attributed_arrow_sites(
     idx: &WorkspaceIndex,
     key: &SymbolKey,
     known: &mut HashSet<(String, u32, u32, u32, u32)>,
+    asts: &mut CallSiteAsts,
 ) -> (Vec<perl_workspace::workspace_index::Location>, HashSet<(String, u32, u32, u32, u32)>) {
     let mut sites = Vec::new();
     let mut attributed: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
-    let mut asts: CallSiteAsts = BTreeMap::new();
 
     for loc in idx.find_method_call_refs(key) {
         let loc_key = location_dedup_key(&loc);
@@ -595,11 +685,11 @@ fn receiver_attributed_arrow_sites(
             continue;
         };
 
-        let receiver = call_site_ast(&mut asts, idx, &loc.uri)
+        let receiver = call_site_ast(asts, idx, &loc.uri)
             .and_then(|ast| attributed_receiver_at(ast, start_off, key.name.as_ref()));
         let receiver_package = match receiver {
             Some(AttributedReceiver::Variable(bare)) => {
-                variable_receiver_package(&mut asts, idx, &loc.uri, &bare, start_off)
+                variable_receiver_package(asts, idx, &loc.uri, &bare, start_off)
             }
             Some(AttributedReceiver::Class(name)) => Some(name),
             None => None,
@@ -655,10 +745,13 @@ enum AttributedReceiver {
 /// The workspace index records each arrow call under the bare method name with
 /// the full expression span (`workspace_index` `NodeKind::MethodCall` dual-key
 /// storage), so the node starting exactly at the span start is the call the
-/// index entry describes; nested calls start deeper inside the span and are
-/// never consulted. A different node kind or method name at that offset is an
-/// index/parser mismatch and fails closed, as does any receiver whose class no
-/// static fact covers (chained `MethodCall` objects, derefs, slices).
+/// index entry describes. A nested call's index entry starts at the nested
+/// node's own offset *inside* a parent `MethodCall`'s span, so the walk keeps
+/// descending through a non-matching `MethodCall` parent to reach it
+/// (#18762 review). A different node kind or method name at the matching
+/// offset is an index/parser mismatch and fails closed, as does any receiver
+/// whose class no static fact covers (chained `MethodCall` objects, derefs,
+/// slices).
 fn attributed_receiver_at(
     ast: &Node,
     call_offset: usize,
@@ -667,10 +760,10 @@ fn attributed_receiver_at(
     if call_offset < ast.location.start || call_offset >= ast.location.end {
         return None;
     }
-    if let NodeKind::MethodCall { object, method, .. } = &ast.kind {
-        if ast.location.start != call_offset || method != method_name {
-            return None;
-        }
+    if let NodeKind::MethodCall { object, method, .. } = &ast.kind
+        && ast.location.start == call_offset
+        && method == method_name
+    {
         return match &object.kind {
             NodeKind::Variable { sigil, name } if sigil == "$" => {
                 let is_plain_identifier =
@@ -1516,6 +1609,110 @@ $var;
             "only the chained association hop renames: {receipt_edit:?}"
         );
         assert_eq!(receipt_edit.edits[0].new_text, "grand_total_cents");
+
+        Ok(())
+    }
+
+    /// #18762 review: arrows inside an argument list must not classify a
+    /// single-hop `$self` call as an association chain. In a foreign package
+    /// that declares `total_cents`, `$self->total_cents($order->foo)` is that
+    /// package's own single-hop call (skipped), while
+    /// `$self->meta->total_cents($other->bar)` is still the two-hop
+    /// association hop (renamed at its token). The pre-review span-arrow
+    /// count read both by total arrow count and renamed the first one — a
+    /// wrong-symbol edit.
+    #[test]
+    fn rename_foreign_own_self_call_with_argument_arrow_is_skipped()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let order = "package Store::Order;\nsub new { return bless {}, shift }\nsub total_cents { return 0 }\n1;\n";
+        let receipt = concat!(
+            "package Store::Receipt;\n",
+            "sub total_cents {\n",
+            "    my ($self) = @_;\n",
+            "    return $self->total_cents($order->foo);\n",
+            "}\n",
+            "sub render {\n",
+            "    my ($self) = @_;\n",
+            "    return $self->meta->total_cents($other->bar);\n",
+            "}\n",
+            "1;\n",
+        );
+
+        index_text(&idx, "file:///Order.pm", order)?;
+        index_text(&idx, "file:///Receipt.pm", receipt)?;
+
+        let key = SymbolKey {
+            pkg: Arc::from("Store::Order"),
+            name: Arc::from("total_cents"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "grand_total_cents")?;
+        let Some(receipt_edit) = edits.iter().find(|e| e.uri.contains("Receipt.pm")) else {
+            return Err(format!(
+                "the two-hop `$self->meta->total_cents($other->bar)` site must stay exempt; \
+                 got URIs: {:?}",
+                edits.iter().map(|e| &e.uri).collect::<Vec<_>>()
+            )
+            .into());
+        };
+        assert_eq!(
+            receipt_edit.edits.len(),
+            1,
+            "the single-hop foreign own-method call must be skipped; only the two-hop \
+             chain renames: {receipt_edit:?}"
+        );
+        assert_eq!(receipt_edit.edits[0].new_text, "grand_total_cents");
+
+        Ok(())
+    }
+
+    /// #18762 review: a nested call's index entry starts at the nested node's
+    /// own offset *inside* the parent call's span, so receiver attribution
+    /// must descend through the parent `MethodCall` node to reach it — the
+    /// nested site joins the edit set instead of staying silently
+    /// unattributed.
+    #[test]
+    fn rename_nested_child_call_site_is_attributed() -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let inventory = "package Store::Inventory;\nsub new { return bless {}, shift }\nsub find_by_sku { return 1 }\n1;\n";
+        let caller = concat!(
+            "package Caller;\n",
+            "my $inventory = Store::Inventory->new();\n",
+            "my $order = Store::Order->new(id => 'O-1');\n",
+            "$order->add_item($inventory->find_by_sku('AB-1234'), 2);\n",
+            "1;\n",
+        );
+
+        index_text(&idx, "file:///Inventory.pm", inventory)?;
+        index_text(&idx, "file:///Caller.pm", caller)?;
+
+        let key = SymbolKey {
+            pkg: Arc::from("Store::Inventory"),
+            name: Arc::from("find_by_sku"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "locate_sku")?;
+        let Some(caller_edit) = edits.iter().find(|e| e.uri.contains("Caller.pm")) else {
+            return Err(format!(
+                "the nested `$inventory->find_by_sku(..)` argument call site was omitted; \
+                 got URIs: {:?}",
+                edits.iter().map(|e| &e.uri).collect::<Vec<_>>()
+            )
+            .into());
+        };
+        assert_eq!(
+            caller_edit.edits.len(),
+            1,
+            "the nested argument call site joins the edit set: {caller_edit:?}"
+        );
+        assert_eq!(caller_edit.edits[0].new_text, "locate_sku");
 
         Ok(())
     }

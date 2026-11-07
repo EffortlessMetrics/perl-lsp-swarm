@@ -1986,20 +1986,24 @@ impl LspServer {
                                         // non-empty-plan reason is a block.
                                         _ => "blocked",
                                     };
-                                    let message = if blocked.blocker_descriptions.is_empty() {
+                                    // Deduplicate while preserving order: the
+                                    // same blocker can anchor several plan
+                                    // rows, and repeating it in the message
+                                    // buries the actionable text (#18762
+                                    // review).
+                                    let mut blockers = blocked.blocker_descriptions;
+                                    blockers.dedup();
+                                    let message = if blockers.is_empty() {
                                         format!("Workspace rename blocked ({pilot_reason})")
                                     } else {
-                                        format!(
-                                            "Workspace rename blocked: {}",
-                                            blocked.blocker_descriptions.join("; ")
-                                        )
+                                        format!("Workspace rename blocked: {}", blockers.join("; "))
                                     };
                                     return Err(JsonRpcError {
                                         code: -32602,
                                         message,
                                         data: Some(json!({
                                             "pilot_reason": pilot_reason,
-                                            "blockers": blocked.blocker_descriptions,
+                                            "blockers": blockers,
                                         })),
                                     });
                                 }
