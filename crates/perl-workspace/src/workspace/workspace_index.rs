@@ -4941,6 +4941,87 @@ impl WorkspaceIndex {
         false
     }
 
+    /// [`Self::find_unused_symbols`] filtered down to what dead-code
+    /// diagnostics should surface (#18765).
+    ///
+    /// The raw query stays untouched for non-diagnostic callers; this edge
+    /// drops the convention-shaped false positives:
+    ///
+    /// - Exporter/CPAN-consumed package variables (`@EXPORT_OK`, `@EXPORT`,
+    ///   `@EXPORT_FAIL`, `%EXPORT_TAGS`, `$VERSION`): they are read by
+    ///   `Exporter::import` and module tooling at runtime, so no source-level
+    ///   name reference can ever exist;
+    /// - Moo/Moose/Mouse construction hooks (`BUILD`, `DEMOLISH`,
+    ///   `BUILDARGS`) in files that import an OO framework: object
+    ///   construction invokes them, never a source-level name reference;
+    /// - any symbol whose bare name appears in its own file's `@EXPORT` /
+    ///   `@EXPORT_OK` list: an export list is itself usage evidence, because
+    ///   `Exporter::import` hands those names to every importing module.
+    ///
+    /// Symbols whose file text is unavailable (not in the document store)
+    /// fall back to the name-only conventions, matching the pre-existing
+    /// behavior for the rest.
+    pub fn find_unused_symbols_for_diagnostics(&self) -> Vec<WorkspaceSymbol> {
+        let unused = self.find_unused_symbols();
+        if unused.is_empty() {
+            return unused;
+        }
+
+        let mut candidate_uris: Vec<String> = unused.iter().map(|s| s.uri.clone()).collect();
+        candidate_uris.sort_unstable();
+        candidate_uris.dedup();
+        let mut export_lists: HashMap<&str, HashSet<String>> = HashMap::new();
+        let mut oo_framework_files: HashSet<&str> = HashSet::new();
+        for uri in &candidate_uris {
+            let Some(content) = self.document_store.get_text(uri) else {
+                continue;
+            };
+            if file_uses_oo_framework(&content) {
+                oo_framework_files.insert(uri.as_str());
+            }
+            let exported = collect_exported_names(&content);
+            if !exported.is_empty() {
+                export_lists.insert(uri.as_str(), exported);
+            }
+        }
+
+        unused
+            .into_iter()
+            .filter(|symbol| {
+                !Self::is_dead_code_convention_symbol(
+                    symbol,
+                    export_lists.get(symbol.uri.as_str()),
+                    oo_framework_files.contains(symbol.uri.as_str()),
+                )
+            })
+            .collect()
+    }
+
+    /// Whether `symbol` matches a dead-code convention that must not be
+    /// flagged as unused (#18765).  See
+    /// [`Self::find_unused_symbols_for_diagnostics`] for the conventions.
+    fn is_dead_code_convention_symbol(
+        symbol: &WorkspaceSymbol,
+        exported_names: Option<&HashSet<String>>,
+        file_uses_oo_framework: bool,
+    ) -> bool {
+        let is_exported = exported_names.is_some_and(|names| names.contains(&symbol.name));
+        match symbol.kind {
+            SymbolKind::Variable(_) => {
+                matches!(
+                    symbol.name.as_str(),
+                    "@EXPORT_OK" | "@EXPORT" | "@EXPORT_FAIL" | "%EXPORT_TAGS" | "$VERSION"
+                ) || is_exported
+            }
+            SymbolKind::Subroutine => {
+                (file_uses_oo_framework
+                    && matches!(symbol.name.as_str(), "BUILD" | "DEMOLISH" | "BUILDARGS"))
+                    || is_exported
+            }
+            _ => is_exported,
+        }
+    }
+
     /// Get all symbols that belong to a specific package
     ///
     /// # Arguments
@@ -7467,6 +7548,115 @@ fn extract_qw_words(input: &str) -> (Vec<String>, String) {
     }
 
     (words, remainder)
+}
+
+/// Whether `content` imports an OO framework whose object construction (or
+/// role composition) invokes `BUILD` / `DEMOLISH` / `BUILDARGS` hooks
+/// implicitly, so those names must not be flagged as unused (#18765).
+fn file_uses_oo_framework(content: &str) -> bool {
+    const OO_FRAMEWORK_PREFIXES: &[&str] =
+        &["Moo", "Moose", "Mouse", "Mojo::Base", "Object::Pad", "Mars", "Role::Tiny"];
+
+    content.lines().any(|line| {
+        let code_portion = line.split('#').next().unwrap_or_default();
+        let mut tokens = code_portion.split_whitespace();
+        if tokens.next() != Some("use") {
+            return false;
+        }
+        let Some(module) = tokens.next().map(|m| m.trim_end_matches(';')) else {
+            return false;
+        };
+        OO_FRAMEWORK_PREFIXES.iter().any(|prefix| {
+            module == *prefix
+                || (module.starts_with(prefix) && module[prefix.len()..].starts_with("::"))
+        })
+    })
+}
+
+/// Bare names listed in `content`'s own `@EXPORT` / `@EXPORT_OK` assignment
+/// or `push` statements (#18765).
+///
+/// An Exporter export list is itself consumption evidence:
+/// `Exporter::import` hands the listed names to every importing module at
+/// runtime, so a symbol named in the list is used even when the workspace
+/// holds no other reference.  Harvests `qw(...)` lists, `'...'` and
+/// `"..."` strings from the initializing (or pushing) statement; nested
+/// references such as `@EXPORT_OK = (@EXPORT, qw(a))` contribute their
+/// literal words while `@EXPORT`'s own statement is harvested separately.
+/// Unparseable or missing names keep the pre-existing flagging behavior
+/// (conservative direction: no new false negatives).
+fn collect_exported_names(content: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for var in ["@EXPORT_OK", "@EXPORT"] {
+        let mut search = 0usize;
+        while let Some(offset) = content[search..].find(var).map(|o| search + o) {
+            let start = offset + var.len();
+            search = start.max(offset + 1);
+            if !export_var_word_boundary(content, offset, start) {
+                continue;
+            }
+            let after_var = content[start..].trim_start();
+            // `our @EXPORT_OK = qw(...)` / `push @EXPORT_OK, qw(...)`
+            if !after_var.starts_with('=') && !after_var.starts_with(',') {
+                continue;
+            }
+            let statement_start = content.len() - after_var.len() + 1;
+            let rest = &content[statement_start.min(content.len())..];
+            let end = rest.find(';').unwrap_or(rest.len()).min(4096);
+            if end == 0 {
+                continue;
+            }
+            harvest_export_names(&rest[..end], &mut names);
+        }
+    }
+    names
+}
+
+/// Whether the `@EXPORT`-shaped match at `offset` is a whole variable word:
+/// the characters around it must not continue a longer identifier (for
+/// example `@EXPORTER`, or `@EXPORT_OK` matched by an `@EXPORT` search).
+fn export_var_word_boundary(content: &str, offset: usize, end: usize) -> bool {
+    let continues = |c: char| c.is_alphanumeric() || c == '_' || c == ':';
+    if content[..offset].chars().next_back().is_some_and(continues) {
+        return false;
+    }
+    content[end..].chars().next().is_none_or(|c| !continues(c))
+}
+
+/// Collect the literal names (quoted strings and `qw(...)` words) from one
+/// export statement body.
+fn harvest_export_names(statement: &str, names: &mut HashSet<String>) {
+    let (qw_words, remainder) = extract_qw_words(statement);
+    names.extend(qw_words);
+    let mut chars = remainder.char_indices().peekable();
+    while let Some((_, c)) = chars.next() {
+        if c != '\'' && c != '"' {
+            continue;
+        }
+        let quote = c;
+        let mut inner = String::new();
+        let mut closed = false;
+        let mut escaped = false;
+        for (_, ch) in chars.by_ref() {
+            if escaped {
+                inner.push(ch);
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == quote {
+                closed = true;
+                break;
+            }
+            inner.push(ch);
+        }
+        if closed && !inner.is_empty() {
+            names.insert(inner);
+        }
+    }
 }
 
 fn extract_module_name_from_require_args(args: &[Node]) -> Option<String> {

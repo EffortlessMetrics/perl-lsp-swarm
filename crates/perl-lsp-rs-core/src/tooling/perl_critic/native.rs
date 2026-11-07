@@ -78,7 +78,10 @@ impl CriticRule for RequireUseStrictRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        if has_use_statement(ctx.source, "strict") || test2_provides_pragma(ctx.source, "strict") {
+        if has_use_statement(ctx.source, "strict")
+            || test2_provides_pragma(ctx.source, "strict")
+            || oo_framework_provides_pragma(ctx.source, "strict")
+        {
             return;
         }
 
@@ -124,6 +127,7 @@ impl CriticRule for RequireUseWarningsRule {
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
         if has_use_statement(ctx.source, "warnings")
             || test2_provides_pragma(ctx.source, "warnings")
+            || oo_framework_provides_pragma(ctx.source, "warnings")
         {
             return;
         }
@@ -2517,6 +2521,52 @@ fn test2_provides_pragma(content: &str, feature: &str) -> bool {
     crate::providers::testing::test2::Test2Facts::from_source(content).provides_pragma(feature)
 }
 
+/// Modules whose `use` turns on `strict` and `warnings` for the importer
+/// (#18765). An idiomatic `use Moo;` / `use Moose;` / `use Mouse;` /
+/// `use Mojo::Base ...;` / `use Object::Pad;` / `use Mars;` module must not
+/// trip the require-use-strict/warnings rules the way an ordinary Test2
+/// test must not (`test2_provides_pragma`).  The list is exact-match so
+/// prefix-borrowing modules that do NOT import the pragmas (`MooX::…`,
+/// `MooseX::…`, `Mouse::Util::TypeConstraints`) keep firing.
+const OO_FRAMEWORKS_PROVIDING_PRAGMAS: &[&str] = &[
+    "Moo",
+    "Moo::Role",
+    "Moose",
+    "Moose::Role",
+    "Mouse",
+    "Mouse::Role",
+    "Mojo::Base",
+    "Object::Pad",
+    "Mars",
+    "Mars::Class",
+    "Mars::Role",
+];
+
+/// Whether an OO framework import in `content` provides the named pragma
+/// implicitly (#18765).
+///
+/// `use feature 'class'` is handled separately and conservatively: since
+/// Perl 5.38 it enables `strict` inside the class block, while `warnings`
+/// is only implied from 5.40 on, so it satisfies `strict` but not
+/// `warnings` here.
+fn oo_framework_provides_pragma(content: &str, feature: &str) -> bool {
+    content.lines().any(|line| {
+        let code_portion = line.split('#').next().unwrap_or_default();
+        let mut tokens = code_portion.split_whitespace();
+        if tokens.next() != Some("use") {
+            return false;
+        }
+        let Some(module) = tokens.next().map(|m| m.trim_end_matches(';')) else {
+            return false;
+        };
+        if module == "feature" {
+            return feature == "strict"
+                && (code_portion.contains("'class'") || code_portion.contains("\"class\""));
+        }
+        OO_FRAMEWORKS_PROVIDING_PRAGMAS.contains(&module)
+    })
+}
+
 fn has_use_statement_line(line: &str, feature: &str) -> bool {
     let code_portion = line.split('#').next().unwrap_or_default();
     let mut tokens = code_portion.split_whitespace();
@@ -3378,6 +3428,88 @@ mod tests {
         assert!(registry.check(&exact_ctx).is_empty());
         assert_eq!(registry.check(&similar_ctx).len(), 1);
         assert_eq!(registry.check(&commented_ctx).len(), 1);
+    }
+
+    /// #18765: OO frameworks import strict and warnings implicitly, so an
+    /// idiomatic `use Moo;` module must not trip either require-use rule.
+    #[test]
+    fn require_use_rules_accept_oo_framework_imports() {
+        let ast = empty_program_node();
+        let config = CriticConfig::default();
+        let strict_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
+        let warnings_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseWarningsRule)]);
+
+        let sources = [
+            "package Store::Product;\nuse Moo;\nmy $x = 1;\n",
+            "package Store::Discount;\nuse Moo::Role;\nmy $x = 1;\n",
+            "package Store::Report;\nuse Moose;\nwith 'Store::Role';\nmy $x = 1;\n",
+            "package Store::Mouse;\nuse Mouse;\nmy $x = 1;\n",
+            "package Store::Mojo;\nuse Mojo::Base 'Store::Base';\nmy $x = 1;\n",
+            "package Store::Pad;\nuse Object::Pad;\nmy $x = 1;\n",
+            "package Store::Mars;\nuse Mars::Class;\nmy $x = 1;\n",
+        ];
+
+        for source in sources {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert!(
+                strict_registry.check(&ctx).is_empty(),
+                "require_use_strict must accept an OO framework module: {source:?}"
+            );
+            assert!(
+                warnings_registry.check(&ctx).is_empty(),
+                "require_use_warnings must accept an OO framework module: {source:?}"
+            );
+        }
+    }
+
+    /// Controls for the OO framework acceptance: prefix-borrowing modules
+    /// (`MooX::…`, `MooseX::…`, `Moom`) do NOT import the pragmas, and a
+    /// commented-out `use Moo;` still fires.
+    #[test]
+    fn require_use_rules_still_fire_without_a_real_oo_framework_import() {
+        let ast = empty_program_node();
+        let config = CriticConfig::default();
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
+
+        let sources = [
+            "use MooX::Options;\nmy $x = 1;\n",
+            "use MooseX::Types::Path::Class;\nmy $x = 1;\n",
+            "use Moom;\nmy $x = 1;\n",
+            "# use Moo;\nmy $x = 1;\n",
+            "package P;\nuse Mouse::Util::TypeConstraints;\nmy $x = 1;\n",
+        ];
+
+        for source in sources {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert_eq!(
+                registry.check(&ctx).len(),
+                1,
+                "require_use_strict must still fire without a real OO framework \
+                 import: {source:?}"
+            );
+        }
+    }
+
+    /// `use feature 'class'` implies strict (Perl 5.38+) but not warnings
+    /// (only implied from 5.40), so the strict rule accepts it while the
+    /// warnings rule keeps firing.
+    #[test]
+    fn require_use_strict_accepts_feature_class_but_warnings_keeps_firing() {
+        let ast = empty_program_node();
+        let config = CriticConfig::default();
+        let source = "use feature 'class';\nclass Point { field $x; }\n";
+        let strict_ctx = CriticContext::new(source, &ast, &config);
+        let warnings_ctx = CriticContext::new(source, &ast, &config);
+
+        let strict_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
+        let warnings_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseWarningsRule)]);
+
+        assert!(strict_registry.check(&strict_ctx).is_empty());
+        assert_eq!(warnings_registry.check(&warnings_ctx).len(), 1);
     }
 
     #[test]
