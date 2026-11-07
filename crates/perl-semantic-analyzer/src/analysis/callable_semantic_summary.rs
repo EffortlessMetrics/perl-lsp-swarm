@@ -497,6 +497,20 @@ fn count_unmodeled(body: &HirBody) -> u32 {
     count
 }
 
+/// Whether the body contains a regex-family expression the per-body PIR
+/// lowering does not model (#7136, #14645).
+fn body_has_regex_family(body: &HirBody) -> bool {
+    body.exprs.iter().any(|expr| {
+        matches!(
+            expr,
+            HirExpr::Regex(_)
+                | HirExpr::Match(_)
+                | HirExpr::Substitution(_)
+                | HirExpr::Transliteration(_)
+        )
+    })
+}
+
 /// The `(range, has_value)` shape of every HIR `Return` expression in the
 /// body, used to distinguish bare `return;` from `return EXPR;` without
 /// guessing.
@@ -551,7 +565,16 @@ fn body_identity(
     nodes: &[PirNode],
     outbound_calls: &[OutboundCallDependency],
     boundary_sites: &[BoundarySiteRef],
+    unmodeled: u32,
+    body: &HirBody,
 ) -> BodyIdentity {
+    // Regex-family operations emit no PIR node, so `/foo/i` and `/bar/i` would
+    // share a digest built from modeled ops alone (#14645). Other unmodeled
+    // forms (eval boundaries, try/catch, …) still contribute anchors through
+    // outbound joins or remain distinguishable from modeled evidence.
+    if unmodeled > 0 && body_has_regex_family(body) {
+        return BodyIdentity::Unknown;
+    }
     let mut fingerprint = SemanticIdentityFingerprint::new("callable-body-v1")
         .field("document", &ctx.document.0.to_string())
         .field("body", &body_idx.to_string());
@@ -568,14 +591,8 @@ fn body_identity(
         // source text): two equal-length but different operations are
         // different bodies.
         //
-        // Scope limit: this holds for operations that *become* PIR nodes. A
-        // construct the per-body lowering records as unsupported emits no node
-        // and so contributes nothing here — regex-family operations are the
-        // clearest case, and `/foo/i`, `/foo/g` and `/bar/i` in an otherwise
-        // identical callable currently share one identity. That predates the
-        // typed regex variants (a bound match was previously an unsupported
-        // `Call`, an unbound one an `Opaque`) and is tracked by #14645. Do not
-        // read the sentence above as covering every edit to a body.
+        // Scope limit: bodies with unmodeled expressions return
+        // `BodyIdentity::Unknown` before this loop runs (#14645).
         fingerprint = fingerprint.field("op", &format!("{:?}", node.operation)).field(
             "op-anchor",
             &node
@@ -1163,7 +1180,7 @@ fn build_packet(
     CallableSemanticSummary::new(
         entity,
         decl.name.clone(),
-        body_identity(ctx, body_idx, nodes, &outbound_calls, &boundary_sites),
+        body_identity(ctx, body_idx, nodes, &outbound_calls, &boundary_sites, unmodeled, body),
         ctx.source_generation.clone(),
         to_anchor(decl_range, ctx.document),
         summary_ref,
