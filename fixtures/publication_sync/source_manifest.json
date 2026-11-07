@@ -1,0 +1,41 @@
+{
+  "schema_version": "source_sync_manifest.v1",
+  "profile": "source",
+  "direction": "swarm_to_public",
+  "source_repository": "EffortlessMetrics/perl-lsp-swarm",
+  "source_ref": "refs/heads/main",
+  "destination_repository": "EffortlessMetrics/perl-lsp",
+  "destination_ref": "refs/heads/master",
+  "reconciliation_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "destination_base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "swarm_source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "planned_at": "2026-10-04",
+  "default_action": "take_swarm",
+  "inputs": [
+    {
+      "id": "reconciliation",
+      "path": "fixtures/source/reconciliation.json",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "id": "product_proof",
+      "path": "fixtures/source/product_proof.json",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "id": "projection_policy",
+      "path": "fixtures/source/projection_policy.json",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "id": "protected_source_controls",
+      "path": "fixtures/source/protected_source_controls.json",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "paths": [],
+  "expected_projected_tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "blockers": [],
+  "published_channels": [],
+  "release_cut": false
+}
