@@ -1995,7 +1995,9 @@ impl LspServer {
                                     let blockers: Vec<String> = blocked
                                         .blocker_descriptions
                                         .into_iter()
-                                        .filter(|description| seen_blockers.insert(description.clone()))
+                                        .filter(|description| {
+                                            seen_blockers.insert(description.clone())
+                                        })
                                         .collect();
                                     let message = if blockers.is_empty() {
                                         format!("Workspace rename blocked ({pilot_reason})")
