@@ -63,6 +63,56 @@ processes, and independent later artifact consumers are outside that lease.
 The root/native orchestrator must account for those consumers and own the build
 lane. A preflight report cannot be replayed as permission for a later command.
 
+## Bootstrap the native hooks through the lightweight owner
+
+The maintained install/check entrypoints use the existing `perl-ci-hygiene`
+binary directly through admission, without an outer product-linked `xtask`
+build. Their Cargo request is `run -p perl-ci-hygiene --bin perl-ci-hygiene
+--profile agent --locked -- install-githooks` (or `check-githooks`). The existing
+admission entrypoint retains the pinned-toolchain guard and private target/build
+paths; there is no guessed executable path or same-name PATH fallback.
+
+`just doctor` inspects Git's effective hook path and compares it with the
+authority in the invoking worktree, including relative `core.hooksPath` layouts.
+Diagnosis remains read-only; its printed repair enters the maintained installer.
+An unsuccessful path or content probe cannot report a current hook.
+
+Inspect each operation separately from its owning worktree:
+
+```bash
+bash scripts/install-githooks.sh --preflight
+bash scripts/check-githooks.sh --preflight
+```
+
+Prepare a caller-owned budget from each report and its independently qualified
+sizing basis, using the schema below. Then use the corresponding policy:
+
+```bash
+bash scripts/install-githooks.sh --preflight --budget-file "$INSTALL_BUDGET"
+bash scripts/install-githooks.sh --budget-file "$INSTALL_BUDGET"
+bash scripts/check-githooks.sh --budget-file "$CHECK_BUDGET"
+```
+
+Wrapper options must precede program arguments. The two operations have distinct
+argv digests: an install policy cannot admit a check, or vice versa. Invoking a
+wrapper from an unrelated directory selects that script's worktree and normalizes
+Git repository selectors only in its child. Qualify that effective root, source,
+toolchain, configuration, cache state, profile/features and all registered live
+worktrees before installation: the installer provisions every live tree sharing
+the common Git directory before setting the relative hook path.
+
+[The scoped Windows evidence in #17861](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17861#issuecomment-6157610963)
+and [later Linux composition qualification](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17861#issuecomment-6256983490)
+record native installer/checker observations and host-owned sizing allowances.
+These historical results are neither repository defaults nor qualification of a
+different cloud executor. Recheck the exact source/toolchain/profile/cache and
+host/runtime assumptions before using a sizing basis, and qualify changes with
+fresh measurements and an operator-selected reserve/concurrent-consumer allowance.
+Missing sizing evidence uses the unchanged default admission;
+missing/stale hooks and failed bootstrap/check operations remain failures.
+Installed hook currency and writer preflight do not prove later commit/push gates
+executed or that their product workload fits the installer budget.
+
 ## Prepare historical inputs in a fresh cloud checkout
 
 Cloud clones and saved snapshots may use `remote.origin.tagOpt=--no-tags`.
