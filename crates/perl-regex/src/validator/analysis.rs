@@ -90,6 +90,10 @@ pub enum RegexDiagnosticCode {
     EmbeddedCodeDeferred,
     /// A repeated group already contains a backtracking quantifier.
     NestedQuantifierRisk,
+    /// A `*`, `+`, or `?` quantifier has no preceding atom, as in `/*abc/`,
+    /// `/a|*b/`, or `/(?:*a)/`. Perl rejects this at compile time with
+    /// `Quantifier follows nothing in regex`.
+    QuantifierFollowsNothing,
     /// Configured Unicode-property count was exceeded.
     UnicodePropertyLimit,
     /// Configured nested-lookbehind depth was exceeded.
@@ -122,6 +126,7 @@ impl RegexDiagnosticCode {
             Self::EmbeddedCodeImmediate => "embedded_code_immediate",
             Self::EmbeddedCodeDeferred => "embedded_code_deferred",
             Self::NestedQuantifierRisk => "nested_quantifier_risk",
+            Self::QuantifierFollowsNothing => "quantifier_follows_nothing",
             Self::UnicodePropertyLimit => "unicode_property_limit",
             Self::LookbehindNestingLimit => "lookbehind_nesting_limit",
             Self::BranchResetNestingLimit => "branch_reset_nesting_limit",
@@ -142,6 +147,8 @@ impl RegexDiagnosticCode {
                 RegexDiagnosticClass::DynamicBoundary
             }
             Self::NestedQuantifierRisk => RegexDiagnosticClass::RiskAdvisory,
+            // Perl rejects this at compile time, so it is syntax, not advisory.
+            Self::QuantifierFollowsNothing => RegexDiagnosticClass::Syntax,
             Self::UnicodePropertyLimit
             | Self::LookbehindNestingLimit
             | Self::BranchResetNestingLimit
@@ -196,6 +203,9 @@ impl RegexDiagnostic {
             }
             RegexDiagnosticCode::NestedQuantifierRisk => {
                 "Nested quantifiers may cause catastrophic backtracking".to_string()
+            }
+            RegexDiagnosticCode::QuantifierFollowsNothing => {
+                "Quantifier follows nothing in regex".to_string()
             }
             RegexDiagnosticCode::UnicodePropertyLimit => format!(
                 "Too many Unicode properties in regex (max {})",
@@ -289,6 +299,8 @@ pub struct RegexFacts {
     pub dynamic_regions: Vec<RegexDynamicRegionFact>,
     /// Nested-quantifier advisory ranges in source order.
     pub nested_quantifiers: Vec<RegexRange>,
+    /// Quantifier-follows-nothing syntax ranges in source order.
+    pub quantifier_follows_nothing: Vec<RegexRange>,
 }
 
 /// Completeness of the bounded static result.

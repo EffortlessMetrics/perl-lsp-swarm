@@ -134,6 +134,7 @@ impl DiagnosticCode {
             "PL1005" => "https://docs.perl-lsp.org/errors/PL1005",
             "PL1006" => "https://docs.perl-lsp.org/errors/PL1006",
             "PL1007" => "https://docs.perl-lsp.org/errors/PL1007",
+            "PL1008" => "https://docs.perl-lsp.org/errors/PL1008",
             _ => return None,
         })
     }
@@ -151,7 +152,8 @@ impl DiagnosticCode {
             | Self::UnquotedBareword
             | Self::UnresolvedQualifiedCall
             | Self::RegexModifierInvalid
-            | Self::RegexCaptureInvalid => DiagnosticSeverity::Error,
+            | Self::RegexCaptureInvalid
+            | Self::RegexQuantifierFollowsNothing => DiagnosticSeverity::Error,
 
             // Warnings
             Self::MissingStrict
@@ -540,6 +542,10 @@ impl DiagnosticCode {
                 partial. Absence of a further finding here is not evidence that the \
                 pattern is clean.",
             ),
+            Self::RegexQuantifierFollowsNothing => Some(
+                "This quantifier has no atom to repeat. Remove it, or add the atom it \
+                should repeat before it.",
+            ),
         }
     }
 
@@ -586,6 +592,8 @@ impl DiagnosticCode {
             || contains_diagnostic_phrase(&msg_lower, "prototype mismatch")
         {
             Some(Self::InvalidPrototype)
+        } else if contains_diagnostic_phrase(&msg_lower, "quantifier follows nothing") {
+            Some(Self::RegexQuantifierFollowsNothing)
         } else if contains_diagnostic_phrase(&msg_lower, "parse error") {
             Some(Self::ParseError)
         } else if contains_diagnostic_phrase(&msg_lower, "syntax error") {
