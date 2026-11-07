@@ -5060,3 +5060,22 @@ created = "2026-09-29"
 review_after = "2026-10-29"
 expires = "2026-11-30"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1453 recognizes the named fallible oracles, or replace with recognized focused proof that preserves the repo's panic-free test policy. Re-audit immediately if the hint text, code, status, or their tests change; do not extend this entry to another probe identity."
+[[suppress]]
+id = "ripr-suppress-host-work-status-pure-domain"
+kind = "predicate_infection_untraceable"
+paths = [
+  "xtask/src/host_work_status/mod.rs",
+  "xtask/src/host_work_status/subject.rs",
+  "xtask/src/host_work_status/dimension.rs",
+  "xtask/src/host_work_status/lifecycle.rs",
+  "xtask/src/host_work_status/status.rs",
+  "xtask/src/host_work_status/adapter.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11664"
+reason = "PR #11995 stages the pure typed host-work-status domain without a production consumer until #11666. The original report identified no_static_path seams in declarations and closed-vocabulary domain code that the instrument did not connect to test activation (ripr#1428/#1429). Historical seam/test counts are not current proof or all-seam coverage. Focused classifier, adapter, aggregation, identity and negative controls provide bounded behavioral evidence; the reviewed revision must carry its execution and instrument results separately. Limit this exception to the six named files and no_static_path classification; remove with the production entry point or upstream tracing repair."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-31"
+removal_criteria = "Remove when #11666 wires the live command (RIPR can then trace activation through the command surface), or when ripr#1428/#1429 fix upstream tracing for declaration-only modules. Narrow immediately if any seam unrelated to the pure domain lands in these files."
