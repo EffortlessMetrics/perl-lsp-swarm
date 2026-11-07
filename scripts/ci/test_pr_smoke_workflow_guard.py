@@ -279,19 +279,20 @@ class ReceiptRetentionTests(unittest.TestCase):
         "Upload PR-fast receipt",
         "Upload PR-fast missing-receipt diagnostics",
     )
-    PEER_UPLOAD = "Upload CI actuals"
+    PEER_UPLOADS = ("Upload gate receipt", "Upload CI actuals")
 
     def test_pr_smoke_receipt_outlives_the_shard_receipts(self) -> None:
         uploads = upload_retention_days()
-        self.assertIn(self.PEER_UPLOAD, uploads)
-        peer = uploads[self.PEER_UPLOAD]
-        for name in self.PR_SMOKE_UPLOADS:
-            self.assertIn(name, uploads)
-            self.assertGreaterEqual(
-                uploads[name],
-                peer,
-                f"{name} expires before the CI Gate shard receipts it explains",
-            )
+        for peer_name in self.PEER_UPLOADS:
+            self.assertIn(peer_name, uploads)
+            for name in self.PR_SMOKE_UPLOADS:
+                with self.subTest(upload=name, peer=peer_name):
+                    self.assertIn(name, uploads)
+                    self.assertGreaterEqual(
+                        uploads[name],
+                        uploads[peer_name],
+                        f"{name} expires before {peer_name}",
+                    )
 
     def test_pr_smoke_receipt_retained_at_least_thirty_days(self) -> None:
         for name in self.PR_SMOKE_UPLOADS:

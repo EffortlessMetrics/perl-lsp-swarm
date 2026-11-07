@@ -1186,9 +1186,9 @@ jobs:
       # own rule -- update the footprint bound only with a fresh measured
       # receipt (PR_SMOKE_FOOTPRINT_GIB above) -- unsatisfiable: the bound's
       # originating run (37195503421) has no surviving artifact and no job
-      # log. Retain at least as long as the CI Gate shard receipts these
-      # verdicts explain ("Upload CI actuals"), so the two evidence classes
-      # cannot drift apart in lifetime.
+      # log. Retain at least as long as both the CI Gate shard receipts
+      # ("Upload gate receipt") and derived telemetry ("Upload CI actuals"),
+      # so the related evidence cannot drift apart in lifetime.
       - name: Upload PR-fast receipt
         if: always() && hashFiles('target/receipts/receipt.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
