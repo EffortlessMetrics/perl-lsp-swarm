@@ -62,9 +62,45 @@ pub(crate) use cancellation::enhanced_cancelled_response;
 use super::*;
 use super::{JsonRpcRequest, JsonRpcResponse, LspServer, Value, cancelled_response_with_method};
 
+/// Request-local authority, never part of the JSON-RPC envelope.
+#[derive(Default)]
+pub(crate) struct RequestDispatchContext {
+    pub(crate) stream_admission: Option<super::stream_session::StreamAdmissionTicket>,
+}
+
 impl LspServer {
     /// Handle a JSON-RPC request
     pub fn handle_request(&self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
+        let dispatch = match self.direct_dispatch_context(&request) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                return request.id.map(|id| JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: Some(id),
+                    result: None,
+                    error: Some(error),
+                });
+            }
+        };
+        self.handle_request_with_context(request, dispatch)
+    }
+
+    fn direct_dispatch_context(
+        &self,
+        request: &JsonRpcRequest,
+    ) -> Result<RequestDispatchContext, super::JsonRpcError> {
+        if Self::streaming_admission_uri(request).is_none() {
+            return Ok(RequestDispatchContext::default());
+        }
+        super::scheduler::reserve_read_dispatch(self, request).map(|(_, dispatch)| dispatch)
+    }
+
+    /// Scheduled work already owns its ingress ticket; never reserve again here.
+    pub(crate) fn handle_request_with_context(
+        &self,
+        request: JsonRpcRequest,
+        dispatch: RequestDispatchContext,
+    ) -> Option<JsonRpcResponse> {
         let context = preflight::RequestContext::from_request(&request);
 
         match preflight::prepare_request(self, &request, &context) {
@@ -76,7 +112,12 @@ impl LspServer {
         let routed =
             formatting_policy::route(self, &request, context.id.clone(), context.should_respond)
                 .unwrap_or_else(|| {
-                    self.route_request(request, context.id.clone(), context.should_respond)
+                    self.route_request_with_context(
+                        request,
+                        context.id.clone(),
+                        context.should_respond,
+                        dispatch,
+                    )
                 });
         response::finalize_response(context.id.as_ref(), routed)
     }
