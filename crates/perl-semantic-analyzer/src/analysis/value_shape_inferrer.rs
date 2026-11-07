@@ -176,20 +176,8 @@ impl InferrerState {
 
             // `bless $ref, 'Pkg'` — bless call.
             NodeKind::FunctionCall { name, args } if name == "bless" => {
-                // Second argument is the package name.
-                if let Some(pkg_node) = args.get(1)
-                    && let Some(pkg) = string_value(pkg_node)
-                {
-                    return Some(ValueShape::Object { package: pkg, confidence: Confidence::Low });
-                }
-                // `bless $ref` with no explicit package — uses current package.
-                if args.len() == 1 {
-                    return Some(ValueShape::Object {
-                        package: self.current_package.clone(),
-                        confidence: Confidence::Low,
-                    });
-                }
-                None
+                literal_bless_package(args, &self.current_package)
+                    .map(|package| ValueShape::Object { package, confidence: Confidence::Low })
             }
 
             _ => None,
@@ -239,6 +227,30 @@ impl InferrerState {
         self.variable_shapes.get(name).is_some_and(
             |shape| matches!(shape, ValueShape::Object { package, .. } if package == "DBI::db"),
         )
+    }
+}
+
+/// Shared syntactic class owner for bless-derived shapes and navigation keys.
+/// Dynamic expressions stay unknown; a quoted special-token spelling is still
+/// a literal class. Bare special tokens remain conservatively unresolved.
+pub(super) fn literal_bless_package(args: &[Node], current_package: &str) -> Option<String> {
+    match args.get(1) {
+        Some(Node { kind: NodeKind::Identifier { name }, .. })
+            if matches!(
+                name.as_str(),
+                "__PACKAGE__" | "__FILE__" | "__LINE__" | "__SUB__" | "__CLASS__"
+            ) =>
+        {
+            None
+        }
+        Some(Node { kind: NodeKind::String { value, interpolated: true }, .. })
+            if value.contains(['$', '@', '\\']) =>
+        {
+            None
+        }
+        Some(package) => string_value(package),
+        None if args.len() == 1 => Some(current_package.to_string()),
+        None => None,
     }
 }
 
