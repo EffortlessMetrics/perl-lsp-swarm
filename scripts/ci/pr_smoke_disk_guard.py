@@ -53,6 +53,7 @@ import math
 import shutil
 import sys
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
 
@@ -168,21 +169,48 @@ def parse_min_free_bytes(raw: str) -> int:
     if text.lower().endswith("gib"):
         number = text[: -len("gib")].strip()
         try:
-            value = float(number)
-        except ValueError as error:
+            value = Decimal(number)
+        except InvalidOperation as error:
             raise argparse.ArgumentTypeError(
                 f"invalid GiB value: {raw!r}"
             ) from error
-        byte_value = value * GIB
-        if not math.isfinite(byte_value):
+        if not value.is_finite():
             raise argparse.ArgumentTypeError(
-                f"GiB value and its byte conversion must be finite: {raw!r}"
+                f"GiB value must be finite: {raw!r}"
             )
         if value < 0:
             raise argparse.ArgumentTypeError(
                 f"min-free value must be non-negative: {raw!r}"
             )
-        return int(byte_value)
+        # Decimal arithmetic preserves every input digit, so large integral
+        # GiB values keep all requested bytes (#19157); truncate only
+        # fractional bytes, as before. Bound the magnitude first: an extreme
+        # decimal exponent (e.g. 1e999999999GiB) would otherwise materialize
+        # a billion-digit integer in as_integer_ratio. Values at or above
+        # 1e300 GiB always overflow binary64 as bytes (1e300 * GIB > 1e309),
+        # so rejecting them here is exact; values below 1e-10 GiB always
+        # truncate to zero bytes.
+        # short-circuit: zero is zero regardless of its decimal exponent
+        # (e.g. 0e500GiB), and adjusted() reflects the exponent, not the value.
+        if value.is_zero():
+            return 0
+        if value.adjusted() >= 300:
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
+        if value.adjusted() <= -11:
+            return 0
+        numerator, denominator = value.as_integer_ratio()
+        byte_value = numerator * GIB // denominator
+        try:
+            conversion_finite = math.isfinite(float(byte_value))
+        except OverflowError:
+            conversion_finite = False
+        if not conversion_finite:
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
+        return byte_value
     try:
         value = int(text)
     except ValueError as error:
