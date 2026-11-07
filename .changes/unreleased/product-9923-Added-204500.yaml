@@ -1,0 +1,9 @@
+project: product
+component: Release tooling
+kind: Added
+body: "`cargo xtask open-vsx-public-state` classifies a bounded read-only observation of six independent Open VSX surfaces into a durable open_vsx_public_state.v1 receipt, so a missing gallery listing, an unretrievable package, a rate-limited probe and an incomplete instrument stay distinguishable instead of all reading as a deleted extension."
+time: 2026-08-30T20:45:00Z
+custom:
+  PR: "9923"
+  Slug: open-vsx-public-state-receipt
+  Breaking: "no"

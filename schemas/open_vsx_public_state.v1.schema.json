@@ -1,0 +1,529 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/open_vsx_public_state.v1.schema.json",
+  "title": "open_vsx_public_state.v1",
+  "description": "Durable read-only receipt describing the current Open VSX public state of one extension identity. Emitted by xtask::open_vsx_public_state from a conforming open_vsx_public_state_observation.v1 document. The receipt is the domain truth; the emitting process exit status is an operational convenience and is not the classification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observed_at",
+    "registry",
+    "identity",
+    "instrument",
+    "instrument_complete",
+    "probe_plan_digest",
+    "subject_version",
+    "cells",
+    "public_bytes",
+    "expected",
+    "limitations",
+    "blockers",
+    "state"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "open_vsx_public_state.v1"
+    },
+    "observed_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "RFC 3339 instant, with an explicit offset, at which the probe ran. This contract sets no maximum age: how stale a receipt may be before it stops counting as current is a consumer policy, not a property of the observation."
+    },
+    "registry": {
+      "const": "open_vsx"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "extension",
+        "extension_id"
+      ],
+      "properties": {
+        "namespace": {
+          "$ref": "#/$defs/registry_segment"
+        },
+        "extension": {
+          "$ref": "#/$defs/registry_segment"
+        },
+        "extension_id": {
+          "description": "Canonical `namespace.extension` identifier.",
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "source_ref"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "source_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "instrument_complete": {
+      "description": "True only when every planned cell was actually attempted. An incomplete instrument can never yield extension_missing.",
+      "type": "boolean"
+    },
+    "probe_plan_digest": {
+      "description": "SHA-256 over the canonical probe plan the observation was required to match. It binds this receipt to one exact read-only request set. Null exactly when the observation was too malformed to derive a plan, which is always the invalid state.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/sha256"
+        }
+      ]
+    },
+    "subject_version": {
+      "description": "The expected version whose public bytes the versioned-file cell was required to address. Null only alongside a null probe_plan_digest.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/version_string"
+        }
+      ]
+    },
+    "cells": {
+      "description": "One entry per observed registry surface. The position of each surface is fixed, which is what makes two runs over identical observations produce byte-identical receipts and makes a duplicated or missing surface unrepresentable.",
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/cell_result"
+      },
+      "prefixItems": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/cell_result"
+            },
+            {
+              "properties": {
+                "cell": {
+                  "const": "listing"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/cell_result"
+            },
+            {
+              "properties": {
+                "cell": {
+                  "const": "search"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/cell_result"
+            },
+            {
+              "properties": {
+                "cell": {
+                  "const": "namespace_metadata"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/cell_result"
+            },
+            {
+              "properties": {
+                "cell": {
+                  "const": "extension_metadata"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/cell_result"
+            },
+            {
+              "properties": {
+                "cell": {
+                  "const": "version_rows"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/cell_result"
+            },
+            {
+              "properties": {
+                "cell": {
+                  "const": "versioned_file"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "public_bytes": {
+      "description": "Exact public package identity, present only when the versioned file was retrieved in full.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "sha256",
+            "byte_length"
+          ],
+          "properties": {
+            "version": {
+              "$ref": "#/$defs/version_string"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "byte_length": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "expected": {
+      "description": "Historical identity carried through unchanged. Retained as historical evidence; never treated as current availability.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "versions",
+        "publication_refs"
+      ],
+      "properties": {
+        "versions": {
+          "description": "Carried through from the observation. Empty only when the observation supplied no expected version, which is always the invalid state.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "version",
+              "vsix_sha256"
+            ],
+            "properties": {
+              "version": {
+                "$ref": "#/$defs/version_string"
+              },
+              "vsix_sha256": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/sha256"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "publication_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Bounded free-text reference retained verbatim in the durable receipt. Values are additionally validated by the classifier: control characters, filesystem paths, credential userinfo, and non-https schemes are refused and redacted."
+          }
+        }
+      }
+    },
+    "limitations": {
+      "description": "What this receipt does not establish. Sorted and deduplicated.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blockers": {
+      "description": "Why the state is not available_exact. Sorted and deduplicated; empty exactly when the state is available_exact.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/blocker"
+      }
+    },
+    "state": {
+      "description": "The classified public state. Provider, transport, instrument, and schema failures resolve to provider_not_proven and can never become extension_missing; contradictory definite answers are also provider_not_proven. available_exact is defined for consumers that hold a resolved candidate authority (#9138) and is NOT reachable from an observation alone: an observation cannot bind its own expected digest, so the ceiling here is available_identity_not_proven.",
+      "enum": [
+        "available_exact",
+        "available_identity_not_proven",
+        "listing_missing_version_retrievable",
+        "extension_missing",
+        "namespace_or_publisher_problem",
+        "provider_not_proven",
+        "invalid"
+      ]
+    }
+  },
+  "$defs": {
+    "registry_segment": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "version_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cell_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cell",
+        "url",
+        "method",
+        "observation",
+        "status",
+        "redirects",
+        "response_bytes",
+        "truncated",
+        "error_kind",
+        "identity_match",
+        "versions",
+        "elapsed_ms"
+      ],
+      "properties": {
+        "cell": {
+          "enum": [
+            "listing",
+            "search",
+            "namespace_metadata",
+            "extension_metadata",
+            "version_rows",
+            "versioned_file"
+          ]
+        },
+        "url": {
+          "description": "The URL the observation actually addressed, not the one the plan derived. When the two differ the receipt is invalid and this field is the evidence.",
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "description": "The only method this tool sanctions. It states the contract rather than echoing the observation: an observation claiming any other method is refused as invalid, with the observed method named in the corresponding blocker.",
+          "const": "GET"
+        },
+        "observation": {
+          "description": "present is an affirmative 2xx; proven_absent is an affirmative 404; provider_failed covers every transport, budget, rate-limit, schema-drift, and other-status outcome; not_attempted is an instrument gap.",
+          "enum": [
+            "present",
+            "proven_absent",
+            "provider_failed",
+            "not_attempted"
+          ]
+        },
+        "status": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            }
+          ]
+        },
+        "redirects": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "response_bytes": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "error_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity_match": {
+          "description": "Whether this surface affirmed the exact subject identity, where the surface can express that. Null where the surface carries no identity claim. On the search surface this is scoped to a single bounded result page: false means the subject did not appear on that page, not that the registry cannot discover it. The classifier does not consume the search surface's value; the namespace and extension surfaces' values do select states.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "versions": {
+          "description": "Version rows this surface published, kept per surface so the extension record and the versions endpoint stay separate observations. Null where the surface publishes none.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/version_string"
+              }
+            }
+          ]
+        },
+        "elapsed_ms": {
+          "description": "Wall-clock duration of the attempt in milliseconds, carried through so a consumer can check the timeout budget the plan declared.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "owner"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "available_exact is the one state with nothing left to report: it carries no blockers and must name the exact public bytes it proved. Every other state must say why it is not that one.",
+      "if": {
+        "properties": {
+          "state": {
+            "const": "available_exact"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "blockers": {
+            "maxItems": 0
+          },
+          "public_bytes": {
+            "type": "object"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "blockers": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "description": "Both fields are derived from the probe plan, so they are present together or absent together; absent means no single request set could be named, which is always the invalid state.",
+      "if": {
+        "properties": {
+          "probe_plan_digest": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "probe_plan_digest"
+        ]
+      },
+      "then": {
+        "properties": {
+          "subject_version": {
+            "type": "null"
+          },
+          "state": {
+            "const": "invalid"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "subject_version": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}
