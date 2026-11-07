@@ -1,0 +1,69 @@
+{
+  "source_commit": "46588022115d4bec71c7db544323528852b5ffb9",
+  "files": [
+    {
+      "path": "scripts/generate_release_topology.py",
+      "source_blob": "65667752ae7a86ca8969ca4cc2be93e9ab0ed0ea"
+    },
+    {
+      "path": "scripts/release_topology_json.py",
+      "source_blob": "5b2067c957c6fb2120d74b195533dea6fdc653a5"
+    },
+    {
+      "path": "scripts/release_subject_projection.py",
+      "source_blob": "f91d791eba33d868050d81a9d1d3d2b34c383642"
+    },
+    {
+      "path": "scripts/publish-topo.py",
+      "source_blob": "2eb88153d10fba191cad4f50fa2be80812111a33"
+    },
+    {
+      "path": "scripts/release_terminal_manifest.py",
+      "source_blob": "3de269626f3f27cd76243c265f52b41685914bee"
+    },
+    {
+      "path": "scripts/release_archive_members.py",
+      "source_blob": "78ba0206ed4e2f0aada8e2cf19202c6a22aae9e5"
+    },
+    {
+      "path": "scripts/release_tag_authority.py",
+      "source_blob": "14d7b5fd451a7ba1829a7494811debbb30d5e02b"
+    },
+    {
+      "path": "scripts/requirements-release.txt",
+      "source_blob": "fc1384befa8d1b555da976920189af9af3dc2a5d"
+    },
+    {
+      "path": "scripts/test_generate_release_topology.py",
+      "source_blob": "1e1d6b168d4dd75e563e9e3c786ffc8b2f2c8217"
+    },
+    {
+      "path": "scripts/test_release_terminal_manifest.py",
+      "source_blob": "29723c8fbb9cc66ab01cabd6adc355bb15e6c70c"
+    },
+    {
+      "path": "scripts/test_release_tag_authority.py",
+      "source_blob": "bd5893cf565287963c5ab760383980d79b086934"
+    },
+    {
+      "path": "scripts/test_release_topology_json.py",
+      "source_blob": "1c37e96eb5d4378313084392697ad0dc1a6da8b2"
+    },
+    {
+      "path": "schemas/release_topology.v1.schema.json",
+      "source_blob": "1c99381d8d6b8206e1a88ac295d294be8f74c757"
+    },
+    {
+      "path": "schemas/release_topology.v2.schema.json",
+      "source_blob": "6ba3cb418eb0fd539ce624dd318f468c28d57034"
+    },
+    {
+      "path": "schemas/release_topology.v3.schema.json",
+      "source_blob": "e1f558005c7210e8608eb90b9e045898bc740394"
+    },
+    {
+      "path": "scripts/bash_binary.py",
+      "source_blob": "09e32070b93e1cc5125eab50c4a929e303cbf236"
+    }
+  ]
+}

@@ -1,3 +1,6 @@
+#[path = "support/workflow_bash.rs"]
+mod workflow_bash;
+
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -19,7 +22,10 @@ fn run_packet_checker(root: &Path) -> Result<std::process::Output, Box<dyn Error
     // (#15435 / #15423 family C8). `current_dir(root)` already anchors the
     // invocation, so a forward-slash absolute path is fine on both platforms.
     let script_arg = script.to_string_lossy().replace('\\', "/");
-    let output = Command::new("bash").arg(script_arg).current_dir(root).output()?;
+    let output = Command::new(workflow_bash::bash_executable())
+        .arg(script_arg)
+        .current_dir(root)
+        .output()?;
     Ok(output)
 }
 

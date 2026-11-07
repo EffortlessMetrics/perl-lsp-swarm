@@ -1,0 +1,45 @@
+name: Release Publication Contract
+
+# Focused #17628 qualification. These tests execute only reviewed shell with
+# a recording gh fake; they do not build Rust or invoke a release publisher.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/release-publication-contract.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/ci/test_release_publication_admission.py'
+      - 'scripts/ci/release_publication_admission.py'
+      - 'scripts/ci/check_release_prerequisite_graph.py'
+      - 'policy/release-publication-admission.json'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-publication-contract.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/ci/test_release_publication_admission.py'
+      - 'scripts/ci/release_publication_admission.py'
+      - 'scripts/ci/check_release_prerequisite_graph.py'
+      - 'policy/release-publication-admission.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publication-contract-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+jobs:
+  publication-contract:
+    name: Release publication contract
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run publication admission regressions
+        run: |
+          python3 -B -m unittest discover -s scripts/ci -p test_release_publication_admission.py -v

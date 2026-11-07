@@ -614,15 +614,10 @@ def derive_subject_projection(release_text: str, root: Path) -> dict[str, Any]:
             --tag "$TAG" \
             --check
 
-      - name: Attest exact terminal candidate subjects
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-checksums: candidate/attestation-subjects.sha256
-
       - name: Upload terminal candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-terminal-candidate
+          name: release-terminal-candidate-${{ inputs.transaction_id }}-${{ github.run_attempt }}
           path: candidate
           if-no-files-found: error
           retention-days: 7
@@ -636,6 +631,16 @@ def derive_subject_projection(release_text: str, root: Path) -> dict[str, Any]:
         raise TopologyError("subject producer has unexpected intervening steps")
     consolidated_checksum_producer(release_text)
     validate_sbom_release_selection(release_text)
+    # The inventory remains private during preparation. Actual attestation is
+    # deferred to the existing publication job after common eligibility.
+    publisher = release_text.split("  publish-release:\n", 1)[-1].split("\n  dispatch-publishers:", 1)[0]
+    attestation = """      - name: Attest exact terminal candidate subjects
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: candidate/attestation-subjects.sha256
+"""
+    if publisher.count(attestation) != 1 or release_text.count("subject-checksums:") != 1:
+        raise TopologyError("subject producer deferred attestation must bind the exact terminal inventory once")
     return topology_subject_projection()
 
 
