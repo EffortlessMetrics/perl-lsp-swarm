@@ -1609,6 +1609,14 @@ $var;
             "only the chained association hop renames: {receipt_edit:?}"
         );
         assert_eq!(receipt_edit.edits[0].new_text, "grand_total_cents");
+        // Pin WHICH call site was renamed: the two-hop chain on line index 3
+        // (`$self->order->total_cents`), not the skipped single-hop
+        // `$self->total_cents` on line index 7 — renaming the latter is the
+        // wrong-symbol regression this test documents (#18762 review).
+        assert_eq!(
+            receipt_edit.edits[0].start.0, 3,
+            "the edit must target the two-hop `$self->order->total_cents` call: {receipt_edit:?}"
+        );
 
         Ok(())
     }
@@ -1666,6 +1674,14 @@ $var;
              chain renames: {receipt_edit:?}"
         );
         assert_eq!(receipt_edit.edits[0].new_text, "grand_total_cents");
+        // Pin WHICH call site was renamed: the two-hop chain on line index 7
+        // (`$self->meta->total_cents($other->bar)`), not the skipped
+        // single-hop `$self->total_cents($order->foo)` on line index 3
+        // (#18762 review).
+        assert_eq!(
+            receipt_edit.edits[0].start.0, 7,
+            "the edit must target the two-hop `$self->meta->total_cents` call: {receipt_edit:?}"
+        );
 
         Ok(())
     }

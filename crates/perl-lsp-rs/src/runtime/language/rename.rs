@@ -1986,13 +1986,17 @@ impl LspServer {
                                         // non-empty-plan reason is a block.
                                         _ => "blocked",
                                     };
-                                    // Deduplicate while preserving order: the
-                                    // same blocker can anchor several plan
-                                    // rows, and repeating it in the message
-                                    // buries the actionable text (#18762
-                                    // review).
-                                    let mut blockers = blocked.blocker_descriptions;
-                                    blockers.dedup();
+                                    // Deduplicate while preserving first-seen
+                                    // order: the same blocker can anchor
+                                    // several non-adjacent plan rows, and
+                                    // repeating it in the message buries the
+                                    // actionable text (#18762 review).
+                                    let mut seen_blockers = BTreeSet::new();
+                                    let blockers: Vec<String> = blocked
+                                        .blocker_descriptions
+                                        .into_iter()
+                                        .filter(|description| seen_blockers.insert(description.clone()))
+                                        .collect();
                                     let message = if blockers.is_empty() {
                                         format!("Workspace rename blocked ({pilot_reason})")
                                     } else {
