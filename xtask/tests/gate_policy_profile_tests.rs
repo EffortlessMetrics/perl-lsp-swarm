@@ -473,11 +473,14 @@ fn package_args(command: &str) -> Vec<String> {
         .collect()
 }
 
-const DAP_HELPER_TARGETS: [&str; 4] = [
+const DAP_HELPER_TARGETS: [&str; 5] = [
     "eval_ref_cache_miss_resume_tests",
     "dap_evaluate_comprehensive_tests",
     "dap_variable_reference_hardening_tests",
     "pause_signal_delivery_tests",
+    // Not feature-gated; the #18491 entry-stop stackTrace regression proof
+    // must execute on this required lane (PR #18536 review F1).
+    "dap_entry_stop_stack_trace_18491",
 ];
 
 fn dap_helper_command_error(command: &str) -> Option<String> {
