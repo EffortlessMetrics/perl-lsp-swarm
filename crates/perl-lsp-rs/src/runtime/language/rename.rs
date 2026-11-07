@@ -3014,13 +3014,15 @@ mod tests {
         server.test_apply_did_open(caller_uri, caller_source, 1)?;
 
         let coordinator = server.coordinator().ok_or("missing workspace index coordinator")?;
+        // Canonical initial-API seeds (#11301 ledger): keep the compatibility
+        // baseline at 697 by burndown instead of growing `index_file` callers.
         coordinator
             .index()
-            .index_file(url::Url::parse(util_uri)?, util_source.to_string())
+            .index_initial_file(url::Url::parse(util_uri)?, util_source.to_string())
             .map_err(std::io::Error::other)?;
         coordinator
             .index()
-            .index_file(url::Url::parse(caller_uri)?, caller_source.to_string())
+            .index_initial_file(url::Url::parse(caller_uri)?, caller_source.to_string())
             .map_err(std::io::Error::other)?;
         coordinator.transition_to_ready(
             coordinator.index().file_count(),
