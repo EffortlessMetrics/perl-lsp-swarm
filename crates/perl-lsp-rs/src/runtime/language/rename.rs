@@ -54,6 +54,16 @@ fn perl_word_split_boundary(c: char) -> bool {
     !c.is_alphanumeric() && c != '_'
 }
 
+/// A pilot-ineligible package rename together with the plan blockers that made
+/// it ineligible (#18762). The LSP handler maps this to a structured JSON-RPC
+/// error so a refused rename names its blocker instead of evaporating as a
+/// bare `null` result after `prepareRename` already offered the gesture.
+#[cfg(feature = "workspace")]
+struct PackageRenamePilotBlocker {
+    reason: RenamePackagePilotIneligibleReason,
+    blocker_descriptions: Vec<String>,
+}
+
 fn lexical_declaration_keyword_before(source: &str, symbol_start: usize) -> bool {
     let line_start =
         if symbol_start == 0 { 0 } else { source[..symbol_start].rfind('\n').map_or(0, |p| p + 1) };
@@ -535,7 +545,7 @@ impl LspServer {
         byte_offset: usize,
         symbol: &str,
         new_name_bare: &str,
-    ) -> Option<Result<(Value, usize), RenamePackagePilotIneligibleReason>> {
+    ) -> Option<Result<(Value, usize), PackageRenamePilotBlocker>> {
         // Sample after the rename readiness wait and before semantic queries; do
         // not call while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
         if self.workspace_index_stale_for_document(uri) {
@@ -556,7 +566,18 @@ impl LspServer {
                         reason: RenamePackagePilotIneligibleReason::EmptyPlan,
                         ..
                     } => None,
-                    RenamePackagePilotResult::Ineligible { reason, .. } => Some(Err(reason)),
+                    // #18762: carry the blockers out with the reason so the
+                    // handler can surface them; the bare reason alone names
+                    // nothing the user can act on.
+                    RenamePackagePilotResult::Ineligible { reason, blockers, .. } => {
+                        Some(Err(PackageRenamePilotBlocker {
+                            reason,
+                            blocker_descriptions: blockers
+                                .iter()
+                                .map(|blocker| blocker.description.clone())
+                                .collect(),
+                        }))
+                    }
                     _ => None,
                 }
             })
@@ -1941,7 +1962,7 @@ impl LspServer {
                                     );
                                     return Self::rename_unavailable();
                                 }
-                                Some(Err(_)) => {
+                                Some(Err(blocked)) => {
                                     self.record_rename_provider_decision_trace(
                                         Some(uri),
                                         Some(symbol),
@@ -1949,7 +1970,48 @@ impl LspServer {
                                         0,
                                         "no_edit",
                                     );
-                                    return Self::rename_unavailable();
+                                    // #18762: a blocked pilot is a refusal the
+                                    // editor must see. `result: null` is the
+                                    // protocol's "unavailable", but after
+                                    // `prepareRename` already offered the
+                                    // gesture it reads as a silent no-op, so
+                                    // the blocker text travels as a structured
+                                    // -32602 error instead.
+                                    let pilot_reason = match blocked.reason {
+                                        RenamePackagePilotIneligibleReason::EmptyPlan => {
+                                            "empty_plan"
+                                        }
+                                        // Forward-compatible fallback: the enum
+                                        // is `#[non_exhaustive]`; every
+                                        // non-empty-plan reason is a block.
+                                        _ => "blocked",
+                                    };
+                                    // Deduplicate while preserving first-seen
+                                    // order: the same blocker can anchor
+                                    // several non-adjacent plan rows, and
+                                    // repeating it in the message buries the
+                                    // actionable text (#18762 review).
+                                    let mut seen_blockers = BTreeSet::new();
+                                    let blockers: Vec<String> = blocked
+                                        .blocker_descriptions
+                                        .into_iter()
+                                        .filter(|description| {
+                                            seen_blockers.insert(description.clone())
+                                        })
+                                        .collect();
+                                    let message = if blockers.is_empty() {
+                                        format!("Workspace rename blocked ({pilot_reason})")
+                                    } else {
+                                        format!("Workspace rename blocked: {}", blockers.join("; "))
+                                    };
+                                    return Err(JsonRpcError {
+                                        code: -32602,
+                                        message,
+                                        data: Some(json!({
+                                            "pilot_reason": pilot_reason,
+                                            "blockers": blockers,
+                                        })),
+                                    });
                                 }
                                 None => {}
                             }
@@ -2928,6 +2990,85 @@ mod tests {
         assert!(
             edits.len() >= 2,
             "stale workspace index should fall back to same-file edits: {rename_result}"
+        );
+
+        Ok(())
+    }
+
+    /// #18762: renaming a symbol whose semantic plan is blocked — exported via
+    /// `@EXPORT_OK` and imported by another file (`CrossModuleExport`) — must
+    /// surface a structured `-32602` error naming the blocker, not a bare
+    /// `null` result. `prepareRename` offers the gesture first, so a silent
+    /// `null` reads as a no-op with nothing for the user to act on.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_rename_pilot_blocker_returns_structured_error_not_null()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let util_uri = "file:///workspace/lib/Block/Util.pm";
+        let caller_uri = "file:///workspace/lib/Block/Caller.pm";
+        let util_source = concat!(
+            "package Block::Util;\n",
+            "use Exporter 'import';\n",
+            "our @EXPORT_OK = qw(format_money);\n",
+            "sub format_money { return 1 }\n",
+            "1;\n",
+        );
+        let caller_source = concat!(
+            "package Block::Caller;\n",
+            "use Block::Util qw(format_money);\n",
+            "sub run { return format_money(5); }\n",
+            "1;\n",
+        );
+        server.test_apply_did_open(util_uri, util_source, 1)?;
+        server.test_apply_did_open(caller_uri, caller_source, 1)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace index coordinator")?;
+        // Canonical initial-API seeds (#11301 ledger): keep the compatibility
+        // baseline at 697 by burndown instead of growing `index_file` callers.
+        coordinator
+            .index()
+            .index_initial_file(url::Url::parse(util_uri)?, util_source.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator
+            .index()
+            .index_initial_file(url::Url::parse(caller_uri)?, caller_source.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator.transition_to_ready(
+            coordinator.index().file_count(),
+            coordinator.index().symbol_count(),
+        );
+
+        let (line, character) = position_of(util_source, "format_money {")?;
+        let rename_result = server.handle_rename_workspace(Some(rename_params(
+            util_uri,
+            line,
+            character,
+            "render_money",
+        )));
+
+        let Err(refusal) = rename_result else {
+            return Err(format!(
+                "blocked pilot rename must produce a structured error, got: {rename_result:?}"
+            )
+            .into());
+        };
+        assert_eq!(refusal.code, -32602, "blocker refusal code: {refusal:?}");
+        assert!(
+            refusal.message.contains("format_money")
+                && refusal.message.contains("exported by module 'Block::Util'"),
+            "refusal message must name the blocker: {refusal:?}"
+        );
+        let Some(data) = refusal.data.as_ref() else {
+            return Err(format!("refusal must carry structured blocker data: {refusal:?}").into());
+        };
+        let blockers = data
+            .get("blockers")
+            .and_then(Value::as_array)
+            .ok_or("refusal data must carry a blockers array")?;
+        assert!(
+            !blockers.is_empty(),
+            "at least one blocker description must travel with the refusal: {data}"
         );
 
         Ok(())
