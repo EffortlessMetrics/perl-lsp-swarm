@@ -184,7 +184,18 @@ def parse_min_free_bytes(raw: str) -> int:
             )
         # Decimal arithmetic preserves every input digit, so large integral
         # GiB values keep all requested bytes (#19157); truncate only
-        # fractional bytes, as before.
+        # fractional bytes, as before. Bound the magnitude first: an extreme
+        # decimal exponent (e.g. 1e999999999GiB) would otherwise materialize
+        # a billion-digit integer in as_integer_ratio. Values at or above
+        # 1e300 GiB always overflow binary64 as bytes (1e300 * GIB > 1e309),
+        # so rejecting them here is exact; values below 1e-10 GiB always
+        # truncate to zero bytes.
+        if value.adjusted() >= 300:
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
+        if value.adjusted() <= -11:
+            return 0
         numerator, denominator = value.as_integer_ratio()
         byte_value = numerator * GIB // denominator
         try:

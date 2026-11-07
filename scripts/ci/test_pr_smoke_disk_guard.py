@@ -119,6 +119,13 @@ class ParseMinFreeBytesTests(unittest.TestCase):
         self.assertEqual(guard.parse_min_free_bytes("0.1GiB"), guard.GIB // 10)
         self.assertEqual(guard.parse_min_free_bytes("1e-10GiB"), 0)
 
+    def test_extreme_exponents_are_bounded_without_huge_integers(self) -> None:
+        for raw in ("1e999999999GiB", "-1e999999999GiB", "1e308GiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+        self.assertEqual(guard.parse_min_free_bytes("1e-999999999GiB"), 0)
+
     def test_rejects_nonfinite_gib(self) -> None:
         for raw in ("NaNGiB", "sNaNGiB", "infGiB", "-InfinityGiB"):
             with self.subTest(raw=raw):
@@ -126,20 +133,6 @@ class ParseMinFreeBytesTests(unittest.TestCase):
                     guard.parse_min_free_bytes(raw)
 
     def test_cli_rejects_non_finite_budgets_without_traceback(self) -> None:
-        for option in ("--footprint-bytes", "--min-free-bytes"):
-            for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
-                with self.subTest(option=option, raw=raw):
-                    result = subprocess.run(
-                        [sys.executable, "-B", str(SCRIPT), "preflight", f"{option}={raw}"],
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertIn("must be finite", result.stderr)
-                    self.assertNotIn("Traceback", result.stderr)
-
-    def test_nonfinite_cli_arguments_fail_without_traceback(self) -> None:
         for option in ("--footprint-bytes", "--min-free-bytes"):
             for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
                 with self.subTest(option=option, raw=raw):
