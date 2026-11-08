@@ -350,6 +350,19 @@ pub struct PullCriticRow {
     pub shown: LspDiagnostic,
 }
 
+/// Whether `code` is a registered alias of `finding`'s canonical identity.
+fn finding_has_registered_alias(
+    finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
+    code: &str,
+) -> bool {
+    use perl_lsp_rs_core::tooling::perl_critic::CriticIdentityRegistry;
+
+    finding
+        .canonical_id()
+        .and_then(CriticIdentityRegistry::aliases_for)
+        .is_some_and(|aliases| aliases.iter().any(|alias| alias.code() == code))
+}
+
 /// Wire code of an LSP diagnostic, when it carries a string code.
 fn lsp_code_str(code: Option<&NumberOrString>) -> Option<&str> {
     match code {
@@ -482,22 +495,45 @@ impl PullDiagnosticsProvider {
         if !current {
             return PullCriticOutcome::Withheld { cancelled: false };
         }
+        // Pair each finding with exactly one committed row. Pass one takes the
+        // finding's own projection, or a collapse twin whose code is one of
+        // the finding's registered aliases (PL100 for require_use_strict), so
+        // coincident twins such as PL100/PL101 at one insertion point are
+        // never cross-assigned. Pass two gives any remaining finding the
+        // coincident collapse twin left over, so the fact is not hidden.
+        let is_collapse_twin = |row: &LspDiagnostic, projected: &LspDiagnostic| {
+            row.range == projected.range
+                && row.severity == projected.severity
+                && super::overlap::codes_collapse_pair(
+                    lsp_code_str(projected.code.as_ref()),
+                    lsp_code_str(row.code.as_ref()),
+                )
+        };
+        let mut shown: Vec<Option<LspDiagnostic>> = vec![None; candidates.len()];
+        for (slot, (finding, projected)) in shown.iter_mut().zip(&candidates) {
+            let position = report_rows.iter().position(|row| row == projected).or_else(|| {
+                report_rows.iter().position(|row| {
+                    is_collapse_twin(row, projected)
+                        && lsp_code_str(row.code.as_ref())
+                            .is_some_and(|code| finding_has_registered_alias(finding, code))
+                })
+            });
+            if let Some(position) = position {
+                *slot = Some(report_rows.swap_remove(position));
+            }
+        }
+        for (slot, (_, projected)) in shown.iter_mut().zip(&candidates) {
+            if slot.is_none()
+                && let Some(position) =
+                    report_rows.iter().position(|row| is_collapse_twin(row, projected))
+            {
+                *slot = Some(report_rows.swap_remove(position));
+            }
+        }
         let rows = candidates
             .into_iter()
-            .filter_map(|(finding, projected)| {
-                let position =
-                    report_rows.iter().position(|row| *row == projected).or_else(|| {
-                        report_rows.iter().position(|row| {
-                            row.range == projected.range
-                                && row.severity == projected.severity
-                                && super::overlap::codes_collapse_pair(
-                                    lsp_code_str(projected.code.as_ref()),
-                                    lsp_code_str(row.code.as_ref()),
-                                )
-                        })
-                    })?;
-                Some(PullCriticRow { finding, shown: report_rows.swap_remove(position) })
-            })
+            .zip(shown)
+            .filter_map(|((finding, _), shown)| Some(PullCriticRow { finding, shown: shown? }))
             .collect();
         PullCriticOutcome::Current(rows)
     }
@@ -2769,6 +2805,76 @@ mod tests {
             "accepted normalization must not widen to the strict profile: {items:?}"
         );
 
+        Ok(())
+    }
+
+    /// `(finding canonical id, shown code)` pairs of a command outcome.
+    fn outcome_pairs(outcome: PullCriticOutcome) -> Result<Vec<(String, String)>, String> {
+        let PullCriticOutcome::Current(rows) = outcome else {
+            return Err("expected a current critic outcome".to_string());
+        };
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let shown = match row.shown.code {
+                    Some(NumberOrString::String(code)) => code,
+                    _ => String::new(),
+                };
+                (row.finding.canonical_id().unwrap_or_default().to_string(), shown)
+            })
+            .collect())
+    }
+
+    #[test]
+    fn critic_outcome_pairs_coincident_pragma_twins_by_alias()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #6969: PL100 and PL101 share one insertion range and severity, so
+        // the report's overlap collapse leaves two coincident twins. Each
+        // native finding must be shown under its own alias, including when
+        // the strict rule is excluded and only the warnings finding remains.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///pragmas.pl".parse()?;
+        let text = "my $x = 1;\nprint $x;\n";
+        let strict = "critic.testing.require_use_strict".to_string();
+        let warnings = "critic.testing.require_use_warnings".to_string();
+
+        let mut context = PullDiagnosticsContext::new();
+        context.accepted_critic_snapshot = accepted_state("recommended", 3, Vec::new(), Vec::new());
+        let both = outcome_pairs(provider.critic_outcome_for_document(&uri, text, &context, None))?;
+        assert!(both.contains(&(strict.clone(), "PL100".to_string())), "{both:?}");
+        assert!(both.contains(&(warnings.clone(), "PL101".to_string())), "{both:?}");
+
+        let mut context = PullDiagnosticsContext::new();
+        context.accepted_critic_snapshot = accepted_state(
+            "recommended",
+            3,
+            Vec::new(),
+            vec!["native.testing.require_use_strict".to_string()],
+        );
+        let report_codes: Vec<String> = get_full_items(
+            provider.get_document_diagnostics_with_context(&uri, text, None, &context, None),
+        )
+        .into_iter()
+        .filter_map(|diag| match diag.code {
+            Some(NumberOrString::String(code)) => Some(code),
+            _ => None,
+        })
+        .collect();
+        assert!(
+            report_codes.iter().any(|code| code == "PL100")
+                && report_codes.iter().any(|code| code == "PL101"),
+            "precondition: both ordinary pragma rows are in the report: {report_codes:?}"
+        );
+        let warnings_only =
+            outcome_pairs(provider.critic_outcome_for_document(&uri, text, &context, None))?;
+        assert!(
+            warnings_only.contains(&(warnings, "PL101".to_string())),
+            "warnings finding must be shown as PL101: {warnings_only:?}"
+        );
+        assert!(
+            !warnings_only.iter().any(|(_, shown)| shown == "PL100"),
+            "no finding may be shown as the strict twin: {warnings_only:?}"
+        );
         Ok(())
     }
 
