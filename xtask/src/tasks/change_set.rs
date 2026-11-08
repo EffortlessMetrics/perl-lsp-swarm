@@ -49,10 +49,12 @@
 //! - `ci_scope::classify_files` / `ScopeOutput` are untouched — this module
 //!   is only the input seam (identity → changed paths), not a classifier.
 
-use std::path::Path;
+use color_eyre::eyre::Result;
 
-use color_eyre::eyre::{Context, Result, eyre};
-use duct::cmd;
+pub use perl_ci_hygiene::change_set::{
+    ArtifactIdentity, ChangeSet, ChangeSetConfig, DiffMode, resolve_change_set,
+    resolve_change_set_with_mode,
+};
 
 use crate::tasks::staged;
 

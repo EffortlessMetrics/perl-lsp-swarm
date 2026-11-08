@@ -939,8 +939,8 @@ def provision_worktree_hooks(slot_path: Path) -> None:
     provision.
 
     The slot's own installer script is preferred so installer and authority
-    stay at the same revision; direct cargo is the fallback when the slot
-    predates the installer script or no bash is available. Either way the
+    stay at the same revision. Missing installer/Bash support refuses rather
+    than bootstrapping the product-linked xtask package. Either way the
     verification below fails loudly on skew instead of silently leaving
     zero hooks.
     """
@@ -960,7 +960,10 @@ def provision_worktree_hooks(slot_path: Path) -> None:
         # is identity on POSIX.
         cmd = [bash_exe, script.as_posix()]
     else:
-        cmd = ["cargo", "xtask", "ci-hygiene", "install-githooks"]
+        raise RuntimeError(
+            f"hook provisioning FAILED for {slot_path}: revision-owned installer or Bash unavailable. "
+            f"Fix: {HOOK_INSTALLER_HINT}"
+        )
     print(f"hooks: provisioning git hooks for {slot_path} ...")
     try:
         proc = run(cmd, cwd=slot_path, check=False)

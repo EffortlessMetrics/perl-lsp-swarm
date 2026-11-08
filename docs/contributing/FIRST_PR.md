@@ -71,6 +71,22 @@ Install the pre-push hook when you want the fast gate before every push:
 bash scripts/install-githooks.sh
 ```
 
+The installer and `bash scripts/check-githooks.sh` use the existing
+`perl-ci-hygiene` binary through `scripts/cargo-admitted`, keeping both build
+directories private to the worktree and refusing missing toolchains or storage
+admission. Checking does not install or refresh hooks. The familiar
+`cargo xtask ci-hygiene install-githooks` / `check-githooks` aliases delegate to
+the same bootstrap, but compiling xtask still has product dependencies.
+
+On a qualified constrained host, these wrappers accept `--budget-file PATH`
+before command arguments and pass it to admission. The file must match the
+exact Cargo request; the default storage policy is unchanged.
+
+The pre-push hook also uses this admitted lightweight route for changed-path
+and Cargo package-name resolution. The shared library remains the sole
+resolver behind the xtask compatibility commands. A failed resolution refuses
+the push; it cannot choose docs-only or targeted proof from unknown evidence.
+
 ## 3. Choose one issue and one claim
 
 Start from an existing issue when one owns the work. Keep one pull request centered on:
