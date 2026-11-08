@@ -1230,6 +1230,34 @@ fn same_file_answer_package_matches(
     }
 }
 
+/// Decide whether a same-file DeclarationProvider answer for the cursor's
+/// `->method` selector must be refused because the call chains through a
+/// method-call receiver (#18761).
+///
+/// A chained receiver's class is the accessor's `isa`, not the caller's
+/// package, so a same-file same-name sub is refused unless the chain's
+/// receiver resolves (`method_call_receiver_package_at`) to the package that
+/// declares the target at `target_offset`. Non-chain selectors are never
+/// refused here; unknown receivers and mismatched packages always are.
+fn chained_receiver_refuses_same_file_answer(
+    ast: &crate::ast::Node,
+    offset: usize,
+    selector: Option<&crate::declaration::MethodCallSelector>,
+    target_offset: Option<usize>,
+) -> bool {
+    if !selector.is_some_and(|selector| selector.receiver_is_chain) {
+        return false;
+    }
+    let receiver_matches_target = target_offset.is_some_and(|target| {
+        crate::declaration::method_call_receiver_package_at(ast, offset).is_some_and(
+            |receiver_package| {
+                crate::declaration::current_package_at(ast, target) == receiver_package.as_str()
+            },
+        )
+    });
+    !receiver_matches_target
+}
+
 fn lookup_workspace_definition(
     coordinator: Option<&std::sync::Arc<crate::workspace_index::IndexCoordinator>>,
     pkg: &str,
@@ -2888,19 +2916,12 @@ impl LspServer {
                             // chain selector is a refusal unless the chain's
                             // receiver resolves (accessor `isa` facts) to the
                             // package that declares the same-file target.
-                            if ast_selector
-                                .as_ref()
-                                .is_some_and(|selector| selector.receiver_is_chain)
-                                && !location_links.first().is_some_and(|link| {
-                                    crate::declaration::method_call_receiver_package_at(ast, offset)
-                                        .is_some_and(|receiver_package| {
-                                            crate::declaration::current_package_at(
-                                                ast,
-                                                link.target_selection_range.0,
-                                            ) == receiver_package.as_str()
-                                        })
-                                })
-                            {
+                            if chained_receiver_refuses_same_file_answer(
+                                ast,
+                                offset,
+                                ast_selector.as_ref(),
+                                location_links.first().map(|link| link.target_selection_range.0),
+                            ) {
                                 tracing::debug!(
                                     offset,
                                     method = ast_selector
@@ -5101,6 +5122,62 @@ mod tests {
         // Unreadable text falls back to the ambient comparison.
         assert!(same_file_answer_package_matches(None, "Scale03::Mod00", "Scale03::Mod00"));
         assert!(!same_file_answer_package_matches(None, "Scale00::Mod00", "Scale03::Mod00"));
+    }
+
+    /// #19042 review: the same-file chained-receiver refusal keeps an answer
+    /// whose package matches the chain's resolved receiver and refuses unknown
+    /// or mismatched receivers. Unit-level because, with a ready workspace
+    /// index, an earlier tier answers the typed chain before this guard runs.
+    #[test]
+    fn chained_receiver_same_file_guard_keeps_only_matching_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let typed = "package Store::Order;\nsub total_cents { return 1; }\npackage Store::Receipt;\nuse Moo;\nhas order => (is => 'ro', isa => 'Store::Order');\nsub total_cents { return 2; }\nsub render { my ($self) = @_; return $self->order->total_cents; }\n1;\n";
+        let ast = Parser::new(typed).parse()?;
+        let call = typed.find("->total_cents").ok_or("chain call")? + 2;
+        let selector = crate::declaration::method_call_selector_at(&ast, call, typed)
+            .ok_or("selector at chain call")?;
+        assert!(selector.receiver_is_chain);
+        let order_sub = typed.find("total_cents { return 1").ok_or("Order sub")?;
+        let receipt_sub = typed.find("total_cents { return 2").ok_or("Receipt sub")?;
+        // Matching package: keep (the pre-review guard refused this).
+        assert!(!chained_receiver_refuses_same_file_answer(
+            &ast,
+            call,
+            Some(&selector),
+            Some(order_sub)
+        ));
+        // Mismatched package (the caller's own same-named sub): refuse.
+        assert!(chained_receiver_refuses_same_file_answer(
+            &ast,
+            call,
+            Some(&selector),
+            Some(receipt_sub)
+        ));
+        // No target location: refuse.
+        assert!(chained_receiver_refuses_same_file_answer(&ast, call, Some(&selector), None));
+
+        // Unknown receiver (no `isa`): refuse even when a same-file sub exists.
+        let untyped = typed.replace(", isa => 'Store::Order'", "");
+        let ast = Parser::new(&untyped).parse()?;
+        let call = untyped.find("->total_cents").ok_or("chain call")? + 2;
+        let selector = crate::declaration::method_call_selector_at(&ast, call, &untyped)
+            .ok_or("selector at untyped chain call")?;
+        let order_sub = untyped.find("total_cents { return 1").ok_or("Order sub")?;
+        assert!(chained_receiver_refuses_same_file_answer(
+            &ast,
+            call,
+            Some(&selector),
+            Some(order_sub)
+        ));
+
+        // A plain variable receiver is not this guard's business.
+        let plain = "package P;\nsub go { my ($self) = @_; return $self->go; }\n1;\n";
+        let ast = Parser::new(plain).parse()?;
+        let call = plain.find("->go").ok_or("plain call")? + 2;
+        let selector =
+            crate::declaration::method_call_selector_at(&ast, call, plain).ok_or("selector")?;
+        assert!(!chained_receiver_refuses_same_file_answer(&ast, call, Some(&selector), Some(0)));
+        Ok(())
     }
 
     fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
