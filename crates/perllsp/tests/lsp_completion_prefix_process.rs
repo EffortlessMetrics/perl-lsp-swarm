@@ -243,6 +243,30 @@ fn method_completion_applies_whole_token_at_midpoint_and_end() -> Result<()> {
 }
 
 #[test]
+fn variable_completion_edit_matches_lexer_token_at_apostrophe() -> Result<()> {
+    // #18462: the completion replacement range must stop where the lexer's
+    // variable token stops. Real perl (5.42.2) folds `'` into a name only as
+    // an old-style package separator with a further name segment behind it —
+    // `"$dog's bowl"` interpolates `$dog::s`, while `print $dog'9` fails to
+    // parse because the apostrophe opens a string. So the edit for
+    // `$count'9` ends before the apostrophe and leaves the suffix in place.
+    let source =
+        "my $count = 42;\nmy $t = \"the $count'9 bowl\";\nmy $u = \"the $count's bowl\";\n";
+    let mut client = start(source)?;
+    // Line 1: `my $t = "the $count'9 bowl";` — cursor after `$co` (char 16).
+    // The lexer's Variable part is `$count` [13..19]; `'9` stays literal, so
+    // the edit is 13..19 and the client keeps `'9 bowl`.
+    let items = complete(&mut client, json!("apostrophe-digit"), 1, 16)?;
+    assert_edit(item(&items, "$count")?, 1, 13, 19, "$count")?;
+    // Line 2: `my $u = "the $count's bowl";` — `$count's` is one lexer token
+    // (perl interpolates `$dog::s`), so the edit covers the folded segment
+    // whole: 13..21.
+    let items = complete(&mut client, json!("apostrophe-fold"), 2, 16)?;
+    assert_edit(item(&items, "$count")?, 2, 13, 21, "$count")?;
+    finish(client)
+}
+
+#[test]
 fn ordinary_lexical_and_package_completion_remain_usable() -> Result<()> {
     let source = "package App;\nsub process_record { 1 }\nmy $record_count = 2;\n$rec;\npro;\npackage Other;\nsub other_task { 1 }\noth;\n";
     let mut client = start(source)?;

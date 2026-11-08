@@ -3627,7 +3627,9 @@ pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysi
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::diagnostics::missing_module
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::diagnostics::missing_module::ModuleSearchPathDisplay
@@ -3770,7 +3772,9 @@ pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysi
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::diagnostics::RelatedInformation
 pub perl_lsp_rs_core::providers::diagnostics::RelatedInformation::location: (usize, usize)
@@ -3823,7 +3827,9 @@ pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysi
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::document_highlight
 pub mod perl_lsp_rs_core::providers::document_highlight
@@ -8688,7 +8694,9 @@ pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysi
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::stray_cut_opens(&self) -> &[(usize, bool)]
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::type_environment(&self) -> &perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine
 pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::DocumentHighlight
 pub perl_lsp_rs_core::providers::DocumentHighlight::kind: perl_lsp_rs_core::providers::DocumentHighlightKind
