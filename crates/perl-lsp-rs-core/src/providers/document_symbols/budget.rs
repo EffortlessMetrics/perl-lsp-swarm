@@ -9,7 +9,7 @@
 //! Root-vector truncation is intentionally not used: every visible logical
 //! node counts, ancestry is preserved, and source order stays stable.
 
-use super::{DocumentSymbol, leaf_document_symbol};
+use super::{CALLABLE_DOCUMENT_SYMBOL_PRIORITY, DocumentSymbol, leaf_document_symbol};
 use perl_position_tracking::{LineStartsCache, WirePosition, WireRange};
 use perl_source_identity::ContentDigest;
 use serde::{Deserialize, Serialize};
@@ -114,7 +114,7 @@ pub fn pod_heading_document_symbols(source: &str) -> Vec<DocumentSymbol> {
             start: WirePosition::new(line_index, 0),
             end: WirePosition::new(line_index, end_character),
         };
-        symbols.push(leaf_document_symbol(name, "", 26, range));
+        symbols.push(leaf_document_symbol(name, "", POD_HEADING_KIND, range));
     }
     symbols
 }
@@ -157,9 +157,12 @@ pub fn nest_pod_headings_into_outline(
         merge_document_symbol_roots_in_source_order(outline, pod_headings);
         return;
     }
-    for heading in pod_headings {
+    for mut heading in pod_headings {
         let heading_line = heading.range.start.line;
-        let Some(root_index) = innermost_enclosing(outline, heading_line, |_| true) else {
+        // Only package containers own POD: in a package-free script the roots
+        // are subs, and a heading inside a sub body stays at the top level.
+        let Some(root_index) = innermost_enclosing(outline, heading_line, is_package_container)
+        else {
             outline.push(heading);
             continue;
         };
@@ -173,13 +176,26 @@ pub fn nest_pod_headings_into_outline(
         // The code symbol already carries the anchor, detail, and selection
         // range; the same-name POD heading adds nothing on the wire, so the
         // `=head2 get_thing_01` / `sub get_thing_01` pair keeps one entry.
-        if parent.children.iter().any(|child| child.name.trim() == heading_name) {
+        // Only code symbols suppress a heading: a repeated POD section name
+        // (two `=head2 Example` blocks) keeps every occurrence.
+        if parent
+            .children
+            .iter()
+            .any(|child| child.kind != POD_HEADING_KIND && child.name.trim() == heading_name)
+        {
             continue;
         }
+        // Rank nested headings with the callables so they interleave with
+        // subs in source order instead of sorting ahead of every sub.
+        heading.sort_priority = CALLABLE_DOCUMENT_SYMBOL_PRIORITY;
         insert_by_child_order_key(&mut parent.children, heading);
     }
     outline.sort_by(source_order_key);
 }
+
+/// LSP `SymbolKind` used for POD headings (26 = TypeParameter, the outline's
+/// established POD kind).
+const POD_HEADING_KIND: u32 = 26;
 
 /// LSP `SymbolKind` values the assembler uses for package-like containers:
 /// 2 = Module (package), 3 = Namespace, 4 = Package, 5 = Class,
@@ -441,10 +457,18 @@ mod tests {
         assert_ne!(visible_tree_fingerprint(&flat), visible_tree_fingerprint(&nested));
     }
 
+    /// A sub child as the assembler emits it (callable priority).
+    fn callable(name: &str, line: u32, children: Vec<DocumentSymbol>) -> DocumentSymbol {
+        let mut sub = symbol(name, line, children);
+        sub.sort_priority = CALLABLE_DOCUMENT_SYMBOL_PRIORITY;
+        sub
+    }
+
     /// A package root shaped like the AST-path output: its range spans the
     /// whole package extent, and code members are its children.
     fn package_root(name: &str, end_line: u32, children: Vec<DocumentSymbol>) -> DocumentSymbol {
         let mut root = symbol(name, 0, children);
+        root.kind = 2;
         root.range.end = WirePosition::new(end_line, 1);
         root
     }
@@ -452,7 +476,7 @@ mod tests {
     #[test]
     fn pod_headings_nest_under_the_enclosing_package_root() {
         // Root extent lines 0..=9; NAME lands on line 2, SEE ALSO on line 7.
-        let mut outline = vec![package_root("Pkg", 9, vec![symbol("sub_a", 4, vec![])])];
+        let mut outline = vec![package_root("Pkg", 9, vec![callable("sub_a", 4, vec![])])];
         let pod = pod_heading_document_symbols(
             "package Pkg;\n\n=head1 NAME\n\nPkg - demo\n\nnothing here\n=head1 SEE ALSO\n\nelsewhere\n",
         );
@@ -467,7 +491,7 @@ mod tests {
 
     #[test]
     fn pod_heading_matching_a_child_name_is_dropped() {
-        let mut outline = vec![package_root("Pkg", 9, vec![symbol("get_thing", 5, vec![])])];
+        let mut outline = vec![package_root("Pkg", 9, vec![callable("get_thing", 5, vec![])])];
         let pod = pod_heading_document_symbols("=head2 get_thing\n\nDocs.\n\n=cut\n");
         nest_pod_headings_into_outline(&mut outline, pod);
         assert_eq!(outline.len(), 1, "no POD headings left at top level: {outline:?}");
@@ -516,11 +540,11 @@ mod tests {
     fn pod_heading_nests_under_the_innermost_nested_package() {
         // Outer spans 0..=20; block-form Inner (Module kind) spans 5..=12
         // and is a child of Outer, the way the assembler nests it.
-        let mut inner = package_root("Inner", 12, vec![symbol("inner_sub", 10, vec![])]);
+        let mut inner = package_root("Inner", 12, vec![callable("inner_sub", 10, vec![])]);
         inner.range.start = WirePosition::new(5, 0);
         inner.kind = 2;
         let mut outline =
-            vec![package_root("Outer", 20, vec![symbol("outer_sub", 2, vec![]), inner])];
+            vec![package_root("Outer", 20, vec![callable("outer_sub", 2, vec![]), inner])];
         let mut pod = pod_heading_document_symbols("\n\n\n\n\n\n\n=head1 INNER_DOC\n");
         pod.extend(pod_heading_document_symbols(
             "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n=head1 OUTER_DOC\n",
@@ -546,7 +570,7 @@ mod tests {
         // package P (0..=9) / =head1 A (line 1) / sub x (3) / sub y (5).
         let pod = pod_heading_document_symbols("package P;\n=head1 A\n");
         let mut outline =
-            vec![package_root("P", 9, vec![symbol("x", 3, vec![]), symbol("y", 5, vec![])])];
+            vec![package_root("P", 9, vec![callable("x", 3, vec![]), callable("y", 5, vec![])])];
         nest_pod_headings_into_outline(&mut outline, pod);
         let outcome = apply_document_symbol_node_budget(outline, 3);
         assert_eq!(outcome.eligible_total, 4);
@@ -559,10 +583,46 @@ mod tests {
         // A heading that duplicates a sub is dropped before budgeting.
         let pod = pod_heading_document_symbols("package P;\n=head2 x\n");
         let mut outline =
-            vec![package_root("P", 9, vec![symbol("x", 3, vec![]), symbol("y", 5, vec![])])];
+            vec![package_root("P", 9, vec![callable("x", 3, vec![]), callable("y", 5, vec![])])];
         nest_pod_headings_into_outline(&mut outline, pod);
         let outcome = apply_document_symbol_node_budget(outline, 3);
         assert_eq!(outcome.eligible_total, 3, "duplicate heading consumes no budget");
         assert!(!outcome.truncated);
+    }
+
+    #[test]
+    fn heading_after_a_sub_follows_it_in_source_order() {
+        // package P (0..=9) / sub first (line 1) / =head1 LATER (line 3).
+        let mut outline = vec![package_root("P", 9, vec![callable("first", 1, vec![])])];
+        let pod = pod_heading_document_symbols("package P;\nsub first {}\n\n=head1 LATER\n");
+        nest_pod_headings_into_outline(&mut outline, pod);
+        let outcome = apply_document_symbol_node_budget(outline, 500);
+        assert!(!outcome.truncated);
+        let children: Vec<_> =
+            outcome.symbols[0].children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(children, vec!["first", "LATER"], "uncapped order follows the source");
+    }
+
+    #[test]
+    fn repeated_pod_section_names_are_all_kept() {
+        let mut outline = vec![package_root("P", 9, vec![])];
+        let pod =
+            pod_heading_document_symbols("package P;\n=head2 Example\n\nx\n\n=head2 Example\n");
+        nest_pod_headings_into_outline(&mut outline, pod);
+        let examples = outline[0].children.iter().filter(|c| c.name == "Example").count();
+        assert_eq!(examples, 2, "both Example sections stay navigable: {outline:?}");
+    }
+
+    #[test]
+    fn package_free_pod_inside_a_sub_stays_at_top_level() {
+        // A script with no package: the root is a multi-line sub (kind 12).
+        let mut main_sub = callable("main_sub", 0, vec![]);
+        main_sub.range.end = WirePosition::new(6, 1);
+        let mut outline = vec![main_sub];
+        let pod = pod_heading_document_symbols("sub main_sub {\n\n=head1 INSIDE\n");
+        nest_pod_headings_into_outline(&mut outline, pod);
+        let top: Vec<_> = outline.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(top, vec!["main_sub", "INSIDE"], "heading not nested under a sub: {outline:?}");
+        assert!(outline[0].children.is_empty());
     }
 }
