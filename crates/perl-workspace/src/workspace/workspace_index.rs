@@ -4948,12 +4948,15 @@ impl WorkspaceIndex {
     /// drops the convention-shaped false positives:
     ///
     /// - Exporter/CPAN-consumed package variables (`@EXPORT_OK`, `@EXPORT`,
-    ///   `@EXPORT_FAIL`, `%EXPORT_TAGS`, `$VERSION`): they are read by
-    ///   `Exporter::import` and module tooling at runtime, so no source-level
-    ///   name reference can ever exist;
+    ///   `@EXPORT_FAIL`, `%EXPORT_TAGS`, `$VERSION`, `@ISA`): they are read by
+    ///   `Exporter::import`, method resolution, and module tooling at
+    ///   runtime, so no source-level name reference can ever exist;
+    /// - subroutines Perl invokes by name (`DESTROY`, `AUTOLOAD`, `import`,
+    ///   `unimport`), in any file;
     /// - Moo/Moose/Mouse construction hooks (`BUILD`, `DEMOLISH`,
-    ///   `BUILDARGS`) in files that import an OO framework: object
-    ///   construction invokes them, never a source-level name reference;
+    ///   `BUILDARGS`, `FOREIGNBUILDARGS`) in files that import an OO
+    ///   framework: object construction invokes them, never a source-level
+    ///   name reference;
     /// - any symbol whose bare name appears in its own file's `@EXPORT` /
     ///   `@EXPORT_OK` list: an export list is itself usage evidence, because
     ///   `Exporter::import` hands those names to every importing module.
@@ -4962,7 +4965,30 @@ impl WorkspaceIndex {
     /// fall back to the name-only conventions, matching the pre-existing
     /// behavior for the rest.
     pub fn find_unused_symbols_for_diagnostics(&self) -> Vec<WorkspaceSymbol> {
-        let unused = self.find_unused_symbols();
+        self.filter_unused_for_diagnostics(self.find_unused_symbols())
+    }
+
+    /// [`Self::find_unused_symbols_for_diagnostics`] restricted to the symbols
+    /// defined in `document_uri`.
+    ///
+    /// URIs are compared by [`DocumentStore::uri_key`], so a Windows drive
+    /// letter minted lowercase by the startup scan still matches the editor's
+    /// uppercase form. Only the requested document's text is read, keeping a
+    /// per-document diagnostics pass independent of total workspace text.
+    pub fn find_unused_symbols_for_diagnostics_in(
+        &self,
+        document_uri: &str,
+    ) -> Vec<WorkspaceSymbol> {
+        let target = DocumentStore::uri_key(document_uri);
+        let unused: Vec<WorkspaceSymbol> = self
+            .find_unused_symbols()
+            .into_iter()
+            .filter(|symbol| DocumentStore::uri_key(&symbol.uri) == target)
+            .collect();
+        self.filter_unused_for_diagnostics(unused)
+    }
+
+    fn filter_unused_for_diagnostics(&self, unused: Vec<WorkspaceSymbol>) -> Vec<WorkspaceSymbol> {
         if unused.is_empty() {
             return unused;
         }
@@ -5010,12 +5036,24 @@ impl WorkspaceIndex {
             SymbolKind::Variable(_) => {
                 matches!(
                     symbol.name.as_str(),
-                    "@EXPORT_OK" | "@EXPORT" | "@EXPORT_FAIL" | "%EXPORT_TAGS" | "$VERSION"
+                    "@EXPORT_OK"
+                        | "@EXPORT"
+                        | "@EXPORT_FAIL"
+                        | "%EXPORT_TAGS"
+                        | "$VERSION"
+                        | "@ISA"
                 ) || is_exported
             }
             SymbolKind::Subroutine => {
-                (file_uses_oo_framework
-                    && matches!(symbol.name.as_str(), "BUILD" | "DEMOLISH" | "BUILDARGS"))
+                // Perl itself invokes these by name: `DESTROY` on object
+                // destruction, `AUTOLOAD` on a missing method, and
+                // `import`/`unimport` on `use`/`no` (folded from #18840).
+                matches!(symbol.name.as_str(), "DESTROY" | "AUTOLOAD" | "import" | "unimport")
+                    || (file_uses_oo_framework
+                        && matches!(
+                            symbol.name.as_str(),
+                            "BUILD" | "DEMOLISH" | "BUILDARGS" | "FOREIGNBUILDARGS"
+                        ))
                     || is_exported
             }
             _ => is_exported,
@@ -7602,7 +7640,13 @@ fn collect_exported_names(content: &str) -> HashSet<String> {
             }
             let statement_start = content.len() - after_var.len() + 1;
             let rest = &content[statement_start.min(content.len())..];
-            let end = rest.find(';').unwrap_or(rest.len()).min(4096);
+            // The 4096-byte cap is a byte offset; clamp it back onto a UTF-8
+            // char boundary so a long non-ASCII export body cannot panic the
+            // slice below (#18765 review).
+            let mut end = rest.find(';').unwrap_or(rest.len()).min(4096);
+            while end > 0 && !rest.is_char_boundary(end) {
+                end -= 1;
+            }
             if end == 0 {
                 continue;
             }

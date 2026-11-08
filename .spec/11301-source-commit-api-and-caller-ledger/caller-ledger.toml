@@ -257,6 +257,7 @@ caller_paths = [
   "crates/perl-workspace/tests/dual_indexing_tests.rs",
   "crates/perl-workspace/tests/exporter_visibility_bridge_tests.rs",
   "crates/perl-workspace/tests/fact_shard_lifecycle_tests.rs",
+  "crates/perl-workspace/tests/fix_18765_dead_code_conventions.rs",
   "crates/perl-workspace/tests/file_semantic_bundle_tests.rs",
   "crates/perl-workspace/tests/folder_provenance_tests.rs",
   "crates/perl-workspace/tests/generated_member_facts.rs",

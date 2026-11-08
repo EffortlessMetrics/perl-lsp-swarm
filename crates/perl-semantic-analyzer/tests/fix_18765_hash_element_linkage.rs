@@ -131,6 +131,31 @@ sub build_index {
     );
 }
 
+/// List-form aggregate declarations (`my (@out, %seen);`) are seeded like
+/// the single-variable form; a bare scalar in the same list still fires.
+///
+/// Oracle, perl 5.38.2: `perl -we 'my (@a, %h, $s); push @a, 1; $h{x}=1;
+/// print scalar(@a), scalar(%h);'` is silent; adding `print $s;` warns
+/// `Use of uninitialized value $s in print`.
+#[test]
+fn list_declared_aggregates_are_not_uninitialized_but_scalars_are() {
+    let code = "use strict;\nsub f { my (@out, %seen, $s); push @out, 1; $seen{x} = 1; \
+                print scalar(@out), scalar(%seen); print $s; }\n";
+    let issues = scope_issues_strict(code);
+    let uninit = uninitialized_names(&issues);
+    assert!(
+        !uninit.iter().any(|n| n.contains("out") || n.contains("seen")),
+        "list-declared aggregates must not fire UninitializedVariable, got: {:?}",
+        uninit
+    );
+    assert!(
+        uninit.iter().any(|n| n.trim_start_matches('$') == "s"),
+        "list-declared bare scalar read must keep firing, got: {:?} (all issues: {:?})",
+        uninit,
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+}
+
 /// Explicit-empty control stays clean (pre-existing behavior).
 #[test]
 fn array_with_explicit_empty_initializer_is_not_uninitialized() {
@@ -152,7 +177,7 @@ fn array_with_explicit_empty_initializer_is_not_uninitialized() {
 /// `Use of uninitialized value $s in print`.
 #[test]
 fn scalar_without_initializer_still_reports_uninitialized() {
-    let code = "use strict;\nsub f { my $s; return $s; }\n";
+    let code = "use strict;\nsub f { my $s; print $s; }\n";
     let issues = scope_issues_strict(code);
     let uninit = uninitialized_names(&issues);
     assert!(

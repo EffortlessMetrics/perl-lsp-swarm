@@ -28,13 +28,13 @@ fn raw_unused_names(index: &WorkspaceIndex) -> Vec<String> {
     index.find_unused_symbols().iter().map(|s| s.name.clone()).collect()
 }
 
-fn index_file(
+fn index_doc(
     index: &WorkspaceIndex,
     uri: &str,
     code: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = Url::parse(uri)?;
-    index.index_file(url, code.to_string())?;
+    index.index_initial_file(url, code.to_string())?;
     Ok(())
 }
 
@@ -43,7 +43,7 @@ fn index_file(
 #[test]
 fn moo_build_is_not_flagged_but_dead_helper_still_is() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Store/Product.pm",
         r#"package Store::Product;
@@ -98,7 +98,7 @@ sub dead_helper {
 #[test]
 fn moo_demolish_and_buildargs_are_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Store/Receipt.pm",
         r#"package Store::Receipt;
@@ -133,7 +133,7 @@ sub total_units { return 7; }
 #[test]
 fn build_without_oo_framework_import_stays_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Plain.pm",
         "package Plain;\n\nsub BUILD {\n    return 'not an object hook';\n}\n",
@@ -155,7 +155,7 @@ fn build_without_oo_framework_import_stays_flagged() -> Result<(), Box<dyn std::
 fn exporter_variables_and_export_listed_subs_are_not_flagged()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Store/Util.pm",
         r#"package Store::Util;
@@ -203,7 +203,7 @@ sub dead_internal {
 #[test]
 fn quoted_export_list_members_are_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Store/Quote.pm",
         r#"package Store::Quote;
@@ -229,7 +229,7 @@ sub render_credit   { return 'credit'; }
 #[test]
 fn multiline_and_pushed_export_lists_are_harvested() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Store/Big.pm",
         r#"package Store::Big;
@@ -265,7 +265,7 @@ sub gamma { return 3; }
 #[test]
 fn module_without_export_list_keeps_existing_behavior() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Store/Island.pm",
         "package Store::Island;\n\nsub never_called { return 1; }\n",
@@ -285,7 +285,7 @@ fn module_without_export_list_keeps_existing_behavior() -> Result<(), Box<dyn st
 #[test]
 fn identifier_lookalikes_are_not_convention_matched() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
-    index_file(
+    index_doc(
         &index,
         "file:///lib/Store/Alike.pm",
         r#"package Store::Alike;
@@ -306,5 +306,112 @@ sub BUILD_like { return 1; }
             names
         );
     }
+    Ok(())
+}
+
+/// Folded from #18840: subroutines Perl invokes by name (`DESTROY`,
+/// `AUTOLOAD`, `import`, `unimport`) and `@ISA` are never dead, in any file;
+/// `FOREIGNBUILDARGS` joins the Moo-family hooks behind the import gate.
+/// Positive controls: a plain-file `FOREIGNBUILDARGS` and a genuinely-dead
+/// helper stay flagged.
+#[test]
+fn perl_invoked_subs_and_isa_are_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    index_doc(
+        &index,
+        "file:///lib/Plain/Thing.pm",
+        r#"package Plain::Thing;
+use strict;
+our @ISA = ('Base::Thing');
+
+sub DESTROY { }
+sub AUTOLOAD { }
+sub import { }
+sub unimport { }
+sub FOREIGNBUILDARGS { }
+sub truly_dead_helper { return 1; }
+
+1;
+"#,
+    )?;
+    index_doc(
+        &index,
+        "file:///lib/Moo/Thing.pm",
+        "package Moo::Thing;\nuse Moo;\nextends 'Some::Base';\nsub FOREIGNBUILDARGS { }\n1;\n",
+    )?;
+
+    let names = unused_names(&index);
+    for convention in ["DESTROY", "AUTOLOAD", "import", "unimport", "@ISA"] {
+        assert!(
+            !names.iter().any(|n| n == convention),
+            "{convention} is invoked/read by Perl itself and must not be flagged; got {names:?}"
+        );
+    }
+    let foreign: Vec<_> = index
+        .find_unused_symbols_for_diagnostics()
+        .into_iter()
+        .filter(|s| s.name == "FOREIGNBUILDARGS")
+        .map(|s| s.uri)
+        .collect();
+    assert_eq!(
+        foreign,
+        vec!["file:///lib/Plain/Thing.pm".to_string()],
+        "FOREIGNBUILDARGS is suppressed only under an OO framework import"
+    );
+    assert!(
+        names.iter().any(|n| n == "truly_dead_helper"),
+        "positive control: a dead non-convention sub must stay flagged; got {names:?}"
+    );
+    Ok(())
+}
+
+/// An export statement whose body runs past the 4096-byte harvest cap with a
+/// multi-byte character straddling that byte offset must not panic (#18765
+/// review: the cap is a byte offset and used to slice mid-character).
+#[test]
+fn long_non_ascii_export_body_does_not_panic() -> Result<(), Box<dyn std::error::Error>> {
+    // The harvested slice starts right after `=` (so with the leading space).
+    // Pad so the slice holds 4095 ASCII bytes, putting the 3-byte '€' at
+    // bytes 4095..4098 (byte 4096 is mid-character), and never close with ';'.
+    let prefix = "package Wide;\nour @EXPORT_OK = ";
+    let mut body = String::from("qw(");
+    while body.len() < 4094 {
+        body.push('a');
+    }
+    for _ in 0..8 {
+        body.push('€');
+    }
+    let code = format!("{prefix}{body}\nsub kept {{ 1 }}\n");
+    let index = WorkspaceIndex::new();
+    index_doc(&index, "file:///lib/Wide.pm", &code)?;
+    // Must return without panicking; the result content is not the oracle.
+    let _ = index.find_unused_symbols_for_diagnostics();
+    let _ = index.find_unused_symbols_for_diagnostics_in("file:///lib/Wide.pm");
+    Ok(())
+}
+
+/// The per-document query returns only the requested file's rows, matches
+/// URIs by normalized key, and applies the same convention filter.
+#[test]
+fn per_document_query_is_scoped_and_filtered() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    index_doc(
+        &index,
+        "file:///lib/A.pm",
+        "package A;\nuse Moo;\nsub BUILD { }\nsub dead_a { 1 }\n1;\n",
+    )?;
+    index_doc(&index, "file:///lib/B.pm", "package B;\nsub dead_b { 1 }\n1;\n")?;
+
+    let a: Vec<String> = index
+        .find_unused_symbols_for_diagnostics_in("file:///lib/A.pm")
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert!(a.iter().any(|n| n == "dead_a"), "own dead sub reported; got {a:?}");
+    assert!(!a.iter().any(|n| n == "dead_b"), "other file's rows excluded; got {a:?}");
+    assert!(!a.iter().any(|n| n == "BUILD"), "convention filter applied; got {a:?}");
+
+    let all: Vec<String> = unused_names(&index);
+    assert!(all.iter().any(|n| n == "dead_b"), "workspace query still sees B; got {all:?}");
     Ok(())
 }

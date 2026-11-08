@@ -221,7 +221,9 @@ pub(super) fn handle_variable_list_declaration<'a>(
             var_name_part,
             variable.location.start,
             is_our,
-            is_initialized,
+            // Bare aggregates in a list (`my (@a, %h);`) are defined-but-empty,
+            // exactly like the single-variable form (#18765).
+            is_initialized || sigil == "@" || sigil == "%",
             context,
         );
 

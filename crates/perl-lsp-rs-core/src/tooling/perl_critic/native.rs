@@ -80,7 +80,7 @@ impl CriticRule for RequireUseStrictRule {
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
         if has_use_statement(ctx.source, "strict")
             || test2_provides_pragma(ctx.source, "strict")
-            || oo_framework_provides_pragma(ctx.source, "strict")
+            || oo_framework_provides_pragma(ctx.source)
         {
             return;
         }
@@ -127,7 +127,7 @@ impl CriticRule for RequireUseWarningsRule {
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
         if has_use_statement(ctx.source, "warnings")
             || test2_provides_pragma(ctx.source, "warnings")
-            || oo_framework_provides_pragma(ctx.source, "warnings")
+            || oo_framework_provides_pragma(ctx.source)
         {
             return;
         }
@@ -2542,29 +2542,65 @@ const OO_FRAMEWORKS_PROVIDING_PRAGMAS: &[&str] = &[
     "Mars::Role",
 ];
 
-/// Whether an OO framework import in `content` provides the named pragma
-/// implicitly (#18765).
+/// Whether an OO framework import in `content` provides `strict` and
+/// `warnings` implicitly (#18765).
 ///
-/// `use feature 'class'` is handled separately and conservatively: since
-/// Perl 5.38 it enables `strict` inside the class block, while `warnings`
-/// is only implied from 5.40 on, so it satisfies `strict` but not
-/// `warnings` here.
-fn oo_framework_provides_pragma(content: &str, feature: &str) -> bool {
+/// Conservative in the false-negative direction:
+/// - `use Module ();` never calls `import`, so it provides no pragma;
+/// - `use Object::Pad 0.821;` (or later) opts out of the implicit pragmas,
+///   per Object::Pad's own documentation, so a versioned import at or above
+///   that threshold provides none;
+/// - `use feature 'class'` enables class syntax only, not `strict`, so it is
+///   not accepted here.
+fn oo_framework_provides_pragma(content: &str) -> bool {
     content.lines().any(|line| {
         let code_portion = line.split('#').next().unwrap_or_default();
         let mut tokens = code_portion.split_whitespace();
         if tokens.next() != Some("use") {
             return false;
         }
-        let Some(module) = tokens.next().map(|m| m.trim_end_matches(';')) else {
+        let Some(raw_module) = tokens.next() else {
             return false;
         };
-        if module == "feature" {
-            return feature == "strict"
-                && (code_portion.contains("'class'") || code_portion.contains("\"class\""));
+        let module = raw_module.trim_end_matches(';');
+        if !OO_FRAMEWORKS_PROVIDING_PRAGMAS.contains(&module) {
+            return false;
         }
-        OO_FRAMEWORKS_PROVIDING_PRAGMAS.contains(&module)
+        // `use Moo;` ends the statement at the module token: import runs.
+        if raw_module.ends_with(';') {
+            return true;
+        }
+        let next = tokens.next().unwrap_or_default();
+        if next.starts_with("()") {
+            return false;
+        }
+        if module == "Object::Pad" && object_pad_version_disables_pragmas(next) {
+            return false;
+        }
+        true
     })
+}
+
+/// Whether the token after `use Object::Pad` is a module version of 0.821
+/// or later, which disables Object::Pad's implicit `strict`/`warnings`.
+fn object_pad_version_disables_pragmas(token: &str) -> bool {
+    let version = token.trim_end_matches(';').trim_start_matches('v');
+    if !version.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    let mut parts = version.split('.');
+    let major: u64 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    if major > 0 {
+        return true;
+    }
+    let frac = parts.next().unwrap_or_default();
+    let frac_digits: String = frac.chars().take_while(char::is_ascii_digit).collect();
+    if frac_digits.is_empty() {
+        return false;
+    }
+    // Compare as a decimal fraction: "821" vs "8" / "82" / "8215".
+    let padded = format!("{frac_digits:0<6}");
+    padded.get(..6).and_then(|p| p.parse::<u64>().ok()).is_some_and(|n| n >= 821_000)
 }
 
 fn has_use_statement_line(line: &str, feature: &str) -> bool {
@@ -3492,24 +3528,55 @@ mod tests {
         }
     }
 
-    /// `use feature 'class'` implies strict (Perl 5.38+) but not warnings
-    /// (only implied from 5.40), so the strict rule accepts it while the
-    /// warnings rule keeps firing.
+    /// `use feature 'class'` enables class syntax, not the `strict` pragma,
+    /// so neither require-use rule may treat it as satisfying (#18765
+    /// review). A versioned `use Object::Pad 0.821;` (or later) opts out of
+    /// Object::Pad's implicit pragmas, and `use Moo ();` never calls
+    /// `import`: all three must keep both rules firing.
     #[test]
-    fn require_use_strict_accepts_feature_class_but_warnings_keeps_firing() {
+    fn require_use_rules_fire_for_imports_that_do_not_provide_pragmas() {
         let ast = empty_program_node();
         let config = CriticConfig::default();
-        let source = "use feature 'class';\nclass Point { field $x; }\n";
-        let strict_ctx = CriticContext::new(source, &ast, &config);
-        let warnings_ctx = CriticContext::new(source, &ast, &config);
-
         let strict_registry =
             NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
         let warnings_registry =
             NativeCriticRegistry::with_rules(vec![Box::new(RequireUseWarningsRule)]);
 
-        assert!(strict_registry.check(&strict_ctx).is_empty());
-        assert_eq!(warnings_registry.check(&warnings_ctx).len(), 1);
+        let sources = [
+            "use feature 'class';\nclass Point { field $x; }\n",
+            "package P;\nuse Object::Pad 0.821;\nclass P;\n",
+            "package P;\nuse Object::Pad 0.825;\nclass P;\n",
+            "package P;\nuse Object::Pad 1.0;\nclass P;\n",
+            "package P;\nuse Moo ();\nmy $x = 1;\n",
+            "package P;\nuse Moose();\nmy $x = 1;\n",
+        ];
+        for source in sources {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert_eq!(
+                strict_registry.check(&ctx).len(),
+                1,
+                "require_use_strict must fire: {source:?}"
+            );
+            assert_eq!(
+                warnings_registry.check(&ctx).len(),
+                1,
+                "require_use_warnings must fire: {source:?}"
+            );
+        }
+
+        // Pre-0.821 versioned Object::Pad imports and import lists still
+        // provide the pragmas.
+        let accepted = [
+            "package P;\nuse Object::Pad 0.820;\nclass P;\n",
+            "package P;\nuse Object::Pad 0.66;\nclass P;\n",
+            "package P;\nuse Moo 2.004;\nmy $x = 1;\n",
+            "package P;\nuse Mojo::Base -base;\nmy $x = 1;\n",
+        ];
+        for source in accepted {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert!(strict_registry.check(&ctx).is_empty(), "strict accepted: {source:?}");
+            assert!(warnings_registry.check(&ctx).is_empty(), "warnings accepted: {source:?}");
+        }
     }
 
     #[test]

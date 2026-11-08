@@ -73,19 +73,17 @@ pub fn detect_dead_code(
     // Diagnostics surface the convention-filtered query (#18765): Moo
     // construction hooks, Exporter-consumed variables, and export-listed
     // names are usage-by-convention and must not be flagged.
-    let unused_symbols = workspace_index.find_unused_symbols_for_diagnostics();
+    //
+    // The query is scoped to the current document and compares normalized
+    // URI keys, not raw strings: the startup scan mints URIs via
+    // `Url::from_file_path`, which lowercases the Windows drive letter, while
+    // editors send `file:///F:/...`; a raw compare silently dropped every
+    // symbol from startup-indexed files. Scoping also keeps the convention
+    // filter from reading every other file's text on each publish.
+    let unused_symbols = workspace_index.find_unused_symbols_for_diagnostics_in(document_uri);
     let mut diagnostics = Vec::new();
 
     for symbol in unused_symbols {
-        // Only report diagnostics for symbols in the current document.
-        // Compare normalized URI keys, not raw strings (#18765): the startup
-        // scan mints URIs via `Url::from_file_path`, which lowercases the
-        // Windows drive letter, while editors send `file:///F:/...`; a raw
-        // compare silently dropped every symbol from startup-indexed files.
-        if perl_uri::uri_key(&symbol.uri) != perl_uri::uri_key(document_uri) {
-            continue;
-        }
-
         // Determine diagnostic code and message subject based on symbol kind
         let identity: &'static DeadCodeIdentity = match symbol.kind {
             SymbolKind::Subroutine => &SUBROUTINE_IDENTITY,
@@ -113,7 +111,7 @@ pub fn detect_dead_code(
         // ever reached through method dispatch (`$obj->method`) or dynamic
         // dispatch has no name reference for the workspace index to see, so
         // an unconditional "Remove" would break working code.
-        let suggestion = if identity.subject == "subroutine" {
+        let suggestion = if matches!(symbol.kind, SymbolKind::Subroutine) {
             format!(
                 "Before removing subroutine '{}', check for method or dynamic dispatch callers",
                 symbol.name
