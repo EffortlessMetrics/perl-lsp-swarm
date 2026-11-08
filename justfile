@@ -1513,6 +1513,7 @@ ci-policy:
     @python3 scripts/ci/test_validate_cargo_feature_roles.py
     @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
     @python3 scripts/ci/test_public_api_filter.py
+    @python3 scripts/ci/test_semver_pr_check.py
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
@@ -1994,7 +1995,7 @@ perf-baseline:
     cargo bench -p perl-lsp-completion --bench completion_benchmark --locked
     cargo bench -p perl-lsp-navigation --bench navigation_benchmark --locked
     cargo bench -p perl-workspace --features workspace --bench workspace_index_benchmark --locked
-    cargo bench -p perl-lsp-rs --bench rope_performance_benchmark --locked
+    cargo bench -p perl-lsp-rs --features benchmarks --bench rope_performance_benchmark --locked
     cargo bench -p perl-lsp-tooling --bench cache_benchmark --locked
     @echo "Baseline complete. See docs/project/PERFORMANCE_BASELINES.md"
 
@@ -2583,6 +2584,43 @@ public-api-check:
         fi
     done
     [ $FAILED -eq 0 ] || { echo "Run 'just public-api-update' to regenerate baselines if the change is intentional."; exit 1; }
+
+# Prove every committed baseline is filter-stable WITHOUT the
+# cargo-public-api instrument (grep/sed/awk only). Merge-time half of
+# public-api-check's canonical-form guard (#18736): a baseline the filter
+# would rewrite hides those lines from the ratchet diff. Runs in the
+# merge-gate meta shard, required=true inside the shard policy. That makes
+# the gate fail its shard; ruleset-level merge blocking additionally needs
+# the shard's own context promoted (#17193 / #18736 Step 2), so until then
+# this gate fails the shard, not the merge.
+public-api-baselines-canonical:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Fail closed on an empty crate list: a silent vacuous loop would be a
+    # green verdict on nothing, which is the one direction this gate may
+    # never take.
+    crates="$(just _api-ratchet-crates)"
+    if [ -z "$crates" ]; then
+        echo "INSTRUMENT-FAIL public-api: ratchet crate list is empty; refusing a vacuous pass"
+        exit 1
+    fi
+    failed=0
+    for crate in $crates; do
+        baseline=".ci/public-api-baselines/${crate}.txt"
+        if [ ! -f "$baseline" ]; then
+            echo "FAIL missing baseline: $baseline (run: just public-api-update)"; failed=1; continue
+        fi
+        just _public-api-filter "$baseline" "/tmp/${crate}-canonical.txt"
+        if [ ! -s "/tmp/${crate}-canonical.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: baseline normalized to nothing"; failed=1; continue
+        fi
+        if ! cmp -s "$baseline" "/tmp/${crate}-canonical.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $baseline is not in canonical filtered form -- lines the filter drops would be invisible to this diff (run 'just public-api-update')"
+            diff -u "$baseline" "/tmp/${crate}-canonical.txt" | head -20 || true
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ] || exit 1
 
 # Regenerate all public API baselines from current workspace state
 public-api-update:

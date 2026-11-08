@@ -23,6 +23,7 @@
 //! enqueue, then releases them immediately.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
@@ -174,6 +175,23 @@ struct CommittedPushDiagnostic {
     generation: u32,
     parse_errors_only: bool,
     sequence: u64,
+    /// Content identity of the committed `diagnostics` array (#18774):
+    /// hash of the canonical serialization of the payload's `diagnostics`
+    /// value only. `uri` and `version` are deliberately excluded --
+    /// `version` changes on every publish and would make identical-content
+    /// detection impossible.
+    payload_hash: u64,
+}
+
+/// Hash the client-visible content of a push-diagnostics payload.
+///
+/// Only the `diagnostics` array participates: two publications that differ
+/// solely in envelope fields (`version`, sequence metadata) present the same
+/// squiggles to the user and must compare equal here (#18774).
+fn diagnostics_payload_hash(payload: &Value) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    payload.get("diagnostics").unwrap_or(&Value::Null).to_string().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Sink state: one committed-diagnostic record per open document URI.
@@ -332,6 +350,11 @@ impl LspServer {
         after_staging: impl FnOnce(),
     ) -> PushDiagnosticsCommitOutcome {
         after_staging();
+        // Hash the diagnostics content before entering the boundary: the
+        // canonical serialization cost is proportional to the payload, and
+        // the boundary holds the documents and config authorities for its
+        // whole duration (#18774).
+        let payload_hash = diagnostics_payload_hash(&payload);
         let result = self.commit_if_diagnostic_subject_current(
             DiagnosticSubject {
                 uri: &identity.normalized_uri,
@@ -349,6 +372,7 @@ impl LspServer {
                     identity,
                     payload,
                     disposition,
+                    payload_hash,
                 )
             },
         );
@@ -386,6 +410,7 @@ impl LspServer {
         identity: &PushDiagnosticIdentity,
         payload: Value,
         disposition: PushDiagnosticsDisposition,
+        payload_hash: u64,
     ) -> PushDiagnosticsCommitOutcome {
         // 3. Sequence law: a candidate older than what this sink already
         // committed for the same document instance can no longer enqueue --
@@ -412,6 +437,51 @@ impl LspServer {
             return PushDiagnosticsCommitOutcome::RejectedSupersededPhase;
         }
 
+        // 4. Identical-content law (#18774): a replacement whose diagnostics
+        // array is byte-identical to the last committed publication for this
+        // same document instance and phase carries no new information --
+        // publishDiagnostics is replace-mode, so the identical set is already
+        // the correct client-visible state. Skipping kills the per-keystroke
+        // identical republish stream (35+ duplicate frames per session).
+        // The ledger still advances and the readiness effect still attaches
+        // below: receipts and #11675 active-document readiness must observe
+        // the committed generation. Clear dispositions always send -- a
+        // suppressed clear would strand stale diagnostics on the client.
+        if disposition == PushDiagnosticsDisposition::Replacement
+            && let Some(entry) = committed.get(&identity.normalized_uri)
+            && Arc::ptr_eq(&entry.document_instance, &identity.document_instance)
+            && entry.parse_errors_only == identity.parse_errors_only
+            && entry.payload_hash == payload_hash
+            && identity.generation >= entry.generation
+        {
+            let identical_to_generation = entry.generation;
+            let sequence = entry.sequence + 1;
+            committed.insert(
+                identity.normalized_uri.clone(),
+                CommittedPushDiagnostic {
+                    document_instance: Arc::clone(&identity.document_instance),
+                    generation: identity.generation,
+                    parse_errors_only: identity.parse_errors_only,
+                    sequence,
+                    payload_hash,
+                },
+            );
+            tracing::debug!(
+                uri = %identity.normalized_uri,
+                generation = identity.generation,
+                identical_to_generation,
+                sequence,
+                "Skipped byte-identical push-diagnostics payload at sink boundary"
+            );
+            self.attach_active_document_effect(
+                &identity.normalized_uri,
+                &identity.document_instance,
+                identity.generation,
+                crate::runtime::readiness::CoreEffectKind::ParserDiagnosticsPublication,
+            );
+            return PushDiagnosticsCommitOutcome::CommittedCurrent;
+        }
+
         let sequence =
             committed.get(&identity.normalized_uri).map(|entry| entry.sequence + 1).unwrap_or(1);
         let previous = committed.insert(
@@ -421,10 +491,11 @@ impl LspServer {
                 generation: identity.generation,
                 parse_errors_only: identity.parse_errors_only,
                 sequence,
+                payload_hash,
             },
         );
 
-        // 4. Irreversible enqueue inside the boundary. A concurrent callback
+        // 5. Irreversible enqueue inside the boundary. A concurrent callback
         // blocks here until this send has been recorded, then fails its own
         // validation if the world moved on.
         match self.notify("textDocument/publishDiagnostics", payload) {
@@ -483,6 +554,15 @@ impl LspServer {
         normalized_uri: &str,
     ) -> Option<(u32, u64)> {
         self.push_diagnostics_sink.last_committed(normalized_uri)
+    }
+
+    /// Test-only ledger detach: a falsifier that proves a mechanism other
+    /// than payload identity (e.g. the debouncer fallback) needs the next
+    /// commit to reach the wire unconditionally instead of being suppressed
+    /// by the identical-content law (#18774).
+    #[cfg(test)]
+    pub(crate) fn test_clear_committed_push_diagnostics(&self) {
+        self.push_diagnostics_sink.committed.lock().clear();
     }
 }
 
@@ -721,12 +801,23 @@ mod tests {
         let identity = open_document(&server, uri, "my $stale = 1;\n");
         assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
 
+        // Distinct content so the explicit commit cannot hit the
+        // identical-content skip law (#18774): this test's subject is the
+        // generation boundary, not payload identity.
+        let payload = || {
+            json!({ "uri": uri, "version": 1, "diagnostics": [
+                { "range": { "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2 } },
+                    "message": "explicit probe", "severity": 1 }
+            ] })
+        };
+
         // First explicit commit for generation N succeeds and adds a frame.
         let frames_before = frame_count(&buf);
         assert_eq!(
             server.commit_push_diagnostics(
                 &identity,
-                json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+                payload(),
                 PushDiagnosticsDisposition::Replacement,
             ),
             PushDiagnosticsCommitOutcome::CommittedCurrent
@@ -748,7 +839,7 @@ mod tests {
         assert_eq!(
             server.commit_push_diagnostics(
                 &identity,
-                json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+                payload(),
                 PushDiagnosticsDisposition::Replacement,
             ),
             PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
@@ -783,12 +874,19 @@ mod tests {
         let accepted_fingerprint = accepted_snapshot.fingerprint();
         let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted_snapshot.clone()));
 
-        // Control: while the policy is still live, binding it changes nothing.
+        // Control: while the policy is still live, binding it changes
+        // nothing. Distinct content so the identical-content skip law
+        // (#18774) cannot consume the control frame this test asserts on.
+        let control_payload = json!({ "uri": uri, "version": 1, "diagnostics": [
+            { "range": { "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 2 } },
+                "message": "policy probe", "severity": 1 }
+        ] });
         let frames_before = frame_count(&buf);
         assert_eq!(
             server.commit_push_diagnostics(
                 &bound,
-                json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+                control_payload,
                 PushDiagnosticsDisposition::Replacement,
             ),
             PushDiagnosticsCommitOutcome::CommittedCurrent
@@ -879,9 +977,15 @@ mod tests {
 
         let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
         let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted.clone()));
+        // Distinct content so the identical-content skip law (#18774) cannot
+        // consume the frame this test asserts on.
         if server.commit_push_diagnostics(
             &bound,
-            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            json!({ "uri": uri, "version": 1, "diagnostics": [
+                { "range": { "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2 } },
+                    "message": "collision probe", "severity": 1 }
+            ] }),
             PushDiagnosticsDisposition::Replacement,
         ) != PushDiagnosticsCommitOutcome::CommittedCurrent
         {
@@ -951,9 +1055,15 @@ mod tests {
         let owner = original_owner.to_string_lossy().into_owned();
         let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), Some(&owner));
         let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted.clone()));
+        // Distinct content so the identical-content skip law (#18774) cannot
+        // consume the frame this test asserts on.
         if server.commit_push_diagnostics(
             &bound,
-            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            json!({ "uri": uri, "version": 1, "diagnostics": [
+                { "range": { "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2 } },
+                    "message": "rebind probe", "severity": 1 }
+            ] }),
             PushDiagnosticsDisposition::Replacement,
         ) != PushDiagnosticsCommitOutcome::CommittedCurrent
         {
@@ -1247,6 +1357,224 @@ mod tests {
         assert_eq!(
             server.workspace_folders.lock()[0].project_config_generation,
             first_generation + 1
+        );
+    }
+
+    /// #18774 gate (i): two Replacement commits with identical diagnostics
+    /// arrays at generations N then N+1 must produce exactly one outbound
+    /// frame while the ledger advances for both accepted tickets. The
+    /// skipped publication is invisible to the client -- publishDiagnostics
+    /// is replace-mode and the identical set is already displayed -- but
+    /// receipts and #11675 readiness must still observe each generation.
+    #[test]
+    fn identical_replacement_payloads_skip_frames_and_ledger_advances() {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_identical_skip_test.pl";
+        let mut identity = open_document(&server, uri, "my $x = 1;\n");
+        assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
+        server.push_diagnostics_sink.committed.lock().clear();
+
+        let payload = || {
+            json!({ "uri": uri, "version": 1, "diagnostics": [
+                { "range": { "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2 } },
+                    "message": "identical probe", "severity": 2 }
+            ] })
+        };
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "the first distinct commit must send a frame"
+        );
+        assert!(wait_for_frames(&buf, 2));
+        let settled_frames = frame_count(&buf);
+        let (base_generation, mut expected_sequence) = server
+            .push_diagnostics_sink
+            .last_committed(&identity.normalized_uri)
+            .expect("the first commit must record a ledger entry");
+
+        // Same content, same generation: skipped, sequence still advances.
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "a skipped identical commit must still report a committed outcome"
+        );
+        expected_sequence += 1;
+        assert_eq!(
+            server.push_diagnostics_sink.last_committed(&identity.normalized_uri),
+            Some((base_generation, expected_sequence)),
+            "the ledger must advance even when the frame is skipped"
+        );
+
+        // Same content at a NEWER generation (an edit that changes nothing
+        // user-visible): still skipped, ledger still advances.
+        identity.generation += 1;
+        identity.document_instance.store(identity.generation, Ordering::SeqCst);
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+        );
+        expected_sequence += 1;
+        assert_eq!(
+            server.push_diagnostics_sink.last_committed(&identity.normalized_uri),
+            Some((identity.generation, expected_sequence)),
+            "the newer generation must be recorded on the skipped commit"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            frame_count(&buf),
+            settled_frames,
+            "byte-identical replacements must not enqueue further frames"
+        );
+    }
+
+    /// #18774 gate (ii): a changed diagnostics message is new information
+    /// and must publish a second frame.
+    #[test]
+    fn changed_diagnostics_content_still_publishes() {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_changed_content_test.pl";
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
+        server.push_diagnostics_sink.committed.lock().clear();
+
+        let payload = |message: &'static str| {
+            json!({ "uri": uri, "version": 1, "diagnostics": [
+                { "range": { "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2 } },
+                    "message": message, "severity": 2 }
+            ] })
+        };
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload("before"),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+        );
+        assert!(wait_for_frames(&buf, 2));
+        let settled_frames = frame_count(&buf);
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload("after"),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+        );
+        assert!(
+            wait_for_frames(&buf, settled_frames + 1),
+            "changed diagnostics content must enqueue a frame"
+        );
+    }
+
+    /// #18774 gate (iii): a Clear disposition always sends, even when its
+    /// payload content matches the last committed publication -- a
+    /// suppressed clear would strand stale diagnostics on the client.
+    #[test]
+    fn clear_disposition_always_publishes_even_when_content_matches() {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_clear_always_test.pl";
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
+        server.push_diagnostics_sink.committed.lock().clear();
+
+        let payload = || json!({ "uri": uri, "version": 1, "diagnostics": [] });
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+        );
+        assert!(wait_for_frames(&buf, 2));
+        let settled_frames = frame_count(&buf);
+
+        // Replacement with identical empty content: skipped (#18774).
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(frame_count(&buf), settled_frames, "identical content must skip");
+
+        // Clear with the same content: must still send.
+        assert_eq!(
+            server.commit_push_diagnostics(&identity, payload(), PushDiagnosticsDisposition::Clear),
+            PushDiagnosticsCommitOutcome::SafeClearCommitted
+        );
+        assert!(
+            wait_for_frames(&buf, settled_frames + 1),
+            "a clear disposition must never be suppressed by content identity"
+        );
+    }
+
+    /// #18774 gate (iv): the fast (parse-errors-only) frame and the full
+    /// frame for the same generation still both deliver -- the
+    /// identical-content law compares phase as well as content, and the
+    /// phase law keeps its authority ahead of the skip.
+    #[test]
+    fn fast_then_full_frames_at_same_generation_still_both_deliver() {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_fast_full_phase_test.pl";
+        let mut identity = open_document(&server, uri, "my $x = 1;\n");
+        assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
+        server.push_diagnostics_sink.committed.lock().clear();
+
+        let error_payload = || {
+            json!({ "uri": uri, "version": 1, "diagnostics": [
+                { "range": { "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2 } },
+                    "message": "parse error probe", "severity": 1 }
+            ] })
+        };
+        identity.parse_errors_only = true;
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                error_payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "the fast frame must publish before a full result exists"
+        );
+        assert!(wait_for_frames(&buf, 2));
+        let settled_frames = frame_count(&buf);
+
+        identity.parse_errors_only = false;
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                error_payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "the full frame must publish even with identical content: the \
+             phase changed, so the client-visible report composition changed"
+        );
+        assert!(
+            wait_for_frames(&buf, settled_frames + 1),
+            "fast-then-full at one generation must deliver both frames"
         );
     }
 }

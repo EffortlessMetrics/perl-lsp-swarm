@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::model::ActivationError;
 
@@ -299,10 +299,10 @@ fn record_gate_matches(
             }
         }
     }
-    if let Some(gate) = extract_single_gate(line) {
-        if known.contains(&gate) {
-            reachable.insert(gate);
-        }
+    if let Some(gate) = extract_single_gate(line)
+        && known.contains(&gate)
+    {
+        reachable.insert(gate);
     }
 }
 

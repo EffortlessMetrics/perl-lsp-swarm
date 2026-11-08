@@ -404,6 +404,12 @@ perllsp --info
 perllsp --check path/to/file.pl
 ```
 
+## Competing Perl tooling
+
+Neovim does not run the VS Code coexistence detector. Use `perllsp --health`, your
+client configuration, and [Competing Perl tooling (coexistence)](COEXISTENCE.md) for
+honest overlap guidance without inventing automatic conflict detection.
+
 ## Historical Neovim 0.8-0.10 setup
 
 The old `require('lspconfig').setup(...)` framework and Neovim 0.8-0.10 recipes

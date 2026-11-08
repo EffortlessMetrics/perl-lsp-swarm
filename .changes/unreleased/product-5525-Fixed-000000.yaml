@@ -1,9 +1,0 @@
-project: product
-component: Developer experience
-kind: Fixed
-body: "The GA release runbook no longer hardcodes three different versions and a push to a branch that does not exist. It carried `0.8.3` for the tag, `0.13.1` for the Homebrew formula, and `0.6.0` for the extension bump, so following the steps in order would have cut one release, published a formula for a second, and shipped an extension for a third — and `git push origin master` would have failed or landed the release commit where nothing releases from. Every step now reads one `$VERSION` set once at the top, and the templated coverage and performance headlines are replaced with pointers to the document that carries the receipts, so a release cannot republish figures nobody re-verified. `cargo xtask doc-claims` guards all of it, in both the runbook and its published book mirror."
-time: 2026-08-01T00:00:00Z
-custom:
-  PR: "5525"
-  Slug: ga-runbook-version-drift-5464
-  Breaking: "no"
