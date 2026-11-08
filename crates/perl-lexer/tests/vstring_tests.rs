@@ -232,3 +232,239 @@ fn test_vstring_large_version_numbers() -> R {
     );
     Ok(())
 }
+
+// ===========================================================================
+// Autoquote gate: `vstring_is_autoquoted` (lib.rs `vstring_is_autoquoted`)
+//
+// A bareword shaped like a v-string in an autoquote position is a string key
+// or name, not a v-string. Each test below names the brace-gate seam it
+// discriminates: the whitespace walks, the byte before `{`, the sigil /
+// closer arms, the identifier-name walk, the arrow-suffixed name arm, and
+// the fallthroughs that leave a genuine v-string intact.
+// ===========================================================================
+
+/// Find the token carrying exactly `text` among the significant tokens.
+fn token_with_text<'a>(toks: &'a [perl_lexer::Token], text: &str) -> Option<&'a perl_lexer::Token> {
+    toks.iter().find(|t| t.text.as_ref() == text)
+}
+
+/// `$h{v5}` — the headline hash-subscript case: the name walk stops at the
+/// `$` sigil (`name_start > 0` boundary), so the brace gate reports
+/// autoquoted and the key stays an identifier.
+#[test]
+fn hash_subscript_bareword_after_sigiled_variable_is_identifier() -> R {
+    let toks = significant("print $h{v5};");
+    let key = token_with_text(&toks, "v5").ok_or("no 'v5' token in 'print $h{v5};'")?;
+    assert!(
+        matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "hash key 'v5' must stay an identifier, got: {:?}",
+        key.token_type
+    );
+    assert_eq!(key.start, 9, "key must span its exact bytes");
+    assert_eq!(key.end, 11);
+    Ok(())
+}
+
+/// `$h {v5}` — whitespace between the variable and the brace: the backward
+/// whitespace walk before `{` must run (above the `inner > 0` boundary) and
+/// still land on the identifier+sigil shape.
+#[test]
+fn whitespace_before_subscript_brace_still_autoquotes_bareword() -> R {
+    let toks = significant("$h {v5}");
+    let key = token_with_text(&toks, "v5").ok_or("no 'v5' token in '$h {v5}'")?;
+    assert!(
+        matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "'$h {{v5}}' is still a subscript; 'v5' must stay an identifier, got: {:?}",
+        key.token_type
+    );
+    assert_eq!(key.start, 4);
+    assert_eq!(key.end, 6);
+    Ok(())
+}
+
+/// `$my_hash{v5}` — the name walk must consume alphanumeric *and* underscore
+/// name bytes (the `is_ascii_alphanumeric() || b'_'` predicate) before
+/// stopping at the sigil.
+#[test]
+fn underscored_hash_name_walk_stops_at_sigil_and_autoquotes() -> R {
+    let toks = significant("$my_hash{v5}");
+    let key = token_with_text(&toks, "v5").ok_or("no 'v5' token in '$my_hash{{v5}}'")?;
+    assert!(
+        matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "key of '$my_hash{{v5}}' must stay an identifier, got: {:?}",
+        key.token_type
+    );
+    Ok(())
+}
+
+/// `@ARGV{v5}` — a hash slice on a multi-character `@`-sigiled name: the
+/// name walk runs several iterations before hitting the sigil, which is the
+/// below/equal/above boundary of the walk loop.
+#[test]
+fn hash_slice_bareword_after_at_array_is_identifier() -> R {
+    let toks = significant("@ARGV{v5}");
+    let key = token_with_text(&toks, "v5").ok_or("no 'v5' token in '@ARGV{{v5}}'")?;
+    assert!(
+        matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "hash-slice key 'v5' must stay an identifier, got: {:?}",
+        key.token_type
+    );
+    Ok(())
+}
+
+/// `$h{a}{v5}` — a `{` directly after a closing `}` (chained subscript):
+/// the closer arm of the brace gate must fire.
+#[test]
+fn chained_hash_subscript_after_closing_brace_is_identifier() -> R {
+    let toks = significant("$h{a}{v5}");
+    let key = token_with_text(&toks, "v5").ok_or("no 'v5' token in '$h{{a}}{{v5}}'")?;
+    assert!(
+        matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "chained-subscript key 'v5' must stay an identifier, got: {:?}",
+        key.token_type
+    );
+    Ok(())
+}
+
+/// `$h->[0]{v5}` — a `{` directly after a closing `]`: the array-closer arm
+/// must fire, and the same shape with intervening whitespace exercises the
+/// whitespace walk landing on the closer.
+#[test]
+fn hash_subscript_after_array_closer_is_identifier() -> R {
+    for input in ["$h->[0]{v5}", "$h->[0] {v5}"] {
+        let toks = significant(input);
+        let key =
+            token_with_text(&toks, "v5").ok_or_else(|| format!("no 'v5' token in {input:?}"))?;
+        assert!(
+            matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+            "'{input}' keys 'v5' after ']' must stay identifiers, got: {:?}",
+            key.token_type
+        );
+    }
+    Ok(())
+}
+
+/// `@{v5}` and `%{v5}` — dereference braces directly after a `@` or `%`
+/// sigil: the sigil arms of the brace gate must fire so the deref name stays
+/// an identifier. (`${v5}` is consumed wholesale by the variable scanner, so
+/// the `$` arm is shadowed there; `@`/`%` are the reachable spellings.)
+#[test]
+fn deref_brace_bareword_after_sigil_is_identifier() -> R {
+    for input in ["@{v5}", "%{v5}"] {
+        let toks = significant(input);
+        let name =
+            token_with_text(&toks, "v5").ok_or_else(|| format!("no 'v5' token in {input:?}"))?;
+        assert!(
+            matches!(&name.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+            "'{input}' deref name 'v5' must stay an identifier, got: {:?}",
+            name.token_type
+        );
+    }
+    Ok(())
+}
+
+/// `${v5}` — the symbolic-dereference spelling is consumed by the variable
+/// scanner as one identifier token, so no bareword v-string candidate ever
+/// appears inside it.
+#[test]
+fn symbolic_deref_braces_are_one_variable_token() -> R {
+    let toks = significant("${v5}");
+    assert_eq!(toks.len(), 1, "expected one token, got: {:?}", toks);
+    assert!(
+        matches!(&toks[0].token_type, TokenType::Identifier(t) if t.as_ref() == "${v5}"),
+        "'${{v5}}' must be one variable token, got: {:?}",
+        toks[0].token_type
+    );
+    Ok(())
+}
+
+/// `$h->{v5}` — the arrow arm: a `-` `>` immediately before the brace (the
+/// `inner >= 2` boundary) means subscript, so the key stays an identifier.
+#[test]
+fn arrow_hash_subscript_bareword_is_identifier() -> R {
+    let toks = significant("$h->{v5}");
+    let key = token_with_text(&toks, "v5").ok_or("no 'v5' token in '$h->{{v5}}'")?;
+    assert!(
+        matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "arrow-subscript key 'v5' must stay an identifier, got: {:?}",
+        key.token_type
+    );
+    assert_eq!(key.start, 5);
+    assert_eq!(key.end, 7);
+    Ok(())
+}
+
+/// `$r->x{v5}` — an identifier name directly before `{` that is itself
+/// preceded by `->`: the arrow-suffixed-name arm must fire.
+#[test]
+fn brace_after_arrow_suffixed_name_is_identifier() -> R {
+    let toks = significant("$r->x{v5}");
+    let key = token_with_text(&toks, "v5").ok_or("no 'v5' token in '$r->x{{v5}}'")?;
+    assert!(
+        matches!(&key.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "subscript of an arrow-call result: 'v5' must stay an identifier, got: {:?}",
+        key.token_type
+    );
+    Ok(())
+}
+
+/// `sub f { v5 }` — a brace whose preceding identifier carries neither a
+/// sigil nor an arrow (a bare named block, not a subscript) is NOT an
+/// autoquote position: the body keeps its genuine v-string.
+#[test]
+fn bare_sub_block_body_keeps_vstring() -> R {
+    let toks = significant("sub f { v5 }");
+    let body = token_with_text(&toks, "v5").ok_or("no 'v5' token in 'sub f {{ v5 }}'")?;
+    assert!(
+        matches!(&body.token_type, TokenType::Version(t) if t.as_ref() == "v5"),
+        "bare block body 'v5' is a genuine v-string, got: {:?}",
+        body.token_type
+    );
+    assert_eq!(body.start, 8);
+    assert_eq!(body.end, 10);
+    Ok(())
+}
+
+/// `{ v5 }` — a brace at the very start of input: the backward walk hits the
+/// `inner > 0` boundary (below), so the gate cannot classify and the final
+/// fallthrough leaves the genuine v-string.
+#[test]
+fn block_brace_at_input_start_keeps_vstring() -> R {
+    let toks = significant("{ v5 }");
+    let body = token_with_text(&toks, "v5").ok_or("no 'v5' token in '{{ v5 }}'")?;
+    assert!(
+        matches!(&body.token_type, TokenType::Version(t) if t.as_ref() == "v5"),
+        "body of a leading bare block 'v5' is a genuine v-string, got: {:?}",
+        body.token_type
+    );
+    Ok(())
+}
+
+/// `; { v5 }` — a brace preceded by `;`: the backward walk skips the
+/// whitespace and lands on a byte that is neither closer, sigil, arrow, nor
+/// identifier (the `_ => {{}}` fallthrough), so the v-string survives.
+#[test]
+fn block_brace_after_statement_semicolon_keeps_vstring() -> R {
+    let toks = significant("; { v5 }");
+    let body = token_with_text(&toks, "v5").ok_or("no 'v5' token in '; {{ v5 }}'")?;
+    assert!(
+        matches!(&body.token_type, TokenType::Version(t) if t.as_ref() == "v5"),
+        "body of a semicolon-preceded bare block 'v5' is a genuine v-string, got: {:?}",
+        body.token_type
+    );
+    Ok(())
+}
+
+/// Regression anchor for the call-site guard: a sub NAME that looks like a
+/// v-string stays an identifier (`sub v5 {{ }}` declares, not versions).
+#[test]
+fn sub_named_like_a_vstring_is_identifier() -> R {
+    let toks = significant("sub v5 { }");
+    let name = token_with_text(&toks, "v5").ok_or("no 'v5' token in 'sub v5 {{ }}'")?;
+    assert!(
+        matches!(&name.token_type, TokenType::Identifier(t) if t.as_ref() == "v5"),
+        "sub name 'v5' must stay an identifier, got: {:?}",
+        name.token_type
+    );
+    Ok(())
+}

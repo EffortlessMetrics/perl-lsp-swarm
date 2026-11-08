@@ -1179,6 +1179,16 @@ jobs:
             --out target/receipts/pr-fast-failure-digest.md
           cat target/receipts/pr-fast-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
 
+      # #19067: the PR Smoke receipt is the only durable record of what the
+      # runner actually offered (the free-bytes snapshot in
+      # pr-fast-disk-pressure.log) and of the tier's gate verdicts. At 7 days
+      # that record expires before anyone can review it, which made the guard's
+      # own rule -- update the footprint bound only with a fresh measured
+      # receipt (PR_SMOKE_FOOTPRINT_GIB above) -- unsatisfiable: the bound's
+      # originating run (37195503421) has no surviving artifact and no job
+      # log. Retain at least as long as both the CI Gate shard receipts
+      # ("Upload gate receipt") and derived telemetry ("Upload CI actuals"),
+      # so the related evidence cannot drift apart in lifetime.
       - name: Upload PR-fast receipt
         if: always() && hashFiles('target/receipts/receipt.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
@@ -1191,7 +1201,7 @@ jobs:
             target/receipts/ci-subject.json
             target/receipts/logs/*.log
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
 
       # When the tier never produced receipt.json, publish diagnostics under a
       # name that does not impersonate a completed pr-fast run (#17915).
@@ -1207,7 +1217,7 @@ jobs:
             target/receipts/ci-subject.json
             target/receipts/pr-fast-failure-digest.md
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 30
 
       - name: Summarize PR-fast gate failures
         if: always()
@@ -1349,7 +1359,7 @@ jobs:
           # and re-flip `ci_workflow_includes_compile_all_targets_in_matrix`
           # if the dedicated job is ever reverted.
           - name: meta
-            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet regex_static_ratchet release_history_check source_commit_api_check perl_token_leaf_contract clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet regex_static_ratchet release_history_check source_commit_api_check perl_token_leaf_contract public_api_baseline_canonical clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack

@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Added
-body: "Requesting the \"Extract variable\" refactor with a zero-width cursor (no text selected) now returns it as a greyed-out, disabled action with a \"requires code selection\" reason, per the LSP 3.16 disabled-action contract, instead of omitting it or offering an action that does nothing useful."
-time: 2026-07-24T03:16:50Z
-custom:
-  PR: "4727"
-  Slug: disabled-extract-variable-zero-width
-  Breaking: "no"
