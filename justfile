@@ -2585,6 +2585,43 @@ public-api-check:
     done
     [ $FAILED -eq 0 ] || { echo "Run 'just public-api-update' to regenerate baselines if the change is intentional."; exit 1; }
 
+# Prove every committed baseline is filter-stable WITHOUT the
+# cargo-public-api instrument (grep/sed/awk only). Merge-time half of
+# public-api-check's canonical-form guard (#18736): a baseline the filter
+# would rewrite hides those lines from the ratchet diff. Runs in the
+# merge-gate meta shard, required=true inside the shard policy. That makes
+# the gate fail its shard; ruleset-level merge blocking additionally needs
+# the shard's own context promoted (#17193 / #18736 Step 2), so until then
+# this gate fails the shard, not the merge.
+public-api-baselines-canonical:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Fail closed on an empty crate list: a silent vacuous loop would be a
+    # green verdict on nothing, which is the one direction this gate may
+    # never take.
+    crates="$(just _api-ratchet-crates)"
+    if [ -z "$crates" ]; then
+        echo "INSTRUMENT-FAIL public-api: ratchet crate list is empty; refusing a vacuous pass"
+        exit 1
+    fi
+    failed=0
+    for crate in $crates; do
+        baseline=".ci/public-api-baselines/${crate}.txt"
+        if [ ! -f "$baseline" ]; then
+            echo "FAIL missing baseline: $baseline (run: just public-api-update)"; failed=1; continue
+        fi
+        just _public-api-filter "$baseline" "/tmp/${crate}-canonical.txt"
+        if [ ! -s "/tmp/${crate}-canonical.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: baseline normalized to nothing"; failed=1; continue
+        fi
+        if ! cmp -s "$baseline" "/tmp/${crate}-canonical.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $baseline is not in canonical filtered form -- lines the filter drops would be invisible to this diff (run 'just public-api-update')"
+            diff -u "$baseline" "/tmp/${crate}-canonical.txt" | head -20 || true
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ] || exit 1
+
 # Regenerate all public API baselines from current workspace state
 public-api-update:
     #!/usr/bin/env bash

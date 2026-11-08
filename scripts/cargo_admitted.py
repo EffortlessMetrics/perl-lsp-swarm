@@ -810,11 +810,11 @@ def check_capacity(paths, env, budget=None):
         if usage.free < required:
             row["shortfall_bytes"] = required - usage.free
             row["used_pct"] = used_pct
-            raise Denied("insufficient disk headroom at " + str(path)
-                         + " free_bytes=" + str(usage.free)
-                         + " required_free_bytes=" + str(required)
-                         + " shortfall_bytes=" + str(row["shortfall_bytes"])
-                         + " used_pct=" + str(row["used_pct"]), row)
+            raise CapacityRefused("insufficient disk headroom at " + str(path)
+                                  + " free_bytes=" + str(usage.free)
+                                  + " required_free_bytes=" + str(required)
+                                  + " shortfall_bytes=" + str(row["shortfall_bytes"])
+                                  + " used_pct=" + str(row["used_pct"]), row)
         if policy == "percent" and ceiling is not None and used_pct >= ceiling:
             required_free_for_pct = usage.total * (100 - ceiling) / 100
             # Admission requires used_pct strictly below the ceiling, so the
@@ -825,21 +825,12 @@ def check_capacity(paths, env, budget=None):
             row["required_free_bytes_for_pct"] = required_free_for_pct
             row["pct_shortfall_bytes"] = additional_free_needed
             row["additional_free_bytes_needed"] = additional_free_needed
-            raise Denied("volume used percentage at or above MAX_USED_PCT at " + str(path)
-                         + " free_bytes=" + str(usage.free)
-                         + " used_pct=" + str(used_pct)
-                         + " max_used_pct=" + str(ceiling)
-                         + " required_free_bytes_for_pct=" + str(required_free_for_pct)
-                         + " additional_free_bytes_needed=" + str(additional_free_needed), row)
-        if usage.free < required or (policy == "percent" and
-                (usage.total - usage.free) * 100 / usage.total >= ceiling):
-            row["shortfall_bytes"] = max(0, required - usage.free)
-            row["used_pct"] = (usage.total - usage.free) * 100 / usage.total
-            raise CapacityRefused("insufficient disk headroom at " + str(path)
+            raise CapacityRefused("volume used percentage at or above MAX_USED_PCT at " + str(path)
                                   + " free_bytes=" + str(usage.free)
-                                  + " required_free_bytes=" + str(required)
-                                  + " shortfall_bytes=" + str(row["shortfall_bytes"])
-                                  + " used_pct=" + str(row["used_pct"]), row)
+                                  + " used_pct=" + str(used_pct)
+                                  + " max_used_pct=" + str(ceiling)
+                                  + " required_free_bytes_for_pct=" + str(required_free_for_pct)
+                                  + " additional_free_bytes_needed=" + str(additional_free_needed), row)
         observations.append(row)
     report["destinations"] = observations
     return report
@@ -928,9 +919,9 @@ def main(args=None):
         env = os.environ.copy()
         env["RUSTUP_AUTO_INSTALL"] = "0"
         discovery_mode = env.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children')
-        if discovery_mode != 'proc-children':
-            if not owned_linux:
-                raise Denied('alternate owned-child discovery requires native Linux')
+        if discovery_mode != 'proc-children' and not owned_linux:
+            raise Denied('alternate owned-child discovery requires native Linux')
+        if managed and owned_linux:
             child_discovery_capability(discovery_mode)  # before scope/lease/allocation
         worktree, slot, paths = resource_plan(env)
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
