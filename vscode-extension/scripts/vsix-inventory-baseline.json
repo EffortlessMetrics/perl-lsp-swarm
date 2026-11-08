@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 31,
-  "total_bytes": 1998529,
+  "total_bytes": 1998665,
   "files": {
     ".oxfmtrc.json": 203,
     ".oxlintrc.json": 559,
@@ -13,7 +13,7 @@
     "language-configuration.json": 1010,
     "package.json": 60646,
     "package.nls.json": 2210,
-    "out/extension.js": 1775659,
+    "out/extension.js": 1775795,
     "snippets/launch.json": 791,
     "snippets/perl.json": 12172,
     "syntaxes/gherkin.tmLanguage.json": 1875,

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16668,
-  "reason": "v0.18.0 changie batch (#19034) folded 546 fragments into CHANGELOG.md (oxfmt-normalized here), and the substitution end-pattern grammar fix (#18463) grew perl.tmLanguage.json; no files added or removed",
-  "base_baseline_file_sha256": "88dbd8ee592842af8db272dad51d8074faff18eb36a0e85ad3a5c3e220d7f770",
-  "candidate_baseline_file_sha256": "8f59aee55b10f9591492546398192bb3b9a57b1b8dfd3b5669ba804f0c14b3b5",
-  "base_inventory_sha256": "568097ca4eecddd8d70f8b1c3ecc1bbdfff020cf20f70e9f410b2d0f75a4f321",
-  "candidate_inventory_sha256": "e6447adf919f4272ee259fc6d618ee851faf2f28370f8568da53d4e85ad0f07a"
+  "owner_issue": 7418,
+  "reason": "Test Explorer no-shell boundary (#7418): runBoundedProcess forces shell:false at spawn; out/extension.js +136 B; no files added or removed",
+  "base_baseline_file_sha256": "8f59aee55b10f9591492546398192bb3b9a57b1b8dfd3b5669ba804f0c14b3b5",
+  "candidate_baseline_file_sha256": "3cf47f5f383014f562b25235daf208abbe73e87886d7ff2c66c4e6f29cd8c417",
+  "base_inventory_sha256": "e6447adf919f4272ee259fc6d618ee851faf2f28370f8568da53d4e85ad0f07a",
+  "candidate_inventory_sha256": "b17798f392218d1c50b37b4b6871ce8c9860003a37fff3b4cb480f9c9f346a46"
 }
