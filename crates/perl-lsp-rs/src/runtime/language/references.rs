@@ -465,35 +465,45 @@ fn line_has_initialized_lexical_declaration(line: &str, sigil: char, name: &str)
     false
 }
 
+/// Source ranges of every PIR lexical fact for one variable spelling, joined
+/// to its canonical HIR binding. Built from a single parse so the P8 scope
+/// gate (#18369) does not reparse the document once per occurrence.
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-fn hir_binding_for_variable_offset(
-    source: &str,
-    byte_offset: usize,
-    sigil: char,
-    name: &str,
-) -> Option<perl_parser_core::hir::HirBindingId> {
-    use perl_parser_core::Parser;
-    use perl_parser_core::hir::lower_ast;
-    use perl_parser_core::pir::extract_lexical_facts;
+struct LexicalBindingIndex {
+    ranges: Vec<(usize, usize, Option<perl_parser_core::hir::HirBindingId>)>,
+}
 
-    let sigil_str = sigil.to_string();
-    let mut parser = Parser::new(source);
-    let output = parser.parse_with_recovery();
-    let hir = lower_ast(&output.ast);
-    let receipt = extract_lexical_facts(&hir);
-    let body = receipt.bodies.first()?;
-    for fact in &body.facts {
-        if fact.name.sigil.as_str() != sigil_str || fact.name.name != name {
-            continue;
-        }
-        let Some(range) = fact.source_anchor.range.as_ref() else {
-            continue;
-        };
-        if byte_offset >= range.start && byte_offset < range.end {
-            return fact.binding;
-        }
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+impl LexicalBindingIndex {
+    fn build(source: &str, sigil: char, name: &str) -> Self {
+        use perl_parser_core::Parser;
+        use perl_parser_core::hir::lower_ast;
+        use perl_parser_core::pir::extract_lexical_facts;
+
+        let sigil_str = sigil.to_string();
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        let hir = lower_ast(&output.ast);
+        let receipt = extract_lexical_facts(&hir);
+        let ranges = receipt
+            .bodies
+            .iter()
+            .flat_map(|body| body.facts.iter())
+            .filter(|fact| fact.name.sigil.as_str() == sigil_str && fact.name.name == name)
+            .filter_map(|fact| {
+                let range = fact.source_anchor.range.as_ref()?;
+                Some((range.start, range.end, fact.binding))
+            })
+            .collect();
+        Self { ranges }
     }
-    None
+
+    fn binding_at(&self, byte_offset: usize) -> Option<perl_parser_core::hir::HirBindingId> {
+        self.ranges
+            .iter()
+            .find(|(start, end, _)| byte_offset >= *start && byte_offset < *end)
+            .and_then(|(_, _, binding)| *binding)
+    }
 }
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -516,18 +526,21 @@ fn p8_lexical_binding_scope_admits<Q: perl_workspace::semantic::queries::Semanti
     let Ok(decl_byte) = usize::try_from(decl_span.start_byte) else {
         return false;
     };
-    let Some(decl_binding) = hir_binding_for_variable_offset(source, decl_byte, sigil, name) else {
+    let index = LexicalBindingIndex::build(source, sigil, name);
+    let Some(decl_binding) = index.binding_at(decl_byte) else {
         return false;
     };
-    let cursor_binding = hir_binding_for_variable_offset(source, cursor_byte_offset, sigil, name);
-    if cursor_binding != Some(decl_binding) {
+    if index.binding_at(cursor_byte_offset) != Some(decl_binding) {
         return false;
     }
 
     let occurrence_anchor_ids: Vec<_> =
         occurrences.iter().map(|occurrence| occurrence.anchor_id).collect();
     let spans = queries.anchor_source_spans(&occurrence_anchor_ids);
-    for (occurrence, span) in occurrences.iter().zip(spans) {
+    if spans.len() != occurrences.len() {
+        return false;
+    }
+    for span in spans {
         let Some(span) = span else {
             return false;
         };
@@ -537,9 +550,7 @@ fn p8_lexical_binding_scope_admits<Q: perl_workspace::semantic::queries::Semanti
         let Ok(start_byte) = usize::try_from(span.start_byte) else {
             return false;
         };
-        let binding = hir_binding_for_variable_offset(source, start_byte, sigil, name);
-        if binding != Some(decl_binding) {
-            let _ = occurrence;
+        if index.binding_at(start_byte) != Some(decl_binding) {
             return false;
         }
     }
