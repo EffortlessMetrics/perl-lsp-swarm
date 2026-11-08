@@ -2275,31 +2275,30 @@ impl LspServer {
                             entity_id,
                         );
                         let mut foreign_scope_proof = Vec::new();
-                        if let Some(sigil) = sigil {
-                            if let perl_lsp_rs_core::providers::navigation::references_shadow::ReferencesCutoverResult::Exact(ref occurrences) =
+                        if let Some(sigil) = sigil
+                            && let perl_lsp_rs_core::providers::navigation::references_shadow::ReferencesCutoverResult::Exact(ref occurrences) =
                                 outcome.result
-                            {
-                                let Some(decl_anchor) = decl_anchor else {
-                                    return Some(Err(
-                                        SourceBackedReferenceDecline::LexicalBindingScopeRejected,
-                                    ));
-                                };
-                                let Some(foreign) = p8_lexical_binding_scope_admits(
-                                    source,
-                                    uri,
-                                    byte_offset as usize,
-                                    sigil,
-                                    symbol,
-                                    decl_anchor,
-                                    occurrences,
-                                    &queries,
-                                ) else {
-                                    return Some(Err(
-                                        SourceBackedReferenceDecline::LexicalBindingScopeRejected,
-                                    ));
-                                };
-                                foreign_scope_proof = foreign;
-                            }
+                        {
+                            let Some(decl_anchor) = decl_anchor else {
+                                return Some(Err(
+                                    SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                                ));
+                            };
+                            let Some(foreign) = p8_lexical_binding_scope_admits(
+                                source,
+                                uri,
+                                byte_offset as usize,
+                                sigil,
+                                symbol,
+                                decl_anchor,
+                                occurrences,
+                                &queries,
+                            ) else {
+                                return Some(Err(
+                                    SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+                                ));
+                            };
+                            foreign_scope_proof = foreign;
                         }
                         Some(Ok((outcome, decl_anchor, foreign_scope_proof)))
                     })
