@@ -17,6 +17,7 @@ import type * as vscode from 'vscode';
 import {
   WhatsNewManager,
   extractVersionSection,
+  hasSectionBody,
   markdownToHtml,
   resolveVersionSection,
 } from '../whatsNew';
@@ -247,6 +248,31 @@ describe('resolveVersionSection', () => {
     const changelog = `${SAMPLE_CHANGELOG}`;
     const section = resolveVersionSection(changelog, '0.13.0-rc.1');
     expect(section).toContain('New feature A');
+  });
+
+  test('skips heading-only sections and returns empty when nothing has content', () => {
+    const changelog = `# Change Log
+
+## [Unreleased]
+
+## [0.18.0] - 2026-11-03
+
+## [0.17.0] - 2026-01-01
+
+### Fixed
+- Old fix
+`;
+    expect(resolveVersionSection(changelog, '0.18.0')).toBe('');
+    expect(resolveVersionSection(changelog, '0.18.0-rc.1')).toBe('');
+  });
+
+  test('resolves non-empty notes for 0.18.0 and its pre-releases from the shipped CHANGELOG', () => {
+    const shipped = fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8');
+    for (const version of ['0.18.0', '0.18.0-rc.1']) {
+      const section = resolveVersionSection(shipped, version);
+      expect(section.startsWith('## [0.18.0]')).toBe(true);
+      expect(hasSectionBody(section)).toBe(true);
+    }
   });
 
   test('prefers an exact version match over Unreleased', () => {

@@ -141,7 +141,7 @@ export class WhatsNewManager {
     if (!version) {
       return false;
     }
-    return this.extractChangelogSection(version).trim().length > 0;
+    return hasSectionBody(this.extractChangelogSection(version));
   }
 
   /**
@@ -219,7 +219,10 @@ ${htmlBody}
 export function extractVersionSection(changelog: string, version: string): string {
   // Match headings like: ## [0.12.0] - 2026-03-19  or  ## 0.12.0
   const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const headingRe = new RegExp(`^##\\s+(?:\\[${escaped}\\]|${escaped})(?:\\s+[^\\n]*)?$`, 'm');
+  const headingRe = new RegExp(
+    `^##[ \\t]+(?:\\[${escaped}\\]|${escaped})(?:[ \\t]+[^\\n]*)?$`,
+    'm',
+  );
   const match = headingRe.exec(changelog);
   if (!match) {
     return '';
@@ -239,21 +242,29 @@ export function extractVersionSection(changelog: string, version: string): strin
  * dedicated heading (pre-releases) or that track `## [Unreleased]` (#18432).
  */
 export function resolveVersionSection(changelog: string, version: string): string {
-  const exact = extractVersionSection(changelog, version);
-  if (exact.trim().length > 0) {
-    return exact;
-  }
-
+  const candidates = [version];
   const hyphen = version.indexOf('-');
   if (hyphen > 0) {
-    const releaseCore = version.slice(0, hyphen);
-    const fromPrerelease = extractVersionSection(changelog, releaseCore);
-    if (fromPrerelease.trim().length > 0) {
-      return fromPrerelease;
+    candidates.push(version.slice(0, hyphen));
+  }
+  candidates.push('Unreleased');
+
+  for (const candidate of candidates) {
+    const section = extractVersionSection(changelog, candidate);
+    if (hasSectionBody(section)) {
+      return section;
     }
   }
+  return '';
+}
 
-  return extractVersionSection(changelog, 'Unreleased');
+/**
+ * True when an extracted section has content beyond its `##` heading line, so a
+ * heading-only `## [Unreleased]` never auto-opens an empty What's New tab.
+ */
+export function hasSectionBody(section: string): boolean {
+  const newline = section.indexOf('\n');
+  return newline >= 0 && section.slice(newline + 1).trim().length > 0;
 }
 
 /**
