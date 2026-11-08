@@ -133,6 +133,65 @@ fn completion_after_hash_in_string_offers_symbols() -> TestResult {
 }
 
 #[test]
+fn completion_at_eof_after_hash_in_string_offers_symbols() -> TestResult {
+    // No trailing newline: the cursor is at EOF, so the guard must classify
+    // through the empty-range left-hand kind (code), not fail closed.
+    let doc = "sub target_sub { return 1; }\nmy $sep = \"#\"; targ";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///hash_eof.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "; targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///hash_eof.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub")),
+        "completion at EOF after \"#\" string must offer target_sub, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_at_eof_inside_real_comment_still_empty() -> TestResult {
+    // Paired with the EOF rescue above: the left-hand kind here is a real
+    // comment, so the guard must still block.
+    let doc = "sub target_sub { return 1; }\nmy $x = 1; # targ";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///comment_eof.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "# targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///comment_eof.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(items.is_empty(), "completion at EOF inside a real comment must be empty, got: {result}");
+    Ok(())
+}
+
+#[test]
 fn completion_inside_real_comment_still_empty() -> TestResult {
     let doc = "sub target_sub { return 1; }\n# targ\n";
     let mut harness = LspHarness::new();

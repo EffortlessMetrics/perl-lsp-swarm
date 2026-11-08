@@ -362,9 +362,8 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
 /// This is deliberately NOT string-aware on its own: callers that guard a
 /// user-visible answer use [`is_in_comment_for_guard`], which adjudicates
 /// a hit with the generation-bound `SourceRegionIndex` (#19206). The naive
-/// verdict remains the fallback when no generation-current snapshot can
-/// adjudicate.
-pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+/// verdict remains the fallback when no usable snapshot can adjudicate.
+fn is_in_comment_naive(position: usize, source: &str) -> bool {
     let line_start =
         if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
     let line = &source[line_start..];
@@ -382,13 +381,13 @@ pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
 /// from the current snapshot, so a `#` inside a string, quote-like, or
 /// regex region no longer kills the rest of the line.
 ///
-/// The naive check runs first, so lines without a `#` pay nothing. With no
-/// snapshot, or a snapshot parsed from different text, the naive verdict
-/// stands (fail-closed, the pre-#19206 behavior). Blocking kinds mirror
-/// rename's `rename_blocked_at` plus `RecoveryAmbiguous`; any other proven
-/// kind (code, string, quote-like, regex, heredoc) rescues the position.
-/// EOF and boundary cursors classify through the left-hand kind, since
-/// there is no source byte at the cursor to classify.
+/// The naive check runs first, so lines without a `#` pay no snapshot or
+/// index cost. With no snapshot, or a snapshot parsed from different text,
+/// the naive verdict stands (fail-closed, the pre-#19206 behavior).
+/// Blocking kinds mirror rename's `rename_blocked_at` plus
+/// `RecoveryAmbiguous`; any other proven kind (code, string, quote-like,
+/// regex, heredoc) rescues the position. EOF cursors fall back to the
+/// empty-range left-hand kind; invalid UTF-8 boundaries fail closed.
 pub(crate) fn is_in_comment_for_guard(
     position: usize,
     source: &str,
@@ -401,18 +400,12 @@ pub(crate) fn is_in_comment_for_guard(
         return true;
     };
     let index = snapshot.source_region_index();
-    let kind = match index.classify_offset(position) {
-        perl_parser_core::syntax::source_context::OffsetClassification::Proven { kind } => {
-            Some(kind)
+    let kind = index.classify_offset(position).proven_kind().or_else(|| {
+        match index.classify_range_checked(position, position) {
+            perl_parser_core::SourceRangeClassification::EmptyBoundary { left, .. } => left,
+            _ => None,
         }
-        perl_parser_core::syntax::source_context::OffsetClassification::InvalidUtf8Boundary
-        | perl_parser_core::syntax::source_context::OffsetClassification::OutOfBounds => {
-            match index.classify_range_checked(position, position) {
-                perl_parser_core::SourceRangeClassification::EmptyBoundary { left, .. } => left,
-                _ => None,
-            }
-        }
-    };
+    });
     match kind {
         Some(
             perl_parser_core::SourceRegionKind::LineComment

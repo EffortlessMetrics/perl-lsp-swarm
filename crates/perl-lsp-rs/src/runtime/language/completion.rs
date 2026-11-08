@@ -3274,6 +3274,53 @@ mod tests {
     }
 
     #[test]
+    fn hash_in_string_completion_reaches_both_runtime_request_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #19206: the wire route exercises only the cancellable handler, so
+        // pin the shared comment-guard adjudication on both request routes.
+        for (source, needle, expect_target) in [
+            ("sub target_sub { return 1; }\nmy $sep = \"#\"; targ", "; targ", true),
+            ("sub target_sub { return 1; }\nmy $x = 1; # targ", "# targ", false),
+        ] {
+            let (line, character) = source
+                .lines()
+                .enumerate()
+                .find_map(|(idx, text)| {
+                    text.find(needle).map(|col| (idx as u32, (col + needle.len()) as u32))
+                })
+                .ok_or("missing completion needle")?;
+            for cancellable in [false, true] {
+                let server = LspServer::default();
+                let uri = "file:///workspace/hash_guard_completion.pl";
+                server.test_apply_did_open(uri, source, 1)?;
+                let params = Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                }));
+                let response = if cancellable {
+                    server.handle_completion_cancellable(params, None)?
+                } else {
+                    server.handle_completion(params)?
+                };
+                let items: Vec<&Value> = response
+                    .as_ref()
+                    .and_then(|value| value.get("items"))
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().collect())
+                    .unwrap_or_default();
+                let offered = items
+                    .iter()
+                    .any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub"));
+                assert_eq!(
+                    offered, expect_target,
+                    "hash guard route mismatch: source={source:?}, cancellable={cancellable}, response={response:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn cancellable_completion_at_comment_position_surfaces_cancellation_not_empty_list()
     -> Result<(), Box<dyn std::error::Error>> {
         // Review finding on this PR: the comment guard in
