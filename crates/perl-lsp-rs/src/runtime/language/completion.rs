@@ -1626,18 +1626,12 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                if super::navigation::is_in_comment_naive(offset, &doc.text) {
-                    break 'completion_response None;
-                }
-
+                // Mirrors the goto-definition comment guard (#5066/#5408):
+                // the naive `#`-earlier-on-line hit is adjudicated by the
+                // snapshot SourceRegionIndex (#19206), so a `#` inside a
+                // string or regex no longer suppresses completions for code
+                // later on the line.
+                //
                 // Use the generation-current snapshot, or a stale one whose
                 // parsed source still equals the current text. While the
                 // current generation's parse is pending, never pair the stale
@@ -1647,6 +1641,10 @@ impl LspServer {
                 // snapshot, which stays usable. Full-sync desynchronization
                 // is not pending parse (#8129).
                 let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
+                if super::navigation::is_in_comment_for_guard(offset, &doc.text, parsed.as_deref())
+                {
+                    break 'completion_response None;
+                }
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1994,15 +1992,23 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
+                // Mirrors the goto-definition comment guard (#5066/#5408):
+                // the naive `#`-earlier-on-line hit is adjudicated by the
+                // snapshot SourceRegionIndex (#19206). The snapshot is
+                // resolved here, before the cancellation check below, exactly
+                // as the freshness contract further down prescribes; the
+                // adjudication itself is pure and does not touch the token.
+                //
+                // Same freshness contract as `handle_completion`: never pair
+                // a stale AST with newer text while the parse is pending
+                // (#17775); same-text stale snapshots stay usable (#11858),
+                // and full-sync desynchronization is not pending parse (#8129).
+                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
+                let in_comment = super::navigation::is_in_comment_for_guard(
+                    offset,
+                    &doc.text,
+                    parsed.as_deref(),
+                );
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead
@@ -2028,11 +2034,6 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                // Same freshness contract as `handle_completion`: never pair
-                // a stale AST with newer text while the parse is pending
-                // (#17775); same-text stale snapshots stay usable (#11858),
-                // and full-sync desynchronization is not pending parse (#8129).
-                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
