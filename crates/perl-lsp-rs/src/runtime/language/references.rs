@@ -506,6 +506,31 @@ impl LexicalBindingIndex {
     }
 }
 
+/// An occurrence in another file that the P8 scope gate (#18369) must still
+/// prove is not a file-local lexical before the exact set can be admitted.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct P8ForeignOccurrence {
+    uri: String,
+    start_byte: usize,
+}
+
+/// Decide whether an exact P8 occurrence set is provably bound to the selected
+/// declaration (#18369).
+///
+/// Two declaration shapes are distinguished:
+///
+/// * **Lexical declaration** (the declaration resolves to a HIR binding): the
+///   cursor and every proposed occurrence must resolve to that same binding. A
+///   file-local lexical cannot have members in another file, so any foreign
+///   occurrence declines.
+/// * **Package declaration** (no lexical binding exists at the declaration):
+///   the lexical check does not apply, but nothing in the set may be a
+///   lexical. The cursor and every same-file occurrence must resolve to no
+///   lexical binding, and every foreign occurrence is returned so the caller
+///   proves the same thing against that file's text outside the semantic view.
+///
+/// Returns `None` to decline, or the foreign occurrences still owed proof.
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 fn p8_lexical_binding_scope_admits<Q: perl_workspace::semantic::queries::SemanticQueries>(
     source: &str,
@@ -516,45 +541,42 @@ fn p8_lexical_binding_scope_admits<Q: perl_workspace::semantic::queries::Semanti
     decl_anchor: perl_semantic_facts::AnchorId,
     occurrences: &[perl_semantic_facts::OccurrenceFact],
     queries: &Q,
-) -> bool {
-    let Some(decl_span) = queries.anchor_source_span(decl_anchor) else {
-        return false;
-    };
+) -> Option<Vec<P8ForeignOccurrence>> {
+    let decl_span = queries.anchor_source_span(decl_anchor)?;
     if decl_span.source_uri != request_uri {
-        return false;
+        return None;
     }
-    let Ok(decl_byte) = usize::try_from(decl_span.start_byte) else {
-        return false;
-    };
+    let decl_byte = usize::try_from(decl_span.start_byte).ok()?;
     let index = LexicalBindingIndex::build(source, sigil, name);
-    let Some(decl_binding) = index.binding_at(decl_byte) else {
-        return false;
-    };
-    if index.binding_at(cursor_byte_offset) != Some(decl_binding) {
-        return false;
+    // `None` here means the declaration is not a lexical (a package
+    // declaration); every member must then also resolve to no lexical.
+    let decl_binding = index.binding_at(decl_byte);
+    if index.binding_at(cursor_byte_offset) != decl_binding {
+        return None;
     }
 
     let occurrence_anchor_ids: Vec<_> =
         occurrences.iter().map(|occurrence| occurrence.anchor_id).collect();
     let spans = queries.anchor_source_spans(&occurrence_anchor_ids);
     if spans.len() != occurrences.len() {
-        return false;
+        return None;
     }
+    let mut foreign = Vec::new();
     for span in spans {
-        let Some(span) = span else {
-            return false;
-        };
+        let span = span?;
+        let start_byte = usize::try_from(span.start_byte).ok()?;
         if span.source_uri != request_uri {
+            if decl_binding.is_some() {
+                return None;
+            }
+            foreign.push(P8ForeignOccurrence { uri: span.source_uri, start_byte });
             continue;
         }
-        let Ok(start_byte) = usize::try_from(span.start_byte) else {
-            return false;
-        };
-        if index.binding_at(start_byte) != Some(decl_binding) {
-            return false;
+        if index.binding_at(start_byte) != decl_binding {
+            return None;
         }
     }
-    true
+    Some(foreign)
 }
 
 impl LspServer {
@@ -1934,6 +1956,47 @@ impl LspServer {
         out
     }
 
+    /// Prove that no foreign member of a package-variable exact P8 set is a
+    /// file-local lexical in its own file (#18369). A member whose file is not
+    /// open has no text to prove against, so it declines rather than being
+    /// admitted unexamined.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    fn p8_foreign_occurrences_are_not_lexical(
+        &self,
+        current_uri: &str,
+        current_text: &str,
+        sigil: char,
+        name: &str,
+        foreign: &[P8ForeignOccurrence],
+    ) -> bool {
+        if foreign.is_empty() {
+            return true;
+        }
+        let needed: Vec<String> =
+            foreign.iter().map(|occurrence| perl_uri::uri_key(&occurrence.uri)).collect();
+        let texts =
+            self.open_document_texts_for_range_narrowing(current_uri, current_text, &needed);
+        let mut indexes: std::collections::HashMap<String, LexicalBindingIndex> =
+            std::collections::HashMap::new();
+        for occurrence in foreign {
+            let key = perl_uri::uri_key(&occurrence.uri);
+            if !indexes.contains_key(&key) {
+                let Some((_, text)) = texts.iter().find(|(uri, _)| perl_uri::uri_key(uri) == key)
+                else {
+                    return false;
+                };
+                indexes.insert(key.clone(), LexicalBindingIndex::build(text, sigil, name));
+            }
+            let Some(index) = indexes.get(&key) else {
+                return false;
+            };
+            if index.binding_at(occurrence.start_byte).is_some() {
+                return false;
+            }
+        }
+        true
+    }
+
     fn bounded_open_document_snapshot(
         &self,
         current_uri: &str,
@@ -2211,6 +2274,7 @@ impl LspServer {
                             symbol,
                             entity_id,
                         );
+                        let mut foreign_scope_proof = Vec::new();
                         if let Some(sigil) = sigil {
                             if let perl_lsp_rs_core::providers::navigation::references_shadow::ReferencesCutoverResult::Exact(ref occurrences) =
                                 outcome.result
@@ -2220,7 +2284,7 @@ impl LspServer {
                                         SourceBackedReferenceDecline::LexicalBindingScopeRejected,
                                     ));
                                 };
-                                if !p8_lexical_binding_scope_admits(
+                                let Some(foreign) = p8_lexical_binding_scope_admits(
                                     source,
                                     uri,
                                     byte_offset as usize,
@@ -2229,14 +2293,15 @@ impl LspServer {
                                     decl_anchor,
                                     occurrences,
                                     &queries,
-                                ) {
+                                ) else {
                                     return Some(Err(
                                         SourceBackedReferenceDecline::LexicalBindingScopeRejected,
                                     ));
-                                }
+                                };
+                                foreign_scope_proof = foreign;
                             }
                         }
-                        Some(Ok((outcome, decl_anchor)))
+                        Some(Ok((outcome, decl_anchor, foreign_scope_proof)))
                     })
                     .flatten()
             },
@@ -2256,10 +2321,26 @@ impl LspServer {
                 SourceBackedReferenceDecline::WorkspaceIndexStale,
             );
         }
-        let (outcome, decl_anchor) = match semantic_resolution {
+        let (outcome, decl_anchor, foreign_scope_proof) = match semantic_resolution {
             Ok(resolution) => resolution,
             Err(decline) => return SourceBackedReferenceAttempt::Declined(decline),
         };
+        // Foreign members of a package-variable exact set are proved here,
+        // outside the semantic view's read guards, against the open document
+        // text of the file that owns them (#18369).
+        if let Some(sigil) = sigil
+            && !self.p8_foreign_occurrences_are_not_lexical(
+                uri,
+                source,
+                sigil,
+                symbol,
+                &foreign_scope_proof,
+            )
+        {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::LexicalBindingScopeRejected,
+            );
+        }
 
         let occurrences = match outcome.result {
             ReferencesCutoverResult::Exact(occurrences) => occurrences,
@@ -5080,7 +5161,7 @@ mod tests {
         let noise_text = "package main;\nour $x;\nmy $alien = $x + 2;\n1;\n";
 
         let cases: [(&str, u32, u32, u32, u32); 3] = [
-            ("$x = 3;\nmy $x = 1;\nmy $y = $x + 1;\n", 0, 1, 1, 9),
+            ("$x = 3;\nmy $x = 1;\nmy $y = $x + 1;\n", 0, 1, 2, 9),
             ("my $x = $x + 1;\nmy $y = $x + 1;\n", 0, 9, 1, 9),
             ("{ my $x = 1; my $y = $x + 1; }\nmy $z = $x + 1;\n", 1, 9, 0, 22),
         ];
@@ -5199,6 +5280,95 @@ mod tests {
             "simple initialized lexical must stay exact: {positive_receipt:?}"
         );
 
+        // A package variable with no same-name lexical is not a lexical-scope
+        // mismatch: this gate must not be what declines the package cohort.
+        // (On current main the earlier initialized-lexical gate already keeps
+        // package variables out of the P8 exact tier.)
+        let server = crate::runtime::LspServer::default();
+        let package_main = "our $x = 1;\nprint $x;\n";
+        server.test_apply_did_open(main_uri, package_main, 11)?;
+        server
+            .test_index_file_in_building_state(main_uri, package_main)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        server.test_handle_references(Some(json!({
+            "textDocument": {"uri": main_uri, "version": 11},
+            "position": {"line": 1, "character": 7},
+            "context": {"includeDeclaration": false}
+        })))?;
+        let package_receipt = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .and_then(|value| value.get("request_receipt").cloned())
+            .ok_or("missing package P8 receipt")?;
+        assert_ne!(
+            package_receipt.get("source_backed_decline_stage").and_then(Value::as_str),
+            Some("lexical_binding_scope"),
+            "a package variable without a same-name lexical must not hit the lexical scope gate: {package_receipt:?}"
+        );
+
+        Ok(())
+    }
+
+    /// #18369: a foreign member of a package-variable exact set must be proved
+    /// against its own file, not skipped.
+    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+    #[test]
+    fn p8_foreign_occurrences_must_prove_they_are_not_file_local_lexicals()
+    -> Result<(), Box<dyn Error>> {
+        let main_uri = "file:///workspace/p8-foreign-18369/main.pl";
+        let package_uri = "file:///workspace/p8-foreign-18369/lib/Pkg.pm";
+        let lexical_uri = "file:///workspace/p8-foreign-18369/lib/Lex.pm";
+        let closed_uri = "file:///workspace/p8-foreign-18369/lib/Closed.pm";
+        let main_text = "our $x = 1;\n";
+        let package_text = "our $x;\nprint $x;\n";
+        let lexical_text = "my $x = 1;\nprint $x;\n";
+
+        let server = crate::runtime::LspServer::default();
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server.test_apply_did_open(package_uri, package_text, 1)?;
+        server.test_apply_did_open(lexical_uri, lexical_text, 1)?;
+
+        let use_byte = |text: &str| text.rfind("$x").map(|offset| offset + 1);
+        let package_use = P8ForeignOccurrence {
+            uri: package_uri.to_owned(),
+            start_byte: use_byte(package_text).ok_or("no package use")?,
+        };
+        let lexical_use = P8ForeignOccurrence {
+            uri: lexical_uri.to_owned(),
+            start_byte: use_byte(lexical_text).ok_or("no lexical use")?,
+        };
+        let closed_use = P8ForeignOccurrence { uri: closed_uri.to_owned(), start_byte: 0 };
+
+        assert!(server.p8_foreign_occurrences_are_not_lexical(
+            main_uri,
+            main_text,
+            '$',
+            "x",
+            std::slice::from_ref(&package_use),
+        ));
+        assert!(
+            !server.p8_foreign_occurrences_are_not_lexical(
+                main_uri,
+                main_text,
+                '$',
+                "x",
+                &[package_use.clone(), lexical_use],
+            ),
+            "a foreign file-local lexical must decline the exact set"
+        );
+        assert!(
+            !server.p8_foreign_occurrences_are_not_lexical(
+                main_uri,
+                main_text,
+                '$',
+                "x",
+                &[package_use, closed_use],
+            ),
+            "a foreign member with no text to prove against must decline"
+        );
         Ok(())
     }
 }
