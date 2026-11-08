@@ -226,18 +226,31 @@ Freeze the exact ledger bytes/digest used by the publication packet.
 The projection starts from the complete tree of `S`. Every intended difference
 must be declared in the release's projection manifest before the join.
 
-The swarm currently provides `cargo xtask sync-divergence scaffold` and
-`cargo xtask sync-divergence check` for reconciliation. It does not currently
-provide a `publication-sync` projection subcommand or a swarm-owned producer for
-`P`.
+The swarm provides `cargo xtask sync-divergence scaffold` and
+`cargo xtask sync-divergence check` for reconciliation, and
+`cargo xtask publication-sync project` as the deterministic producer for `P`:
 
-This runbook therefore treats projection generation as a hard prerequisite, not
-as an operation that this checkout can perform. Before a release transaction,
-identify a separately reviewed producer whose output is bound to `R`, `S`, the
-reconciliation evidence, and the manifest. If no accepted producer is
-available, stop here. Do not infer one from a command name, invoke an
-unimplemented `cargo xtask` path, or replace the missing producer with a manual
-exclusion checklist.
+```bash
+cargo xtask publication-sync project \
+  --base "$R" \
+  --source "$S" \
+  --manifest <reviewed-input-manifest.json> \
+  --ledger <blocker-free-publication-ledger.json> \
+  --message-file <reviewed-message-file> \
+  --out-dir <packet-output-dir> \
+  --author-name <fixed-author-name> \
+  --author-email <fixed-author-email> \
+  --timestamp <fixed-unix-seconds>
+```
+
+The producer starts from the complete tree of `S`, applies only the
+manifest-owned translations/exclusions, builds `J0` and `J` under one fixed
+commit identity, generates twice, and fails closed on any difference between
+the runs, any unlisted `S`→`P` difference, a blocked ledger, a non-`pass`
+invariant, stale or mismatched `R`/`S` identities, or an unsafe path. Its
+output is bound to `R`, `S`, the reconciliation evidence, and the manifest.
+If the producer or its review is unavailable, stop here. Do not replace the
+missing producer with a manual exclusion checklist.
 
 The final manifest must cover, where applicable:
 
