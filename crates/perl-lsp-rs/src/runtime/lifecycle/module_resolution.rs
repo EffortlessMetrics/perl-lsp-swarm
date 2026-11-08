@@ -1385,6 +1385,24 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    /// Keep cache-policy tests independent of the filesystem resolver's wall-clock budget.
+    struct InjectedResolutionResults;
+
+    impl InjectedResolutionResults {
+        fn new(results: impl IntoIterator<Item = ModuleUriResolution>) -> Self {
+            RESOLVE_URI_PROOF_RESULTS.with(|injected| {
+                injected.borrow_mut().extend(results);
+            });
+            Self
+        }
+    }
+
+    impl Drop for InjectedResolutionResults {
+        fn drop(&mut self) {
+            RESOLVE_URI_PROOF_RESULTS.with(|results| results.borrow_mut().clear());
+        }
+    }
+
     #[test]
     fn resolve_module_path_blocks_traversal_include_paths() -> TestResult {
         let temp = tempfile::tempdir()?;
@@ -2870,6 +2888,10 @@ use Overlay::OpenDoc;
     #[test]
     fn negative_cache_skips_repeat_resolution_for_absent_module() -> TestResult {
         reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([
+            ModuleUriResolution::NotFound,
+            ModuleUriResolution::NotFound,
+        ]);
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace)?;
@@ -2885,6 +2907,7 @@ use Overlay::OpenDoc;
             config.include_paths = (0..80).map(|index| format!("inc-{index}")).collect();
             config.resolution_timeout_ms = 50;
             config.use_system_inc = false;
+            config.use_perl5lib = false;
         }
 
         assert_eq!(server.resolve_module_to_path("Moo"), None);
@@ -2911,6 +2934,10 @@ use Overlay::OpenDoc;
     #[test]
     fn negative_cache_invalidates_for_pm_uri_changes() -> TestResult {
         reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([
+            ModuleUriResolution::NotFound,
+            ModuleUriResolution::NotFound,
+        ]);
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace)?;
@@ -2921,7 +2948,11 @@ use Overlay::OpenDoc;
         let server = LspServer::new();
         *server.workspace_folders.lock() =
             vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
-        server.workspace_config.lock().use_system_inc = false;
+        {
+            let mut config = server.workspace_config.lock();
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
 
         assert_eq!(server.resolve_module_to_path("Moo"), None);
         assert_eq!(resolve_uri_proof_calls(), 1);
@@ -2948,6 +2979,7 @@ use Overlay::OpenDoc;
     #[test]
     fn negative_cache_open_document_bypasses_cached_miss() -> TestResult {
         reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([ModuleUriResolution::NotFound]);
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(workspace.join("lib"))?;
@@ -2958,7 +2990,11 @@ use Overlay::OpenDoc;
         let server = LspServer::new();
         *server.workspace_folders.lock() =
             vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
-        server.workspace_config.lock().use_system_inc = false;
+        {
+            let mut config = server.workspace_config.lock();
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
 
         assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
         assert_eq!(resolve_uri_proof_calls(), 1);
@@ -2977,7 +3013,7 @@ use Overlay::OpenDoc;
 
         let resolved = server.resolve_module_to_path("Foo::Bar");
         assert!(
-            resolved.as_deref() == Some(module_uri.as_str()),
+            resolved.as_deref() == Some(perl_uri::uri_key(&module_uri).as_str()),
             "open buffer must satisfy module resolution despite a cached miss, got: {resolved:?}"
         );
         assert_eq!(
@@ -2992,6 +3028,7 @@ use Overlay::OpenDoc;
     #[test]
     fn negative_cache_clears_when_workspace_folder_is_added() -> TestResult {
         reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([ModuleUriResolution::NotFound]);
         let temp = tempfile::tempdir()?;
         let folder_a = temp.path().join("folder-a");
         let folder_b = temp.path().join("folder-b");
@@ -3013,6 +3050,7 @@ use Overlay::OpenDoc;
             let mut config = server.workspace_config.lock();
             config.include_paths = vec!["lib".to_string()];
             config.use_system_inc = false;
+            config.use_perl5lib = false;
         }
 
         assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
@@ -3044,6 +3082,7 @@ use Overlay::OpenDoc;
     #[test]
     fn negative_cache_clears_on_did_create_files() -> TestResult {
         reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([ModuleUriResolution::NotFound]);
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(workspace.join("lib").join("Foo"))?;
@@ -3062,6 +3101,7 @@ use Overlay::OpenDoc;
             let mut config = server.workspace_config.lock();
             config.include_paths = vec!["lib".to_string()];
             config.use_system_inc = false;
+            config.use_perl5lib = false;
         }
 
         assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
@@ -3086,18 +3126,10 @@ use Overlay::OpenDoc;
     #[test]
     fn negative_cache_does_not_suppress_retry_after_timeout() -> TestResult {
         reset_resolve_uri_proof_calls();
-        struct ResetInjectedResults;
-        impl Drop for ResetInjectedResults {
-            fn drop(&mut self) {
-                RESOLVE_URI_PROOF_RESULTS.with(|results| results.borrow_mut().clear());
-            }
-        }
-        let _reset = ResetInjectedResults;
-        RESOLVE_URI_PROOF_RESULTS.with(|results| {
-            results
-                .borrow_mut()
-                .extend([ModuleUriResolution::TimedOut, ModuleUriResolution::NotFound]);
-        });
+        let _results = InjectedResolutionResults::new([
+            ModuleUriResolution::TimedOut,
+            ModuleUriResolution::NotFound,
+        ]);
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace)?;
@@ -3112,6 +3144,7 @@ use Overlay::OpenDoc;
             let mut config = server.workspace_config.lock();
             config.include_paths = vec!["lib".to_string()];
             config.use_system_inc = false;
+            config.use_perl5lib = false;
         }
 
         assert_eq!(server.resolve_module_to_path("Moo"), None);
