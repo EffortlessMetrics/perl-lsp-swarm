@@ -126,8 +126,19 @@ pub fn feature_ids_from_caps(c: &ServerCapabilities) -> Vec<&'static str> {
 
 /// Build LSP `ServerCapabilities` from feature IDs.
 pub fn caps_from_feature_ids(features: &[&str]) -> ServerCapabilities {
-    #[allow(clippy::wildcard_imports)]
-    use lsp_types::*;
+    use lsp_types::{
+        CallHierarchyServerCapability, CodeActionProviderCapability, CodeLensOptions,
+        ColorProviderCapability, CompletionOptions, DeclarationCapability, DiagnosticOptions,
+        DiagnosticServerCapabilities, DocumentLinkOptions, DocumentOnTypeFormattingOptions,
+        ExecuteCommandOptions, FoldingRangeProviderCapability, HoverProviderCapability,
+        ImplementationProviderCapability, InlayHintOptions, InlayHintServerCapabilities,
+        InlineValueOptions, InlineValueServerCapabilities, LinkedEditingRangeServerCapabilities,
+        MonikerOptions, MonikerServerCapabilities, Notebook, NotebookCellSelector,
+        NotebookDocumentSyncOptions, NotebookSelector, OneOf, SelectionRangeProviderCapability,
+        SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
+        SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
+        SignatureHelpOptions, TypeDefinitionProviderCapability, WorkDoneProgressOptions,
+    };
 
     let mut caps = ServerCapabilities::default();
 

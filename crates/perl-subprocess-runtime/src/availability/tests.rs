@@ -137,6 +137,20 @@ fn relative_path_component_is_never_admitted() -> TestResult {
 }
 
 #[test]
+fn candidate_in_cwd_subtree_is_excluded_even_via_absolute_path_component() -> TestResult {
+    let tree = TempTree::new("cwd-subtree")?;
+    let cwd = tree.dir("workspace")?;
+    let bin = tree.dir("workspace/bin")?;
+    plant_tool(&bin, "perlcritic")?;
+
+    require(
+        !command_exists_in("perlcritic", Some(&path_of(&[&bin])?), &cwd),
+        "a PATH directory under the CWD subtree must not admit its tools",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn candidate_in_the_current_directory_is_excluded_even_via_an_absolute_component() -> TestResult {
     let tree = TempTree::new("cwd-absolute")?;
     let cwd = tree.dir("workspace")?;
@@ -172,6 +186,7 @@ fn tool_in_an_absolute_path_directory_is_admitted() -> TestResult {
 #[test]
 fn non_utf8_absolute_path_component_preserves_admission_policy() -> TestResult {
     let tree = TempTree::new("non-utf8-path")?;
+    let cwd = tree.dir("workspace")?;
     let name = OsString::from_vec(b"bin-\xff".to_vec());
     let bin = tree.root.join(&name);
     std::fs::create_dir_all(&bin).map_err(|e| format!("create non-utf8 dir: {e}"))?;
@@ -179,8 +194,8 @@ fn non_utf8_absolute_path_component_preserves_admission_policy() -> TestResult {
 
     let path = path_of(&[&bin])?;
     require(
-        command_exists_in("perlcritic", Some(&path), &tree.root),
-        "an executable under an absolute non-UTF-8 PATH component must remain available",
+        command_exists_in("perlcritic", Some(&path), &cwd),
+        "an executable under an absolute non-UTF-8 PATH component must remain available when that component is outside the CWD",
     )?;
     require(
         !command_exists_in("perlcritic", Some(&path), &bin),

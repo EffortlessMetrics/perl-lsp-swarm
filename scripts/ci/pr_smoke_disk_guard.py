@@ -49,9 +49,11 @@ the workflow beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 import sys
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
 
@@ -94,6 +96,11 @@ def effective_min_free_bytes(
     return max(requested, floor)
 
 PRESSURE_LOG_NAME = "pr-fast-disk-pressure.log"
+# Written by the preparation step into the shared receipt-log directory before
+# the full pr-fast tier runs; it must not satisfy full-tier gate-evidence
+# binding when receipt.json is absent (#17915 review).
+PREPARATION_GATE_LOG = "unit_routed_full_build.log"
+NAVIGATION_LOG_PREFIX = "navigation-"
 
 # Signatures taken verbatim from the confirmed exhaustion receipts (runs
 # 32697324730 / 32697144932): collect2 SIGBUS during linking, cargo/rustc
@@ -162,16 +169,48 @@ def parse_min_free_bytes(raw: str) -> int:
     if text.lower().endswith("gib"):
         number = text[: -len("gib")].strip()
         try:
-            value = float(number)
-        except ValueError as error:
+            value = Decimal(number)
+        except InvalidOperation as error:
             raise argparse.ArgumentTypeError(
                 f"invalid GiB value: {raw!r}"
             ) from error
+        if not value.is_finite():
+            raise argparse.ArgumentTypeError(
+                f"GiB value must be finite: {raw!r}"
+            )
         if value < 0:
             raise argparse.ArgumentTypeError(
                 f"min-free value must be non-negative: {raw!r}"
             )
-        return int(value * GIB)
+        # Decimal arithmetic preserves every input digit, so large integral
+        # GiB values keep all requested bytes (#19157); truncate only
+        # fractional bytes, as before. Bound the magnitude first: an extreme
+        # decimal exponent (e.g. 1e999999999GiB) would otherwise materialize
+        # a billion-digit integer in as_integer_ratio. Values at or above
+        # 1e300 GiB always overflow binary64 as bytes (1e300 * GIB > 1e309),
+        # so rejecting them here is exact; values below 1e-10 GiB always
+        # truncate to zero bytes.
+        # short-circuit: zero is zero regardless of its decimal exponent
+        # (e.g. 0e500GiB), and adjusted() reflects the exponent, not the value.
+        if value.is_zero():
+            return 0
+        if value.adjusted() >= 300:
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
+        if value.adjusted() <= -11:
+            return 0
+        numerator, denominator = value.as_integer_ratio()
+        byte_value = numerator * GIB // denominator
+        try:
+            conversion_finite = math.isfinite(float(byte_value))
+        except OverflowError:
+            conversion_finite = False
+        if not conversion_finite:
+            raise argparse.ArgumentTypeError(
+                f"GiB value and its byte conversion must be finite: {raw!r}"
+            )
+        return byte_value
     try:
         value = int(text)
     except ValueError as error:
@@ -255,6 +294,10 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
     if not logs_dir.is_dir():
         return findings
     for log_path in sorted(logs_dir.glob("*.log")):
+        if log_path.name == PRESSURE_LOG_NAME:
+            continue
+        if log_path.is_symlink():
+            continue
         try:
             text = log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -270,6 +313,41 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
                 )
                 break
     return findings
+
+
+def gate_log_paths(logs_dir: Path) -> list[Path]:
+    """Return gate log files excluding the advisory pressure transcript."""
+    if not logs_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in logs_dir.glob("*.log")
+        if path.name != PRESSURE_LOG_NAME and path.is_file() and not path.is_symlink()
+    )
+
+
+def _log_is_preparation_or_navigation(name: str) -> bool:
+    return name == PREPARATION_GATE_LOG or name.startswith(NAVIGATION_LOG_PREFIX)
+
+
+def has_full_tier_gate_evidence(
+    logs_dir: Path,
+    gate_logs: list[Path],
+    receipt_path: Path | None = None,
+) -> bool:
+    """True when pr-fast produced gate logs beyond preparation-only residue.
+
+    Preparation copies ``unit_routed_full_build.log`` into the shared log
+    directory before the tier receipt exists. A planning failure on the full
+    ``xtask gates`` invocation must not treat that log as tier evidence.
+    """
+    if not gate_logs:
+        return False
+    if receipt_path is None:
+        receipt_path = logs_dir.parent / "receipt.json"
+    if receipt_path.is_file():
+        return True
+    return any(not _log_is_preparation_or_navigation(path.name) for path in gate_logs)
 
 
 def _emit(message: str) -> None:
@@ -358,7 +436,9 @@ def run_preflight(args: argparse.Namespace) -> int:
 
 
 def run_classify(args: argparse.Namespace) -> int:
-    findings = scan_logs(Path(args.logs_dir))
+    logs_dir = Path(args.logs_dir)
+    gate_logs = gate_log_paths(logs_dir)
+    findings = scan_logs(logs_dir)
     strong = [
         finding
         for finding in findings
@@ -371,7 +451,16 @@ def run_classify(args: argparse.Namespace) -> int:
     ]
     target_dir = args.target_dir or "target"
     body_lines = [render_snapshot({"cargo-target-dir": target_dir})]
-    if strong:
+    if not gate_logs or not has_full_tier_gate_evidence(logs_dir, gate_logs):
+        body_lines.append(
+            "VERDICT: NOT_PROVEN: no gate logs available for exhaustion "
+            "classification (the pr-fast tier did not produce gate evidence)."
+        )
+        _emit(
+            "PR-fast disk-exhaustion classification: NOT_PROVEN "
+            f"(no gate logs under {args.logs_dir})"
+        )
+    elif strong:
         body_lines.append(
             "VERDICT: resource-exhaustion detected in gate logs "
             "(ENOSPC / os-error-28 class); matched logs: "

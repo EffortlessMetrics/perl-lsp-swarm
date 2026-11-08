@@ -21,6 +21,10 @@ def git_output(path):
 
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
+        # These fixtures mock the launch/owner; native discovery is tested separately.
+        self.discovery_fixture = patch.object(safe, "child_discovery_capability", return_value={})
+        self.discovery_fixture.start()
+        self.addCleanup(self.discovery_fixture.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="cargo-admitted-proof-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -56,6 +60,20 @@ class AdmissionTests(unittest.TestCase):
                         ["-vC/tmp"], ["-vC", "/tmp"], ["-pfoo"], ["-Ffoo"]):
             self.assertEqual(self.run_safe(["build", *options]), 75, options)
             self.assertFalse(self.slot.exists())
+
+    def test_local_config_cli_args_injected_when_present(self):
+        seen = []
+
+        def cargo(command, env):
+            seen.append(command)
+            return 0
+
+        local_path = self.root / ".cargo" / "config.local.toml"
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text("[build]\njobs = 1\n", encoding="utf-8")
+        self.assertEqual(self.run_safe(["check"], cargo), 0)
+        self.assertIn(str(local_path), seen[0])
+        self.assertLess(seen[0].index(str(local_path)), seen[0].index("unstable.unstable-options=false"))
 
     def test_separate_short_values_and_program_arguments_remain_supported(self):
         seen = []
@@ -515,6 +533,8 @@ class AdmissionTests(unittest.TestCase):
         import contextlib
         import io
         import json
+        # This opt-in test launches a real owner, so do not bypass discovery admission.
+        self.discovery_fixture.stop()
         repo, linked = self.root / "repo", self.root / "linked"
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):

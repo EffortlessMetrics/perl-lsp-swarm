@@ -910,7 +910,31 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        # #18428: this pass is the one lane workload with no memory envelope
+        # (the analysis container above is capped at 14g). Both examined kills
+        # (jobs 124028039451 and 124544802140) show the guidance child at
+        # ~15 GiB RSS with the 16 GB host down to 44-100 MiB free before the
+        # runner died at exit 143 — host-memory exhaustion read as runner
+        # eviction, which armed the infra retry and fed a same-head rerun
+        # loop. Run the pass inside a transient cgroup scope with the same
+        # 14g / no-swap budget as the container (systemd is PID 1 on
+        # ubuntu-24.04), so an oversized pass is OOM-killed inside the lane:
+        # SIGKILL (exit 137) carries no runner-teardown marker, so the
+        # classifier fails closed to ripr-failure and never arms the retry.
+        # The envelope itself fails closed — if sudo -n or systemd-run cannot
+        # create the scope the step reds rather than running unbounded.
+        # --setenv forwards the step environment sudo strips (names filtered
+        # to what systemd accepts); --uid/--gid keep target/ runner-owned for
+        # the host steps that follow. Same command and 3600s bound as before.
+        shell: bash
+        run: |
+          scope_env=()
+          while IFS= read -r -d '' pair; do
+            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
+          done < <(env -0)
+          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
+            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
+            bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -1249,7 +1273,18 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        # #18428: same 14g / no-swap cgroup envelope as the primary hosted
+        # lane's guidance step above — this lane runs on the same 16 GB
+        # ubuntu-24.04 host with the same unbounded guidance child.
+        shell: bash
+        run: |
+          scope_env=()
+          while IFS= read -r -d '' pair; do
+            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
+          done < <(env -0)
+          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
+            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
+            cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -2005,6 +2040,13 @@ jobs:
                   break
                 fi
               done
+              # #17450: the hosted UI often shows only an early build prefix.
+              # Persist the API-retrieved tail before the temp file is removed.
+              if [ "$fetched" = "true" ] && [ -f scripts/ci/preserve-lane-log-tail.sh ]; then
+                if ! bash scripts/ci/preserve-lane-log-tail.sh "$lane_log" ripr-lane-log-tail.txt; then
+                  echo "::warning::lane log tail for ${lane_name} (job ${lane_job_id}) was not preserved; lane classification continues"
+                fi
+              fi
               if [ "$fetched" != "true" ]; then
                 # Retrieval failure is not evidence of an eviction. Preserve
                 # the fail-closed class so ripr-infra-retry cannot arm, but
@@ -2139,6 +2181,17 @@ jobs:
               echo "RIPR_GATE_VERDICT=configured-timeout-no-proof"
               write_gate_classification "configured-timeout-no-proof" "configured hosted lane exceeded 135 minutes, proven by current job annotation"
               echo "::error::ripr lane ${lane_name} (job ${lane_job_id}) exceeded its configured 135-minute limit. No proof exists for ${GITHUB_SHA}; this is not a RIPR gap or an infra auto-retry. Investigate the bounded lane before a manual rerun."
+              {
+                echo "- classification: \`configured-timeout-no-proof\`"
+                echo "- lane: \`${lane_name}\` (job \`${lane_job_id:-unknown}\`)"
+                echo "- head: \`${GITHUB_SHA}\`"
+                echo "- evidence: \`${lane_evidence_source}\`"
+                if [ -f ripr-lane-log-tail.txt ]; then
+                  echo "- lane log tail: workflow artifact \`ripr-lane-log-tail\` (last 4 MiB of the retrieved lane log)"
+                else
+                  echo "- lane log tail: unavailable (lane log was not retrievable before the gate deadline)"
+                fi
+              } >> "$GITHUB_STEP_SUMMARY"
             elif [ "$lane_class" = "cancelled-no-verdict" ]; then
               echo "RIPR_GATE_VERDICT=cancelled-no-verdict"
               write_gate_classification "cancelled-no-verdict" "cancellation cause unproved on current lane attempt"
@@ -2198,4 +2251,16 @@ jobs:
           name: ripr-gate-classification
           path: ripr-gate-classification.env
           retention-days: 1
+          if-no-files-found: ignore
+
+      # #17450: when the hosted lane hits its configured timeout, the UI log is
+      # often truncated to compile/setup output; the artifact keeps the tail the
+      # gate already retrieved for classification.
+      - name: Upload lane log tail
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ripr-lane-log-tail
+          path: ripr-lane-log-tail.txt
+          retention-days: 7
           if-no-files-found: ignore

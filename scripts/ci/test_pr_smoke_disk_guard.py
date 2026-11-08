@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -96,6 +97,71 @@ class ParseMinFreeBytesTests(unittest.TestCase):
 
     def test_gib_suffix_case_insensitive(self) -> None:
         self.assertEqual(guard.parse_min_free_bytes("2gib"), 2 * guard.GIB)
+
+    def test_finite_gib_controls(self) -> None:
+        for raw, expected in (("0GiB", 0), ("0.5GiB", guard.GIB // 2), ("1e2GiB", 100 * guard.GIB)):
+            with self.subTest(raw=raw):
+                self.assertEqual(guard.parse_min_free_bytes(raw), expected)
+
+    def test_rejects_non_finite_gib_and_byte_conversion_overflow(self) -> None:
+        for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+
+    def test_large_gib_value_preserves_integer_precision(self) -> None:
+        self.assertEqual(
+            guard.parse_min_free_bytes("9007199254740993GiB"),
+            9007199254740993 * guard.GIB,
+        )
+
+    def test_fractional_gib_truncates_only_fractional_bytes(self) -> None:
+        self.assertEqual(guard.parse_min_free_bytes("0.1GiB"), guard.GIB // 10)
+        self.assertEqual(guard.parse_min_free_bytes("1e-10GiB"), 0)
+
+    def test_extreme_exponents_are_bounded_without_huge_integers(self) -> None:
+        for raw in ("1e999999999GiB", "-1e999999999GiB", "1e308GiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+        self.assertEqual(guard.parse_min_free_bytes("1e-999999999GiB"), 0)
+
+    def test_zero_with_extreme_exponent_parses_to_zero(self) -> None:
+        self.assertEqual(guard.parse_min_free_bytes("0e500GiB"), 0)
+        self.assertEqual(guard.parse_min_free_bytes("-0e500GiB"), 0)
+
+    def test_rejects_nonfinite_gib(self) -> None:
+        for raw in ("NaNGiB", "sNaNGiB", "infGiB", "-InfinityGiB"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    guard.parse_min_free_bytes(raw)
+
+    def test_cli_rejects_non_finite_budgets_without_traceback(self) -> None:
+        for option in ("--footprint-bytes", "--min-free-bytes"):
+            for raw in ("infGiB", "-infGiB", "NaNGiB", "1e309GiB", "1e308GiB"):
+                with self.subTest(option=option, raw=raw):
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(SCRIPT), "preflight", f"{option}={raw}"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("must be finite", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_nonfinite_cli_arguments_fail_without_traceback(self) -> None:
+        for flag in ("--min-free-bytes", "--footprint-bytes"):
+            with self.subTest(flag=flag):
+                result = subprocess.run(
+                    [sys.executable, "-B", str(SCRIPT), "preflight", flag, "infGiB"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("finite", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_rejects_garbage(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):
@@ -495,6 +561,36 @@ class ClassifyFlowTests(unittest.TestCase):
             self.assertNotIn("::error::", output)
             self.assertIn("no exhaustion signatures", output)
             self.assertIn("no resource-exhaustion signatures", pressure_log.read_text(encoding="utf-8").lower())
+
+    def test_preparation_log_without_receipt_is_not_full_tier_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / guard.PREPARATION_GATE_LOG).write_text(
+                "all checks passed", encoding="utf-8"
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "target")
+            self.assertIn("NOT_PROVEN", output)
+            self.assertNotIn("no resource-exhaustion signatures found", output.lower())
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: NOT_PROVEN", verdict)
+
+    def test_pressure_log_alone_is_not_gate_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / guard.PRESSURE_LOG_NAME).write_text(
+                "== PR-fast disk-exhaustion classification ==\n", encoding="utf-8"
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "target")
+            self.assertIn("NOT_PROVEN", output)
+            self.assertNotIn("no resource-exhaustion signatures found", output.lower())
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: NOT_PROVEN", verdict)
 
     def test_missing_pressure_log_parent_is_created(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
