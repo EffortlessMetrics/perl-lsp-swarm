@@ -306,6 +306,58 @@ impl PendingPullDiagnostics {
     }
 }
 
+impl PendingPullCriticContribution {
+    /// Whether this staged run may be presented as the current Critic answer
+    /// for `context`: the run is publishable, its accepted snapshot is still
+    /// the context's snapshot, and the context's live currentness authority
+    /// still holds. Shared by the pull report boundary and
+    /// [`PullDiagnosticsProvider::critic_outcome_for_document`] so the two
+    /// cannot disagree about when a run is current (#6969).
+    fn is_current_for(&self, context: &PullDiagnosticsContext) -> bool {
+        self.run.is_publishable()
+            && self.snapshot == context.accepted_critic_snapshot
+            && context.accepted_state_currentness.holds()
+    }
+}
+
+/// The native Critic contribution that pull diagnostics would commit for one
+/// document, exposed for `perl.runCritic` (#6969).
+///
+/// Produced by the exact pull composition — same parse-snapshot reuse, core
+/// diagnostics, overlap observations, accepted snapshot and service call — so
+/// the command and `textDocument/diagnostic` cannot diverge for the same
+/// buffer generation and context.
+pub enum PullCriticOutcome {
+    /// No Critic contribution was evaluated (no AST for this text).
+    NotEvaluated,
+    /// The run settled but cannot be presented as current: unpublishable, or
+    /// the accepted policy moved before the boundary.
+    Withheld {
+        /// The service reported cancellation rather than staleness.
+        cancelled: bool,
+    },
+    /// The publishable, current native findings, in service order, each with
+    /// the row the pull report shows for it.
+    Current(Vec<PullCriticRow>),
+}
+
+/// One native Critic finding and the pull-report row that carries it.
+pub struct PullCriticRow {
+    /// The normalized service finding.
+    pub finding: perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
+    /// The row in the committed pull report: the finding's own projection, or
+    /// the ordinary `PL*` twin the report's overlap collapse kept instead.
+    pub shown: LspDiagnostic,
+}
+
+/// Wire code of an LSP diagnostic, when it carries a string code.
+fn lsp_code_str(code: Option<&NumberOrString>) -> Option<&str> {
+    match code {
+        Some(NumberOrString::String(code)) => Some(code),
+        _ => None,
+    }
+}
+
 /// Provider for pull-based diagnostics (LSP 3.17).
 pub struct PullDiagnosticsProvider;
 
@@ -381,6 +433,73 @@ impl PullDiagnosticsProvider {
             self.finalize_pending_diagnostics(uri, content, context, pending);
         let reusable_id = critic_subject_current.then_some(result_id).flatten();
         self.build_full_report(reusable_id, diagnostics)
+    }
+
+    /// Native Critic contribution for one document, computed through the
+    /// pull-diagnostics path (#6969).
+    ///
+    /// `perl.runCritic` consumes this instead of assembling its own subject,
+    /// so its findings are the rows [`Self::get_document_diagnostics_with_context`]
+    /// commits for the same `content`, `context` and `doc_state`.
+    pub fn critic_outcome_for_document(
+        &self,
+        uri: &Uri,
+        content: &str,
+        context: &PullDiagnosticsContext,
+        doc_state: Option<&DocumentState>,
+    ) -> PullCriticOutcome {
+        use perl_lsp_rs_core::tooling::perl_critic::NativeCriticRunCompleteness;
+
+        let pending =
+            self.collect_diagnostics_for_text_with_context(uri, content, context, doc_state);
+        let Some(critic) = pending.critic.as_ref() else {
+            return PullCriticOutcome::NotEvaluated;
+        };
+        if !critic.is_current_for(context) {
+            return PullCriticOutcome::Withheld {
+                cancelled: matches!(
+                    critic.run.completeness(),
+                    NativeCriticRunCompleteness::Cancelled
+                ),
+            };
+        }
+        let candidates: Vec<_> = critic
+            .run
+            .findings()
+            .iter()
+            .map(|finding| {
+                (finding.clone(), self.normalized_finding_to_lsp_diagnostic(uri, content, finding))
+            })
+            .collect();
+
+        // Commit through the same report boundary pull uses. Its push/pull
+        // overlap collapse replaces a native row with the ordinary `PL*` twin
+        // at the same range and severity (one fact, one row); the command
+        // then shows that same twin, so it neither hides the fact nor names
+        // it differently from the editor's diagnostics.
+        let (mut report_rows, current) =
+            self.finalize_pending_diagnostics(uri, content, context, pending);
+        if !current {
+            return PullCriticOutcome::Withheld { cancelled: false };
+        }
+        let rows = candidates
+            .into_iter()
+            .filter_map(|(finding, projected)| {
+                let position =
+                    report_rows.iter().position(|row| *row == projected).or_else(|| {
+                        report_rows.iter().position(|row| {
+                            row.range == projected.range
+                                && row.severity == projected.severity
+                                && super::overlap::codes_collapse_pair(
+                                    lsp_code_str(projected.code.as_ref()),
+                                    lsp_code_str(row.code.as_ref()),
+                                )
+                        })
+                    })?;
+                Some(PullCriticRow { finding, shown: report_rows.swap_remove(position) })
+            })
+            .collect();
+        PullCriticOutcome::Current(rows)
     }
 
     /// Handle workspace/diagnostic request.
@@ -972,10 +1091,8 @@ impl PullDiagnosticsProvider {
 
         let mut critic_subject_current = context.accepted_state_currentness.holds();
         if let Some(critic) = pending.critic {
-            critic_subject_current &= critic.snapshot == context.accepted_critic_snapshot;
-            if !critic.run.is_publishable() {
-                critic_subject_current = false;
-            } else if critic_subject_current {
+            critic_subject_current &= critic.is_current_for(context);
+            if critic_subject_current {
                 if critic.run.superseded_overlap_carriers() {
                     take_critic_overlap_observations(&mut pending.core);
                 }
