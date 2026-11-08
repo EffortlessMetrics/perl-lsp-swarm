@@ -283,6 +283,43 @@ describe('resolveVersionSection', () => {
   });
 });
 
+describe('WhatsNewManager.hasReleaseNotesContent', () => {
+  const shippedChangelog = (): string =>
+    fs.readFileSync(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8');
+
+  function packagedExtension(version: string, changelog: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wn-installed-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version }));
+    fs.writeFileSync(path.join(dir, 'changelog.md'), changelog);
+    return dir;
+  }
+
+  test.each(['0.18.0', '0.18.0-rc.1'])(
+    'installed %s with the shipped changelog has release notes to auto-open',
+    (version) => {
+      const dir = packagedExtension(version, shippedChangelog());
+      try {
+        const mgr = new WhatsNewManager(makeContext({ extensionPath: dir }), makeOutputChannel());
+        expect(mgr.currentVersion()).toBe(version);
+        expect(mgr.hasReleaseNotesContent()).toBe(true);
+        expect(mgr.extractChangelogSection(version).startsWith('## [0.18.0]')).toBe(true);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('installed version with only heading-only sections does not auto-open', () => {
+    const dir = packagedExtension('0.19.0', '# Change Log\n\n## [Unreleased]\n\n## [0.19.0]\n');
+    try {
+      const mgr = new WhatsNewManager(makeContext({ extensionPath: dir }), makeOutputChannel());
+      expect(mgr.hasReleaseNotesContent()).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('WhatsNewManager.extractChangelogSection', () => {
   test('delegates to extractVersionSection with the CHANGELOG from extensionPath', () => {
     const ctx = makeContext();
