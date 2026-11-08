@@ -395,7 +395,6 @@ fn clone_preserves_all_fields() -> Result<(), Box<dyn std::error::Error>> {
         semantic_tokens_deadline: Duration::from_secs(2),
         code_lens_resolve_deadline: Duration::from_secs(1),
         completion_deadline: Duration::from_millis(500),
-        completion_parse_settle_budget: Duration::from_millis(30),
         return_partial_on_timeout: true,
         include_open_docs_when_degraded: false,
         memory_budget: perl_lsp_rs_core::runtime::limits::MemoryBudget::default(),

@@ -1,7 +1,4 @@
 //! Integration tests for PL411 — irrelevant `wantarray()` branch detection.
-// Fixture-anchored `.expect`s carry the context that a silent skip would
-// lose; same exemption every other fixture test in this package uses.
-#![allow(clippy::expect_used)]
 
 use std::sync::Arc;
 
