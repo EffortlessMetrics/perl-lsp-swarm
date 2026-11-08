@@ -21,7 +21,7 @@ use crate::{
     protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri},
     runtime::routing::{IndexAccessMode, route_index_access},
     state::DocumentState,
-    state::{completion_cap, completion_deadline, completion_parse_settle_budget},
+    state::{completion_cap, completion_deadline},
 };
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -41,6 +41,39 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
 }
 
 use super::super::LspServer;
+
+/// How long `textDocument/completion` may wait for the current generation's
+/// pending parse to publish before answering from the bounded fallback
+/// (#18760). At keystroke latency the didChange-triggered parse is usually
+/// still in flight; a short latest-wins wait converts the common case into
+/// the settled answer. Internal tuning, not a client setting.
+const COMPLETION_PARSE_SETTLE_BUDGET: Duration = Duration::from_millis(30);
+
+/// Test-only override of [`COMPLETION_PARSE_SETTLE_BUDGET`], in
+/// milliseconds; `u64::MAX` means "no override".
+#[cfg(test)]
+static COMPLETION_PARSE_SETTLE_BUDGET_OVERRIDE_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+fn completion_parse_settle_budget() -> Duration {
+    #[cfg(test)]
+    {
+        let ms =
+            COMPLETION_PARSE_SETTLE_BUDGET_OVERRIDE_MS.load(std::sync::atomic::Ordering::SeqCst);
+        if ms != u64::MAX {
+            return Duration::from_millis(ms);
+        }
+    }
+    COMPLETION_PARSE_SETTLE_BUDGET
+}
+
+/// Outcome of [`LspServer::settle_pending_completion_parse`].
+enum CompletionSettle {
+    /// Answer from the (possibly refreshed) owned document.
+    Ready,
+    /// The document's generation advanced during the wait.
+    Superseded,
+}
 
 /// Sentinel request ID used for the notification-path token in
 /// [`Self::handle_completion_cancellable`]. Real client request IDs are
@@ -1602,6 +1635,81 @@ impl LspServer {
         }
     }
 
+    /// Bounded latest-wins wait for the current generation's parse to
+    /// publish (#18760), shared by both completion handlers.
+    ///
+    /// At keystroke latency the didChange-triggered parse is usually still
+    /// in flight; answering immediately either fell into the fabricated
+    /// lexical fallback (plausible-looking junk at an arrow position) or lost
+    /// the computed answer to the mid-request generation bump (silently
+    /// empty). Waiting -- bounded by `completion_parse_settle_budget` --
+    /// converts the common case into the settled, generation-current
+    /// provider answer; expiry keeps the bounded fallback, which is marked
+    /// incomplete so clients re-query.
+    ///
+    /// The wait only engages when the off-lock parse worker is installed (on
+    /// the synchronous path a pending snapshot never settles) and a parse has
+    /// published before (template-skipped and oversize documents never
+    /// publish one). `doc_owned` is re-cloned only when a new parse publishes;
+    /// the generation the request was captured at is never refreshed. A
+    /// didChange that lands during the wait moved the document under the
+    /// request's position, so the wait returns `Superseded` and the caller
+    /// answers with the incomplete superseded list (the client re-queries at
+    /// its own mapped position) instead of mapping the original position onto
+    /// newer text. `cancelled` lets the cancellable handler surface
+    /// REQUEST_CANCELLED instead of burning its budget.
+    fn settle_pending_completion_parse(
+        &self,
+        uri: &str,
+        doc_owned: &mut Option<DocumentState>,
+        captured_generation: Option<u32>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<CompletionSettle, JsonRpcError> {
+        let settle_budget = if self.parse_worker().is_some() {
+            completion_parse_settle_budget()
+        } else {
+            Duration::ZERO
+        };
+        if settle_budget.is_zero() {
+            return Ok(CompletionSettle::Ready);
+        }
+        let settle_start = Instant::now();
+        while settle_start.elapsed() < settle_budget
+            && doc_owned.as_ref().is_some_and(|doc| {
+                doc.latest_parsed().is_some() && Self::completion_parsed_snapshot(doc).1
+            })
+        {
+            if cancelled() {
+                return Err(JsonRpcError {
+                    code: REQUEST_CANCELLED,
+                    message: "Request cancelled during completion settle wait".to_string(),
+                    data: None,
+                });
+            }
+            notify_completion_settle_wait_started(uri);
+            std::thread::sleep(Duration::from_millis(2));
+            let documents = self.documents_guard();
+            let Some(fresh) = self.get_document(&documents, uri) else {
+                break;
+            };
+            if captured_generation
+                .is_some_and(|generation| fresh.current_generation() != generation)
+            {
+                return Ok(CompletionSettle::Superseded);
+            }
+            let held = doc_owned.as_ref().and_then(DocumentState::latest_parsed);
+            let published = fresh.latest_parsed();
+            let new_parse = match (&published, &held) {
+                (Some(published), Some(held)) => !Arc::ptr_eq(published, held),
+                (published, held) => published.is_some() != held.is_some(),
+            };
+            if new_parse {
+                *doc_owned = Some(fresh.clone());
+            }
+        }
+        Ok(CompletionSettle::Ready)
+    }
+
     /// The response for an answer whose document generation advanced while
     /// the request was analyzing (#18760). The computed page is stale, but
     /// the client must still re-query: an empty `isIncomplete=false` list
@@ -1675,55 +1783,15 @@ impl LspServer {
                 ));
             }
 
-            // Bounded latest-wins wait for the current generation's parse to
-            // publish (#18760). At keystroke latency the didChange-triggered
-            // parse is usually still in flight; answering immediately either
-            // fell into the fabricated lexical fallback (plausible-looking
-            // junk at an arrow position) or lost the computed answer to the
-            // mid-request generation bump (silently empty). Waiting --
-            // bounded by `completion_parse_settle_budget` -- converts the
-            // common case into the settled, generation-current provider
-            // answer; expiry keeps today's bounded fallback, which is marked
-            // incomplete so clients re-query. Skipped entirely when no parse
-            // has ever published for this document (template-skipped and
-            // oversize documents will never publish one) and when the budget
-            // is zero.
-            {
-                // A parse can only be genuinely in flight when the off-lock
-                // worker is installed; on the synchronous fallback path a
-                // pending snapshot will never settle, so waiting would burn
-                // the budget on every request for the same answer.
-                let settle_budget = if self.parse_worker().is_some() {
-                    completion_parse_settle_budget()
-                } else {
-                    Duration::ZERO
-                };
-                let settle_start = Instant::now();
-                while doc_owned.as_ref().is_some_and(|doc| doc.latest_parsed().is_some())
-                    && settle_budget > Duration::ZERO
-                    && settle_start.elapsed() < settle_budget
-                    && doc_owned.as_ref().is_some_and(|doc| Self::completion_parsed_snapshot(doc).1)
-                {
-                    notify_completion_settle_wait_started(uri);
-                    std::thread::sleep(Duration::from_millis(2));
-                    let documents = self.documents_guard();
-                    match self.get_document(&documents, uri) {
-                        // Re-clone only the state the analysis runs against;
-                        // keep the generation the request was captured at. A
-                        // didChange that lands during the wait moved the
-                        // document under the request's position, so mapping
-                        // the original line/character onto the newer text can
-                        // answer the wrong location -- that edit must yield
-                        // the superseded incomplete list (the client re-queries
-                        // at its own mapped position), which
-                        // `publish_user_answer_value` produces precisely when
-                        // the captured generation no longer matches.
-                        Some(fresh) => {
-                            doc_owned = Some(fresh.clone());
-                        }
-                        None => break,
-                    }
-                }
+            // Bounded latest-wins wait for the current generation's parse
+            // (#18760); a mid-wait edit answers with the superseded list.
+            if let CompletionSettle::Superseded = self.settle_pending_completion_parse(
+                uri,
+                &mut doc_owned,
+                captured_generation,
+                &|| false,
+            )? {
+                return Ok(Some(Self::superseded_completion_list()));
             }
 
             let t_analyze_start = std::time::Instant::now();
@@ -1851,13 +1919,14 @@ impl LspServer {
                     Vec::new()
                 } else {
                     // Fallback: provide basic keyword completions when AST is unavailable.
-                    // A predecessor snapshot means the pending-parse window is active
-                    // (#18760): keep the fabricated method list out of it.
+                    // Withhold the fabricated method list only in the pending-parse
+                    // window over a predecessor snapshot (#18760); a settled AST-less
+                    // snapshot (failed parse) or a never-parsed document keeps it.
                     self.lexical_complete(
                         &doc.text,
                         offset,
                         Some(uri),
-                        doc.latest_parsed().is_none(),
+                        !(pending_parse_gap && doc.latest_parsed().is_some()),
                     )
                 };
 
@@ -1970,13 +2039,12 @@ impl LspServer {
                     crate::runtime::timing::uri_tail(uri),
                 ));
             }
-            if let Some(response) = response {
-                return Ok(Some(self.publish_completion_answer(
-                    uri,
-                    captured_generation,
-                    response,
-                )));
-            }
+            // An empty answer (comment position, document gone) goes through
+            // the same generation check as a computed page: an edit that
+            // landed meanwhile yields the superseded incomplete list, not a
+            // complete-looking "no suggestions".
+            let response = response.unwrap_or_else(Self::empty_completion_list);
+            return Ok(Some(self.publish_completion_answer(uri, captured_generation, response)));
         }
 
         Ok(Some(Self::empty_completion_list()))
@@ -2086,54 +2154,15 @@ impl LspServer {
                 ));
             }
 
-            // Bounded latest-wins wait for the current generation's parse to
-            // publish (#18760) -- the cancellable handler's mirror of the
-            // `handle_completion` settle loop above. Each iteration checks
-            // the cancellation token, so a cancelled request surfaces
-            // REQUEST_CANCELLED instead of burning its settle budget.
-            {
-                // A parse can only be genuinely in flight when the off-lock
-                // worker is installed; on the synchronous fallback path a
-                // pending snapshot will never settle, so waiting would burn
-                // the budget on every request for the same answer.
-                let settle_budget = if self.parse_worker().is_some() {
-                    completion_parse_settle_budget()
-                } else {
-                    Duration::ZERO
-                };
-                let settle_start = Instant::now();
-                while doc_owned.as_ref().is_some_and(|doc| doc.latest_parsed().is_some())
-                    && settle_budget > Duration::ZERO
-                    && settle_start.elapsed() < settle_budget
-                    && doc_owned.as_ref().is_some_and(|doc| Self::completion_parsed_snapshot(doc).1)
-                {
-                    if token.is_cancelled_relaxed() {
-                        return Err(JsonRpcError {
-                            code: REQUEST_CANCELLED,
-                            message: "Request cancelled during completion settle wait".to_string(),
-                            data: None,
-                        });
-                    }
-                    notify_completion_settle_wait_started(uri);
-                    std::thread::sleep(Duration::from_millis(2));
-                    let documents = self.documents_guard();
-                    match self.get_document(&documents, uri) {
-                        // Re-clone only the state the analysis runs against;
-                        // keep the generation the request was captured at. A
-                        // didChange that lands during the wait moved the
-                        // document under the request's position, so mapping
-                        // the original line/character onto the newer text can
-                        // answer the wrong location -- that edit must yield
-                        // the superseded incomplete list (the client re-queries
-                        // at its own mapped position), which
-                        // `publish_user_answer_value` produces precisely when
-                        // the captured generation no longer matches.
-                        Some(fresh) => {
-                            doc_owned = Some(fresh.clone());
-                        }
-                        None => break,
-                    }
-                }
+            // Same bounded settle wait as `handle_completion`; the token
+            // check surfaces REQUEST_CANCELLED instead of burning the budget.
+            if let CompletionSettle::Superseded = self.settle_pending_completion_parse(
+                uri,
+                &mut doc_owned,
+                captured_generation,
+                &|| token.is_cancelled_relaxed(),
+            )? {
+                return Ok(Some(Self::superseded_completion_list()));
             }
 
             // RAII span: covers the whole analysis attempt via `Drop`, so it
@@ -2264,13 +2293,12 @@ impl LspServer {
                 } else if doc.full_sync_required() {
                     Vec::new()
                 } else {
-                    // A predecessor snapshot means the pending-parse window is
-                    // active (#18760): keep the fabricated method list out of it.
+                    // Same fabrication gate as `handle_completion` (#18760).
                     self.lexical_complete(
                         &doc.text,
                         offset,
                         Some(uri),
-                        doc.latest_parsed().is_none(),
+                        !(pending_parse_gap && doc.latest_parsed().is_some()),
                     )
                 };
 
@@ -2418,15 +2446,9 @@ impl LspServer {
                     apply_kind_support,
                 ))
             };
-            if let Some(response) = response {
-                return Ok(Some(self.publish_completion_answer(
-                    uri,
-                    captured_generation,
-                    response,
-                )));
-            }
-
-            Ok(Some(Self::empty_completion_list()))
+            // Same generation check for empty answers as `handle_completion`.
+            let response = response.unwrap_or_else(Self::empty_completion_list);
+            Ok(Some(self.publish_completion_answer(uri, captured_generation, response)))
         } else {
             self.handle_completion(params)
         }
@@ -2435,14 +2457,14 @@ impl LspServer {
     /// Lexical completion fallback for when AST is unavailable
     ///
     /// `fabricate_method_names` admits the fabricated common-method list at
-    /// arrow positions. Callers pass `doc.latest_parsed().is_none()`:
-    /// documents with a predecessor snapshot are in the pending-parse window
-    /// (#18760), where a replacement parse is milliseconds away and the
-    /// response is already marked incomplete, so inventing plausible method
-    /// names ("render" for a class with no render) is strictly worse than
-    /// answering empty. Only documents that will never publish a parse
-    /// (template-skipped, oversize) keep the fabrication as their only
-    /// answer.
+    /// arrow positions. Callers withhold it only in the pending-parse window
+    /// over a predecessor snapshot (#18760), where a replacement parse is
+    /// milliseconds away and the response is already marked incomplete, so
+    /// inventing plausible method names ("render" for a class with no render)
+    /// is strictly worse than answering empty. Documents with no pending
+    /// parse to wait for -- never parsed (template-skipped, oversize) or
+    /// settled on an AST-less snapshot (failed parse) -- keep the
+    /// fabrication as their only answer.
     pub(crate) fn lexical_complete(
         &self,
         content: &str,
@@ -6338,21 +6360,20 @@ our $single_root_var;
 
     /// Restores the process-global completion settle budget on every exit
     /// path, including assertion failures.
-    struct RestoreSettleBudget(std::time::Duration);
+    struct RestoreSettleBudget(u64);
     impl Drop for RestoreSettleBudget {
         fn drop(&mut self) {
-            if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
-                limits.completion_parse_settle_budget = self.0;
-            }
+            COMPLETION_PARSE_SETTLE_BUDGET_OVERRIDE_MS
+                .store(self.0, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
     fn force_settle_budget(budget: std::time::Duration) -> RestoreSettleBudget {
-        let original = perl_lsp_rs_core::runtime::limits::completion_parse_settle_budget();
-        if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
-            limits.completion_parse_settle_budget = budget;
-        }
-        RestoreSettleBudget(original)
+        let ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX - 1);
+        RestoreSettleBudget(
+            COMPLETION_PARSE_SETTLE_BUDGET_OVERRIDE_MS
+                .swap(ms, std::sync::atomic::Ordering::SeqCst),
+        )
     }
 
     /// #18760: a completion request that arrives while the current
@@ -6522,6 +6543,137 @@ our $single_root_var;
             json!(false),
             "the re-queried settled answer must be complete: {settled}"
         );
+        Ok(())
+    }
+
+    /// #18760 review follow-up: a mid-wait edit that turns the request's
+    /// original position into a comment must still yield the superseded
+    /// incomplete list. Before the wait returned `Superseded` itself, the
+    /// comment guard exited ahead of the generation check and published a
+    /// complete-looking empty list. Covers both handlers.
+    #[test]
+    #[serial_test::serial]
+    fn mid_wait_edit_into_comment_yields_superseded_incomplete_list()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for cancellable in [false, true] {
+            let server = Arc::new(LspServer::default());
+            server.test_install_parse_worker();
+            assert!(server.test_parse_worker_installed());
+
+            let _restore = force_settle_budget(std::time::Duration::from_secs(5));
+
+            let uri = if cancellable {
+                "file:///workspace/settle_midwait_comment_cancellable.pl"
+            } else {
+                "file:///workspace/settle_midwait_comment.pl"
+            };
+            let v1 = "package SettleMidWaitComment;\nsub pred_comment_marker {}\n1;\n";
+            // Request position is (line 3, character 3): end of the typed "set".
+            let v2 = "package SettleMidWaitComment;\nsub pred_comment_marker {}\nsub settled_comment_marker {}\nset\n1;\n";
+            // The mid-wait edit comments the line out: the original position
+            // now sits inside a comment in the newer text.
+            let v3 = "package SettleMidWaitComment;\nsub pred_comment_marker {}\nsub settled_comment_marker {}\n# set\n1;\n";
+
+            server.test_apply_did_open(uri, v1, 1)?;
+            assert!(
+                server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+                "generation-1 parse must publish before the pending-window scenario starts"
+            );
+
+            server.test_parse_worker_arm_barrier(uri, 2);
+            server.test_apply_did_change(uri, v2, 2)?;
+            server.test_parse_worker_wait_until_paused();
+
+            let (wait_started_tx, wait_started_rx) = std::sync::mpsc::channel();
+            set_completion_settle_wait_started_observer(uri, wait_started_tx);
+            let requester = Arc::clone(&server);
+            let request = std::thread::spawn(move || {
+                let params = Some(json!({
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "position": { "line": 3, "character": 3 }
+                }));
+                if cancellable {
+                    requester.handle_completion_cancellable(params, None)
+                } else {
+                    requester.handle_completion(params)
+                }
+            });
+            wait_started_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .map_err(|_| "completion request never entered the settle wait")?;
+
+            server.test_apply_did_change(uri, v3, 3)?;
+            server.test_parse_worker_release_barrier();
+            assert!(
+                server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+                "generation-3 parse must publish while the request is still waiting"
+            );
+
+            let response = request
+                .join()
+                .map_err(|_| "completion request thread panicked")??
+                .ok_or("completion must answer during the pending-parse window")?;
+            assert_eq!(
+                response,
+                json!({"isIncomplete": true, "items": []}),
+                "cancellable={cancellable}: a mid-wait edit into a comment must yield the \
+                 superseded list, not a complete empty list: {response}"
+            );
+        }
+        Ok(())
+    }
+
+    /// #18760 review follow-up: a settled AST-less snapshot (a parse that
+    /// published without an AST) has no pending parse to wait for, so the
+    /// fabricated method fallback stays its answer at an arrow position.
+    /// Only the pending-parse window over a predecessor snapshot withholds
+    /// it. Covers both handlers.
+    #[test]
+    fn settled_ast_less_snapshot_keeps_fabricated_method_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for cancellable in [false, true] {
+            let server = LspServer::default();
+            let uri = "file:///workspace/settled_ast_less.pl";
+            let source = "my $obj = Thing->new;\n$obj->ren";
+            let mut doc = crate::state::DocumentState::new(source, 1);
+            let generation = doc.current_generation();
+            let snapshot = Arc::new(crate::state::ParsedSnapshot::from_parse_result(
+                generation,
+                source,
+                None,
+                Vec::new(),
+            ));
+            assert!(doc.publish_parsed_if_current(generation, snapshot));
+            let (parsed, pending) = LspServer::completion_parsed_snapshot(&doc);
+            assert!(!pending, "fixture must be settled, not pending");
+            assert!(
+                parsed.as_ref().is_some_and(|p| p.ast().is_none()),
+                "fixture must be an AST-less current snapshot"
+            );
+            server.documents_guard().insert(uri.to_string(), doc);
+
+            let params = Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 9 }
+            }));
+            let response = if cancellable {
+                server.handle_completion_cancellable(params, None)?
+            } else {
+                server.handle_completion(params)?
+            }
+            .ok_or("completion must answer")?;
+            let labels: Vec<&str> = response["items"]
+                .as_array()
+                .ok_or("missing items")?
+                .iter()
+                .filter_map(|item| item["label"].as_str())
+                .collect();
+            assert!(
+                labels.contains(&"render"),
+                "cancellable={cancellable}: a settled AST-less snapshot keeps the fabricated \
+                 method fallback; got {labels:?}"
+            );
+        }
         Ok(())
     }
 

@@ -713,10 +713,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    // Fixture assertions read rejected-result payloads via expect_err;
-    // module-scoped exemption matches the sibling test-module convention.
-    #![allow(clippy::expect_used)]
-
     use super::*;
     use perl_lsp_rs_core::governance::FeatureProfile;
     use serde_json::json;
