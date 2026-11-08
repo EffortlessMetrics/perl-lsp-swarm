@@ -1833,7 +1833,8 @@
       "capability": "restore_and_save",
       "trigger_event_set": [
         "pull_request",
-        "push"
+        "push",
+        "workflow_dispatch"
       ],
       "candidate_event_reachability": "reachable",
       "executed_subject": "candidate",
