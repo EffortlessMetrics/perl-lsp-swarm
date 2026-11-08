@@ -3013,7 +3013,7 @@ use Overlay::OpenDoc;
 
         let resolved = server.resolve_module_to_path("Foo::Bar");
         assert!(
-            resolved.as_deref() == Some(module_uri.as_str()),
+            resolved.as_deref() == Some(perl_uri::uri_key(&module_uri).as_str()),
             "open buffer must satisfy module resolution despite a cached miss, got: {resolved:?}"
         );
         assert_eq!(
