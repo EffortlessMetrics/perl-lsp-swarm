@@ -120,7 +120,7 @@ export interface ServerEntryPointRow {
 /**
  * Demand dispositions for the commands that can be asked for something only a
  * running server provides. Commands not listed here (status, test, critic,
- * navigation, binary-identity, …) only read the current client projection and
+ * navigation, …) only read the current client projection and
  * behave as `never`: they report the server as not running when dormant.
  *
  * `on-first-use` means the command routes through `ensureStarted` and may start
@@ -143,6 +143,11 @@ export const SERVER_ENTRY_POINT_LEDGER: readonly ServerEntryPointRow[] = [
     command: 'perl-lsp.showVersion',
     perllsp: 'on-first-use',
     note: 'Reports the resolved server version, which requires a resolved binary.',
+  },
+  {
+    command: 'perl-lsp.showBinaryIdentity',
+    perllsp: 'on-first-use',
+    note: 'Identity is read from the running server; a dormant server is started first so the answer is not a false "not installed".',
   },
   {
     command: 'perl-lsp.showWorkspaceStatus',

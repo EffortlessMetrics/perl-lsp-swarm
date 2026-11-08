@@ -1,3 +1,5 @@
+import * as path from 'path';
+
 import type { BinaryIdentityResponseV1 } from '../binaryIdentityProtocol.generated';
 
 jest.mock('vscode-languageclient/node', () => ({
@@ -17,6 +19,7 @@ import {
   createBinaryIdentityCommand,
   createBinaryIdentityDialogShow,
   installedIdentityFromManifest,
+  resolveSelectedBinaryRole,
 } from '../extension';
 
 function response(): BinaryIdentityResponseV1 {
@@ -364,5 +367,164 @@ describe('binary identity command', () => {
 
     expect(result).toEqual({ status: 'error', message: 'method not found' });
     expect(reportError).toHaveBeenCalledWith('method not found');
+  });
+
+  function recordingHost(action?: string): BinaryIdentityCommandHost & {
+    show: jest.Mock;
+    repairManagedPair: jest.Mock;
+  } {
+    return {
+      show: jest.fn().mockResolvedValue(action),
+      refreshIdentity: jest.fn().mockResolvedValue(undefined),
+      repairManagedPair: jest.fn().mockResolvedValue(undefined),
+      inspectConfiguredBinary: jest.fn().mockResolvedValue(undefined),
+      copySupportPacket: jest.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  test('a dormant server is started before identity is read', async () => {
+    const request = jest.fn().mockResolvedValue(response());
+    const client: BinaryIdentityRequestClient = { sendRequest: request };
+    let started = false;
+    const ensureServer = jest.fn(async () => {
+      started = true;
+    });
+    const host = recordingHost();
+
+    const result = await createBinaryIdentityCommand(
+      () => (started ? client : undefined),
+      () => ({ extensionVersion: '0.18.0', selectedRole: 'managed' }),
+      host,
+      () => undefined,
+      ensureServer,
+    )();
+
+    expect(ensureServer).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({ state: 'update_or_repair_required' }));
+  });
+
+  test('no resolved managed binary after a start attempt offers governed repair', async () => {
+    const host = recordingHost('repair_managed_pair');
+
+    const result = await createBinaryIdentityCommand(
+      () => undefined,
+      () => ({ extensionVersion: '0.18.0', selectedRole: 'managed', serverBinaryResolved: false }),
+      host,
+      () => undefined,
+      async () => undefined,
+    )();
+
+    expect(result).toEqual(expect.objectContaining({ state: 'managed_binary_missing' }));
+    expect(host.show).toHaveBeenCalledTimes(1);
+    expect(host.repairManagedPair).toHaveBeenCalledTimes(1);
+  });
+
+  test('no server for a configured binary is shown as not_proven, never silently dropped', async () => {
+    const host = recordingHost();
+
+    const result = await createBinaryIdentityCommand(
+      () => undefined,
+      () => ({
+        extensionVersion: '0.18.0',
+        selectedRole: 'user_supplied',
+        serverBinaryResolved: false,
+      }),
+      host,
+    )();
+
+    expect(result).toEqual(expect.objectContaining({ state: 'not_proven', action: 'none' }));
+    expect(host.show).toHaveBeenCalledTimes(1);
+    expect(host.repairManagedPair).not.toHaveBeenCalled();
+  });
+
+  test('a malformed identity response is projected as not_proven, not thrown', async () => {
+    const client: BinaryIdentityRequestClient = {
+      sendRequest: jest.fn().mockResolvedValue({ feature_version: 1 }),
+    };
+    const reportError = jest.fn();
+
+    const result = await createBinaryIdentityCommand(
+      () => client,
+      () => ({ extensionVersion: '0.18.0', selectedRole: 'managed' }),
+      recordingHost(),
+      reportError,
+    )();
+
+    expect(result).toEqual(expect.objectContaining({ state: 'not_proven' }));
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  test('an unattributed binary is requested as role unknown, never as managed', async () => {
+    const request = jest.fn().mockResolvedValue(response());
+    await createBinaryIdentityCommand(
+      () => ({ sendRequest: request }),
+      () => ({ extensionVersion: '0.18.0', selectedRole: 'unknown' }),
+      recordingHost(),
+    )();
+    const sent = request.mock.calls[0][1] as { expected_extension: Record<string, unknown> };
+    expect(sent.expected_extension.binary_artifact_role).toBe('unknown');
+  });
+
+  describe('selected binary role attribution', () => {
+    const managedPath = path.resolve('/managed/perl-lsp/0.18.0/perllsp');
+    const userPath = path.resolve('/opt/wrappers/perllsp-wrapper');
+
+    test('the configured path that actually resolved is user-supplied, whatever its name', () => {
+      expect(
+        resolveSelectedBinaryRole({
+          configuredPath: ` ${userPath} `,
+          resolvedPath: userPath,
+          managedManifestPresent: false,
+        }),
+      ).toEqual({ selectedRole: 'user_supplied', serverBinaryResolved: true });
+    });
+
+    test('a managed manifest beside the resolved binary is managed', () => {
+      expect(
+        resolveSelectedBinaryRole({
+          configuredPath: undefined,
+          resolvedPath: managedPath,
+          managedManifestPresent: true,
+        }),
+      ).toEqual({ selectedRole: 'managed', serverBinaryResolved: true });
+    });
+
+    test('a configured path that did not win does not make the resolved binary user-supplied', () => {
+      expect(
+        resolveSelectedBinaryRole({
+          configuredPath: userPath,
+          resolvedPath: managedPath,
+          managedManifestPresent: true,
+        }),
+      ).toEqual({ selectedRole: 'managed', serverBinaryResolved: true });
+    });
+
+    test('a PATH or bundled binary without a manifest is unknown, not managed', () => {
+      expect(
+        resolveSelectedBinaryRole({
+          configuredPath: '',
+          resolvedPath: path.resolve('/usr/local/bin/perllsp'),
+          managedManifestPresent: false,
+        }),
+      ).toEqual({ selectedRole: 'unknown', serverBinaryResolved: true });
+    });
+
+    test('nothing resolved keeps the selection but marks the binary unresolved', () => {
+      expect(
+        resolveSelectedBinaryRole({
+          configuredPath: undefined,
+          resolvedPath: null,
+          managedManifestPresent: false,
+        }),
+      ).toEqual({ selectedRole: 'managed', serverBinaryResolved: false });
+      expect(
+        resolveSelectedBinaryRole({
+          configuredPath: userPath,
+          resolvedPath: null,
+          managedManifestPresent: false,
+        }),
+      ).toEqual({ selectedRole: 'user_supplied', serverBinaryResolved: false });
+    });
   });
 });

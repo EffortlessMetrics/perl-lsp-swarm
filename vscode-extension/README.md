@@ -277,6 +277,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show Server Version**          | Display the installed `perllsp` version                    |
 | **Perl: Check for Binary Updates**     | Check whether a newer server binary is available           |
 | **Perl: Reinstall Server Binary**      | Re-download the managed server binary                      |
+| **Perl: Show Server and DAP Identity** | Check that the server and debugger match this extension    |
 | **Perl: Open Configuration Guide**     | Open the configuration guide                               |
 | **Perl: Show What's New**              | Show release notes for the installed version               |
 | **Perl: Show Output Channel**          | Open the extension output log                              |
