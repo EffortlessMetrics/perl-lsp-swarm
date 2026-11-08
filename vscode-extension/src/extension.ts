@@ -888,14 +888,6 @@ export async function copyProviderDecisionReceiptCommand(
   return copyProviderDecisionReceipt(activeClient, providerOverride, diagnosticCommandOptions());
 }
 
-/**
- * Passive workspace file creation must not insert boilerplate (#14451).
- * Explicit create/scaffold commands own starter content.
- */
-export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
-  return;
-}
-
 export async function activate(context: vscode.ExtensionContext) {
   const activation = new ExtensionActivationOwner(context, (message) => {
     outputChannel?.error(message);

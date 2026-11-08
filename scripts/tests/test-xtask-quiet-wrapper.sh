@@ -116,6 +116,7 @@ for arg in "\$@"; do
   rendered+="[\${arg}]"
 done
 printf '%s\n' "\${rendered}" >> "${argv_log}"
+printf '%s\0' "\$@" > "${argv_log}.nul"
 printf 'xtask-stdout-marker\n'
 printf 'xtask-stderr-marker\n' >&2
 exit "\${FAKE_XTASK_EXIT:-0}"
@@ -317,6 +318,146 @@ scenario_argv_spaces_and_unicode() {
     "$argv" "[arg with space][unicodé-Δ]"
 }
 
+# Each accepted form must preserve its exact build argv. The glob names an
+# existing source file so an unquoted expansion cannot pass this fixture by
+# leaving an unmatched pattern unchanged.
+scenario_supported_build_flags() {
+  local flags expected dir status admitted_args
+  local cases=(
+    $' \t\n'
+    '--features=parser-tasks,other-feature'
+    '-F parser-tasks'
+    '--all-features --no-default-features'
+    $' \t--features\nparser-tasks\t--no-default-features\n'
+    '--features parser-tasks -F other-feature --features=third-feature'
+    '--features scripts/xtask-quiet.s?'
+    '--features feature--target-name'
+  )
+  local expected_args=(
+    ''
+    '[--features=parser-tasks,other-feature]'
+    '[-F][parser-tasks]'
+    '[--all-features][--no-default-features]'
+    '[--features][parser-tasks][--no-default-features]'
+    '[--features][parser-tasks][-F][other-feature][--features=third-feature]'
+    '[--features][scripts/xtask-quiet.s?]'
+    '[--features][feature--target-name]'
+  )
+  local index
+  for ((index = 0; index < ${#cases[@]}; index++)); do
+    flags="${cases[index]}"
+    expected="admitted args=[build][-p][xtask][--locked]${expected_args[index]}"
+    dir="$(make_scenario_dir)"
+    register_scenario_dir "$dir"
+    status=0
+    XTASK_QUIET_BUILD_FLAGS="$flags" run_wrapper "$dir" ci doctor --help \
+      >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
+    admitted_args="$(cat "${dir}/admitted.log" 2>/dev/null || true)"
+    if [[ "$status" -eq 0 && "$admitted_args" == "$expected" && -s "${dir}/argv.log" ]]; then
+      pass "supported build flags: exact argv case ${index}"
+    else
+      fail "supported build flags: case ${index} (exit ${status}, argv ${admitted_args})"
+    fi
+  done
+}
+
+# A pre-existing debug binary is present in every scenario. A producer that
+# accepts a different artifact/profile or a no-work option must never let the
+# wrapper dispatch that stale binary. Refuse before invoking the producer.
+scenario_unsupported_build_flags() {
+  local flags label dir status err
+  local cases=(
+    '--release'
+    '-r'
+    '--profile agent'
+    '--profile=release'
+    '--bin other'
+    '--bin=other'
+    '--lib'
+    '--example other'
+    '--tests'
+    '--all-targets'
+    '--package other'
+    '--package=other'
+    '-p other'
+    '--workspace'
+    '--exclude xtask'
+    '--help'
+    '-h'
+    '--version'
+    '-V'
+    '--message-format=json'
+    '--message-format json'
+    '--target example-triple'
+    '--target=example-triple'
+    '--target-dir other'
+    '--'
+    '--features parser-tasks --release'
+    $'--features parser-tasks\n--release'
+    '--features'
+    '--features='
+    '-F'
+    '--features --release'
+    '--features=--release'
+    '-F --release'
+    '--features= --all-features'
+  )
+  for flags in "${cases[@]}"; do
+    printf -v label '%q' "$flags"
+    dir="$(make_scenario_dir)"
+    register_scenario_dir "$dir"
+    status=0
+    XTASK_QUIET_BUILD_FLAGS="$flags" run_wrapper "$dir" ci doctor --help \
+      >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
+    err="$(cat "${dir}/err.txt")"
+    if [[ "$status" -eq 70 && -n "$err" && ! -s "${dir}/out.txt" && \
+      ! -s "${dir}/admitted.log" && ! -s "${dir}/argv.log" ]]; then
+      pass "unsupported build flags: ${label} refused before build/dispatch"
+    else
+      fail "unsupported build flags: ${label} reached build/dispatch or returned ${status}"
+    fi
+  done
+}
+
+scenario_build_target_environment() {
+  local dir status err
+  dir="$(make_scenario_dir)"
+  register_scenario_dir "$dir"
+  status=0
+  CARGO_BUILD_TARGET=example-triple run_wrapper "$dir" ci doctor --help \
+    >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
+  err="$(cat "${dir}/err.txt")"
+  if [[ "$status" -eq 70 && "$err" == *CARGO_BUILD_TARGET* && \
+    ! -s "${dir}/out.txt" && ! -s "${dir}/admitted.log" && ! -s "${dir}/argv.log" ]]; then
+    pass "build target environment: refused before build/dispatch"
+  else
+    fail "build target environment: reached build/dispatch or returned ${status}"
+  fi
+}
+
+# These are xtask arguments, not wrapper build options. Compare NUL-delimited
+# records so empty arguments, newlines and metacharacters cannot disappear or
+# be confused with the human-readable bracket log.
+scenario_exact_command_argv() {
+  local dir status
+  local args=(
+    '' 'arg with space' 'unicodé-Δ' '*' '[?*]' 'semi;colon'
+    '$(printf unexpected)' '`printf unexpected`' '$HOME' $'line\nbreak'
+    '--release' '--features=' '--'
+  )
+  dir="$(make_scenario_dir)"
+  register_scenario_dir "$dir"
+  printf '%s\0' "${args[@]}" >"${dir}/expected-argv.nul"
+  status=0
+  run_wrapper "$dir" "${args[@]}" \
+    >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
+  if [[ "$status" -eq 0 ]] && cmp -s "${dir}/expected-argv.nul" "${dir}/argv.log.nul"; then
+    pass "command argv: empty arguments and metacharacters pass through byte-for-byte"
+  else
+    fail "command argv: arguments changed or wrapper returned ${status}"
+  fi
+}
+
 # Scenario 7: source pin — the production wrapper names cargo-admitted and
 # does not contain a raw `cargo build` producer.
 scenario_source_pins_admitted_producer() {
@@ -341,6 +482,10 @@ scenario_build_flags_passthrough
 scenario_xtask_exit_status
 scenario_missing_resources_does_not_exec
 scenario_argv_spaces_and_unicode
+scenario_supported_build_flags
+scenario_unsupported_build_flags
+scenario_build_target_environment
+scenario_exact_command_argv
 scenario_source_pins_admitted_producer
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

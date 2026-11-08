@@ -995,6 +995,21 @@ rustc() {
 ripr() {
   printf 'ripr %s\n' "$*" >> "$FAKE_CALLS"
 }
+sudo() {
+  # #18428: the fallback guidance step wraps its subject pass in
+  # `sudo -n systemd-run --scope ... -- cargo xtask ...`. The sandbox has no
+  # systemd manager and the wrapped command must still hit the cargo shim
+  # below, so unwrap exactly this shape and execute the wrapped command;
+  # any other sudo use fails closed.
+  [ "${1:-}" = "-n" ] || return 1
+  shift
+  [ "${1:-}" = "systemd-run" ] || return 1
+  shift
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+  [ "$#" -gt 0 ] || return 1
+  shift
+  "$@"
+}
     cargo() {
       printf 'cargo %s\n' "$*" >> "$FAKE_CALLS"
       [ "$1" = "xtask" ] || return 0
