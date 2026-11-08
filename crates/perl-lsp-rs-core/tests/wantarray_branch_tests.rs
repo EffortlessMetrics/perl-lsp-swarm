@@ -1,14 +1,10 @@
 //! Integration tests for PL411 — irrelevant `wantarray()` branch detection.
 
-// Fixture helper below uses `.expect` on fixture-internal needles, matching
-// the crate's other integration tests (pre-existing #18698 omission; the
-// `-D warnings` gate could not reach this target while CI clippy was dark).
-#![allow(clippy::expect_used, clippy::panic)]
-
 use std::sync::Arc;
 
 use perl_lsp_rs_core::providers::diagnostics::{Diagnostic, DiagnosticsProvider};
 use perl_parser::Parser;
+use perl_test_must::must_some_with;
 
 fn diagnostics_for(source: &str) -> Vec<Diagnostic> {
     let output = Parser::new(source).parse_with_recovery();
@@ -36,14 +32,15 @@ sub get_data {
     let diags = pl411(source);
     assert_eq!(diags.len(), 1, "issue #2993 minimal reproducer should emit PL411");
     let needle = "if (wantarray())";
-    let cond_start = source.find(needle).expect("fixture should contain bare wantarray if");
+    let cond_start =
+        must_some_with(source.find(needle), "fixture should contain bare wantarray if");
     let cond_end = cond_start + needle.len();
     let (start, end) = (diags[0].range.0, diags[0].range.1);
     assert!(
         start <= cond_start && end >= cond_end,
         "PL411 range {start}..{end} should cover conditional `{needle}`"
     );
-    let covered = source.get(start..end).expect("range in bounds");
+    let covered = must_some_with(source.get(start..end), "range in bounds");
     assert!(
         covered.contains("if") && covered.contains("wantarray"),
         "diagnostic span should anchor on the wantarray conditional: {covered:?}"

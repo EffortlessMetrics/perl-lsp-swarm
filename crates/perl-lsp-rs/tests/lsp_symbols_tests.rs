@@ -465,12 +465,18 @@ sub multiply {
         all_symbols.len()
     );
 
-    // Verify the two subroutines are present
-    let add = all_symbols.iter().any(|s| s["name"].as_str() == Some("add"));
-    assert!(add, "Should find 'add' symbol");
-
-    let multiply = all_symbols.iter().any(|s| s["name"].as_str() == Some("multiply"));
-    assert!(multiply, "Should find 'multiply' symbol");
+    // The package root is kept at the top level and owns both subs.
+    let util = symbols
+        .iter()
+        .find(|s| s["name"].as_str() == Some("Util"))
+        .ok_or("Should find the 'Util' package root at the top level")?;
+    let util_children = util["children"].as_array().ok_or("'Util' root has no children")?;
+    for sub in ["add", "multiply"] {
+        assert!(
+            util_children.iter().any(|s| s["name"].as_str() == Some(sub)),
+            "'{sub}' should nest under the 'Util' package root"
+        );
+    }
 
     // Verify each symbol has a valid range
     for symbol in &all_symbols {

@@ -1,8 +1,13 @@
-//! Deterministic recursive document-symbol node budget (#8242).
+//! Final document-symbol tree composition: POD heading projection and
+//! nesting (#18769) plus the deterministic recursive node budget (#8242).
 //!
-//! Applies one total-node cap after final tree composition. Root-vector
-//! truncation is intentionally not used: every visible logical node counts,
-//! ancestry is preserved, and source order stays stable.
+//! POD `=headN` headings are projected through one per-request line index and
+//! nested under their innermost enclosing package container before the
+//! budget runs, so the cap counts the composed tree users actually see.
+//!
+//! The budget applies one total-node cap after final tree composition.
+//! Root-vector truncation is intentionally not used: every visible logical
+//! node counts, ancestry is preserved, and source order stays stable.
 
 use super::{DocumentSymbol, leaf_document_symbol};
 use perl_position_tracking::{LineStartsCache, WirePosition, WireRange};
@@ -126,18 +131,24 @@ pub fn merge_document_symbol_roots_in_source_order(
     outline.sort_by(source_order_key);
 }
 
-/// Nest POD headings under their innermost enclosing outline root, dropping
-/// headings whose trimmed name duplicates an existing child of that root
-/// (#18769).
+/// Nest POD headings under their innermost enclosing package container,
+/// dropping headings whose trimmed name duplicates an existing child of that
+/// container (#18769).
 ///
 /// The AST-path outline roots are namespace containers whose ranges span the
 /// whole package extent, so a heading between the package statement and
-/// `__END__`/`__DATA__` is enclosed by exactly one innermost root; nesting it
-/// there keeps the top level to package roots while the heading stays
-/// visible under its owner. A heading outside every root (file-header POD
-/// before the first package) stays at the top level. Kind, name, and range
-/// of surviving headings are unchanged; an empty outline falls back to the
-/// flat root merge.
+/// `__END__`/`__DATA__` is enclosed by one innermost root. From that root the
+/// search descends through nested package containers (a block-form
+/// `package Inner { ... }` that the assembler placed under `Outer`), so the
+/// heading lands under the tightest enclosing package, not merely the root.
+/// A heading outside every root (file-header POD before the first package)
+/// stays at the top level. Kind, name, and range of surviving headings are
+/// unchanged; an empty outline falls back to the flat root merge.
+///
+/// Because this runs before [`apply_document_symbol_node_budget`], the cap
+/// counts the nested tree: a deduplicated heading no longer consumes budget,
+/// and a nested heading is visited in pre-order inside its package rather
+/// than as a separate root.
 pub fn nest_pod_headings_into_outline(
     outline: &mut Vec<DocumentSymbol>,
     pod_headings: Vec<DocumentSymbol>,
@@ -148,11 +159,16 @@ pub fn nest_pod_headings_into_outline(
     }
     for heading in pod_headings {
         let heading_line = heading.range.start.line;
-        let Some(parent_index) = innermost_enclosing_root(outline, heading_line) else {
+        let Some(root_index) = innermost_enclosing(outline, heading_line, |_| true) else {
             outline.push(heading);
             continue;
         };
-        let parent = &mut outline[parent_index];
+        let mut parent = &mut outline[root_index];
+        while let Some(child_index) =
+            innermost_enclosing(&parent.children, heading_line, is_package_container)
+        {
+            parent = &mut parent.children[child_index];
+        }
         let heading_name = heading.name.trim();
         // The code symbol already carries the anchor, detail, and selection
         // range; the same-name POD heading adds nothing on the wire, so the
@@ -165,14 +181,25 @@ pub fn nest_pod_headings_into_outline(
     outline.sort_by(source_order_key);
 }
 
-/// Index of the root whose range most tightly encloses `line`.
-fn innermost_enclosing_root(outline: &[DocumentSymbol], line: u32) -> Option<usize> {
+/// LSP `SymbolKind` values the assembler uses for package-like containers:
+/// 2 = Module (package), 3 = Namespace, 4 = Package, 5 = Class,
+/// 11 = Interface (role).
+fn is_package_container(symbol: &DocumentSymbol) -> bool {
+    matches!(symbol.kind, 2 | 3 | 4 | 5 | 11)
+}
+
+/// Index of the eligible symbol whose range most tightly encloses `line`.
+fn innermost_enclosing(
+    symbols: &[DocumentSymbol],
+    line: u32,
+    eligible: impl Fn(&DocumentSymbol) -> bool,
+) -> Option<usize> {
     let mut best: Option<(usize, u32)> = None;
-    for (index, root) in outline.iter().enumerate() {
-        if line < root.range.start.line || line > root.range.end.line {
+    for (index, symbol) in symbols.iter().enumerate() {
+        if !eligible(symbol) || line < symbol.range.start.line || line > symbol.range.end.line {
             continue;
         }
-        let span = root.range.end.line.saturating_sub(root.range.start.line);
+        let span = symbol.range.end.line.saturating_sub(symbol.range.start.line);
         if best.is_none_or(|(_, best_span)| span < best_span) {
             best = Some((index, span));
         }
@@ -483,5 +510,59 @@ mod tests {
         nest_pod_headings_into_outline(&mut outline, pod);
         assert_eq!(outline.len(), 1, "heading kept as a root: {outline:?}");
         assert_eq!(outline[0].name, "ONLY");
+    }
+
+    #[test]
+    fn pod_heading_nests_under_the_innermost_nested_package() {
+        // Outer spans 0..=20; block-form Inner (Module kind) spans 5..=12
+        // and is a child of Outer, the way the assembler nests it.
+        let mut inner = package_root("Inner", 12, vec![symbol("inner_sub", 10, vec![])]);
+        inner.range.start = WirePosition::new(5, 0);
+        inner.kind = 2;
+        let mut outline =
+            vec![package_root("Outer", 20, vec![symbol("outer_sub", 2, vec![]), inner])];
+        let mut pod = pod_heading_document_symbols("\n\n\n\n\n\n\n=head1 INNER_DOC\n");
+        pod.extend(pod_heading_document_symbols(
+            "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n=head1 OUTER_DOC\n",
+        ));
+        nest_pod_headings_into_outline(&mut outline, pod);
+        let outer_children: Vec<_> = outline[0].children.iter().map(|c| c.name.as_str()).collect();
+        assert!(outer_children.contains(&"OUTER_DOC"), "after Inner closes: {outer_children:?}");
+        assert!(!outer_children.contains(&"INNER_DOC"), "not on Outer: {outer_children:?}");
+        let inner_children: Vec<_> = outline[0]
+            .children
+            .iter()
+            .find(|c| c.name == "Inner")
+            .map(|c| c.children.iter().map(|g| g.name.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(inner_children, vec!["INNER_DOC", "inner_sub"], "{outline:?}");
+    }
+
+    /// Pins how nesting composes with the recursive node budget: the cap
+    /// counts the nested tree, so a nested heading is visited in pre-order
+    /// inside its package and a deduplicated heading consumes no budget.
+    #[test]
+    fn capped_outline_counts_the_nested_tree() {
+        // package P (0..=9) / =head1 A (line 1) / sub x (3) / sub y (5).
+        let pod = pod_heading_document_symbols("package P;\n=head1 A\n");
+        let mut outline =
+            vec![package_root("P", 9, vec![symbol("x", 3, vec![]), symbol("y", 5, vec![])])];
+        nest_pod_headings_into_outline(&mut outline, pod);
+        let outcome = apply_document_symbol_node_budget(outline, 3);
+        assert_eq!(outcome.eligible_total, 4);
+        assert_eq!(outcome.visible_total, 3);
+        assert!(outcome.truncated);
+        assert_eq!(outcome.symbols.len(), 1, "one root under the cap: {:?}", outcome.symbols);
+        let visible: Vec<_> = outcome.symbols[0].children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(visible, vec!["A", "x"], "pre-order P -> A -> x; y omitted");
+
+        // A heading that duplicates a sub is dropped before budgeting.
+        let pod = pod_heading_document_symbols("package P;\n=head2 x\n");
+        let mut outline =
+            vec![package_root("P", 9, vec![symbol("x", 3, vec![]), symbol("y", 5, vec![])])];
+        nest_pod_headings_into_outline(&mut outline, pod);
+        let outcome = apply_document_symbol_node_budget(outline, 3);
+        assert_eq!(outcome.eligible_total, 3, "duplicate heading consumes no budget");
+        assert!(!outcome.truncated);
     }
 }
