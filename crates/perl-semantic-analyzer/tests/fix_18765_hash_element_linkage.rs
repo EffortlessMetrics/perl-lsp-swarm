@@ -297,3 +297,36 @@ fn genuinely_undeclared_hash_access_still_reports() {
          UndeclaredVariable, got no issues"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PL102 — unused `$class` invocant (#18765 item 7)
+// ---------------------------------------------------------------------------
+
+fn unused_names(issues: &[ScopeIssue]) -> Vec<&str> {
+    issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::UnusedVariable)
+        .map(|i| i.variable_name.as_str())
+        .collect()
+}
+
+/// `my ($class, $value) = @_;` in a class method that never touches the
+/// invocant is the class-method twin of the already-suppressed `$self`
+/// idiom; it must not fire PL102. Another unused list element in the same
+/// declaration still does (positive control).
+#[test]
+fn unused_class_invocant_is_not_reported_but_other_unused_vars_are() {
+    let code = "use strict;\nuse warnings;\npackage Shape;\n\
+                sub default_size { my ($class, $value, $spare) = @_; return $value * 2; }\n\
+                sub new { my ($class, %args) = @_; return bless {%args}, 'Shape'; }\n1;\n";
+    let issues = scope_issues_strict(code);
+    let unused = unused_names(&issues);
+    assert!(
+        !unused.contains(&"$class"),
+        "unused `$class` invocant must not fire PL102, got: {unused:?}"
+    );
+    assert!(
+        unused.contains(&"$spare"),
+        "a genuinely unused non-invocant variable must keep firing, got: {unused:?}"
+    );
+}
