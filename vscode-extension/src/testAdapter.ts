@@ -96,7 +96,14 @@ export interface BoundedProcessResult {
   diagnostic?: string;
 }
 
-export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'stdio'> {
+export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'stdio' | 'shell'> {
+  /**
+   * Bounded processes never run through a command interpreter: arguments may
+   * carry workspace-derived pathnames, and `cmd.exe`/`sh` would give their
+   * metacharacters a second meaning (#7418). The type admits only `false`, and
+   * `runBoundedProcess` forces `shell: false` at the spawn boundary regardless.
+   */
+  shell?: false;
   signal?: AbortSignal;
   /** Optional newline-delimited input written to the child before execution. */
   stdin?: string;
@@ -146,6 +153,7 @@ export function runBoundedProcess(
     } = options;
     const proc: ChildProcess = (spawnProcess ?? spawn)(command, [...args], {
       ...spawnOptions,
+      shell: false,
       stdio: 'pipe',
     });
     const stdoutDecoder = new StringDecoder('utf8');
@@ -493,6 +501,8 @@ function probePerlExecutable(candidate: string): string | null {
  * possible.
  *
  * Returns `{ command, args, shell }` for use with `child_process.spawn`.
+ * `shell` is the literal type `false`: no resolution may reintroduce a
+ * command-interpreter fallback around workspace test paths (#7418).
  */
 export function resolveProveCommand(
   extraArgs: string[],
@@ -500,7 +510,7 @@ export function resolveProveCommand(
 ): {
   command: string;
   args: string[];
-  shell: boolean;
+  shell: false;
   error?: string;
 } {
   const isWindows = probeOptions.isWindows ?? process.platform === 'win32';
@@ -753,7 +763,7 @@ export class PerlTestAdapter implements vscode.Disposable {
       }
       return;
     }
-    const { command: proveCmd, args: proveArgs, shell: useShell } = resolution;
+    const { command: proveCmd, args: proveArgs } = resolution;
     const cancellation = new AbortController();
     const killOnCancel = token.onCancellationRequested(() => cancellation.abort());
     if (token.isCancellationRequested) {
@@ -763,7 +773,7 @@ export class PerlTestAdapter implements vscode.Disposable {
     const result = await runBoundedProcess(proveCmd, proveArgs, {
       cwd,
       env: { ...process.env, HARNESS_ACTIVE: '1' },
-      shell: useShell,
+      shell: false,
       signal: cancellation.signal,
       ...(isWindows ? { stdin: `${filePath}\n` } : {}),
       ...configuredProveLimits(fileItem.uri),
