@@ -7589,11 +7589,27 @@ fn extract_qw_words(input: &str) -> (Vec<String>, String) {
 }
 
 /// Whether `content` imports an OO framework whose object construction (or
-/// role composition) invokes `BUILD` / `DEMOLISH` / `BUILDARGS` hooks
-/// implicitly, so those names must not be flagged as unused (#18765).
+/// role composition) invokes `BUILD` / `DEMOLISH` / `BUILDARGS` /
+/// `FOREIGNBUILDARGS` hooks implicitly, so those names must not be flagged
+/// as unused (#18765).
 fn file_uses_oo_framework(content: &str) -> bool {
-    const OO_FRAMEWORK_PREFIXES: &[&str] =
-        &["Moo", "Moose", "Mouse", "Mojo::Base", "Object::Pad", "Mars", "Role::Tiny"];
+    // Exact importers whose constructor (or role composition) calls the
+    // hooks; prefix-borrowing utilities such as `Mouse::Util::TypeConstraints`
+    // or `MooX::…` do not install one.
+    const OO_FRAMEWORK_IMPORTERS: &[&str] = &[
+        "Moo",
+        "Moo::Role",
+        "Moose",
+        "Moose::Role",
+        "Mouse",
+        "Mouse::Role",
+        "Mojo::Base",
+        "Object::Pad",
+        "Mars",
+        "Mars::Class",
+        "Mars::Role",
+        "Role::Tiny",
+    ];
 
     content.lines().any(|line| {
         let code_portion = line.split('#').next().unwrap_or_default();
@@ -7601,13 +7617,34 @@ fn file_uses_oo_framework(content: &str) -> bool {
         if tokens.next() != Some("use") {
             return false;
         }
-        let Some(module) = tokens.next().map(|m| m.trim_end_matches(';')) else {
+        let Some(raw_module) = tokens.next() else {
             return false;
         };
-        OO_FRAMEWORK_PREFIXES.iter().any(|prefix| {
-            module == *prefix
-                || (module.starts_with(prefix) && module[prefix.len()..].starts_with("::"))
-        })
+        if !OO_FRAMEWORK_IMPORTERS.contains(&raw_module.trim_end_matches(';')) {
+            return false;
+        }
+        // `use Moo ();` / `use Moo 2.0 ( );` never call `import`, so no
+        // constructor is installed.
+        let tail = code_portion
+            .split_once(raw_module)
+            .map(|(_, rest)| rest)
+            .unwrap_or_default()
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        let first = tail.split_whitespace().next().unwrap_or_default();
+        let imports = if first.trim_start_matches('v').starts_with(|c: char| c.is_ascii_digit())
+            && !first.contains('(')
+        {
+            tail[first.len()..].trim_start()
+        } else {
+            tail
+        };
+        !imports
+            .strip_prefix('(')
+            .and_then(|rest| rest.split_once(')'))
+            .is_some_and(|(inside, after)| inside.trim().is_empty() && after.trim().is_empty())
     })
 }
 
@@ -7631,6 +7668,13 @@ fn collect_exported_names(content: &str) -> HashSet<String> {
             let start = offset + var.len();
             search = start.max(offset + 1);
             if !export_var_word_boundary(content, offset, start) {
+                continue;
+            }
+            // A `#` earlier on the same line makes this a comment, not an
+            // executable export list (conservative: a `#` inside a string on
+            // that line also skips, which only keeps the symbol flagged).
+            let line_start = content[..offset].rfind('\n').map_or(0, |i| i + 1);
+            if content[line_start..offset].contains('#') {
                 continue;
             }
             let after_var = content[start..].trim_start();

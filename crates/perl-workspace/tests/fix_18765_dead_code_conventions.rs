@@ -415,3 +415,44 @@ fn per_document_query_is_scoped_and_filtered() -> Result<(), Box<dyn std::error:
     assert!(all.iter().any(|n| n == "dead_b"), "workspace query still sees B; got {all:?}");
     Ok(())
 }
+
+/// Imports that do not install a constructor (`use Moo ();`, a versioned
+/// empty list, a prefix-borrowing utility module) must not suppress `BUILD`,
+/// and an export list that only appears in a comment is not usage evidence.
+#[test]
+fn inactive_imports_and_commented_export_lists_keep_symbols_flagged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cases = [
+        ("file:///lib/E1.pm", "package E1;\nuse Moo ();\nsub BUILD { 1 }\n1;\n", "BUILD"),
+        ("file:///lib/E2.pm", "package E2;\nuse Moo 2.0 ( );\nsub BUILD { 1 }\n1;\n", "BUILD"),
+        (
+            "file:///lib/E3.pm",
+            "package E3;\nuse Mouse::Util::TypeConstraints;\nsub BUILD { 1 }\n1;\n",
+            "BUILD",
+        ),
+        (
+            "file:///lib/E4.pm",
+            "package E4;\n# our @EXPORT_OK = qw(dead_helper);\nsub dead_helper { 1 }\n1;\n",
+            "dead_helper",
+        ),
+    ];
+    for (uri, code, name) in cases {
+        let index = WorkspaceIndex::new();
+        index_doc(&index, uri, code)?;
+        let names = unused_names(&index);
+        assert!(
+            names.iter().any(|n| n == name),
+            "{name} must stay flagged in {code:?}; got {names:?}"
+        );
+    }
+
+    // Control: an active versioned import still suppresses BUILD.
+    let index = WorkspaceIndex::new();
+    index_doc(&index, "file:///lib/E5.pm", "package E5;\nuse Moo 2.004;\nsub BUILD { 1 }\n1;\n")?;
+    let names = unused_names(&index);
+    assert!(
+        !names.iter().any(|n| n == "BUILD"),
+        "active Moo import suppresses BUILD; got {names:?}"
+    );
+    Ok(())
+}

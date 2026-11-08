@@ -2566,19 +2566,38 @@ fn oo_framework_provides_pragma(content: &str) -> bool {
         if !OO_FRAMEWORKS_PROVIDING_PRAGMAS.contains(&module) {
             return false;
         }
-        // `use Moo;` ends the statement at the module token: import runs.
-        if raw_module.ends_with(';') {
-            return true;
-        }
-        let next = tokens.next().unwrap_or_default();
-        if next.starts_with("()") {
+        // Everything after the module name up to the statement end.
+        let after_module =
+            code_portion.split_once(raw_module).map(|(_, rest)| rest).unwrap_or_default();
+        let tail = after_module.split(';').next().unwrap_or_default().trim();
+        let (version, imports) = split_use_version(tail);
+        if is_empty_import_list(imports) {
             return false;
         }
-        if module == "Object::Pad" && object_pad_version_disables_pragmas(next) {
+        if module == "Object::Pad" && object_pad_version_disables_pragmas(version) {
             return false;
         }
         true
     })
+}
+
+/// Split a `use Module` statement tail into its optional leading module
+/// version (`2.0`, `v1.2.3`) and the remaining import list text.
+fn split_use_version(tail: &str) -> (&str, &str) {
+    let first = tail.split_whitespace().next().unwrap_or_default();
+    let looks_like_version =
+        first.trim_start_matches('v').starts_with(|c: char| c.is_ascii_digit())
+            && !first.contains(['(', ',', '\'', '"']);
+    if looks_like_version { (first, tail[first.len()..].trim_start()) } else { ("", tail) }
+}
+
+/// Whether an import list is the explicit empty list (`()`, `( )`), which
+/// tells Perl not to call `import` at all.
+fn is_empty_import_list(imports: &str) -> bool {
+    imports
+        .strip_prefix('(')
+        .and_then(|rest| rest.split_once(')'))
+        .is_some_and(|(inside, after)| inside.trim().is_empty() && after.trim().is_empty())
 }
 
 /// Whether the token after `use Object::Pad` is a module version of 0.821
@@ -3549,6 +3568,8 @@ mod tests {
             "package P;\nuse Object::Pad 1.0;\nclass P;\n",
             "package P;\nuse Moo ();\nmy $x = 1;\n",
             "package P;\nuse Moose();\nmy $x = 1;\n",
+            "package P;\nuse Moo 2.0 ();\nmy $x = 1;\n",
+            "package P;\nuse Moo ( );\nmy $x = 1;\n",
         ];
         for source in sources {
             let ctx = CriticContext::new(source, &ast, &config);
