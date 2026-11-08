@@ -9,13 +9,13 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(unix)]
+use perl_workspace_core::REASON_ROOT_ESCAPES_WORKSPACE;
 use perl_workspace_core::{
     BLIB_LIB, BUILD_PL, BuildSystemKind, DetectedEummMbBuildSystem, EummMbRootDisposition,
     EummMbRootFreshness, MAKEFILE_PL, ProjectRootRole, REASON_GENERATED_ROOT_STALE,
     REASON_GENERATED_ROOT_WITHOUT_BUILD_SYSTEM, SOURCE_LIB, TEST_LIB, detect_eumm_mb,
 };
-#[cfg(unix)]
-use perl_workspace_core::REASON_ROOT_ESCAPES_WORKSPACE;
 
 struct Fixture {
     root: PathBuf,
