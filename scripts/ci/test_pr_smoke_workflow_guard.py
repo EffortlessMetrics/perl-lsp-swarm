@@ -57,6 +57,36 @@ def smoke_step(name: str) -> tuple[str, str]:
     return block, ""
 
 
+def upload_retention_days() -> dict[str, int]:
+    """Every actions/upload-artifact step in the workflow and its retention.
+
+    Read from the raw workflow text, without a YAML dependency, so the
+    assertion binds to the value GitHub Actions will actually honour.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    retentions: dict[str, int] = {}
+    for match in re.finditer(
+        r"^      - name: (?P<name>[^\n]+)\n(?P<body>.*?)(?=^      - |\Z)",
+        text,
+        re.M | re.S,
+    ):
+        body = match.group("body")
+        if "uses: actions/upload-artifact@" not in body:
+            continue
+        days = re.search(r"^ +retention-days: (\d+)$", body, re.M)
+        if days:
+            retentions[match.group("name")] = int(days.group(1))
+    return retentions
+
+
+def smoke_step_retention_days(name: str) -> int:
+    """The retention declared by a step inside the PR Smoke job."""
+    metadata, _ = smoke_step(name)
+    match = re.search(r"^ +retention-days: (\d+)$", metadata, re.M)
+    assert match, f"workflow step declares no retention-days: {name}"
+    return int(match.group(1))
+
+
 class WorkflowGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -232,6 +262,56 @@ class WorkflowGuardTests(unittest.TestCase):
         missing_metadata, _ = smoke_step("Upload PR-fast missing-receipt diagnostics")
         self.assertIn("hashFiles('target/receipts/receipt.json') == ''", missing_metadata)
         self.assertIn("pr-fast-missing-receipt-", missing_metadata)
+
+
+class ReceiptRetentionTests(unittest.TestCase):
+    """The PR Smoke receipt must outlive the evidence it explains (#19067).
+
+    The declared footprint bound may be revised only with a fresh measured
+    receipt (PR_SMOKE_FOOTPRINT_GIB), and that measurement rides in
+    pr-fast-disk-pressure.log inside the uploaded receipt. When the receipt
+    expires before anyone can review it, the rule cannot be obeyed and the
+    bound is an assertion nobody can check. The bound's own originating run
+    (37195503421) has no surviving artifact and no job log.
+    """
+
+    PR_SMOKE_UPLOADS = (
+        "Upload PR-fast receipt",
+        "Upload PR-fast missing-receipt diagnostics",
+    )
+    PEER_UPLOADS = ("Upload gate receipt", "Upload CI actuals")
+
+    def test_pr_smoke_receipt_outlives_the_shard_receipts(self) -> None:
+        uploads = upload_retention_days()
+        for peer_name in self.PEER_UPLOADS:
+            self.assertIn(peer_name, uploads)
+            for name in self.PR_SMOKE_UPLOADS:
+                with self.subTest(upload=name, peer=peer_name):
+                    self.assertIn(name, uploads)
+                    self.assertGreaterEqual(
+                        uploads[name],
+                        uploads[peer_name],
+                        f"{name} expires before {peer_name}",
+                    )
+
+    def test_pr_smoke_receipt_retained_at_least_thirty_days(self) -> None:
+        for name in self.PR_SMOKE_UPLOADS:
+            self.assertGreaterEqual(
+                smoke_step_retention_days(name),
+                30,
+                f"{name} must survive long enough for a measured footprint "
+                "receipt to be reviewed before the bound is revised",
+            )
+
+    def test_disk_pressure_log_rides_with_the_pr_smoke_receipt(self) -> None:
+        for name in self.PR_SMOKE_UPLOADS:
+            metadata, _ = smoke_step(name)
+            self.assertIn(
+                "target/receipts/logs/*.log",
+                metadata,
+                f"{name} does not upload the log directory that carries "
+                "pr-fast-disk-pressure.log",
+            )
 
 
 if __name__ == "__main__":

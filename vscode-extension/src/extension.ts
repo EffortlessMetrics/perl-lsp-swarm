@@ -81,7 +81,6 @@ import {
   runTestAtCursorCommand,
   runTestsCommand,
 } from './testCommands';
-import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
 import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
@@ -889,14 +888,6 @@ export async function copyProviderDecisionReceiptCommand(
   return copyProviderDecisionReceipt(activeClient, providerOverride, diagnosticCommandOptions());
 }
 
-/**
- * Passive workspace file creation must not insert boilerplate (#14451).
- * Explicit create/scaffold commands own starter content.
- */
-export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
-  return;
-}
-
 export async function activate(context: vscode.ExtensionContext) {
   const activation = new ExtensionActivationOwner(context, (message) => {
     outputChannel?.error(message);
@@ -1046,14 +1037,6 @@ async function runExtensionActivation(
   const aliasLanguageDisposable = registerPerlAliasLanguageConfiguration(context.extensionPath);
   if (aliasLanguageDisposable) {
     activation.own('base', 'optional_degradable', aliasLanguageDisposable);
-  }
-  // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
-  // longer activation-critical: it registers nothing and returns no disposable.
-  const mcpDisposable = measureOrDeferFeature(featureActivationMetrics, 'mcp', false, () =>
-    registerMcpSupport(outputChannel),
-  );
-  if (mcpDisposable) {
-    activation.own('support', 'optional_degradable', mcpDisposable);
   }
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
@@ -2342,7 +2325,9 @@ function createLanguageClientLifecycle(
         crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
         // Check after finalization so a dynamic registration received during
         // its awaits is not lost between the startup check and running state.
-        void suggestAiCompletionIfSupported(context, client).catch((err: unknown) => {
+        void suggestAiCompletionIfSupported(context, client, (message) =>
+          outputChannel.warn(message),
+        ).catch((err: unknown) => {
           outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
         });
       }
@@ -2639,7 +2624,9 @@ export function createLanguageClient(serverPath: string): LanguageClient {
           extensionContext
         ) {
           // A user-facing prompt must not hold the registration response open.
-          void suggestAiCompletionIfSupported(extensionContext, lc).catch((err: unknown) => {
+          void suggestAiCompletionIfSupported(extensionContext, lc, (message) =>
+            outputChannel.warn(message),
+          ).catch((err: unknown) => {
             outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
           });
         }

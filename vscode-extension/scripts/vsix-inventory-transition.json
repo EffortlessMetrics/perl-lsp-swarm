@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 18432,
-  "reason": "Onboarding and What's New resolution (#18432): bundled extension.js growth from housekeeping and changelog fallback logic.",
-  "base_baseline_file_sha256": "0633a7e9aa1ea0246ab5ad17079bbf5df52fa8c7c4813dd53b65bdd56ca2d833",
-  "base_inventory_sha256": "86e984708b37c1da15009138adc353afc1a437324ea12308b978960679213a60",
-  "candidate_baseline_file_sha256": "0c3e8e8f3cf3ef7074aa05a61162207420d0b28a99f8dd4d149e909410de1939",
-  "candidate_inventory_sha256": "b304dfd19f8cb19839c464808e6d3a096e2df9b8178a0373e3ecd0a8dc595f36"
+  "owner_issue": 16668,
+  "reason": "v0.18.0 changie batch (#19034) folded 546 fragments into CHANGELOG.md (oxfmt-normalized here), and the substitution end-pattern grammar fix (#18463) grew perl.tmLanguage.json; no files added or removed",
+  "base_baseline_file_sha256": "88dbd8ee592842af8db272dad51d8074faff18eb36a0e85ad3a5c3e220d7f770",
+  "candidate_baseline_file_sha256": "8f59aee55b10f9591492546398192bb3b9a57b1b8dfd3b5669ba804f0c14b3b5",
+  "base_inventory_sha256": "568097ca4eecddd8d70f8b1c3ecc1bbdfff020cf20f70e9f410b2d0f75a4f321",
+  "candidate_inventory_sha256": "e6447adf919f4272ee259fc6d618ee851faf2f28370f8568da53d4e85ad0f07a"
 }

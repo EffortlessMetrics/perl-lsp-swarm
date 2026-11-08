@@ -253,9 +253,12 @@ Incomplete closure or failed release returns 75 and retains ownership.
 ### Explicit Linux proc-parent/pidfd discovery
 
 `CARGO_ADMITTED_CHILD_DISCOVERY=proc-parent-pidfd` explicitly selects a bounded
-alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. The default
-`proc-children` profile is unchanged; no missing-table detection silently selects
-a namespace scan. The alternate profile reads only visible numeric PID `stat`
+alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. Linux builtin Cargo and
+staged Clippy preflight and execution check the selected profile's discovery capability
+before resource planning or lease acquisition. An unavailable default `proc-children`
+interface therefore refuses even a build that might otherwise complete normally; select
+the alternate explicitly only when its capability checks pass. No missing-table
+detection silently selects a namespace scan. The alternate profile reads only visible numeric PID `stat`
 records, including their parent and kernel starttime. It does not read process
 environments, command lines, descriptors, mappings or executable paths.
 
@@ -440,6 +443,19 @@ deadline/error retains the lease. There is no automatic broad /proc fallback;
 the separately selected proc-parent/pidfd profile above supplies discovery only.
 Missing
 capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
+deadline/error retains the lease. There is no broad /proc fallback. Missing
+`/proc/self/task/<native-tid>/children` can be a kernel capability boundary,
+not a wrong PID or namespace: Linux builds this entry only with
+[`CONFIG_PROC_CHILDREN`](https://github.com/torvalds/linux/blob/v6.18/fs/proc/Kconfig).
+The calling thread and its procfs task identity must be checked before drawing
+that conclusion. Known pidfds and an empty live-handle ledger do not replace
+the table: nonblocking exited-child waits return no identity for a running
+unknown adopted child. They must not promote missing discovery to ECHILD or
+authorize release. A staged consumer that requires this capability must refuse
+before launch when it is unavailable; a mount or alternate task path cannot
+restore an entry compiled out of the running kernel.
+
+Missing capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
 owner death and incomplete cancellation never become release authority.
 
 The opt-in `scripts/tests/qualify_admitted_clippy.py --proof-root ABSOLUTE_DIR`

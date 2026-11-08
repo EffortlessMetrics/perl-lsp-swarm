@@ -615,18 +615,13 @@ beforeAll(async () => {
   );
   trackEventFactory(
     vscode.workspace as unknown as Record<string, unknown>,
+    'onDidChangeWorkspaceFolders',
+    'watcher:workspace-folders',
+  );
+  trackEventFactory(
+    vscode.workspace as unknown as Record<string, unknown>,
     'onWillSaveTextDocument',
     'watcher:format-on-save',
-  );
-  trackEventFactory(
-    vscode.workspace as unknown as Record<string, unknown>,
-    'onDidCreateFiles',
-    'watcher:file-creation',
-  );
-  trackEventFactory(
-    vscode.workspace as unknown as Record<string, unknown>,
-    'onDidChangeTextDocument',
-    'watcher:arrow-completion',
   );
   trackEventFactory(
     vscode.workspace as unknown as Record<string, unknown>,
