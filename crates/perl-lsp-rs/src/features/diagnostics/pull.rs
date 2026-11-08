@@ -327,7 +327,7 @@ impl PendingPullCriticContribution {
 /// diagnostics, overlap observations, accepted snapshot and service call — so
 /// the command and `textDocument/diagnostic` cannot diverge for the same
 /// buffer generation and context.
-pub enum PullCriticOutcome {
+pub(crate) enum PullCriticOutcome {
     /// No Critic contribution was evaluated (no AST for this text).
     NotEvaluated,
     /// The run settled but cannot be presented as current: unpublishable, or
@@ -342,12 +342,12 @@ pub enum PullCriticOutcome {
 }
 
 /// One native Critic finding and the pull-report row that carries it.
-pub struct PullCriticRow {
+pub(crate) struct PullCriticRow {
     /// The normalized service finding.
-    pub finding: perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
+    pub(crate) finding: perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
     /// The row in the committed pull report: the finding's own projection, or
     /// the ordinary `PL*` twin the report's overlap collapse kept instead.
-    pub shown: LspDiagnostic,
+    pub(crate) shown: LspDiagnostic,
 }
 
 /// Whether `code` is a registered alias of `finding`'s canonical identity.
@@ -454,7 +454,7 @@ impl PullDiagnosticsProvider {
     /// `perl.runCritic` consumes this instead of assembling its own subject,
     /// so its findings are the rows [`Self::get_document_diagnostics_with_context`]
     /// commits for the same `content`, `context` and `doc_state`.
-    pub fn critic_outcome_for_document(
+    pub(crate) fn critic_outcome_for_document(
         &self,
         uri: &Uri,
         content: &str,
