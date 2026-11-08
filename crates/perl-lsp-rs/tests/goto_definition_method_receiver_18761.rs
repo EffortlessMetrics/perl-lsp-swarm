@@ -504,3 +504,121 @@ fn hover_on_constructor_bound_receiver_shows_signature_card() -> TestResult {
     );
     Ok(())
 }
+
+const SAME_FILE_TYPED_CHAIN_PM: &str = r#"package Store::Order;
+use Moo;
+
+sub total_cents {
+    my ($self) = @_;
+    return 4210;
+}
+
+package Store::Receipt;
+use Moo;
+
+has order => (is => 'ro', isa => 'Store::Order');
+
+sub render {
+    my ($self) = @_;
+    return $self->order->total_cents;
+}
+
+1;
+"#;
+
+const UPPERCASE_ORDER_PM: &str = r#"package Order;
+
+sub new {
+    my ($class) = @_;
+    return bless {}, $class;
+}
+
+sub total_cents {
+    my ($self) = @_;
+    return 4210;
+}
+
+1;
+"#;
+
+const UPPERCASE_ACCESSOR_CHAIN_PM: &str = r#"package Store::Receipt;
+use Moo;
+
+has Order => (is => 'ro');
+
+sub render {
+    my ($self) = @_;
+    return $self->Order->total_cents;
+}
+
+1;
+"#;
+
+/// Review follow-up: a typed chain whose `isa` class is declared in the same
+/// file keeps its same-file answer — the chain refusal applies only when the
+/// receiver is unknown or names a different package than the target.
+#[test]
+fn same_file_typed_chain_keeps_matching_package_answer() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    workspace.write("lib/Store/Receipt.pm", SAME_FILE_TYPED_CHAIN_PM)?;
+
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    open_files(&mut harness, &workspace, &[("lib/Store/Receipt.pm", SAME_FILE_TYPED_CHAIN_PM)])?;
+    wait_ready(&mut harness, &workspace, "total_cents", "lib/Store/Receipt.pm")?;
+
+    let receipt_uri = workspace.uri("lib/Store/Receipt.pm");
+    let (line, character) = pos_of(SAME_FILE_TYPED_CHAIN_PM, "->total_cents", 0)?;
+    let result = goto_def(&mut harness, &receipt_uri, line, character + 2)?;
+    let (decl_line, _) = pos_of(SAME_FILE_TYPED_CHAIN_PM, "sub total_cents", 0)?;
+
+    let locations = result.as_array().ok_or_else(|| {
+        format!(
+            "expected a location array for the same-file typed chain, got: {}",
+            describe(&result)
+        )
+    })?;
+    let first = locations.first().ok_or_else(|| {
+        format!("a same-file typed chain must resolve, got: {}", describe(&result))
+    })?;
+    let target_line = first.pointer("/range/start/line").and_then(Value::as_u64);
+    assert_eq!(
+        target_line,
+        Some(u64::from(decl_line)),
+        "same-file typed chain must land on Store::Order::total_cents, got: {}",
+        describe(&result)
+    );
+    Ok(())
+}
+
+/// Review follow-up: an untyped chain whose accessor name is package-shaped
+/// (`$self->Order->total_cents`) must not hover as `Order::total_cents` — the
+/// text fallback would read the previous method name as the receiver.
+#[test]
+fn hover_on_untyped_chain_does_not_borrow_accessor_name_as_package() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    workspace.write("lib/Order.pm", UPPERCASE_ORDER_PM)?;
+    workspace.write("lib/Store/Receipt.pm", UPPERCASE_ACCESSOR_CHAIN_PM)?;
+
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    open_files(
+        &mut harness,
+        &workspace,
+        &[
+            ("lib/Order.pm", UPPERCASE_ORDER_PM),
+            ("lib/Store/Receipt.pm", UPPERCASE_ACCESSOR_CHAIN_PM),
+        ],
+    )?;
+    wait_ready(&mut harness, &workspace, "total_cents", "lib/Order.pm")?;
+
+    let receipt_uri = workspace.uri("lib/Store/Receipt.pm");
+    let (line, character) = pos_of(UPPERCASE_ACCESSOR_CHAIN_PM, "->total_cents", 0)?;
+    let result = hover_at(&mut harness, &receipt_uri, line, character + 2)?;
+    let markdown = hover_markdown(&result);
+    assert!(
+        !markdown.contains("Order::total_cents") && !markdown.contains("sub total_cents"),
+        "an untyped chain must not attribute the method to the accessor's name, got: {markdown:?}"
+    );
+    Ok(())
+}

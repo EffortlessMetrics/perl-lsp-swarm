@@ -1467,6 +1467,12 @@ impl LspServer {
         if let Some(package) = crate::declaration::method_call_receiver_package_at(ast, offset) {
             return package;
         }
+        // A chained receiver the class model cannot type is unknown: the text
+        // scan below would read the previous method name as the receiver
+        // (`$self->Order->total` → `Order`).
+        if crate::declaration::method_call_receiver_is_chain(ast, offset) {
+            return String::new();
+        }
 
         // Text-level fallbacks for receivers the AST classification could not
         // resolve: `$self` synonyms and bareword package-shaped names.

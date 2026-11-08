@@ -2885,10 +2885,21 @@ impl LspServer {
                             // current-package fallback used to produce — the
                             // receiver's class is the accessor's `isa`, not
                             // this file's package. A same-file answer for a
-                            // chain selector is a refusal, whatever the name.
+                            // chain selector is a refusal unless the chain's
+                            // receiver resolves (accessor `isa` facts) to the
+                            // package that declares the same-file target.
                             if ast_selector
                                 .as_ref()
                                 .is_some_and(|selector| selector.receiver_is_chain)
+                                && !location_links.first().is_some_and(|link| {
+                                    crate::declaration::method_call_receiver_package_at(ast, offset)
+                                        .is_some_and(|receiver_package| {
+                                            crate::declaration::current_package_at(
+                                                ast,
+                                                link.target_selection_range.0,
+                                            ) == receiver_package.as_str()
+                                        })
+                                })
                             {
                                 tracing::debug!(
                                     offset,
@@ -3440,6 +3451,14 @@ impl LspServer {
                 let byte_offset = u32::try_from(offset).ok()?;
                 return Some((symbol, byte_offset));
             }
+        }
+        // #18761: an unresolved `->method` selector has no honest symbol; the
+        // bare-token fallback would let the provider-decision receipt record a
+        // same-named workspace definition the live path refuses.
+        if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
+            && crate::declaration::method_call_selector_at(ast, offset, &doc.text).is_some()
+        {
+            return None;
         }
         let symbol = token_under_cursor(&doc.text, line as usize, character as usize)?;
         if symbol.is_empty() {
