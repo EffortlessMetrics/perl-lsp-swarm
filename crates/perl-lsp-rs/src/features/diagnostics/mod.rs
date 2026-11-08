@@ -4,8 +4,8 @@ pub(crate) mod overlap;
 pub mod pull;
 pub mod report_identity;
 pub(crate) mod wire_code;
-pub use pull::{AcceptedStateCurrentness, PullDiagnosticsContext, PullDiagnosticsProvider};
 pub(crate) use pull::PullCriticOutcome;
+pub use pull::{AcceptedStateCurrentness, PullDiagnosticsContext, PullDiagnosticsProvider};
 pub use report_identity::{
     DiagnosticProjectionFragment, NotReusable, PullPositionEncoding, PullReportResultId,
     PullReportSubject,
