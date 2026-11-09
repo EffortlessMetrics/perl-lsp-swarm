@@ -845,23 +845,33 @@ def read_only_git_environment(env):
     return result
 
 
-def git_path(*args, env=None):
+def git_path(*args, env=None, output_reader=None):
     # Read bytes: text mode also translates CR/LF that may belong to a POSIX
     # filename. Git emits one terminal LF; preserve every preceding path byte.
-    output = subprocess.check_output(["git", "rev-parse", *args], env=env)
+    command = ["git", "rev-parse", *args]
+    output = (subprocess.check_output(command, env=env) if output_reader is None
+              else output_reader(command, env))
     if not output.endswith(b"\n"):
         raise Denied("Git path output is missing its terminal newline")
     return native_path(os.fsdecode(output[:-1]))
 
 
-def resource_plan(env):
+def private_worktree_root(slot, worktree):
+    """Resolve private storage from an already canonical native worktree path."""
+    return slot / "worktrees" / hashlib.sha256(os.fsencode(worktree)).hexdigest()
+
+
+def resource_plan(env, *, git_output_reader=None):
     # Cargo uses the invocation directory, not Git's repository-location
     # overrides. Refuse an ambiguous subject instead of silently retargeting it.
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
         if name in env:
             raise Denied(name + " repository-location override is unsupported; unset it and invoke from the intended worktree")
-    worktree = git_path("--show-toplevel", env=env)
-    common = git_path("--path-format=absolute", "--git-common-dir", env=env)
+    git_options = {"env": env}
+    if git_output_reader is not None:
+        git_options["output_reader"] = git_output_reader
+    worktree = git_path("--show-toplevel", **git_options)
+    common = git_path("--path-format=absolute", "--git-common-dir", **git_options)
     identity = str(common).casefold() if os.name == "nt" else str(common)
     key = hashlib.sha256(os.fsencode(identity)).hexdigest()[:16]
     base = native_path(env.get("DEVPLANE", str(Path.home() / ".cache" / "devplane")))
@@ -871,8 +881,7 @@ def resource_plan(env):
     slot = base / (socket.gethostname() + "-" + sys.platform + "-" + key)
     # native_path already resolves the actual root; do not invent Unicode/case
     # equivalence between distinct filesystem paths. fsencode is lossless on POSIX.
-    worktree_key = hashlib.sha256(os.fsencode(worktree)).hexdigest()
-    private = slot / "worktrees" / worktree_key
+    private = private_worktree_root(slot, worktree)
     target, build = private / "target", private / "build"
     for name, expected in (("CARGO_TARGET_DIR", target), ("CARGO_BUILD_BUILD_DIR", build)):
         if env.get(name) and native_path(env[name]) != expected:

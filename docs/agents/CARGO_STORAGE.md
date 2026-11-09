@@ -579,6 +579,33 @@ ownership. Peak demand, build deltas, open-unlinked bytes, WSL guest free space,
 VHDX allocation and backing-host capacity remain separate unknown fields. No
 `df` minus `du` inference, cleanup or compaction is performed.
 
+For retained private storage across this repository's registered and removed
+worktrees, run `bash scripts/storage-doctor --current-slot --json`. This read-only
+census resolves the current host/common-repository slot through the admission
+owner and inventories only its immediate private worktree members. Root, nested,
+and linked-worktree invocations agree. One entry/time budget and inode map cover
+the whole census; Git output and member counts are also bounded. It reads no
+fingerprint contents and allocates no storage. Git trace/redirection outputs and
+optional locks are disabled for these observations, including configured Trace2
+targets. Existing descriptor and no-argument modes retain their behavior.
+
+The separate `cargo_private_storage_census.v1` envelope distinguishes registration,
+presence, discovery, and measurement completeness. A registered source can have
+missing storage; retained output can have no matching current registration.
+Each valid row includes its opaque `member_key`, the private directory name
+beneath the slot's `worktrees/`, alongside its path hash; invalid members have
+no member key. Native source and storage paths are not emitted.
+Invalid, unavailable, changing, or clipped observations keep partial byte counts
+and unknown complete totals. Native Windows allocated bytes remain unknown.
+Unregistered does not establish a safe orphan, and same-path worktree recreation
+does not establish allocation ownership. Every row retains unknown allocation
+ownership and reclaim eligibility. Exit zero means this inventory completed,
+not admission or permission to delete. The census excludes shared Cargo/compiler
+caches, slot containers, temporary storage, and other repositories or host slots.
+It does not execute the separate repo-local target guard or establish live process,
+lease, quota, or peak-demand facts. See [#19216](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/19216);
+exact reclamation remains under #11650/#11666/#11671.
+
 `observe-xtask-build.sh` captures the emitted descriptor in a bounded private
 temporary file outside its output directory and emits only this sanitized
 historical inventory after the command. Multiple descriptors or an incomplete
