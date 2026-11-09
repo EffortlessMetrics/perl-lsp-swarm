@@ -660,33 +660,60 @@ fn bench_early_exit_optimization(c: &mut Criterion) {
     });
 }
 
-/// Benchmark coordinator with resource limits enforcement
+/// Benchmark coordinator with resource limits enforcement on a genuinely
+/// populated index (#19179).
 ///
-/// Validates that limit checking overhead is acceptable (<10μs per check)
+/// The previous premise called `transition_to_ready(500, 25000)`, which only
+/// writes lifecycle counters and leaves the committed files map empty, so it
+/// measured empty-index overhead. Each size below populates the real map and
+/// asserts the accepted file/symbol denominators and a query sentinel before
+/// any timing runs.
 fn bench_resource_limit_enforcement(c: &mut Criterion) {
     use perl_workspace::workspace_index::{IndexCoordinator, IndexResourceLimits};
 
-    c.bench_function("resource limit enforcement", |b| {
-        b.iter_batched(
-            || {
-                let limits = IndexResourceLimits {
-                    max_files: 1000,
-                    max_total_symbols: 50000,
-                    ..Default::default()
-                };
-                let coordinator = IndexCoordinator::with_limits(limits);
-                coordinator.transition_to_ready(500, 25000);
-                coordinator
-            },
-            |coordinator| {
+    for size in [100usize, 1_000, 10_000] {
+        // Populate once, outside the timed loop, so per-iteration setup and
+        // teardown of a 10k-file index cannot masquerade as check cost.
+        let limits = IndexResourceLimits {
+            max_files: 20_000,
+            max_total_symbols: 50_000,
+            ..Default::default()
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let files: Vec<(Url, String)> = (0..size)
+            .map(|i| {
+                (
+                    must(Url::parse(&format!("file:///lib/Bench/Mod{i}.pm"))),
+                    format!("sub bench_symbol_{i} {{ }}"),
+                )
+            })
+            .collect();
+        let errors = coordinator.index().index_files_batch(files);
+        assert!(errors.is_empty(), "populated bench setup refused work: {errors:?}");
+        assert_eq!(coordinator.index().file_count(), size);
+        assert_eq!(coordinator.index().symbol_count(), size);
+        let sentinel = must(Url::parse("file:///lib/Bench/Mod0.pm"));
+        assert!(
+            coordinator
+                .index()
+                .file_symbols(sentinel.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "bench_symbol_0"),
+            "query sentinel missing before timing"
+        );
+        c.bench_function(&format!("resource limit enforcement {size} files"), |b| {
+            b.iter(|| {
                 // Check limits (this happens after every index operation)
                 coordinator.enforce_limits();
-                black_box(coordinator.state());
-                black_box(coordinator);
-            },
-            BatchSize::SmallInput,
-        );
-    });
+                black_box(&coordinator);
+            });
+        });
+        c.bench_function(&format!("symbol count {size} files"), |b| {
+            b.iter(|| {
+                black_box(coordinator.index().symbol_count());
+            });
+        });
+    }
 }
 
 /// Benchmark batch indexing 1000 files (CPAN-scale workload).

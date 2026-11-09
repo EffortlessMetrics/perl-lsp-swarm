@@ -827,7 +827,7 @@ impl IndexCoordinator {
     /// # Performance
     ///
     /// - Lock-free read of index state (<100ns)
-    /// - Symbol counting is O(n) where n is number of files
+    /// - Symbol counting is O(1): the committed aggregate under the files lock
     ///
     /// Returns: `Some(DegradationReason)` when a limit is exceeded, otherwise `None`.
     ///
@@ -848,8 +848,10 @@ impl IndexCoordinator {
             return Some(DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles });
         }
 
-        // Check max_total_symbols limit
-        let total_symbols: usize = files.values().map(|fi| fi.symbols.len()).sum();
+        // Check max_total_symbols limit. Read the aggregate through this
+        // already-held guard; do not call `symbol_count()`, which would
+        // re-acquire the same RwLock.
+        let total_symbols = files.committed_symbol_total();
         if total_symbols > self.limits.max_total_symbols {
             return Some(DegradationReason::ResourceLimit { kind: ResourceKind::MaxSymbols });
         }
@@ -1378,10 +1380,138 @@ enum IndexFileWithGenerationOutcome {
     RejectedStale,
 }
 
+/// Committed file map and its exact symbol aggregate, owned together under
+/// the workspace index's existing files lock (#19179).
+///
+/// `committed_symbol_total` always equals
+/// `map.values().map(|file| file.symbols.len()).sum()`. Every
+/// cardinality-changing mutation goes through `insert`/`remove`/`clear`
+/// here, so admission, retrospective limit checks, and `symbol_count` read
+/// the scalar in O(1) instead of enumerating unrelated files. The raw map is
+/// never handed out mutably: read access goes through the delegating methods
+/// below, so a committed symbol vector cannot be mutated without the
+/// aggregate being adjusted.
+#[derive(Default)]
+struct CommittedFiles {
+    map: HashMap<String, FileIndex>,
+    committed_symbol_total: usize,
+    #[cfg(test)]
+    enumerated_total_calls: AtomicUsize,
+    #[cfg(test)]
+    enumerated_entries: AtomicUsize,
+}
+
+impl CommittedFiles {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(capacity),
+            committed_symbol_total: 0,
+            #[cfg(test)]
+            enumerated_total_calls: AtomicUsize::new(0),
+            #[cfg(test)]
+            enumerated_entries: AtomicUsize::new(0),
+        }
+    }
+
+    /// The committed symbol total, maintained by every mutation below.
+    fn committed_symbol_total(&self) -> usize {
+        self.committed_symbol_total
+    }
+
+    fn insert(&mut self, key: String, file_index: FileIndex) -> Option<FileIndex> {
+        let candidate_symbols = file_index.symbols.len();
+        let previous = self.map.insert(key, file_index);
+        let replaced_symbols = previous.as_ref().map_or(0, |file| file.symbols.len());
+        self.committed_symbol_total = self
+            .committed_symbol_total
+            .saturating_sub(replaced_symbols)
+            .saturating_add(candidate_symbols);
+        previous
+    }
+
+    fn remove(&mut self, key: &str) -> Option<FileIndex> {
+        let removed = self.map.remove(key);
+        if let Some(file) = &removed {
+            self.committed_symbol_total =
+                self.committed_symbol_total.saturating_sub(file.symbols.len());
+        }
+        removed
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.committed_symbol_total = 0;
+    }
+
+    /// Mutable access for generation/pending bookkeeping only. Callers must
+    /// not change `symbols` cardinality through this route; committed symbol
+    /// changes go through `insert`/`remove`/`clear`.
+    fn get_mut(&mut self, key: &str) -> Option<&mut FileIndex> {
+        self.map.get_mut(key)
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.map.reserve(additional);
+    }
+
+    fn get(&self, key: &str) -> Option<&FileIndex> {
+        self.map.get(key)
+    }
+
+    fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Committed entries. In test builds every call records the populated
+    /// entry count, so a symbol-budget reader that enumerates the map —
+    /// including an inline `values().map(..).sum()` — is observed by the
+    /// no-enumeration test.
+    fn values(&self) -> std::collections::hash_map::Values<'_, String, FileIndex> {
+        #[cfg(test)]
+        self.enumerated_entries.fetch_add(self.map.len(), Ordering::Relaxed);
+        self.map.values()
+    }
+
+    fn iter(&self) -> std::collections::hash_map::Iter<'_, String, FileIndex> {
+        #[cfg(test)]
+        self.enumerated_entries.fetch_add(self.map.len(), Ordering::Relaxed);
+        self.map.iter()
+    }
+
+    /// Read-only map view for the cache-rebuild helpers that take a plain
+    /// `&HashMap`. This is the only route that exposes the raw map, and it
+    /// cannot mutate committed state.
+    fn as_map(&self) -> &HashMap<String, FileIndex> {
+        &self.map
+    }
+
+    /// Test-only independent recomputation, used as the parity oracle and to
+    /// prove the production readers never enumerate the committed map.
+    #[cfg(test)]
+    fn enumerated_symbol_total(&self) -> usize {
+        self.enumerated_total_calls.fetch_add(1, Ordering::Relaxed);
+        self.map.values().map(|file| file.symbols.len()).sum()
+    }
+
+    #[cfg(test)]
+    fn enumerated_total_calls(&self) -> usize {
+        self.enumerated_total_calls.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn enumerated_entries(&self) -> usize {
+        self.enumerated_entries.load(Ordering::Relaxed)
+    }
+}
+
 /// Thread-safe workspace index
 pub struct WorkspaceIndex {
     /// Index data per file URI (normalized key -> data)
-    files: Arc<RwLock<HashMap<String, FileIndex>>>,
+    files: Arc<RwLock<CommittedFiles>>,
     /// Global symbol multimap (qualified/bare name -> ordered definition candidates)
     symbols: Arc<RwLock<HashMap<String, Vec<DefinitionCandidate>>>>,
     /// Workspace-symbol search index for fast query lookup.
@@ -1844,7 +1974,7 @@ impl WorkspaceIndex {
     /// Create an empty index with explicit resource-admission limits.
     pub fn with_resource_limits(limits: IndexResourceLimits) -> Self {
         Self {
-            files: Arc::new(RwLock::new(HashMap::new())),
+            files: Arc::new(RwLock::new(CommittedFiles::default())),
             symbols: Arc::new(RwLock::new(HashMap::new())),
             search_index: Arc::new(RwLock::new(HashMap::new())),
             global_references: Arc::new(RwLock::new(HashMap::new())),
@@ -1905,7 +2035,7 @@ impl WorkspaceIndex {
             estimated_files.saturating_mul(avg_symbols_per_file).saturating_mul(2).min(1_000_000);
         let ref_cap = (sym_cap / 4).min(1_000_000);
         Self {
-            files: Arc::new(RwLock::new(HashMap::with_capacity(estimated_files))),
+            files: Arc::new(RwLock::new(CommittedFiles::with_capacity(estimated_files))),
             symbols: Arc::new(RwLock::new(HashMap::with_capacity(sym_cap))),
             search_index: Arc::new(RwLock::new(HashMap::with_capacity(sym_cap))),
             global_references: Arc::new(RwLock::new(HashMap::with_capacity(ref_cap))),
@@ -1998,7 +2128,7 @@ impl WorkspaceIndex {
 
     fn admission_limit_for(
         &self,
-        files: &HashMap<String, FileIndex>,
+        files: &CommittedFiles,
         key: &str,
         candidate: &FileIndex,
     ) -> Option<ResourceKind> {
@@ -2006,7 +2136,7 @@ impl WorkspaceIndex {
             return Some(ResourceKind::MaxFiles);
         }
 
-        let current_symbols: usize = files.values().map(|file| file.symbols.len()).sum();
+        let current_symbols = files.committed_symbol_total();
         let replaced_symbols = files.get(key).map_or(0, |file| file.symbols.len());
         let projected_symbols = current_symbols
             .saturating_sub(replaced_symbols)
@@ -2518,8 +2648,8 @@ impl WorkspaceIndex {
                 reindex_metrics::record_legacy_symbols_removed(old_index.symbols.len());
                 #[cfg(test)]
                 reindex_metrics::record_legacy_search_removed(old_index.symbols.len());
-                Self::incremental_remove_symbols(&files, &mut symbols, old_index);
-                Self::incremental_remove_search(&files, &mut search_idx, old_index);
+                Self::incremental_remove_symbols(files.as_map(), &mut symbols, old_index);
+                Self::incremental_remove_search(files.as_map(), &mut search_idx, old_index);
                 drop(search_idx);
                 drop(symbols);
             }
@@ -2656,8 +2786,8 @@ impl WorkspaceIndex {
                 // Incrementally remove symbols and re-insert any shadowed names.
                 let mut symbols = self.symbols.write();
                 let mut search_idx = self.search_index.write();
-                Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
-                Self::incremental_remove_search(&files, &mut search_idx, &file_index);
+                Self::incremental_remove_symbols(files.as_map(), &mut symbols, &file_index);
+                Self::incremental_remove_search(files.as_map(), &mut search_idx, &file_index);
 
                 // Defensive sweep: purge any remaining cache entries whose value
                 // points to this file's URI.  incremental_remove_symbols already
@@ -3045,8 +3175,8 @@ impl WorkspaceIndex {
             }
 
             // Single rebuild at the end
-            Self::rebuild_symbol_cache(&files, &mut symbols);
-            Self::rebuild_search_index(&files, &mut search_idx);
+            Self::rebuild_symbol_cache(files.as_map(), &mut symbols);
+            Self::rebuild_search_index(files.as_map(), &mut search_idx);
         }
 
         errors
@@ -3391,7 +3521,7 @@ impl WorkspaceIndex {
         // unboundedly across long sessions. Returning the resolved location
         // directly preserves correctness without retaining state.
         let files = self.files.read();
-        Self::find_definition_in_files(&files, symbol_name, None)
+        Self::find_definition_in_files(files.as_map(), symbol_name, None)
             .map(|(location, _uri)| vec![location])
             .unwrap_or_default()
     }
@@ -4151,8 +4281,7 @@ impl WorkspaceIndex {
 
     /// Return the total number of symbols across all indexed files
     pub fn symbol_count(&self) -> usize {
-        let files = self.files.read();
-        files.values().map(|file_index| file_index.symbols.len()).sum()
+        self.files.read().committed_symbol_total()
     }
 
     /// Get all files in a specific workspace folder
@@ -9044,7 +9173,7 @@ use Data::Dumper;
     #[test]
     fn test_windows_paths() {
         // Test Windows-style paths
-        let result = fs_path_to_uri(r"C:\Users\test\Documents\script.pl");
+        let result = fs_path_to_uri(r"C:\test-home\Documents\script.pl");
         assert!(result.is_ok());
         let uri = must(result);
         assert!(uri.starts_with("file://"));
@@ -9497,6 +9626,275 @@ use Data::Dumper;
                 ..
             }
         ));
+    }
+
+    /// Independent full-sum oracle for the committed symbol total (#19179).
+    /// Recomputes from the committed map; never reads the cached aggregate.
+    fn committed_full_sum(index: &WorkspaceIndex) -> usize {
+        index.files.read().enumerated_symbol_total()
+    }
+
+    fn assert_total_matches_oracle(index: &WorkspaceIndex) {
+        assert_eq!(
+            index.symbol_count(),
+            committed_full_sum(index),
+            "cached symbol total must equal the independent full sum"
+        );
+    }
+
+    #[test]
+    fn test_committed_symbol_total_matches_full_sum_through_lifecycle() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 6,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let index = WorkspaceIndex::with_resource_limits(limits);
+        let a = must(url::Url::parse("file:///total-a.pl"));
+        let b = must(url::Url::parse("file:///total-b.pl"));
+
+        // Symbol-free file contributes zero.
+        must(index.index_file(a.clone(), "1;".to_string()));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 0);
+
+        // Insert, then grow, shrink, and equal-size replacement.
+        must(index.index_file(a.clone(), "sub a1 { }".to_string()));
+        assert_total_matches_oracle(&index);
+        must(index.index_file(a.clone(), "sub a1 { }\nsub a2 { }".to_string()));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 2);
+        must(index.index_file(a.clone(), "sub a9 { }".to_string()));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 1);
+        must(index.index_file(a.clone(), "sub a8 { }".to_string()));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 1);
+
+        // Unchanged content is a NoOp and must not double-count.
+        must(index.index_file(a.clone(), "sub a8 { }".to_string()));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 1);
+
+        // A second file, then a rejected over-limit replacement: the
+        // previously committed state and total are preserved.
+        must(index.index_file(b.clone(), "sub b1 { }\nsub b2 { }".to_string()));
+        assert_total_matches_oracle(&index);
+        let rejected = index.index_file(
+            b.clone(),
+            "sub b1 { }\nsub b2 { }\nsub b3 { }\nsub b4 { }\nsub b5 { }\nsub b6 { }".to_string(),
+        );
+        assert!(rejected.is_err(), "replacement beyond max_total_symbols must be rejected");
+        assert!(matches!(index.take_resource_limit_rejection(), Some(ResourceKind::MaxSymbols)));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 3);
+
+        // A stale tracked generation must not charge or replace.
+        must(index.index_file_with_generation(a.clone(), "sub gen5 { }".to_string(), 5));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 3);
+        must(index.index_file_with_generation(a.clone(), "sub stale { }".to_string(), 3));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 3);
+        assert!(
+            index.file_symbols(a.as_str()).iter().any(|s| s.name == "gen5"),
+            "stale generation must not replace committed symbols"
+        );
+
+        // Remove, repeated remove, then clear and re-add.
+        index.remove_file(b.as_str());
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 1);
+        index.remove_file(b.as_str());
+        assert_total_matches_oracle(&index);
+        index.clear();
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 0);
+        must(index.index_file(a.clone(), "sub again { }".to_string()));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 1);
+    }
+
+    #[test]
+    fn test_committed_symbol_total_zero_budgets() {
+        let zero_symbols = WorkspaceIndex::with_resource_limits(IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 0,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        });
+        let free = must(url::Url::parse("file:///zero-free.pl"));
+        must(zero_symbols.index_file(free, "1;".to_string()));
+        assert_total_matches_oracle(&zero_symbols);
+        let one = must(url::Url::parse("file:///zero-one.pl"));
+        assert!(zero_symbols.index_file(one, "sub nope { }".to_string()).is_err());
+        assert!(matches!(
+            zero_symbols.take_resource_limit_rejection(),
+            Some(ResourceKind::MaxSymbols)
+        ));
+        assert_total_matches_oracle(&zero_symbols);
+        assert_eq!(zero_symbols.symbol_count(), 0);
+
+        let zero_files = WorkspaceIndex::with_resource_limits(IndexResourceLimits {
+            max_files: 0,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        });
+        let any = must(url::Url::parse("file:///zero-files.pl"));
+        assert!(zero_files.index_file(any, "1;".to_string()).is_err());
+        assert!(matches!(zero_files.take_resource_limit_rejection(), Some(ResourceKind::MaxFiles)));
+        assert_total_matches_oracle(&zero_files);
+        assert_eq!(zero_files.file_count(), 0);
+    }
+
+    #[test]
+    fn test_committed_symbol_total_batch_duplicate_and_mixed() {
+        let limits = IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 3,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+        let index = WorkspaceIndex::with_resource_limits(limits);
+        let dup = must(url::Url::parse("file:///batch-dup.pl"));
+        let ok = must(url::Url::parse("file:///batch-ok.pl"));
+        let big = must(url::Url::parse("file:///batch-big.pl"));
+
+        // Duplicate URI in one batch: last payload wins. The batch then
+        // admits 2 + 1 symbols and refuses the 4-symbol file at the limit.
+        let errors = index.index_files_batch(vec![
+            (dup.clone(), "sub first { }".to_string()),
+            (ok, "sub ok { }".to_string()),
+            (dup.clone(), "sub last1 { }\nsub last2 { }".to_string()),
+            (big, "sub b1 { }\nsub b2 { }\nsub b3 { }\nsub b4 { }".to_string()),
+        ]);
+        assert_eq!(errors.len(), 1, "only the over-limit batch entry is refused: {errors:?}");
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 3);
+        let names: Vec<String> =
+            index.file_symbols(dup.as_str()).iter().map(|s| s.name.clone()).collect();
+        assert!(names.contains(&"last1".to_string()), "last duplicate must win: {names:?}");
+        assert!(!names.contains(&"first".to_string()), "first duplicate must not win: {names:?}");
+
+        // A rejected batch replacement preserves the committed file and total.
+        let errors = index.index_files_batch(vec![(
+            dup.clone(),
+            "sub x1 { }\nsub x2 { }\nsub x3 { }\nsub x4 { }".to_string(),
+        )]);
+        assert_eq!(errors.len(), 1, "over-limit batch replacement is refused: {errors:?}");
+        assert!(matches!(index.take_resource_limit_rejection(), Some(ResourceKind::MaxSymbols)));
+        assert_total_matches_oracle(&index);
+        assert_eq!(index.symbol_count(), 3);
+        let names: Vec<String> =
+            index.file_symbols(dup.as_str()).iter().map(|s| s.name.clone()).collect();
+        assert!(
+            names.contains(&"last1".to_string()),
+            "rejected replacement must not win: {names:?}"
+        );
+    }
+
+    #[test]
+    fn test_two_writers_race_for_final_symbol_slot() {
+        // Repeated fresh trials: a check-then-publish implementation that
+        // drops the write lock between admission and insert oversubscribes
+        // the single symbol slot in some trial; the atomic implementation
+        // admits exactly one writer in every trial.
+        for trial in 0..50 {
+            let limits = IndexResourceLimits {
+                max_files: 10,
+                max_symbols_per_file: 1000,
+                max_total_symbols: 1,
+                max_ast_cache_bytes: 128 * 1024 * 1024,
+                max_ast_cache_items: 50,
+                max_scan_duration_ms: 30_000,
+            };
+            let index = Arc::new(WorkspaceIndex::with_resource_limits(limits));
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let mut handles = Vec::new();
+            for i in 0..2 {
+                let index = Arc::clone(&index);
+                let barrier = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    let uri = must(url::Url::parse(&format!("file:///race{i}.pl")));
+                    barrier.wait();
+                    index.index_file(uri, format!("sub racer{i} {{ }}"))
+                }));
+            }
+            let outcomes: Vec<Result<(), String>> =
+                handles.into_iter().map(|h| must(h.join())).collect();
+            assert_eq!(
+                outcomes.iter().filter(|r| r.is_ok()).count(),
+                1,
+                "trial {trial}: exactly one admission"
+            );
+            assert_eq!(index.symbol_count(), 1, "trial {trial}");
+            assert_total_matches_oracle(&index);
+        }
+    }
+
+    #[test]
+    fn test_symbol_budget_readers_do_not_enumerate_committed_files() {
+        let coordinator = IndexCoordinator::with_limits(IndexResourceLimits {
+            max_files: 10_000,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 50_000,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        });
+        let index = coordinator.index();
+        let batch: Vec<(url::Url, String)> = (0..100)
+            .map(|i| {
+                (
+                    must(url::Url::parse(&format!("file:///enum{i}.pl"))),
+                    format!("sub enum_symbol{i} {{ }}"),
+                )
+            })
+            .collect();
+        assert!(index.index_files_batch(batch).is_empty());
+        assert_eq!(index.symbol_count(), 100);
+
+        let before_calls = index.files.read().enumerated_total_calls();
+        let before_entries = index.files.read().enumerated_entries();
+        // Every symbol-budget reader must use the committed scalar, not a
+        // map scan — including an inline values().map(..).sum(), which the
+        // counted CommittedFiles::values()/iter() routes would record.
+        assert_eq!(index.symbol_count(), 100);
+        assert!(coordinator.check_limits().is_none());
+        coordinator.enforce_limits();
+        let extra = must(url::Url::parse("file:///enum-extra.pl"));
+        must(index.index_file(extra, "sub enum_extra { }".to_string()));
+        let batch_extra = must(url::Url::parse("file:///enum-batch-extra.pl"));
+        assert!(
+            index
+                .index_files_batch(vec![(batch_extra, "sub enum_batch_extra { }".to_string())])
+                .is_empty()
+        );
+        assert_eq!(index.symbol_count(), 102);
+        assert_eq!(
+            index.files.read().enumerated_total_calls(),
+            before_calls,
+            "symbol-budget readers must not recompute the total by enumeration"
+        );
+        assert_eq!(
+            index.files.read().enumerated_entries(),
+            before_entries,
+            "symbol-budget readers must not enumerate committed files"
+        );
+
+        // The counters are load-bearing: the independent oracle does enumerate.
+        assert_eq!(committed_full_sum(index), 102);
+        assert_eq!(index.files.read().enumerated_total_calls(), before_calls + 1);
     }
 
     #[test]
