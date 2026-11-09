@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Agent preflight safety checks
-# Run before any edit-capable agent starts work.
+# Select source authoring or the full local-Git workstation checks.
 #
 # Exit codes:
 #   0 — all checks pass
@@ -11,9 +11,15 @@
 #   5 — CARGO_TARGET_DIR is set (defeats automatic per-worktree isolation)
 #   6 — stash issue (shared stash has entries — cross-contamination risk)
 #   7 — hooks issue (installed pre-push hook missing, stale, or not executable)
+#  64 — unsupported arguments
 #
 # Usage:
-#   bash scripts/agent-preflight.sh
+#   bash scripts/agent-preflight.sh --source  # edits and compiler-free proof
+#   bash scripts/agent-preflight.sh           # existing local-Git workstation checks
+#
+# Source authoring needs an owned candidate checkout, not a Cargo build or
+# installed Git hooks. --source also accepts an isolated standalone checkout;
+# it does not grant build, commit, push, publication, or merge authority.
 #
 # Check 5 ENFORCES target-dir isolation (issue #3854). Cargo's default
 # (unconfigured) target-dir already resolves per-worktree — agents must NOT
@@ -27,6 +33,21 @@
 
 set -uo pipefail
 
+SOURCE_ONLY=false
+case "$#:${1:-}" in
+    0:) ;;
+    1:--source) SOURCE_ONLY=true ;;
+    1:--help|1:-h)
+        echo "Usage: bash scripts/agent-preflight.sh [--source]"
+        echo "--source: source authoring only; Cargo, hooks and publication are not assessed."
+        exit 0
+        ;;
+    *)
+        echo "Usage: bash scripts/agent-preflight.sh [--source]" >&2
+        exit 64
+        ;;
+esac
+
 PASS=0
 FAIL=0
 
@@ -35,6 +56,23 @@ err() { printf 'ERR %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 echo "=== Agent Preflight Checks ==="
 echo ""
+
+if [[ "$SOURCE_ONLY" == true ]]; then
+    # A task-local source check must inspect the actual cwd, not Git state
+    # redirected to another checkout by inherited environment settings.
+    if [[ ${GIT_DIR+x} || ${GIT_WORK_TREE+x} || ${GIT_COMMON_DIR+x} || ${GIT_INDEX_FILE+x} ]]; then
+        err "Unset GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR and GIT_INDEX_FILE; inspect the intended checkout and its actual index."
+        exit 2
+    fi
+    if [[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" != true ]]; then
+        err "Source authoring requires a non-bare Git checkout."
+        exit 2
+    fi
+    # Normalize nested/symlinked invocations and inspect conflicts in the whole
+    # current checkout. Do not infer a primary path by trimming '/.git'.
+    SOURCE_ROOT="$(git rev-parse --show-toplevel)" || exit 2
+    cd "$SOURCE_ROOT" || exit 2
+fi
 
 # ── Check 1: Not on master or main ───────────────────────────────────────────
 
@@ -46,7 +84,11 @@ if [[ -z "$CURRENT_BRANCH" ]]; then
     BRANCH_OK=false
 elif [[ "$CURRENT_BRANCH" == "master" || "$CURRENT_BRANCH" == "main" ]]; then
     err "On protected branch '$CURRENT_BRANCH'. Agents must not edit master/main directly."
-    echo "    Fix: Work in an isolated worktree with its own branch (isolation: worktree)"
+    if [[ "$SOURCE_ONLY" == true ]]; then
+        echo "    Fix: Create or use the candidate branch in the owned checkout; keep any shared coordination checkout separate."
+    else
+        echo "    Fix: Work in an isolated worktree with its own branch (isolation: worktree)"
+    fi
     BRANCH_OK=false
 else
     ok "Branch: $CURRENT_BRANCH (not master/main)"
@@ -58,7 +100,24 @@ fi
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"
 GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"
 
-if [[ "$GIT_DIR" == "$GIT_COMMON_DIR" ]]; then
+if [[ "$SOURCE_ONLY" == true && "$GIT_DIR" == "$GIT_COMMON_DIR" ]]; then
+    # A standalone cloud/task clone has one registered tree. The primary of
+    # a shared multi-worktree repository remains a coordination checkout.
+    # Inspect Git registration only; do not scan other checkouts or claim
+    # that registration proves semantic ownership or writer liveness.
+    REGISTERED_TREES="$(git worktree list --porcelain)" || exit 2
+    TREE_COUNT=0
+    while IFS= read -r entry; do
+        [[ "$entry" == worktree\ * ]] && TREE_COUNT=$((TREE_COUNT + 1))
+    done <<< "$REGISTERED_TREES"
+    if [[ "$TREE_COUNT" == 1 ]]; then
+        ok "Source checkout: standalone candidate (one registered tree)"
+        WORKTREE_OK=true
+    else
+        err "Primary checkout has $TREE_COUNT registered trees; use the owned candidate checkout, not the shared coordination checkout."
+        WORKTREE_OK=false
+    fi
+elif [[ "$GIT_DIR" == "$GIT_COMMON_DIR" ]]; then
     # git-dir equals common-dir → this IS the main checkout, not a worktree
     err "Not in an isolated git worktree. Agents require worktree isolation."
     echo "    Fix: Spawn agent with isolation: worktree in the agent definition"
@@ -73,8 +132,16 @@ fi
 
 # Search for conflict markers, skipping the .git directory
 CONFLICT_FILES="$(grep -rl --exclude-dir='.git' '^<<<<<<< ' . 2>/dev/null || true)"
+UNMERGED_FILES=""
+if [[ "$SOURCE_ONLY" == true ]]; then
+    UNMERGED_FILES="$(git diff --name-only --diff-filter=U)" || exit 3
+fi
 
-if [[ -n "$CONFLICT_FILES" ]]; then
+if [[ -n "$UNMERGED_FILES" ]]; then
+    err "Unmerged index entries remain:"
+    printf '    %s\n' "$UNMERGED_FILES"
+    CONFLICT_OK=false
+elif [[ -n "$CONFLICT_FILES" ]]; then
     err "Unresolved merge conflict markers found:"
     while IFS= read -r f; do
         echo "    $f"
@@ -100,7 +167,10 @@ else
 fi
 CWD="$(pwd -P)"
 
-if [[ -n "$MAIN_REPO" && "$CWD" = "$MAIN_REPO" ]]; then
+if [[ "$SOURCE_ONLY" == true ]]; then
+    ok "Source cwd: $SOURCE_ROOT (checkout topology checked above)"
+    CWD_OK=true
+elif [[ -n "$MAIN_REPO" && "$CWD" = "$MAIN_REPO" ]]; then
     err "cwd is the main repo root ($MAIN_REPO). Agents must run from their worktree."
     RECOVERY_WT=""
     while IFS= read -r wt_line || [[ -n "$wt_line" ]]; do
@@ -139,7 +209,10 @@ fi
 # it's set: unsetting it (not documenting around it) is the enforcement
 # point.
 
-if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+if [[ "$SOURCE_ONLY" == true ]]; then
+    ok "Cargo environment not assessed for source authoring; use exact-command admission before building"
+    TARGET_DIR_OK=true
+elif [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
     err "CARGO_TARGET_DIR is set (\"$CARGO_TARGET_DIR\") — unset it; cargo's default is already per-worktree isolated and a stale export redirects builds to the wrong worktree (see WORKTREE_PROTOCOL.md / #3854)."
     echo "    Fix: unset CARGO_TARGET_DIR"
     echo "    If this came from a shell profile (~/.bashrc, ~/.zshrc), remove that"
@@ -183,7 +256,10 @@ INSTALLED_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-push"
 INSTALLED_COMMIT_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-commit"
 CHECKED_IN_HOOK="$REPO_ROOT_AGENT/hooks/pre-push"
 HOOK_INSTALLER_FIX="bash scripts/install-githooks.sh"
-if [[ ! -f "$CHECKED_IN_HOOK" ]]; then
+if [[ "$SOURCE_ONLY" == true ]]; then
+    ok "Git hooks not assessed for source authoring; local Git writes retain their hook requirements"
+    HOOKS_OK=true
+elif [[ ! -f "$CHECKED_IN_HOOK" ]]; then
     # No authority in this checkout (e.g. a bare fixture repo, not perl-lsp):
     # nothing to verify against — skip without failing.
     ok "pre-push hook check skipped (no hooks/pre-push authority here)"
@@ -283,5 +359,9 @@ if [[ "$HOOKS_OK" == false ]]; then
 fi
 
 echo ""
-echo "Preflight passed. Safe to begin work."
+if [[ "$SOURCE_ONLY" == true ]]; then
+    echo "Source preflight passed. Cargo, local Git hooks, publication and merge are not assessed."
+else
+    echo "Preflight passed. Safe to begin work."
+fi
 exit 0

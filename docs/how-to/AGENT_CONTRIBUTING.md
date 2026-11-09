@@ -18,6 +18,24 @@ the [development method](../agents/DEVELOPMENT_METHOD.md). Check the
 [authority status](../agents/AUTHORITY_STATUS.md) before relying on older agent
 or orchestration documents.
 
+## Begin source work without building setup tools
+
+Use the owned candidate checkout on a named non-default branch. A task-isolated cloud
+clone is sufficient; do not create a linked workstation worktree or compile/install
+Git hooks merely to edit source or run compiler-free tests:
+
+```bash
+git status --short --branch
+bash scripts/agent-preflight.sh --source
+```
+
+This checks source-checkout hazards, not Cargo capacity, installed Git hooks or
+publication readiness. Run the corresponding admission when the task actually reaches
+a build, local Git write or protected publication. Missing Rust or unprovisioned hooks
+do not require another permission request for already-authorized source work. The
+[worktree protocol](../reference/WORKTREE_PROTOCOL.md#source-authoring) defines the
+retained isolation and one-writer boundary.
+
 ## Activate tools in the task shell
 
 A saved cloud setup can install tools successfully while leaving a fresh task

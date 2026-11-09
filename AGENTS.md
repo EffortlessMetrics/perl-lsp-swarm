@@ -32,6 +32,13 @@ Use these task-specific entrypoints as needed; setup and repository maps stay wi
 their existing owners. The route below selects the work, and admission applies to the
 exact command that will execute it.
 
+For source edits and compiler-free proof, use `bash scripts/agent-preflight.sh --source`
+in the owned candidate checkout. An isolated task/cloud clone is a valid source
+checkout; it does not need a workstation's linked-worktree layout or Cargo-built hooks
+before editing. Source admission is not build, local-Git, publication or merge
+qualification; keep those checks attached to their actual operations. See the
+[source-authoring boundary](docs/reference/WORKTREE_PROTOCOL.md#source-authoring).
+
 ## Sources of truth
 
 This ordering resolves repository facts and document status. It does not override

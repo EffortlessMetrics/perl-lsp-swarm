@@ -111,10 +111,12 @@ Keep reserve policy, toolchain pins and existing outputs intact; provision missi
 resources only after this selection. Report provisioning separately from execution.
 
 An isolated clone has its own common directory and Cargo exclusion domain; the
-resolver supports it. This does not make the clone's root a linked worktree or pass
-the linked-worktree-only checks in `scripts/agent-preflight.sh` or writer admission.
-Use the authorized task checkout and applicable admission, and report any such refusal
-as a separate boundary rather than disguising the clone or weakening the check.
+resolver supports it. For source edits and compiler-free proof, use the authorized
+candidate checkout with `bash scripts/agent-preflight.sh --source`; do not require
+linked-worktree workstation setup or Cargo-built hooks first. The no-argument local-Git
+preflight and exact-command Cargo admission retain their own operation-scoped checks.
+Follow the [source-authoring boundary](../../../docs/reference/WORKTREE_PROTOCOL.md#source-authoring)
+without disguising the clone or claiming build/publication qualification.
 
 Hook setup is a separate mutation decision. Current
 `crates/perl-ci-hygiene/src/git_hooks.rs::cmd_install_githooks` enumerates every live

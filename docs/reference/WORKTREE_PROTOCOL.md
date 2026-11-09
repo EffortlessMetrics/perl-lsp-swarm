@@ -32,9 +32,10 @@ demonstrated combined-tree interaction.
 
 ## Coordination checkout
 
-The main checkout is a coordination surface, not an edit surface. Keep it on the current
-default branch, `main`, and use it for fetches, worktree creation, and read-only source
-comparison.
+In a shared multi-worktree repository, the primary checkout is a coordination surface,
+not an edit surface. Keep it on the current default branch, `main`, and use it for
+fetches, worktree creation, and read-only source comparison. This workstation layout is
+not a requirement to manufacture in an already isolated task/cloud clone.
 
 Do not:
 
@@ -47,6 +48,35 @@ Do not:
 
 `git stash` is shared across all worktrees. Use scoped `git restore` for discarded work
 or a branch-local WIP commit for work that must survive.
+
+## Source authoring
+
+Source edits and compiler-free tests require an identified candidate and one mutation
+owner, not an installed Rust toolchain or Cargo-built Git hooks. An isolated standalone
+checkout on a named candidate branch is valid, as is an owned linked worktree. Do not
+mistake `git-dir == common-dir` for evidence that a task-local clone is a shared
+workstation checkout.
+
+```bash
+git status --short --branch
+git rev-parse --show-toplevel --git-common-dir HEAD
+bash scripts/agent-preflight.sh --source
+```
+
+The source mode rejects protected/detached branches, repository redirection through
+`GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`/`GIT_INDEX_FILE`, a primary checkout with multiple
+registered trees, conflicts and unresolved stash state. It supports nested invocation and separate
+Git directories without guessing a primary path by stripping `/.git`. Git registration
+does not prove semantic ownership or writer liveness; the candidate's one-writer rule
+above still applies.
+
+The result is explicitly source-only. Cargo admission belongs to an actual Cargo
+invocation. Installed-hook checks belong to local Git operations that rely on them;
+the existing no-argument preflight retains the linked-worktree workstation checks.
+GitHub-native publication uses its supported route and current protections, not a
+claim that local hooks ran. Review, CI activation and protected merge requirements
+remain unchanged. A source preflight neither grants those operations nor requires
+them before editing; missing setup is not a new request for source-edit permission.
 
 ## Create a worktree
 
@@ -72,14 +102,18 @@ bash scripts/worktree-add.sh .worktrees/<short-slot> <branch>
 ```
 
 Raw `git worktree add` skips provisioning (local hooks cannot be strictly
-enforced). After a raw add, install hooks before editing:
+enforced). It is sufficient for source authoring after `--source` preflight. Before
+local Git operations that require hooks, use the admitted hook-installation route in
+[Cargo storage admission](../agents/CARGO_STORAGE.md), then verify the installed hooks.
+The compatibility installer is:
 
 ```bash
 bash scripts/install-githooks.sh
 ```
 
-Either way, `bash scripts/agent-preflight.sh` refuses to proceed (exit 7)
-while the installed pre-push hook is missing or stale.
+The full workstation `bash scripts/agent-preflight.sh` refuses to proceed (exit 7)
+while the installed pre-push hook is missing or stale. That refusal must not be reused
+as a gate for source authoring; `--source` does not claim hook protection.
 
 Installed hooks live in each tree's own `.githooks/` dir (via a repo-local
 relative `core.hooksPath`, issue #17414 rule C), never in the shared common
@@ -104,7 +138,7 @@ git status --short --branch
 git rev-parse --show-toplevel
 git rev-parse --git-dir
 git rev-parse --git-common-dir
-bash scripts/agent-preflight.sh
+bash scripts/agent-preflight.sh --source
 ```
 
 The worktree must be on a named candidate branch, not `main` and not detached HEAD.
@@ -386,9 +420,9 @@ Before editing:
 
 - [ ] Current issue/claim and candidate are identified.
 - [ ] One mutation owner is established within the active orchestration context.
-- [ ] Worktree is isolated, named, and not on `main`.
-- [ ] Coordination checkout is clean and remains on `main`.
-- [ ] `CARGO_TARGET_DIR` is not inherited from a persistent shell profile.
+- [ ] Candidate checkout is isolated, named, and not on `main`.
+- [ ] Any shared coordination checkout remains separate and on `main`.
+- [ ] Source-only preflight passes; build and local-Git setup are not edit prerequisites.
 - [ ] Dirty, untracked, and salvageable state has been inspected.
 
 Before branch mutation:
