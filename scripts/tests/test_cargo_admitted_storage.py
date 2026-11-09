@@ -20,6 +20,127 @@ def git_output(path):
     return os.fsencode(path) + b"\n"
 
 
+def projected_environment(command):
+    # Decode only the renderer's JSON-compatible assignments, not Cargo files.
+    values = {}
+    for index, argument in enumerate(command):
+        if argument == "--":
+            break
+        if argument != "--config" or not command[index + 1].startswith("env."):
+            continue
+        key, encoded = command[index + 1].split("=", 1)
+        fields, value = key.split("."), json.loads(encoded)
+        if len(fields) == 2:
+            values[fields[1]] = value
+        else:
+            values.setdefault(fields[1], {})[fields[2]] = value
+    return values
+
+
+class ChildEnvironmentProjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.values = {name: "/admitted/" + name for name in (
+            "TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL", "CARGO_TARGET_DIR",
+            "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS")}
+        self.values.update(RUSTUP_AUTO_INSTALL="0", CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="3")
+        self.prefix = ["cargo", "--config", "/fixture/config.local.toml"]
+        self.tree = Mock()
+
+    def project(self):
+        return safe.child_environment_config(self.prefix, self.values, self.values, self.tree)
+
+    def oracle(self, shapes, malformed=False):
+        def probe(command, env, **bounds):
+            self.assertEqual(command[:len(self.prefix)], self.prefix)
+            self.assertEqual(command[-2:], ["locate-project", "--message-format=json"])
+            self.assertGreater(bounds["timeout"], 0)
+            self.assertLessEqual(bounds["timeout"], 15)
+            self.assertLessEqual(bounds["output_limit"], 16384)
+            projection = projected_environment(command)
+            if malformed or any(name in shapes and type(value) is not shapes[name]
+                                for name, value in projection.items()):
+                raise subprocess.CalledProcessError(101, command, b"", b"fixture: incompatible config")
+            return subprocess.CompletedProcess(command, 0, b'{"root":"/fixture/Cargo.toml"}', b"")
+        return probe
+
+    def test_absent_table_scalar_and_mixed_project_every_admitted_value(self):
+        mixed = {name: str if i % 2 else dict for i, name in enumerate(self.values)}
+        for label, shapes, calls in (
+                ("absent", {}, 1), ("table", dict.fromkeys(self.values, dict), 1),
+                ("scalar", dict.fromkeys(self.values, str), 2),
+                ("mixed", mixed, 3 + len(self.values) + sum(shape is str for shape in mixed.values()))):
+            with self.subTest(shape=label):
+                self.tree.probe.reset_mock()
+                self.tree.probe.side_effect = self.oracle(shapes)
+                projection = projected_environment(self.project())
+                expected = {name: value if shapes.get(name) is str else
+                            {"value": value, "force": True, "relative": False}
+                            for name, value in self.values.items()}
+                self.assertEqual(projection, expected)
+                self.assertEqual(self.tree.probe.call_count, calls)
+                # The accepted combined vector is the last probe, and is reused.
+                self.assertEqual(projected_environment(self.tree.probe.call_args.args[0]), projection)
+
+    def test_malformed_config_refuses_after_first_key_has_no_supported_shape(self):
+        self.tree.probe.side_effect = self.oracle({}, malformed=True)
+        with self.assertRaisesRegex(safe.CargoConfigRefused, "neither supported configuration shape.*TEMP"):
+            self.project()
+        self.assertEqual(self.tree.probe.call_count, 4)
+
+    def test_fixed_key_set_bounds_attempts_and_final_combined_validation(self):
+        for final_success in (True, False):
+            with self.subTest(final_success=final_success):
+                self.tree.probe.reset_mock()
+                def probe(command, env, **bounds):
+                    projected = projected_environment(command)
+                    if (self.tree.probe.call_count <= 2 or
+                            any(isinstance(value, dict) for value in projected.values()) or
+                            (len(projected) > 1 and not final_success)):
+                        raise subprocess.CalledProcessError(101, command, b"", b"fixture: shape changed")
+                    return subprocess.CompletedProcess(command, 0, b"{}", b"")
+                self.tree.probe.side_effect = probe
+                if final_success:
+                    self.assertEqual(projected_environment(self.project()), self.values)
+                else:
+                    with self.assertRaisesRegex(safe.CargoConfigRefused, "combined configuration projection rejected"):
+                        self.project()
+                self.assertEqual(self.tree.probe.call_count, 2 * len(self.values) + 3)
+
+    def test_unexpected_status_timeout_output_failure_and_cancellation_do_not_search_shapes(self):
+        for error in (subprocess.CalledProcessError(7, ["fixture"], b"", b"unexpected"),
+                      subprocess.CalledProcessError(-9, ["fixture"], b"", b"signal"),
+                      subprocess.TimeoutExpired(["fixture"], 15),
+                      safe.Denied("output observation bound"), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__, status=getattr(error, "returncode", None)):
+                self.tree.probe.reset_mock()
+                self.tree.probe.side_effect = error
+                expected = KeyboardInterrupt if isinstance(error, KeyboardInterrupt) else safe.CargoConfigRefused
+                with self.assertRaises(expected):
+                    self.project()
+                self.assertEqual(self.tree.probe.call_count, 1)
+
+    def test_deadline_and_output_budget_cover_all_shape_probes(self):
+        clock = [100.0]
+        def slow(command, env, **bounds):
+            clock[0] += 16
+            return subprocess.CompletedProcess(command, 0, b"{}", b"")
+        self.tree.probe.side_effect = slow
+        with patch.object(safe.time, "monotonic", side_effect=lambda: clock[0]), \
+             self.assertRaisesRegex(safe.CargoConfigRefused, "observation bound exhausted"):
+            self.project()
+        self.assertEqual(self.tree.probe.call_count, 1)
+
+        self.tree.probe.reset_mock()
+        def noisy(command, env, **bounds):
+            if self.tree.probe.call_count <= 2:
+                raise subprocess.CalledProcessError(101, command, b"", b"x" * 16384)
+            return subprocess.CompletedProcess(command, 0, b"x" * 16384, b"")
+        self.tree.probe.side_effect = noisy
+        with self.assertRaisesRegex(safe.CargoConfigRefused, "observation bound exhausted"):
+            self.project()
+        self.assertEqual(self.tree.probe.call_count, 4)
+
+
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
         # These fixtures mock the launch/owner; native discovery is tested separately.
@@ -36,6 +157,7 @@ class AdmissionTests(unittest.TestCase):
         # Storage policy fixtures substitute the process seam; actual Linux
         # ownership is independently exercised by test_cargo_admitted_builtin_tree.
         self.tree = Mock()
+        self.tree.probe.return_value = subprocess.CompletedProcess([], 0, b"{}\n", b"")
         self.tree.finish.return_value = {"tree_settled": True, "cancelled": False}
         self.enterContext(patch.object(safe, "ClippyTree", return_value=self.tree))
         self.enterContext(patch.object(safe, "call_clippy", side_effect=
@@ -80,18 +202,38 @@ class AdmissionTests(unittest.TestCase):
         local = self.root / ".cargo" / "config.local.toml"
         expected = {name: str(self.paths["temp"]) for name in ("TEMP", "TMP", "TMPDIR")}
         expected["RUSTUP_AUTO_INSTALL"] = "0"
+        expected.update(CARGO_TARGET_DIR=str(self.paths["target"]),
+                        CARGO_BUILD_BUILD_DIR=str(self.paths["build"]),
+                        CARGO_INCREMENTAL="0")
         sentinel = {"value": "retained local value", "force": True, "relative": False}
 
-        for configured in (False, True):
-            with self.subTest(local_config=configured):
-                if configured:
-                    local.parent.mkdir()
-                    values = {name: {"value": "foreign-" + name, "force": True, "relative": True}
-                              for name in expected}
+        for shape, jobs in (("absent", "2"), ("table", "3"), ("scalar", "3"), ("mixed", "3")):
+            expected["CARGO_BUILD_JOBS"] = jobs
+            self.env["CARGO_BUILD_JOBS"] = jobs
+            with self.subTest(local_config=shape, jobs=jobs):
+                values = {}
+                if shape != "absent":
+                    local.parent.mkdir(exist_ok=True)
+                    values = {name: "foreign-" + name if shape == "scalar" or (shape == "mixed" and i % 2)
+                              else {"value": "foreign-" + name, "force": True, "relative": True}
+                              for i, name in enumerate(expected)}
                     values["LOCAL_CONFIG_SENTINEL"] = sentinel
-                    local.write_text("\n".join(
-                        "env." + name + "." + field + "=" + json.dumps(value)
-                        for name, fields in values.items() for field, value in fields.items()) + "\n")
+                    entries = []
+                    for name, value in values.items():
+                        if isinstance(value, str):
+                            entries.append("env." + name + "=" + json.dumps(value))
+                        else:
+                            entries.extend("env." + name + "." + field + "=" + json.dumps(setting)
+                                           for field, setting in value.items())
+                    local.write_text("\n".join(entries) + "\n")
+
+                def probe(command, env, **bounds):
+                    projection = projected_environment(command)
+                    if any(name in values and type(value) is not type(values[name])
+                           for name, value in projection.items()):
+                        raise subprocess.CalledProcessError(101, command, b"", b"fixture: incompatible config")
+                    return subprocess.CompletedProcess(command, 0, b"{}", b"")
+                self.tree.probe.side_effect = probe
 
                 def cargo(command, env):
                     # Decode only this fixture's dotted, JSON-compatible TOML
@@ -108,17 +250,56 @@ class AdmissionTests(unittest.TestCase):
                         for entry in entries:
                             if entry.startswith("env."):
                                 key, encoded = entry.split("=", 1)
-                                _, name, field = key.split(".")
-                                child_config.setdefault(name, {})[field] = json.loads(encoded)
+                                fields = key.split(".")
+                                if len(fields) == 2:
+                                    if fields[1] in child_config:
+                                        self.assertIsInstance(child_config[fields[1]], str)
+                                    child_config[fields[1]] = json.loads(encoded)
+                                else:
+                                    _, name, field = fields
+                                    self.assertIsInstance(child_config.setdefault(name, {}), dict)
+                                    child_config[name][field] = json.loads(encoded)
                     self.assertEqual(
                         {name: child_config.get(name) for name in expected},
-                        {name: {"value": value, "force": True, "relative": False}
+                        {name: value if isinstance(values.get(name), str) else
+                         {"value": value, "force": True, "relative": False}
                          for name, value in expected.items()})
                     self.assertEqual({name: env[name] for name in expected}, expected)
-                    self.assertEqual(child_config.get("LOCAL_CONFIG_SENTINEL"), sentinel if configured else None)
+                    self.assertEqual(child_config.get("LOCAL_CONFIG_SENTINEL"), sentinel if shape != "absent" else None)
+                    self.assertNotIn("CARGO_HOME", child_config)  # Cargo rejects this key in [env].
                     return 0
 
                 self.assertEqual(self.run_safe(["check"], cargo), 0)
+
+    def test_setup_failure_never_launches_product_and_uses_original_owner_settlement(self):
+        import contextlib
+        import io
+        for error, probes, status in (
+                (subprocess.CalledProcessError(101, ["fixture"], b"", b"malformed"), 4, 75),
+                (subprocess.CalledProcessError(7, ["fixture"], b"", b"unexpected"), 1, 75),
+                (subprocess.TimeoutExpired(["fixture"], 15), 1, 75),
+                (safe.Denied("output observation bound"), 1, 75),
+                (KeyboardInterrupt(), 1, 130)):
+            with self.subTest(error=type(error).__name__, status=getattr(error, "returncode", None)):
+                self.tree.reset_mock()
+                self.tree.probe.side_effect = error
+                product = Mock()
+                output = io.StringIO()
+                with contextlib.redirect_stderr(output):
+                    self.assertEqual(self.run_safe(["check"], product), status)
+                product.assert_not_called()
+                self.assertEqual(self.tree.probe.call_count, probes)
+                self.tree.finish.assert_called_once_with(stop=True)
+                self.assertFalse((self.slot / "cargo-active").exists())
+                self.assertNotIn("Cargo product:", output.getvalue())
+
+    def test_preflight_never_runs_configuration_or_product_probe(self):
+        product = Mock()
+        self.assertEqual(self.run_safe(["--preflight", "check"], product), 0)
+        self.tree.probe.assert_not_called()
+        self.tree.finish.assert_not_called()
+        product.assert_not_called()
+        self.assertFalse(self.slot.exists())
 
     def test_separate_short_values_and_program_arguments_remain_supported(self):
         seen = []

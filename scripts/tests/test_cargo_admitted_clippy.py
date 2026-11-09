@@ -82,9 +82,11 @@ class ClippyAdmissionTests(unittest.TestCase):
                                   ("cargo", "rustc", "rustdoc", "cargo-clippy", "clippy-driver")}}
         self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
 
-    def invoke(self, args=REQUEST, status=0, env=None, call=None, versions=None, config=None, settled=False, cancelled=False):
+    def invoke(self, args=REQUEST, status=0, env=None, call=None, versions=None, config=None, settled=False, cancelled=False, probe=None):
         stderr = io.StringIO()
         guard = Mock()
+        guard.probe.return_value = subprocess.CompletedProcess([], 0, b"{}\n", b"")
+        guard.probe.side_effect = probe
         guard.finish.return_value = {"tree_settled": settled, "cancelled": cancelled}
         with patch.dict(os.environ, env or self.env, clear=True), contextlib.redirect_stderr(stderr), \
              patch.object(safe, "resource_plan", return_value=(self.worktree, self.slot, self.paths)), \
@@ -180,6 +182,57 @@ class ClippyAdmissionTests(unittest.TestCase):
 
                     result, _ = self.invoke(args=request, call=launch, settled=True)
                     self.assertEqual(result, 0)
+
+    def test_scalar_and_mixed_configuration_preserve_all_clippy_child_controls(self):
+        names = ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL", "CARGO_TARGET_DIR",
+                 "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS",
+                 "CARGO", "RUSTC", "RUSTDOC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                 "SYSROOT", "CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS", "CLIPPY_ARGS", "CLIPPY_CONF_DIR")
+        def projected(command):
+            result = {}
+            for index, argument in enumerate(command):
+                if argument == "--config" and command[index + 1].startswith("env."):
+                    key, encoded = command[index + 1].split("=", 1)
+                    fields = key.split(".")
+                    if len(fields) == 2:
+                        result[fields[1]] = json.loads(encoded)
+                    else:
+                        result.setdefault(fields[1], {})[fields[2]] = json.loads(encoded)
+            return result
+        for shape in ("scalar", "mixed"):
+            with self.subTest(shape=shape):
+                types = {name: str if shape == "scalar" or i % 2 else dict for i, name in enumerate(names)}
+                def probe(command, env, **bounds):
+                    self.assertEqual(command[0], self.plan["subjects"]["cargo"]["path"])
+                    self.assertEqual(command[-2:], ["locate-project", "--message-format=json"])
+                    if any(type(value) is not types[name] for name, value in projected(command).items()):
+                        raise subprocess.CalledProcessError(101, command, b"", b"fixture: incompatible config")
+                    return subprocess.CompletedProcess(command, 0, b"{}", b"")
+                oracle = Mock(side_effect=probe)
+                launched = []
+                def launch(command, env, lock):
+                    launched.append(command)
+                    expected = {name: env[name] if types[name] is str else
+                                {"value": env[name], "force": True, "relative": False} for name in names}
+                    self.assertEqual(projected(command), expected)
+                    self.assertEqual(env["CLIPPY_ARGS"], safe.CLIPPY_LINT_ARGS)
+                    self.assertEqual(env["RUSTC_WORKSPACE_WRAPPER"], self.plan["subjects"]["clippy-driver"]["path"])
+                    self.assertEqual(command[-len(REQUEST[1:]):], REQUEST[1:])
+                    return 101
+                result, _ = self.invoke(probe=oracle, call=launch, settled=True)
+                self.assertEqual(result, 101)
+                self.assertEqual(len(launched), 1)
+                self.assertEqual(oracle.call_count, 2 if shape == "scalar" else 3 + len(names) + len(names) // 2)
+
+    def test_configuration_probe_failure_is_setup_failure_without_clippy_product(self):
+        product = Mock()
+        oracle = Mock(side_effect=subprocess.CalledProcessError(7, ["fixture"], b"", b"unexpected"))
+        result, output = self.invoke(probe=oracle, call=product, settled=True)
+        self.assertEqual(result, 75)
+        product.assert_not_called()
+        self.assertEqual(oracle.call_count, 1)
+        self.assertNotIn("Clippy product:", output)
+        self.assertFalse((self.slot / "cargo-active").exists())
 
     def test_settled_clippy_retains_replacement_marker_and_reports_original_identity(self):
         original = self.root / "original-marker"
@@ -440,8 +493,22 @@ class ClippyAdmissionTests(unittest.TestCase):
 
     def test_configuration_change_during_setup_refuses_package_and_retains_lease(self):
         launch = Mock()
-        result, output = self.invoke(call=launch, config=Mock(side_effect=[[], [], [{"path": "changed"}]]))
+        probe = Mock(return_value=subprocess.CompletedProcess([], 0, b"{}", b""))
+        result, output = self.invoke(call=launch, probe=probe,
+                                    config=Mock(side_effect=[[], [], [{"path": "changed"}]]))
         self.assertEqual(result, 75)
+        probe.assert_not_called()
+        launch.assert_not_called()
+        self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertNotIn("Clippy product:", output)
+
+    def test_configuration_change_during_projection_refuses_before_clippy_product(self):
+        launch = Mock()
+        probe = Mock(return_value=subprocess.CompletedProcess([], 0, b"{}", b""))
+        result, output = self.invoke(call=launch, probe=probe,
+                                    config=Mock(side_effect=[[], [], [], [{"path": "changed"}]]))
+        self.assertEqual(result, 75)
+        self.assertEqual(probe.call_count, 1)
         launch.assert_not_called()
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertNotIn("Clippy product:", output)

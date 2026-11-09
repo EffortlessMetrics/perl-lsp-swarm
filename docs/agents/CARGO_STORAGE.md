@@ -12,6 +12,24 @@ See the [rustup environment reference](https://rust-lang.github.io/rustup/enviro
 Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Python 3.11+ and the exact installed repository pin 1.95.0. Keep the qualification
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
+Cargo's child environment also receives the admitted target/build paths, jobs and
+incremental setting, overriding conflicting forced `[env]` values after local
+configuration. Tests and build scripts that launch nested Cargo inherit those
+settings. This does not constrain a child that explicitly replaces its own
+environment or Cargo arguments. Cargo itself refuses `CARGO_HOME` in `[env]`.
+
+Cargo accepts string and table forms of `[env]`, but rejects merging between
+those forms. Execution validates the controlled entries with noncompiling
+`cargo locate-project --message-format=json` under the same lease and Linux
+process owner as the product. The usual absent/table configuration needs one
+probe; all-string configuration needs two. Mixed forms use at most two probes
+per controlled key plus three, within an aggregate 15-second/64-KiB observation
+bound. Table values are forced; string values project the admitted value and
+preserve the admitted process environment. A final combined projection must
+pass before the product runs once. Failed setup never retries the product.
+This adds setup work to warm builds. Preflight still invokes no Cargo and cannot
+predict configuration compatibility. Other platforms keep their legacy
+descendant-settlement limitation.
 
 Host profiles for the jobs knob (#17673): the default of two protects
 constrained and shared hosts. On a dedicated host with at least eight logical

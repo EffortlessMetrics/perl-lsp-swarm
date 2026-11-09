@@ -35,6 +35,8 @@ print(json.dumps({'result':result}),flush=True)
 '''
 FAKE = '''import json,os,signal,sys,time
 from pathlib import Path
+if sys.argv[-2:]==['locate-project','--message-format=json']:
+ print('{}');sys.exit(0)
 root=Path(os.environ['FIXTURE_ROOT']);status=int(os.environ['FIXTURE_STATUS'])
 if os.environ['FIXTURE_MODE'].startswith('nested'):
  read_fd,write_fd=os.pipe()
@@ -235,6 +237,7 @@ class BuiltinAdmissionControls(unittest.TestCase):
         self.root=Path(self.temp.name)
         self.paths={key:self.root/key for key in ('target','build','cargo_home','temp')}
         self.guard=Mock();self.guard.finish.return_value={'tree_settled':True,'cancelled':False}
+        self.guard.probe.return_value=subprocess.CompletedProcess([],0,b'{}\n',b'')
 
     def invoke(self,status=0,settled=True,cancelled=False,host='linux',failure=None):
         import contextlib,io
@@ -245,6 +248,7 @@ class BuiltinAdmissionControls(unittest.TestCase):
              patch.object(self.safe.sys,'platform',host),contextlib.redirect_stderr(output), \
              patch.object(self.safe,'resource_plan',return_value=(self.root,self.root/'slot',self.paths)), \
              patch.object(self.safe,'ClippyTree',return_value=self.guard) as tree, \
+             patch.object(self.safe.subprocess,'run',return_value=subprocess.CompletedProcess([],0)), \
              patch.object(self.safe,'call_clippy',launch),patch.object(self.safe.subprocess,'call',return_value=status,side_effect=failure if host != 'linux' else None) as legacy:
             result=self.safe.main(['test','-p','consumer','--locked','--offline'])
         return result,output.getvalue(),tree,launch,legacy

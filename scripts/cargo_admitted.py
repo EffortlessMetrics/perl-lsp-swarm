@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import selectors
 import shutil
 import socket
 import signal
@@ -32,6 +33,10 @@ def local_config_cli_args(worktree):
     return []
 class CapacityRefused(Denied):
     """Observed disk headroom is insufficient for the selected policy."""
+
+
+class CargoConfigRefused(Denied):
+    """Noncompiling Cargo setup could not validate the child environment."""
 
 
 def native_path(value):
@@ -439,7 +444,8 @@ class ClippyTree:
             raise
         self.handles[pid] = (fd, process)
 
-    def probe(self, command, env):
+    def probe(self, command, env, *, timeout=15, output_limit=16384):
+        deadline = time.monotonic() + timeout
         self.binding = True
         try:
             process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
@@ -447,9 +453,35 @@ class ClippyTree:
             self.track(process.pid, process)
         finally:
             self.binding = False
-        if self.cancelled:
-            raise KeyboardInterrupt("Clippy probe cancelled after child binding")
-        stdout, stderr = process.communicate(timeout=15)
+        output = {process.stdout: bytearray(), process.stderr: bytearray()}
+        observed = 0
+        try:
+            if self.cancelled:
+                raise KeyboardInterrupt("Clippy probe cancelled after child binding")
+            with selectors.DefaultSelector() as selector:
+                for stream in output:
+                    selector.register(stream, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fd, min(4096, output_limit - observed + 1))
+                        observed += len(chunk)
+                        if observed > output_limit:
+                            raise Denied("Cargo setup output exceeded its observation bound")
+                        if chunk:
+                            output[key.fileobj].extend(chunk)
+                        else:
+                            selector.unregister(key.fileobj)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                process.wait(timeout=remaining)
+            stdout, stderr = bytes(output[process.stdout]), bytes(output[process.stderr])
+        finally:
+            process.stdout.close()
+            process.stderr.close()
         result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         result.check_returncode()
         return result
@@ -928,6 +960,79 @@ def release_lease(lock, identity, marker=None, marker_identity=None):
         pass
 
 
+def child_environment_config(prefix, values, env, tree):
+    """Ask Cargo to merge only our fixed env entries, without loading/building a workspace.
+
+    Cargo accepts string or table [env] values, but cannot merge between those
+    shapes. A scalar never forces over the admitted process environment. Still
+    project its admitted value: a later type change must fail, not bypass policy.
+    """
+    deadline = time.monotonic() + 15
+    remaining_output = 65536
+    attempts, maximum = 0, 2 * len(values) + 3
+    last_error = None
+
+    def render(names, scalar=False):
+        result = []
+        for name in names:
+            key, value = "env." + name, json.dumps(values[name])
+            fields = [(key, value)] if scalar else [
+                (key + ".value", value), (key + ".force", "true"), (key + ".relative", "false")]
+            for key, value in fields:
+                result.extend(("--config", key + "=" + value))
+        return result
+
+    def refuse(reason):
+        diagnostic = (last_error.stderr or b"").decode("utf-8", "replace").strip() if last_error else ""
+        raise CargoConfigRefused("Cargo child environment setup: " + reason +
+                                 ("\n" + diagnostic[-4096:] if diagnostic else ""))
+
+    def accepts(projection):
+        nonlocal attempts, remaining_output, last_error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or attempts >= maximum or remaining_output <= 0:
+            refuse("configuration observation bound exhausted")
+        attempts += 1
+        command = [*prefix, *projection, "locate-project", "--message-format=json"]
+        try:
+            if tree is not None:
+                result = tree.probe(command, env, timeout=remaining,
+                                    output_limit=min(16384, remaining_output))
+            else:
+                # Existing non-Linux routes retain their legacy settlement
+                # limitation. Discard output rather than capture without a bound.
+                result = subprocess.run(command, env=env, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=remaining, check=True)
+        except subprocess.CalledProcessError as error:
+            result = last_error = error
+            if error.returncode != 101:
+                refuse("configuration probe exited " + str(error.returncode))
+        except (Denied, OSError, subprocess.TimeoutExpired) as error:
+            raise CargoConfigRefused("Cargo child environment setup: " + str(error)) from error
+        remaining_output -= len(result.stdout or b"") + len(result.stderr or b"")
+        if remaining_output < 0 or time.monotonic() > deadline:
+            refuse("configuration observation bound exhausted")
+        return result.returncode == 0
+
+    projection = render(values)
+    if accepts(projection):
+        return projection
+    projection = render(values, scalar=True)
+    if accepts(projection):
+        return projection
+    projection = []
+    for name in values:
+        entry = render([name])
+        if not accepts(entry):
+            entry = render([name], scalar=True)
+            if not accepts(entry):
+                refuse("neither supported configuration shape for " + name)
+        projection.extend(entry)
+    if not accepts(projection):
+        refuse("combined configuration projection rejected")
+    return projection
+
+
 def main(args=None):
     args = sys.argv[1:] if args is None else args
     preflight, scope = False, None
@@ -1017,19 +1122,18 @@ def main(args=None):
                                   marker_identity=list(marker_identity))
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
             local_config = local_config_cli_args(worktree)
-            config_index = 1 + len(local_config)
-            command = ["cargo", *local_config,
-                       "--config", "unstable.unstable-options=false",
-                       "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
-                       "--config", 'build.rustc-wrapper=""',
-                       "--config", 'build.rustc-workspace-wrapper=""',
-                       *args[:1], "--target-dir", str(paths["target"]), *args[1:]]
+            prefix = ["cargo", *local_config,
+                      "--config", "unstable.unstable-options=false",
+                      "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
+                      "--config", 'build.rustc-wrapper=""',
+                      "--config", 'build.rustc-workspace-wrapper=""']
             # Cargo's [env] force=true can override process environment for
-            # rustc/build scripts. Override those entries after the local file.
-            for name in ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL"):
-                child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
-                for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
-                    command[config_index:config_index] = ["--config", "env." + name + "." + field + "=" + value]
+            # rustc/build scripts/tests. Nested Cargo must inherit the admitted
+            # paths, jobs and incremental policy too. These entries follow the
+            # local file; CARGO_HOME is forbidden in Cargo's [env] table.
+            child_values = {name: env[name] for name in (
+                "TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL", "CARGO_TARGET_DIR",
+                "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS")}
             if clippy:
                 exact = toolchain["subjects"]
                 controlled = {"CARGO": exact["cargo"]["path"],
@@ -1037,19 +1141,12 @@ def main(args=None):
                               "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": exact["clippy-driver"]["path"],
                               "SYSROOT": toolchain["root"],
                               "CARGO_ENCODED_RUSTFLAGS": "", "RUSTFLAGS": "",
-                              "CLIPPY_ARGS": CLIPPY_LINT_ARGS, "CLIPPY_CONF_DIR": str(worktree),
-                              "CARGO_TARGET_DIR": str(paths["target"]),
-                              "CARGO_BUILD_BUILD_DIR": str(paths["build"]),
-                              "CARGO_INCREMENTAL": "0", "CARGO_BUILD_JOBS": str(jobs)}
+                              "CLIPPY_ARGS": CLIPPY_LINT_ARGS, "CLIPPY_CONF_DIR": str(worktree)}
                 env.update(controlled)
                 # Override forced Cargo [env] as well, before nested Cargo sees
                 # compiler/lint inputs. Real lint fail/clean controls test this.
-                for name, value in controlled.items():
-                    for field, setting in (("value", json.dumps(value)), ("force", "true"), ("relative", "false")):
-                        command[config_index:config_index] = ["--config", "env." + name + "." + field + "=" + setting]
-                position = command.index("clippy")
-                command = [exact["cargo-clippy"]["path"], "clippy", "--message-format=json-render-diagnostics",
-                           *command[1:position], "--target", toolchain["host"], *command[position + 1:]]
+                child_values.update(controlled)
+                prefix[0] = exact["cargo"]["path"]
                 if clippy_configuration(worktree, paths) != scope["clippy_setup"]["configuration"]:
                     raise Denied("Clippy configuration changed after admission")
                 revalidate_clippy_toolchain(toolchain)
@@ -1071,12 +1168,20 @@ def main(args=None):
                 print("cargo-admitted Cargo tree: " + json.dumps({"owner_pid": os.getpid(),
                       "subreaper": True, "prior_children": "none", "single_native_thread": True,
                       "lease": str(lock)}), file=sys.stderr, flush=True)
+            launch_attempted = True
+            projection = child_environment_config(prefix, child_values, env, tree)
+            command = [*prefix, *projection, *args[:1], "--target-dir", str(paths["target"]), *args[1:]]
+            if clippy:
+                if clippy_configuration(worktree, paths) != scope["clippy_setup"]["configuration"]:
+                    raise Denied("Clippy configuration changed during setup")
+                position = command.index("clippy")
+                command = [exact["cargo-clippy"]["path"], "clippy", "--message-format=json-render-diagnostics",
+                           *command[1:position], "--target", toolchain["host"], *command[position + 1:]]
             for path in (slot, *paths.values()):
                 if native_path(str(path)) != path:
                     raise Denied("resource path changed before launch: " + str(path))
             if not owns_lease(lock, identity, marker, marker_identity):
                 raise Denied("lease ownership changed before Cargo launch")
-            launch_attempted = True
             if clippy:
                 result = call_clippy(command, env, lock, tree)
             elif owned_linux:

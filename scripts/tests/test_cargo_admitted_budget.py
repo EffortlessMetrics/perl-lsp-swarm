@@ -50,6 +50,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.budget.write_text(json.dumps(self.document), encoding="utf-8")
         # Arithmetic fixtures mock execution; native route tests prove ownership.
         tree = Mock()
+        tree.probe.return_value = subprocess.CompletedProcess([], 0, b"{}\n", b"")
         tree.finish.return_value = {"tree_settled": True, "cancelled": False}
         self.enterContext(patch.object(safe, "ClippyTree", return_value=tree))
         self.enterContext(patch.object(safe, "call_clippy", side_effect=
