@@ -1721,6 +1721,33 @@ fn run_critic_unopened_disabled_accepted_state_reports_no_native_findings()
 }
 
 #[test]
+fn run_critic_unopened_live_config_captures_disabled_per_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #6969 production-wiring proof: the seam `misc.rs` actually uses is
+    // `with_accepted_critic_config` (live config, captured per request for
+    // the owning root), not an explicitly attached snapshot. A disabled
+    // live config must therefore also yield no native findings on an
+    // unopened file inside the workspace root.
+    let source = "use strict;\nuse warnings;\nmy $c = '1';\neval $c;\n";
+    let tmp = tempdir()?;
+    let file = tmp.path().join("disabled_live_config.pl");
+    fs::write(&file, source)?;
+
+    let mut config = perl_lsp_rs_core::config::ServerConfig::default();
+    config.perlcritic_enabled = false;
+    let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_accepted_critic_config(config);
+    let result = provider
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])?;
+    assert_eq!(result["status"], "success");
+    assert_eq!(
+        result["violationCount"], 0,
+        "disabled live config must report no native findings on the unopened path: {result}"
+    );
+    Ok(())
+}
+
+#[test]
 fn external_critic_not_requested_without_config() {
     // The structural guarantee behind "perlcritic on PATH does not change the
     // default": with no config the external branch is never reached, so the

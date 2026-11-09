@@ -5,8 +5,7 @@ use crate::perl_remediation::PERL_REMEDIATION;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_lsp_rs_core::config::{
-    AcceptedCriticSnapshot, CriticEngine, EffectiveCriticState, EffectiveNativeCriticConfig,
-    WorkspaceConfig,
+    AcceptedCriticSnapshot, CriticEngine, EffectiveCriticState, WorkspaceConfig,
 };
 use perl_lsp_rs_core::providers::{
     ProviderDecisionConfidence, ProviderDecisionCopyablePayload, ProviderDecisionExplanation,
@@ -95,27 +94,19 @@ pub struct ExecuteCommandProvider {
     /// native pull-diagnostics path uses, so the command and on-type diagnostics
     /// report the same `NativeCriticRegistry` rule set.
     native_critic_config: NativeCriticCommandConfig,
-    /// Accepted critic snapshot captured where this provider is constructed
-    /// from live `ServerConfig` (#6969). When present it is the sole policy
-    /// authority for the unopened-file native run: `Disabled` yields no
-    /// native findings, and profile/severity/include/exclude come from the
-    /// #8253 accepted state rather than the raw sibling fields above. When
-    /// absent (direct construction in tests and other callers), the run
-    /// derives an equivalent accepted state from `native_critic_config`.
+    /// Accepted critic snapshot attached explicitly (#6969), used by tests
+    /// and other direct callers. When present it is the policy authority
+    /// for the unopened-file native run: `Disabled` yields no native
+    /// findings, and profile/severity/include/exclude come from the #8253
+    /// accepted state rather than the raw sibling fields above.
     accepted_critic_snapshot: Option<AcceptedCriticSnapshot>,
-}
-
-/// Canonicalize one raw rule-ID list the way the #8253 accepted-state
-/// derivation does: trimmed, empties dropped, deduplicated, sorted.
-fn canonical_critic_rule_ids(values: &[String]) -> Vec<String> {
-    let mut canonical: Vec<String> = values
-        .iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect();
-    canonical.sort();
-    canonical.dedup();
-    canonical
+    /// Live `ServerConfig` attached where this provider is constructed
+    /// from the server (#6969). When present (and no explicit snapshot is
+    /// attached), each unopened run captures its accepted snapshot from
+    /// this config at request time, for the workspace root that owns the
+    /// target file, so per-root accepted state and `Disabled` reach the
+    /// native service exactly as the pull-diagnostics path sees them.
+    accepted_critic_config: Option<perl_lsp_rs_core::config::ServerConfig>,
 }
 
 /// Native-critic rule configuration plumbed into [`ExecuteCommandProvider`] from
@@ -267,6 +258,7 @@ impl ExecuteCommandProvider {
             critic_engine: CriticEngine::Native,
             native_critic_config: NativeCriticCommandConfig::default(),
             accepted_critic_snapshot: None,
+            accepted_critic_config: None,
         }
     }
 
@@ -278,6 +270,7 @@ impl ExecuteCommandProvider {
             critic_engine: CriticEngine::Native,
             native_critic_config: NativeCriticCommandConfig::default(),
             accepted_critic_snapshot: None,
+            accepted_critic_config: None,
         }
     }
 
@@ -323,27 +316,55 @@ impl ExecuteCommandProvider {
         self
     }
 
-    /// The accepted critic state this provider evaluates unopened files
+    /// Attach the live `ServerConfig` this provider was constructed from
+    /// (#6969). Each unopened run then captures its accepted snapshot at
+    /// request time for the owning workspace root (see
+    /// [`Self::effective_critic_state`]). An explicitly attached snapshot
+    /// takes precedence.
+    pub fn with_accepted_critic_config(
+        mut self,
+        config: perl_lsp_rs_core::config::ServerConfig,
+    ) -> Self {
+        self.accepted_critic_config = Some(config);
+        self
+    }
+
+    /// The accepted critic state this provider evaluates one unopened file
     /// under (#6969).
     ///
-    /// A captured snapshot wins. Without one, derive the same accepted shape
-    /// from the raw command config: profile parsed canonically (unknown
-    /// tokens fall back to the default profile), severity clamped to
-    /// 1..=5, and rule-ID lists canonicalized. This fallback cannot express
-    /// `Disabled` — that state only arrives through a captured snapshot,
-    /// which is why production construction always captures one.
-    fn effective_critic_state(&self) -> EffectiveCriticState {
+    /// An explicitly attached snapshot wins. Otherwise, when the live
+    /// server config is attached, capture the accepted snapshot now, for
+    /// the longest workspace root containing `file_path` (or the
+    /// server-global subject when no root contains it), so the run is
+    /// judged against the same per-root accepted state the
+    /// pull-diagnostics path uses, `Disabled` included.
+    ///
+    /// Without either, derive through the same #8253 derivation law
+    /// (`ServerConfig::effective_critic_state`) fed from the raw command
+    /// config. That fallback cannot express `Disabled` — the command
+    /// config carries no enabled flag — which is why server construction
+    /// always attaches the live config.
+    fn effective_critic_state(&self, file_path: &Path) -> EffectiveCriticState {
         if let Some(snapshot) = &self.accepted_critic_snapshot {
             return snapshot.state().clone();
         }
+        if let Some(config) = &self.accepted_critic_config {
+            let owning_root = self
+                .workspace_roots
+                .iter()
+                .filter(|root| file_path.starts_with(root))
+                .max_by_key(|root| root.as_os_str().len());
+            let owning_root = owning_root.map(|root| root.to_string_lossy().into_owned());
+            return AcceptedCriticSnapshot::capture(config, owning_root.as_deref()).state().clone();
+        }
         let cfg = &self.native_critic_config;
-        EffectiveCriticState::Native(EffectiveNativeCriticConfig {
-            profile: NativeCriticProfile::parse(&cfg.profile).unwrap_or_default(),
-            severity_threshold: cfg.severity.clamp(1, 5),
-            include: canonical_critic_rule_ids(&cfg.include),
-            exclude: canonical_critic_rule_ids(&cfg.exclude),
-            owning_root: None,
-        })
+        let mut config = perl_lsp_rs_core::config::ServerConfig::default();
+        config.perlcritic_enabled = true;
+        config.native_critic_profile.clone_from(&cfg.profile);
+        config.perlcritic_severity = cfg.severity;
+        config.native_critic_include.clone_from(&cfg.include);
+        config.native_critic_exclude.clone_from(&cfg.exclude);
+        config.effective_critic_state(None)
     }
 
     /// Attach a workspace configuration to enable PerlOracleEnv isolation for
@@ -986,9 +1007,11 @@ impl ExecuteCommandProvider {
         // hand-rolled registry/policy pipeline this method used before:
         // where the two differed (canonical rule-ID lists, the disabled
         // state, completeness accounting), the service behavior wins.
-        // This provider is a synchronous one-shot over a snapshot taken
-        // before evaluation, so both gates are open: there is no live
-        // authority that could move underneath the run.
+        // This provider is a synchronous one-shot: the accepted state is
+        // captured for this request (see `effective_critic_state`) and
+        // cannot move underneath the run, so both gates are open. The
+        // publishability check below still applies: a non-publishable
+        // run is reported as stale, never as a successful empty result.
         use perl_lsp_rs_core::tooling::perl_critic::{
             NativeCriticService, NativeCriticSubject, RunGate, critic_source_identity_for_uri,
         };
@@ -998,11 +1021,25 @@ impl ExecuteCommandProvider {
             critic_source_identity_for_uri(&file, 0),
             &ast,
             code_text,
-            self.effective_critic_state(),
+            self.effective_critic_state(file_path),
             Vec::new(),
             RunGate::open(),
             RunGate::open(),
         ));
+
+        if !run.is_publishable() {
+            // The subject is an accepted snapshot and both gates are open,
+            // so a non-publishable run means the service judged the
+            // evaluation incomplete or cancelled; never dress that up as
+            // a successful empty result.
+            return Ok(json!({
+                "status": "stale",
+                "staleReason": "critic evaluation did not complete",
+                "violations": Value::Null,
+                "violationCount": 0,
+                "analyzerUsed": "native"
+            }));
+        }
 
         let mut formatted_violations: Vec<_> = run
             .findings()

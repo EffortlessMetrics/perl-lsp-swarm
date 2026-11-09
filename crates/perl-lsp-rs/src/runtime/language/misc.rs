@@ -2424,28 +2424,24 @@ impl LspServer {
                 native_include,
                 native_exclude,
                 native_severity,
-                accepted_critic_snapshot,
+                accepted_critic_config,
             ) = {
                 let config = self.config.lock();
-                // #6969: capture the accepted critic snapshot in the same
-                // single read, so the unopened-file `perl.runCritic` route
-                // evaluates through `NativeCriticService` under the #8253
-                // accepted state (including `Disabled`) instead of rebuilding
-                // policy from raw siblings. Provider construction precedes
-                // path resolution, so the snapshot is captured for the
-                // server-global subject (`None` root): `ServerConfig`'s
-                // accepted-state derivation is root-independent apart from
-                // the identity label it embeds, so the policy is identical
-                // for any owning root.
-                let accepted_critic_snapshot =
-                    perl_lsp_rs_core::config::AcceptedCriticSnapshot::capture(&config, None);
+                // #6969: clone the live config in the same single read so
+                // the provider can capture the accepted critic snapshot at
+                // request time, for the workspace root that owns the
+                // target file. The unopened-file `perl.runCritic` route
+                // then evaluates through `NativeCriticService` under the
+                // #8253 accepted state (including `Disabled` and per-root
+                // policy) instead of rebuilding policy from raw siblings.
+                let accepted_critic_config = config.clone();
                 (
                     config.critic_engine,
                     config.native_critic_profile.clone(),
                     config.native_critic_include.clone(),
                     config.native_critic_exclude.clone(),
                     config.perlcritic_severity,
-                    accepted_critic_snapshot,
+                    accepted_critic_config,
                 )
             };
             let provider = ExecuteCommandProvider::with_workspace_roots(workspace_roots)
@@ -2457,7 +2453,7 @@ impl LspServer {
                     native_exclude,
                     native_severity,
                 )
-                .with_accepted_critic_snapshot(accepted_critic_snapshot);
+                .with_accepted_critic_config(accepted_critic_config);
 
             match command {
                 // Keep existing test commands for backward compatibility
