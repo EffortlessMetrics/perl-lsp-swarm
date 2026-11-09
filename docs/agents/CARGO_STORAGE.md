@@ -127,6 +127,42 @@ retained worktrees, and the capacity gate remains necessary. Do not repurpose a
 worktree path or restore backdated source over its build state without a separately
 verified fresh qualification; this path partition is not content-addressed state.
 
+### Private allocation creation evidence
+
+On native Linux, an admitted invocation that creates both previously absent
+private target/build directories writes one bounded `allocation.json` beside
+them. The immutable `cargo_private_allocation.v1` record binds the canonical
+worktree, Git common/admin directories, private member and both output roots to
+their original device/inode identities. It also binds its own exclusively
+created regular-file identity and records the creating admission source digest.
+Copying the record's bytes cannot transfer that identity to another file. The
+creator digest is historical provenance; later admission code revisions and
+ordinary source edits do not invalidate unchanged directory identities.
+
+Preflight reads and validates an existing record without allocating or writing.
+Execution validates it again under the existing lease and immediately before
+Cargo launch. A replaced worktree, output root or record refuses; the command
+preserves the existing state for its owner. Record creation requires exclusive
+creation, complete write, file and parent-directory fsync, and matching readback
+before a completed creation receipt is emitted. A failed attempt retains partial
+data and launches no Cargo. Removing a record is not a supported recovery or
+migration procedure.
+
+The resource descriptor's `private_allocation_provenance.status` distinguishes
+`matching_creation_record` from `unknown`. Pre-existing unrecorded roots retain
+their existing compatibility behavior and remain unknown; the route does not
+adopt them. A partial allocation that created only one root also remains unknown.
+Other platforms retain their existing behavior and report unknown provenance.
+Temporary storage and shared Cargo/compiler caches are outside this record.
+
+Creation evidence does not prove source-content freshness, a successful build,
+process settlement, independently retained consumers, or safe deletion. Both
+`consumer_custody` and `reclaim_eligibility` stay unknown. The record supplies
+original allocation facts for [#19235](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/19235)
+and the later #19218/#11671 handoff; it adds no cleanup command, adoption route,
+new lease, quota or capacity-policy change. Native identities are checked within
+the existing cooperative ownership boundary, not as a hostile-filesystem sandbox.
+
 For a focused `xtask` gate, use the supported builtin `run` route from the same
 canonical worktree and with the same admitted `DEVPLANE`, Cargo home and temporary-storage
 settings as the earlier producer:

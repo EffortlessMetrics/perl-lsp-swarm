@@ -15,7 +15,7 @@ import unittest
 OWNER = Path(__file__).resolve().parents[1] / 'cargo_admitted.py'
 PRELUDE = '''import importlib.util,json,os,subprocess,sys,time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 spec=importlib.util.spec_from_file_location('owner',sys.argv[1])
 owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(owner)
 '''
@@ -29,7 +29,7 @@ if mode=='nested-deferred':
  owner.ClippyTree.reap_adopted=lambda self:None
 if mode=='unproven':
  owner.ClippyTree.finish=lambda self,**kw:original(self,timeout=.01,**kw)
-with patch.dict(os.environ,env,clear=True),patch.object(owner,'resource_plan',return_value=(root,root/'slot',paths)):
+with patch.dict(os.environ,env,clear=True),patch.object(owner,'resource_plan',return_value=(root,root/'slot',paths)),patch.object(owner,'PrivateAllocation',return_value=Mock(receipt={'status':'unknown','reason':'synthetic_process_fixture'})):
  result=owner.main(['test','-p','consumer','--locked','--offline'])
 print(json.dumps({'result':result}),flush=True)
 '''
@@ -232,6 +232,8 @@ class BuiltinAdmissionControls(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('safe',OWNER)
         self.safe=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.safe)
         from unittest.mock import patch
+        self.enterContext(patch.object(self.safe, "PrivateAllocation", return_value=Mock(
+            receipt={"status": "unknown", "reason": "synthetic_process_fixture"})))
         self.enterContext(patch.object(self.safe, "child_discovery_capability", return_value={}))
         self.temp=tempfile.TemporaryDirectory(prefix='builtin-admission-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)

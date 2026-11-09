@@ -70,6 +70,9 @@ class QualificationBindingTests(unittest.TestCase):
 class ClippyAdmissionTests(unittest.TestCase):
     def setUp(self):
         # These fixtures mock the launch/owner; native discovery is tested separately.
+        # The driver fixtures do not assert private Git allocation provenance.
+        self.enterContext(patch.object(safe, "PrivateAllocation", return_value=Mock(
+            receipt={"status": "unknown", "reason": "synthetic_admission_fixture"})))
         self.enterContext(patch.object(safe, "child_discovery_capability", return_value={}))
         self.temp = tempfile.TemporaryDirectory(prefix="admitted-clippy-controls-")
         self.addCleanup(self.temp.cleanup)

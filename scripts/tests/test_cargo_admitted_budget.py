@@ -19,6 +19,9 @@ class ConstrainedAdmissionTests(unittest.TestCase):
 
     def setUp(self):
         # These fixtures mock the launch/owner; native discovery is tested separately.
+        # The arithmetic fixtures do not assert private Git allocation provenance.
+        self.enterContext(patch.object(safe, "PrivateAllocation", return_value=Mock(
+            receipt={"status": "unknown", "reason": "synthetic_admission_fixture"})))
         self.enterContext(patch.object(safe, "child_discovery_capability", return_value={}))
         import hashlib
         import json
