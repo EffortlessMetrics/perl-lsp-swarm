@@ -555,6 +555,9 @@ impl LiteralScanState {
 
             if self.escaped {
                 self.escaped = false;
+                if let Some(active_literal) = self.literal.as_mut() {
+                    active_literal.class_fresh = false;
+                }
                 index += 1;
                 continue;
             }
@@ -633,6 +636,8 @@ struct QuoteLikeLiteral {
     sections: usize,
     consumed: usize,
     kind: QuoteLikeLiteralKind,
+    /// `tr///`/`y///` search lists are not regex patterns.
+    transliteration: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -652,6 +657,13 @@ struct ActiveLiteral {
     /// needs a `dead_code` exemption — the derived `Debug`/`PartialEq` read it,
     /// which `ScanCarry` relies on to compare carried literal state.
     kind: QuoteLikeLiteralKind,
+    /// Regex character-class state (#19206): depth counts nested POSIX
+    /// classes; a leading `]` after an optional `^` is literal.
+    class_depth: u8,
+    class_fresh: bool,
+    class_caret: bool,
+    transliteration: bool,
+    first_section: bool,
 }
 
 impl ActiveLiteral {
@@ -663,12 +675,18 @@ impl ActiveLiteral {
             depth: 1,
             awaiting_section_opener: false,
             kind: literal.kind,
+            class_depth: 0,
+            class_fresh: false,
+            class_caret: false,
+            transliteration: literal.transliteration,
+            first_section: true,
         }
     }
 
     fn advance(&mut self, byte: u8, escaped: &mut bool) -> bool {
         if *escaped {
             *escaped = false;
+            self.class_fresh = false;
             return false;
         }
 
@@ -689,6 +707,27 @@ impl ActiveLiteral {
             return false;
         }
 
+        if self.kind == QuoteLikeLiteralKind::Regex && !self.transliteration && self.first_section {
+            if byte == b'[' {
+                self.class_depth = self.class_depth.saturating_add(1);
+                self.class_fresh = true;
+                self.class_caret = false;
+                return false;
+            }
+            if self.class_depth > 0 {
+                match byte {
+                    b']' if self.class_fresh => self.class_fresh = false,
+                    b']' => {
+                        self.class_depth = self.class_depth.saturating_sub(1);
+                        self.class_fresh = false;
+                    }
+                    b'^' if self.class_fresh && !self.class_caret => self.class_caret = true,
+                    _ => self.class_fresh = false,
+                }
+                return false;
+            }
+        }
+
         if self.opener != self.closer && byte == self.opener {
             self.depth += 1;
             return false;
@@ -707,6 +746,7 @@ impl ActiveLiteral {
         if self.sections_remaining == 0 {
             return true;
         }
+        self.first_section = false;
 
         if self.opener == self.closer {
             self.depth = 1;
@@ -731,7 +771,7 @@ fn quote_like_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLiter
         return None;
     }
 
-    let (delimiter_offset, sections, allow_space, kind) =
+    let (delimiter_offset, sections, allow_space, kind, transliteration) =
         quote_like_operator_parameters(bytes.get(index).copied()?, bytes.get(index + 1).copied())?;
 
     let delimiter_index = index + delimiter_offset;
@@ -746,20 +786,28 @@ fn quote_like_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLiter
 
     let opener = bytes.get(delimiter_index).copied()?;
     let closer = quote_like_closer(opener)?;
-    Some(QuoteLikeLiteral { opener, closer, sections, consumed: delimiter_index + 1 - index, kind })
+    Some(QuoteLikeLiteral {
+        opener,
+        closer,
+        sections,
+        consumed: delimiter_index + 1 - index,
+        kind,
+        transliteration,
+    })
 }
 
 fn quote_like_operator_parameters(
     byte: u8,
     next: Option<u8>,
-) -> Option<(usize, usize, bool, QuoteLikeLiteralKind)> {
+) -> Option<(usize, usize, bool, QuoteLikeLiteralKind, bool)> {
     match (byte, next) {
-        (b'q', Some(b'r')) => Some((2, 1, true, QuoteLikeLiteralKind::Regex)),
-        (b'q', Some(b'q' | b'w' | b'x')) => Some((2, 1, true, QuoteLikeLiteralKind::String)),
-        (b't', Some(b'r')) => Some((2, 2, true, QuoteLikeLiteralKind::Regex)),
-        (b'q', _) => Some((1, 1, true, QuoteLikeLiteralKind::String)),
-        (b'm', _) => Some((1, 1, true, QuoteLikeLiteralKind::Regex)),
-        (b's' | b'y', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex)),
+        (b'q', Some(b'r')) => Some((2, 1, true, QuoteLikeLiteralKind::Regex, false)),
+        (b'q', Some(b'q' | b'w' | b'x')) => Some((2, 1, true, QuoteLikeLiteralKind::String, false)),
+        (b't', Some(b'r')) => Some((2, 2, true, QuoteLikeLiteralKind::Regex, true)),
+        (b'q', _) => Some((1, 1, true, QuoteLikeLiteralKind::String, false)),
+        (b'm', _) => Some((1, 1, true, QuoteLikeLiteralKind::Regex, false)),
+        (b's', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex, false)),
+        (b'y', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex, true)),
         _ => None,
     }
 }
@@ -835,6 +883,7 @@ fn slash_regex_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLite
         sections: 1,
         consumed: 1,
         kind: QuoteLikeLiteralKind::Regex,
+        transliteration: false,
     })
 }
 
@@ -1369,6 +1418,7 @@ mod tests {
             sections: 1,
             consumed: 2,
             kind: QuoteLikeLiteralKind::String,
+            transliteration: false,
         }));
         assert!(state.is_active(), "an open quote-like literal is active");
     }
@@ -1435,6 +1485,7 @@ mod tests {
             sections: 1,
             consumed: 2,
             kind: QuoteLikeLiteralKind::String,
+            transliteration: false,
         });
         assert_eq!(
             advance_all(&mut literal, "a{b}c}rest"),
@@ -1451,6 +1502,7 @@ mod tests {
             sections: 1,
             consumed: 1,
             kind: QuoteLikeLiteralKind::Regex,
+            transliteration: false,
         });
         assert_eq!(
             advance_all(&mut literal, "a\\/b/rest"),
@@ -1467,6 +1519,7 @@ mod tests {
             sections: 2,
             consumed: 1,
             kind: QuoteLikeLiteralKind::Regex,
+            transliteration: false,
         });
         assert_eq!(
             advance_all(&mut literal, "pat/rep/rest"),
@@ -1483,6 +1536,7 @@ mod tests {
             sections: 2,
             consumed: 2,
             kind: QuoteLikeLiteralKind::Regex,
+            transliteration: false,
         });
         assert_eq!(
             advance_all(&mut literal, "pat} [rep]rest"),
@@ -1499,6 +1553,7 @@ mod tests {
             sections: 2,
             consumed: 2,
             kind: QuoteLikeLiteralKind::Regex,
+            transliteration: false,
         });
         assert_eq!(
             advance_all(&mut literal, "pat};"),
@@ -1617,32 +1672,32 @@ mod tests {
     fn quote_like_operator_parameters_maps_each_operator_form() {
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'r')),
-            Some((2, 1, true, QuoteLikeLiteralKind::Regex)),
+            Some((2, 1, true, QuoteLikeLiteralKind::Regex, false)),
             "qr is a one-section regex with a two-byte operator"
         );
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'w')),
-            Some((2, 1, true, QuoteLikeLiteralKind::String)),
+            Some((2, 1, true, QuoteLikeLiteralKind::String, false)),
             "qw is a one-section string list"
         );
         assert_eq!(
             quote_like_operator_parameters(b't', Some(b'r')),
-            Some((2, 2, true, QuoteLikeLiteralKind::Regex)),
+            Some((2, 2, true, QuoteLikeLiteralKind::Regex, true)),
             "tr is a two-section transliteration"
         );
         assert_eq!(
             quote_like_operator_parameters(b'q', None),
-            Some((1, 1, true, QuoteLikeLiteralKind::String)),
+            Some((1, 1, true, QuoteLikeLiteralKind::String, false)),
             "bare q is a one-section string"
         );
         assert_eq!(
             quote_like_operator_parameters(b'm', None),
-            Some((1, 1, true, QuoteLikeLiteralKind::Regex)),
+            Some((1, 1, true, QuoteLikeLiteralKind::Regex, false)),
             "m is a one-section regex"
         );
         assert_eq!(
             quote_like_operator_parameters(b's', None),
-            Some((1, 2, true, QuoteLikeLiteralKind::Regex)),
+            Some((1, 2, true, QuoteLikeLiteralKind::Regex, false)),
             "s is a two-section regex"
         );
         assert_eq!(

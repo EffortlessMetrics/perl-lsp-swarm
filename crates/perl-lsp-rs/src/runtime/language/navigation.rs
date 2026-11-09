@@ -356,16 +356,54 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
     }
 }
 
-/// Naive comment-only heuristic for the goto-definition and completion
-/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
-/// same line.
+/// Whether `position` lies inside a real line comment (#5066/#19206).
 ///
-/// This is deliberately NOT the rename candidate classifier and is
-/// deliberately not string-aware: a `#` inside a string literal still reads
-/// as a comment to this guard, and that trade-off is pinned by the guard
-/// regression tests. Rename's edit policy uses the generation-bound
-/// `SourceRegionIndex` instead (#4964).
+/// Uses the generation-bound [`perl_parser_core::SourceRegionIndex`]
+/// (#4964) when the caller supplies a snapshot parsed from this exact
+/// `source`: only a proven `LineComment` counts, so a `#` inside a string
+/// or regex no longer kills the rest of the line. Without a matching
+/// snapshot (no parse yet), the index is built ad hoc from `source`.
+/// Unclassifiable offsets (EOF, UTF-8 interior) fall back to the naive
+/// line scan so the guard stays conservative there.
+pub(crate) fn is_in_comment(
+    position: usize,
+    source: &str,
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+) -> bool {
+    if position > source.len() || !source.is_char_boundary(position) {
+        return false;
+    }
+    let proven_kind = |index: &perl_parser_core::SourceRegionIndex, offset: usize| {
+        index.classify_offset(offset).proven_kind()
+    };
+    // EOF classifies as out-of-bounds; the last char start carries the
+    // region the cursor sits in (#19206 review).
+    let prev_char_start = source[..position].char_indices().last().map(|(start, _)| start);
+    let proven = match snapshot.filter(|snap| snap.source() == source) {
+        Some(snap) => {
+            let index = snap.source_region_index();
+            proven_kind(&index, position)
+                .or_else(|| prev_char_start.and_then(|prev| proven_kind(&index, prev)))
+        }
+        None => {
+            let index = perl_parser_core::SourceRegionIndex::build(source);
+            proven_kind(&index, position)
+                .or_else(|| prev_char_start.and_then(|prev| proven_kind(&index, prev)))
+        }
+    };
+    match proven {
+        Some(kind) => kind == perl_parser_core::SourceRegionKind::LineComment,
+        None => is_in_comment_naive(position, source),
+    }
+}
+
+/// Naive fallback for the comment guard: `true` when a `#` appears
+/// earlier on the same line. Used only when the region index cannot
+/// classify the offset.
 pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+    if position > source.len() || !source.is_char_boundary(position) {
+        return false;
+    }
     let line_start =
         if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
     let line = &source[line_start..];
@@ -1959,20 +1997,14 @@ impl LspServer {
                     //
                     // This guard runs BEFORE any resolution path (module lookup,
                     // AST resolver, goto-label, Mason, etc.) so it covers all
-                    // navigation, not just the module-reference path.
-                    //
-                    // String-aware guarding is intentionally omitted: text-based
-                    // quote scanners produce false positives on real Perl code
-                    // (regexes, heredocs, qw(), POD).  The original guard used
-                    // `is_in_comment && !is_in_string`, which was logically
-                    // inverted — it only blocked when in a comment that was NOT
-                    // also classified as a string.  This now blocks whenever the
-                    // offset is inside a comment.
+                    // navigation, not just the module-reference path. Only a
+                    // proven line comment blocks (#19206): a `#` inside a
+                    // string/regex no longer kills the rest of the line.
                     let text = &doc.text;
-                    if is_in_comment_naive(offset, text) {
+                    let current_parsed = doc.current_parsed();
+                    if is_in_comment(offset, text, current_parsed.as_deref()) {
                         return Ok(Some(Value::Null));
                     }
-                    let current_parsed = doc.current_parsed();
                     let cursor_in_single_quoted_literal =
                         in_single_quoted_literal(current_parsed.as_deref(), offset);
                     let quoted_parent_base_argument = cursor_in_single_quoted_literal
@@ -6032,6 +6064,70 @@ mod tests {
             "an argument spelling the receiver name must resolve to sub Animal, not the constructor; got {collide_targets:?}"
         );
 
+        Ok(())
+    }
+
+    /// #19206: a `#` inside a string/regex on the same line must not kill
+    /// definition for real code later on that line.
+    #[test]
+    fn definition_after_hash_inside_string_or_regex_still_resolves_19206()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cases: [(&str, &str); 5] = [
+            ("plain", "sub helper { return 1; }\nmy $m = \"ab\"; helper();\n"),
+            ("string", "sub helper { return 1; }\nmy $m = \"a#b\"; helper();\n"),
+            ("regex", "sub helper { return 1; }\nmy $ok = (\"x\" =~ /a#b/); helper();\n"),
+            // EOF without trailing newline: the region index reports
+            // out-of-bounds there, but the guard must not fall back to
+            // killing the line (#19206 review).
+            ("string_eof", "sub helper { return 1; }\nmy $m = \"a#b\"; helper();"),
+            // Character class containing both `/` and `#`.
+            ("class", "sub helper { return 1; }\nmy $ok = (\"y\" =~ /[/#]/); helper();\n"),
+        ];
+        for (case, text) in cases {
+            let uri = format!("file:///workspace/def-hash-19206-{case}.pl");
+            let server = LspServer::new();
+            server.test_apply_did_open(&uri, text, 1)?;
+            let line_text = text.lines().nth(1).ok_or("fixture needs line 1")?;
+            let character = line_text.rfind("helper").ok_or("fixture needs helper")? as u32;
+            let result = server.test_handle_definition(Some(json!({
+                "textDocument": { "uri": &uri },
+                "position": { "line": 1, "character": character }
+            })))?;
+            let hit = result.as_ref().is_some_and(|value| {
+                !value.is_null()
+                    && value.as_array().is_none_or(|items| !items.is_empty())
+                    && value
+                        .pointer("/0/range/start/line")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|line| line == 0)
+            });
+            assert!(hit, "#19206 case {case}: definition must resolve to line 0, got {result:?}");
+        }
+        Ok(())
+    }
+
+    /// #19206 negative control: a `#` opening a real trailing comment must
+    /// keep refusing definition (#5066 guard must not regress).
+    #[test]
+    fn definition_inside_real_trailing_comment_still_refused_19206()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = "sub helper { return 1; }\nmy $m = \"a#b\"; # helper();\n";
+        let uri = "file:///workspace/def-hash-19206-comment.pl";
+        let server = LspServer::new();
+        server.test_apply_did_open(uri, text, 1)?;
+        let line_text = text.lines().nth(1).ok_or("fixture needs line 1")?;
+        let character = line_text.rfind("helper").ok_or("fixture needs helper")? as u32;
+        let result = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": character }
+        })))?;
+        let refused = result
+            .as_ref()
+            .is_none_or(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty));
+        assert!(
+            refused,
+            "#19206 comment control: definition inside a real comment must refuse, got {result:?}"
+        );
         Ok(())
     }
 }
