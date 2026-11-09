@@ -1334,8 +1334,8 @@ pub fn collect_semantic_tokens_controlled(
 
             TokenType::Comment(_) => "comment",
 
-            // POD documentation blocks
-            TokenType::Pod => "comment",
+            // Documentation and non-executable data sections.
+            TokenType::Pod | TokenType::DataMarker(_) | TokenType::DataBody(_) => "comment",
             _ => continue,
         };
 
@@ -4402,6 +4402,88 @@ print "ok" foreach @ys;
     fn modern_declaration_attributes_not_painted_here() -> Result<(), Box<dyn std::error::Error>> {
         for source in ["method bar ($z) :lvalue { }", "field $y :param;", "my $x :shared;"] {
             assert!(painted_tokens(source, "modifier")?.is_empty(), "source: {source}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn data_marker_and_body_are_classified_as_comments() -> Result<(), Box<dyn std::error::Error>> {
+        let leg = legend();
+        let comment_kind = *leg.map.get("comment").ok_or("missing comment kind")?;
+        let variable_kind = *leg.map.get("variable").ok_or("missing variable kind")?;
+        let number_kind = *leg.map.get("number").ok_or("missing number kind")?;
+        for marker in ["__DATA__", "__END__"] {
+            let source = format!("my $x = 1;\n{marker}\nmy $x = 1;");
+            let tokens = absolute_tokens(&source)?;
+            assert!(tokens.iter().any(|t| (t.0, t.1, t.2, t.3) == (0, 3, 2, variable_kind)));
+            assert!(tokens.iter().any(|t| (t.0, t.1, t.2, t.3) == (0, 8, 1, number_kind)));
+            assert_eq!(
+                tokens.into_iter().filter(|t| t.0 > 0).collect::<Vec<_>>(),
+                vec![(1, 0, marker.len() as u32, comment_kind, 0), (2, 0, 10, comment_kind, 0),],
+                "post-marker code-like text must contribute only the canonical comment tokens"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn marker_text_in_other_constructs_does_not_suppress_later_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let leg = legend();
+        let variable_kind = *leg.map.get("variable").ok_or("missing variable kind")?;
+        let number_kind = *leg.map.get("number").ok_or("missing number kind")?;
+        for marker in ["__DATA__", "__END__"] {
+            for (source, line) in [
+                (format!("my $str = \"{marker}\";\nmy $x = 1;"), 1),
+                (format!("my ${marker} = 0;\nmy $x = 1;"), 1),
+                (format!("{marker}_suffix();\nmy $x = 1;"), 1),
+                (format!("=pod\n{marker}\n=cut\nmy $x = 1;"), 3),
+                (format!("print <<~EOF;\n{marker}\nEOF\nmy $x = 1;"), 3),
+            ] {
+                let tokens = absolute_tokens(&source)?;
+                assert!(
+                    tokens.iter().any(|t| (t.0, t.1, t.2, t.3) == (line, 3, 2, variable_kind)),
+                    "later variable disappeared in {source:?}"
+                );
+                assert!(
+                    tokens.iter().any(|t| (t.0, t.1, t.2, t.3) == (line, 8, 1, number_kind)),
+                    "later number disappeared in {source:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn data_marker_body_preserves_line_and_utf16_geometry() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let comment_kind = *legend().map.get("comment").ok_or("missing comment kind")?;
+        for marker in ["__DATA__", "__END__"] {
+            for (body, expected) in [
+                ("Line 1\n\nLine 3\n__DATA__\n", vec![(2, 0, 6), (4, 0, 6), (5, 0, 8)]),
+                ("Line 1\r\n", vec![(2, 0, 6)]),
+                ("Line 1\nLine 2", vec![(2, 0, 6), (3, 0, 6)]),
+                ("Line with 😊\n", vec![(2, 0, 12)]),
+                ("", vec![]),
+            ] {
+                let source = format!("my $x = 1;\r\n{marker}\r\n{body}");
+                let comments: Vec<_> = absolute_tokens(&source)?
+                    .into_iter()
+                    .filter(|t| t.3 == comment_kind)
+                    .map(|t| (t.0, t.1, t.2))
+                    .collect();
+                let mut expected_comments = vec![(1, 0, marker.len() as u32)];
+                expected_comments.extend(expected);
+                assert_eq!(comments, expected_comments, "{source:?}");
+            }
+            for ending in ["", "\n", "\r\n"] {
+                let source = format!("{marker}{ending}");
+                assert_eq!(
+                    absolute_tokens(&source)?,
+                    vec![(0, 0, marker.len() as u32, comment_kind, 0)],
+                    "a marker-only file must preserve its exact token at EOF: {source:?}"
+                );
+            }
         }
         Ok(())
     }

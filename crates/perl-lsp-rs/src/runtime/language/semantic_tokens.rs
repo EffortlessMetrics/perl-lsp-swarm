@@ -695,6 +695,10 @@ fn filter_encoded_semantic_tokens_by_range(
     end_line: u32,
     end_char: u32,
 ) -> Vec<u32> {
+    if (start_line, start_char) >= (end_line, end_char) {
+        return Vec::new();
+    }
+
     let mut absolute_tokens = Vec::new();
     let mut line = 0u32;
     let mut start = 0u32;
@@ -708,11 +712,12 @@ fn filter_encoded_semantic_tokens_by_range(
             start = delta_start;
         }
 
-        let starts_after_range_start =
-            line > start_line || (line == start_line && start >= start_char);
+        // Preserve canonical single-line UTF-16 token geometry on partial overlap.
+        let ends_after_range_start =
+            line > start_line || (line == start_line && start.saturating_add(length) > start_char);
         let starts_before_range_end = line < end_line || (line == end_line && start < end_char);
 
-        if starts_after_range_start && starts_before_range_end {
+        if ends_after_range_start && starts_before_range_end {
             absolute_tokens.push((line, start, length, token_type, modifiers));
         }
     }
@@ -953,6 +958,39 @@ mod tests {
         assert!(filter_encoded_semantic_tokens_by_range(tokens, 3, 0, 4, 0).is_empty());
 
         Ok(())
+    }
+
+    #[test]
+    fn filter_encoded_semantic_tokens_by_range_preserves_partial_overlap() {
+        let tokens = vec![[0, 0, 5, 1, 0], [1, 2, 3, 2, 0], [0, 5, 4, 3, 1], [1, 1, 2, 4, 0]];
+        assert_eq!(
+            filter_encoded_semantic_tokens_by_range(tokens.clone(), 1, 3, 1, 4),
+            vec![1, 2, 3, 2, 0],
+            "a range inside a token must retain its whole canonical geometry"
+        );
+        assert_eq!(
+            filter_encoded_semantic_tokens_by_range(tokens.clone(), 1, 3, 1, 8),
+            vec![1, 2, 3, 2, 0, 0, 5, 4, 3, 1],
+            "both partially overlapping boundaries must retain and re-encode their tokens"
+        );
+        for (start, end) in [
+            ((1, 5), (1, 7)), // touches the earlier end and later start only
+            ((1, 8), (1, 8)), // empty range inside a token
+            ((1, 9), (1, 8)), // reversed range inside a token
+            ((2, 1), (1, 8)), // reversed multiline range
+        ] {
+            assert!(
+                filter_encoded_semantic_tokens_by_range(
+                    tokens.clone(),
+                    start.0,
+                    start.1,
+                    end.0,
+                    end.1,
+                )
+                .is_empty(),
+                "{start:?}..{end:?} must not invent overlap"
+            );
+        }
     }
 
     #[test]

@@ -5,53 +5,58 @@
 mod support;
 
 use serde_json::json;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Keep workspace discovery confined to this fixture and finish canonical
+/// initialization before queuing document requests. Return the workspace first
+/// so callers drop the harness before removing its files.
+fn open_semantic_fixture(
+    source: &str,
+) -> Result<(TempWorkspace, LspHarness, String), Box<dyn std::error::Error>> {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("tokens.pl", source)])?;
+    let uri = workspace.uri("tokens.pl");
+    harness.open(&uri, source)?;
+    Ok((workspace, harness, uri))
+}
 
 // ==================== SEMANTIC TOKENS (3.16+) ====================
 
 #[test]
 fn test_semantic_tokens_full_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    harness.open("file:///test.pl", "package Foo;\nsub bar { my $var = 1; }")?;
+    let (_workspace, mut harness, uri) =
+        open_semantic_fixture("package Foo;\nsub bar { my $var = 1; }")?;
 
     let response = harness.request(
         "textDocument/semanticTokens/full",
         json!({
-            "textDocument": { "uri": "file:///test.pl" }
+            "textDocument": { "uri": uri }
         }),
-    );
+    )?;
 
-    if let Ok(tokens) = response
-        && !tokens.is_null()
-    {
-        assert!(tokens["data"].is_array());
-    }
+    let data = response["data"].as_array().ok_or("full response missing token data")?;
+    assert!(!data.is_empty(), "the open fixture must produce full tokens");
     Ok(())
 }
 
 #[test]
 fn test_semantic_tokens_range_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    harness.open("file:///test.pl", "my $x = 1;\nmy $y = 2;")?;
+    let (_workspace, mut harness, uri) = open_semantic_fixture("my $x = 1;\nmy $y = 2;")?;
 
     let response = harness.request(
         "textDocument/semanticTokens/range",
         json!({
-            "textDocument": { "uri": "file:///test.pl" },
+            "textDocument": { "uri": uri },
             "range": {
                 "start": { "line": 0, "character": 0 },
                 "end": { "line": 0, "character": 10 }
             }
         }),
-    );
+    )?;
 
-    if let Ok(tokens) = response {
-        assert!(tokens.is_null() || tokens["data"].is_array());
-    }
+    let data = response["data"].as_array().ok_or("range response missing token data")?;
+    assert!(!data.is_empty(), "the requested fixture range must contain tokens");
     Ok(())
 }
 
@@ -61,8 +66,9 @@ fn test_semantic_tokens_range_3_17() -> TestResult {
 /// `textDocument/semanticTokens/full/delta`.
 #[test]
 fn test_semantic_tokens_advertises_delta_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    let init = harness.initialize(None)?;
+    let workspace = TempWorkspace::new()?;
+    let mut harness = LspHarness::new_raw();
+    let init = harness.initialize_ready(&workspace.root_uri, None)?;
 
     let full = &init["capabilities"]["semanticTokensProvider"]["full"];
     assert_eq!(
@@ -77,14 +83,11 @@ fn test_semantic_tokens_advertises_delta_3_17() -> TestResult {
 /// to it.
 #[test]
 fn test_semantic_tokens_full_returns_result_id_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    harness.open("file:///delta.pl", "package Foo;\nsub bar { my $var = 1; }")?;
+    let (_workspace, mut harness, uri) =
+        open_semantic_fixture("package Foo;\nsub bar { my $var = 1; }")?;
 
-    let full = harness.request(
-        "textDocument/semanticTokens/full",
-        json!({ "textDocument": { "uri": "file:///delta.pl" } }),
-    )?;
+    let full = harness
+        .request("textDocument/semanticTokens/full", json!({ "textDocument": { "uri": uri } }))?;
 
     assert!(full["data"].is_array(), "full result must carry token data");
     assert!(full["resultId"].as_str().is_some(), "full result must carry a resultId; got {full:?}");
@@ -94,20 +97,17 @@ fn test_semantic_tokens_full_returns_result_id_3_17() -> TestResult {
 /// A delta request against an unchanged document returns an empty edit list.
 #[test]
 fn test_semantic_tokens_delta_unchanged_is_empty_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    harness.open("file:///delta.pl", "package Foo;\nsub bar { my $var = 1; }")?;
+    let (_workspace, mut harness, uri) =
+        open_semantic_fixture("package Foo;\nsub bar { my $var = 1; }")?;
 
-    let full = harness.request(
-        "textDocument/semanticTokens/full",
-        json!({ "textDocument": { "uri": "file:///delta.pl" } }),
-    )?;
+    let full = harness
+        .request("textDocument/semanticTokens/full", json!({ "textDocument": { "uri": uri } }))?;
     let result_id = full["resultId"].as_str().ok_or("full result missing resultId")?;
 
     let delta = harness.request(
         "textDocument/semanticTokens/full/delta",
         json!({
-            "textDocument": { "uri": "file:///delta.pl" },
+            "textDocument": { "uri": uri },
             "previousResultId": result_id
         }),
     )?;
@@ -122,27 +122,20 @@ fn test_semantic_tokens_delta_unchanged_is_empty_3_17() -> TestResult {
 /// change.
 #[test]
 fn test_semantic_tokens_delta_after_change_has_edits_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    harness.open("file:///delta.pl", "package Foo;\nsub bar { my $var = 1; }")?;
+    let (_workspace, mut harness, uri) =
+        open_semantic_fixture("package Foo;\nsub bar { my $var = 1; }")?;
 
-    let full = harness.request(
-        "textDocument/semanticTokens/full",
-        json!({ "textDocument": { "uri": "file:///delta.pl" } }),
-    )?;
+    let full = harness
+        .request("textDocument/semanticTokens/full", json!({ "textDocument": { "uri": uri } }))?;
     let result_id = full["resultId"].as_str().ok_or("full result missing resultId")?.to_string();
 
     // Edit the document so the token stream changes.
-    harness.change_full(
-        "file:///delta.pl",
-        2,
-        "package Foo;\nsub bar { my $var = 1; my $other = 2; }",
-    )?;
+    harness.change_full(&uri, 2, "package Foo;\nsub bar { my $var = 1; my $other = 2; }")?;
 
     let delta = harness.request(
         "textDocument/semanticTokens/full/delta",
         json!({
-            "textDocument": { "uri": "file:///delta.pl" },
+            "textDocument": { "uri": uri },
             "previousResultId": result_id
         }),
     )?;
@@ -160,20 +153,17 @@ fn test_semantic_tokens_delta_after_change_has_edits_3_17() -> TestResult {
 /// client can resynchronize.
 #[test]
 fn test_semantic_tokens_delta_unknown_id_returns_full_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
-    harness.open("file:///delta.pl", "package Foo;\nsub bar { my $var = 1; }")?;
+    let (_workspace, mut harness, uri) =
+        open_semantic_fixture("package Foo;\nsub bar { my $var = 1; }")?;
 
     // Prime the cache with a full request first.
-    harness.request(
-        "textDocument/semanticTokens/full",
-        json!({ "textDocument": { "uri": "file:///delta.pl" } }),
-    )?;
+    harness
+        .request("textDocument/semanticTokens/full", json!({ "textDocument": { "uri": uri } }))?;
 
     let delta = harness.request(
         "textDocument/semanticTokens/full/delta",
         json!({
-            "textDocument": { "uri": "file:///delta.pl" },
+            "textDocument": { "uri": uri },
             "previousResultId": "does-not-exist"
         }),
     )?;
