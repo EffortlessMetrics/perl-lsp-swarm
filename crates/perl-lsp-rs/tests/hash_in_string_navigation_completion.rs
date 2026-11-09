@@ -19,19 +19,20 @@ fn pos_of(source: &str, needle: &str) -> Result<(u32, u32), String> {
     Err(format!("needle {needle:?} not found"))
 }
 
-fn assert_definition_at_declaration(result: &Value, label: &str) {
+fn assert_definition_at_declaration(result: &Value, label: &str) -> TestResult {
     let location = match result {
         Value::Array(items) => items.first(),
         Value::Object(_) => Some(result),
         _ => None,
     };
-    let location = location.unwrap_or_else(|| panic!("{label} must resolve, got: {result}"));
+    let location = location.ok_or_else(|| format!("{label} must resolve, got: {result}"))?;
     let line = location
         .pointer("/range/start/line")
         .or_else(|| location.pointer("/targetRange/start/line"))
         .and_then(Value::as_u64)
-        .unwrap_or_else(|| panic!("{label} location has no start line, got: {result}"));
+        .ok_or_else(|| format!("{label} location has no start line, got: {result}"))?;
     assert_eq!(line, 0, "{label} must land on the declaration (line 0), got: {result}");
+    Ok(())
 }
 
 fn definition_resolves_to_declaration(doc: &str, uri: &str, label: &str) -> TestResult {
@@ -48,8 +49,7 @@ fn definition_resolves_to_declaration(doc: &str, uri: &str, label: &str) -> Test
             "position": {"line": line, "character": character + 2}
         }),
     )?;
-    assert_definition_at_declaration(&result, label);
-    Ok(())
+    assert_definition_at_declaration(&result, label)
 }
 
 #[test]
