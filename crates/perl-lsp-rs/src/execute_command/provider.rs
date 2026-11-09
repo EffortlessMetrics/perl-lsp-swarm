@@ -349,10 +349,20 @@ impl ExecuteCommandProvider {
             return snapshot.state().clone();
         }
         if let Some(config) = &self.accepted_critic_config {
+            // `file_path` arrives canonicalized (`resolve_path_from_args`),
+            // which on Windows yields `\\?\`-prefixed paths, while the
+            // registered roots are plain paths: compare canonical forms on
+            // both sides (as `find_workspace_root` does) or the prefix test
+            // silently never matches and the run falls back to the global
+            // subject. The captured root keeps the registered spelling.
+            let canonical_file = file_path.canonicalize().ok();
             let owning_root = self
                 .workspace_roots
                 .iter()
-                .filter(|root| file_path.starts_with(root))
+                .filter(|root| {
+                    let Ok(canonical_root) = root.canonicalize() else { return false };
+                    canonical_file.as_ref().is_some_and(|path| path.starts_with(&canonical_root))
+                })
                 .max_by_key(|root| root.as_os_str().len());
             let owning_root = owning_root.map(|root| root.to_string_lossy().into_owned());
             return AcceptedCriticSnapshot::capture(config, owning_root.as_deref()).state().clone();
@@ -1027,20 +1037,6 @@ impl ExecuteCommandProvider {
             RunGate::open(),
         ));
 
-        if !run.is_publishable() {
-            // The subject is an accepted snapshot and both gates are open,
-            // so a non-publishable run means the service judged the
-            // evaluation incomplete or cancelled; never dress that up as
-            // a successful empty result.
-            return Ok(json!({
-                "status": "stale",
-                "staleReason": "critic evaluation did not complete",
-                "violations": Value::Null,
-                "violationCount": 0,
-                "analyzerUsed": "native"
-            }));
-        }
-
         let mut formatted_violations: Vec<_> = run
             .findings()
             .iter()
@@ -1068,6 +1064,22 @@ impl ExecuteCommandProvider {
                 (violation.range.start.column + 1) as usize,
                 &file,
             ));
+        }
+
+        if !run.is_publishable() {
+            // The subject is an accepted snapshot and both gates are open,
+            // so this is unreachable today; if the service ever judges an
+            // evaluation incomplete or cancelled, report it the way the
+            // open-document route reports stale (empty violation list,
+            // no findings dressed up as a successful result) instead of
+            // publishing partial findings as plain success.
+            return Ok(json!({
+                "status": "stale",
+                "staleReason": "critic evaluation did not complete",
+                "violations": Vec::<Value>::new(),
+                "violationCount": 0,
+                "analyzerUsed": "native"
+            }));
         }
 
         Ok(json!({

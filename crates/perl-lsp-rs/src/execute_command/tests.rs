@@ -1733,6 +1733,22 @@ fn run_critic_unopened_live_config_captures_disabled_per_request()
     let file = tmp.path().join("disabled_live_config.pl");
     fs::write(&file, source)?;
 
+    // Control leg through the same live-config seam: the default
+    // (enabled) config reports the fixture's finding, so the empty
+    // disabled result below is attributable to the accepted state.
+    let enabled = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_accepted_critic_config(perl_lsp_rs_core::config::ServerConfig::default());
+    let control = enabled
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])?;
+    assert!(
+        control["violations"]
+            .as_array()
+            .ok_or("violations is not an array")?
+            .iter()
+            .any(|violation| violation["policy"] == "native.security.string_eval"),
+        "enabled live config must report native findings for this fixture: {control}"
+    );
+
     let mut config = perl_lsp_rs_core::config::ServerConfig::default();
     config.perlcritic_enabled = false;
     let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
@@ -1743,6 +1759,39 @@ fn run_critic_unopened_live_config_captures_disabled_per_request()
     assert_eq!(
         result["violationCount"], 0,
         "disabled live config must report no native findings on the unopened path: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_critic_unopened_accepted_snapshot_applies_exclude_policy()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #6969 accepted-route policy proof: an enabled accepted snapshot
+    // whose state excludes one rule must shape the unopened run (the
+    // excluded row disappears, the sibling row survives). The raw-config
+    // parity tests cannot see this: they never attach a snapshot, so a
+    // regression that dropped the accepted state's policy would pass
+    // them while breaking this one.
+    let source = "use strict;\nuse warnings;\nmy $c = '1';\neval $c;\nmy $out = `ls -la`;\n";
+    let tmp = tempdir()?;
+    let file = tmp.path().join("accepted_exclude.pl");
+    fs::write(&file, source)?;
+
+    let mut config = perl_lsp_rs_core::config::ServerConfig::default();
+    config.native_critic_exclude = vec!["native.security.string_eval".to_string()];
+    let snapshot = perl_lsp_rs_core::config::AcceptedCriticSnapshot::capture(&config, None);
+    let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_accepted_critic_snapshot(snapshot);
+    let result = provider
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])?;
+    let violations = result["violations"].as_array().ok_or("violations is not an array")?;
+    assert!(
+        !violations.iter().any(|violation| violation["policy"] == "native.security.string_eval"),
+        "accepted exclude must remove the string_eval row on the unopened route: {result}"
+    );
+    assert!(
+        violations.iter().any(|violation| violation["policy"] == "native.security.backtick_exec"),
+        "the non-excluded sibling row must survive on the unopened route: {result}"
     );
     Ok(())
 }
