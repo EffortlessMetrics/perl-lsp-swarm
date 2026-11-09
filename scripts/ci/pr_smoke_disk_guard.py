@@ -111,7 +111,9 @@ def load_footprint_baseline(
     is present and carries a positive integral ``footprint_gib`` and a
     non-negative integral ``reserve_gib``; otherwise falls back to the
     in-code constants.
-    A malformed baseline therefore never lowers the floor.
+    A malformed baseline therefore never lowers the floor, and neither
+    does a well-formed one below the in-code fallback (see the clamp in
+    the body): the file may only raise the floor on its own.
     """
     path = BASELINE_PATH if baseline_path is None else baseline_path
     try:
@@ -124,7 +126,19 @@ def load_footprint_baseline(
     reserve_gib = _baseline_gib(data.get("reserve_gib"), allow_zero=True)
     if footprint_gib is None or reserve_gib is None:
         return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
-    return footprint_gib * GIB, reserve_gib * GIB
+    footprint_bytes = footprint_gib * GIB
+    reserve_bytes = reserve_gib * GIB
+    if (
+        footprint_bytes < _FALLBACK_FOOTPRINT_BYTES
+        or reserve_bytes < _FALLBACK_RESERVE_BYTES
+    ):
+        # The baseline may raise the floor on its own, but it may never
+        # lower it: a lower footprint is legitimate only with a fresh
+        # equivalent measurement (#17623/#17655), and that change must
+        # lower the in-code fallback in the same reviewed commit so the
+        # two cannot drift apart silently.
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    return footprint_bytes, reserve_bytes
 
 
 MEASURED_FOOTPRINT_BYTES, RESERVE_BYTES = load_footprint_baseline()

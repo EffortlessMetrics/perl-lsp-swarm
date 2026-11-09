@@ -124,6 +124,21 @@ class FootprintBaselineTests(unittest.TestCase):
                 (100 * guard.GIB, 10 * guard.GIB),
             )
 
+    def test_low_baseline_never_lowers_the_floor(self) -> None:
+        # A well-formed baseline below the in-code fallback must not
+        # lower the floor on its own; only a reviewed change that also
+        # lowers the fallback (with a fresh measurement) may do that.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            path.write_text(
+                '{"footprint_gib": 1, "reserve_gib": 0}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                guard.load_footprint_baseline(path),
+                (85 * guard.GIB, 5 * guard.GIB),
+            )
+
     def test_missing_baseline_falls_back_to_in_code_constants(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "absent.json"
