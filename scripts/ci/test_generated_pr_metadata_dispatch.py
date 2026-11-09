@@ -27,7 +27,7 @@ with log.open('a') as out:
 if args[:2] == ['pr', 'view']:
     if os.environ.get('FAIL_LOOKUP') == '1':
         sys.exit(1)
-    count = sum(1 for line in log.read_text().splitlines() if json.loads(line)[:2] == ['pr', 'view'])
+    count = sum(1 for line in log.read_text(encoding='utf-8').splitlines() if json.loads(line)[:2] == ['pr', 'view'])
     head = 'b' * 40 if count < int(os.environ.get('MOVE_AT', '999')) else 'c' * 40
     print(json.dumps({'baseRefOid': 'a' * 40, 'headRefOid': head}))
     sys.exit(0)
@@ -38,7 +38,7 @@ sys.exit(99)
 
 
 def dispatch_step(path):
-    workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+    workflow = yaml.load(path.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
     return next(step for job in workflow['jobs'].values() for step in job.get('steps', [])
                 if step.get('name') == 'Raise CI on the generated PR')
 
@@ -53,7 +53,7 @@ class GeneratedMetadataDispatchTests(unittest.TestCase):
         step = dispatch_step((source_root or self.root) / '.github/workflows' / workflow)
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            (directory / 'gh').write_text(STUB)
+            (directory / 'gh').write_text(STUB, encoding='utf-8')
             (directory / 'gh').chmod(0o755)
             log = directory / 'calls.jsonl'
             branch, _ = WORKFLOWS[workflow]
@@ -64,7 +64,7 @@ class GeneratedMetadataDispatchTests(unittest.TestCase):
                        GENERATED_HEAD_SHA='b' * 40, **overrides)
             run = subprocess.run(['bash', '-c', step['run']], env=env,
                                  capture_output=True, text=True, timeout=10)
-            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            calls = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
             return run, calls
 
     def test_installed_generation_retains_required_dispatch_and_exact_ci_inputs(self):
