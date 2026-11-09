@@ -42,13 +42,21 @@ Cargo build outputs transferable between worktrees.
 
 ## Recommended route for agent work
 
-After the root admits host capacity and existing consumers, use the existing
-strict route:
+`just devplane-init` prints the existing admitted resource plan without allocating
+directories or assessing capacity. After the root admits host capacity and existing
+consumers, preflight the selected package/target request and run its focused recipe:
 
 ```bash
-scripts/cargo-admitted check --workspace --all-targets --locked
-scripts/cargo-admitted test -p perl-lsp-rs --locked
+scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib
+just agent-check perl-token --lib
+
+scripts/cargo-admitted --preflight test -p perl-token --profile agent --locked --lib
+just agent-test perl-token --lib
 ```
+
+Each recipe requires a package and forwards additional arguments literally. Neither
+implicitly selects the whole workspace or all targets. Run only after the matching
+preflight succeeds; preserve its exact argument order, profile, features and filters.
 
 The [Cargo storage admission contract](../agents/CARGO_STORAGE.md) governs this
 route. It retains one common-repository/host lease and independently reusable

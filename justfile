@@ -13,7 +13,7 @@ cargo-allow-cadence executable sha256 as_of root output_dir:
     python3 scripts/cargo_allow_cadence.py --executable {{quote(executable)}} --expected-sha256 {{quote(sha256)}} --as-of {{quote(as_of)}} --root {{quote(root)}} --output-dir {{quote(output_dir)}}
 
 
-# Initialize bounded build/cache directories.
+# Plan admitted build paths without allocating directories or assessing capacity.
 devplane-init:
     ./scripts/devplane-init
 
@@ -29,20 +29,26 @@ agent-preflight: storage-doctor
     @echo "storage layout preflight ok; Cargo build capacity was not assessed"
     @echo "For build admission: scripts/cargo-admitted --preflight <exact Cargo command>"
 
-# Legacy cargo-safe compatibility check; not host admission. New agent work: scripts/cargo-admitted after host admission.
-agent-check:
-    {{cargo_safe}} check --workspace --all-targets --profile agent --locked
+# Check one package through cargo-admitted (agent profile, locked); preflight the same request first.
+[positional-arguments]
+agent-check package *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec ./scripts/cargo-admitted check -p "$1" --profile agent --locked "${@:2}"
 
-# Legacy cargo-safe compatibility test; not host admission. New agent work: scripts/cargo-admitted after host admission.
-agent-test:
-    {{cargo_safe}} test --workspace --all-targets --profile agent --locked
+# Test one package through cargo-admitted (agent profile, locked); preflight the same request first.
+[positional-arguments]
+agent-test package *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec ./scripts/cargo-admitted test -p "$1" --profile agent --locked "${@:2}"
 
 # Legacy cargo-safe compatibility lint; not host admission. See docs/agents/CARGO_STORAGE.md#staged-native-clippy for the separately qualified route.
 agent-clippy:
     {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
 
 # Nextest's runner profile and Cargo's build profile are separate selectors.
-# Match agent-test's build profile so switching runners reuses its test binaries.
+# The agent build profile does not give this legacy route admitted output ownership.
 # Legacy cargo-safe compatibility nextest; not host admission. External nextest is not admitted; requires a separately admitted route.
 agent-nextest:
     {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent

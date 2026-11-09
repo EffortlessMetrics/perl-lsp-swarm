@@ -17,6 +17,7 @@ on:
       # Scoped pre-build storage admission; Python fixtures compile no Rust.
       - 'scripts/cargo-admitted'
       - 'scripts/cargo_admitted.py'
+      - 'scripts/devplane-init'
       - 'scripts/cargo_cohort.py'
       # Parser-policy proofs inspect Cargo graphs; their CI consumer must not
       # bootstrap the product-linked xtask integration harness (#18016).
@@ -30,6 +31,8 @@ on:
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_discovery_gate.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
+      - 'scripts/tests/test_cargo_admitted_frontdoor.py'
+      - '.vscode/tasks.json'
       - 'scripts/storage-doctor'
       - 'scripts/storage_observation.py'
       - 'scripts/tests/test_storage_doctor.py'
@@ -794,7 +797,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Run both admitted storage suites without Rust builds
+      - name: Install just for admitted recipe regressions
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: just@1.46.0
+          fallback: none
+      - name: Run admitted storage suites without Rust builds
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
       - name: Check cohort ownership and exact reclamation controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v

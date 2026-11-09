@@ -276,10 +276,11 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertIn("docs/how-to/CONSTRAINED_CARGO_BUILDS.md", section)
         rows = [line for line in section.splitlines() if line.startswith("| ")]
         for operation in ("check", "test"):
-            command = f"scripts/cargo-admitted {operation} -p <package> --locked"
+            command = f"scripts/cargo-admitted {operation} -p <package> --profile agent --locked"
             self.assertTrue(any("New agent" in row and command in row for row in rows), command)
-        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
-                       "agent-nextest", "agent-pr-fast"):
+            shortcut = f"just agent-{operation} <package> [args...]"
+            self.assertTrue(any(shortcut in row and "admitted" in row for row in rows), shortcut)
+        for recipe in ("cached", "agent-clippy", "agent-nextest", "agent-pr-fast"):
             matching = [row for row in rows if f"`just {recipe}" in row]
             self.assertTrue(matching, recipe)
             self.assertTrue(all("compatibility" in row.lower() for row in matching), recipe)
@@ -290,8 +291,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
 
     def test_legacy_recipe_help_does_not_promise_admission(self):
         justfile = (ROOT / "justfile").read_text(encoding="utf-8")
-        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
-                       "agent-nextest", "agent-pr-fast"):
+        for recipe in ("cached", "agent-clippy", "agent-nextest", "agent-pr-fast"):
             with self.subTest(recipe=recipe):
                 match = re.search(r"((?:^#[^\n]*\n)+)^" + re.escape(recipe)
                                   + r"(?: [^\n:]*)?:", justfile, re.MULTILINE)
@@ -302,7 +302,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
                 self.assertIn("not host admission", help_text)
                 self.assertNotIn("Agent-safe", help_text)
                 self.assertNotIn("Documented default", help_text)
-                if recipe in ("cached", "agent-check", "agent-test"):
+                if recipe == "cached":
                     self.assertIn("scripts/cargo-admitted", help_text)
                 elif recipe == "agent-clippy":
                     self.assertIn("CARGO_STORAGE.md#staged-native-clippy", help_text)

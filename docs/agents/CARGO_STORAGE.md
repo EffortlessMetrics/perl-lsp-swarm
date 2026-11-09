@@ -26,6 +26,39 @@ was not captured, so treat the profile as unqualified on memory-tight
 hosts and on hosted CI runners, which have different core/memory envelopes
 and should keep the default.
 
+## Plan storage and run focused proof
+
+`just devplane-init` projects this route's existing resource plan for the invoking
+worktree and shell. It prints the shared Cargo home and private target/build paths
+without creating directories, acquiring a lease, probing Cargo, or assessing capacity.
+The output is explicitly **planned, not allocated; capacity not assessed**. It does
+not create per-worktree dependency/compiler caches or enable a compiler wrapper.
+Invalid Git selectors and incompatible storage overrides retain the admission
+owner's refusal behavior. Planning does not establish that a later build can run.
+
+`just agent-check PACKAGE [ARGS...]` and `just agent-test PACKAGE [ARGS...]` require
+an explicit package. They invoke `scripts/cargo-admitted` with `check|test -p PACKAGE
+--profile agent --locked`, then forward every additional argument literally, including
+the test-program separator `--`. They add neither `--workspace` nor `--all-targets`.
+Choose the smallest useful target, and preflight the **same underlying argv** before
+execution:
+
+```bash
+scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib
+just agent-check perl-token --lib
+
+scripts/cargo-admitted --preflight test -p perl-token --profile agent --locked --lib -- --nocapture
+just agent-test perl-token --lib -- --nocapture
+```
+
+Run each execution only after its matching preflight succeeds, from the same task
+shell and worktree. The recipes do not interpret wrapper options such as
+`--preflight` or `--budget-file`; use the direct admitted entrypoint when those
+options are needed. Raw `cargo agent-*` aliases and the remaining legacy Just
+recipes retain their compatibility behavior and provide no admission guarantees.
+
+## Resource ownership
+
 One admission/lease slot is keyed by canonical Git common directory, hostname and
 OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
 exclusion domain; independent clones and Windows/WSL do not. Within that slot,

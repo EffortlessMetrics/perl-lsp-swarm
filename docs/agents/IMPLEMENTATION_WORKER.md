@@ -85,17 +85,22 @@ deterministic ordering. Do not hold locks across `.await`.
 
 ## Build and storage discipline
 
-Use repository wrappers and scoped proof. Prefer:
+Use [Cargo storage admission](CARGO_STORAGE.md) and scoped proof. The focused
+recipes require a package, use the agent profile, and forward additional arguments
+literally. Preflight their exact underlying request before execution:
 
 ```bash
-just agent-check
-just agent-test
-just agent-clippy
-just agent-pr-fast
+scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib
+just agent-check perl-token --lib
+scripts/cargo-admitted --preflight test -p perl-token --profile agent --locked --lib
+just agent-test perl-token --lib
 ```
 
-For a single crate, use `scripts/cargo-safe` with the `agent` profile and `--locked`.
-Avoid workspace-wide builds unless the packet explicitly assigns that proof. Run:
+Select the assignment's actual package and target in both commands, preserving
+profile, features and filters. Use the separately qualified Clippy route when
+lint proof is needed. `just devplane-init` only plans paths; legacy `cargo-safe`
+recipes do not establish admission. Avoid workspace-wide builds unless the packet
+explicitly assigns that proof. Run:
 
 ```bash
 scripts/storage-doctor
