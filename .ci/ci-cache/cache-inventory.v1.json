@@ -729,7 +729,7 @@
       "cached_paths": [],
       "key_dimensions": {
         "key": null,
-        "shared_key": "pr-smoke",
+        "shared_key": "pr-fast-unblocked",
         "restore_keys": null
       },
       "key_authority": "trusted",

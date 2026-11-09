@@ -1379,7 +1379,11 @@ jobs:
       # entry is seeded by the merge-gate shards at full debuginfo, whose dep
       # artifacts never fingerprint-match this lane's line-tables-only env, and
       # both jobs saving under one key would nondeterministically overwrite
-      # each other's newest main entry. A stable shared key (no lockfile hash —
+      # each other's newest main entry. This lane uses its own shared key
+      # (same shape, separate family): on main pushes pr-smoke fails fast at
+      # its guard yet still saves first, which would pin the shared key to a
+      # compile-free entry and starve this lane's seed (#19229 review).
+      # A stable shared key (no lockfile hash —
       # rust-cache already folds the lockfile into its internal keying,
       # docs/ci/cache-policy.md) lets the push-to-main run of this job seed
       # matching line-tables-only artifacts that PR and merge-group runs
@@ -1390,7 +1394,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-all-crates: true
-          shared-key: pr-smoke
+          shared-key: pr-fast-unblocked
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       # #15528 hardening: the dedicated cache family restores the whole
@@ -1427,15 +1431,11 @@ jobs:
           mkdir -p target/receipts
 
       # #11943 visible arm (pre-build): refuse to start the tier on a runner
-      # whose free headroom is below the measured worst-case need, naming the
-      # path in an explicit resource-exhaustion diagnostic. A degraded runner
-      # must fail here in seconds instead of dying inside `ld` with SIGBUS
-      # disguised as a compile failure 40 minutes in.
-
       # Revival telemetry (#19045): observe the same floor without refusing
-      # to start. Verdict is ::warning only; the tier runs regardless so
-      # pr_fast emits verdicts again. Exoneration of ENOSPC stays with the
-      # advisory Classify step below.
+      # to start. The guard's ::error:: verdict is relabeled warning-only:
+      # a breach is recorded, never fatal, and the tier proceeds so pr_fast
+      # emits verdicts again. Exoneration of ENOSPC stays with the advisory
+      # Classify step below; ground-truth df/du capture is unchanged.
       - name: Observe disk budget (telemetry only)
         id: pr-fast-disk-telemetry
         continue-on-error: true
@@ -1444,8 +1444,10 @@ jobs:
           python3 "$PR_SMOKE_DISK_GUARD" preflight \
             --workspace-path . \
             --target-dir "${CARGO_TARGET_DIR:-target}" \
-            --baseline-path "$PR_SMOKE_BASELINE_PATH" \
-          || echo "::warning::disk headroom below measured worst-case need; tier runs anyway (#19045)"
+            --baseline-path "$PR_SMOKE_BASELINE_PATH" 2>&1 \
+            | sed 's/^::error::/::warning telemetry-only: /' || true
+          echo "::warning::disk observation is telemetry-only; the tier proceeds regardless (#19045)"
+          exit 0
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
