@@ -131,6 +131,56 @@ class ClippyAdmissionTests(unittest.TestCase):
         self.assertEqual(receipt["lease_marker"], str(next(lock.iterdir())))
         self.assertEqual(tuple(receipt["marker_identity"]), safe.directory_identity(next(lock.iterdir())))
 
+    def test_forced_child_environment_wins_over_local_config_after_clippy_dispatch(self):
+        self.worktree = self.root / "worktree"
+        self.worktree.mkdir()
+        local = self.worktree / ".cargo" / "config.local.toml"
+        names = ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL", "CARGO", "RUSTC", "RUSTDOC",
+                 "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "SYSROOT", "CARGO_ENCODED_RUSTFLAGS",
+                 "RUSTFLAGS", "CLIPPY_ARGS", "CLIPPY_CONF_DIR", "CARGO_TARGET_DIR",
+                 "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS")
+        sentinel = {"value": "retained local value", "force": True, "relative": False}
+
+        for configured in (False, True):
+            if configured:
+                local.parent.mkdir()
+                values = {name: {"value": "foreign-" + name, "force": True, "relative": True}
+                          for name in names}
+                values["LOCAL_CONFIG_SENTINEL"] = sentinel
+                local.write_text("\n".join(
+                    "env." + name + "." + field + "=" + json.dumps(value)
+                    for name, fields in values.items() for field, value in fields.items()) + "\n")
+            for request in (REQUEST, NAMED_REQUEST):
+                with self.subTest(local_config=configured, request=request), \
+                     patch.object(safe.Path, "cwd", return_value=self.worktree):
+                    def launch(command, env, lock):
+                        self.assertEqual(command[:2], [self.plan["subjects"]["cargo-clippy"]["path"], "clippy"])
+                        self.assertEqual(command[-len(request[1:]):], request[1:])
+                        # This fixture uses only dotted, JSON-compatible TOML
+                        # scalars. Fold the real local file and emitted inline
+                        # settings in order, without requiring tomllib or Cargo.
+                        child_config = {}
+                        for index, argument in enumerate(command):
+                            if argument == "--":
+                                break
+                            if argument != "--config":
+                                continue
+                            value = command[index + 1]
+                            entries = local.read_text().splitlines() if value == str(local) else [value]
+                            for entry in entries:
+                                if entry.startswith("env."):
+                                    key, encoded = entry.split("=", 1)
+                                    _, name, field = key.split(".")
+                                    child_config.setdefault(name, {})[field] = json.loads(encoded)
+                        self.assertEqual(
+                            {name: child_config.get(name) for name in names},
+                            {name: {"value": env[name], "force": True, "relative": False} for name in names})
+                        self.assertEqual(child_config.get("LOCAL_CONFIG_SENTINEL"), sentinel if configured else None)
+                        return 0
+
+                    result, _ = self.invoke(args=request, call=launch, settled=True)
+                    self.assertEqual(result, 0)
+
     def test_settled_clippy_retains_replacement_marker_and_reports_original_identity(self):
         original = self.root / "original-marker"
         def replace(command, env, lock):

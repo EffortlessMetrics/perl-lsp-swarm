@@ -1016,18 +1016,20 @@ def main(args=None):
                 descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
                                   marker_identity=list(marker_identity))
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
-            command = ["cargo", *local_config_cli_args(worktree),
+            local_config = local_config_cli_args(worktree)
+            config_index = 1 + len(local_config)
+            command = ["cargo", *local_config,
                        "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                        "--config", 'build.rustc-wrapper=""',
                        "--config", 'build.rustc-workspace-wrapper=""',
                        *args[:1], "--target-dir", str(paths["target"]), *args[1:]]
             # Cargo's [env] force=true can override process environment for
-            # rustc/build scripts. Override those config entries as well.
+            # rustc/build scripts. Override those entries after the local file.
             for name in ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL"):
                 child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
                 for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
-                    command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
+                    command[config_index:config_index] = ["--config", "env." + name + "." + field + "=" + value]
             if clippy:
                 exact = toolchain["subjects"]
                 controlled = {"CARGO": exact["cargo"]["path"],
@@ -1044,7 +1046,7 @@ def main(args=None):
                 # compiler/lint inputs. Real lint fail/clean controls test this.
                 for name, value in controlled.items():
                     for field, setting in (("value", json.dumps(value)), ("force", "true"), ("relative", "false")):
-                        command[1:1] = ["--config", "env." + name + "." + field + "=" + setting]
+                        command[config_index:config_index] = ["--config", "env." + name + "." + field + "=" + setting]
                 position = command.index("clippy")
                 command = [exact["cargo-clippy"]["path"], "clippy", "--message-format=json-render-diagnostics",
                            *command[1:position], "--target", toolchain["host"], *command[position + 1:]]

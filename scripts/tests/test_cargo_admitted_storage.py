@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -74,6 +75,50 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.run_safe(["check"], cargo), 0)
         self.assertIn(str(local_path), seen[0])
         self.assertLess(seen[0].index(str(local_path)), seen[0].index("unstable.unstable-options=false"))
+
+    def test_forced_child_environment_wins_over_local_config(self):
+        local = self.root / ".cargo" / "config.local.toml"
+        expected = {name: str(self.paths["temp"]) for name in ("TEMP", "TMP", "TMPDIR")}
+        expected["RUSTUP_AUTO_INSTALL"] = "0"
+        sentinel = {"value": "retained local value", "force": True, "relative": False}
+
+        for configured in (False, True):
+            with self.subTest(local_config=configured):
+                if configured:
+                    local.parent.mkdir()
+                    values = {name: {"value": "foreign-" + name, "force": True, "relative": True}
+                              for name in expected}
+                    values["LOCAL_CONFIG_SENTINEL"] = sentinel
+                    local.write_text("\n".join(
+                        "env." + name + "." + field + "=" + json.dumps(value)
+                        for name, fields in values.items() for field, value in fields.items()) + "\n")
+
+                def cargo(command, env):
+                    # Decode only this fixture's dotted, JSON-compatible TOML
+                    # scalars, in actual --config order. Native Cargo separately
+                    # establishes the merge rule; this is not a Cargo interpreter.
+                    child_config = {}
+                    for index, argument in enumerate(command):
+                        if argument == "--":
+                            break
+                        if argument != "--config":
+                            continue
+                        value = command[index + 1]
+                        entries = local.read_text().splitlines() if value == str(local) else [value]
+                        for entry in entries:
+                            if entry.startswith("env."):
+                                key, encoded = entry.split("=", 1)
+                                _, name, field = key.split(".")
+                                child_config.setdefault(name, {})[field] = json.loads(encoded)
+                    self.assertEqual(
+                        {name: child_config.get(name) for name in expected},
+                        {name: {"value": value, "force": True, "relative": False}
+                         for name, value in expected.items()})
+                    self.assertEqual({name: env[name] for name in expected}, expected)
+                    self.assertEqual(child_config.get("LOCAL_CONFIG_SENTINEL"), sentinel if configured else None)
+                    return 0
+
+                self.assertEqual(self.run_safe(["check"], cargo), 0)
 
     def test_separate_short_values_and_program_arguments_remain_supported(self):
         seen = []
