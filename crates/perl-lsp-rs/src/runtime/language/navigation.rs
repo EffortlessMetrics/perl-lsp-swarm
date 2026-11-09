@@ -385,13 +385,19 @@ fn is_in_comment_naive(position: usize, source: &str) -> bool {
 /// index cost. With no snapshot, or a snapshot parsed from different text,
 /// the naive verdict stands (fail-closed, the pre-#19206 behavior).
 /// Blocking kinds mirror rename's `rename_blocked_at` plus
-/// `RecoveryAmbiguous`; any other proven kind (code, string, quote-like,
-/// regex, heredoc) rescues the position. EOF cursors fall back to the
-/// empty-range left-hand kind; invalid UTF-8 boundaries fail closed.
+/// `RecoveryAmbiguous`; proven `Code` always rescues the position. Proven
+/// literal kinds (string, quote-like, regex, heredoc) rescue only when
+/// `rescue_literals` is set: completion passes `true` because its provider
+/// classifies string/regex context itself, while definition passes `false`
+/// so quoted text cannot gain jumps the naive guard used to suppress
+/// (for example a module name inside `"# use Foo::Bar"`). EOF cursors fall
+/// back to the empty-range left-hand kind; invalid UTF-8 boundaries fail
+/// closed.
 pub(crate) fn is_in_comment_for_guard(
     position: usize,
     source: &str,
     snapshot: Option<&crate::state::ParsedSnapshot>,
+    rescue_literals: bool,
 ) -> bool {
     if !is_in_comment_naive(position, source) {
         return false;
@@ -413,7 +419,8 @@ pub(crate) fn is_in_comment_for_guard(
             | perl_parser_core::SourceRegionKind::DataSection
             | perl_parser_core::SourceRegionKind::RecoveryAmbiguous,
         ) => true,
-        Some(_) => false,
+        Some(perl_parser_core::SourceRegionKind::Code) => false,
+        Some(_) => !rescue_literals,
         None => true,
     }
 }
@@ -2009,7 +2016,7 @@ impl LspServer {
                     // verdict stands.
                     let text = &doc.text;
                     let current_parsed = doc.current_parsed();
-                    if is_in_comment_for_guard(offset, text, current_parsed.as_deref()) {
+                    if is_in_comment_for_guard(offset, text, current_parsed.as_deref(), false) {
                         return Ok(Some(Value::Null));
                     }
                     let cursor_in_single_quoted_literal =

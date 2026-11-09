@@ -80,6 +80,32 @@ fn definition_after_hash_in_regex_resolves() -> TestResult {
 }
 
 #[test]
+fn definition_inside_quoted_text_still_refused() -> TestResult {
+    // Definition must not gain jumps from quoted text the naive guard used
+    // to suppress: the cursor is inside a string literal here, not in code
+    // after it (#19206 review).
+    let doc = "package Foo::Bar;\nmy $m = \"# use Foo::Bar\";\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///quoted_module.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "# use Foo::Bar")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///quoted_module.pl"},
+            "position": {"line": line, "character": character + 8}
+        }),
+    )?;
+    assert!(
+        result.is_null() || result.as_array().is_some_and(|items| items.is_empty()),
+        "definition inside quoted text must refuse, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
 fn definition_inside_real_comment_still_refused() -> TestResult {
     let doc = "sub target_sub { return 1; }\nmy $x = 1; # target_sub();\n";
     let mut harness = LspHarness::new();

@@ -77,7 +77,7 @@ fn warm_lane(doc: &str, uri: &str, needle: &str, label: &str) -> TestResult {
 }
 
 #[test]
-#[ignore = "manual latency receipt"]
+#[ignore = "manual latency receipt (#19206)"]
 fn hash_guard_latency_receipt() -> TestResult {
     warm_lane(
         "sub target_sub { return 1; }\nmy $sep = \"#\"; target_sub();\n",
@@ -104,14 +104,21 @@ fn hash_guard_latency_receipt() -> TestResult {
     warm_lane(&large_a, "file:///lane_a_large.pl", "target_sub();", "warm definition A large")?;
     warm_lane(&large_c, "file:///lane_c_large.pl", "target_sub();", "warm definition C large")?;
 
-    // Cold lane: first definition request of each fresh generation.
+    // Cold lanes: first definition request of each fresh generation, with
+    // the no-`#` control isolating the once-per-generation index build.
+    cold_lane(&large_a, "cold definition A large first-per-generation")?;
+    cold_lane(&large_c, "cold definition C large first-per-generation")?;
+    Ok(())
+}
+
+fn cold_lane(doc: &str, label: &str) -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
-    harness.open_document("file:///lane_cold.pl", &large_a)?;
+    harness.open_document("file:///lane_cold.pl", doc)?;
     harness.barrier();
     let mut samples = Vec::new();
     for generation in 0..20 {
-        let tweaked = format!("{large_a}# generation {generation}\n");
+        let tweaked = format!("{doc}# generation {generation}\n");
         harness.change_full("file:///lane_cold.pl", generation + 2, &tweaked)?;
         harness.barrier();
         let lines = tweaked.lines().count() as u32;
@@ -124,6 +131,6 @@ fn hash_guard_latency_receipt() -> TestResult {
         )?;
         samples.push(micros);
     }
-    summarize("cold definition A large first-per-generation", samples);
+    summarize(label, samples);
     Ok(())
 }

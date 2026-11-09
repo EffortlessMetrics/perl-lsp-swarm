@@ -1641,9 +1641,20 @@ impl LspServer {
                 // snapshot, which stays usable. Full-sync desynchronization
                 // is not pending parse (#8129).
                 let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
-                if super::navigation::is_in_comment_for_guard(offset, &doc.text, parsed.as_deref())
-                {
-                    break 'completion_response None;
+                if super::navigation::is_in_comment_for_guard(
+                    offset,
+                    &doc.text,
+                    parsed.as_deref(),
+                    true,
+                ) {
+                    // While the parse is pending the guard verdict rests on
+                    // the naive fallback alone, so answer incomplete instead
+                    // of a confident empty list (#19206 review).
+                    break 'completion_response if pending_parse_gap {
+                        Some(json!({"isIncomplete": true, "items": []}))
+                    } else {
+                        None
+                    };
                 }
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
@@ -2008,6 +2019,7 @@ impl LspServer {
                     offset,
                     &doc.text,
                     parsed.as_deref(),
+                    true,
                 );
 
                 // Test-only rendezvous: gives a regression test a
@@ -2031,7 +2043,14 @@ impl LspServer {
                 }
 
                 if in_comment {
-                    break 'completion_response None;
+                    // While the parse is pending the guard verdict rests on
+                    // the naive fallback alone, so answer incomplete instead
+                    // of a confident empty list (#19206 review).
+                    break 'completion_response if pending_parse_gap {
+                        Some(json!({"isIncomplete": true, "items": []}))
+                    } else {
+                        None
+                    };
                 }
 
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
