@@ -1316,7 +1316,8 @@ jobs:
           # No explicit token: the default github.token applies. An explicit
           # secrets.GITHUB_TOKEN reference in a PR-triggered job trips the
           # workflow security ratchet (pr_secret_reference); default
-          # credentials already cover fetch-tags here (#19229).          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          # credentials already cover fetch-tags here (#19229).
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
           # Fetch full history so the immutable subject can validate exact event ancestry.
           fetch-depth: 0
           # release_history --verify-git resolves every release tag locally.
