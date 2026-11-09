@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,61 @@ class FootprintFloorTests(unittest.TestCase):
             {".": "."}, guard.effective_min_free_bytes(None), probe=fake_probe(table)
         )
         self.assertEqual(breaches, [])
+
+
+class FootprintBaselineTests(unittest.TestCase):
+    """The committed baseline JSON is the guard's single source (#19067)."""
+
+    def test_committed_baseline_matches_guard_constants(self) -> None:
+        baseline = Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
+        self.assertTrue(baseline.is_file())
+        footprint, reserve = guard.load_footprint_baseline(baseline)
+        self.assertEqual(footprint, 85 * guard.GIB)
+        self.assertEqual(reserve, 5 * guard.GIB)
+        self.assertEqual(guard.MEASURED_FOOTPRINT_BYTES, footprint)
+        self.assertEqual(guard.RESERVE_BYTES, reserve)
+        self.assertEqual(guard.effective_min_free_bytes(None), 90 * guard.GIB)
+
+    def test_committed_baseline_records_expired_provenance(self) -> None:
+        baseline = Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
+        data = json.loads(baseline.read_text(encoding="utf-8"))
+        self.assertEqual(data["footprint_gib"], 85)
+        self.assertEqual(data["reserve_gib"], 5)
+        self.assertEqual(data["source_run_id"], 37195503421)
+        self.assertEqual(data["provenance_status"], "expired-unverifiable")
+        self.assertEqual(data["recorded_date"], "2026-11-08")
+        self.assertEqual(data["runner"], "ubuntu-24.04")
+
+    def test_baseline_json_overrides_fallback_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            path.write_text(
+                '{"footprint_gib": 100, "reserve_gib": 10}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                guard.load_footprint_baseline(path),
+                (100 * guard.GIB, 10 * guard.GIB),
+            )
+
+    def test_missing_baseline_falls_back_to_in_code_constants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent.json"
+            self.assertEqual(
+                guard.load_footprint_baseline(missing),
+                (85 * guard.GIB, 5 * guard.GIB),
+            )
+
+    def test_malformed_baseline_falls_back_without_lowering_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for text in ("not json", '{"footprint_gib": 1}', '{"footprint_gib": "85", "reserve_gib": 5}'):
+                path = Path(tmp) / "baseline.json"
+                path.write_text(text, encoding="utf-8")
+                with self.subTest(text=text):
+                    self.assertEqual(
+                        guard.load_footprint_baseline(path),
+                        (85 * guard.GIB, 5 * guard.GIB),
+                    )
 
 
 class ParseMinFreeBytesTests(unittest.TestCase):

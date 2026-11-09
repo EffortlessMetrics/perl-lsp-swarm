@@ -40,15 +40,22 @@ Measured basis (2026-08-24 receipt artifacts, runs 32697324730 and
 cold-cache branch while the hosted runner offers ~83-84 GiB free at start on a
 145 GiB root volume, so unbounded builds fill the disk mid-link. Run
 37195503421 (2026-10-04) measured 85 GiB after the debuginfo trim (#17231).
-The preflight floor is derived from that declared footprint bound plus a
-reserve, so a runner that cannot hold the tier is rejected before any build
-instead of being accepted into a mid-link ENOSPC; the bound is declared in
-the workflow beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
+EXPIRED-UNVERIFIABLE (#19067): that originating run's artifacts are expired
+(artifacts API ``total_count=0``), so the 85 GiB value cannot be re-verified
+from it; it is retained conservatively and recorded in the committed
+baseline ``.ci/pr-smoke-footprint-baseline.json``, which this guard reads
+as its single source when present (the in-code constants below are only
+the fallback when that file is absent or malformed). The preflight floor
+is derived from that declared footprint bound plus a reserve, so a runner
+that cannot hold the tier is rejected before any build instead of being
+accepted into a mid-link ENOSPC; the bound is declared in the workflow
+beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import shutil
 import sys
@@ -62,14 +69,65 @@ GIB = 1024**3
 # Declared footprint bound for the PR Smoke tier (#17231): the single
 # CARGO_TARGET_DIR measured 85 GiB in run 37195503421 (2026-10-04 receipt,
 # pr-fast-disk-pressure.log), after the line-tables-only debuginfo trim.
+# EXPIRED-UNVERIFIABLE (#19067): run 37195503421's artifacts are expired
+# (artifacts API total_count=0), so this 85 GiB value cannot be re-verified
+# from the originating run. It is retained conservatively; do not lower it
+# (or the derived 90 GiB floor) on the basis of the expired receipt.
 # The preflight floor is DERIVED from this bound (footprint + reserve), so
 # the two cannot drift apart the way the former fixed 32 GiB floor did:
 # that floor's rejection band was empty and it accepted runners the lane
 # then filled to 100% (ENOSPC -> ld SIGBUS). Update the bound only with a
 # fresh measured receipt; the workflow declares the same number beside the
 # trim that bounds it (PR_SMOKE_FOOTPRINT_GIB in ci.yml).
-MEASURED_FOOTPRINT_BYTES = 85 * GIB
-RESERVE_BYTES = 5 * GIB
+#
+# Single source (#19067): the committed baseline JSON below is authoritative
+# when present and well-formed. The in-code values are only the fallback for
+# a missing or malformed baseline (e.g. this helper copied standalone by
+# the workflow-pairing seam), so a broken baseline can never silently lower
+# the floor below the fallback bound.
+_FALLBACK_FOOTPRINT_BYTES = 85 * GIB
+_FALLBACK_RESERVE_BYTES = 5 * GIB
+BASELINE_PATH = (
+    Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
+)
+
+
+def _baseline_gib(value: object, *, allow_zero: bool = False) -> int | None:
+    """Return an integral GiB count, or None when not usable."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    gib = int(value)
+    return gib if gib > 0 or (allow_zero and gib == 0) else None
+
+
+def load_footprint_baseline(
+    baseline_path: Path | None = None,
+) -> tuple[int, int]:
+    """Return ``(footprint_bytes, reserve_bytes)`` from the baseline JSON.
+
+    Reads ``.ci/pr-smoke-footprint-baseline.json`` (single source) when it
+    is present and carries a positive integral ``footprint_gib`` and a
+    non-negative integral ``reserve_gib``; otherwise falls back to the
+    in-code constants.
+    A malformed baseline therefore never lowers the floor.
+    """
+    path = BASELINE_PATH if baseline_path is None else baseline_path
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    if not isinstance(data, dict):
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    footprint_gib = _baseline_gib(data.get("footprint_gib"))
+    reserve_gib = _baseline_gib(data.get("reserve_gib"), allow_zero=True)
+    if footprint_gib is None or reserve_gib is None:
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
+    return footprint_gib * GIB, reserve_gib * GIB
+
+
+MEASURED_FOOTPRINT_BYTES, RESERVE_BYTES = load_footprint_baseline()
 
 
 def effective_min_free_bytes(

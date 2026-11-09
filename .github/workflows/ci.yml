@@ -826,6 +826,13 @@ jobs:
       # run 37195503421 (2026-10-04) after the trim above. The preflight
       # guard derives its floor from this bound plus a reserve; update it
       # only with a fresh measured receipt, never to make a red lane pass.
+      # EXPIRED-UNVERIFIABLE (#19067): the originating run 37195503421's
+      # artifacts are expired (artifacts API total_count=0), so the 85 GiB
+      # value cannot be re-verified from that run. It is retained
+      # conservatively (85 GiB + 5 GiB reserve = 90 GiB floor unchanged);
+      # the committed provenance record is
+      # .ci/pr-smoke-footprint-baseline.json, which the guard reads as its
+      # single source when present.
       PR_SMOKE_FOOTPRINT_GIB: "85"
       # #15528: one stable, cache-aligned target dir. The former per-run
       # `pr-smoke-${run_id}-${run_attempt}` path (unique per run and attempt)
