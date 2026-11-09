@@ -90,6 +90,7 @@ use std::cell::Cell;
 thread_local! {
     static INCREMENTAL_SEARCH_ADD_CALLS: Cell<usize> = const { Cell::new(0) };
     static REBUILD_SEARCH_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
+    static WORKSPACE_SYMBOL_CLONE_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
@@ -1062,7 +1063,8 @@ pub struct CrossFileReferenceQueryResult {
 // `PartialEq` added for 1711-B shadow-compare parity assertions (see
 // `FileExtractionBundle` / `extraction_bundle_shadow_compare`) -- every field
 // type already derives `PartialEq`, so this is purely additive.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(not(test), derive(Clone))]
 /// A symbol in the workspace for Index/Navigate workflows.
 pub struct WorkspaceSymbol {
     /// Symbol name without package qualification
@@ -1093,6 +1095,27 @@ pub struct WorkspaceSymbol {
     /// lexical-unused detection is deferred to the scope-aware `ScopeAnalyzer`.
     #[serde(default)]
     pub is_lexical: bool,
+}
+
+// Observe the actual operation, including clones introduced before the final
+// result materializer. Normal builds retain the derived implementation.
+#[cfg(test)]
+impl Clone for WorkspaceSymbol {
+    fn clone(&self) -> Self {
+        WORKSPACE_SYMBOL_CLONE_CALLS.with(|calls| calls.set(calls.get() + 1));
+        Self {
+            name: self.name.clone(),
+            kind: self.kind,
+            uri: self.uri.clone(),
+            range: self.range,
+            qualified_name: self.qualified_name.clone(),
+            documentation: self.documentation.clone(),
+            container_name: self.container_name.clone(),
+            has_body: self.has_body,
+            workspace_folder_uri: self.workspace_folder_uri.clone(),
+            is_lexical: self.is_lexical,
+        }
+    }
 }
 
 fn default_has_body() -> bool {
@@ -3982,14 +4005,18 @@ impl WorkspaceIndex {
                     resolved.insert(anchor.id, None);
                     continue;
                 }
-                let next_location = self.document_store.get(&shard.source_uri).and_then(|doc| {
-                    let start = usize::try_from(anchor.span_start_byte).ok()?;
-                    let end = usize::try_from(anchor.span_end_byte).ok()?;
-                    Some(WireLocation::new(
-                        shard.source_uri.clone(),
-                        WireRange::from_byte_offsets(doc.text(), start, end),
-                    ))
-                });
+                // Acquire current source per anchor, not once per shard. Only
+                // the pure coordinate conversion runs under the document guard.
+                let next_range = self
+                    .document_store
+                    .with_text(&shard.source_uri, |text| {
+                        let start = usize::try_from(anchor.span_start_byte).ok()?;
+                        let end = usize::try_from(anchor.span_end_byte).ok()?;
+                        Some(WireRange::from_byte_offsets(text, start, end))
+                    })
+                    .flatten();
+                let next_location =
+                    next_range.map(|range| WireLocation::new(shard.source_uri.clone(), range));
                 resolved.insert(anchor.id, next_location);
             }
         }
@@ -4376,7 +4403,7 @@ impl WorkspaceIndex {
     where
         I: IntoIterator<Item = (&'a str, &'a Vec<WorkspaceSymbol>)>,
     {
-        let mut seen: HashSet<(String, usize)> = HashSet::new();
+        let mut seen: HashSet<(&str, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring/prefix > subsequence (fuzzy).
         //
@@ -4409,19 +4436,26 @@ impl WorkspaceIndex {
             left.compare(right).then_with(|| left_key.cmp(right_key))
         });
 
-        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
+        // Keep candidates borrowed until the final cap. Matching, deduplication
+        // and sorting still inspect the admitted population; only returned
+        // symbols need their owned strings copied.
+        let mut scored: Vec<(u8, &WorkspaceSymbol)> = Vec::new();
         for (evidence, _name_key, symbols) in admitted {
             let score = legacy_index_match_rank(evidence.tier());
             for sym in symbols {
-                let dedup_key = (sym.uri.clone(), sym.range.start.byte);
+                let dedup_key = (sym.uri.as_str(), sym.range.start.byte);
                 if seen.insert(dedup_key) {
-                    scored.push((score, sym.clone()));
+                    scored.push((score, sym));
                 }
             }
         }
         // Sort by relevance (descending), then by name for stable ordering.
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
-        scored.into_iter().map(|(_, s)| s).take(cap.unwrap_or(usize::MAX)).collect()
+        scored
+            .into_iter()
+            .take(cap.unwrap_or(usize::MAX))
+            .map(|(_, symbol)| symbol.clone())
+            .collect()
     }
 
     /// Search labeled generated/framework members backed by semantic source anchors.
@@ -13821,7 +13855,379 @@ mod entity_id_file_scoped_tests {
     }
 }
 
+// ── Batched anchor source borrowing (#19242) ──
+
+#[cfg(test)]
+mod anchor_source_borrow_tests {
+    use super::*;
+    use crate::document_store::{DocumentAccessCounts, observe_document_access};
+
+    fn wire(uri: &str, start: (u32, u32), end: (u32, u32)) -> WireLocation {
+        WireLocation::new(
+            uri.to_string(),
+            WireRange::new(WirePosition::new(start.0, start.1), WirePosition::new(end.0, end.1)),
+        )
+    }
+
+    fn inject(index: &WorkspaceIndex, uri: &str, anchors: &[(u64, u32, u32)]) {
+        let file_id = WorkspaceIndex::hash_uri_to_file_id(uri);
+        index.inject_test_fact_shard(FileFactShard {
+            source_uri: uri.to_string(),
+            file_id,
+            content_hash: 1,
+            producer_schema_version: PRODUCER_SCHEMA_VERSION,
+            anchors_hash: None,
+            entities_hash: None,
+            occurrences_hash: None,
+            edges_hash: None,
+            anchors: anchors
+                .iter()
+                .map(|&(id, start, end)| AnchorFact {
+                    id: AnchorId(id),
+                    file_id,
+                    span_start_byte: start,
+                    span_end_byte: end,
+                    scope_id: None,
+                    provenance: Provenance::ExactAst,
+                    confidence: Confidence::High,
+                })
+                .collect(),
+            entities: Vec::new(),
+            occurrences: Vec::new(),
+            edges: Vec::new(),
+        });
+    }
+
+    #[test]
+    fn indexed_reference_batch_copies_no_documents() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///indexed-references.pm";
+        let source = "sub alpha { 1 }\r\nalpha();\r\nalpha();\r\n";
+        index.index_initial_file(Url::parse(uri)?, source.to_string())?;
+        assert_eq!(index.file_count(), 1);
+        let mut anchors = index.file_fact_shard(uri).ok_or("missing indexed shard")?.anchors;
+        anchors.sort_by_key(|anchor| (anchor.span_start_byte, anchor.span_end_byte));
+        let spans: Vec<_> =
+            anchors.iter().map(|anchor| (anchor.span_start_byte, anchor.span_end_byte)).collect();
+        // Declaration anchors cover the name; SubroutineCall anchors retain
+        // the full call expression, including its parentheses.
+        assert_eq!(spans, vec![(4, 9), (17, 24), (27, 34)], "pin the real anchor population");
+        let expected: HashMap<_, _> = anchors
+            .iter()
+            .zip([wire(uri, (0, 4), (0, 9)), wire(uri, (1, 0), (1, 7)), wire(uri, (2, 0), (2, 7))])
+            .map(|(anchor, location)| (anchor.id, Some(location)))
+            .collect();
+        let mut requested: Vec<_> = anchors.iter().map(|anchor| anchor.id).collect();
+        requested.push(anchors[0].id); // repeated request IDs are not extra conversions
+        let (actual, counts) =
+            observe_document_access(|| index.semantic_anchor_wire_locations(&requested));
+        assert_eq!(actual, expected);
+        assert_eq!(
+            (counts.clones, counts.source_bytes),
+            (0, 0),
+            "the populated batch must not copy documents or their complete source text"
+        );
+        assert_eq!(counts.scoped_reads, 3, "acquire source separately for each eligible anchor");
+        for (id, location) in expected {
+            assert_eq!(index.semantic_anchor_wire_location(id), location);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unicode_crlf_and_refusals_keep_complete_requested_results() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///valid-anchors.pm";
+        let other = "file:///duplicate-anchors.pm";
+        for document in [uri, other] {
+            index.document_store.open(document.to_string(), 1, "é😀\r\nx".to_string());
+        }
+        inject(
+            &index,
+            uri,
+            &[(1, 2, 6), (2, 8, 9), (3, 2, 6), (3, 2, 6), (4, 2, 6), (5, 0, 0), (6, 6, 2)],
+        );
+        inject(&index, other, &[(4, 2, 6)]);
+        inject(&index, "file:///missing-source.pm", &[(7, 0, 1)]);
+        let mut requested: Vec<_> = (1..=8).map(AnchorId).collect();
+        requested.push(AnchorId(1));
+        let mut expected: HashMap<_, _> = (1..=8).map(|id| (AnchorId(id), None)).collect();
+        expected.insert(AnchorId(1), Some(wire(uri, (0, 1), (0, 3))));
+        expected.insert(AnchorId(2), Some(wire(uri, (1, 0), (1, 1))));
+        let (actual, counts) =
+            observe_document_access(|| index.semantic_anchor_wire_locations(&requested));
+        assert_eq!(actual, expected);
+        assert_eq!((counts.clones, counts.source_bytes), (0, 0));
+        // First claims for 1, 2, 3 and 4 plus the missing-source lookup for 7.
+        // Both cross-shard duplicate claims have available positive-width source,
+        // so HashMap iteration cannot change this denominator.
+        assert_eq!(counts.scoped_reads, 5);
+        for (id, location) in expected {
+            assert_eq!(index.semantic_anchor_wire_location(id), location);
+        }
+    }
+
+    #[test]
+    fn empty_unmatched_and_degenerate_batches_do_not_acquire_documents() {
+        let index = WorkspaceIndex::new();
+        index.document_store.open("file:///zero.pm".to_string(), 1, "abc".to_string());
+        inject(&index, "file:///zero.pm", &[(1, 0, 0), (2, 2, 1), (3, 0, 1)]);
+        for requested in [vec![], vec![AnchorId(99)], vec![AnchorId(1), AnchorId(2)]] {
+            let expected: HashMap<_, _> = requested.iter().map(|id| (*id, None)).collect();
+            let (actual, counts) =
+                observe_document_access(|| index.semantic_anchor_wire_locations(&requested));
+            assert_eq!(actual, expected);
+            assert_eq!(counts, DocumentAccessCounts::default());
+        }
+    }
+
+    #[test]
+    fn batch_reads_current_text_after_replacement_and_reopen() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///replacement.pm";
+        index.document_store.open(uri.to_string(), 7, "é😀\r\nx".to_string());
+        inject(&index, uri, &[(1, 2, 6)]);
+        let check = |expected: Option<WireLocation>| {
+            let (actual, counts) =
+                observe_document_access(|| index.semantic_anchor_wire_locations(&[AnchorId(1)]));
+            assert_eq!(actual, HashMap::from([(AnchorId(1), expected)]));
+            assert_eq!((counts.clones, counts.source_bytes), (0, 0));
+            assert_eq!(counts.scoped_reads, 1);
+        };
+        check(Some(wire(uri, (0, 1), (0, 3))));
+        assert!(index.document_store.update(uri, 7, "ab😀\r\nx".to_string()));
+        check(Some(wire(uri, (0, 2), (0, 4))));
+        index.document_store.open(uri.to_string(), 8, "\r\n😀\r\nx".to_string());
+        check(Some(wire(uri, (1, 0), (1, 2))));
+        assert!(index.document_store.close(uri));
+        check(None);
+        index.document_store.open(uri.to_string(), 1, "é😀\r\nx".to_string());
+        check(Some(wire(uri, (0, 1), (0, 3))));
+    }
+}
+
 // ── search_source_symbols / search_generated_workspace_symbols cap (#1668) ──
+
+#[cfg(test)]
+mod source_symbol_materialization_tests {
+    use super::*;
+
+    fn symbol(name: &str, uri: &str, start: usize) -> WorkspaceSymbol {
+        WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: uri.to_string(),
+            range: Range {
+                start: Position { byte: start, line: 2, column: 3 },
+                end: Position { byte: start + name.len(), line: 2, column: 3 + name.len() as u32 },
+            },
+            qualified_name: Some(format!("Pkg::{name}")),
+            documentation: Some(format!("Documentation for {name}")),
+            container_name: Some("Pkg".to_string()),
+            has_body: false,
+            workspace_folder_uri: Some("file:///workspace".to_string()),
+            is_lexical: true,
+        }
+    }
+
+    fn observe_clones<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+        // Fixture creation and the independent reference run outside this
+        // thread-local window. The selector itself is synchronous.
+        WORKSPACE_SYMBOL_CLONE_CALLS.with(|calls| calls.set(0));
+        let result = operation();
+        let clones = WORKSPACE_SYMBOL_CLONE_CALLS.with(Cell::get);
+        (result, clones)
+    }
+
+    fn legacy_owned_reference<'a>(
+        buckets: impl IntoIterator<Item = (&'a str, &'a Vec<WorkspaceSymbol>)>,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol> {
+        // Deliberately flatten owned rows first, independently of the
+        // production bucket helper and its deferred ownership strategy.
+        // Query admission/comparison remain with their canonical owner.
+        let mut rows = Vec::new();
+        for (key, symbols) in buckets {
+            let role = if key.contains("::") || key.contains('\'') {
+                WorkspaceSymbolSearchKeyRole::QualifiedName
+            } else {
+                WorkspaceSymbolSearchKeyRole::BareName
+            };
+            if let Some(evidence) = match_searchable_key(profile, key, role) {
+                for symbol in symbols {
+                    rows.push((evidence.clone(), key, symbol.clone()));
+                }
+            }
+        }
+        rows.sort_by(|(left, left_key, _), (right, right_key, _)| {
+            left.compare(right).then_with(|| left_key.cmp(right_key))
+        });
+        let mut seen = HashSet::new();
+        rows.retain(|(_, _, row)| seen.insert((row.uri.clone(), row.range.start.byte)));
+        rows.sort_by(|(left, _, a), (right, _, b)| {
+            legacy_index_match_rank(right.tier())
+                .cmp(&legacy_index_match_rank(left.tier()))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        rows.into_iter().take(cap.unwrap_or(usize::MAX)).map(|(_, _, row)| row).collect()
+    }
+
+    #[test]
+    fn clone_probe_observes_complete_symbol_copies() {
+        let original = symbol("run", "file:///workspace/one.pm", 7);
+        let (copy, clones) = observe_clones(|| original.clone());
+        assert_eq!(clones, 1, "the instrument must observe the real Clone operation");
+        assert_eq!(copy, original, "the test Clone implementation must preserve every field");
+        assert_ne!(copy.uri.as_ptr(), original.uri.as_ptr());
+    }
+
+    #[test]
+    fn ordered_buckets_clone_only_the_returned_prefix() {
+        let buckets: Vec<_> = (0..24)
+            .rev()
+            .map(|i| {
+                let name = format!("run_{i:02}");
+                let row = symbol(&name, &format!("file:///workspace/{i}.pm"), i);
+                (name, vec![row])
+            })
+            .collect();
+        for query in ["", "run", "run_03", "missing"] {
+            let profile = WorkspaceSymbolQueryProfile::compile(query);
+            let total = legacy_owned_reference(
+                buckets.iter().map(|(key, rows)| (key.as_str(), rows)),
+                &profile,
+                None,
+            )
+            .len();
+            for cap in [Some(0), Some(1), Some(2), Some(total), Some(total + 1), None] {
+                let expected = legacy_owned_reference(
+                    buckets.iter().map(|(key, rows)| (key.as_str(), rows)),
+                    &profile,
+                    cap,
+                );
+                let (actual, clones) = observe_clones(|| {
+                    WorkspaceIndex::search_source_symbols_from_buckets(
+                        buckets.iter().map(|(key, rows)| (key.as_str(), rows)),
+                        &profile,
+                        cap,
+                    )
+                });
+                assert_eq!(actual, expected, "ordered rows changed: query={query:?}, cap={cap:?}");
+                assert_eq!(
+                    clones,
+                    actual.len(),
+                    "cloned discarded rows: query={query:?}, cap={cap:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_search_clones_only_returned_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let source = (0..16).map(|i| format!("sub run_{i:02} {{ {i} }}\n")).collect::<String>();
+        index.index_initial_file(Url::parse("file:///workspace/Pkg.pm")?, source)?;
+        assert_eq!(index.file_count(), 1, "the public fixture must admit its source file");
+        let names: Vec<_> =
+            index.search_source_symbols("", None).into_iter().map(|row| row.name).collect();
+        let expected_names: Vec<_> = (0..16).map(|i| format!("run_{i:02}")).collect();
+        assert_eq!(names, expected_names, "public proof requires all sixteen indexed declarations");
+        for query in ["", "run", "run_03", "missing"] {
+            let profile = WorkspaceSymbolQueryProfile::compile(query);
+            let total = {
+                let search_index = index.search_index.read();
+                legacy_owned_reference(
+                    search_index.iter().map(|(key, rows)| (key.as_str(), rows)),
+                    &profile,
+                    None,
+                )
+                .len()
+            };
+            for cap in [Some(0), Some(1), Some(2), Some(total), Some(total + 1), None] {
+                let expected = {
+                    let search_index = index.search_index.read();
+                    legacy_owned_reference(
+                        search_index.iter().map(|(key, rows)| (key.as_str(), rows)),
+                        &profile,
+                        cap,
+                    )
+                };
+                let (actual, clones) =
+                    observe_clones(|| index.search_source_symbols_with_profile(&profile, cap));
+                assert_eq!(actual, expected, "public rows changed: query={query:?}, cap={cap:?}");
+                assert_eq!(
+                    clones,
+                    actual.len(),
+                    "public path over-cloned: query={query:?}, cap={cap:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn alias_evidence_and_stable_ties_survive_materialization() {
+        let first = symbol("run", "file:///workspace/first.pm", 10);
+        let second = symbol("run", "file:///workspace/second.pm", 20);
+        let competing = symbol("a_run", "file:///workspace/competing.pm", 30);
+        let expected = vec![second.clone(), first.clone(), competing.clone()];
+        let buckets = [
+            ("Pkg::run", vec![first.clone(), second.clone()]),
+            ("a_run", vec![competing]),
+            ("run", vec![second, first]),
+        ];
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let (actual, clones) = observe_clones(|| {
+            WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, rows)| (*key, rows)),
+                &profile,
+                None,
+            )
+        });
+        assert_eq!(actual, expected, "best alias and stable equal-name order must be preserved");
+        assert_eq!(clones, 3);
+    }
+
+    #[test]
+    fn equal_uri_contents_deduplicate_without_collapsing_other_locations() {
+        let first = symbol("run", "file:///workspace/one.pm", 10);
+        let alias = first.clone();
+        assert_ne!(first.uri.as_ptr(), alias.uri.as_ptr(), "fixture requires distinct allocations");
+        let next_position = symbol("run", "file:///workspace/one.pm", 20);
+        let next_file = symbol("run", "file:///workspace/two.pm", 10);
+        let expected = vec![first.clone(), next_position.clone(), next_file.clone()];
+        let buckets = [("Pkg::run", vec![alias]), ("run", vec![first, next_position, next_file])];
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let (actual, clones) = observe_clones(|| {
+            WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, rows)| (*key, rows)),
+                &profile,
+                None,
+            )
+        });
+        assert_eq!(actual, expected);
+        assert_eq!(clones, 3);
+    }
+
+    #[test]
+    fn cap_is_applied_after_final_name_ranking() {
+        let zeta = symbol("zeta", "file:///workspace/zeta.pm", 10);
+        let alpha = symbol("alpha", "file:///workspace/alpha.pm", 20);
+        let expected = vec![alpha.clone()];
+        let buckets = [("A::zeta", vec![zeta]), ("B::alpha", vec![alpha])];
+        let profile = WorkspaceSymbolQueryProfile::compile("");
+        let (actual, clones) = observe_clones(|| {
+            WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, rows)| (*key, rows)),
+                &profile,
+                Some(1),
+            )
+        });
+        assert_eq!(actual, expected, "bucket order must not truncate the better final name");
+        assert_eq!(clones, 1);
+    }
+}
 
 #[cfg(test)]
 mod search_cap_tests {

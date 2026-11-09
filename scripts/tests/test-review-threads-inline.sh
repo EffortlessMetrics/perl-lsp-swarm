@@ -41,12 +41,39 @@ for required in "$THREADS" "$INLINE" "$DISPOSITION"; do
     [[ -f "$required" ]] || { echo "ERROR: missing $required"; exit 1; }
 done
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
+REAL_JQ="$(command -v jq)"
+REAL_MKTEMP="$(command -v mktemp)"
+export REAL_JQ REAL_MKTEMP
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 STUB_BIN="$TMP_ROOT/bin"
 STUB_DIR="$TMP_ROOT/data"
 mkdir -p "$STUB_BIN" "$STUB_DIR"
+
+# Observe the actual retained page history before the real jq reads it, and
+# observe cleanup after each child invocation. Neither shim changes jq filters
+# or the directory returned by mktemp.
+export THREAD_PAGES_CAPTURE="$TMP_ROOT/retained-pages.json"
+export THREAD_DIRS_LOG="$TMP_ROOT/thread-dirs.log"
+cat > "$STUB_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+    if [[ "$arg" == */pages.json && -f "$arg" ]]; then
+        cp "$arg" "$THREAD_PAGES_CAPTURE"
+    fi
+done
+exec "$REAL_JQ" "$@"
+STUB
+cat > "$STUB_BIN/mktemp" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+created="$("$REAL_MKTEMP" "$@")"
+printf '%s\n' "$created" >> "$THREAD_DIRS_LOG"
+printf '%s\n' "$created"
+STUB
+chmod +x "$STUB_BIN/jq" "$STUB_BIN/mktemp"
 
 # ── stub gh ─────────────────────────────────────────────────────────────────
 # Serves page 1 of reviewThreads when the query carries no cursor and page 2
@@ -58,9 +85,14 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_LOG"
 
 if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
-    if [[ "$(grep -c 'api graphql' "$GH_STUB_LOG")" -gt 3 ]]; then
+    calls="$(grep -c 'api graphql' "$GH_STUB_LOG")"
+    if [[ "$calls" -gt 3 ]]; then
         echo 'gh stub: pagination call budget exceeded' >&2
         exit 1
+    fi
+    if [[ "$calls" == "${GH_STUB_GRAPHQL_FAIL_PAGE:-}" ]]; then
+        echo 'gh stub: requested transport failure' >&2
+        exit 42
     fi
     # The cursor must match the one page 1 handed out. A stub that serves page 2
     # for any query containing `after:` would let a paginator that forwards a
@@ -112,7 +144,21 @@ chmod +x "$STUB_BIN/gh"
 GH_STUB_LOG="$TMP_ROOT/gh-calls.log"
 export GH_STUB_LOG GH_STUB_DIR="$STUB_DIR"
 
-reset_stub() { : > "$GH_STUB_LOG"; rm -f "$STUB_DIR/posted_payload.json"; unset GH_STUB_REVIEWS_FAIL GH_STUB_EXPECTED_CURSOR; }
+reset_stub() {
+    : > "$GH_STUB_LOG"
+    : > "$THREAD_DIRS_LOG"
+    rm -f "$STUB_DIR/posted_payload.json" "$THREAD_PAGES_CAPTURE"
+    unset GH_STUB_REVIEWS_FAIL GH_STUB_EXPECTED_CURSOR GH_STUB_GRAPHQL_FAIL_PAGE
+}
+
+thread_dirs_cleaned() {
+    local path observed=0
+    while IFS= read -r path; do
+        observed=1
+        [[ ! -e "$path" ]] || return 1
+    done < "$THREAD_DIRS_LOG"
+    [[ "$observed" -eq 1 ]]
+}
 
 # ── fixtures: a two-page reviewThreads connection ───────────────────────────
 thread_node() {
@@ -232,11 +278,28 @@ test_threads_json_shape() {
     fi
 }
 
+test_threads_json_is_compact() {
+    reset_stub
+    run_threads 9999 test-owner/test-repo --json
+    local compact
+    compact="$(printf '%s\n' "$RUN_OUT" | jq -c .)"
+    if [[ "$RUN_EXIT" -eq 0 && "$RUN_OUT" == "$compact" ]] \
+        && jq -e '.thread_count == 3 and (.threads | length) == 3' >/dev/null <<<"$RUN_OUT"; then
+        pass 'threads: machine JSON omits formatting whitespace without omitting records'
+    else
+        fail 'threads: machine JSON still carries pretty-print whitespace or lost records'
+    fi
+}
+
 # An id from `threads` must be accepted by `disposition --thread` unchanged.
 # --dry-run keeps this offline; it proves the handoff contract, not the network.
 test_threads_id_feeds_disposition() {
     reset_stub
     run_threads 9999 test-owner/test-repo --unresolved-only --json
+    if [[ "$RUN_EXIT" -ne 0 ]]; then
+        fail "threads→disposition enumeration — exit=$RUN_EXIT out=$RUN_OUT"
+        return
+    fi
     local tid; tid="$(jq -r '.threads[0].id' <<<"$RUN_OUT")"
     local d_exit=0 d_out
     d_out="$(bash "$DISPOSITION" --pr 9999 --thread "$tid" --class fixed \
@@ -344,49 +407,95 @@ test_threads_refuses_truncation() {
 # Regression: bot review bodies are long, and an accumulator passed to jq
 # through argv (`jq --argjson acc "$SO_FAR"`) dies with "Argument list too
 # long" — observed live on a real 12-thread PR before the fix, and it would hit
-# hardest on exactly the large PRs this script exists for. Serve one page whose
-# payload comfortably exceeds any argv limit and require every thread to
-# survive.
+# hardest on exactly the large PRs this script exists for. Both pages exceed
+# common argv limits. Full bodies must not survive in the accumulated history
+# after their existing metadata/excerpt projection has been produced.
 test_threads_survives_large_payload() {
     reset_stub
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.large-backup"
+    cp "$STUB_DIR/threads_page2.json" "$TMP_ROOT/page2.large-backup"
     # The fixture itself must never travel through argv — doing so would
     # reproduce the very failure this case guards against instead of testing
     # for it. Build it into a file and slurp it.
     jq -n '[range(0; 40) as $i | {
         id: ("PRRT_big_" + ($i | tostring)),
-        isResolved: false, isOutdated: false,
-        path: ("crates/big/src/f" + ($i | tostring) + ".rs"), line: 1, originalLine: 1,
+        isResolved: ($i % 4 == 0), isOutdated: ($i % 5 == 0),
+        path: ("crates/big/src/f" + ($i | tostring) + ".rs"),
+        line: (if $i % 5 == 0 then null else 1 end), originalLine: ($i + 7),
         startLine: null, originalStartLine: null, diffSide: "RIGHT",
-        comments: { nodes: [ { author: { login: "coderabbitai" },
-                               body: ("Finding " + ($i | tostring) + ".\n" + ("x" * 60000)),
+        comments: { nodes: [ { author: { __typename: "Bot", login: "coderabbitai" },
+                               body: ("<!-- hidden -->\r\n \r\n Finding " + ($i | tostring)
+                                   + ". café 日本語 $(sentinel) `x`.\r\n" + ("x" * 60000)),
                                url: ("https://example.invalid/" + ($i | tostring)) } ] }
     }]' > "$STUB_DIR/big_nodes.json"
     jq -n --slurpfile n "$STUB_DIR/big_nodes.json" '{data:{repository:{pullRequest:{reviewThreads:{
-        nodes: $n[0], pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
+        nodes: $n[0][0:20], pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
         > "$STUB_DIR/threads_page1.json"
+    jq -n --slurpfile n "$STUB_DIR/big_nodes.json" '{data:{repository:{pullRequest:{reviewThreads:{
+        nodes: $n[0][20:40], pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
+        > "$STUB_DIR/threads_page2.json"
+
+    # Independent expected values, not a copy of the production projection.
+    jq -n '[range(0; 40) as $i | {
+        id: ("PRRT_big_" + ($i | tostring)),
+        isResolved: ($i % 4 == 0), isOutdated: ($i % 5 == 0),
+        path: ("crates/big/src/f" + ($i | tostring) + ".rs"),
+        line: (if $i % 5 == 0 then $i + 7 else 1 end),
+        line_is_original: ($i % 5 == 0), originalLine: ($i + 7), startLine: null,
+        diffSide: "RIGHT", author: "coderabbitai", author_typename: "Bot",
+        url: ("https://example.invalid/" + ($i | tostring)),
+        excerpt: ("Finding " + ($i | tostring) + ". café 日本語 $(sentinel) `x`.")
+    }]' > "$STUB_DIR/expected-large.json"
 
     run_threads 9999 test-owner/test-repo --json
-    local ok=0
+    local ok=0 retained=0 raw=0 serialized=0 pretty=0
     if [[ "$RUN_EXIT" -eq 0 ]] \
-        && jq -e '(.threads | length) == 40
-                  and (.threads[0].excerpt == "Finding 0.")' >/dev/null <<<"$RUN_OUT"; then
+        && [[ "$(graphql_calls)" -eq 2 ]] \
+        && jq -e --slurpfile expected "$STUB_DIR/expected-large.json" '
+            . == {pr:9999, repo:"test-owner/test-repo", thread_count:40,
+                unresolved_count:30, unresolved_active:24, unresolved_outdated:6,
+                threads:$expected[0]}' >/dev/null <<<"$RUN_OUT" \
+        && thread_dirs_cleaned; then
         ok=1
     fi
-
-    # Restore the two-page fixtures for any later case.
-    jq -n \
-        --argjson a "$(thread_node PRRT_page1_active false false 'crates/a/src/lib.rs' 3 3 coderabbitai 'Consider bounding this loop.' Bot)" \
-        --argjson b "$(thread_node PRRT_page1_resolved true false 'crates/b/src/main.rs' 11 11 alice 'Nit: rename this.' User)" \
-        '{data:{repository:{pullRequest:{reviewThreads:{
-            nodes: [$a, $b],
-            pageInfo: {hasNextPage: true, endCursor: "CURSOR-PAGE-1"}}}}}}' \
-        > "$STUB_DIR/threads_page1.json"
-
     if [[ "$ok" -eq 1 ]]; then
-        pass "threads: a multi-megabyte thread payload survives (no argv-limit truncation)"
+        pass 'threads: two multi-megabyte pages preserve every ordered field, excerpt and count, then clean up'
     else
         fail "threads large payload — exit=$RUN_EXIT out=$(head -c 400 <<<"$RUN_OUT")"
     fi
+
+    if [[ -f "$THREAD_PAGES_CAPTURE" ]]; then
+        retained="$(wc -c < "$THREAD_PAGES_CAPTURE")"
+        raw="$(wc -c < "$STUB_DIR/big_nodes.json")"
+    fi
+    if [[ "$ok" -eq 1 && "$retained" -gt 0 && "$retained" -lt $((raw / 20)) ]] \
+        && jq -e -s --slurpfile expected "$STUB_DIR/expected-large.json" \
+            'length == 2 and add == $expected[0]' "$THREAD_PAGES_CAPTURE" >/dev/null; then
+        pass "threads: retained page history contains only complete projected rows ($retained vs $raw raw bytes)"
+    else
+        fail "threads: accumulated history retains unused bodies or loses rows ($retained vs $raw raw bytes)"
+    fi
+    serialized="$(printf '%s\n' "$RUN_OUT" | wc -c)"
+    pretty="$(printf '%s\n' "$RUN_OUT" | jq . | wc -c)"
+    if [[ "$ok" -eq 1 && "$serialized" -lt "$pretty" ]]; then
+        pass "threads: complete machine JSON avoids indentation ($serialized vs $pretty pretty bytes)"
+    else
+        fail "threads: machine JSON did not remove formatting overhead ($serialized vs $pretty bytes)"
+    fi
+
+    reset_stub
+    run_threads 9999 test-owner/test-repo --unresolved-only --json
+    if [[ "$RUN_EXIT" -eq 0 ]] \
+        && jq -e --slurpfile expected "$STUB_DIR/expected-large.json" '
+            .threads == ($expected[0] | map(select(.isResolved == false)))
+            and .thread_count == 30 and .unresolved_count == 30' >/dev/null <<<"$RUN_OUT" \
+        && thread_dirs_cleaned; then
+        pass 'threads: unresolved-only preserves complete projected values and order across large pages'
+    else
+        fail 'threads: large-page unresolved projection or cleanup differs'
+    fi
+    cp "$TMP_ROOT/page1.large-backup" "$STUB_DIR/threads_page1.json"
+    cp "$TMP_ROOT/page2.large-backup" "$STUB_DIR/threads_page2.json"
 }
 
 # A malformed page is not a zero-thread result, even after valid earlier pages.
@@ -396,7 +505,7 @@ assert_threads_page_rejected() {
     out="$(PATH="$STUB_BIN:$PATH" bash "$THREADS" 9999 test-owner/test-repo \
         --unresolved-only --json 2>"$TMP_ROOT/thread-page.err")" || status=$?
     if [[ "$status" -eq 2 && -z "$out" && "$(graphql_calls)" -eq "$expected_calls" ]] \
-        && grep -q 'ERROR:' "$TMP_ROOT/thread-page.err"; then
+        && grep -q 'ERROR:' "$TMP_ROOT/thread-page.err" && thread_dirs_cleaned; then
         pass "threads: $label fails closed without a partial summary"
     else
         fail "threads: $label — exit=$status calls=$(graphql_calls) stdout=$out stderr=$(cat "$TMP_ROOT/thread-page.err")"
@@ -509,13 +618,86 @@ test_threads_nullable_metadata() {
     cp "$TMP_ROOT/page2.nullable-backup" "$STUB_DIR/threads_page2.json"
 }
 
+test_threads_excerpt_boundaries() {
+    reset_stub
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.excerpt-backup"
+    jq -n '[
+        {id:"empty", body:"", expected:""},
+        {id:"null", body:null, expected:""},
+        {id:"blank", body:" \r\n\t\n", expected:""},
+        {id:"markup", body:"<!-- hidden\r\ncomment -->\r\n\t Visible finding. \t\r\nDetails.", expected:"Visible finding."},
+        {id:"ascii119", body:("x" * 119), expected:("x" * 119)},
+        {id:"ascii120", body:("x" * 120), expected:("x" * 120)},
+        {id:"ascii121", body:("x" * 121), expected:(("x" * 117) + "...")},
+        {id:"emoji120", body:("😀" * 120), expected:("😀" * 120)},
+        {id:"emoji121", body:("😀" * 121), expected:(("😀" * 117) + "...")}
+    ]' > "$STUB_DIR/excerpt-cases.json"
+    jq -n --slurpfile cases "$STUB_DIR/excerpt-cases.json" \
+        --argjson template "$(thread_node PRRT_excerpt false false 'a.rs' 1 1 bot body Bot)" \
+        '{data:{repository:{pullRequest:{reviewThreads:{
+            nodes: [$cases[0][] as $case | $template | .id = $case.id
+                | .comments.nodes[0].body = $case.body],
+            pageInfo:{hasNextPage:false,endCursor:null}}}}}}' \
+        > "$STUB_DIR/threads_page1.json"
+    run_threads 9999 test-owner/test-repo --json
+    if [[ "$RUN_EXIT" -eq 0 && "$(graphql_calls)" -eq 1 ]] \
+        && jq -e --slurpfile cases "$STUB_DIR/excerpt-cases.json" '
+            (.threads | map({id, excerpt})) == ($cases[0] | map({id, excerpt:.expected}))
+            and .thread_count == 9 and .unresolved_count == 9' >/dev/null <<<"$RUN_OUT" \
+        && thread_dirs_cleaned; then
+        pass 'threads: excerpt projection preserves blank/HTML/CRLF and exact 120/121-character ASCII/Unicode boundaries'
+    else
+        fail "threads: excerpt projection boundary changed — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+    cp "$TMP_ROOT/page1.excerpt-backup" "$STUB_DIR/threads_page1.json"
+}
+
 test_threads_projection_failure_is_normalized() {
     reset_stub
     cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.projection-backup"
     jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments = 7' \
         "$TMP_ROOT/page1.projection-backup" > "$STUB_DIR/threads_page1.json"
-    assert_threads_page_rejected 'malformed ancillary metadata' 2
+    assert_threads_page_rejected 'malformed ancillary metadata' 1
     cp "$TMP_ROOT/page1.projection-backup" "$STUB_DIR/threads_page1.json"
+}
+
+test_threads_resolved_metadata_is_not_skipped() {
+    local page
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.resolved-backup"
+    cp "$STUB_DIR/threads_page2.json" "$TMP_ROOT/page2.resolved-backup"
+    for page in 1 2; do
+        reset_stub
+        cp "$TMP_ROOT/page1.resolved-backup" "$STUB_DIR/threads_page1.json"
+        cp "$TMP_ROOT/page2.resolved-backup" "$STUB_DIR/threads_page2.json"
+        jq '.data.repository.pullRequest.reviewThreads.nodes[0] |=
+            (.isResolved = true | .comments = 7)' \
+            "$TMP_ROOT/page${page}.resolved-backup" > "$STUB_DIR/threads_page${page}.json"
+        # Projection timing may fail on the bad page or after full acquisition;
+        # both must reject the malformed resolved record before emitting output.
+        local status=0 out calls
+        out="$(PATH="$STUB_BIN:$PATH" bash "$THREADS" 9999 test-owner/test-repo \
+            --unresolved-only --json 2>"$TMP_ROOT/thread-page.err")" || status=$?
+        calls="$(graphql_calls)"
+        if [[ "$status" -eq 2 && -z "$out" && "$calls" -ge "$page" && "$calls" -le 2 ]] \
+            && grep -q 'malformed review-thread metadata' "$TMP_ROOT/thread-page.err" \
+            && thread_dirs_cleaned; then
+            pass "threads: malformed resolved metadata on page $page fails before filtering and cleans up"
+        else
+            fail "threads: malformed resolved metadata page $page was skipped or leaked output/storage"
+        fi
+    done
+    cp "$TMP_ROOT/page1.resolved-backup" "$STUB_DIR/threads_page1.json"
+    cp "$TMP_ROOT/page2.resolved-backup" "$STUB_DIR/threads_page2.json"
+}
+
+test_threads_transport_failure_is_atomic() {
+    local page
+    for page in 1 2; do
+        reset_stub
+        export GH_STUB_GRAPHQL_FAIL_PAGE="$page"
+        assert_threads_page_rejected "page $page transport failure" "$page"
+    done
+    unset GH_STUB_GRAPHQL_FAIL_PAGE
 }
 
 test_threads_opaque_cursor() {
@@ -885,6 +1067,7 @@ echo ""
 test_threads_paginates
 test_threads_unresolved_only
 test_threads_json_shape
+test_threads_json_is_compact
 test_threads_id_feeds_disposition
 test_threads_human_output_is_actionable
 test_threads_usage_error
@@ -898,7 +1081,10 @@ test_threads_rejects_invalid_response_stream
 test_threads_refuses_cursor_cycle
 test_threads_complete_empty_page
 test_threads_nullable_metadata
+test_threads_excerpt_boundaries
 test_threads_projection_failure_is_normalized
+test_threads_resolved_metadata_is_not_skipped
+test_threads_transport_failure_is_atomic
 test_threads_opaque_cursor
 test_inline_posts_one_review
 test_inline_reads_stdin
