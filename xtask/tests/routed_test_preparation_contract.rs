@@ -67,34 +67,38 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
     // not drift silently.
     for (job_name, receipt_prefix, missing_prefix) in [
         ("pr-smoke", "pr-fast-receipt-", "pr-fast-missing-receipt-"),
-        (
-            "pr-fast-unblocked",
-            "pr-fast-unblocked-receipt-",
-            "pr-fast-unblocked-missing-receipt-",
-        ),
+        ("pr-fast-unblocked", "pr-fast-unblocked-receipt-", "pr-fast-unblocked-missing-receipt-"),
     ] {
         let job = &workflow["jobs"][job_name];
         assert_eq!(job["timeout-minutes"].as_u64(), Some(75));
         let steps = job["steps"].as_sequence().ok_or("missing steps")?;
         let prepare = steps
             .iter()
-            .position(|step| step["name"].as_str() == Some("Prepare routed integration-test targets"))
+            .position(|step| {
+                step["name"].as_str() == Some("Prepare routed integration-test targets")
+            })
             .ok_or("missing preparation")?;
         let execute = steps
             .iter()
-            .position(|step| step["name"].as_str() == Some("Run PR-fast via shared xtask gate runner"))
+            .position(|step| {
+                step["name"].as_str() == Some("Run PR-fast via shared xtask gate runner")
+            })
             .ok_or("missing runtime")?;
         assert!(prepare < execute);
         let build = steps[prepare]["run"].as_str().ok_or("missing preparation command")?;
         assert!(
-            build.contains("--gate unit_routed_full_build --subject target/receipts/ci-subject.json")
+            build.contains(
+                "--gate unit_routed_full_build --subject target/receipts/ci-subject.json"
+            )
         );
         assert!(build.contains("--receipt-path target/receipts/routed-test-build/receipt.json"));
         assert!(!build.contains("--receipt-path target/receipts/receipt.json"));
         assert!(!build.contains("|| true"));
         assert!(build.contains("preparation_status=$?"));
         assert!(build.contains("exit \"$preparation_status\""));
-        assert!(build.contains("target/receipts/routed-test-build/logs/unit_routed_full_build.log"));
+        assert!(
+            build.contains("target/receipts/routed-test-build/logs/unit_routed_full_build.log")
+        );
         assert_eq!(
             steps[prepare]["continue-on-error"].as_bool(),
             Some(true),
@@ -109,8 +113,9 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         let runtime = steps[execute]["run"].as_str().ok_or("missing runtime command")?;
         assert!(runtime.contains("timeout --signal=TERM --kill-after=60s 3600s"));
         assert!(
-            runtime
-                .contains("gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt")
+            runtime.contains(
+                "gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt"
+            )
         );
         assert!(!runtime.contains("--gate unit_routed_full_build"));
         let upload = steps
@@ -127,9 +132,7 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         let missing = steps
             .iter()
             .find(|step| {
-                step["with"]["name"]
-                    .as_str()
-                    .is_some_and(|name| name.starts_with(missing_prefix))
+                step["with"]["name"].as_str().is_some_and(|name| name.starts_with(missing_prefix))
             })
             .ok_or("missing missing-receipt diagnostics artifact")?;
         let missing_if = missing["if"].as_str().ok_or("missing diagnostics upload guard")?;
@@ -139,7 +142,9 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         );
         let paths = upload["with"]["path"].as_str().ok_or("missing artifact paths")?;
         assert!(
-            paths.lines().any(|path| path.trim() == "target/receipts/routed-test-build/receipt.json")
+            paths
+                .lines()
+                .any(|path| path.trim() == "target/receipts/routed-test-build/receipt.json")
         );
         assert!(paths.lines().any(|path| path.trim() == "target/receipts/logs/*.log"));
         assert!(
