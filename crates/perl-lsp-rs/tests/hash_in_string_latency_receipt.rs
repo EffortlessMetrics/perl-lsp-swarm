@@ -115,8 +115,13 @@ fn hash_guard_latency_receipt() -> TestResult {
         harness.change_full("file:///lane_cold.pl", generation + 2, &tweaked)?;
         harness.barrier();
         let lines = tweaked.lines().count() as u32;
-        let (_, micros) =
-            request_timed(&mut harness, "textDocument/definition", "file:///lane_cold.pl", lines - 2, 17)?;
+        let (_, micros) = request_timed(
+            &mut harness,
+            "textDocument/definition",
+            "file:///lane_cold.pl",
+            lines - 2,
+            17,
+        )?;
         samples.push(micros);
     }
     summarize("cold definition A large first-per-generation", samples);

@@ -187,7 +187,10 @@ fn completion_at_eof_inside_real_comment_still_empty() -> TestResult {
         .or_else(|| result.as_array())
         .cloned()
         .unwrap_or_default();
-    assert!(items.is_empty(), "completion at EOF inside a real comment must be empty, got: {result}");
+    assert!(
+        items.is_empty(),
+        "completion at EOF inside a real comment must be empty, got: {result}"
+    );
     Ok(())
 }
 
