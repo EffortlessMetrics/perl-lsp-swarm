@@ -17,6 +17,12 @@ agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D 
 t2 = "test -- --test-threads=2"
 
 [build]
+# Bound raw-Cargo fallback growth while callers migrate to the admitted route.
+# Canonical agent commands already force incremental off and private output roots.
+# Deliberate single-worktree measurements may opt in with CARGO_INCREMENTAL=1;
+# that override is outside the default agent posture and grants no admission,
+# lease, or cleanup authority. See docs/agents/CARGO_INCREMENTAL_FALLBACK.md.
+incremental = false
 rustflags = []
 
 # Lossless ELF debug compression on the pinned native Linux compiler-driver
