@@ -36,11 +36,26 @@ agent-check package *args:
     set -euo pipefail
     exec ./scripts/cargo-admitted check -p "$1" --profile agent --locked "${@:2}"
 
-# Test one package through cargo-admitted (agent profile, locked); preflight the same request first.
+# Test explicit targets through cargo-admitted; put the selector after package and preflight the same request.
 [positional-arguments]
-agent-test package *args:
+agent-test package selector *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    invalid_scope() {
+        printf '%s\n' \
+            'agent-test: put a Cargo target selector immediately after PACKAGE.' \
+            'Use --lib/--doc, --test NAME (also --bin/--example/--bench), or an explicit plural selector.' \
+            'Named selectors require a nonempty value; use --test=NAME when NAME starts with a dash.' >&2
+        exit 2
+    }
+    case "$2" in
+        --lib|--doc|--bins|--tests|--examples|--benches|--all-targets) ;;
+        --bin|--test|--example|--bench)
+            [[ -n "${3:-}" && "${3:-}" != -* ]] || invalid_scope
+            ;;
+        --bin=?*|--test=?*|--example=?*|--bench=?*) ;;
+        *) invalid_scope ;;
+    esac
     exec ./scripts/cargo-admitted test -p "$1" --profile agent --locked "${@:2}"
 
 # Legacy cargo-safe compatibility lint; not host admission. See docs/agents/CARGO_STORAGE.md#staged-native-clippy for the separately qualified route.

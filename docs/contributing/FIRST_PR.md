@@ -203,7 +203,7 @@ restarting every prior judgment merely because the commit SHA changed.
 | Tool and environment check | `just devex` |
 | Fast pull-request loop | `just pr-fast` |
 | Full local merge gate | `just ci-gate` |
-| Agent package check/test | `just agent-check <package> [args...]`, `just agent-test <package> [args...]`, after matching admitted preflight |
+| Agent package check/test | `just agent-check <package> [args...]`, `just agent-test <package> <selector> [args...]` (for example, `--lib` or `--test NAME`), after matching admitted preflight |
 | Agent admission and lint | [Cargo storage admission](../agents/CARGO_STORAGE.md), including the separately qualified Clippy route |
 | Parser or generated status | `just status-update`, then `just status-check` |
 | Public API documentation | `just ci-docs-check`, then `just docs-verify` |

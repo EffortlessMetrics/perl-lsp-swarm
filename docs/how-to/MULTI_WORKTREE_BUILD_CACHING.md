@@ -54,9 +54,11 @@ scripts/cargo-admitted --preflight test -p perl-token --profile agent --locked -
 just agent-test perl-token --lib
 ```
 
-Each recipe requires a package and forwards additional arguments literally. Neither
-implicitly selects the whole workspace or all targets. Run only after the matching
-preflight succeeds; preserve its exact argument order, profile, features and filters.
+Each recipe requires a package and forwards additional arguments literally.
+`agent-test` also requires a target selector immediately after the package, such as
+`--lib` or `--test NAME`; a runtime filter alone does not narrow compilation.
+Run only after the matching preflight succeeds; preserve its exact argument order,
+profile, features and filters.
 
 The [Cargo storage admission contract](../agents/CARGO_STORAGE.md) governs this
 route. It retains one common-repository/host lease and independently reusable

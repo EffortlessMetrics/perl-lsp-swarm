@@ -2,7 +2,7 @@
 xtask = "run --package xtask --"
 
 # Legacy raw Cargo aliases: workspace-wide compatibility commands, not admission.
-# New agent work uses `just agent-check PACKAGE` / `just agent-test PACKAGE`
+# New agent work uses `just agent-check PACKAGE` / `just agent-test PACKAGE SELECTOR`
 # after exact-command preflight; see docs/agents/CARGO_STORAGE.md.
 #
 # Optional machine-local overrides live in `.cargo/config.local.toml` (gitignored;

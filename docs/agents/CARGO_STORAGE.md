@@ -36,12 +36,28 @@ not create per-worktree dependency/compiler caches or enable a compiler wrapper.
 Invalid Git selectors and incompatible storage overrides retain the admission
 owner's refusal behavior. Planning does not establish that a later build can run.
 
-`just agent-check PACKAGE [ARGS...]` and `just agent-test PACKAGE [ARGS...]` require
-an explicit package. They invoke `scripts/cargo-admitted` with `check|test -p PACKAGE
---profile agent --locked`, then forward every additional argument literally, including
-the test-program separator `--`. They add neither `--workspace` nor `--all-targets`.
-Choose the smallest useful target, and preflight the **same underlying argv** before
-execution:
+`just agent-check PACKAGE [ARGS...]` and `just agent-test PACKAGE SELECTOR [ARGS...]`
+require an explicit package. They invoke `scripts/cargo-admitted` with
+`check|test -p PACKAGE --profile agent --locked`, then forward the selector and all
+remaining arguments literally, including the test-program separator `--`.
+
+For `agent-test`, the target selector must immediately follow the package:
+
+- `--lib` or `--doc` selects library unit tests or documentation tests.
+- `--test NAME`, `--bin NAME`, `--example NAME`, or `--bench NAME` selects a named
+  target. Joined forms such as `--test=NAME` also work. A separate name must be
+  nonempty and cannot start with `-`; use the joined form for such a name.
+- `--tests`, `--bins`, `--examples`, `--benches`, or `--all-targets` explicitly
+  requests a broader target population.
+
+A [test-name filter](https://doc.rust-lang.org/cargo/commands/cargo-test.html),
+including one after `--`, filters test execution after Cargo has selected and
+compiled targets. It does not limit that compilation. The recipe
+refuses a missing or invalid first selector before delegation; it never silently
+selects library-only proof. Remaining arguments are Cargo's responsibility.
+The direct admitted route still supports deliberately broader package requests.
+Choose the target population required by the change, and preflight the **same
+underlying argv** before execution:
 
 ```bash
 scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib

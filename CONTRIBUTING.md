@@ -192,10 +192,13 @@ and intermediate paths, resource ownership and supported commands; see
 [constrained-host guidance](docs/how-to/CONSTRAINED_CARGO_BUILDS.md) if capacity
 refuses the request. Do not lower limits merely to pass.
 
-`just agent-check <package> [args...]` and `just agent-test <package> [args...]`
+`just agent-check <package> [args...]` and `just agent-test <package> <selector> [args...]`
 delegate to that route with `-p <package> --profile agent --locked`, followed by
-your literal arguments. A package is required; neither recipe adds `--workspace`
-or `--all-targets`. Preflight the exact underlying request, including its profile:
+your literal arguments. Both require a package. For tests, put a target selector
+such as `--lib` or `--test NAME` immediately after the package; a runtime test-name
+filter alone still compiles the package's default targets. Explicit broad selectors
+such as `--tests` remain available. Preflight the exact underlying request,
+including its profile:
 
 ```bash
 scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib
@@ -210,7 +213,7 @@ just agent-check perl-token --lib
 | Full local merge gate | `just ci-gate` |
 | Plan build storage | `just devplane-init` — prints admitted paths without allocating directories or assessing capacity |
 | New agent package check/test | `scripts/cargo-admitted check -p <package> --profile agent --locked` / `scripts/cargo-admitted test -p <package> --profile agent --locked`, after exact-command preflight |
-| Focused agent shortcuts | `just agent-check <package> [args...]` / `just agent-test <package> [args...]` — the same admitted agent-profile commands |
+| Focused agent shortcuts | `just agent-check <package> [args...]` / `just agent-test <package> <selector> [args...]` — the same admitted agent-profile commands |
 | Agent Clippy | Follow the separately qualified [staged native Clippy route](docs/agents/CARGO_STORAGE.md#staged-native-clippy): Linux, installed repository pin 1.95.0, exact supported command |
 | Legacy compatibility callers | `just cached <cargo args>`, `just agent-clippy`, `just agent-nextest`, `just agent-pr-fast` — retain existing behavior; not host admission or the route for new agent work |
 | Build disk grew / stale target trees | `just target-gc` (advisory report), then request an exact owner-verified cleanup proposal; `--apply` is retired |

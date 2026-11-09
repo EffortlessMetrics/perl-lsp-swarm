@@ -86,7 +86,9 @@ deterministic ordering. Do not hold locks across `.await`.
 ## Build and storage discipline
 
 Use [Cargo storage admission](CARGO_STORAGE.md) and scoped proof. The focused
-recipes require a package, use the agent profile, and forward additional arguments
+recipes require a package and use the agent profile. `agent-test` also requires a
+target selector immediately after the package, such as `--lib` or `--test NAME`;
+a runtime filter alone does not narrow compilation. Arguments are forwarded
 literally. Preflight their exact underlying request before execution:
 
 ```bash

@@ -609,7 +609,7 @@ fn proof_command(
 
 fn agent_hints(surfaces: &BTreeSet<Surface>) -> Vec<String> {
     let mut hints = vec![
-        "Use `just agent-check <package> [args...]` and `just agent-test <package> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.".to_string(),
+        "Use `just agent-check <package> [args...]` and `just agent-test <package> <selector> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.".to_string(),
         "Use `just agent-pr-fast` when you need the PR-fast gate through cargo-safe agent profiles.".to_string(),
     ];
 
@@ -1129,7 +1129,7 @@ Optional / expensive:
   evidence: optional unless the change is broad, risky, or CI-only behavior is unclear
 
 Agent-safe hints:
-- Use `just agent-check <package> [args...]` and `just agent-test <package> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.
+- Use `just agent-check <package> [args...]` and `just agent-test <package> <selector> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.
 - Use `just agent-pr-fast` when you need the PR-fast gate through cargo-safe agent profiles.
 "#
         );
@@ -1192,7 +1192,7 @@ Agent-safe hints:
     }
   ],
   "agent_hints": [
-    "Use `just agent-check <package> [args...]` and `just agent-test <package> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.",
+    "Use `just agent-check <package> [args...]` and `just agent-test <package> <selector> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.",
     "Use `just agent-pr-fast` when you need the PR-fast gate through cargo-safe agent profiles."
   ],
   "worktree_clean": true,
@@ -1345,7 +1345,7 @@ Agent-safe path:       available
 Receipt written:       target/devex/local-proof.json
 
 Agent hints:
-  - Use `just agent-check <package> [args...]` and `just agent-test <package> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.
+  - Use `just agent-check <package> [args...]` and `just agent-test <package> <selector> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.
   - Use `just agent-pr-fast` when you need the PR-fast gate through cargo-safe agent profiles.
   - For memory-sensitive edits, keep focused lifecycle/cache tests in the PR body alongside policy proof.
 
@@ -1406,7 +1406,7 @@ Optional proof:
 
 
 Agent hints:
-- Use `just agent-check <package> [args...]` and `just agent-test <package> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.
+- Use `just agent-check <package> [args...]` and `just agent-test <package> <selector> [args...]` after matching exact-command preflight. See docs/agents/CARGO_STORAGE.md for admission and the separately qualified Clippy route.
 - Use `just agent-pr-fast` when you need the PR-fast gate through cargo-safe agent profiles.
 - For parser-accuracy edits, attach ratchet output or explain intentional baseline/status changes.
 

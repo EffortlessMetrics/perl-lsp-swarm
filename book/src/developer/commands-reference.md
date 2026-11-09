@@ -88,7 +88,7 @@ perl-dap --stdio  # Standard DAP transport
 | Before push | `just ready` | Runs doctor plus the fast PR gate. |
 | Fast PR loop | `just pr-fast` | Cheapest useful proof while iterating. |
 | Plan build storage | `just devplane-init` | Prints admitted resource paths; allocates nothing and does not assess capacity. |
-| Agent package check/test | `just agent-check <package> [args...]` / `just agent-test <package> [args...]` | Uses cargo-admitted with the agent profile and locked dependencies; requires matching exact-command preflight. |
+| Agent package check/test | `just agent-check <package> [args...]` / `just agent-test <package> <selector> [args...]` | Uses cargo-admitted with the agent profile and locked dependencies; tests require an explicit target selector such as `--lib` or `--test NAME`. Requires matching exact-command preflight. |
 | Agent lint | [Staged native Clippy](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/agents/CARGO_STORAGE.md#staged-native-clippy) | Uses the separately qualified admitted route. |
 | Legacy lint/PR compatibility | `just agent-clippy` / `just agent-pr-fast` | Retains cargo-safe behavior; does not provide admission. |
 | Full pre-merge | `just ci-gate` or `nix develop -c just ci-gate` | Canonical local merge gate. |

@@ -250,12 +250,50 @@ class AgentRecipeTests(unittest.TestCase):
                 self.assertFalse(self.arguments.exists())
                 self.assertFalse(self.calls.exists())
 
-    def test_default_is_one_package_through_admission(self):
-        for operation in ("check", "test"):
-            with self.subTest(operation=operation):
-                result = self.invoke("agent-" + operation, "perl-token")
+    def test_check_default_is_one_package_through_admission(self):
+        result = self.invoke("agent-check", "perl-token")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_delegated(["check", "-p", "perl-token", "--profile", "agent", "--locked"])
+
+    def test_test_requires_a_target_selector_before_any_execution(self):
+        # The shortcut requires the selector first; runtime filters alone do not narrow compilation.
+        for args in ((), ("",), ("wanted",), ("wanted", "--lib"),
+                     ("--", "--lib"), ("--", "--test", "selected"),
+                     ("--offline", "--lib"), ("--features", "--lib"),
+                     ("--target", "host-triple"), ("--unknown",),
+                     ("--lib=extra",), ("--doc=extra",), ("--tests=extra",)):
+            with self.subTest(args=args):
+                result = self.invoke("agent-test", "perl-token", *args)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(self.arguments.exists(), "invalid scope reached admission")
+                self.assertFalse(self.calls.exists())
+
+    def test_named_selectors_require_an_unambiguous_nonempty_value(self):
+        for selector in ("--bin", "--test", "--example", "--bench"):
+            for args in ((selector,), (selector, ""), (selector, "--"),
+                         (selector, "--lib"), (selector, "-name"), (selector + "=",)):
+                with self.subTest(args=args):
+                    result = self.invoke("agent-test", "perl-token", *args)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertFalse(self.arguments.exists(), "missing target value reached admission")
+                    self.assertFalse(self.calls.exists())
+
+    def test_explicit_target_forms_and_literal_values_reach_admission(self):
+        forms = [(flag,) for flag in ("--lib", "--doc", "--bins", "--tests",
+                                     "--examples", "--benches", "--all-targets")]
+        target = "target $(touch target-injected) `touch target-too`; *\nquote'\"$cash"
+        for selector in ("--bin", "--test", "--example", "--bench"):
+            forms.extend(((selector, target), (selector + "=" + target,),
+                          (selector + "=-literal-name",)))
+        extra = ["--features", "feature with spaces", "--", "--lib", "", "case*"]
+        for selection in forms:
+            with self.subTest(selection=selection):
+                args = [*selection, *extra]
+                result = self.invoke("agent-test", "perl-token", *args)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assert_delegated([operation, "-p", "perl-token", "--profile", "agent", "--locked"])
+                self.assert_delegated(["test", "-p", "perl-token", "--profile", "agent", "--locked", *args])
+        for name in ("target-injected", "target-too"):
+            self.assertFalse((self.root / name).exists())
 
     def test_arguments_and_program_separator_are_literal(self):
         args = ["--test", "specific-target", "--features", "feature with spaces", "--",

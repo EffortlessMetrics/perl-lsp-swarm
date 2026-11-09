@@ -278,7 +278,8 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         for operation in ("check", "test"):
             command = f"scripts/cargo-admitted {operation} -p <package> --profile agent --locked"
             self.assertTrue(any("New agent" in row and command in row for row in rows), command)
-            shortcut = f"just agent-{operation} <package> [args...]"
+            selector = " <selector>" if operation == "test" else ""
+            shortcut = f"just agent-{operation} <package>{selector} [args...]"
             self.assertTrue(any(shortcut in row and "admitted" in row for row in rows), shortcut)
         for recipe in ("cached", "agent-clippy", "agent-nextest", "agent-pr-fast"):
             matching = [row for row in rows if f"`just {recipe}" in row]
