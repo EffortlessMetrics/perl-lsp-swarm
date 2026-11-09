@@ -2,4 +2,4 @@ mod driver;
 pub(crate) mod helpers;
 mod state;
 
-pub use state::PerlLexer;
+pub use state::{PerlLexer, StrayCutOpen};

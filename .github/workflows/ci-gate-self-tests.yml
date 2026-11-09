@@ -428,6 +428,9 @@ jobs:
       - name: Run worktree hook-provisioning self-test
         run: bash scripts/tests/test-worktree-add-hooks.sh
 
+      - name: Run warning-only checkout hook regression
+        run: python3 -m unittest discover -s scripts/tests -p test_warn_stale_checkout.py -v
+
       - name: Summary
         if: always()
         env:
@@ -437,6 +440,7 @@ jobs:
             echo "## Worktree hook-provisioning self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Fresh worktrees (issue #17406) get a current executable pre-push hook via scripts/worktree-add.sh and worktree-manager.py \`allocate\`, installer failures fail loudly naming the installer, and current hooks skip the installer build." >> "$GITHUB_STEP_SUMMARY"
+            echo "Warning-only checkout hooks also preserve successful Git transitions when freshness receipts or parsers fail (#19108)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## Worktree hook-provisioning self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"

@@ -13,7 +13,7 @@ fn runtime_mode_normal_defaults_unchanged() {
     let tuning = server.runtime_tuning();
     assert_eq!(tuning.runtime_mode, RuntimeMode::Normal);
     assert_eq!(tuning.diagnostic_mode, DiagnosticMode::Normal);
-    assert_eq!(tuning.diagnostic_debounce_ms, 250);
+    assert_eq!(tuning.diagnostic_debounce_ms, 50);
     assert!(tuning.eager_workspace_indexing);
     assert!(tuning.file_watchers);
 }
