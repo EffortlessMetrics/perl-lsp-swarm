@@ -298,8 +298,10 @@ environments, command lines, descriptors, mappings or executable paths.
 `child_discovery_capability(mode)` validates the live calling owner before any
 lease or allocation. The profile requires one native CPython owner thread, default
 SIGCHLD, matching singleton procfs/native PID identities, the same current and
-child PID namespaces, and one full procfs root without hidepid restrictions or
-numeric/task-path overmounts. It revalidates these observations on discovery
+child PID namespaces, and at least one full procfs root without hidepid restrictions
+or numeric/task-path overmounts. When mounts are stacked at `/proc`, every root
+record must describe a complete, unrestricted procfs root; an invalid hidden lower
+layer still refuses. It revalidates these observations on discovery
 turns. Unreadable or malformed records, changed roots, more than 32,768 numeric
 entries, or a discovery turn exceeding one second refuse. This elapsed-time
 threshold includes metadata and the final observation; it does not preempt an

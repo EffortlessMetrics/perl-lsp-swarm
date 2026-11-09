@@ -300,11 +300,14 @@ def proc_parent_child_ids():
                 raise Denied('proc-parent numeric/task projection is overmounted')
             if point == '/proc':
                 roots.append((fields, filesystem))
-        if len(roots) != 1 or roots[0][0][3] != '/' or roots[0][1][0] != 'proc':
-            raise Denied('proc-parent discovery requires one complete procfs root')
-        options = roots[0][0][5].split(',') + roots[0][1][2].split(',')
-        if any(option.startswith('hidepid=') and option != 'hidepid=0' for option in options):
-            raise Denied('proc-parent discovery refuses hidden PID visibility')
+        # Stacked mounts may share /proc; even a hidden layer must be complete.
+        if not roots or any(fields[3] != '/' or filesystem[0] != 'proc'
+                            for fields, filesystem in roots):
+            raise Denied('proc-parent discovery requires complete procfs roots at /proc')
+        for fields, filesystem in roots:
+            options = fields[5].split(',') + filesystem[2].split(',')
+            if any(option.startswith('hidepid=') and option != 'hidepid=0' for option in options):
+                raise Denied('proc-parent discovery refuses hidden PID visibility')
         root_identity = directory_identity(Path('/proc'))
         if time.monotonic() - started > 1:
             raise Denied('proc-parent discovery exceeds bounded turn')
