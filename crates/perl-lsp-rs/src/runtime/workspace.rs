@@ -749,8 +749,8 @@ impl LspServer {
             match access_mode {
                 IndexAccessMode::Full(coordinator) => {
                     // Full query path: use workspace index.
-                    // Pass the cap into the search so results are bounded before
-                    // allocation — early exit at the search boundary, not after collecting.
+                    // Source search clones only its capped result rows. Matching
+                    // and ranking still inspect the admitted candidate population.
                     let mut symbols = coordinator
                         .index()
                         .search_source_symbols_with_profile(&query_profile, Some(cap));

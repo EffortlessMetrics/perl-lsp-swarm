@@ -90,6 +90,7 @@ use std::cell::Cell;
 thread_local! {
     static INCREMENTAL_SEARCH_ADD_CALLS: Cell<usize> = const { Cell::new(0) };
     static REBUILD_SEARCH_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
+    static WORKSPACE_SYMBOL_CLONE_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
@@ -1062,7 +1063,8 @@ pub struct CrossFileReferenceQueryResult {
 // `PartialEq` added for 1711-B shadow-compare parity assertions (see
 // `FileExtractionBundle` / `extraction_bundle_shadow_compare`) -- every field
 // type already derives `PartialEq`, so this is purely additive.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(not(test), derive(Clone))]
 /// A symbol in the workspace for Index/Navigate workflows.
 pub struct WorkspaceSymbol {
     /// Symbol name without package qualification
@@ -1093,6 +1095,27 @@ pub struct WorkspaceSymbol {
     /// lexical-unused detection is deferred to the scope-aware `ScopeAnalyzer`.
     #[serde(default)]
     pub is_lexical: bool,
+}
+
+// Observe the actual operation, including clones introduced before the final
+// result materializer. Normal builds retain the derived implementation.
+#[cfg(test)]
+impl Clone for WorkspaceSymbol {
+    fn clone(&self) -> Self {
+        WORKSPACE_SYMBOL_CLONE_CALLS.with(|calls| calls.set(calls.get() + 1));
+        Self {
+            name: self.name.clone(),
+            kind: self.kind,
+            uri: self.uri.clone(),
+            range: self.range,
+            qualified_name: self.qualified_name.clone(),
+            documentation: self.documentation.clone(),
+            container_name: self.container_name.clone(),
+            has_body: self.has_body,
+            workspace_folder_uri: self.workspace_folder_uri.clone(),
+            is_lexical: self.is_lexical,
+        }
+    }
 }
 
 fn default_has_body() -> bool {
@@ -4376,7 +4399,7 @@ impl WorkspaceIndex {
     where
         I: IntoIterator<Item = (&'a str, &'a Vec<WorkspaceSymbol>)>,
     {
-        let mut seen: HashSet<(String, usize)> = HashSet::new();
+        let mut seen: HashSet<(&str, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring/prefix > subsequence (fuzzy).
         //
@@ -4409,19 +4432,26 @@ impl WorkspaceIndex {
             left.compare(right).then_with(|| left_key.cmp(right_key))
         });
 
-        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
+        // Keep candidates borrowed until the final cap. Matching, deduplication
+        // and sorting still inspect the admitted population; only returned
+        // symbols need their owned strings copied.
+        let mut scored: Vec<(u8, &WorkspaceSymbol)> = Vec::new();
         for (evidence, _name_key, symbols) in admitted {
             let score = legacy_index_match_rank(evidence.tier());
             for sym in symbols {
-                let dedup_key = (sym.uri.clone(), sym.range.start.byte);
+                let dedup_key = (sym.uri.as_str(), sym.range.start.byte);
                 if seen.insert(dedup_key) {
-                    scored.push((score, sym.clone()));
+                    scored.push((score, sym));
                 }
             }
         }
         // Sort by relevance (descending), then by name for stable ordering.
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
-        scored.into_iter().map(|(_, s)| s).take(cap.unwrap_or(usize::MAX)).collect()
+        scored
+            .into_iter()
+            .take(cap.unwrap_or(usize::MAX))
+            .map(|(_, symbol)| symbol.clone())
+            .collect()
     }
 
     /// Search labeled generated/framework members backed by semantic source anchors.
@@ -13822,6 +13852,227 @@ mod entity_id_file_scoped_tests {
 }
 
 // ── search_source_symbols / search_generated_workspace_symbols cap (#1668) ──
+
+#[cfg(test)]
+mod source_symbol_materialization_tests {
+    use super::*;
+
+    fn symbol(name: &str, uri: &str, start: usize) -> WorkspaceSymbol {
+        WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: uri.to_string(),
+            range: Range {
+                start: Position { byte: start, line: 2, column: 3 },
+                end: Position { byte: start + name.len(), line: 2, column: 3 + name.len() as u32 },
+            },
+            qualified_name: Some(format!("Pkg::{name}")),
+            documentation: Some(format!("Documentation for {name}")),
+            container_name: Some("Pkg".to_string()),
+            has_body: false,
+            workspace_folder_uri: Some("file:///workspace".to_string()),
+            is_lexical: true,
+        }
+    }
+
+    fn observe_clones<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+        // Fixture creation and the independent reference run outside this
+        // thread-local window. The selector itself is synchronous.
+        WORKSPACE_SYMBOL_CLONE_CALLS.with(|calls| calls.set(0));
+        let result = operation();
+        let clones = WORKSPACE_SYMBOL_CLONE_CALLS.with(Cell::get);
+        (result, clones)
+    }
+
+    fn legacy_owned_reference<'a>(
+        buckets: impl IntoIterator<Item = (&'a str, &'a Vec<WorkspaceSymbol>)>,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol> {
+        // Deliberately flatten owned rows first, independently of the
+        // production bucket helper and its deferred ownership strategy.
+        // Query admission/comparison remain with their canonical owner.
+        let mut rows = Vec::new();
+        for (key, symbols) in buckets {
+            let role = if key.contains("::") || key.contains('\'') {
+                WorkspaceSymbolSearchKeyRole::QualifiedName
+            } else {
+                WorkspaceSymbolSearchKeyRole::BareName
+            };
+            if let Some(evidence) = match_searchable_key(profile, key, role) {
+                for symbol in symbols {
+                    rows.push((evidence.clone(), key, symbol.clone()));
+                }
+            }
+        }
+        rows.sort_by(|(left, left_key, _), (right, right_key, _)| {
+            left.compare(right).then_with(|| left_key.cmp(right_key))
+        });
+        let mut seen = HashSet::new();
+        rows.retain(|(_, _, row)| seen.insert((row.uri.clone(), row.range.start.byte)));
+        rows.sort_by(|(left, _, a), (right, _, b)| {
+            legacy_index_match_rank(right.tier())
+                .cmp(&legacy_index_match_rank(left.tier()))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        rows.into_iter().take(cap.unwrap_or(usize::MAX)).map(|(_, _, row)| row).collect()
+    }
+
+    #[test]
+    fn clone_probe_observes_complete_symbol_copies() {
+        let original = symbol("run", "file:///workspace/one.pm", 7);
+        let (copy, clones) = observe_clones(|| original.clone());
+        assert_eq!(clones, 1, "the instrument must observe the real Clone operation");
+        assert_eq!(copy, original, "the test Clone implementation must preserve every field");
+        assert_ne!(copy.uri.as_ptr(), original.uri.as_ptr());
+    }
+
+    #[test]
+    fn ordered_buckets_clone_only_the_returned_prefix() {
+        let buckets: Vec<_> = (0..24)
+            .rev()
+            .map(|i| {
+                let name = format!("run_{i:02}");
+                let row = symbol(&name, &format!("file:///workspace/{i}.pm"), i);
+                (name, vec![row])
+            })
+            .collect();
+        for query in ["", "run", "run_03", "missing"] {
+            let profile = WorkspaceSymbolQueryProfile::compile(query);
+            let total = legacy_owned_reference(
+                buckets.iter().map(|(key, rows)| (key.as_str(), rows)),
+                &profile,
+                None,
+            )
+            .len();
+            for cap in [Some(0), Some(1), Some(2), Some(total), Some(total + 1), None] {
+                let expected = legacy_owned_reference(
+                    buckets.iter().map(|(key, rows)| (key.as_str(), rows)),
+                    &profile,
+                    cap,
+                );
+                let (actual, clones) = observe_clones(|| {
+                    WorkspaceIndex::search_source_symbols_from_buckets(
+                        buckets.iter().map(|(key, rows)| (key.as_str(), rows)),
+                        &profile,
+                        cap,
+                    )
+                });
+                assert_eq!(actual, expected, "ordered rows changed: query={query:?}, cap={cap:?}");
+                assert_eq!(
+                    clones,
+                    actual.len(),
+                    "cloned discarded rows: query={query:?}, cap={cap:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_search_clones_only_returned_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let source = (0..16).map(|i| format!("sub run_{i:02} {{ {i} }}\n")).collect::<String>();
+        index.index_initial_file(Url::parse("file:///workspace/Pkg.pm")?, source)?;
+        assert_eq!(index.file_count(), 1, "the public fixture must admit its source file");
+        let names: Vec<_> =
+            index.search_source_symbols("", None).into_iter().map(|row| row.name).collect();
+        let expected_names: Vec<_> = (0..16).map(|i| format!("run_{i:02}")).collect();
+        assert_eq!(names, expected_names, "public proof requires all sixteen indexed declarations");
+        for query in ["", "run", "run_03", "missing"] {
+            let profile = WorkspaceSymbolQueryProfile::compile(query);
+            let total = {
+                let search_index = index.search_index.read();
+                legacy_owned_reference(
+                    search_index.iter().map(|(key, rows)| (key.as_str(), rows)),
+                    &profile,
+                    None,
+                )
+                .len()
+            };
+            for cap in [Some(0), Some(1), Some(2), Some(total), Some(total + 1), None] {
+                let expected = {
+                    let search_index = index.search_index.read();
+                    legacy_owned_reference(
+                        search_index.iter().map(|(key, rows)| (key.as_str(), rows)),
+                        &profile,
+                        cap,
+                    )
+                };
+                let (actual, clones) =
+                    observe_clones(|| index.search_source_symbols_with_profile(&profile, cap));
+                assert_eq!(actual, expected, "public rows changed: query={query:?}, cap={cap:?}");
+                assert_eq!(
+                    clones,
+                    actual.len(),
+                    "public path over-cloned: query={query:?}, cap={cap:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn alias_evidence_and_stable_ties_survive_materialization() {
+        let first = symbol("run", "file:///workspace/first.pm", 10);
+        let second = symbol("run", "file:///workspace/second.pm", 20);
+        let competing = symbol("a_run", "file:///workspace/competing.pm", 30);
+        let expected = vec![second.clone(), first.clone(), competing.clone()];
+        let buckets = [
+            ("Pkg::run", vec![first.clone(), second.clone()]),
+            ("a_run", vec![competing]),
+            ("run", vec![second, first]),
+        ];
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let (actual, clones) = observe_clones(|| {
+            WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, rows)| (*key, rows)),
+                &profile,
+                None,
+            )
+        });
+        assert_eq!(actual, expected, "best alias and stable equal-name order must be preserved");
+        assert_eq!(clones, 3);
+    }
+
+    #[test]
+    fn equal_uri_contents_deduplicate_without_collapsing_other_locations() {
+        let first = symbol("run", "file:///workspace/one.pm", 10);
+        let alias = first.clone();
+        assert_ne!(first.uri.as_ptr(), alias.uri.as_ptr(), "fixture requires distinct allocations");
+        let next_position = symbol("run", "file:///workspace/one.pm", 20);
+        let next_file = symbol("run", "file:///workspace/two.pm", 10);
+        let expected = vec![first.clone(), next_position.clone(), next_file.clone()];
+        let buckets = [("Pkg::run", vec![alias]), ("run", vec![first, next_position, next_file])];
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let (actual, clones) = observe_clones(|| {
+            WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, rows)| (*key, rows)),
+                &profile,
+                None,
+            )
+        });
+        assert_eq!(actual, expected);
+        assert_eq!(clones, 3);
+    }
+
+    #[test]
+    fn cap_is_applied_after_final_name_ranking() {
+        let zeta = symbol("zeta", "file:///workspace/zeta.pm", 10);
+        let alpha = symbol("alpha", "file:///workspace/alpha.pm", 20);
+        let expected = vec![alpha.clone()];
+        let buckets = [("A::zeta", vec![zeta]), ("B::alpha", vec![alpha])];
+        let profile = WorkspaceSymbolQueryProfile::compile("");
+        let (actual, clones) = observe_clones(|| {
+            WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, rows)| (*key, rows)),
+                &profile,
+                Some(1),
+            )
+        });
+        assert_eq!(actual, expected, "bucket order must not truncate the better final name");
+        assert_eq!(clones, 1);
+    }
+}
 
 #[cfg(test)]
 mod search_cap_tests {
