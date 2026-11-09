@@ -1,0 +1,11 @@
+{
+  "schema_version": "perl_lsp.release_publication_policy.v1",
+  "profiles": {
+    "public-beta-rc": {
+      "required": ["github_release"],
+      "conditional": ["open_vsx"],
+      "forbidden": ["crates_io", "vscode_marketplace", "docker", "homebrew"],
+      "requires_prerelease": true
+    }
+  }
+}

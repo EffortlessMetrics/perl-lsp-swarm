@@ -6,6 +6,8 @@
 //! Fixture layout mirrors `tests/packet_characterization.rs` (fixed
 //! `target/`-relative root; [`RiprFactsRequest::root`] must be repo-relative).
 
+#![deny(clippy::map_err_ignore)]
+
 use perl_ripr_facts::{RiprFactsRequest, build_ripr_facts_packet};
 use perl_tdd_support::{must, must_with};
 
