@@ -2,14 +2,13 @@
 """Compatibility shim for the Rust non-Rust policy schema validator.
 
 The schema validation logic lives in `cargo xtask non-rust validate-policy` so
-file-policy checks share the same Rust implementation. This wrapper preserves
-older automation that still invokes the historical Python script path.
+file-policy checks share the same Rust implementation. This historical entrypoint
+uses the existing Cargo admission owner; it does not select build storage itself.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import subprocess
 import sys
@@ -29,19 +28,28 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    caller = pathlib.Path.cwd()
+    # Anchor the producer to this checkout, but retain the caller's policy-file
+    # referents. Joining an absolute cwd preserves symlink/.. filesystem
+    # semantics; resolve()/abspath() would unnecessarily rewrite those paths.
     command = [
-        "cargo",
-        "xtask",
+        sys.executable,
+        "-B",
+        str(repo_root / "scripts" / "cargo_admitted.py"),
+        "run",
+        "-p", "xtask",
+        "--bin", "xtask",
+        "--locked",
+        "--",
         "non-rust",
         "validate-policy",
         "--allowlist",
-        str(args.allowlist),
+        str(caller / args.allowlist),
         "--debt",
-        str(args.debt),
+        str(caller / args.debt),
     ]
-    env = os.environ.copy()
-    env.setdefault("CARGO_TARGET_DIR", "/tmp/perl-lsp-target")
-    return subprocess.run(command, check=False, env=env).returncode
+    return subprocess.run(command, check=False, cwd=repo_root).returncode
 
 
 if __name__ == "__main__":
