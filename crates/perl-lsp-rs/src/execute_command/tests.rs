@@ -1670,6 +1670,57 @@ fn run_critic_severity_threshold_matches_diagnostics_plane_policy()
 }
 
 #[test]
+fn run_critic_unopened_disabled_accepted_state_reports_no_native_findings()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #6969 discriminating proof: the unopened-file path now evaluates
+    // through `NativeCriticService` under the accepted state captured at
+    // provider construction. A `Disabled` accepted state is only
+    // representable through that service route — the previous direct
+    // registry/policy pipeline had no disabled input and always reported
+    // the profile's findings for this source.
+    let source = "use strict;\nuse warnings;\nmy $c = '1';\neval $c;\nmy $out = `ls -la`;\n";
+    let tmp = tempdir()?;
+    let file = tmp.path().join("disabled_unopened.pl");
+    fs::write(&file, source)?;
+
+    // Control: the same file under the default (enabled) provider reports
+    // native findings, so an empty result below is the disabled state at
+    // work, not a fixture that trips nothing.
+    let control = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()]);
+    let control_result = control
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])?;
+    assert_eq!(control_result["analyzerUsed"], "native");
+    assert!(
+        control_result["violations"]
+            .as_array()
+            .ok_or("violations is not an array")?
+            .iter()
+            .any(|violation| violation["policy"] == "native.security.string_eval"),
+        "control run must report native findings for this fixture: {control_result}"
+    );
+
+    let mut config = perl_lsp_rs_core::config::ServerConfig::default();
+    config.perlcritic_enabled = false;
+    let disabled_snapshot =
+        perl_lsp_rs_core::config::AcceptedCriticSnapshot::capture(&config, None);
+    let provider = ExecuteCommandProvider::with_workspace_roots(vec![tmp.path().to_path_buf()])
+        .with_accepted_critic_snapshot(disabled_snapshot);
+    let result = provider
+        .execute_command("perl.runCritic", vec![json!(file.to_string_lossy().to_string())])?;
+    assert_eq!(result["status"], "success");
+    assert_eq!(result["analyzerUsed"], "native");
+    assert_eq!(
+        result["violationCount"], 0,
+        "disabled accepted state must report no native findings on the unopened path: {result}"
+    );
+    assert!(
+        result["violations"].as_array().ok_or("violations is not an array")?.is_empty(),
+        "disabled accepted state must produce an empty violation list: {result}"
+    );
+    Ok(())
+}
+
+#[test]
 fn external_critic_not_requested_without_config() {
     // The structural guarantee behind "perlcritic on PATH does not change the
     // default": with no config the external branch is never reached, so the

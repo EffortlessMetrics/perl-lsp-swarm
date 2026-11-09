@@ -1,13 +1,13 @@
 //! Backend command implementations for run/debug/test and analyzer actions.
 
-use crate::perl_critic::{
-    BuiltInAnalyzer, CriticAnalyzer, CriticConfig, CriticContext, NativeCriticProfile,
-    NativeCriticRegistry,
-};
+use crate::perl_critic::{BuiltInAnalyzer, CriticAnalyzer, CriticConfig, NativeCriticProfile};
 use crate::perl_remediation::PERL_REMEDIATION;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
-use perl_lsp_rs_core::config::{CriticEngine, WorkspaceConfig};
+use perl_lsp_rs_core::config::{
+    AcceptedCriticSnapshot, CriticEngine, EffectiveCriticState, EffectiveNativeCriticConfig,
+    WorkspaceConfig,
+};
 use perl_lsp_rs_core::providers::{
     ProviderDecisionConfidence, ProviderDecisionCopyablePayload, ProviderDecisionExplanation,
     ProviderDecisionFactSource, ProviderDecisionFallback, ProviderDecisionFreshness,
@@ -95,6 +95,27 @@ pub struct ExecuteCommandProvider {
     /// native pull-diagnostics path uses, so the command and on-type diagnostics
     /// report the same `NativeCriticRegistry` rule set.
     native_critic_config: NativeCriticCommandConfig,
+    /// Accepted critic snapshot captured where this provider is constructed
+    /// from live `ServerConfig` (#6969). When present it is the sole policy
+    /// authority for the unopened-file native run: `Disabled` yields no
+    /// native findings, and profile/severity/include/exclude come from the
+    /// #8253 accepted state rather than the raw sibling fields above. When
+    /// absent (direct construction in tests and other callers), the run
+    /// derives an equivalent accepted state from `native_critic_config`.
+    accepted_critic_snapshot: Option<AcceptedCriticSnapshot>,
+}
+
+/// Canonicalize one raw rule-ID list the way the #8253 accepted-state
+/// derivation does: trimmed, empties dropped, deduplicated, sorted.
+fn canonical_critic_rule_ids(values: &[String]) -> Vec<String> {
+    let mut canonical: Vec<String> = values
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    canonical.sort();
+    canonical.dedup();
+    canonical
 }
 
 /// Native-critic rule configuration plumbed into [`ExecuteCommandProvider`] from
@@ -245,6 +266,7 @@ impl ExecuteCommandProvider {
             workspace_config: None,
             critic_engine: CriticEngine::Native,
             native_critic_config: NativeCriticCommandConfig::default(),
+            accepted_critic_snapshot: None,
         }
     }
 
@@ -255,6 +277,7 @@ impl ExecuteCommandProvider {
             workspace_config: None,
             critic_engine: CriticEngine::Native,
             native_critic_config: NativeCriticCommandConfig::default(),
+            accepted_critic_snapshot: None,
         }
     }
 
@@ -283,6 +306,44 @@ impl ExecuteCommandProvider {
         self.native_critic_config =
             NativeCriticCommandConfig { profile, include, exclude, severity };
         self
+    }
+
+    /// Attach the accepted critic snapshot captured from live `ServerConfig`
+    /// where this provider is constructed (#6969).
+    ///
+    /// This is the production seam for the unopened-file `perl.runCritic`
+    /// route: the snapshot is captured in one read of the accepted-state
+    /// authority, so a `Disabled` state (critic switched off) and the
+    /// canonical profile/severity/include/exclude policy reach the native
+    /// service exactly as the pull-diagnostics path sees them. It takes
+    /// precedence over the raw sibling fields set by
+    /// [`Self::with_native_critic_config`].
+    pub fn with_accepted_critic_snapshot(mut self, snapshot: AcceptedCriticSnapshot) -> Self {
+        self.accepted_critic_snapshot = Some(snapshot);
+        self
+    }
+
+    /// The accepted critic state this provider evaluates unopened files
+    /// under (#6969).
+    ///
+    /// A captured snapshot wins. Without one, derive the same accepted shape
+    /// from the raw command config: profile parsed canonically (unknown
+    /// tokens fall back to the default profile), severity clamped to
+    /// 1..=5, and rule-ID lists canonicalized. This fallback cannot express
+    /// `Disabled` — that state only arrives through a captured snapshot,
+    /// which is why production construction always captures one.
+    fn effective_critic_state(&self) -> EffectiveCriticState {
+        if let Some(snapshot) = &self.accepted_critic_snapshot {
+            return snapshot.state().clone();
+        }
+        let cfg = &self.native_critic_config;
+        EffectiveCriticState::Native(EffectiveNativeCriticConfig {
+            profile: NativeCriticProfile::parse(&cfg.profile).unwrap_or_default(),
+            severity_threshold: cfg.severity.clamp(1, 5),
+            include: canonical_critic_rule_ids(&cfg.include),
+            exclude: canonical_critic_rule_ids(&cfg.exclude),
+            owning_root: None,
+        })
     }
 
     /// Attach a workspace configuration to enable PerlOracleEnv isolation for
@@ -877,9 +938,9 @@ impl ExecuteCommandProvider {
         }
     }
 
-    /// Run the native critic rule registry (`NativeCriticRegistry`) — the same
-    /// engine the editor's on-type pull diagnostics use — and format its findings
-    /// into the `perl.runCritic` result shape.
+    /// Run the native critic service (`NativeCriticService`) — the same
+    /// entrypoint the editor's pull diagnostics and code actions use — and
+    /// format its findings into the `perl.runCritic` result shape.
     ///
     /// This is the default `perl.runCritic` path (engine `Native`). Unlike
     /// [`Self::run_builtin_critic`] (which runs the Perl::Critic-compatible
@@ -915,43 +976,37 @@ impl ExecuteCommandProvider {
             }
         };
 
-        // Build the native critic config from the plumbed server config, mirroring
-        // the editor's native pull-diagnostics path (`add_native_critic_diagnostics`).
-        // The `NativeCriticProfile` selects the rule set; `include`/`exclude`/
-        // `severity` refine it. The rc-file `profile` is an external-perlcritic
-        // concept the native registry does not consult, so it stays `None`.
-        let cfg = &self.native_critic_config;
-        let critic_config = CriticConfig {
-            severity: cfg.severity.clamp(1, 5),
-            profile: None,
-            include: cfg.include.clone(),
-            exclude: cfg.exclude.clone(),
-            ..CriticConfig::default()
-        };
-        let critic_context = CriticContext::new(code_text, &ast, &critic_config);
-        let profile = NativeCriticProfile::parse(&cfg.profile).unwrap_or_default();
-        let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
-        let file = file_path.to_string_lossy();
-
+        // Route through the one native critic service (#6969/#9062): the
+        // accepted state captured at construction (or derived from the raw
+        // command config) is the sole policy authority, so registry
+        // construction, candidate collection, canonical normalization,
+        // profile/severity/include/exclude policy, and scoped suppression
+        // all happen inside the service exactly as on the pull-diagnostics
+        // and code-action routes. Service normalization supersedes the
+        // hand-rolled registry/policy pipeline this method used before:
+        // where the two differed (canonical rule-ID lists, the disabled
+        // state, completeness accounting), the service behavior wins.
+        // This provider is a synchronous one-shot over a snapshot taken
+        // before evaluation, so both gates are open: there is no live
+        // authority that could move underneath the run.
         use perl_lsp_rs_core::tooling::perl_critic::{
-            CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
-            native_finding_candidates_with_accounting, normalize_with_native_policy,
+            NativeCriticService, NativeCriticSubject, RunGate, critic_source_identity_for_uri,
         };
-        let candidates = native_finding_candidates_with_accounting(
+        let file = file_path.to_string_lossy();
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
             &file,
-            registry.check_unfiltered(&critic_context),
             critic_source_identity_for_uri(&file, 0),
-        );
-        let suppressions = CriticSuppressionMap::from_source(code_text);
-        let policy = NativeCriticPolicy::new(
-            cfg.severity.clamp(1, 5),
-            &critic_config.include,
-            &critic_config.exclude,
-            &suppressions,
-        );
+            &ast,
+            code_text,
+            self.effective_critic_state(),
+            Vec::new(),
+            RunGate::open(),
+            RunGate::open(),
+        ));
 
-        let mut formatted_violations: Vec<_> = normalize_with_native_policy(candidates, &policy)
-            .into_iter()
+        let mut formatted_violations: Vec<_> = run
+            .findings()
+            .iter()
             .map(|finding| {
                 self.format_violation(
                     finding.public_code(),

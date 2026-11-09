@@ -2418,14 +2418,34 @@ impl LspServer {
             // the workspace_config lock below) so `perl.runCritic` (engine Native)
             // reports the same rule set as the editor's on-type native pull
             // diagnostics.
-            let (critic_engine, native_profile, native_include, native_exclude, native_severity) = {
+            let (
+                critic_engine,
+                native_profile,
+                native_include,
+                native_exclude,
+                native_severity,
+                accepted_critic_snapshot,
+            ) = {
                 let config = self.config.lock();
+                // #6969: capture the accepted critic snapshot in the same
+                // single read, so the unopened-file `perl.runCritic` route
+                // evaluates through `NativeCriticService` under the #8253
+                // accepted state (including `Disabled`) instead of rebuilding
+                // policy from raw siblings. Provider construction precedes
+                // path resolution, so the snapshot is captured for the
+                // server-global subject (`None` root): `ServerConfig`'s
+                // accepted-state derivation is root-independent apart from
+                // the identity label it embeds, so the policy is identical
+                // for any owning root.
+                let accepted_critic_snapshot =
+                    perl_lsp_rs_core::config::AcceptedCriticSnapshot::capture(&config, None);
                 (
                     config.critic_engine,
                     config.native_critic_profile.clone(),
                     config.native_critic_include.clone(),
                     config.native_critic_exclude.clone(),
                     config.perlcritic_severity,
+                    accepted_critic_snapshot,
                 )
             };
             let provider = ExecuteCommandProvider::with_workspace_roots(workspace_roots)
@@ -2436,7 +2456,8 @@ impl LspServer {
                     native_include,
                     native_exclude,
                     native_severity,
-                );
+                )
+                .with_accepted_critic_snapshot(accepted_critic_snapshot);
 
             match command {
                 // Keep existing test commands for backward compatibility
