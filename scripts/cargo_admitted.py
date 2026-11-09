@@ -836,6 +836,15 @@ def check_capacity(paths, env, budget=None):
     return report
 
 
+def read_only_git_environment(env):
+    """Disable Git observation side effects without changing repository selection."""
+    result = {key: value for key, value in env.items()
+              if not key.startswith(("GIT_TRACE", "GIT_REDIRECT_"))}
+    result.update(GIT_OPTIONAL_LOCKS="0", GIT_TRACE2="0",
+                  GIT_TRACE2_EVENT="0", GIT_TRACE2_PERF="0")
+    return result
+
+
 def git_path(*args, env=None):
     # Read bytes: text mode also translates CR/LF that may belong to a POSIX
     # filename. Git emits one terminal LF; preserve every preceding path byte.

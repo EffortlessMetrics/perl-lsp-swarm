@@ -127,6 +127,19 @@ class DevplanePlanTests(unittest.TestCase):
         self.assertEqual(report["resources"]["cargo_home"], override["CARGO_HOME"])
         self.assertEqual(report["resources"]["temp"], override["TMPDIR"])
 
+    def test_git_trace_environment_cannot_write_diagnostic_files(self):
+        override = {name: str(self.root / (name.lower() + ".log")) for name in (
+            "GIT_TRACE", "GIT_TRACE_SETUP", "GIT_TRACE_PERFORMANCE",
+            "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF")}
+        self.report(self.invoke(extra_env=override))
+
+    def test_git_trace_configuration_cannot_write_diagnostic_files(self):
+        config = self.root / "trace.gitconfig"
+        for target in ("normalTarget", "eventTarget", "perfTarget"):
+            self.git("config", "--file", str(config), "trace2." + target,
+                     str(self.root / (target + ".log")))
+        self.report(self.invoke(extra_env={"GIT_CONFIG_GLOBAL": str(config)}))
+
     def test_nested_directory_and_linked_worktree_keep_canonical_partition(self):
         nested = self.repo / "nested/deeper"
         nested.mkdir(parents=True)
