@@ -209,7 +209,7 @@ outcome_owner = "#10230"
 # 41 scanned files, 60 producer rows over 18 candidate classes, the entry routes
 # and the finalizer seam are unchanged. This is a source re-audit of changed
 # insertion geometry, not a claim that completion behavior is unchanged.
-source_digest = "sha256:1a55f6b90bd9db99feb10ecab188178a93f2bf21135d26f7cc84d104b2d0a6f7"
+source_digest = "sha256:5eabb3676279435ca2628d071a30f979219887430b679cc6bca0c179192352ed"
 
 [[delegations]]
 module = "dancer2"
