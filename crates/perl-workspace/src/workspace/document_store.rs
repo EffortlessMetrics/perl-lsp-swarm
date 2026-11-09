@@ -7,8 +7,35 @@ use crate::line_index::LineIndex;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DocumentAccessCounts {
+    pub clones: usize,
+    /// Logical source bytes copied by Document::clone, not allocated bytes/RSS.
+    pub source_bytes: usize,
+    /// Successful scoped read-lock acquisitions, including absent document keys.
+    pub scoped_reads: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static DOCUMENT_ACCESS: std::cell::Cell<DocumentAccessCounts> = const {
+        std::cell::Cell::new(DocumentAccessCounts { clones: 0, source_bytes: 0, scoped_reads: 0 })
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn observe_document_access<T>(
+    operation: impl FnOnce() -> T,
+) -> (T, DocumentAccessCounts) {
+    DOCUMENT_ACCESS.with(|counts| counts.set(DocumentAccessCounts::default()));
+    let result = operation();
+    (result, DOCUMENT_ACCESS.with(std::cell::Cell::get))
+}
+
 /// A document in the store
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(not(test), derive(Clone))]
 pub struct Document {
     /// The document URI
     pub uri: String,
@@ -19,6 +46,21 @@ pub struct Document {
     /// once rather than in a separate field to avoid a redundant per-document
     /// copy.
     pub line_index: LineIndex,
+}
+
+// Count the real deep-copy operation, wherever a caller introduces it. Normal
+// builds retain the derived implementation and carry no observation state.
+#[cfg(test)]
+impl Clone for Document {
+    fn clone(&self) -> Self {
+        DOCUMENT_ACCESS.with(|counts| {
+            let mut observed = counts.get();
+            observed.clones += 1;
+            observed.source_bytes += self.text().len();
+            counts.set(observed);
+        });
+        Self { uri: self.uri.clone(), version: self.version, line_index: self.line_index.clone() }
+    }
 }
 
 impl Document {
@@ -172,6 +214,22 @@ impl DocumentStore {
         docs.get(&key).cloned()
     }
 
+    /// Inspect source text without copying the document or its line index.
+    ///
+    /// The callback runs under the store's read lock and must return owned data.
+    /// It must not re-enter this store or acquire other locks.
+    pub(crate) fn with_text<T>(&self, uri: &str, inspect: impl FnOnce(&str) -> T) -> Option<T> {
+        let key = Self::uri_key(uri);
+        let docs = self.documents.read().ok()?;
+        #[cfg(test)]
+        DOCUMENT_ACCESS.with(|counts| {
+            let mut observed = counts.get();
+            observed.scoped_reads += 1;
+            counts.set(observed);
+        });
+        docs.get(&key).map(|doc| inspect(doc.text()))
+    }
+
     /// Get the text content of a document
     pub fn get_text(&self, uri: &str) -> Option<String> {
         let key = Self::uri_key(uri);
@@ -221,6 +279,92 @@ impl DocumentStore {
 impl Default for DocumentStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod anchor_source_borrow_tests {
+    use super::*;
+    use perl_position_tracking::{WirePosition, WireRange};
+    use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn document_clone_probe_observes_logical_source_bytes() {
+        let original = Document::new("file:///probe.pm".to_string(), 7, "é😀\r\nx".to_string());
+        let (copy, counts) = observe_document_access(|| original.clone());
+        assert_eq!(counts, DocumentAccessCounts { clones: 1, source_bytes: 9, scoped_reads: 0 });
+        assert_eq!(copy.uri, original.uri);
+        assert_eq!(copy.version, original.version);
+        assert_eq!(copy.text(), original.text());
+        assert_ne!(copy.text().as_ptr(), original.text().as_ptr());
+        assert_eq!(copy.line_index.offset_to_position(8), (1, 0));
+    }
+
+    #[test]
+    fn scoped_text_is_borrowed_normalized_and_releases_its_read_guard() {
+        let store = DocumentStore::new();
+        let upper = "file:///C:/source.pm";
+        let lower = "file:///c:/source.pm";
+        store.open(upper.to_string(), 7, "é😀\r\nx".to_string());
+        let stored_pointer = {
+            let docs = must(store.documents.read());
+            must_some(docs.get(&DocumentStore::uri_key(upper))).text().as_ptr()
+        };
+        let (range, counts) = observe_document_access(|| {
+            store.with_text(lower, |text| {
+                assert_eq!(text.as_ptr(), stored_pointer, "borrow the stored allocation itself");
+                assert!(matches!(
+                    store.documents.try_write(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                WireRange::from_byte_offsets(text, 2, 6)
+            })
+        });
+        assert_eq!(range, Some(WireRange::new(WirePosition::new(0, 1), WirePosition::new(0, 3))));
+        assert_eq!(counts, DocumentAccessCounts { clones: 0, source_bytes: 0, scoped_reads: 1 });
+        assert!(store.documents.try_write().is_ok(), "the callback must release its read guard");
+        assert!(store.update(lower, 7, "ab😀\r\nx".to_string()));
+        let (range, counts) = observe_document_access(|| {
+            store.with_text(upper, |text| WireRange::from_byte_offsets(text, 2, 6))
+        });
+        assert_eq!(range, Some(WireRange::new(WirePosition::new(0, 2), WirePosition::new(0, 4))));
+        assert_eq!(counts, DocumentAccessCounts { clones: 0, source_bytes: 0, scoped_reads: 1 });
+    }
+
+    #[test]
+    fn missing_source_does_not_call_the_borrower() {
+        let store = DocumentStore::new();
+        let called = std::cell::Cell::new(false);
+        let (value, counts) = observe_document_access(|| {
+            store.with_text("file:///absent.pm", |_| {
+                called.set(true);
+                1
+            })
+        });
+        assert_eq!(value, None);
+        assert!(!called.get());
+        assert_eq!(counts, DocumentAccessCounts { clones: 0, source_bytes: 0, scoped_reads: 1 });
+    }
+
+    #[test]
+    fn poisoned_store_does_not_call_the_borrower() {
+        let store = DocumentStore::new();
+        store.open("file:///poison.pm".to_string(), 1, "available".to_string());
+        let poisoned = std::panic::catch_unwind(|| {
+            let _writer = must(store.documents.write());
+            panic!("deliberately poison the document writer");
+        });
+        assert!(poisoned.is_err());
+        let called = std::cell::Cell::new(false);
+        let (value, counts) = observe_document_access(|| {
+            store.with_text("file:///poison.pm", |_| {
+                called.set(true);
+                1
+            })
+        });
+        assert_eq!(value, None);
+        assert!(!called.get());
+        assert_eq!(counts, DocumentAccessCounts::default());
     }
 }
 

@@ -4005,14 +4005,18 @@ impl WorkspaceIndex {
                     resolved.insert(anchor.id, None);
                     continue;
                 }
-                let next_location = self.document_store.get(&shard.source_uri).and_then(|doc| {
-                    let start = usize::try_from(anchor.span_start_byte).ok()?;
-                    let end = usize::try_from(anchor.span_end_byte).ok()?;
-                    Some(WireLocation::new(
-                        shard.source_uri.clone(),
-                        WireRange::from_byte_offsets(doc.text(), start, end),
-                    ))
-                });
+                // Acquire current source per anchor, not once per shard. Only
+                // the pure coordinate conversion runs under the document guard.
+                let next_range = self
+                    .document_store
+                    .with_text(&shard.source_uri, |text| {
+                        let start = usize::try_from(anchor.span_start_byte).ok()?;
+                        let end = usize::try_from(anchor.span_end_byte).ok()?;
+                        Some(WireRange::from_byte_offsets(text, start, end))
+                    })
+                    .flatten();
+                let next_location =
+                    next_range.map(|range| WireLocation::new(shard.source_uri.clone(), range));
                 resolved.insert(anchor.id, next_location);
             }
         }
@@ -13848,6 +13852,157 @@ mod entity_id_file_scoped_tests {
                 "query '{query}': incremental and batch must return same symbol names"
             );
         }
+    }
+}
+
+// ── Batched anchor source borrowing (#19242) ──
+
+#[cfg(test)]
+mod anchor_source_borrow_tests {
+    use super::*;
+    use crate::document_store::{DocumentAccessCounts, observe_document_access};
+
+    fn wire(uri: &str, start: (u32, u32), end: (u32, u32)) -> WireLocation {
+        WireLocation::new(
+            uri.to_string(),
+            WireRange::new(WirePosition::new(start.0, start.1), WirePosition::new(end.0, end.1)),
+        )
+    }
+
+    fn inject(index: &WorkspaceIndex, uri: &str, anchors: &[(u64, u32, u32)]) {
+        let file_id = WorkspaceIndex::hash_uri_to_file_id(uri);
+        index.inject_test_fact_shard(FileFactShard {
+            source_uri: uri.to_string(),
+            file_id,
+            content_hash: 1,
+            producer_schema_version: PRODUCER_SCHEMA_VERSION,
+            anchors_hash: None,
+            entities_hash: None,
+            occurrences_hash: None,
+            edges_hash: None,
+            anchors: anchors
+                .iter()
+                .map(|&(id, start, end)| AnchorFact {
+                    id: AnchorId(id),
+                    file_id,
+                    span_start_byte: start,
+                    span_end_byte: end,
+                    scope_id: None,
+                    provenance: Provenance::ExactAst,
+                    confidence: Confidence::High,
+                })
+                .collect(),
+            entities: Vec::new(),
+            occurrences: Vec::new(),
+            edges: Vec::new(),
+        });
+    }
+
+    #[test]
+    fn indexed_reference_batch_copies_no_documents() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///indexed-references.pm";
+        let source = "sub alpha { 1 }\r\nalpha();\r\nalpha();\r\n";
+        index.index_initial_file(Url::parse(uri)?, source.to_string())?;
+        assert_eq!(index.file_count(), 1);
+        let mut anchors = index.file_fact_shard(uri).ok_or("missing indexed shard")?.anchors;
+        anchors.sort_by_key(|anchor| (anchor.span_start_byte, anchor.span_end_byte));
+        let spans: Vec<_> =
+            anchors.iter().map(|anchor| (anchor.span_start_byte, anchor.span_end_byte)).collect();
+        // Declaration anchors cover the name; SubroutineCall anchors retain
+        // the full call expression, including its parentheses.
+        assert_eq!(spans, vec![(4, 9), (17, 24), (27, 34)], "pin the real anchor population");
+        let expected: HashMap<_, _> = anchors
+            .iter()
+            .zip([wire(uri, (0, 4), (0, 9)), wire(uri, (1, 0), (1, 7)), wire(uri, (2, 0), (2, 7))])
+            .map(|(anchor, location)| (anchor.id, Some(location)))
+            .collect();
+        let mut requested: Vec<_> = anchors.iter().map(|anchor| anchor.id).collect();
+        requested.push(anchors[0].id); // repeated request IDs are not extra conversions
+        let (actual, counts) =
+            observe_document_access(|| index.semantic_anchor_wire_locations(&requested));
+        assert_eq!(actual, expected);
+        assert_eq!(
+            (counts.clones, counts.source_bytes),
+            (0, 0),
+            "the populated batch must not copy documents or their complete source text"
+        );
+        assert_eq!(counts.scoped_reads, 3, "acquire source separately for each eligible anchor");
+        for (id, location) in expected {
+            assert_eq!(index.semantic_anchor_wire_location(id), location);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unicode_crlf_and_refusals_keep_complete_requested_results() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///valid-anchors.pm";
+        let other = "file:///duplicate-anchors.pm";
+        for document in [uri, other] {
+            index.document_store.open(document.to_string(), 1, "é😀\r\nx".to_string());
+        }
+        inject(
+            &index,
+            uri,
+            &[(1, 2, 6), (2, 8, 9), (3, 2, 6), (3, 2, 6), (4, 2, 6), (5, 0, 0), (6, 6, 2)],
+        );
+        inject(&index, other, &[(4, 2, 6)]);
+        inject(&index, "file:///missing-source.pm", &[(7, 0, 1)]);
+        let mut requested: Vec<_> = (1..=8).map(AnchorId).collect();
+        requested.push(AnchorId(1));
+        let mut expected: HashMap<_, _> = (1..=8).map(|id| (AnchorId(id), None)).collect();
+        expected.insert(AnchorId(1), Some(wire(uri, (0, 1), (0, 3))));
+        expected.insert(AnchorId(2), Some(wire(uri, (1, 0), (1, 1))));
+        let (actual, counts) =
+            observe_document_access(|| index.semantic_anchor_wire_locations(&requested));
+        assert_eq!(actual, expected);
+        assert_eq!((counts.clones, counts.source_bytes), (0, 0));
+        // First claims for 1, 2, 3 and 4 plus the missing-source lookup for 7.
+        // Both cross-shard duplicate claims have available positive-width source,
+        // so HashMap iteration cannot change this denominator.
+        assert_eq!(counts.scoped_reads, 5);
+        for (id, location) in expected {
+            assert_eq!(index.semantic_anchor_wire_location(id), location);
+        }
+    }
+
+    #[test]
+    fn empty_unmatched_and_degenerate_batches_do_not_acquire_documents() {
+        let index = WorkspaceIndex::new();
+        index.document_store.open("file:///zero.pm".to_string(), 1, "abc".to_string());
+        inject(&index, "file:///zero.pm", &[(1, 0, 0), (2, 2, 1), (3, 0, 1)]);
+        for requested in [vec![], vec![AnchorId(99)], vec![AnchorId(1), AnchorId(2)]] {
+            let expected: HashMap<_, _> = requested.iter().map(|id| (*id, None)).collect();
+            let (actual, counts) =
+                observe_document_access(|| index.semantic_anchor_wire_locations(&requested));
+            assert_eq!(actual, expected);
+            assert_eq!(counts, DocumentAccessCounts::default());
+        }
+    }
+
+    #[test]
+    fn batch_reads_current_text_after_replacement_and_reopen() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///replacement.pm";
+        index.document_store.open(uri.to_string(), 7, "é😀\r\nx".to_string());
+        inject(&index, uri, &[(1, 2, 6)]);
+        let check = |expected: Option<WireLocation>| {
+            let (actual, counts) =
+                observe_document_access(|| index.semantic_anchor_wire_locations(&[AnchorId(1)]));
+            assert_eq!(actual, HashMap::from([(AnchorId(1), expected)]));
+            assert_eq!((counts.clones, counts.source_bytes), (0, 0));
+            assert_eq!(counts.scoped_reads, 1);
+        };
+        check(Some(wire(uri, (0, 1), (0, 3))));
+        assert!(index.document_store.update(uri, 7, "ab😀\r\nx".to_string()));
+        check(Some(wire(uri, (0, 2), (0, 4))));
+        index.document_store.open(uri.to_string(), 8, "\r\n😀\r\nx".to_string());
+        check(Some(wire(uri, (1, 0), (1, 2))));
+        assert!(index.document_store.close(uri));
+        check(None);
+        index.document_store.open(uri.to_string(), 1, "é😀\r\nx".to_string());
+        check(Some(wire(uri, (0, 1), (0, 3))));
     }
 }
 
