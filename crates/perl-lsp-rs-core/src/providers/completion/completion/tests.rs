@@ -5678,6 +5678,18 @@ fn test_is_not_in_regex_flags_after_later_statement() {
 }
 
 #[test]
+fn test_is_in_regex_flags_s_operator_o_and_n_modifiers() {
+    // Canonical modifiers `o` (compile once) and `n` (no capture) must keep
+    // the flag region after s/// (#19206 review).
+    for code in ["s/foo/bar/o", "s/foo/bar/n", "s/foo/bar/gon"] {
+        assert!(
+            CompletionProvider::is_in_regex_flags(code, code.len()),
+            "{code} should be in regex-flags context"
+        );
+    }
+}
+
+#[test]
 fn test_is_in_regex_flags_m_brace_delimiter() {
     let code = "m{foo}i";
     assert!(

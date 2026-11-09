@@ -316,7 +316,10 @@ fn is_multi_delim_regex_at_close(text: &str) -> bool {
     else {
         return false;
     };
-    const FLAG_CHARS: &[char] = &['g', 'i', 'm', 's', 'x', 'e', 'r', 'a', 'd', 'u', 'p', 'l', 'c'];
+    // Includes `o`/`n` (compile-once / no-unicode) from the canonical
+    // modifier set, which the entry-point trim list above omits.
+    const FLAG_CHARS: &[char] =
+        &['g', 'i', 'm', 's', 'x', 'e', 'r', 'a', 'd', 'u', 'p', 'l', 'c', 'o', 'n'];
     after_close.chars().all(|c| FLAG_CHARS.contains(&c))
 }
 
