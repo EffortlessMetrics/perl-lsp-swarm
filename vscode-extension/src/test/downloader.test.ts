@@ -2078,6 +2078,33 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     expect(httpGetSpy).not.toHaveBeenCalled();
   });
 
+  test('an empty versionTag on the tag channel refuses on the internal mirror too (#16578)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'downloadBaseUrl') {
+          return 'https://mirror.example.test/releases';
+        }
+        // versionTag falls through to the '' default.
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const httpGetSpy = jest.spyOn(seams, 'httpGet');
+
+    // The mirror route must not silently substitute 'latest' for the
+    // missing pin; it refuses with the same actionable remedy as GitHub.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+        'set versionTag (for example v0.12.1) to pin a release.',
+    );
+    expect(httpGetSpy).not.toHaveBeenCalled();
+  });
+
   test('a versionTag outside the tag channel warns once per session that it is ignored (#16533)', async () => {
     const seams = downloader as unknown as DownloaderSeams;
     const vscode = require('vscode');

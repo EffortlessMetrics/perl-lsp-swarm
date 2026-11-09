@@ -1475,8 +1475,16 @@ export class BinaryDownloader {
     const versionTag = config.get<string>('versionTag', '');
     const downloadBaseUrl = config.get<string>('downloadBaseUrl', '');
 
-    // Handle internal base URL hosting
+    // Handle internal base URL hosting. A pinned tag channel with no tag
+    // refuses here too (#16578): substituting 'latest' would silently
+    // unpin the user, so mirror the GitHub route's actionable remedy.
     if (downloadBaseUrl) {
+      if (channelSetting === 'tag' && versionTag.trim() === '') {
+        throw new Error(
+          'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+            'set versionTag (for example v0.12.1) to pin a release.',
+        );
+      }
       return this.getInternalRelease(downloadBaseUrl, versionTag || 'latest');
     }
 
