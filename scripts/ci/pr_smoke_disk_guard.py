@@ -48,8 +48,8 @@ as its single source when present (the in-code constants below are only
 the fallback when that file is absent or malformed). The preflight floor
 is derived from that declared footprint bound plus a reserve, so a runner
 that cannot hold the tier is rejected before any build instead of being
-accepted into a mid-link ENOSPC; the bound is declared in the workflow
-beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
+accepted into a mid-link ENOSPC; the bound is declared in the committed
+baseline the workflow materializes beside the trim that produces it.
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ GIB = 1024**3
 # the two cannot drift apart the way the former fixed 32 GiB floor did:
 # that floor's rejection band was empty and it accepted runners the lane
 # then filled to 100% (ENOSPC -> ld SIGBUS). Update the bound only with a
-# fresh measured receipt; the workflow declares the same number beside the
-# trim that bounds it (PR_SMOKE_FOOTPRINT_GIB in ci.yml).
+# fresh measured receipt; the committed baseline declares the same number
+# beside the trim that bounds it, and the workflow materializes that record.
 #
 # Single source (#19067): the committed baseline JSON below is authoritative
 # when present and well-formed. The in-code values are only the fallback for
@@ -87,9 +87,17 @@ GIB = 1024**3
 # the floor below the fallback bound.
 _FALLBACK_FOOTPRINT_BYTES = 85 * GIB
 _FALLBACK_RESERVE_BYTES = 5 * GIB
-BASELINE_PATH = (
-    Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
-)
+try:
+    BASELINE_PATH: Path | None = (
+        Path(__file__).resolve().parents[2] / ".ci" / "pr-smoke-footprint-baseline.json"
+    )
+except IndexError:
+    # Copied standalone with fewer than three parent levels (the workflow
+    # materializes this helper into RUNNER_TEMP): there is no repo root to
+    # locate, so import must still succeed and the loader falls back. The
+    # workflow passes the materialized baseline explicitly in that case
+    # (--baseline-path), so the committed record still governs.
+    BASELINE_PATH = None
 
 
 def _baseline_gib(value: object, *, allow_zero: bool = False) -> int | None:
@@ -116,6 +124,8 @@ def load_footprint_baseline(
     the body): the file may only raise the floor on its own.
     """
     path = BASELINE_PATH if baseline_path is None else baseline_path
+    if path is None:
+        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -126,19 +136,16 @@ def load_footprint_baseline(
     reserve_gib = _baseline_gib(data.get("reserve_gib"), allow_zero=True)
     if footprint_gib is None or reserve_gib is None:
         return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
-    footprint_bytes = footprint_gib * GIB
-    reserve_bytes = reserve_gib * GIB
-    if (
-        footprint_bytes < _FALLBACK_FOOTPRINT_BYTES
-        or reserve_bytes < _FALLBACK_RESERVE_BYTES
-    ):
-        # The baseline may raise the floor on its own, but it may never
-        # lower it: a lower footprint is legitimate only with a fresh
-        # equivalent measurement (#17623/#17655), and that change must
-        # lower the in-code fallback in the same reviewed commit so the
-        # two cannot drift apart silently.
-        return _FALLBACK_FOOTPRINT_BYTES, _FALLBACK_RESERVE_BYTES
-    return footprint_bytes, reserve_bytes
+    # The baseline may raise either field on its own, but it may never
+    # lower one: a lower footprint is legitimate only with a fresh
+    # equivalent measurement (#17623/#17655), and that change must
+    # lower the in-code fallback in the same reviewed commit so the
+    # two cannot drift apart silently. Clamp each field independently
+    # so a raise to one is not discarded because the other is lower.
+    return (
+        max(footprint_gib * GIB, _FALLBACK_FOOTPRINT_BYTES),
+        max(reserve_gib * GIB, _FALLBACK_RESERVE_BYTES),
+    )
 
 
 MEASURED_FOOTPRINT_BYTES, RESERVE_BYTES = load_footprint_baseline()
@@ -469,11 +476,20 @@ def run_preflight(args: argparse.Namespace) -> int:
     paths = {"workspace": args.workspace_path}
     target_dir = args.target_dir or str(Path(args.workspace_path) / "target")
     paths["cargo-target-dir"] = target_dir
+    baseline_path = getattr(args, "baseline_path", None)
+    if baseline_path:
+        # The workflow materializes the committed baseline beside the
+        # workflow-bound helper and passes its exact path: that record,
+        # not a duplicated workflow literal, declares the footprint.
+        footprint_bytes, reserve_bytes = load_footprint_baseline(Path(baseline_path))
+    else:
+        footprint_bytes = getattr(args, "footprint_bytes", MEASURED_FOOTPRINT_BYTES)
+        reserve_bytes = getattr(args, "reserve_bytes", RESERVE_BYTES)
     try:
         min_free_bytes = effective_min_free_bytes(
             args.min_free_bytes,
-            footprint_bytes=getattr(args, "footprint_bytes", MEASURED_FOOTPRINT_BYTES),
-            reserve_bytes=getattr(args, "reserve_bytes", RESERVE_BYTES),
+            footprint_bytes=footprint_bytes,
+            reserve_bytes=reserve_bytes,
         )
     except ValueError as error:
         _emit(f"::error::PR Smoke pre-flight disk guard misconfigured: {error}")
@@ -612,6 +628,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=MEASURED_FOOTPRINT_BYTES,
         help="declared tier footprint bound, bytes or GiB suffix "
         "(default: measured 85GiB, issue #17231)",
+    )
+    preflight.add_argument(
+        "--baseline-path",
+        default="",
+        help="path to the committed footprint baseline JSON materialized "
+        "by the workflow; when given it declares footprint and reserve "
+        "instead of --footprint-bytes (issue #19067)",
     )
     preflight.set_defaults(handler=run_preflight)
 

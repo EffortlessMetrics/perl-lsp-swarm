@@ -829,18 +829,19 @@ jobs:
       # EXPIRED-UNVERIFIABLE (#19067): the originating run 37195503421's
       # artifacts are expired (artifacts API total_count=0), so the 85 GiB
       # value cannot be re-verified from that run. It is retained
-      # conservatively (85 GiB + 5 GiB reserve = 90 GiB floor unchanged);
-      # the committed provenance record is
-      # .ci/pr-smoke-footprint-baseline.json, which the guard reads as its
-      # single source when present.
-      PR_SMOKE_FOOTPRINT_GIB: "85"
+      # conservatively (85 GiB + 5 GiB reserve = 90 GiB floor unchanged).
+      # The committed provenance record is
+      # .ci/pr-smoke-footprint-baseline.json: the Resolve step below
+      # materializes it from the workflow SHA and the preflight guard
+      # reads it via --baseline-path, so this job carries no second
+      # literal copy of the bound.
       # #15528: one stable, cache-aligned target dir. The former per-run
       # `pr-smoke-${run_id}-${run_attempt}` path (unique per run and attempt)
       # made every run a full cold build, so the 45m watchdog reliably killed
       # the tier mid-compile. `target` is exactly the tree the rust-cache step
       # below restores and saves, so the lane warms like every other ci.yml
       # job. The #11943 arms: line-tables-only debuginfo above bounds the
-      # footprint (declared below as PR_SMOKE_FOOTPRINT_GIB), and the
+      # footprint (declared in the committed baseline below), and the
       # preflight guard's floor is derived from that bound plus a reserve
       # (#17231), plus the post-run disk guards, which probe this same
       # filesystem (hosted `df` shows /mnt on /dev/root, so the old /mnt
@@ -875,11 +876,20 @@ jobs:
           fi
           guard_path="${RUNNER_TEMP}/pr-smoke-disk-guard.py"
           guard_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-disk-guard.XXXXXX")"
-          trap 'rm -f "$guard_tmp"' EXIT
+          baseline_path="${RUNNER_TEMP}/pr-smoke-footprint-baseline.json"
+          baseline_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-footprint-baseline.XXXXXX")"
+          trap 'rm -f "$guard_tmp" "$baseline_tmp"' EXIT
           git show "${PR_SMOKE_WORKFLOW_SHA}:scripts/ci/pr_smoke_disk_guard.py" > "$guard_tmp"
           test -s "$guard_tmp"
           mv "$guard_tmp" "$guard_path"
+          # #19067: materialize the committed footprint baseline from the
+          # same workflow SHA, so the preflight guard evaluates the
+          # committed record instead of a duplicated workflow literal.
+          git show "${PR_SMOKE_WORKFLOW_SHA}:.ci/pr-smoke-footprint-baseline.json" > "$baseline_tmp"
+          test -s "$baseline_tmp"
+          mv "$baseline_tmp" "$baseline_path"
           echo "PR_SMOKE_DISK_GUARD=$guard_path" >> "$GITHUB_ENV"
+          echo "PR_SMOKE_BASELINE_PATH=$baseline_path" >> "$GITHUB_ENV"
           echo "PR Smoke disk guard source: $PR_SMOKE_WORKFLOW_SHA"
 
       - name: Fetch release tags from canonical repo
@@ -958,7 +968,7 @@ jobs:
           python3 "$PR_SMOKE_DISK_GUARD" preflight \
             --workspace-path . \
             --target-dir "${CARGO_TARGET_DIR:-target}" \
-            --footprint-bytes "${PR_SMOKE_FOOTPRINT_GIB}GiB"
+            --baseline-path "$PR_SMOKE_BASELINE_PATH"
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
@@ -1191,7 +1201,7 @@ jobs:
       # pr-fast-disk-pressure.log) and of the tier's gate verdicts. At 7 days
       # that record expires before anyone can review it, which made the guard's
       # own rule -- update the footprint bound only with a fresh measured
-      # receipt (PR_SMOKE_FOOTPRINT_GIB above) -- unsatisfiable: the bound's
+      # receipt (the committed footprint baseline above) -- unsatisfiable: the bound's
       # originating run (37195503421) has no surviving artifact and no job
       # log. Retain at least as long as both the CI Gate shard receipts
       # ("Upload gate receipt") and derived telemetry ("Upload CI actuals"),

@@ -139,6 +139,20 @@ class FootprintBaselineTests(unittest.TestCase):
                 (85 * guard.GIB, 5 * guard.GIB),
             )
 
+    def test_baseline_fields_clamp_independently(self) -> None:
+        # A raise to one field must not be discarded because the other
+        # field sits below its fallback: each clamps on its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            path.write_text(
+                '{"footprint_gib": 100, "reserve_gib": 2}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                guard.load_footprint_baseline(path),
+                (100 * guard.GIB, 5 * guard.GIB),
+            )
+
     def test_missing_baseline_falls_back_to_in_code_constants(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "absent.json"
