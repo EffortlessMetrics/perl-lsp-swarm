@@ -1430,7 +1430,6 @@ jobs:
             || { echo "::error::cannot clear cache-restored PR-fast receipt surfaces (#12085); refusing to run over a possibly stale receipt"; exit 1; }
           mkdir -p target/receipts
 
-      # #11943 visible arm (pre-build): refuse to start the tier on a runner
       # Revival telemetry (#19045): observe the same floor without refusing
       # to start. The guard's ::error:: verdict is relabeled warning-only:
       # a breach is recorded, never fatal, and the tier proceeds so pr_fast
@@ -1445,7 +1444,7 @@ jobs:
             --workspace-path . \
             --target-dir "${CARGO_TARGET_DIR:-target}" \
             --baseline-path "$PR_SMOKE_BASELINE_PATH" 2>&1 \
-            | sed 's/^::error::/::warning telemetry-only: /' || true
+            | sed 's/^::error::/::warning::telemetry-only: /' || true
           echo "::warning::disk observation is telemetry-only; the tier proceeds regardless (#19045)"
           exit 0
 
