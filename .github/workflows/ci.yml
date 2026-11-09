@@ -1313,8 +1313,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          # No explicit token: the default github.token applies. An explicit
+          # secrets.GITHUB_TOKEN reference in a PR-triggered job trips the
+          # workflow security ratchet (pr_secret_reference); default
+          # credentials already cover fetch-tags here (#19229).          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
           # Fetch full history so the immutable subject can validate exact event ancestry.
           fetch-depth: 0
           # release_history --verify-git resolves every release tag locally.
@@ -1686,7 +1688,7 @@ jobs:
 
       - name: Upload PR-fast receipt
         if: always() && hashFiles('target/receipts/receipt.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: pr-fast-unblocked-receipt-${{ github.sha }}
           path: |
@@ -1703,7 +1705,7 @@ jobs:
 
       - name: Upload PR-fast missing-receipt diagnostics
         if: always() && hashFiles('target/receipts/receipt.json') == ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: pr-fast-unblocked-missing-receipt-${{ github.sha }}
           path: |
