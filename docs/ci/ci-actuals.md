@@ -59,8 +59,34 @@ workflow is an ignored one. The warn expires so that a workflow which never got 
 `--lane-id` cannot sit warning indefinitely, which would recreate the original silence
 by a slower route.
 
-The schema is otherwise tolerant: missing `duration_ms` results in `actual_lem: null`.
-This avoids the actuals collector becoming a brittle gate.
+### Observation admission and refusal
+
+The emitter accepts whole `gates.v1` envelopes with metadata, a nonempty gate
+population and a matching `summary.total_gates`. The separate `ci_gate_shard.v1`
+summary is ignored; it is not another execution. Unknown versions, standalone
+gate objects, malformed files and missing observations are refused, not silently
+dropped from the lane.
+
+Each consumed gate needs its name, tier, status and an observed unsigned 64-bit
+integer `duration_ms`. Zero is measured zero, including a producer-reported skipped
+gate; missing or invalid timing is not zero. Runner multipliers, lane floors and
+derived costs must be finite and nonnegative. The existing lane attribution and
+once-per-lane floor remain unchanged, as does actuals schema 1.
+
+The history collector sums per-job actuals. Publishing a measured gate beside an
+unmeasured gate would therefore train a partial lane as a cheap complete sample,
+even if its total were null. The emitter refuses that publication instead.
+
+Before validation it invalidates only the exact `--json-out` entry, so a refused
+invocation cannot leave an old report for an always-upload step. Source receipts,
+policies and neighboring files are preserved. A conflicting output path that names
+an input is refused without deleting that input. Successful output is strict JSON,
+published by a same-directory atomic replacement; publication errors remove the
+invocation's temporary file.
+
+This validates supplied observations, not acquisition of every expected sibling
+job or unique physical execution. Equal receipt content is not a safe deduplication
+key. Gate timing also excludes setup overhead and is not a billing measurement.
 
 ---
 
@@ -92,8 +118,11 @@ The script is meant to run after `xtask gates` in CI workflows:
     if-no-files-found: warn
 ```
 
-The actual workflow wiring lands in a follow-up — this PR delivers the script and docs
-without touching `.github/workflows/ci.yml` so the rollout stays low-risk.
+The current shard caller in `.github/workflows/ci.yml` supplies
+`--receipts-dir target/receipts/shards` and `--lane-id merge_gate_shards`. Its
+telemetry step remains non-blocking and its artifact upload runs even after errors;
+refusal therefore leaves no actuals file to upload. This producer repair changes
+neither workflow triggers nor qualification policy.
 
 ---
 
@@ -144,7 +173,7 @@ job overhead like cache restore and toolchain setup.
 
 | PR | Change |
 |---:|---|
-| 08 | This file. Python script + docs; not wired into workflows yet. |
+| 08 | Original Python script and documentation; shard wiring has since landed. |
 | 13 | Soft LEM warnings using actuals. |
 | 16 | Use percentile actuals (`p50`, `p90`, `p95`) to derive learned estimates. |
 
