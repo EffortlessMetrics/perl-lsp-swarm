@@ -1029,24 +1029,31 @@ def main(args=None):
                 # or reconstruct ownership from age/current contents after death.
                 descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
                                   marker_identity=list(marker_identity))
-            print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
-            command = ["cargo", *local_config_cli_args(worktree),
+            if staged_cohorts:
+                descriptor['runtime_environment'] = runtime_environment
+                descriptor['runtime_environment_sha256'] = hashlib.sha256(json.dumps(runtime_environment, sort_keys=True).encode()).hexdigest()
+                env['CARGO_ADMITTED_COHORT_DESCRIPTOR'] = json.dumps(descriptor, sort_keys=True)
+            print("cargo-admitted resources: " + json.dumps({key: value for key, value in descriptor.items() if key != "runtime_environment"}), file=sys.stderr, flush=True)
+            local_config = local_config_cli_args(worktree)
+            config_index = 1 + len(local_config)
+            command = ["cargo", *local_config,
                        "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                        "--config", 'build.rustc-wrapper=""',
                        "--config", 'build.rustc-workspace-wrapper=""',
                        *args[:1], "--target-dir", str(paths["target"]), *args[1:]]
+            if staged_cohorts:
+                # Mixed file/inline Cargo config merges left to right. Force this
+                # original live owner after the local file, before later prepends
+                # move both together; never allow a caller-provided replacement.
+                for field, value in (('value', json.dumps(env['CARGO_ADMITTED_COHORT_DESCRIPTOR'])), ('force', 'true'), ('relative', 'false')):
+                    command[config_index:config_index] = ['--config', 'env.CARGO_ADMITTED_COHORT_DESCRIPTOR.' + field + '=' + value]
             # Cargo's [env] force=true can override process environment for
             # rustc/build scripts. Override those config entries as well.
             for name in ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL"):
                 child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
                 for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
                     command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
-            if staged_cohorts:
-                # Cargo configuration may force [env]; forward only this original
-                # live owner descriptor, never a caller-provided replacement.
-                for field, value in (('value', json.dumps(env['CARGO_ADMITTED_COHORT_DESCRIPTOR'])), ('force', 'true'), ('relative', 'false')):
-                    command[1:1] = ['--config', 'env.CARGO_ADMITTED_COHORT_DESCRIPTOR.' + field + '=' + value]
             if clippy:
                 exact = toolchain["subjects"]
                 controlled = {"CARGO": exact["cargo"]["path"],
