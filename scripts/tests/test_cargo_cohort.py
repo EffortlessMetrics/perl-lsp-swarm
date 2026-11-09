@@ -1088,6 +1088,23 @@ class PortableControls(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux', 'native Linux tree')
 class NativeControls(unittest.TestCase):
+    def supported_profiles(self):
+        profiles = []
+        for mode in ('proc-children', 'proc-parent-pidfd'):
+            try:
+                cohort.children_capability(mode)
+            except cohort.Denied:
+                continue
+            profiles.append(mode)
+        if not profiles:
+            self.skipTest('native cohort proof requires a supported explicit discovery profile')
+        return profiles
+
+    def native_environment(self, mode):
+        paths = [str(Path(__file__).parent), str(Path(cohort.__file__).parent)]
+        return dict(os.environ, PYTHONPATH=os.pathsep.join(paths),
+                    CARGO_ADMITTED_CHILD_DISCOVERY=mode)
+
     def test_live_detached_descendant_delays_kernel_closure(self):
         program = r'''import os,subprocess,sys,time,json
 from cargo_admitted import ClippyTree
@@ -1098,10 +1115,11 @@ assert receipt['tree_settled'],receipt
 assert time.monotonic()-start >= .15,receipt
 print(json.dumps(receipt))
 '''
-        env=dict(os.environ, PYTHONPATH=str(Path(cohort.__file__).parent))
-        result=subprocess.run([sys.executable,'-c',program], env=env, capture_output=True,text=True,timeout=4)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('kernel ECHILD',result.stdout)
+        for mode in self.supported_profiles():
+            with self.subTest(profile=mode):
+                result=subprocess.run([sys.executable,'-c',program], env=self.native_environment(mode), capture_output=True,text=True,timeout=4)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertIn('kernel ECHILD',result.stdout)
 
 
     def test_actual_host_capability_refusal_or_native_success(self):
@@ -1112,6 +1130,7 @@ from test_cargo_cohort import PortableControls
 import cargo_cohort as cohort
 fixture=PortableControls(); fixture.setUp()
 try:
+ fixture.descriptor['child_discovery']=os.environ['CARGO_ADMITTED_CHILD_DISCOVERY']
  instance=fixture.owner()
  env=dict(os.environ,CARGO_TARGET_DIR=str(fixture.paths['target']),CARGO_BUILD_BUILD_DIR=str(fixture.paths['build']),CARGO_HOME=str(fixture.paths['cargo_home']),TMPDIR=str(fixture.paths['temp']))
  try:
@@ -1131,17 +1150,19 @@ try:
   print('NATIVE SUCCESS ECHILD')
 finally:fixture.doCleanups()
 """
-        paths = [str(Path(__file__).parent),str(Path(cohort.__file__).parent)]
-        result=subprocess.run([sys.executable,'-c',program],env=dict(os.environ,PYTHONPATH=os.pathsep.join(paths)),capture_output=True,text=True,timeout=4)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertTrue('NATIVE CAPABILITY REFUSAL' in result.stdout or 'NATIVE SUCCESS ECHILD' in result.stdout,result.stdout)
+        for mode in ('proc-children', 'proc-parent-pidfd', 'unsupported-profile'):
+            with self.subTest(profile=mode):
+                result=subprocess.run([sys.executable,'-c',program],env=self.native_environment(mode),capture_output=True,text=True,timeout=4)
+                self.assertEqual(result.returncode,0,result.stderr)
+                try:
+                    cohort.children_capability(mode)
+                except cohort.Denied:
+                    self.assertIn('NATIVE CAPABILITY REFUSAL',result.stdout)
+                else:
+                    self.assertIn('NATIVE SUCCESS ECHILD',result.stdout)
 
 
     def test_supported_host_actual_cohort_sigterm_cancellation(self):
-        try:
-            cohort.children_capability()
-        except cohort.Denied as error:
-            self.skipTest('native cancellation requires live-thread proc children: ' + str(error))
         # Admission uses disposable filesystem fixtures; native tree discovery,
         # SIGTERM handling, pidfd signals, subreaper adoption and waits are real.
         program = r"""import ctypes,json,os,sys
@@ -1149,6 +1170,7 @@ from cargo_admitted import ClippyTree
 from test_cargo_cohort import PortableControls
 fixture=PortableControls();fixture.setUp()
 try:
+ fixture.descriptor['child_discovery']=os.environ['CARGO_ADMITTED_CHILD_DISCOVERY']
  instance=fixture.owner()
  env=dict(os.environ,CARGO_TARGET_DIR=str(fixture.paths['target']),CARGO_BUILD_BUILD_DIR=str(fixture.paths['build']),CARGO_HOME=str(fixture.paths['cargo_home']),TMPDIR=str(fixture.paths['temp']))
  mutation="import os,signal,time\nready=Path("+repr(str(fixture.root/'helper-ready'))+")\nif os.fork()==0:\n os.setsid();ready.write_text('ready');time.sleep(5);os._exit(0)\nwhile not ready.exists():time.sleep(.001)\nos.kill(os.getppid(),signal.SIGTERM)\ntime.sleep(5)"
@@ -1169,10 +1191,37 @@ finally:
  ctypes.CDLL(None,use_errno=True).prctl(36,0,0,0,0)
  fixture.doCleanups()
 """
-        paths=[str(Path(__file__).parent),str(Path(cohort.__file__).parent)]
-        result=subprocess.run([sys.executable,'-c',program],env=dict(os.environ,PYTHONPATH=os.pathsep.join(paths)),capture_output=True,text=True,timeout=8)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('kernel ECHILD',result.stdout)
+        for mode in self.supported_profiles():
+            with self.subTest(profile=mode):
+                result=subprocess.run([sys.executable,'-c',program],env=self.native_environment(mode),capture_output=True,text=True,timeout=8)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertIn('kernel ECHILD',result.stdout)
+
+    def test_native_alias_reclamation_uses_existing_inode_controls(self):
+        # Reuse the exact alias assertions with real discovery and settlement.
+        # Only the disposable filesystem admission descriptor remains a fixture.
+        program = r"""import os
+from test_cargo_cohort import PortableControls
+fixture=PortableControls();fixture.setUp()
+try:
+ fixture.descriptor['child_discovery']=os.environ['CARGO_ADMITTED_CHILD_DISCOVERY']
+ def run_native(instance, **kwargs):
+  env=dict(os.environ,CARGO_TARGET_DIR=str(fixture.paths['target']),CARGO_BUILD_BUILD_DIR=str(fixture.paths['build']),CARGO_HOME=str(fixture.paths['cargo_home']),TMPDIR=str(fixture.paths['temp']))
+  row=instance.run(kwargs.pop('producer',fixture.producer()),kwargs.pop('consumers',{str(fixture.exe):[]}),env,settlement_timeout=2,**kwargs)
+  assert row['status']==0,row
+  assert row['settlement']['tree_settled'],row
+  assert 'kernel ECHILD' in row['settlement']['proof'],row
+  return row
+ fixture.run_portable=run_native
+ fixture.test_new_private_cargo_alias_group_consumed_once_and_all_names_reclaimed()
+ print('NATIVE ALIAS SUCCESS ECHILD')
+finally:fixture.doCleanups()
+"""
+        for mode in self.supported_profiles():
+            with self.subTest(profile=mode):
+                result=subprocess.run([sys.executable,'-c',program],env=self.native_environment(mode),capture_output=True,text=True,timeout=5)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertIn('NATIVE ALIAS SUCCESS ECHILD',result.stdout)
 
     def test_pidfd_wait_failure_never_authorizes_signal(self):
         # Portable fault injection of the existing owner seam, not native proof.
@@ -1195,7 +1244,14 @@ class WorkflowControls(unittest.TestCase):
         run = "python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v"
         self.assertIn('        run: ' + run, job.splitlines())
         self.assertNotIn('continue-on-error:', job)
-        self.assertNotIn('if:', job)
+        from test_storage_self_test_workflow import INDEPENDENT, storage_steps
+        steps = storage_steps(workflow)  # Rejects job-level if/needs/error masking.
+        for step in steps:
+            self.assertIn(step.get('if'), (None, INDEPENDENT), 'unqualified storage step condition')
+        selected = [step for step in steps if step.get('run') == run]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].get('if'), INDEPENDENT,
+                         'cohort suite must retain its independent step condition')
         self.assertNotIn('|| true', job)
         if sys.platform != 'linux':
             return  # Existing owning job is Ubuntu; no native Windows claim.
@@ -1213,6 +1269,25 @@ class WorkflowControls(unittest.TestCase):
                 self.assertEqual(log.read_text().splitlines(),
                                  ['-m', 'unittest', 'discover', '-s', 'scripts/tests',
                                   '-p', 'test_cargo_cohort.py', '-v'])
+
+    def test_job_level_or_unqualified_step_conditions_cannot_hide_cohort_suite(self):
+        from test_storage_self_test_workflow import INDEPENDENT
+        path = Path(__file__).resolve().parents[2] / '.github/workflows/ci-gate-self-tests.yml'
+        text = path.read_text()
+        variants = [
+            (text.replace('\n  cargo-admitted-storage-self-test:\n',
+                          '\n  cargo-admitted-storage-self-test:\n    if: false\n', 1),
+             'storage job must not hide an independent result'),
+            (text.replace(INDEPENDENT, '${{ false }}'), 'unqualified storage step condition'),
+        ]
+        real_read = Path.read_text
+        for variant, message in variants:
+            with self.subTest(condition=message):
+                self.assertNotEqual(variant, text)
+                def read(subject, *args, **kwargs):
+                    return variant if subject == path else real_read(subject, *args, **kwargs)
+                with patch.object(Path, 'read_text', read), self.assertRaisesRegex(AssertionError, message):
+                    self.test_existing_job_reaches_cohort_suite_for_both_source_paths()
 
 
 

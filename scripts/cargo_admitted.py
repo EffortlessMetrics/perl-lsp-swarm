@@ -298,11 +298,14 @@ def proc_parent_child_ids():
                 raise Denied('proc-parent numeric/task projection is overmounted')
             if point == '/proc':
                 roots.append((fields, filesystem))
-        if len(roots) != 1 or roots[0][0][3] != '/' or roots[0][1][0] != 'proc':
-            raise Denied('proc-parent discovery requires one complete procfs root')
-        options = roots[0][0][5].split(',') + roots[0][1][2].split(',')
-        if any(option.startswith('hidepid=') and option != 'hidepid=0' for option in options):
-            raise Denied('proc-parent discovery refuses hidden PID visibility')
+        # Stacked mounts may share /proc; even a hidden layer must be complete.
+        if not roots or any(fields[3] != '/' or filesystem[0] != 'proc'
+                            for fields, filesystem in roots):
+            raise Denied('proc-parent discovery requires complete procfs roots at /proc')
+        for fields, filesystem in roots:
+            options = fields[5].split(',') + filesystem[2].split(',')
+            if any(option.startswith('hidepid=') and option != 'hidepid=0' for option in options):
+                raise Denied('proc-parent discovery refuses hidden PID visibility')
         root_identity = directory_identity(Path('/proc'))
         if time.monotonic() - started > 1:
             raise Denied('proc-parent discovery exceeds bounded turn')
@@ -1049,11 +1052,11 @@ def main(args=None):
                 for field, value in (('value', json.dumps(env['CARGO_ADMITTED_COHORT_DESCRIPTOR'])), ('force', 'true'), ('relative', 'false')):
                     command[config_index:config_index] = ['--config', 'env.CARGO_ADMITTED_COHORT_DESCRIPTOR.' + field + '=' + value]
             # Cargo's [env] force=true can override process environment for
-            # rustc/build scripts. Override those config entries as well.
+            # rustc/build scripts. Override those entries after the local file.
             for name in ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL"):
                 child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
                 for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
-                    command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
+                    command[config_index:config_index] = ["--config", "env." + name + "." + field + "=" + value]
             if clippy:
                 exact = toolchain["subjects"]
                 controlled = {"CARGO": exact["cargo"]["path"],
@@ -1070,7 +1073,7 @@ def main(args=None):
                 # compiler/lint inputs. Real lint fail/clean controls test this.
                 for name, value in controlled.items():
                     for field, setting in (("value", json.dumps(value)), ("force", "true"), ("relative", "false")):
-                        command[1:1] = ["--config", "env." + name + "." + field + "=" + setting]
+                        command[config_index:config_index] = ["--config", "env." + name + "." + field + "=" + setting]
                 position = command.index("clippy")
                 command = [exact["cargo-clippy"]["path"], "clippy", "--message-format=json-render-diagnostics",
                            *command[1:position], "--target", toolchain["host"], *command[position + 1:]]
