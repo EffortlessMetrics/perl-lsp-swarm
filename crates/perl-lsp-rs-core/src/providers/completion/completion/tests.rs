@@ -5662,6 +5662,22 @@ fn test_is_in_regex_flags_s_operator() {
 }
 
 #[test]
+fn test_is_not_in_regex_flags_after_later_statement() {
+    // #19206: slashes of a completed s/// must not claim a flag region over
+    // code in a later statement on the same line.
+    let code = "my $s = \"ab\"; $s =~ s/#.*//; targ";
+    assert!(
+        !CompletionProvider::is_in_regex_flags(code, code.len()),
+        "code after s///; must not be detected as regex-flags context"
+    );
+    let code = "$x =~ /foo/; targ";
+    assert!(
+        !CompletionProvider::is_in_regex_flags(code, code.len()),
+        "code after /foo/; must not be detected as regex-flags context"
+    );
+}
+
+#[test]
 fn test_is_in_regex_flags_m_brace_delimiter() {
     let code = "m{foo}i";
     assert!(

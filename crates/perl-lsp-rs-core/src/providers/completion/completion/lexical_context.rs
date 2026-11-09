@@ -305,8 +305,39 @@ fn is_multi_delim_regex_at_close(text: &str) -> bool {
         return false;
     };
     let body_after_op = &text[op_len..];
-    let slash_count = count_unescaped_slashes(body_after_op);
-    slash_count == required_slashes
+    if count_unescaped_slashes(body_after_op) != required_slashes {
+        return false;
+    }
+    // The closing slash must end the operator: only flag letters may follow
+    // it. Counting slashes over the whole remainder also matches code in
+    // later statements on the line (`s/#.*//; targ`, #19206), which is not a
+    // flag region.
+    let Some(after_close) = suffix_after_nth_unescaped_slash(body_after_op, required_slashes)
+    else {
+        return false;
+    };
+    const FLAG_CHARS: &[char] = &['g', 'i', 'm', 's', 'x', 'e', 'r', 'a', 'd', 'u', 'p', 'l', 'c'];
+    after_close.chars().all(|c| FLAG_CHARS.contains(&c))
+}
+
+/// Text after the `n`th unescaped `/` in `s` (1-based), mirroring
+/// [`count_unescaped_slashes`] escape semantics.
+fn suffix_after_nth_unescaped_slash(s: &str, n: usize) -> Option<&str> {
+    let mut count = 0usize;
+    let mut escaped = false;
+    for (index, ch) in s.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '/' {
+            count += 1;
+            if count == n {
+                return Some(&s[index + ch.len_utf8()..]);
+            }
+        }
+    }
+    None
 }
 
 fn is_m_or_qr_closed(text: &str) -> bool {
@@ -355,6 +386,13 @@ fn count_unescaped_slashes(s: &str) -> usize {
 /// a comment start (#4956 bug 4). Previously this was a naive `line.contains('#')`
 /// check, which suppressed completion whenever a `#` appeared anywhere on the
 /// line — including inside strings like `my $x = "a # b";`.
+///
+/// The quote machine is regex-blind, so a machine hit is adjudicated with
+/// the canonical `SourceRegionIndex` (#19206, the #13244 direction): only a
+/// proven `LineComment` at the cursor counts. That rescues code after a
+/// regex `#` such as `$s =~ s/#.*//;` while a real trailing comment still
+/// suppresses completion. The index is built only on a machine hit, so
+/// `#`-free and quoted-`#` lines pay no index cost.
 pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
     let line_start = source[..position].rfind('\n').map_or(0, |p| p + 1);
     let line = &source[line_start..position];
@@ -362,6 +400,7 @@ pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
     let mut in_single = false;
     let mut in_double = false;
     let mut i = 0;
+    let mut machine_hit = false;
     while i < bytes.len() {
         let b = bytes[i];
         if b == b'\\' && (in_single || in_double) {
@@ -371,12 +410,25 @@ pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
         match b {
             b'\'' if !in_double => in_single = !in_single,
             b'"' if !in_single => in_double = !in_double,
-            b'#' if !in_single && !in_double => return true,
+            b'#' if !in_single && !in_double => {
+                machine_hit = true;
+                break;
+            }
             _ => {}
         }
         i += 1;
     }
-    false
+    if !machine_hit {
+        return false;
+    }
+    let index = perl_parser_core::SourceRegionIndex::build(source);
+    let kind = index.classify_offset(position).proven_kind().or_else(|| {
+        match index.classify_range_checked(position, position) {
+            perl_parser_core::SourceRangeClassification::EmptyBoundary { left, .. } => left,
+            _ => None,
+        }
+    });
+    kind == Some(perl_parser_core::SourceRegionKind::LineComment)
 }
 
 /// Check if position is inside a heredoc literal.
@@ -1626,6 +1678,24 @@ mod tests {
         };
 
         assert!(!has_future_heredoc_close("<<EOF", 99, &delimiter));
+    }
+
+    #[test]
+    fn is_in_comment_adjudicates_regex_and_string_hash() {
+        // #19206: a `#` inside a regex or string does not start a comment,
+        // so code after it on the same line is not in a comment.
+        let regex_source = "my $s = \"ab\"; $s =~ s/#.*//; targ";
+        assert!(!is_in_comment(regex_source, regex_source.len()));
+        let match_source = "my $x = 1; $x =~ /^#/; targ";
+        assert!(!is_in_comment(match_source, match_source.len()));
+        let string_source = "my $sep = \"#\"; targ";
+        assert!(!is_in_comment(string_source, string_source.len()));
+
+        // A real trailing comment still counts, including at EOF.
+        let comment_source = "my $x = 1; # targ";
+        assert!(is_in_comment(comment_source, comment_source.len()));
+        let plain_comment = "# targ";
+        assert!(is_in_comment(plain_comment, plain_comment.len()));
     }
 
     #[test]

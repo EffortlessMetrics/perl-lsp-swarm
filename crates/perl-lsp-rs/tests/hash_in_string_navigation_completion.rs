@@ -133,6 +133,35 @@ fn completion_after_hash_in_string_offers_symbols() -> TestResult {
 }
 
 #[test]
+fn completion_after_hash_in_regex_offers_symbols() -> TestResult {
+    let doc = "sub target_sub { return 1; }\nmy $s = \"ab\"; $s =~ s/#.*//; targ\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///hash_regex_completion.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "; targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///hash_regex_completion.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub")),
+        "completion after regex # must offer target_sub, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
 fn completion_at_eof_after_hash_in_string_offers_symbols() -> TestResult {
     // No trailing newline: the cursor is at EOF, so the guard must classify
     // through the empty-range left-hand kind (code), not fail closed.
