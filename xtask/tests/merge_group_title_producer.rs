@@ -1,9 +1,14 @@
 //! #18255: the merge queue must receive `validate-title` on the actual G.
 //!
 //! The queue path resolves the group's constituent PRs from the commit graph,
-//! re-reads each current title, and applies the same shared policy as the PR
-//! path. It must not check out candidate contents or hold PR comment/label
-//! write privileges.
+//! re-reads each current title, and applies the same policy as the PR path. It
+//! must not check out candidate contents or mutate PR state.
+//!
+//! The required context has exactly one static producer: a single
+//! unconditionally reachable job whose event split lives inside the script. A
+//! second job emitting the same name would violate the gate-enforcement
+//! contract (`duplicate_emitted_context`) and a job-level `if` would violate
+//! `always-or-scoped-noop` reachability.
 
 use std::fs;
 use std::path::PathBuf;
@@ -17,14 +22,26 @@ fn project_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn workflow() -> Value {
+fn workflow_raw() -> String {
     let path = project_root().join(".github/workflows/pr-title-check.yml");
-    let raw = fs::read_to_string(&path).expect("read pr-title-check.yml");
-    serde_yaml_ng::from_str(&raw).expect("parse pr-title-check.yml")
+    fs::read_to_string(&path).expect("read pr-title-check.yml")
+}
+
+fn workflow() -> Value {
+    serde_yaml_ng::from_str(&workflow_raw()).expect("parse pr-title-check.yml")
 }
 
 fn job<'a>(workflow: &'a Value, id: &str) -> &'a Value {
     workflow.get("jobs").and_then(|jobs| jobs.get(id)).unwrap_or_else(|| panic!("job {id} missing"))
+}
+
+/// The queue branch of the single script, from its guard to the PR-path marker.
+fn queue_branch() -> String {
+    let raw = workflow_raw();
+    let start = raw.find("if (context.eventName === 'merge_group')").expect("queue branch guard");
+    let end = raw.find("// PR and manual-dispatch path.").expect("PR path marker");
+    assert!(start < end, "queue branch must precede the PR path");
+    raw[start..end].to_string()
 }
 
 #[test]
@@ -38,48 +55,62 @@ fn merge_group_trigger_is_present() {
 }
 
 #[test]
-fn queue_job_owns_the_required_context_name() {
+fn exactly_one_static_producer_owns_the_context() {
     let workflow = workflow();
-    let queue = job(&workflow, "validate-title-merge-group");
+    let jobs = workflow.get("jobs").and_then(Value::as_mapping).expect("jobs");
+    let producers: Vec<&str> = jobs
+        .iter()
+        .filter(|(_, job)| job.get("name").and_then(Value::as_str) == Some("validate-title"))
+        .filter_map(|(id, _)| id.as_str())
+        .collect();
     assert_eq!(
-        queue.get("name").and_then(Value::as_str),
-        Some("validate-title"),
-        "the queue job must emit the required `validate-title` context"
-    );
-    assert_eq!(
-        queue.get("if").and_then(Value::as_str),
-        Some("github.event_name == 'merge_group'"),
-        "the queue job must run only on merge_group"
+        producers,
+        vec!["validate-title"],
+        "the required context must have exactly one static producer"
     );
 }
 
 #[test]
-fn queue_job_has_no_pr_write_and_checks_out_only_the_trusted_base() {
+fn producer_job_is_unconditionally_reachable() {
     let workflow = workflow();
-    let queue = job(&workflow, "validate-title-merge-group");
-    let perms = queue.get("permissions").expect("queue permissions");
-    assert_eq!(perms.get("contents").and_then(Value::as_str), Some("read"));
-    assert_eq!(perms.get("checks").and_then(Value::as_str), Some("write"));
+    let job = job(&workflow, "validate-title");
     assert!(
-        perms.get("pull-requests").is_none(),
-        "the queue job must not inherit PR comment/label write privileges"
-    );
-    let raw = serde_yaml_ng::to_string(queue).expect("serialize queue job");
-    assert!(
-        raw.contains("ref: ${{ github.event.merge_group.base_sha }}"),
-        "the queue job must check out the trusted base, not the candidate head"
-    );
-    assert!(
-        !raw.contains("github.event.merge_group.head_sha }}"),
-        "the queue job must not check out the candidate head"
+        job.get("if").is_none(),
+        "an always-or-scoped-noop required job must not carry a job-level `if`"
     );
 }
 
 #[test]
-fn queue_job_resolves_members_from_the_commit_graph_and_fails_closed() {
-    let workflow = workflow();
-    let queue = job(&workflow, "validate-title-merge-group");
-    let raw = serde_yaml_ng::to_string(queue).expect("serialize queue job");
+fn job_never_checks_out_candidate_contents() {
+    let raw = workflow_raw();
+    assert!(
+        !raw.contains("actions/checkout"),
+        "the job must not check out anything; the policy is defined inline"
+    );
+}
+
+#[test]
+fn policy_is_defined_once_in_the_workflow() {
+    let raw = workflow_raw();
+    assert_eq!(
+        raw.matches("const validateTitle =").count(),
+        1,
+        "the title policy must be defined exactly once so the paths cannot drift"
+    );
+    for needle in [
+        "dependabot",
+        "skip-title-check",
+        "release stamp",
+        "placeholder issue reference",
+        "no issue reference",
+    ] {
+        assert!(raw.contains(needle), "the inline policy must contain `{needle}`");
+    }
+}
+
+#[test]
+fn queue_branch_resolves_members_from_the_commit_graph_and_fails_closed() {
+    let queue = queue_branch();
     for needle in [
         "merge_group?.head_sha",
         "merge_group?.base_sha",
@@ -88,46 +119,32 @@ fn queue_job_resolves_members_from_the_commit_graph_and_fails_closed() {
         "pulls.get",
         "no constituent pull requests resolved",
         "merge group title validation failed",
-        "require('./scripts/ci/pr-title-policy.js')",
     ] {
-        assert!(raw.contains(needle), "queue job must contain `{needle}`");
+        assert!(queue.contains(needle), "queue branch must contain `{needle}`");
     }
 }
 
 #[test]
-fn pr_path_keeps_its_write_boundary_and_uses_the_shared_policy() {
+fn queue_branch_never_mutates_pr_state() {
+    let queue = queue_branch();
+    for forbidden in [
+        "createComment",
+        "updateComment",
+        "addLabels",
+        "removeLabel",
+        "issues.update",
+        "pulls.update",
+    ] {
+        assert!(!queue.contains(forbidden), "the queue branch must not call `{forbidden}`");
+    }
+}
+
+#[test]
+fn pr_path_keeps_its_write_boundary() {
     let workflow = workflow();
-    let pr = job(&workflow, "validate-title");
-    let perms = pr.get("permissions").expect("PR permissions");
+    let perms = workflow.get("permissions").expect("workflow permissions");
     assert_eq!(perms.get("pull-requests").and_then(Value::as_str), Some("write"));
     assert_eq!(perms.get("checks").and_then(Value::as_str), Some("write"));
-    assert_eq!(perms.get("contents").and_then(Value::as_str), Some("read"));
-    assert_eq!(
-        pr.get("if").and_then(Value::as_str),
-        Some("github.event_name != 'merge_group'"),
-        "the PR path must not run on merge_group"
-    );
-    let raw = serde_yaml_ng::to_string(pr).expect("serialize PR job");
-    assert!(
-        raw.contains("require('./scripts/ci/pr-title-policy.js')"),
-        "the PR path must call the shared policy module"
-    );
-}
-
-#[test]
-fn shared_policy_module_exports_the_policy() {
-    let path = project_root().join("scripts/ci/pr-title-policy.js");
-    let raw = fs::read_to_string(&path).expect("read pr-title-policy.js");
-    for needle in [
-        "function validateTitle",
-        "dependabot",
-        "skip-title-check",
-        "release stamp",
-        "placeholder issue reference",
-        "module.exports = { validateTitle }",
-    ] {
-        assert!(raw.contains(needle), "shared policy must contain `{needle}`");
-    }
 }
 
 #[test]
