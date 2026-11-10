@@ -4,9 +4,9 @@ on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
   # #18255: the merge queue requires `validate-title` on the merge-group ref.
-  # The queue path resolves the group's constituent PRs from an authoritative
-  # source and validates every member's title; it never checks out or executes
-  # candidate contents and holds no PR comment/label write privilege.
+  # The queue path resolves the group's constituent PRs from the commit graph,
+  # re-reads each current title, and applies the same shared policy. It never
+  # checks out candidate contents and holds no PR comment/label write privilege.
   merge_group: {}
   workflow_dispatch: {}
 
@@ -17,20 +17,27 @@ jobs:
   validate-title:
     # PR and manual-dispatch path. This metadata-only pull_request_target check
     # must remain available even when the optional self-hosted nano pool is
-    # offline. It never checks out or executes candidate contents, so a hosted
-    # runner preserves the trust boundary while making the required context live.
+    # offline. It checks out only the trusted base branch, never candidate
+    # contents, so a hosted runner preserves the trust boundary.
     name: validate-title
     if: github.event_name != 'merge_group'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: write
       checks: write
     steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Check PR title
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
+            const { validateTitle } = require('./scripts/ci/pr-title-policy.js');
             const actor = context.actor;
             let pr = context.payload.pull_request;
             if (!pr) {
@@ -52,21 +59,15 @@ jobs:
               pr = pulls[0];
             }
             const title = pr.title;
-            const login = pr.user.login;
 
-            if (actor === 'dependabot[bot]' || login.includes('dependabot')) {
+            if (actor === 'dependabot[bot]') {
               core.info('Exempt: dependabot PR');
               return;
             }
 
-            const labels = pr.labels.map(l => l.name);
-            if (labels.includes('skip-title-check')) {
-              core.info('Exempt: skip-title-check label present');
-              return;
-            }
-
-            if (/^v?\d+\.\d+\.\d+$/.test(title.trim())) {
-              core.info('Exempt: release stamp title');
+            const verdict = validateTitle(pr);
+            if (verdict.kind === 'exempt') {
+              core.info(`Exempt: ${verdict.reason}`);
               return;
             }
 
@@ -110,9 +111,8 @@ jobs:
                 core.info('Posted new bot comment.');
               }
             };
-            const issueMatches = [...title.matchAll(/\B#(\d+)\b/g)];
 
-            if (issueMatches.length === 0) {
+            if (verdict.kind === 'missing-issue') {
               core.setFailed(
                 `PR title must reference an issue (e.g. "feat: add thing (#42)"). ` +
                 `Codex/agent PRs should file the plan as an issue first. Got: "${title}"`
@@ -142,12 +142,9 @@ jobs:
             // real issue must be linked before merge (ops is the backstop). This
             // removes any incentive to guess a real issue number \u2014 a wrong-but-real
             // reference silently pollutes an unrelated issue's thread.
-            const nonZeroMatch = issueMatches.find((match) => parseInt(match[1], 10) !== 0);
-            const zeroIssueMatch = issueMatches.find((match) => parseInt(match[1], 10) === 0);
-
-            if (!nonZeroMatch && zeroIssueMatch) {
+            if (verdict.kind === 'placeholder') {
               core.info(
-                `Placeholder issue reference "${zeroIssueMatch[0]}" accepted (non-blocking). ` +
+                `Placeholder issue reference "${verdict.placeholder}" accepted (non-blocking). ` +
                 `Flagging needs-issue-link.`
               );
               const commentBody = [
@@ -155,7 +152,7 @@ jobs:
                 '',
                 BOT_MARKER,
                 '',
-                `This PR title uses the placeholder issue reference \`${zeroIssueMatch[0]}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
+                `This PR title uses the placeholder issue reference \`${verdict.placeholder}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
                 '',
                 'If you know the issue, update the title to reference it, e.g. `(#1234)`. Never guess a real issue number.',
                 '',
@@ -180,7 +177,7 @@ jobs:
             }
 
             // Validate the first real (non-placeholder) issue reference.
-            const issueNumber = parseInt(nonZeroMatch[1], 10);
+            const issueNumber = verdict.issueNumber;
             try {
               await github.rest.issues.get({
                 owner: context.repo.owner,
@@ -202,6 +199,7 @@ jobs:
             // ref added, this check went green) but `needs-issue-link` survived
             // and blocked an ops merge under the "no needs-* label may merge"
             // doctrine — the label-writer never reconciled its own label.
+            const labels = (pr.labels || []).map(l => l.name);
             if (labels.includes('needs-issue-link')) {
               try {
                 await github.rest.issues.removeLabel({
@@ -221,9 +219,9 @@ jobs:
   validate-title-merge-group:
     # #18255 queue path. Same required context name, but a separate job so the
     # queue side never inherits PR comment/label write privileges and never
-    # checks out candidate contents. Membership is resolved from the live merge
-    # queue (authoritative) or the commit-associated PRs by head SHA; absent or
-    # contradictory membership fails closed instead of passing.
+    # checks out candidate contents. Membership is resolved from the commit
+    # graph between the group base and head; each member's CURRENT title is
+    # re-read and validated. Absent or contradictory membership fails closed.
     name: validate-title
     if: github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
@@ -232,13 +230,19 @@ jobs:
       contents: read
       checks: write
     steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          persist-credentials: false
+
       - name: Validate every constituent PR title
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
+            const { validateTitle } = require('./scripts/ci/pr-title-policy.js');
             const headSha = context.payload.merge_group?.head_sha;
             const baseSha = context.payload.merge_group?.base_sha;
-            const baseRef = context.payload.merge_group?.base_ref || '';
 
             if (!headSha || !baseSha) {
               core.setFailed('merge_group payload is missing head_sha or base_sha');
@@ -247,6 +251,7 @@ jobs:
 
             // Contradictory G/base: the base must be an ancestor of the group
             // head. A diverged or behind base is not a valid merge group.
+            let commits;
             try {
               const { data: cmp } = await github.rest.repos.compareCommitsWithBasehead({
                 owner: context.repo.owner,
@@ -260,110 +265,43 @@ jobs:
                 );
                 return;
               }
+              commits = cmp.commits || [];
             } catch (e) {
-              core.setFailed(`could not verify merge_group base/head ancestry: ${e.message}`);
+              core.setFailed(`could not read the merge_group commit graph: ${e.message}`);
               return;
             }
 
-            // Reuse the existing title policy. Exemptions and placeholder
-            // semantics are unchanged; the queue path only reports the verdict
-            // and never mutates PR comments or labels.
-            const validateTitle = (pr) => {
-              const title = pr.title || '';
-              const login = pr.author?.login || pr.user?.login || '';
-              const labels = (pr.labels?.nodes || pr.labels || []).map((l) => l.name);
-              if (login.includes('dependabot')) {
-                return { ok: true, reason: 'dependabot' };
-              }
-              if (labels.includes('skip-title-check')) {
-                return { ok: true, reason: 'skip-title-check' };
-              }
-              if (/^v?\d+\.\d+\.\d+$/.test(title.trim())) {
-                return { ok: true, reason: 'release stamp' };
-              }
-              const issueMatches = [...title.matchAll(/\B#(\d+)\b/g)];
-              if (issueMatches.length === 0) {
-                return { ok: false, reason: 'no issue reference' };
-              }
-              const nonZero = issueMatches.find((m) => parseInt(m[1], 10) !== 0);
-              if (!nonZero) {
-                return { ok: true, reason: 'placeholder issue reference' };
-              }
-              return { ok: true, reason: `issue #${parseInt(nonZero[1], 10)}` };
-            };
-
-            const branch = baseRef.replace(/^refs\/heads\//, '');
-            let members = [];
-            let source = '';
-
-            // Primary: the live merge queue is the authoritative membership
-            // source. Entries are ordered by position; the group is the run of
-            // entries ending at the group head and starting at the group base.
-            if (branch) {
-              try {
-                const query = `query($owner:String!,$repo:String!,$branch:String!){repository(owner:$owner,name:$repo){mergeQueue(branch:$branch){entries(first:100){nodes{position state baseCommit{oid} headCommit{oid} pullRequest{number title state headRefOid author{login} labels(first:20){nodes{name}}}}}}}}`;
-                const result = await github.graphql(query, {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  branch,
-                });
-                const entries = result?.repository?.mergeQueue?.entries?.nodes || [];
-                if (entries.length > 0) {
-                  const headIndex = entries.findIndex((e) => e.headCommit?.oid === headSha);
-                  if (headIndex === -1) {
-                    core.setFailed(
-                      `merge_group head ${headSha} is not present in the live merge queue for ${branch}`
-                    );
-                    return;
-                  }
-                  const group = [];
-                  let reachedBase = false;
-                  for (let i = headIndex; i >= 0; i--) {
-                    const entry = entries[i];
-                    if (!entry.pullRequest) {
-                      core.setFailed(
-                        `merge queue entry at position ${entry.position} has no pull request`
-                      );
-                      return;
-                    }
-                    group.unshift(entry.pullRequest);
-                    if (entry.baseCommit?.oid === baseSha) {
-                      reachedBase = true;
-                      break;
-                    }
-                  }
-                  if (!reachedBase) {
-                    core.setFailed(
-                      `merge queue walk from ${headSha} did not reach base ${baseSha}`
-                    );
-                    return;
-                  }
-                  members = group;
-                  source = 'mergeQueue';
-                }
-              } catch (e) {
-                core.info(
-                  `mergeQueue query unavailable (${e.message}); falling back to commit-associated PRs`
-                );
-              }
+            if (commits.length === 0) {
+              core.setFailed(
+                `merge_group has no commits between base ${baseSha} and head ${headSha}`
+              );
+              return;
             }
 
-            // Fallback: the API by head SHA. This is authoritative for a
-            // single-member group and fails closed when it resolves nothing.
-            if (members.length === 0) {
+            // Map each non-base commit in the group to its PR by head SHA. The
+            // commit graph is authoritative; the gh-readonly-queue ref name is
+            // never parsed for membership.
+            const seen = new Set();
+            const members = [];
+            for (const commit of commits) {
+              let pulls;
               try {
                 const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  commit_sha: headSha,
+                  commit_sha: commit.sha,
                 });
-                members = data.filter((pr) => pr.state === 'open' || pr.merged_at);
-                source = 'commit-pulls';
+                pulls = data;
               } catch (e) {
                 core.setFailed(
-                  `could not resolve merge group members by head SHA: ${e.message}`
+                  `could not map commit ${commit.sha} to a pull request: ${e.message}`
                 );
                 return;
+              }
+              for (const pr of pulls) {
+                if (seen.has(pr.number)) continue;
+                seen.add(pr.number);
+                members.push(pr);
               }
             }
 
@@ -374,18 +312,33 @@ jobs:
               return;
             }
 
+            // Re-read each member's CURRENT title so a title edited while queued
+            // cannot pass on an earlier green check run.
             const failures = [];
-            for (const pr of members) {
-              const verdict = validateTitle(pr);
+            for (const member of members) {
+              let current;
+              try {
+                const { data } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: member.number,
+                });
+                current = data;
+              } catch (e) {
+                failures.push(`#${member.number}: could not re-read current title (${e.message})`);
+                continue;
+              }
+              const verdict = validateTitle(current);
               if (!verdict.ok) {
-                failures.push(`#${pr.number}: ${verdict.reason}`);
+                failures.push(`#${member.number}: ${verdict.reason}`);
               }
             }
+
             if (failures.length > 0) {
               core.setFailed(`merge group title validation failed: ${failures.join('; ')}`);
               return;
             }
             core.info(
-              `merge group title validation passed for ${members.length} PR(s) via ${source}: ` +
+              `merge group title validation passed for ${members.length} PR(s): ` +
               members.map((p) => `#${p.number}`).join(', ')
             );
