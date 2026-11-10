@@ -2,6 +2,10 @@ name: Methodology Gate
 
 on:
   pull_request:
+    # The gate reads PR labels and body, not the diff. A `synchronize` push
+    # cannot change either, so it does not need to re-run the gate; `edited`
+    # and lifecycle events still cover the inputs it actually consumes.
+    types: [opened, reopened, edited, ready_for_review]
   merge_group:
   push:
     branches:
