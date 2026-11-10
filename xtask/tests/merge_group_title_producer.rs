@@ -24,10 +24,7 @@ fn workflow() -> Value {
 }
 
 fn job<'a>(workflow: &'a Value, id: &str) -> &'a Value {
-    workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get(id))
-        .unwrap_or_else(|| panic!("job {id} missing"))
+    workflow.get("jobs").and_then(|jobs| jobs.get(id)).unwrap_or_else(|| panic!("job {id} missing"))
 }
 
 #[test]
@@ -102,10 +99,7 @@ fn pr_path_keeps_its_write_boundary_and_uses_the_shared_policy() {
     let workflow = workflow();
     let pr = job(&workflow, "validate-title");
     let perms = pr.get("permissions").expect("PR permissions");
-    assert_eq!(
-        perms.get("pull-requests").and_then(Value::as_str),
-        Some("write")
-    );
+    assert_eq!(perms.get("pull-requests").and_then(Value::as_str), Some("write"));
     assert_eq!(perms.get("checks").and_then(Value::as_str), Some("write"));
     assert_eq!(perms.get("contents").and_then(Value::as_str), Some("read"));
     assert_eq!(
@@ -142,10 +136,7 @@ fn policy_records_merge_group_as_a_real_producer() {
     let raw = fs::read_to_string(&path).expect("read required-checks.toml");
     let policy: toml::Value = toml::from_str(&raw).expect("parse required-checks.toml");
 
-    let checks = policy
-        .get("checks")
-        .and_then(toml::Value::as_array)
-        .expect("checks");
+    let checks = policy.get("checks").and_then(toml::Value::as_array).expect("checks");
     let row = checks
         .iter()
         .find(|row| row.get("name").and_then(toml::Value::as_str) == Some("validate-title"))
@@ -157,15 +148,9 @@ fn policy_records_merge_group_as_a_real_producer() {
         .iter()
         .filter_map(toml::Value::as_str)
         .collect();
-    assert!(
-        events.contains(&"merge_group"),
-        "validate-title events must include merge_group"
-    );
+    assert!(events.contains(&"merge_group"), "validate-title events must include merge_group");
 
-    let check_rows = policy
-        .get("check")
-        .and_then(toml::Value::as_array)
-        .expect("check");
+    let check_rows = policy.get("check").and_then(toml::Value::as_array).expect("check");
     let check_row = check_rows
         .iter()
         .find(|row| row.get("name").and_then(toml::Value::as_str) == Some("validate-title"))
