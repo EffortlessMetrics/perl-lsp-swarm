@@ -507,6 +507,10 @@ export function lookupSha256SumsDigest(checksums: string, assetName: string): Sh
   return { status: 'found', digest: resolvedDigest };
 }
 
+const EMPTY_TAG_PIN_REMEDY =
+  'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+  'set versionTag (for example v0.12.1) to pin a release.';
+
 /**
  * Map a managed-release-selector refusal to the established user-facing error
  * messages (#9925). The stable-channel `no_compatible_release` message is
@@ -535,10 +539,7 @@ function describeManagedReleaseRefusal(
       // not the selector's detail prose, identifies this case so the selector
       // can reword its message without silently dropping the remedy.
       if (channel === 'tag' && (refusal.configuredTag ?? '').trim() === '') {
-        return (
-          'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
-          'set versionTag (for example v0.12.1) to pin a release.'
-        );
+        return EMPTY_TAG_PIN_REMEDY;
       }
       return `Invalid managed release policy: ${refusal.detail}`;
   }
@@ -1476,14 +1477,11 @@ export class BinaryDownloader {
     const downloadBaseUrl = config.get<string>('downloadBaseUrl', '');
 
     // Handle internal base URL hosting. A pinned tag channel with no tag
-    // refuses here too (#16578): substituting 'latest' would silently
-    // unpin the user, so mirror the GitHub route's actionable remedy.
+    // refuses here too (#16533): substituting 'latest' would silently
+    // unpin the user, so use the GitHub route's actionable remedy.
     if (downloadBaseUrl) {
-      if (channelSetting === 'tag' && versionTag.trim() === '') {
-        throw new Error(
-          'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
-            'set versionTag (for example v0.12.1) to pin a release.',
-        );
+      if (channelSetting === 'tag' && (versionTag ?? '').trim() === '') {
+        throw new Error(EMPTY_TAG_PIN_REMEDY);
       }
       return this.getInternalRelease(downloadBaseUrl, versionTag || 'latest');
     }

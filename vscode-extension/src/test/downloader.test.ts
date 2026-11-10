@@ -1741,6 +1741,7 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   };
   type DownloaderSeams = {
     getLatestRelease: (timeoutMs?: number, token?: TestCancellation) => Promise<unknown>;
+    getInternalRelease: (baseUrl: string, version: string) => Promise<unknown>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
 
@@ -2078,13 +2079,72 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     expect(httpGetSpy).not.toHaveBeenCalled();
   });
 
-  test('an empty versionTag on the tag channel refuses on the internal mirror too (#16578)', async () => {
+  test('an absent versionTag on the tag channel refuses on the internal mirror too (#16533)', async () => {
     const seams = downloader as unknown as DownloaderSeams;
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
         if (key === 'channel') {
           return 'tag';
+        }
+        if (key === 'versionTag') {
+          return null;
+        }
+        if (key === 'downloadBaseUrl') {
+          return 'https://mirror.example.test/releases';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const internalReleaseSpy = jest.spyOn(seams, 'getInternalRelease');
+
+    // Nullish configuration is tolerated just like the GitHub route. Observe
+    // the actual mirror boundary: the generic HTTP seam is not called even on
+    // the broken fallback, so it cannot distinguish this guard.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+        'set versionTag (for example v0.12.1) to pin a release.',
+    );
+    expect(internalReleaseSpy).not.toHaveBeenCalled();
+  });
+
+  test('mirror + tag preserves a configured tag (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return 'v0.12.1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return 'https://mirror.example.test/releases';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const release = { tag_name: 'v0.12.1', assets: [] };
+    const internalReleaseSpy = jest.spyOn(seams, 'getInternalRelease').mockResolvedValue(release);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toBe(release);
+    expect(internalReleaseSpy).toHaveBeenCalledTimes(1);
+    expect(internalReleaseSpy).toHaveBeenCalledWith(
+      'https://mirror.example.test/releases',
+      'v0.12.1',
+    );
+  });
+
+  test('mirror + latest retains the latest fallback (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
         }
         if (key === 'downloadBaseUrl') {
           return 'https://mirror.example.test/releases';
@@ -2094,15 +2154,15 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       }),
       update: jest.fn(),
     });
-    const httpGetSpy = jest.spyOn(seams, 'httpGet');
+    const release = { tag_name: 'latest', assets: [] };
+    const internalReleaseSpy = jest.spyOn(seams, 'getInternalRelease').mockResolvedValue(release);
 
-    // The mirror route must not silently substitute 'latest' for the
-    // missing pin; it refuses with the same actionable remedy as GitHub.
-    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
-      'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
-        'set versionTag (for example v0.12.1) to pin a release.',
+    await expect(seams.getLatestRelease(1000)).resolves.toBe(release);
+    expect(internalReleaseSpy).toHaveBeenCalledTimes(1);
+    expect(internalReleaseSpy).toHaveBeenCalledWith(
+      'https://mirror.example.test/releases',
+      'latest',
     );
-    expect(httpGetSpy).not.toHaveBeenCalled();
   });
 
   test('a versionTag outside the tag channel warns once per session that it is ignored (#16533)', async () => {
