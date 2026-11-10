@@ -1482,13 +1482,6 @@ impl CommittedFiles {
         self.map.iter()
     }
 
-    /// Read-only map view for the cache-rebuild helpers that take a plain
-    /// `&HashMap`. This is the only route that exposes the raw map, and it
-    /// cannot mutate committed state.
-    fn as_map(&self) -> &HashMap<String, FileIndex> {
-        &self.map
-    }
-
     /// Test-only independent recomputation, used as the parity oracle and to
     /// prove the production readers never enumerate the committed map.
     #[cfg(test)]
@@ -1640,7 +1633,7 @@ impl WorkspaceIndex {
     }
 
     fn rebuild_symbol_cache(
-        files: &HashMap<String, FileIndex>,
+        files: &CommittedFiles,
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
     ) {
         symbols.clear();
@@ -1667,7 +1660,6 @@ impl WorkspaceIndex {
     /// Incrementally remove one file's symbols from the global cache,
     /// re-inserting shadowed symbols from remaining files.
     fn incremental_remove_symbols(
-        _files: &HashMap<String, FileIndex>,
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
         old_file_index: &FileIndex,
     ) {
@@ -1731,7 +1723,7 @@ impl WorkspaceIndex {
     /// Lock order: hold `symbols` write before calling; acquire `search_index` write
     /// immediately after `symbols` write.
     fn rebuild_search_index(
-        files: &HashMap<String, FileIndex>,
+        files: &CommittedFiles,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
     ) {
         #[cfg(test)]
@@ -1769,7 +1761,6 @@ impl WorkspaceIndex {
     /// Mirrors [`Self::incremental_remove_symbols`]: per-key retain surgery only;
     /// empty buckets are dropped without an O(workspace) full rebuild.
     fn incremental_remove_search(
-        _files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
         old_file_index: &FileIndex,
     ) {
@@ -1845,7 +1836,7 @@ impl WorkspaceIndex {
     }
 
     fn find_definition_in_files(
-        files: &HashMap<String, FileIndex>,
+        files: &CommittedFiles,
         symbol_name: &str,
         uri_filter: Option<&str>,
     ) -> Option<(Location, String)> {
@@ -2648,8 +2639,8 @@ impl WorkspaceIndex {
                 reindex_metrics::record_legacy_symbols_removed(old_index.symbols.len());
                 #[cfg(test)]
                 reindex_metrics::record_legacy_search_removed(old_index.symbols.len());
-                Self::incremental_remove_symbols(files.as_map(), &mut symbols, old_index);
-                Self::incremental_remove_search(files.as_map(), &mut search_idx, old_index);
+                Self::incremental_remove_symbols(&mut symbols, old_index);
+                Self::incremental_remove_search(&mut search_idx, old_index);
                 drop(search_idx);
                 drop(symbols);
             }
@@ -2786,8 +2777,8 @@ impl WorkspaceIndex {
                 // Incrementally remove symbols and re-insert any shadowed names.
                 let mut symbols = self.symbols.write();
                 let mut search_idx = self.search_index.write();
-                Self::incremental_remove_symbols(files.as_map(), &mut symbols, &file_index);
-                Self::incremental_remove_search(files.as_map(), &mut search_idx, &file_index);
+                Self::incremental_remove_symbols(&mut symbols, &file_index);
+                Self::incremental_remove_search(&mut search_idx, &file_index);
 
                 // Defensive sweep: purge any remaining cache entries whose value
                 // points to this file's URI.  incremental_remove_symbols already
@@ -3175,8 +3166,8 @@ impl WorkspaceIndex {
             }
 
             // Single rebuild at the end
-            Self::rebuild_symbol_cache(files.as_map(), &mut symbols);
-            Self::rebuild_search_index(files.as_map(), &mut search_idx);
+            Self::rebuild_symbol_cache(&files, &mut symbols);
+            Self::rebuild_search_index(&files, &mut search_idx);
         }
 
         errors
@@ -3521,7 +3512,7 @@ impl WorkspaceIndex {
         // unboundedly across long sessions. Returning the resolved location
         // directly preserves correctness without retaining state.
         let files = self.files.read();
-        Self::find_definition_in_files(files.as_map(), symbol_name, None)
+        Self::find_definition_in_files(&files, symbol_name, None)
             .map(|(location, _uri)| vec![location])
             .unwrap_or_default()
     }
@@ -9657,33 +9648,33 @@ use Data::Dumper;
         let b = must(url::Url::parse("file:///total-b.pl"));
 
         // Symbol-free file contributes zero.
-        must(index.index_file(a.clone(), "1;".to_string()));
+        must(index.index_initial_file(a.clone(), "1;".to_string()));
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 0);
 
         // Insert, then grow, shrink, and equal-size replacement.
-        must(index.index_file(a.clone(), "sub a1 { }".to_string()));
+        must(index.index_initial_file(a.clone(), "sub a1 { }".to_string()));
         assert_total_matches_oracle(&index);
-        must(index.index_file(a.clone(), "sub a1 { }\nsub a2 { }".to_string()));
+        must(index.index_initial_file(a.clone(), "sub a1 { }\nsub a2 { }".to_string()));
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 2);
-        must(index.index_file(a.clone(), "sub a9 { }".to_string()));
+        must(index.index_initial_file(a.clone(), "sub a9 { }".to_string()));
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 1);
-        must(index.index_file(a.clone(), "sub a8 { }".to_string()));
+        must(index.index_initial_file(a.clone(), "sub a8 { }".to_string()));
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 1);
 
         // Unchanged content is a NoOp and must not double-count.
-        must(index.index_file(a.clone(), "sub a8 { }".to_string()));
+        must(index.index_initial_file(a.clone(), "sub a8 { }".to_string()));
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 1);
 
         // A second file, then a rejected over-limit replacement: the
         // previously committed state and total are preserved.
-        must(index.index_file(b.clone(), "sub b1 { }\nsub b2 { }".to_string()));
+        must(index.index_initial_file(b.clone(), "sub b1 { }\nsub b2 { }".to_string()));
         assert_total_matches_oracle(&index);
-        let rejected = index.index_file(
+        let rejected = index.index_initial_file(
             b.clone(),
             "sub b1 { }\nsub b2 { }\nsub b3 { }\nsub b4 { }\nsub b5 { }\nsub b6 { }".to_string(),
         );
@@ -9693,10 +9684,24 @@ use Data::Dumper;
         assert_eq!(index.symbol_count(), 3);
 
         // A stale tracked generation must not charge or replace.
-        must(index.index_file_with_generation(a.clone(), "sub gen5 { }".to_string(), 5));
+        assert_eq!(
+            index.index_live_file(
+                a.clone(),
+                "sub gen5 { }".to_string(),
+                SourceCommit::new(must_some(NonZeroU32::new(5))),
+            ),
+            SourceCommitOutcome::Accepted
+        );
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 3);
-        must(index.index_file_with_generation(a.clone(), "sub stale { }".to_string(), 3));
+        assert_eq!(
+            index.index_live_file(
+                a.clone(),
+                "sub stale { }".to_string(),
+                SourceCommit::new(must_some(NonZeroU32::new(3))),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 3);
         assert!(
@@ -9713,7 +9718,7 @@ use Data::Dumper;
         index.clear();
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 0);
-        must(index.index_file(a.clone(), "sub again { }".to_string()));
+        must(index.index_initial_file(a.clone(), "sub again { }".to_string()));
         assert_total_matches_oracle(&index);
         assert_eq!(index.symbol_count(), 1);
     }
@@ -9729,10 +9734,10 @@ use Data::Dumper;
             max_scan_duration_ms: 30_000,
         });
         let free = must(url::Url::parse("file:///zero-free.pl"));
-        must(zero_symbols.index_file(free, "1;".to_string()));
+        must(zero_symbols.index_initial_file(free, "1;".to_string()));
         assert_total_matches_oracle(&zero_symbols);
         let one = must(url::Url::parse("file:///zero-one.pl"));
-        assert!(zero_symbols.index_file(one, "sub nope { }".to_string()).is_err());
+        assert!(zero_symbols.index_initial_file(one, "sub nope { }".to_string()).is_err());
         assert!(matches!(
             zero_symbols.take_resource_limit_rejection(),
             Some(ResourceKind::MaxSymbols)
@@ -9749,7 +9754,7 @@ use Data::Dumper;
             max_scan_duration_ms: 30_000,
         });
         let any = must(url::Url::parse("file:///zero-files.pl"));
-        assert!(zero_files.index_file(any, "1;".to_string()).is_err());
+        assert!(zero_files.index_initial_file(any, "1;".to_string()).is_err());
         assert!(matches!(zero_files.take_resource_limit_rejection(), Some(ResourceKind::MaxFiles)));
         assert_total_matches_oracle(&zero_files);
         assert_eq!(zero_files.file_count(), 0);
@@ -9772,7 +9777,7 @@ use Data::Dumper;
 
         // Duplicate URI in one batch: last payload wins. The batch then
         // admits 2 + 1 symbols and refuses the 4-symbol file at the limit.
-        let errors = index.index_files_batch(vec![
+        let errors = index.index_initial_files_batch(vec![
             (dup.clone(), "sub first { }".to_string()),
             (ok, "sub ok { }".to_string()),
             (dup.clone(), "sub last1 { }\nsub last2 { }".to_string()),
@@ -9787,7 +9792,7 @@ use Data::Dumper;
         assert!(!names.contains(&"first".to_string()), "first duplicate must not win: {names:?}");
 
         // A rejected batch replacement preserves the committed file and total.
-        let errors = index.index_files_batch(vec![(
+        let errors = index.index_initial_files_batch(vec![(
             dup.clone(),
             "sub x1 { }\nsub x2 { }\nsub x3 { }\nsub x4 { }".to_string(),
         )]);
@@ -9805,10 +9810,9 @@ use Data::Dumper;
 
     #[test]
     fn test_two_writers_race_for_final_symbol_slot() {
-        // Repeated fresh trials: a check-then-publish implementation that
-        // drops the write lock between admission and insert oversubscribes
-        // the single symbol slot in some trial; the atomic implementation
-        // admits exactly one writer in every trial.
+        // Stress the real API's write-lock invariant. This is concurrency
+        // coverage, not a deterministic race falsifier: the companion
+        // non-atomic negative control demonstrates what the lock prevents.
         for trial in 0..50 {
             let limits = IndexResourceLimits {
                 max_files: 10,
@@ -9827,7 +9831,7 @@ use Data::Dumper;
                 handles.push(std::thread::spawn(move || {
                     let uri = must(url::Url::parse(&format!("file:///race{i}.pl")));
                     barrier.wait();
-                    index.index_file(uri, format!("sub racer{i} {{ }}"))
+                    index.index_initial_file(uri, format!("sub racer{i} {{ }}"))
                 }));
             }
             let outcomes: Vec<Result<(), String>> =
@@ -9840,6 +9844,55 @@ use Data::Dumper;
             assert_eq!(index.symbol_count(), 1, "trial {trial}");
             assert_total_matches_oracle(&index);
         }
+    }
+
+    #[test]
+    fn non_atomic_check_then_publish_is_a_negative_control() {
+        // This deliberately demonstrates the broken shape: both candidates are
+        // checked before either publishes, so the final symbol slot accepts both.
+        // The real API prevents this interleaving by holding `files.write()`
+        // continuously across `admission_limit_for` and `CommittedFiles::insert`.
+        // This control proves the budget predicate alone is not the race guard.
+        let index = WorkspaceIndex::with_resource_limits(IndexResourceLimits {
+            max_files: 10,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        });
+        must(index.index_initial_file(
+            must(url::Url::parse("file:///negative-control.pl")),
+            "sub one { }".to_string(),
+        ));
+        let candidate = must_some(index.files.read().values().next().cloned());
+        let first = candidate.clone();
+        let second = candidate;
+
+        let mut broken = CommittedFiles::default();
+        assert!(index.admission_limit_for(&broken, "first", &first).is_none());
+        assert!(index.admission_limit_for(&broken, "second", &second).is_none());
+        broken.insert("first".to_string(), first);
+        broken.insert("second".to_string(), second);
+        assert_eq!(
+            broken.committed_symbol_total(),
+            2,
+            "check-then-publish without the shared write lock must oversubscribe"
+        );
+    }
+
+    #[test]
+    fn raw_map_enumeration_is_counted() {
+        // The raw view must not be an escape hatch in the no-enumeration proof.
+        let index = WorkspaceIndex::new();
+        must(index.index_initial_file(
+            must(url::Url::parse("file:///counted-view.pl")),
+            "sub one { }".to_string(),
+        ));
+        let before = index.files.read().enumerated_entries();
+        let full_sum: usize = index.files.read().values().map(|file| file.symbols.len()).sum();
+        assert_eq!(full_sum, 1);
+        assert_eq!(index.files.read().enumerated_entries(), before + 1);
     }
 
     #[test]
@@ -9861,7 +9914,7 @@ use Data::Dumper;
                 )
             })
             .collect();
-        assert!(index.index_files_batch(batch).is_empty());
+        assert!(index.index_initial_files_batch(batch).is_empty());
         assert_eq!(index.symbol_count(), 100);
 
         let before_calls = index.files.read().enumerated_total_calls();
@@ -9873,23 +9926,21 @@ use Data::Dumper;
         assert!(coordinator.check_limits().is_none());
         coordinator.enforce_limits();
         let extra = must(url::Url::parse("file:///enum-extra.pl"));
-        must(index.index_file(extra, "sub enum_extra { }".to_string()));
+        must(index.index_initial_file(extra, "sub enum_extra { }".to_string()));
         let batch_extra = must(url::Url::parse("file:///enum-batch-extra.pl"));
         assert!(
             index
-                .index_files_batch(vec![(batch_extra, "sub enum_batch_extra { }".to_string())])
+                .index_initial_files_batch(vec![(
+                    batch_extra,
+                    "sub enum_batch_extra { }".to_string()
+                )])
                 .is_empty()
         );
         assert_eq!(index.symbol_count(), 102);
         assert_eq!(
-            index.files.read().enumerated_total_calls(),
-            before_calls,
-            "symbol-budget readers must not recompute the total by enumeration"
-        );
-        assert_eq!(
             index.files.read().enumerated_entries(),
-            before_entries,
-            "symbol-budget readers must not enumerate committed files"
+            before_entries + 204,
+            "only the batch's two final cache rebuilds may visit 102 rows each; no budget reader may add an O(F) scan"
         );
 
         // The counters are load-bearing: the independent oracle does enumerate.

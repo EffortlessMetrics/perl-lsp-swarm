@@ -688,7 +688,7 @@ fn bench_resource_limit_enforcement(c: &mut Criterion) {
                 )
             })
             .collect();
-        let errors = coordinator.index().index_files_batch(files);
+        let errors = coordinator.index().index_initial_files_batch(files);
         assert!(errors.is_empty(), "populated bench setup refused work: {errors:?}");
         assert_eq!(coordinator.index().file_count(), size);
         assert_eq!(coordinator.index().symbol_count(), size);
@@ -701,6 +701,20 @@ fn bench_resource_limit_enforcement(c: &mut Criterion) {
                 .any(|symbol| symbol.name == "bench_symbol_0"),
             "query sentinel missing before timing"
         );
+        c.bench_function(&format!("resource limit admission {size} files"), |b| {
+            // Time the actual single-file admission seam, not just the
+            // retrospective check. Reusing one file keeps each replacement's
+            // projected file and symbol counts valid while measuring O(1)
+            // budget reads under the existing write lock (#19179).
+            let uri = must(Url::parse("file:///lib/Bench/Mod0.pm"));
+            b.iter(|| {
+                let _ = black_box(
+                    coordinator
+                        .index()
+                        .index_initial_file(uri.clone(), "sub replacement_symbol { }".to_string()),
+                );
+            });
+        });
         c.bench_function(&format!("resource limit enforcement {size} files"), |b| {
             b.iter(|| {
                 // Check limits (this happens after every index operation)
