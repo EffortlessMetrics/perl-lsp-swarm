@@ -5,6 +5,7 @@ use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome, Workspa
 use std::fs;
 use std::hint::black_box;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
@@ -701,18 +702,29 @@ fn bench_resource_limit_enforcement(c: &mut Criterion) {
                 .any(|symbol| symbol.name == "bench_symbol_0"),
             "query sentinel missing before timing"
         );
+        let generation = AtomicU32::new(0);
         c.bench_function(&format!("resource limit admission {size} files"), |b| {
-            // Time the actual single-file admission seam, not just the
-            // retrospective check. Reusing one file keeps each replacement's
-            // projected file and symbol counts valid while measuring O(1)
-            // budget reads under the existing write lock (#19179).
+            // Replace one existing file with distinct content and generation
+            // on every iteration. The typed outcome assertion rejects NoOp:
+            // only Accepted traverses admission_limit_for and commits under
+            // the existing write lock (#19179). The counter deliberately lives
+            // outside this callback, which Criterion invokes repeatedly.
             let uri = must(Url::parse("file:///lib/Bench/Mod0.pm"));
-            b.iter(|| {
-                let _ = black_box(
-                    coordinator
-                        .index()
-                        .index_initial_file(uri.clone(), "sub replacement_symbol { }".to_string()),
-                );
+            b.iter_custom(|iterations| {
+                let start = Instant::now();
+                let mut accepted = 0u64;
+                for _ in 0..iterations {
+                    let next = generation.fetch_add(1, Ordering::Relaxed) + 1;
+                    let outcome = black_box(coordinator.index().index_live_file(
+                        uri.clone(),
+                        format!("sub replacement_symbol_{next} {{ }}"),
+                        SourceCommit::new(must_some(NonZeroU32::new(next))),
+                    ));
+                    assert_eq!(outcome, SourceCommitOutcome::Accepted);
+                    accepted += 1;
+                }
+                assert_eq!(accepted, iterations, "every timed replacement reached admission");
+                start.elapsed()
             });
         });
         c.bench_function(&format!("resource limit enforcement {size} files"), |b| {
