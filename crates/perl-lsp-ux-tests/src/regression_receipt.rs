@@ -825,6 +825,12 @@ fn failing_test_own_input<'a>(raw: &'a str, failing_tests: &[UxFailingTest]) -> 
     strip_diagnostic_detail(&owned.join("\n"))
 }
 
+/// Match a standalone heuristic word, not an arbitrary substring such as
+/// `race` inside a Rust stack `backtrace` diagnostic (#17035).
+fn contains_ascii_word(raw: &str, word: &str) -> bool {
+    raw.split(|character: char| !character.is_ascii_alphanumeric()).any(|token| token == word)
+}
+
 fn infer_failure_class(raw: &str) -> UxFailureClass {
     let lower = raw.to_ascii_lowercase();
     if looks_like_scenario_19_race(&lower) {
@@ -837,7 +843,7 @@ fn infer_failure_class(raw: &str) -> UxFailureClass {
         UxFailureClass::BaselineDrift
     } else if lower.contains("timed out") || lower.contains("timeout") {
         UxFailureClass::Timeout
-    } else if lower.contains("race") || lower.contains("flaky") {
+    } else if contains_ascii_word(&lower, "race") || contains_ascii_word(&lower, "flaky") {
         UxFailureClass::TestRace
     } else if lower.contains("panicked") && lower.contains("tests/ux_scenario_") {
         UxFailureClass::NewTestBug
@@ -2172,6 +2178,28 @@ test result: FAILED. 0 passed; 1 failed";
         assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::UnattributedPanic);
         assert_eq!(receipt.failure_class, UxFailureClass::Unknown);
         assert_eq!(receipt.merge_action, "triage");
+    }
+
+    #[test]
+    fn a_stack_backtrace_is_not_race_evidence_for_a_custom_panic() {
+        // A stack-note function name is diagnostic plumbing, not a reason to
+        // quarantine a test whose custom payload still has unknown provenance.
+        let log = "failures:\n\n\
+---- ux_latency_raw_rpc::symbols stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:77:9:\n\
+boom\n\
+stack backtrace:\n\
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::UnattributedPanic);
+        assert_eq!(receipt.failure_class, UxFailureClass::Unknown);
+        assert_eq!(receipt.route, UxRoute::Triage);
+        assert_eq!(receipt.merge_action, "triage");
+        assert!(contains_ascii_word("data race after stale message", "race"));
+        assert!(contains_ascii_word("flaky: response never settled", "flaky"));
+        assert!(!contains_ascii_word("stack backtrace:", "race"));
     }
 
     #[test]
