@@ -462,6 +462,7 @@ fn classify_failure_mode(block: &str) -> (UxFailureMode, Option<String>) {
 fn is_runtime_panic_message(message: &str) -> bool {
     let lower = message.trim().to_ascii_lowercase();
     lower.starts_with("called `option::unwrap()` on a `none` value")
+        || lower.starts_with("called `result::unwrap()` on an `err` value:")
         || lower.starts_with("index out of bounds:")
         || (lower.starts_with("attempt to ") && lower.ends_with("with overflow"))
         || lower == "attempt to divide by zero"
@@ -483,8 +484,11 @@ fn unattributed_custom_panic_evidence(block: &str) -> Option<String> {
         }
         let trimmed = line.trim();
         let normalized_path = trimmed.replace('\\', "/");
+        let crate_relative_location = normalized_path
+            .rsplit_once("panicked at ")
+            .is_some_and(|(_, path)| path.starts_with("tests/") || path.starts_with("src/"));
         if !(trimmed.ends_with(':')
-            && normalized_path.contains("crates/perl-lsp-ux-tests/")
+            && (normalized_path.contains("crates/perl-lsp-ux-tests/") || crate_relative_location)
             && normalized_path.contains(".rs:"))
         {
             continue;
@@ -655,11 +659,34 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
             )
         })
     {
-        // A real assertion marker belongs to a failing test. Read it beside only
-        // the failing tests' own evidence so unrelated compiler output, cache
-        // prose, or a different failure cannot choose the run's remedy. Deleting
-        // this branch is caught by the fixture-matrix disagreement fixture.
-        return infer_failure_class(&failing_test_own_input(raw, failing_tests));
+        // Read only assertion-bearing blocks. An adjacent custom or runtime
+        // panic may contain baseline/matrix/timeout prose, but its message is
+        // not assertion evidence and must not choose the run's remedy (#17035).
+        // Deleting this scoping is caught by the co-failure fixture below.
+        let assertion_failures: Vec<UxFailingTest> = failing_tests
+            .iter()
+            .filter(|test| {
+                matches!(
+                    test.mode,
+                    UxFailureMode::AssertionFailed | UxFailureMode::AssertionOnAbsentObservation
+                )
+            })
+            .cloned()
+            .collect();
+        let assertion_class =
+            infer_failure_class(&failing_test_own_input(raw, &assertion_failures));
+        if assertion_class == UxFailureClass::Unknown {
+            // Preserve only the established heuristic routes when assertion
+            // evidence does not select another class. They rest on test/scenario
+            // naming or race/flake wording, not a claim about custom-panic
+            // provenance (#17035, #16103). Baseline/matrix/timeout prose from
+            // an adjacent panic never enters this assertion-only reader.
+            let scanned = infer_failure_class(&classification_input(raw));
+            if matches!(scanned, UxFailureClass::NewTestBug | UxFailureClass::TestRace) {
+                return scanned;
+            }
+        }
+        return assertion_class;
     }
 
     let scanned = infer_failure_class(&classification_input(raw));
@@ -676,8 +703,10 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
         // Unprefixed custom text cannot prove a provider regression or a server
         // crash. In particular, do not let unrelated `baseline` or `panicked at`
         // strings elsewhere in the tee'd log manufacture a remedy (#17035).
-        // `NewTestBug` and the scenario-19 race instead rest on named test/location
-        // evidence, so those established non-provenance routes remain intact.
+        // `NewTestBug` and `TestRace` preserve their established whole-log
+        // heuristics, including scenario-name, generic race, and flake markers.
+        // Those are not typed custom-assertion provenance; other unclear cases
+        // remain Unknown instead of guessing a provider regression or crash.
         return UxFailureClass::Unknown;
     }
 
@@ -2109,6 +2138,24 @@ test result: FAILED. 0 passed; 1 failed";
     }
 
     #[test]
+    fn crate_directory_relative_test_paths_preserve_custom_panic_uncertainty() {
+        // Running from crates/perl-lsp-ux-tests omits crates/perl-lsp-ux-tests/
+        // from panic locations. That launch-directory difference is not evidence
+        // of assertion provenance either.
+        let log = "failures:\n\n\
+---- ux_latency_raw_rpc::symbols stdout ----\n\
+thread 'main' panicked at tests/ux_latency_raw_rpc.rs:77:9:\n\
+documentSymbol must expose alpha\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::UnattributedPanic);
+        assert!(!receipt.failing_tests[0].discriminated);
+        assert_eq!(receipt.failure_class, UxFailureClass::Unknown);
+        assert_eq!(receipt.merge_action, "triage");
+    }
+
+    #[test]
     fn unrelated_assertion_and_panic_text_cannot_route_an_unattributed_panic() {
         // A compiler diagnostic from another target can contain both strings.
         // They are not evidence from this failing test and must not select a route.
@@ -2188,11 +2235,37 @@ test result: FAILED. 0 passed; 1 failed";
     }
 
     #[test]
+    fn an_unattributed_panic_cofailure_cannot_borrow_its_drift_prose() {
+        // The custom block's "baseline mismatch" is not an observed comparison.
+        // Only the other block's assertion marker may choose the run's remedy.
+        let log = "running 2 tests\n\
+test ux_latency_raw_rpc::symbols ... FAILED\n\
+test ux_latency_raw_rpc::hover ... FAILED\n\
+\n\
+failures:\n\n\
+---- ux_latency_raw_rpc::symbols stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:77:9:\n\
+baseline mismatch\n\
+\n\
+---- ux_latency_raw_rpc::hover stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:99:9:\n\
+assertion failed: real value\n\
+\n\
+test result: FAILED. 0 passed; 2 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::UnattributedPanic);
+        assert_eq!(receipt.failing_tests[1].mode, UxFailureMode::AssertionFailed);
+        assert_eq!(receipt.failure_class, UxFailureClass::ProviderRegression);
+        assert_eq!(receipt.merge_action, "fix_provider");
+    }
+
+    #[test]
     fn recognized_runtime_panic_payloads_have_direct_coverage() {
         // F4: each retained heuristic is pinned independently. Result::expect has
         // no `expect(` marker in its actual rendering and deliberately has no arm.
         for payload in [
             "called `Option::unwrap()` on a `None` value",
+            "called `Result::unwrap()` on an `Err` value: missing update: NotFound",
             "index out of bounds: the len is 1 but the index is 2",
             "attempt to add with overflow",
             "attempt to subtract with overflow",
