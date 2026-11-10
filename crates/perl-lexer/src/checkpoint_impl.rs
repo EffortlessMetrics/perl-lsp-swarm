@@ -38,6 +38,11 @@ impl Checkpointable for PerlLexer<'_> {
             qw_recovery_enabled,
             eof_emitted,
             pod_cut_cache: _,
+            // Operation-local record, like `pod_cut_cache`: the checkpoint's
+            // replay state describes *where to resume*, not which POD blocks a
+            // particular lexing pass happened to skip. A consumer that needs
+            // the full record drives its own lexer to EOF.
+            stray_cut_opens: _,
             scan_limit,
             logical_source,
             generation,
@@ -172,6 +177,13 @@ impl Checkpointable for PerlLexer<'_> {
         });
         self.eof_emitted = replay.eof_emitted;
         self.scan_limit = None;
+        // The record accumulates as the lexer passes each directive. Resuming
+        // from `replay.position` will re-traverse any directive at or beyond
+        // it and re-record those, so drop the not-yet-owned tail to keep the
+        // post-restore record duplicate-free (#19051 review). Entries before
+        // the restored position came from already-consumed tokens and stay.
+        let restore_position = replay.position;
+        self.stray_cut_opens.retain(|event| event.cut_offset < restore_position);
         if matches!(replay.context, CheckpointContext::Format { .. }) {
             self.mode = LexerMode::InFormatBody;
         }

@@ -21,6 +21,10 @@ def git_output(path):
 
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
+        # These fixtures mock the launch/owner; native discovery is tested separately.
+        self.discovery_fixture = patch.object(safe, "child_discovery_capability", return_value={})
+        self.discovery_fixture.start()
+        self.addCleanup(self.discovery_fixture.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="cargo-admitted-proof-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -529,6 +533,8 @@ class AdmissionTests(unittest.TestCase):
         import contextlib
         import io
         import json
+        # This opt-in test launches a real owner, so do not bypass discovery admission.
+        self.discovery_fixture.stop()
         repo, linked = self.root / "repo", self.root / "linked"
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
@@ -624,6 +630,155 @@ class AdmissionTests(unittest.TestCase):
                 link.rmdir()
             else:
                 link.unlink()
+
+
+class ResourceIdentityPreflightTests(unittest.TestCase):
+    """Real Git and CLI proof; preflight never launches Cargo or acquires a lease."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="admission identity ")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "source repo"
+        self.foreign = self.root / "foreign repo"
+        # Keep fixtures independent of user Git selectors and build settings.
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith(("GIT_", "CARGO_", "RUST"))}
+        self.env.update(GIT_CONFIG_GLOBAL=str(self.root / "no global config"),
+                        GIT_CONFIG_NOSYSTEM="1", DEVPLANE=str(self.root / "private plane"),
+                        CARGO_HOME=str(self.root / "cargo home"),
+                        TMPDIR=str(self.root / "scratch space"),
+                        CARGO_BUILD_JOBS="2",
+                        # Fixture-only disk policy; this is identity proof, not
+                        # qualification of a real build's capacity envelope.
+                        MIN_FREE_GB="0.001", MAX_USED_PCT="100")
+        for repo in (self.repo, self.foreign):
+            subprocess.run(["git", "init", "-q", str(repo)], env=self.env,
+                           check=True, capture_output=True)
+
+    def preflight(self, cwd, **overrides):
+        return subprocess.run([sys.executable, str(ROOT / "scripts/cargo_admitted.py"),
+                               "--preflight", "check"], cwd=cwd,
+                              env=dict(self.env, **overrides), text=True,
+                              capture_output=True, timeout=20)
+
+    def accepted(self, cwd, **overrides):
+        import json
+        result = self.preflight(cwd, **overrides)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prefix = "cargo-admitted preflight: "
+        lines = [line for line in result.stderr.splitlines() if line.startswith(prefix)]
+        self.assertEqual(len(lines), 1, result.stderr)
+        report = json.loads(lines[0][len(prefix):])
+        self.assertEqual(report["verdict"], "PASS")
+        self.assertFalse(report["lease_acquired"])
+        self.assertFalse(Path(report["lease"]).exists())
+        self.assertEqual(Path(report["scope"]["working_directory"]), cwd.resolve())
+        return report
+
+    def refused(self, cwd, reason, **overrides):
+        result = self.preflight(cwd, **overrides)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn(reason, result.stderr)
+        import json
+        prefix = "cargo-admitted preflight: "
+        lines = [line for line in result.stderr.splitlines() if line.startswith(prefix)]
+        self.assertEqual(len(lines), 1, result.stderr)
+        report = json.loads(lines[0][len(prefix):])
+        self.assertEqual(report["verdict"], "DENY")
+        self.assertFalse(report["lease_acquired"])
+        self.assertIsNone(report["scope"])
+        self.assertNotIn("cargo-admitted resources: ", result.stderr)
+
+    def test_spaced_paths_and_foreign_cwd_bind_to_invoked_repository(self):
+        nested = self.repo / "nested folder"
+        nested.mkdir()
+        first = self.accepted(self.repo)
+        nested_report = self.accepted(nested)
+        foreign = self.accepted(self.foreign)
+        for report, repo in ((first, self.repo), (nested_report, self.repo),
+                             (foreign, self.foreign)):
+            self.assertEqual(Path(report["scope"]["worktree"]), repo)
+            self.assertEqual(Path(report["scope"]["resources"]["cargo_home"]),
+                             self.root / "cargo home")
+            self.assertEqual(Path(report["scope"]["resources"]["temp"]),
+                             self.root / "scratch space")
+        self.assertEqual(first["scope"]["resources"], nested_report["scope"]["resources"])
+        self.assertEqual(first["lease"], nested_report["lease"])
+        self.assertNotEqual(first["lease"], foreign["lease"])
+        for name in ("target", "build"):
+            self.assertNotEqual(first["scope"]["resources"][name], foreign["scope"]["resources"][name])
+        self.assertFalse(Path(self.env["DEVPLANE"]).exists())
+        self.assertFalse(Path(self.env["CARGO_HOME"]).exists())
+        self.assertFalse(Path(self.env["TMPDIR"]).exists())
+
+    def test_relative_targets_refuse_even_when_they_resolve_to_owned_paths(self):
+        for cwd in (self.repo, self.foreign):
+            resources = self.accepted(cwd)["scope"]["resources"]
+            for name, variable in (("target", "CARGO_TARGET_DIR"),
+                                   ("build", "CARGO_BUILD_BUILD_DIR")):
+                with self.subTest(cwd=cwd, variable=variable):
+                    expected = Path(resources[name])
+                    relative = os.path.relpath(expected, cwd)
+                    self.assertFalse(Path(relative).is_absolute())
+                    self.assertEqual((cwd / relative).resolve(), expected)
+                    self.refused(cwd, "storage paths must be absolute", **{variable: relative})
+                    # The identical owned resource is admitted when explicit.
+                    self.accepted(cwd, **{variable: str(expected)})
+        self.assertFalse(Path(self.env["DEVPLANE"]).exists())
+
+    def test_explicit_targets_cannot_transfer_foreign_repository_ownership(self):
+        source = self.accepted(self.repo)["scope"]["resources"]
+        foreign = self.accepted(self.foreign)["scope"]["resources"]
+        for name, variable in (("target", "CARGO_TARGET_DIR"),
+                               ("build", "CARGO_BUILD_BUILD_DIR")):
+            for cwd, own, other in ((self.repo, source, foreign),
+                                    (self.foreign, foreign, source)):
+                with self.subTest(cwd=cwd, variable=variable):
+                    self.refused(cwd, variable + " override unsupported", **{variable: other[name]})
+                    self.accepted(cwd, **{variable: own[name]})
+        self.assertFalse(Path(self.env["DEVPLANE"]).exists())
+
+    def check_linked_storage(self, junction=False):
+        report = self.accepted(self.repo)
+        resources = report["scope"]["resources"]
+        private = Path(resources["target"]).parent
+        private.mkdir(parents=True)
+        sentinel = private / "owner evidence"
+        sentinel.write_bytes(b"preserve original storage owner")
+        alias = self.root / "storage alias"
+        if junction:
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(private)],
+                           check=True, capture_output=True)
+            self.addCleanup(alias.rmdir)
+        else:
+            try:
+                alias.symlink_to(private, target_is_directory=True)
+            except OSError as error:
+                if os.name != "nt" or error.winerror != 1314:
+                    raise
+                self.skipTest("Windows symlink privilege unavailable; junction has separate coverage")
+            self.addCleanup(alias.unlink)
+        self.assertEqual(alias.resolve(), private)
+        for name, variable in (("target", "CARGO_TARGET_DIR"),
+                               ("build", "CARGO_BUILD_BUILD_DIR")):
+            with self.subTest(variable=variable):
+                selected = alias / name
+                self.assertEqual(selected.resolve(), Path(resources[name]))
+                self.refused(self.repo, "linked storage path is unsupported", **{variable: str(selected)})
+                self.accepted(self.repo, **{variable: resources[name]})
+                self.assertFalse(Path(resources[name]).exists())
+        self.assertEqual(sentinel.read_bytes(), b"preserve original storage owner")
+        self.assertFalse(Path(report["lease"]).exists())
+        self.assertFalse(Path(resources["cargo_home"]).exists())
+        self.assertFalse(Path(resources["temp"]).exists())
+
+    def test_symlink_alias_cannot_adopt_owned_storage(self):
+        self.check_linked_storage()
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction control")
+    def test_junction_alias_cannot_adopt_owned_storage(self):
+        self.check_linked_storage(junction=True)
 
 
 if __name__ == "__main__":
