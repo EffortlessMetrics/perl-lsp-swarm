@@ -2079,35 +2079,42 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     expect(httpGetSpy).not.toHaveBeenCalled();
   });
 
-  test('an absent versionTag on the tag channel refuses on the internal mirror too (#16533)', async () => {
-    const seams = downloader as unknown as DownloaderSeams;
-    const vscode = require('vscode');
-    vscode.workspace.getConfiguration.mockReturnValue({
-      get: jest.fn((key: string, defaultValue?: unknown) => {
-        if (key === 'channel') {
-          return 'tag';
-        }
-        if (key === 'versionTag') {
-          return null;
-        }
-        if (key === 'downloadBaseUrl') {
-          return 'https://mirror.example.test/releases';
-        }
-        return defaultValue;
-      }),
-      update: jest.fn(),
-    });
-    const internalReleaseSpy = jest.spyOn(seams, 'getInternalRelease');
+  test.each([
+    ['null', null],
+    ["''", ''],
+    ['whitespace-only', '   '],
+  ])(
+    'an absent versionTag on the tag channel refuses on the internal mirror (%s) (#16533)',
+    async (_label: string, versionTag: string | null) => {
+      const seams = downloader as unknown as DownloaderSeams;
+      const vscode = require('vscode');
+      vscode.workspace.getConfiguration.mockReturnValue({
+        get: jest.fn((key: string, defaultValue?: unknown) => {
+          if (key === 'channel') {
+            return 'tag';
+          }
+          if (key === 'versionTag') {
+            return versionTag;
+          }
+          if (key === 'downloadBaseUrl') {
+            return 'https://mirror.example.test/releases';
+          }
+          return defaultValue;
+        }),
+        update: jest.fn(),
+      });
+      const internalReleaseSpy = jest.spyOn(seams, 'getInternalRelease');
 
-    // Nullish configuration is tolerated just like the GitHub route. Observe
-    // the actual mirror boundary: the generic HTTP seam is not called even on
-    // the broken fallback, so it cannot distinguish this guard.
-    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
-      'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
-        'set versionTag (for example v0.12.1) to pin a release.',
-    );
-    expect(internalReleaseSpy).not.toHaveBeenCalled();
-  });
+      // Nullish, empty, and whitespace-only tags are all an unfinished pin.
+      // Observe the actual mirror boundary, not the generic HTTP seam that the
+      // broken fallback would also leave unused on the getInternalRelease path.
+      await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+        'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+          'set versionTag (for example v0.12.1) to pin a release.',
+      );
+      expect(internalReleaseSpy).not.toHaveBeenCalled();
+    },
+  );
 
   test('mirror + tag preserves a configured tag (#16533)', async () => {
     const seams = downloader as unknown as DownloaderSeams;
