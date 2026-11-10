@@ -1029,6 +1029,79 @@ test_unreachable_real_registration_survives_both_modes() {
   fi
 }
 
+test_bare_repository_with_linked_worktrees() {
+  local root="${TMPDIR_BASE}/bare-real" output before after
+  mkdir -p "$root"
+  git init -q -b main "$root/source"
+  git -C "$root/source" config user.email cleanup-test@example.invalid
+  git -C "$root/source" config user.name "cleanup test"
+  printf 'preserved\n' > "$root/source/file.txt"
+  git -C "$root/source" add file.txt
+  git -C "$root/source" -c commit.gpgsign=false commit --no-verify -qm init
+  git clone -q --bare "$root/source" "$root/.git"
+  git -C "$root/.git" worktree add -q "$root/current" -b current
+  git -C "$root/.git" worktree add -q "$root/landed" -b landed
+  git -C "$root/.git" worktree add -q "$root/dirty" -b dirty
+  printf 'uncommitted\n' >> "$root/dirty/file.txt"
+  git -C "$root/.git" worktree add -q "$root/unique" -b unique
+  git -C "$root/unique" -c user.name='cleanup test' -c user.email=cleanup-test@example.invalid \
+    -c commit.gpgsign=false commit --no-verify --allow-empty -qm unique
+
+  mkdir -p "$root/current/scripts"
+  cp "$IMPL" "$root/current/scripts/cleanup-completed-worktrees.sh"
+  before="$(find "$root/.git" -type f -exec sha256sum {} \; | sort)"
+  if output="$(cd "$root/current" && bash "$IMPL" --dry-run 2>&1)"; then
+    pass "bare common repository accepts linked-worktree invocation"
+  else
+    fail "bare common repository accepts linked-worktree invocation"
+    printf '%s\n' "$output"
+    return 0
+  fi
+  local row
+  for row in 'bare-real primary SKIP' 'current current SKIP' 'landed landed REMOVE' \
+             'dirty dirty KEEP' 'unique no-remote KEEP'; do
+    local name state action
+    read -r name state action <<< "$row"
+    if awk -v name="$name" -v state="$state" -v action="$action" \
+      '$1 == name && $3 == state && $4 == action { found = 1 } END { exit !found }' <<< "$output"; then
+      pass "bare repository classifies $row"
+    else
+      fail "bare repository classifies $row"
+      printf '%s\n' "$output"
+    fi
+  done
+  if output="$(cd "$root/.git" && bash "$root/current/scripts/cleanup-completed-worktrees.sh" --dry-run 2>&1)"; then
+    pass "bare repository accepts direct invocation"
+  else
+    fail "bare repository accepts direct invocation"
+    printf '%s\n' "$output"
+  fi
+  if awk '$1 == "current" && $3 == "tooling" && $4 == "SKIP" { found = 1 } END { exit !found }' <<< "$output"; then
+    pass "bare-root invocation protects the script-host checkout"
+  else
+    fail "bare-root invocation protects the script-host checkout"
+    printf '%s\n' "$output"
+  fi
+  after="$(find "$root/.git" -type f -exec sha256sum {} \; | sort)"
+  if [[ "$before" == "$after" ]]; then
+    pass "bare dry runs leave repository metadata byte-identical"
+  else
+    fail "bare dry runs leave repository metadata byte-identical"
+  fi
+  if output="$(cd "$root/current" && bash "$IMPL" 2>&1)"; then
+    pass "bare repository mutating sweep succeeds"
+  else
+    fail "bare repository mutating sweep succeeds"
+    printf '%s\n' "$output"
+  fi
+  if [[ -d "$root/.git" && -d "$root/current" && -d "$root/dirty" &&
+        -d "$root/unique" && ! -e "$root/landed" ]]; then
+    pass "bare sweep removes only the disposable sibling"
+  else
+    fail "bare sweep removes only the disposable sibling"
+  fi
+}
+
 test_json_projection_carries_the_inspection_axes() {
   local case_dir output
   if ! command -v jq >/dev/null 2>&1; then
@@ -1083,6 +1156,7 @@ test_successful_sweeps_exit_zero
 test_json_projection_carries_the_inspection_axes
 test_real_repository_dry_run_writes_nothing
 test_unreachable_real_registration_survives_both_modes
+test_bare_repository_with_linked_worktrees
 
 TOTAL=$((PASS + FAIL))
 echo ""

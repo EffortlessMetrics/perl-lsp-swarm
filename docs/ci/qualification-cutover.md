@@ -166,6 +166,40 @@ Those aggregates preserve their route selection, fallback and receipt checks. Th
 historical main-red probe remains a diagnostic/refusal owner; missing main evidence
 is not a request to restore routine main Actions. It cannot replace current G proof.
 
+### Advisory PR-fast footprint experiment
+
+Current main added `pr-fast-unblocked` alongside `pr-smoke`. Both run the same
+`pr_fast` portfolio with separate caches; the revival treats the disk preflight
+as telemetry. This candidate retains its commands and receipts for an explicit
+`workflow_dispatch` with `run_pr_fast_experiment: true` (default false). It cannot
+start automatically for G or ordinary development events. The original `pr-smoke`
+keeps its fatal workflow-bound footprint guard and committed baseline unchanged.
+
+This avoids an automatic second full build; it does not prove the guarded tier
+fits a standard hosted runner. Its retained 90-GiB requirement can still refuse
+that host. `unit_routed_full` owns scoped integration-test runtime that the other
+shards do not replace. While the canonical tier refuses capacity, applicable
+runtime proof remains an in-session or explicitly admitted manual obligation;
+neither a guard refusal nor the dormant experiment supplies successful G evidence.
+Footprint qualification remains with #19067/#19045. Do not claim a faster complete
+route or remove that obligation because the experiment is no longer automatic.
+
+### Cache writers after ordinary main triggers retire
+
+The `ci-gate`, `ci-all-targets` and `pr-smoke` cache families retain their existing
+main/master-only `save-if` boundaries. Ordinary main pushes no longer invoke those
+writers, and candidate/G runs remain restore-only. This source change does not
+authorize shared-cache writes from candidate code or prove those families will
+continue receiving fresh trusted entries.
+
+An existing explicit main-ref dispatch or separately admitted deep producer needs
+a named operational selection and a verified matching toolchain/profile/cache key
+before it can supply ongoing seed ownership. Without that selection, future warming
+is `NOT_PROVEN`; a previously warm cache is not a durable seeding mechanism. This is
+separate from RIPR's retained scheduled seed. Do not restore per-merge qualification
+or add automatic schedules merely to refill caches; measure a separately purposed
+seed against the rebuild and transfer cost it avoids.
+
 ### Existing API and semver advisory boundaries
 
 The current policy already classifies both `Public API Surface (facade PR)` and
@@ -207,6 +241,38 @@ App checks are a different mechanism. The accepted publisher must prove actual
 PR evaluation, correct subject and expected application, not just return a check
 ID. Do not impersonate App `15368`, invent success, remove an obligation, or
 change its binding without the reviewed, authorized settings transaction.
+
+### Coupled H/G protection migration
+
+The [November 10 continuation](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17903#issuecomment-6760618295)
+and [administrative handoff](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10065#issuecomment-6760629800)
+correct the earlier assumption that the five branch requirements can remain
+unchanged while only Hermes admits H. GitHub couples pre-enqueue H requirements
+and G requirements. Merely removing the H Actions producers would strand admission.
+
+The selected protection-facing aggregate is `CI Lifecycle Qualification`, bound
+to the actual expected Hermes App. Its H result means current scoped local proof,
+substantive review and conditional landing authority; its G result means completed
+integration qualification. Preserve the five mandatory authenticated G leaves
+listed above, including their real Actions App `15368` identity. Hermes verifies
+those results; it does not impersonate their App or call unexecuted H compilation
+and RIPR successful. The checked-in required-check ledger still records the
+observed prior five-context binding; it is not evidence that final settings were
+applied or a command to keep those five coupled H requirements indefinitely.
+
+Reconcile the protection-facing mapping across all applicable rulesets and classic
+protection. Hold new admissions throughout the source/settings/workflow-state writes
+and verify each applied generation. In particular, queue-only landing must be enforced
+before cheap H admission is usable. Preserve review/thread, deletion, force-push and
+tag protections. Unknown classic settings, App identity or workflow registrations
+remain unresolved: actual IDs remain unknown and the checked-in publisher policy
+stays disabled until the existing owner establishes them.
+
+The same packet must name the supported first protected installation of the additive
+publisher capability and B-side readers. Enabling the queue last without an eligible
+H route, installing a green shim, or treating source publication as protected proof
+does not close that edge. The existing Hermes publisher and admission owner retain
+this operation; no new controller or ordinary-CI bootstrap is introduced.
 
 ## First-installation decision
 
@@ -300,8 +366,9 @@ prior source, protection and workflow states cannot jointly maintain the current
 no-development-CI boundary, remain held with that precise incompatibility. There
 is no temporary ordinary-lifecycle bootstrap or rollback exception.
 
-Before removing queue-only enforcement, prove that compatible full-proof rails
-are restored; never leave cheap admission protecting direct merges. If historical
+Restore and read back a reachable full qualification producer and exact required
+App/context before relaxing queue enforcement; never leave cheap admission
+protecting direct merges. If historical
 patch preimages changed, prepare a reviewed contextual revert rather than forcing
 an obsolete exact-reversal patch. Source rollback alone is not runtime rollback.
 

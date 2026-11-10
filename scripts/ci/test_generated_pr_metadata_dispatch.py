@@ -30,7 +30,7 @@ sys.exit(99)
 
 
 def steps(path):
-    workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+    workflow = yaml.load(path.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
     return [step for job in workflow['jobs'].values() for step in job.get('steps', [])]
 
 
@@ -47,7 +47,7 @@ class GeneratedPublicationTests(unittest.TestCase):
         step = readback_step(self.root / '.github/workflows' / workflow)
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            (directory / 'gh').write_text(STUB)
+            (directory / 'gh').write_text(STUB, encoding='utf-8')
             (directory / 'gh').chmod(0o755)
             log, summary = directory / 'calls.jsonl', directory / 'summary.md'
             env = dict(PATH=str(directory) + os.pathsep + os.environ['PATH'],
@@ -56,8 +56,8 @@ class GeneratedPublicationTests(unittest.TestCase):
             env.update(overrides)
             result = subprocess.run(['bash', '-c', step['run'] if run_source is None else run_source],
                                     env=env, capture_output=True, text=True, timeout=10)
-            calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
-            return result, calls, summary.read_text() if summary.exists() else ''
+            calls = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()] if log.exists() else []
+            return result, calls, summary.read_text(encoding='utf-8') if summary.exists() else ''
 
     def assert_no_dispatch(self, calls):
         self.assertTrue(calls)

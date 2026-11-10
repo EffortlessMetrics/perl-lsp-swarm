@@ -258,6 +258,52 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             self.assertIn('merge_group', actual[path].events, name)
             self.assertIn(job, actual[path].jobs, name)
 
+    def test_pr_fast_revival_requires_explicit_manual_admission(self):
+        from scripts.ci.test_ripr_cache_authority_15055 import evaluate_guard
+
+        ci = yaml.load((ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8'),
+                       Loader=yaml.BaseLoader)
+        dispatch_inputs = ci['on']['workflow_dispatch']['inputs']
+        self.assertIn('run_pr_fast_experiment', dispatch_inputs)
+        admission = dispatch_inputs['run_pr_fast_experiment']
+        self.assertEqual(admission['type'], 'boolean')
+        self.assertEqual(admission['default'], 'false')
+        self.assertEqual(admission['required'], 'false')
+        revival = ci['jobs']['pr-fast-unblocked']
+        condition = revival['if']
+        # Execute the newly added event/input predicate using the existing
+        # bounded Actions-expression interpreter. The unchanged subject guard
+        # remains a separate required conjunct, not an alternative admission.
+        selection, separator, subject = condition.partition(' && needs.')
+        self.assertTrue(separator)
+        self.assertEqual('needs.' + subject,
+                         ci['jobs']['pr-smoke']['if'])
+        expression = selection.replace('inputs.run_pr_fast_experiment', 'inputs.seed_cache')
+        for event in ('merge_group', 'pull_request', 'pull_request_target', 'push',
+                      'schedule', 'workflow_dispatch'):
+            for requested in (False, True):
+                with self.subTest(event=event, requested=requested):
+                    self.assertEqual(
+                        evaluate_guard(expression, event=event, ref='', seed=requested),
+                        event == 'workflow_dispatch' and requested)
+        # Removing the event boundary would allocate the second full tier on G.
+        mutant = expression.replace("github.event_name == 'workflow_dispatch' && ", '')
+        self.assertNotEqual(mutant, expression)
+        self.assertTrue(evaluate_guard(mutant, event='merge_group', ref='', seed=True))
+        self.assertFalse(evaluate_guard(expression, event='merge_group', ref='', seed=True))
+        # The original guarded portfolio and experiment's proof/receipts survive.
+        guarded_steps = ci['jobs']['pr-smoke']['steps']
+        guard = next(step for step in guarded_steps
+                     if step.get('name') == 'Pre-flight disk budget guard')
+        self.assertNotEqual(guard.get('continue-on-error'), 'true')
+        self.assertIn('--baseline-path "$PR_SMOKE_BASELINE_PATH"', guard['run'])
+        for job in (ci['jobs']['pr-smoke'], revival):
+            scripts = '\n'.join(step.get('run', '') for step in job['steps'])
+            self.assertIn('--gate unit_routed_full_build', scripts)
+            self.assertIn('gates --tier pr-fast --subject', scripts)
+            self.assertTrue(any(step.get('name') == 'Upload PR-fast receipt'
+                                for step in job['steps']))
+
     def test_projected_contract_passes_source_only_and_keeps_native_ceiling(self):
         with staged_tree() as root:
             git(root, 'add', '.')
