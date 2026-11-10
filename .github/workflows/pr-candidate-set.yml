@@ -3,12 +3,7 @@ name: PR Candidate-Set Reconciliation
 on:
   pull_request:
     branches: [main, master]
-    # `synchronize` (a code push) cannot change a PR's candidate set: that set
-    # is derived from the body, labels, and cross-references, which change on
-    # `edited`/lifecycle events. The 6-hour schedule still reconciles live
-    # cross-reference drift, so dropping the per-push run removes duplicate
-    # work without losing reconciliation.
-    types: [opened, closed, reopened, edited, ready_for_review, converted_to_draft]
+    types: [opened, closed, reopened, synchronize, edited, ready_for_review, converted_to_draft]
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch: {}
