@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { ChildProcess } from 'child_process';
+import type { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import {
@@ -371,6 +371,34 @@ describe('bounded prove process execution', () => {
       exitCode: 0,
     });
   }, 30_000);
+
+  test('spawns metacharacter test paths as literal argv without a command interpreter (#7418)', async () => {
+    const literalPath = 'C:\\repo\\t\\literal&second-command %PATH% !x! ^ (a) [1] {a,b}.t';
+    const child = fakeChildProcess();
+    const spawnProcess = jest.fn(() => child);
+    // A caller that bypasses the `shell?: false` type must still not reach a shell.
+    const smuggled = { shell: true } as unknown as { shell?: false };
+    const pending = runBoundedProcess('perl.exe', ['-x', 'prove.bat', '-v', literalPath], {
+      ...smuggled,
+      timeoutMs: 5_000,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+      spawnProcess: spawnProcess as unknown as typeof spawn,
+    });
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
+    await expect(pending).resolves.toMatchObject({ outcome: 'completed' });
+
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+    const [command, args, options] = spawnProcess.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { shell?: unknown },
+    ];
+    expect(command).toBe('perl.exe');
+    expect(args).toEqual(['-x', 'prove.bat', '-v', literalPath]);
+    expect(options.shell).toBe(false);
+  });
 
   test('reports a closed stdin stream separately from caller cancellation', async () => {
     const result = await runBoundedProcess(
