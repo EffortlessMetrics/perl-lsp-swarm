@@ -992,7 +992,8 @@ ci-contracts:
         scripts/ci/test_reconcile_github_enforcement_snapshot.py \
         scripts/ci/test_observe_github_enforcement.py \
         scripts/ci/test_check_release_required_ci.py \
-        scripts/ci/test_required_checks_doc_contract.py || status=1
+        scripts/ci/test_required_checks_doc_contract.py \
+        scripts/ci/test_merge_queue_activation_checklist.py || status=1
     python3 scripts/ci/test_detect_required_check_registration.py || status=1
     python3 scripts/ci/required_checks_doc_contract.py --root . || status=1
     python3 -m unittest scripts/ci/test_workflow_security_ratchet.py || status=1
