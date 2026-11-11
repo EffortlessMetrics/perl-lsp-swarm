@@ -12,9 +12,13 @@ export CARGO_HOME="$shared/cargo"
 export RUSTUP_HOME="$shared/rustup"
 export DEVPLANE="$shared/devplane/perl-lsp-swarm"
 export npm_config_cache="$shared/npm-cache"
-export PATH="$CARGO_HOME/bin:$shared/node-v26.6.0-linux-x64/bin${PATH:+:$PATH}"
-# A standalone assignment preserves parser failure under set -e.
-RUSTUP_TOOLCHAIN="$(python3 - "$repo/rust-toolchain.toml" <<'PY'
+export PATH="$CARGO_HOME/bin${PATH:+:$PATH}"
+
+# Parse the repository default before any setup command runs. An explicit task
+# selector remains authoritative; otherwise rustup resolves rust-toolchain.toml
+# from the repository working directory. Startup validates either selection and
+# never installs a missing toolchain or changes rustup's global/directory state.
+repo_toolchain="$(python3 - "$repo/rust-toolchain.toml" <<'PY'
 import pathlib
 import sys
 import tomllib
@@ -25,21 +29,46 @@ if not isinstance(channel, str) or not channel.strip():
 print(channel)
 PY
 )"
-export RUSTUP_TOOLCHAIN
+if [[ -n "${RUSTUP_TOOLCHAIN:-}" ]]; then
+    toolchain_source=environment
+    toolchain_selector="$RUSTUP_TOOLCHAIN"
+else
+    unset RUSTUP_TOOLCHAIN
+    toolchain_source=rustup-resolution
+    toolchain_selector="<unset>"
+fi
 export RUSTUP_AUTO_INSTALL=0
 
-# Provisioning is separate: do not install tools, change rustup's global default,
-# lower a capacity floor, choose more jobs, or compile Cargo utilities at startup.
-rustc --version
-cargo --version
-just --version
+require_command() {
+    local name="$1"
+    local resolved
+    if ! resolved="$(command -v -- "$name")"; then
+        printf 'cloud-startup: required command not found on PATH: %s\n' "$name" >&2
+        return 127
+    fi
+    printf 'cloud-startup: command %s=%s\n' "$name" "$resolved"
+}
 
 cd "$repo"
+printf 'cloud-startup: rust-toolchain source=%s selector=%s repository-default=%s\n' \
+    "$toolchain_source" "$toolchain_selector" "$repo_toolchain"
+for command in rustup rustc cargo just node npm; do
+    require_command "$command"
+done
+
+# Version/identity output is the startup receipt. The extension doctor below
+# remains the authority for accepting the active Node/npm versions.
+rustup show active-toolchain
+rustc --version
+cargo --version
+node --version
+npm --version
+just --version
+
 python3 scripts/check_release_tag_provenance.py --prepare-git --repo-root .
 just devplane-init
 just agent-preflight
 
 cd "$repo/vscode-extension"
-# The repository's doctor owns the supported Node/npm versions.
 npm run doctor
 npm ci
