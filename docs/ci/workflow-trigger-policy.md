@@ -1,24 +1,27 @@
 # Workflow trigger policy (conventional required checks)
 
-`cargo xtask workflow-trigger-lint` validates trigger and concurrency requirements for workflows listed in `.ci/policies/required-checks.toml`.
+`scripts/cargo-admitted run -p xtask --locked -- workflow-trigger-lint` validates trigger and concurrency requirements for workflows listed in `.ci/policies/required-checks.toml`.
 
 ## Why this exists
 
-The main ruleset (`16664791`, binding administrators) requires the
-proof-floor contexts listed in `.ci/policies/required-checks.toml`:
-`Perl LSP Rust Small Result`, `ripr+ New Gap Gate`, `Compile All Targets
-(bit-rot guard)`, `Conflict marker check`, and `validate-title`.
-`Codecov / Patch 95` and `codecov/patch` are advisory coverage contexts and
-are not required-style workflows. The workflow-trigger lint still audits
-required-style workflow shape in advisory mode.
+The source policy names six desired required contexts across five workflows:
+Perl LSP Rust Small Result, ripr+ New Gap Gate, Compile All Targets
+(bit-rot guard), Conflict marker check, validate-title, and Gate Enforcement
+Contract. The November 11, 2026 read of main ruleset 16664791 still contained
+only the first five. The queue ruleset remained disabled and the complete
+classic/ruleset protection union was not established. Source policy is not
+proof of live enforcement; see [qualification activation](qualification-cutover.md).
+
+Codecov / Patch 95 and codecov/patch remain advisory coverage contexts.
 
 ## Two tables, and which one this lint reads
 
 `.ci/policies/required-checks.toml` holds two tables that answer different
 questions, and they are easy to confuse because they differ by one letter:
 
-- `[[checks]]` — the status-context inventory. It records which contexts the
-  `main` ruleset requires, who produces them, and on which events.
+- `[[checks]]` — the status-context inventory. It records the desired required
+  contexts, producers, events, and separately claimed enforcement bindings.
+  These source fields do not read or install GitHub protection.
 - `[[check]]` — this lint's **governance list**. A workflow is evaluated
   against the clauses below only if it has a `[[check]]` row with
   `required = true`.
@@ -33,15 +36,14 @@ The lint now reads both and refuses the mismatch. Every `[[checks]]` row with
 some `[[check]]` row governs, and the receipt carries the counts:
 
 ```
-governance: 5/5 ruleset-required contexts governed, 0 produced outside this repository, 0 ungoverned, 5 accepted exemptions, 1 remainders
+governance: 6/6 ruleset-required contexts governed, 0 produced outside this repository, 0 ungoverned, 13 accepted exemptions, 0 remainders
 ```
 
-That is the line this policy file produces today, copied from the run rather
-than composed: all five required contexts are produced by jobs in this
-repository, so the out-of-scope count is zero. It is printed anyway, because the
-three counts partition the required set — every required context is governed,
-out of scope, or reported — and a number that only appears once it is non-zero
-is a number a reader cannot check.
+This is the observed source-policy result for the #17903 cutover composition.
+The output's historical "ruleset-required" label counts source rows, not a live
+GitHub read. All six desired contexts are repository jobs. Governed, external,
+and ungoverned counts partition that source set; none proves an installed App,
+native run, required-check union, or protected landing.
 
 A row with `required = false` governs nothing — `evaluate_required_entry`
 returns no violations for one — so it does not satisfy the requirement.
@@ -71,7 +73,10 @@ one and an unstated producer fails closed.
 
 ## Required-workflow lint rules
 
-For each `[[check]]` row with `required = true`, the workflow must:
+For each required governance row, the conventional clauses below apply unless
+that exact clause has an explicit accepted exemption. #17903 deliberately
+retires PR and routine push roots; those two exemptions do not waive G
+reachability, unfiltered execution, or failure propagation.
 
 - define `pull_request`
 - define `merge_group`
@@ -87,11 +92,21 @@ For each `[[check]]` row with `required = true`, the workflow must:
 
 ## Exemptions
 
-Not every required context is produced by a workflow the clauses above suit.
-`validate-title` is a metadata-only check that must run on
-`pull_request_target` and never checks out candidate contents; `ripr` keeps
-`cancel-in-progress: false` on purpose, because a cancelled run becomes a
-false red on a required context (#16087).
+CI Gate, Rust Small, and RIPR carry only the two #17903 retirement
+exemptions for pull-request-trigger and push-targets-master. Their actual
+merge-group trigger and no-path-filter checks remain mandatory. RIPR also
+retains its existing cancellation exception from #16141.
+
+The title producer runs only on actual merge-group G. It reads native ordered
+membership and App-authenticated H intake, checks B/H tree composition, then
+validates current per-member title metadata and rechecks freshness. Commit-to-PR
+associations do not prove membership. The source is read-only and its App
+binding remains disabled. Its event-B checkout is not independent proof that
+B is protected: speculative B trust remains an activation blocker.
+
+Gate Enforcement Contract uses its own explicit G-only retirement exemptions.
+No ordinary Draft, Ready, publication, title edit, or label change is a hosted
+qualification request. A passing source lint does not prove the native lifecycle.
 
 A `[[check]]` row may record such a divergence per clause:
 
@@ -126,12 +141,15 @@ only visible in a failing run is an exemption nobody re-reads.
 ## Commands
 
 - Policy run with receipt:
-  - `cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json`
+  - `scripts/cargo-admitted run -p xtask --locked -- workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json`
 - Fixture validation:
-  - `cargo xtask workflow-trigger-lint --fixture xtask/tests/fixtures/workflows/valid-required.yml`
+  - `scripts/cargo-admitted run -p xtask --locked -- workflow-trigger-lint --fixture xtask/tests/fixtures/workflows/valid-required.yml`
 - JSON output:
-  - `cargo xtask workflow-trigger-lint --format json`
+  - `scripts/cargo-admitted run -p xtask --locked -- workflow-trigger-lint --format json`
 
 ## CI workflow
 
-`.github/workflows/workflow-trigger-lint.yml` runs this lint on `pull_request`, `merge_group`, and `push` to `master` with no path filters. The job is currently advisory while legacy required workflows are migrated.
+`.github/workflows/workflow-trigger-lint.yml` subscribes only to
+`merge_group: checks_requested`, without path filters. Its source does not
+request ordinary PR or push runs. This page and the local receipt establish
+source consistency only, not native execution or live check enforcement.

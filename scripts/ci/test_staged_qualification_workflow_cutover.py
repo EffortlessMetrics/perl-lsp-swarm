@@ -20,7 +20,8 @@ from scripts.ci import test_request_qualification as adapter_fixture
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / '.ci/staged/17903-root-triggers.patch'
 SIXTH_GATE_PATCH = ROOT / '.ci/staged/17903-sixth-gate-composition.patch'
-PATCHES = (PATCH, SIXTH_GATE_PATCH)
+TRIGGER_POLICY_PATCH = ROOT / '.ci/staged/17903-trigger-policy-composition.patch'
+PATCHES = (PATCH, SIXTH_GATE_PATCH, TRIGGER_POLICY_PATCH)
 POLICY = '.ci/policies/required-checks.toml'
 POST_LANDING = ('.github/workflows/docs-deploy.yml',)
 RETIRED = '.github/workflows/main-history-event.yml'
@@ -217,6 +218,20 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                                  {'pull-request-trigger', 'push-targets-master', 'event-aware-concurrency'})
                 for left in before[key]:
                     right = rows[left['name']]
+                    if left['name'] in {'CI Gate', 'Perl LSP Rust Small Result', 'ripr+ New Gap Gate'}:
+                        expected = dict(left)
+                        added = [item for item in right['exemption']
+                                 if item['clause'] in {'pull-request-trigger', 'push-targets-master'}]
+                        self.assertEqual({item['clause'] for item in added},
+                                         {'pull-request-trigger', 'push-targets-master'})
+                        self.assertEqual(len(added), 2)
+                        for item in added:
+                            self.assertEqual(item['status'], 'accepted')
+                            self.assertEqual(item['tracking'], '17903')
+                            self.assertIn('actual', item['reason'])
+                        expected['exemption'] = added + left.get('exemption', [])
+                        self.assertEqual(expected, right)
+                        continue
                     if left['name'] != 'validate-title':
                         self.assertEqual(left, right)
                         continue
@@ -248,6 +263,10 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                                 enforcement='github-ruleset', ruleset_integration_id=15368,
                                 reason=right['reason'])
                 self.assertIn('source promotion does not prove live ruleset installation', right['reason'])
+            if left['name'] == 'Perl LSP Rust Small Result':
+                expected['reason'] = right['reason']
+                self.assertIn('push baseline is retired by #17903', right['reason'])
+                self.assertIn('actual G', right['reason'])
             if left['name'] == 'validate-title':
                 expected['events'] = ['merge_group']
                 expected['reason'] = right['reason']

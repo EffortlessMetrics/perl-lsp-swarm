@@ -139,7 +139,7 @@ def _git(root: Path, *args: str) -> str:
         env=isolated_git_env(),
         check=True,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     return completed.stdout.strip()
 

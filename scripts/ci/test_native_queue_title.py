@@ -305,6 +305,22 @@ class NativeTitleSubjectTests(unittest.TestCase):
                                                    "nodes": [{"name": "needs-issue-link"}]}
         title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW)
 
+    def test_native_membership_bound_accepts_100_and_refuses_101_or_incomplete_counts(self):
+        def api_with(count):
+            api = API()
+            nodes = [member(i, format(i, "040x"), G if i == count else "e" * 40)
+                     for i in range(1, count + 1)]
+            api.queue["repository"]["mergeQueue"]["entries"].update(nodes=nodes, totalCount=count)
+            return api
+        api = api_with(100)
+        result = title.group_members(api, api.subject, configured())
+        self.assertEqual([m["pull_number"] for m in result["members"]], list(range(1, 101)))
+        for api in [api_with(101), api_with(100)]:
+            if len(api.nodes) == 100:
+                api.queue["repository"]["mergeQueue"]["entries"]["totalCount"] = 101
+            with self.assertRaisesRegex(title.Refused, "complete native queue membership"):
+                title.group_members(api, api.subject, configured())
+
     def test_duplicate_JSON_is_not_an_authority_override(self):
         with self.assertRaisesRegex(title.Refused, "duplicate"):
             title.decode('{"head_sha":"old","head_sha":"new"}')
@@ -342,9 +358,17 @@ class NativeTitleCompositionTests(unittest.TestCase):
             def environment(self): return {**super().environment(), "GIT_ALLOW_PROTOCOL": "file"}
         self.Proof = LocalProof
 
+    def test_git_proof_accepts_utf8_temp_path_under_legacy_decoder(self):
+        # Exercise actual Git output through the production subprocess boundary.
+        with tempfile.TemporaryDirectory(prefix="native-title-", suffix="-\u2603") as home:
+            with patch.object(tempfile, "tempdir", home), \
+                    patch.object(subprocess, "_text_encoding", return_value="ascii"):
+                with title.GitProof(REPO) as proof:
+                    self.assertEqual(proof.run(["rev-parse", "--is-bare-repository"]), "true")
+
     def git(self, *args, expect_success=True):
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        result = subprocess.run(["git", *args], cwd=self.source, env=env, capture_output=True, text=True)
+        result = subprocess.run(["git", *args], cwd=self.source, env=env, capture_output=True, text=True, encoding="utf-8")
         if expect_success: self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip() if expect_success else result.returncode
 
@@ -382,6 +406,154 @@ class NativeTitleCompositionTests(unittest.TestCase):
         with self.Proof(REPO) as proof:
             return proof.prove({"base_sha": self.base, "head_sha": group},
                                self.admitted_members(heads, closure), self.configured)
+
+    def pipeline_api(self, heads, group):
+        """Synthetic service observations, real local Git composition and workflow body.
+
+        These fixtures do not authenticate a live native queue or establish that
+        event B is protected. Speculative-B executable trust remains unresolved.
+        """
+        api = API()
+        api.subject.update(base_sha=self.base, head_sha=group)
+        api.run["head_sha"] = group
+        api.suite["head_sha"] = group
+        api.ref["object"]["sha"] = group
+        nodes = [member(i, head, group if i == len(heads) else "e" * 40)
+                 for i, head in enumerate(heads, 1)]
+        for entry in nodes:
+            entry["baseCommit"]["oid"] = self.base
+            entry["pullRequest"]["mergeQueueEntry"]["baseCommit"]["oid"] = self.base
+        connection = api.queue["repository"]["mergeQueue"]["entries"]
+        connection.update(nodes=nodes, totalCount=len(nodes))
+        template = deepcopy(api.checks[H1]["check_runs"][0])
+        api.checks = {}
+        for i, head in enumerate(heads, 1):
+            check = deepcopy(template)
+            check.update(id=100 + i, head_sha=head, external_id=f"hermes-queue:admit-{i}:H")
+            intake = title.decode(check["output"]["text"])
+            intake.update(pull_number=i, head_sha=head, entry_id=f"entry-{i}",
+                          admission_request_id=f"admit-{i}", enqueue_request_id=f"enqueue-{i}",
+                          producer_closure=self.closure(self.base))
+            check["output"]["text"] = title.canonical(intake)
+            api.checks[head] = {"total_count": 1, "check_runs": [check]}
+        return api
+
+    def workflow_titles(self, receipt, **options):
+        self.assertIsNotNone(shutil.which("node"), "Node is required for actual workflow-body proof")
+        process = subprocess.run(["node", str(ROOT / "scripts/ci/test_merge_group_title_workflow.js"),
+                                  "--receipt-stdin"],
+                                 input=json.dumps({"receipt": receipt, **options}),
+                                 capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        result = json.loads(process.stdout)
+        self.assertEqual([row["pull_number"] for row in result["results"]],
+                         [row["pull_number"] for row in receipt["members"]])
+        return result
+
+    def pipeline_observe(self, api):
+        return title.observe(api, api.subject, self.configured, self.Proof, clock=lambda: NOW)
+
+    def assert_pipeline_current(self, api, receipt):
+        self.assertEqual(len(title.recheck(api, receipt, api.subject, self.configured,
+                                          clock=lambda: NOW)), 64)
+        self.assertTrue(all(method in {"GET", "GRAPHQL_READ"} for method, _ in api.calls))
+        self.assertFalse(any("/pulls" in target or "/compare/" in target for _, target in api.calls))
+
+    def test_actual_pipeline_accepts_singleton_squash_without_commit_associations(self):
+        # Live shape: #19257 review5854101886, RIPR G=71529dab, H=16f49ab.
+        # The locally generated commits below are not a native-G qualification.
+        head = self.head("pipeline-single", {"product.txt": "singleton\n"})
+        group = self.group([head])
+        self.assertNotEqual(self.git("merge-base", "--is-ancestor", head, group,
+                                     expect_success=False), 0)
+        api = self.pipeline_api([head], group)
+        receipt = self.pipeline_observe(api)
+        result = self.workflow_titles(receipt)
+        self.assertEqual(result["failures"], [])
+        self.assertEqual([row["verdict"] for row in result["results"]], ["success"])
+        self.assert_pipeline_current(api, receipt)
+
+    def test_actual_pipeline_requires_every_member_and_each_H_intake(self):
+        first = self.head("pipeline-first", {"first.txt": "first\n"})
+        second = self.head("pipeline-second", {"second.txt": "second\n"})
+        group = self.group([first, second])
+        api = self.pipeline_api([first, second], group)
+        receipt = self.pipeline_observe(api)
+        self.assertEqual(self.workflow_titles(receipt)["failures"], [])
+        self.assert_pipeline_current(api, receipt)
+        missing_intake = self.pipeline_api([first, second], group)
+        missing_intake.checks[second] = {"total_count": 0, "check_runs": []}
+        with self.assertRaisesRegex(title.Refused, "unique current"):
+            self.pipeline_observe(missing_intake)
+        # Even a syntactically complete singleton snapshot with valid H intake
+        # cannot hide first's contribution to actual G.
+        omitted = self.pipeline_api([second], group)
+        with self.assertRaisesRegex(title.Refused, "differs from complete"):
+            self.pipeline_observe(omitted)
+        extra_group = self.commit({"unselected.txt": "extra\n"})
+        extra = self.pipeline_api([first, second], extra_group)
+        with self.assertRaisesRegex(title.Refused, "differs from complete"):
+            self.pipeline_observe(extra)
+
+    def test_actual_pipeline_ignores_unrelated_associations_and_later_queue_members(self):
+        head = self.head("pipeline-unrelated", {"product.txt": "selected\n"})
+        group = self.group([head])
+        for change in ({"state": "CLOSED"}, {"baseRefName": "other"}):
+            with self.subTest(change=change):
+                api = self.pipeline_api([head], group)
+                unrelated = member(2, "8" * 40, "9" * 40)
+                unrelated["pullRequest"].update(title="unrelated title without an issue", **change)
+                connection = api.queue["repository"]["mergeQueue"]["entries"]
+                connection["nodes"].append(unrelated)
+                connection["totalCount"] = 2
+                original_get = api.get
+                association_reads = []
+                def get(repository, suffix):
+                    if suffix.endswith("/pulls"):
+                        association_reads.append(suffix)
+                        return [{"number": 999, "title": "no issue", "state": "closed",
+                                 "base": {"ref": "other"}}]
+                    return original_get(repository, suffix)
+                api.get = get
+                receipt = self.pipeline_observe(api)
+                result = self.workflow_titles(receipt)
+                self.assertEqual(result["failures"], [])
+                self.assertEqual([row["pull_number"] for row in result["results"]], [1])
+                self.assert_pipeline_current(api, receipt)
+                self.assertEqual(association_reads, [])
+                # A selected constituent cannot use the same exclusion to pass.
+                api.nodes[0]["pullRequest"].update(**change)
+                with self.assertRaisesRegex(title.Refused, "current native PR"):
+                    self.pipeline_observe(api)
+
+    def test_actual_pipeline_uses_current_exact_author_and_rechecks_title_metadata(self):
+        head = self.head("pipeline-metadata", {"product.txt": "metadata\n"})
+        group = self.group([head])
+        api = self.pipeline_api([head], group)
+        receipt = self.pipeline_observe(api)
+        self.assertEqual(self.workflow_titles(receipt)["failures"], [])
+        self.assert_pipeline_current(api, receipt)
+        api.nodes[0]["pullRequest"]["title"] = "no issue reference"
+        with self.assertRaisesRegex(title.Refused, "changed before success"):
+            self.assert_pipeline_current(api, receipt)
+        for login, verdict in [("not-dependabot-person", "failure"), ("dependabot[bot]", "success")]:
+            with self.subTest(login=login):
+                api.nodes[0]["pullRequest"]["author"]["login"] = login
+                current = self.pipeline_observe(api)
+                result = self.workflow_titles(current)
+                self.assertEqual([row["verdict"] for row in result["results"]], [verdict])
+                self.assertEqual(len(result["failures"]), int(verdict == "failure"))
+                # Current membership is distinct from a successful title verdict.
+                self.assert_pipeline_current(api, current)
+
+    def test_nonancestor_event_base_refuses_even_when_its_tree_equals_G(self):
+        head = self.head("nonancestor-base", {"product.txt": "same resulting tree\n"})
+        group = self.group([head])
+        self.prove([head], group)
+        self.assertEqual(self.git("rev-parse", head + "^{tree}"), self.git("rev-parse", group + "^{tree}"))
+        with self.Proof(REPO) as proof, self.assertRaisesRegex(title.Refused, "conflicted or unavailable"):
+            proof.prove({"base_sha": head, "head_sha": group},
+                        self.admitted_members([head]), self.configured)
 
     def test_reviewed_new_producer_generation_can_differ_from_protected_B(self):
         head = self.head("reviewed-generation", {

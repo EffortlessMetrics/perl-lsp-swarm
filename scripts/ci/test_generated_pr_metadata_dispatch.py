@@ -55,7 +55,7 @@ class GeneratedPublicationTests(unittest.TestCase):
                        CREATED_HEAD_SHA='b' * 40, GITHUB_STEP_SUMMARY=str(summary))
             env.update(overrides)
             result = subprocess.run(['bash', '-c', step['run'] if run_source is None else run_source],
-                                    env=env, capture_output=True, text=True, timeout=10)
+                                    env=env, capture_output=True, text=True, encoding="utf-8", timeout=10)
             calls = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()] if log.exists() else []
             return result, calls, summary.read_text(encoding='utf-8') if summary.exists() else ''
 

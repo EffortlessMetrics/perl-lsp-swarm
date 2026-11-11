@@ -978,11 +978,20 @@ ci-check-no-nested-lock:
 ci-workflow-audit:
     @cargo xtask ci-audit-workflows
 
+# Complete, exact-head post-compile admission proof. Kept separate from the
+# <180-second pr_fast tier; missing tools or evidence must not become green.
+# Set RUNNER_TEMP to an existing artifact directory, for example
+# `RUNNER_TEMP="$(mktemp -d)" just prove-required-merge-surface`. Without it,
+# the proof deliberately exits 80 NOT_PROVEN rather than losing the original
+# tee/grep log assertions or silently using a caller-unowned temp directory.
+prove-required-merge-surface:
+    bash scripts/ci/required-merge-surface.sh
+
 # The checked-in contract validators that the `Gate Enforcement Contract` and
 # `Workflow Security Ratchet` CI jobs run. Run this on a committed tree: the
 # gate-enforcement contract proves the exact subject, so tracked modifications
 # are NOT_PROVEN rather than green.
-ci-contracts:
+ci-contracts: prove-required-merge-surface
     #!/usr/bin/env bash
     set -uo pipefail
     status=0
@@ -992,7 +1001,8 @@ ci-contracts:
         scripts/ci/test_reconcile_github_enforcement_snapshot.py \
         scripts/ci/test_observe_github_enforcement.py \
         scripts/ci/test_check_release_required_ci.py \
-        scripts/ci/test_required_checks_doc_contract.py || status=1
+        scripts/ci/test_required_checks_doc_contract.py \
+        scripts/ci/test_merge_queue_activation_checklist.py || status=1
     python3 scripts/ci/test_detect_required_check_registration.py || status=1
     python3 scripts/ci/required_checks_doc_contract.py --root . || status=1
     python3 -m unittest scripts/ci/test_workflow_security_ratchet.py || status=1

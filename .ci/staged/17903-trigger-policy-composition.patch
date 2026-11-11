@@ -1,0 +1,71 @@
+--- a/.ci/policies/required-checks.toml
++++ b/.ci/policies/required-checks.toml
+@@ -11,24 +11,53 @@
+ required = true
+ contract_role = "required-workflow-shape"
+
++  [[check.exemption]]
++  clause = "pull-request-trigger"
++  status = "accepted"
++  reason = "#17903 prohibits ordinary development Actions; required integration work runs on actual native merge-group G, not Draft or Ready events."
++  tracking = "17903"
++
++  [[check.exemption]]
++  clause = "push-targets-master"
++  status = "accepted"
++  reason = "#17903 retires routine main-push qualification; protected integration is proved on actual G before landing."
++  tracking = "17903"
++
+ [[check]]
+ name = "Perl LSP Rust Small Result"
+ workflow = ".github/workflows/em-ci-routed-rust.yml"
+ required = true
+ contract_role = "required-workflow-shape"
+
+-  # #16168 closed the `push-targets-master` remainder this row previously
+-  # carried: the workflow now defines `push: branches: [main, master]`, so a
+-  # landed main commit carries its own `Perl LSP Rust Small Result` baseline
+-  # run instead of leaving a red-at-merge lane silently red on main. The push
+-  # concurrency group is per commit SHA, so main pushes neither cancel each
+-  # other nor inherit ci.yml's 76% pre-scheduling cancellation class.
++  [[check.exemption]]
++  clause = "pull-request-trigger"
++  status = "accepted"
++  reason = "#17903 prohibits ordinary development Actions; required integration work runs on actual native merge-group G, not Draft or Ready events."
++  tracking = "17903"
++
++  [[check.exemption]]
++  clause = "push-targets-master"
++  status = "accepted"
++  reason = "#17903 retires routine main-push qualification; protected integration is proved on actual G before landing."
++  tracking = "17903"
+
+ [[check]]
+ name = "ripr+ New Gap Gate"
+ workflow = ".github/workflows/ripr.yml"
+ required = true
+ contract_role = "required-workflow-shape"
++
++  [[check.exemption]]
++  clause = "pull-request-trigger"
++  status = "accepted"
++  reason = "#17903 prohibits ordinary development Actions; required integration work runs on actual native merge-group G, not Draft or Ready events."
++  tracking = "17903"
++
++  [[check.exemption]]
++  clause = "push-targets-master"
++  status = "accepted"
++  reason = "#17903 retires routine main-push qualification; protected integration is proved on actual G before landing."
++  tracking = "17903"
+
+   # Deliberate and argued in the workflow itself: RIPR is evidence production,
+   # and a cancelled run becomes a false red on a required context because the
+@@ -150,7 +179,7 @@
+ applicability = "always-or-scoped-noop"
+ enforcement = "github-ruleset"
+ ruleset_integration_id = 15368
+-reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration. #16168 added the push trigger so landed main commits carry the required baseline."
++reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration. The former #16168 push baseline is retired by #17903; qualification belongs to actual G."
+
+ [[checks]]
+ name = "ripr+ New Gap Gate"

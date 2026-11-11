@@ -43,16 +43,23 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
     let workflow: Value =
         serde_yaml_ng::from_str(&fs::read_to_string(root()?.join(".github/workflows/ci.yml"))?)?;
     let required = &workflow["jobs"]["check-all-targets"];
-    assert_eq!(required["name"].as_str(), Some("Compile All Targets (bit-rot guard)"));
+    assert_eq!(required["name"].as_str(), Some("Compile All Targets execution"));
+    let integration = &workflow["jobs"]["integration-required"];
+    assert_eq!(integration["name"].as_str(), Some("Compile All Targets (bit-rot guard)"));
+    assert_eq!(
+        integration["needs"],
+        serde_yaml_ng::from_str::<Value>("[check-all-targets, merge-gate]")?,
+        "the protected name must join compiler execution and selected integration proof",
+    );
     let required_steps = required["steps"].as_sequence().ok_or("missing required steps")?;
-    let route = required_steps
+    let producer_step = required_steps
         .iter()
         .find(|step| {
-            step["name"].as_str()
-                == Some("Routed test preparation contract (required merge surface)")
+            step["run"].as_str() == Some("bash scripts/ci/required-merge-surface.sh")
+                && step["name"].as_str() == Some("Required merge surface")
         })
-        .ok_or("missing required preparation contract route")?;
-    let route_command = route["run"].as_str().ok_or("missing required contract command")?;
+        .ok_or("missing shared required preparation contract producer")?;
+    let route_command = fs::read_to_string(root()?.join("scripts/ci/required-merge-surface.sh"))?;
     assert!(
         route_command
             .contains("cargo test -p xtask --test routed_test_preparation_contract --locked --")
@@ -60,7 +67,7 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
     assert!(route_command.contains("2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"));
     assert!(route_command.contains("preparation_preserves_runtime_command_and_budget"));
     assert!(route_command.contains("preparation_precedes_watchdog_and_has_separate_evidence"));
-    assert_eq!(route["continue-on-error"], Value::Null);
+    assert_eq!(producer_step["continue-on-error"], Value::Null);
     // The revival sibling (pr-fast-unblocked, #19045) copies the preparation
     // and watchdog shape so the tier runs without the fatal disk floor.
     // Assert both jobs stay in lockstep; a one-sided edit must fail here,

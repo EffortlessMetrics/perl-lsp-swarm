@@ -456,7 +456,7 @@ sys.exit(item.get("exit", 0))
         result = subprocess.run([sys.executable, "-B", "-m", "scripts.ci.native_queue", "recover",
             "--repository", SUBJECT.repository, "--repository-node-id", SUBJECT.repository_node_id,
             "--pr", str(SUBJECT.pr), "--expected-head", HEAD, "--base-branch", "main"],
-            cwd=ROOT, text=True, capture_output=True, timeout=10, check=False)
+            cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=10, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "QUEUE_ENTRY_OBSERVED")
         self.assertEqual(len(self.calls()), 1)
@@ -465,7 +465,7 @@ sys.exit(item.get("exit", 0))
     def test_cli_cannot_install_mutation_authority(self):
         for operation in ("enqueue", "request", "merge", "--authorized"):
             result = subprocess.run([sys.executable, "-B", "-m", "scripts.ci.native_queue", operation],
-                cwd=ROOT, text=True, capture_output=True, timeout=10, check=False)
+                cwd=ROOT, text=True, encoding="utf-8", capture_output=True, timeout=10, check=False)
             self.assertEqual(result.returncode, 2)
         self.assertEqual(self.calls(), [])
 
@@ -475,6 +475,8 @@ class WiringTests(unittest.TestCase):
         source = (ROOT / ".github/workflows/gate-enforcement-contract.yml").read_text()
         command = source.split("python3 -m unittest", 1)[1].split("test_status=$?", 1)[0]
         self.assertIn("scripts/ci/test_native_queue.py", command)
+        self.assertIn("scripts/ci/test_native_queue_title.py", command)
+        self.assertIn("scripts/ci/test_pr_title_validator.py", command)
         self.assertIn("scripts/ci/test_queue_qualification_source.py", command)
         self.assertIn("scripts/ci/test_qualification_cutover_docs.py", command)
 

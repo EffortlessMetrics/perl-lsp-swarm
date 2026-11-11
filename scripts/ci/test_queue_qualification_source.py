@@ -61,7 +61,7 @@ def git(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(root), "-c", "core.hooksPath=", "-c", "commit.gpgsign=false",
          "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *args],
-        env=env, check=True, capture_output=True, text=True,
+        env=env, check=True, capture_output=True, text=True, encoding="utf-8",
     ).stdout.strip()
 
 
@@ -103,7 +103,7 @@ def validate(root: Path, *, selected=(SOURCE,), entry_event="merge_group"):
 def cli(root: Path, *args: str):
     return subprocess.run(
         [sys.executable, "-B", str(SCRIPT), "--root", str(root), "--json", *args],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", check=False,
     )
 
 

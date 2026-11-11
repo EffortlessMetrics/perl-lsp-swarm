@@ -118,6 +118,19 @@ class CutoverDocumentationTests(unittest.TestCase):
         self.assertNotIn('replacement is still **unapplied**', source)
         self.assertNotIn('Do not apply `.ci/staged/17903-root-triggers.patch` as the selected queue migration:', source)
 
+    def test_trigger_policy_page_describes_the_installed_source_not_retired_roots(self):
+        source = compact(text("docs/ci/workflow-trigger-policy.md"))
+        for current in ("6/6 ruleset-required contexts governed", "13 accepted exemptions",
+                        "0 remainders", "source rows, not a live GitHub read",
+                        "Commit-to-PR associations do not prove membership",
+                        "speculative B trust remains an activation blocker"):
+            self.assertIn(current, source)
+        for retired in ("must run on `pull_request_target`",
+                        "the line this policy file produces today",
+                        "runs this lint on `pull_request`, `merge_group`, and `push`"):
+            self.assertNotIn(retired, source)
+        self.assertIn("17903-trigger-policy-composition.patch", text(RUNBOOK))
+
     def test_agent_entrypoints_and_finishing_routes_follow_authorized_native_queue(self):
         method = text('docs/agents/DEVELOPMENT_METHOD.md')
         self.assertIn('exact-H product/scope judgment and conditional landing authorization', method)

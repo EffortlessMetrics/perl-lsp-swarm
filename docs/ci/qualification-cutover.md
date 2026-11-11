@@ -112,8 +112,11 @@ only the named Pages publication exception. Run the affected native contracts on
 installed tree before activation. The installed-generation contract tests the actual
 closed catalog and all six desired G producers. It reconstructs the historical preimage only
 inside a disposable fixture, then applies/reverses the retained patch and the additive
-`.ci/staged/17903-sixth-gate-composition.patch` to verify source rollback
-and the original failure controls. It never applies that patch to the owning checkout.
+`.ci/staged/17903-sixth-gate-composition.patch`, followed by
+`.ci/staged/17903-trigger-policy-composition.patch`, to verify source rollback
+and the original failure controls. Reverse them in the opposite order. The
+last patch adds only the explicit PR/push retirement exemptions and corrects
+obsolete push-baseline prose; G and path-filter contracts remain enforced. It never applies that patch to the owning checkout.
 Generated publication tests likewise compare historical dispatch with the installed
 bounded readback. PR-payload-dependent standalone bodies preserved as
 explicit source are not newly qualified manual or G producers. Every uniquely required
@@ -137,9 +140,11 @@ It adds `Gate Enforcement Contract` as the desired sixth Actions-bound context,
 on `merge_group` only. Generated PR publication still dispatches no CI. The
 security ratchet remains advisory and explicitly dispatched. `just ci-contracts`
 uses the same no-development-event source profile as the actual-G contract job.
-The additive composition patch preserves the original trigger fixture unchanged;
-reverse the additive patch before the original fixture in source rehearsal.
-This is not runtime rollback or proof that GitHub installed the sixth context.
+The additive composition patches preserve the original trigger fixture unchanged.
+For source rehearsal, apply root-triggers, sixth-gate-composition, then
+trigger-policy-composition. Reverse trigger-policy-composition first, then
+sixth-gate-composition, then root-triggers. This is not runtime rollback or proof
+that GitHub installed the sixth context.
 
 The November 11, 2026 observation still showed main ruleset `16664791` with five
 Actions-bound contexts and disabled queue ruleset `17372329`. Desired source has
@@ -163,6 +168,13 @@ current merely because another executor cannot reproduce it.
 | `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result`, with actual-G skipped-route refusal. Preserve route execution and canonical receipt semantics; native producer/attempt acceptance remains unobserved. |
 | `ripr+ New Gap Gate` | `ripr.yml:ripr`, retained actual-G route and separately purposed cache seed. Native exact-subject execution and truthful no-gap/failure accounting remain to be observed. |
 | `Gate Enforcement Contract` | Desired sixth requirement: `gate-enforcement-contract.yml:contract`, actual G only and Actions-bound (`15368`). Offline source/contract proof is available; live required binding, native execution and final landing remain NOT_PROVEN. |
+
+Two source-to-activation findings remain open. Existing Actions-bound H
+requirements cannot be treated as satisfied by G-only workflows before enqueue.
+The title/non-Rust source's event-B checkout also does not establish independently
+trusted protected code when B is a speculative earlier group. Native admission
+and trusted evaluator selection must resolve these findings before activation;
+the disabled App policy is not evidence that either join is complete.
 
 ### Same-run integration dependencies
 

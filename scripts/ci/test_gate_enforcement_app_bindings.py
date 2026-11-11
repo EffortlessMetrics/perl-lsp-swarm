@@ -191,7 +191,7 @@ class GitSubjectIsolationTests(unittest.TestCase):
         return subprocess.check_output(
             ["git", "-C", str(root), "-c", "core.hooksPath=", "-c", "commit.gpgsign=false",
              "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *args],
-            env=self.clean_env, text=True, stderr=subprocess.PIPE,
+            env=self.clean_env, text=True, encoding="utf-8", stderr=subprocess.PIPE,
         ).strip()
 
     def cli(self, *, env=None, root=None, selected_source=False):
@@ -201,7 +201,7 @@ class GitSubjectIsolationTests(unittest.TestCase):
         if selected_source:
             args.extend(("--qualification-source", self.WORKFLOW))
         result = subprocess.run(args, cwd=self.root, env=dict(self.clean_env, **(env or {})),
-                                text=True, capture_output=True, timeout=20, check=False)
+                                text=True, encoding="utf-8", capture_output=True, timeout=20, check=False)
         self.assertEqual(result.stderr, "", result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload, json.loads(receipt.read_text(encoding="utf-8")))

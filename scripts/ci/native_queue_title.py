@@ -301,7 +301,7 @@ class GitProof(AbstractContextManager):
             command += ["--git-dir=" + str(self.store)]
         try:
             result = subprocess.run(command + args, env=self.environment(), cwd=self.home,
-                                    capture_output=True, text=True, timeout=180)
+                                    capture_output=True, text=True, encoding="utf-8", timeout=180)
         except (OSError, subprocess.TimeoutExpired):
             raise Refused("isolated Git composition unavailable") from None
         require(result.returncode == 0, "isolated Git composition conflicted or unavailable")
@@ -396,7 +396,7 @@ def main(argv=None):
         custody_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                            GIT_CONFIG_SYSTEM=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
         process = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], env=custody_env,
-                                 capture_output=True, text=True, timeout=30)
+                                 capture_output=True, text=True, encoding="utf-8", timeout=30)
         require(process.returncode == 0 and process.stdout.strip() == subject["base_sha"],
                 "title evaluator is not running from protected immutable B")
         api, target = GitHub(), Path(args.receipt)

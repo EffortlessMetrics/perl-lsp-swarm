@@ -722,7 +722,170 @@ fn get_top_level_field<'a>(workflow: &'a Value, field: &str) -> Option<&'a Value
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ensure;
+    use color_eyre::eyre::{ContextCompat, ensure};
+
+    const QUEUE_ONLY_ROWS: [&str; 3] =
+        ["CI Gate", "Perl LSP Rust Small Result", "ripr+ New Gap Gate"];
+
+    // Copy the actual policy and governed workflow bytes. The production
+    // evaluator, not a parallel rule implementation, judges every control.
+    fn queue_policy_fixture() -> Result<tempfile::TempDir> {
+        let root = project_root()?;
+        let fixture = tempfile::tempdir()?;
+        let raw = fs::read_to_string(root.join(".ci/policies/required-checks.toml"))?;
+        let policy: RequiredChecksPolicy = toml::from_str(&raw)?;
+        fs::create_dir_all(fixture.path().join(".ci/policies"))?;
+        fs::write(fixture.path().join(".ci/policies/required-checks.toml"), raw)?;
+        for row in policy.check.iter().filter(|row| row.required) {
+            let destination = fixture.path().join(&row.workflow);
+            let parent = destination.parent().wrap_err("workflow parent missing")?;
+            fs::create_dir_all(parent)?;
+            fs::copy(root.join(&row.workflow), destination)?;
+        }
+        Ok(fixture)
+    }
+
+    #[test]
+    fn installed_queue_only_policy_passes_the_production_evaluator() -> Result<()> {
+        let root = project_root()?;
+        let (evaluations, governance) =
+            evaluate_policy(&root, &root.join(".ci/policies/required-checks.toml"))?;
+        assert_eq!(evaluations.len(), 5, "five workflow rows own six required contexts");
+        assert_eq!(governance.required_contexts, 6);
+        assert_eq!(governance.governed, 6);
+        assert!(governance.ungoverned.is_empty());
+        for row in evaluations {
+            assert!(row.ok, "{}: {:?}", row.name, row.violations);
+            if QUEUE_ONLY_ROWS.contains(&row.name.as_str()) {
+                let exemptions: Vec<_> = row
+                    .exemptions
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            item.clause.as_str(),
+                            "pull-request-trigger" | "push-targets-master"
+                        )
+                    })
+                    .collect();
+                assert_eq!(exemptions.len(), 2, "{}", row.name);
+                for item in exemptions {
+                    assert_eq!(item.status, ExemptionStatus::Accepted);
+                    assert_eq!(item.tracking.as_deref(), Some("17903"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_only_exemptions_do_not_hide_missing_groups_or_path_filters() -> Result<()> {
+        for name in QUEUE_ONLY_ROWS {
+            for missing_group in [true, false] {
+                let fixture = queue_policy_fixture()?;
+                let policy_path = fixture.path().join(".ci/policies/required-checks.toml");
+                let policy: RequiredChecksPolicy =
+                    toml::from_str(&fs::read_to_string(&policy_path)?)?;
+                let row = policy
+                    .check
+                    .iter()
+                    .find(|row| row.name == name)
+                    .wrap_err("actual queue policy row missing")?;
+                let path = fixture.path().join(&row.workflow);
+                let mut workflow = read_workflow_yaml(&path)?;
+                let on = workflow
+                    .get_mut("on")
+                    .and_then(Value::as_mapping_mut)
+                    .wrap_err("actual workflow event map missing")?;
+                if missing_group {
+                    ensure!(
+                        on.remove(Value::String("merge_group".into())).is_some(),
+                        "control must remove a real merge-group trigger"
+                    );
+                } else {
+                    let group = on
+                        .get_mut(Value::String("merge_group".into()))
+                        .and_then(Value::as_mapping_mut)
+                        .wrap_err("actual merge-group map missing")?;
+                    group.insert(
+                        Value::String("paths".into()),
+                        Value::Sequence(vec![Value::String("src/**".into())]),
+                    );
+                }
+                fs::write(&path, serde_yaml_ng::to_string(&workflow)?)?;
+                let (evaluations, _) = evaluate_policy(fixture.path(), &policy_path)?;
+                let result = evaluations
+                    .iter()
+                    .find(|row| row.name == name)
+                    .wrap_err("evaluation row missing")?;
+                let expected = if missing_group { "missing merge_group" } else { "path filters" };
+                assert!(!result.ok, "{name}: control must fail");
+                assert!(
+                    result.violations.iter().any(|item| item.contains(expected)),
+                    "{name}: {:?}",
+                    result.violations
+                );
+                assert_eq!(
+                    result
+                        .exemptions
+                        .iter()
+                        .filter(|item| matches!(
+                            item.clause.as_str(),
+                            "pull-request-trigger" | "push-targets-master"
+                        ))
+                        .count(),
+                    2,
+                    "retirement exemptions remain active in the negative control"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn removing_queue_retirement_exemptions_restores_the_six_violations() -> Result<()> {
+        let fixture = queue_policy_fixture()?;
+        let path = fixture.path().join(".ci/policies/required-checks.toml");
+        let mut policy: toml::Value = toml::from_str(&fs::read_to_string(&path)?)?;
+        let rows = policy
+            .get_mut("check")
+            .and_then(toml::Value::as_array_mut)
+            .wrap_err("actual policy rows missing")?;
+        for row in rows {
+            if row
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|name| QUEUE_ONLY_ROWS.contains(&name))
+            {
+                let exemptions = row
+                    .get_mut("exemption")
+                    .and_then(toml::Value::as_array_mut)
+                    .wrap_err("queue retirement exemptions missing")?;
+                exemptions.retain(|item| {
+                    !matches!(
+                        item.get("clause").and_then(toml::Value::as_str),
+                        Some("pull-request-trigger" | "push-targets-master")
+                    )
+                });
+            }
+        }
+        fs::write(&path, toml::to_string(&policy)?)?;
+        let (evaluations, _) = evaluate_policy(fixture.path(), &path)?;
+        for row in evaluations {
+            if QUEUE_ONLY_ROWS.contains(&row.name.as_str()) {
+                assert!(!row.ok, "{}", row.name);
+                assert_eq!(row.violations.len(), 2, "{}: {:?}", row.name, row.violations);
+                assert!(row.violations.iter().any(|item| item == "missing pull_request trigger"));
+                assert!(
+                    row.violations
+                        .iter()
+                        .any(|item| item == "push trigger must target master branch")
+                );
+            } else {
+                assert!(row.ok, "{}: {:?}", row.name, row.violations);
+            }
+        }
+        Ok(())
+    }
 
     fn load_fixture(name: &str) -> Result<Value> {
         let root = project_root()?;

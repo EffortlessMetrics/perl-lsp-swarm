@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import textwrap
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / ".ci/retired-workflows/pr-title-check.yml"
@@ -63,9 +64,18 @@ class TitleValidatorSemanticsTests(unittest.TestCase):
         self.assertEqual(LEGACY.read_text().count(marker), 1)
         input["legacy"] = textwrap.dedent(LEGACY.read_text().split(marker, 1)[1])
         result = subprocess.run(["node", "-e", BRIDGE, str(ROOT / "scripts/ci/pr_title_validator.js")],
-                                input=json.dumps(input), capture_output=True, text=True, timeout=30)
+                                input=json.dumps(input), capture_output=True, text=True, encoding="utf-8", timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_utf8_title_output_ignores_default_subprocess_decoder(self):
+        with patch.object(subprocess, "_text_encoding", return_value="ascii"):
+            result = self.run_node(cases=[{"pr": pr("titre caf\u00e9 sans issue")}],
+                                   authoring=False)[0]
+        self.assertEqual(result["current"], result["legacy"])
+        comment = result["current"]["writes"][0]["args"]["body"]
+        self.assertIn("caf\u00e9", comment)
+        self.assertIn("\u26a0\ufe0f", comment)
 
     def test_prior_pass_failure_exempt_placeholder_warning_and_housekeeping_semantics_survive(self):
         titles = ["feat: proof (#42)", "no issue reference", "feat: proof (#0)", "feat: proof (#0000)",
@@ -83,6 +93,17 @@ class TitleValidatorSemanticsTests(unittest.TestCase):
         for case, result in zip(cases, self.run_node(cases=cases, authoring=False)):
             with self.subTest(title=case["pr"]["title"]):
                 self.assertEqual(result["current"], result["legacy"])
+
+    def test_placeholder_reuses_existing_comment_and_prepares_label_without_writes(self):
+        case = {"pr": pr("feat: pending (#0000)"), "comments": [
+            {"id": 42, "user": {"type": "Bot"}, "body": "<!-- pr-title-check-bot --> old"}]}
+        result = self.run_node(cases=[case], authoring=False)[0]
+        self.assertEqual(result["current"], result["legacy"])
+        self.assertEqual(result["current"]["failures"], [])
+        proposed = result["current"]["writes"]
+        self.assertEqual([row["operation"] for row in proposed], ["updateComment", "addLabels"])
+        self.assertEqual(proposed[0]["args"]["comment_id"], 42)
+        self.assertEqual(proposed[1]["args"]["labels"], ["needs-issue-link"])
 
     def test_only_exact_dependabot_author_is_exempt_from_native_title_rules(self):
         logins = ["dependabot", "dependabot-preview", "not-dependabot-person",
