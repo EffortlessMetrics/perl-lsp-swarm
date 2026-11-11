@@ -7,7 +7,8 @@ async function legacyTitleRules({github, core, context}, pr, actor) {
   const title = pr.title;
   const login = pr.user.login;
 
-  if (actor === 'dependabot[bot]' || login.includes('dependabot')) {
+  // Only GitHub's exact bot identity is exempt, never a lookalike login.
+  if (actor === 'dependabot[bot]' || login === 'dependabot[bot]') {
     core.info('Exempt: dependabot PR');
     return;
   }
