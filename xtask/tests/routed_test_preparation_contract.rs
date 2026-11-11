@@ -49,7 +49,7 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         .iter()
         .find(|step| {
             step["run"].as_str() == Some("bash scripts/ci/required-merge-surface.sh")
-                && step["name"].as_str() == Some("Required merge surface (38 commands)")
+                && step["name"].as_str() == Some("Required merge surface")
         })
         .ok_or("missing shared required preparation contract producer")?;
     let route_command = fs::read_to_string(root()?.join("scripts/ci/required-merge-surface.sh"))?;

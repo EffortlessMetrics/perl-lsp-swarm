@@ -360,7 +360,7 @@ fn required_parity_wiring_is_present(workflow: &str, shared_producer: &str) -> b
     let job = &section[..end];
     (job.contains("name: Legacy parity library authority (required merge surface)")
         && job.contains("name: Legacy parity CLI authority (required merge surface)")
-        || job.contains("Required merge surface (38 commands)")
+        || job.contains("Required merge surface")
             && job.contains("run: bash scripts/ci/required-merge-surface.sh"))
         && shared_producer.contains(
             "cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture",

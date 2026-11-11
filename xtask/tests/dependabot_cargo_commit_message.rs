@@ -239,7 +239,7 @@ fn required_wiring_is_present(workflow: &str) -> bool {
         return false;
     };
     (job.contains(REQUIRED_STEP)
-        || job.contains("Required merge surface (38 commands)")
+        || job.contains("Required merge surface")
             && job.contains("run: bash scripts/ci/required-merge-surface.sh"))
         && !job.contains("continue-on-error: true")
 }

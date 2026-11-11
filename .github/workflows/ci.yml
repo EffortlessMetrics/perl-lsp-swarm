@@ -2754,7 +2754,7 @@ jobs:
       # target from executing. Run its 15 retained tests independently here;
       # require the real workflow assertion and both positive/negative controls.
       # #19262: the complete local admission target and this CI job share one producer.
-      - name: Required merge surface (38 commands)
+      - name: Required merge surface
         run: bash scripts/ci/required-merge-surface.sh
 
 

@@ -96,11 +96,8 @@ fn required_step_wiring(
         .trim_start()
         .strip_prefix("run: ")
         .expect("expected command must use a run field");
-    let expected_step = if shared_producer {
-        "      - name: Required merge surface (38 commands)"
-    } else {
-        expected_step
-    };
+    let expected_step =
+        if shared_producer { "      - name: Required merge surface" } else { expected_step };
     let expected_command = if shared_producer {
         "        run: bash scripts/ci/required-merge-surface.sh"
     } else {

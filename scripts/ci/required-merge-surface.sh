@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# The one producer for the 38 post-compile required merge-surface commands.
+# The one producer for the post-compile required merge-surface commands.
 # Run after the ordinary CI setup and `just check-all-targets`. `just pr-fast`
 # deliberately does not call this complete, measured-duration proof.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
+
+# An early refusal must never leave an earlier green receipt looking current.
+mkdir -p target/receipts
+rm -f target/receipts/required-merge-surface.json
 
 if [[ -z "${RUNNER_TEMP:-}" || ! -d "${RUNNER_TEMP:-}" ]]; then
   echo '::error::required-merge-surface NOT_PROVEN: RUNNER_TEMP must name an existing artifact directory' >&2
@@ -98,7 +102,7 @@ packet = {
     'schema_version': 1,
     'kind': 'required_merge_surface_admission',
     'result': 'pass' if passed else 'not_proven',
-    'result_reason': 'all 38 required commands and proof identity verified' if passed else 'missing, failing, filtered, or modified evidence',
+    'result_reason': 'all required commands and proof identity verified' if passed else 'missing, failing, filtered, or modified evidence',
     'head': head,
     'head_at_receipt': current_head,
     'tracked_tree_clean': clean,

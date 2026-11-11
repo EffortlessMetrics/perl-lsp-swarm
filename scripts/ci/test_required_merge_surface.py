@@ -62,6 +62,22 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         self.assertEqual(actual[:len(expected)], expected)
         self.assertGreaterEqual(len(actual), 38)
 
+    def test_appending_a_contract_command_needs_only_the_producer(self):
+        keeper = tempfile.TemporaryDirectory()
+        self.addCleanup(keeper.cleanup)
+        altered = Path(keeper.name) / 'required-merge-surface.sh'
+        altered.write_text(
+            SCRIPT.read_text(encoding='utf-8')
+            + '\n# required merge surface command 39: Future contract (required merge surface)\n'
+            + '_step_index=$((_step_index + 1))\n'
+            + 'cargo test -p xtask --test future_contract --locked -- --nocapture\n',
+            encoding='utf-8',
+        )
+        expected = [step['run'].strip() for step in original_steps()]
+        actual = producer_commands(altered)
+        self.assertEqual(actual[:len(expected)], expected)
+        self.assertEqual(len(actual), len(expected) + 1)
+
     def test_ci_retains_setup_compile_and_exactly_one_shared_producer(self):
         data = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8'))
         steps = data['jobs']['check-all-targets']['steps']
@@ -80,18 +96,28 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         self.assertNotIn('required-merge-surface.sh', policy)
         self.assertIn('target_duration_seconds: 180', policy)
 
+    def seed_stale_pass_receipt(self):
+        receipt = ROOT / 'target/receipts/required-merge-surface.json'
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text('{"result":"pass","head":"stale"}\n', encoding='utf-8')
+        return receipt
+
     def test_filtered_step_is_not_green(self):
+        receipt = self.seed_stale_pass_receipt()
         keeper, result = run_with_tools(SCRIPT, [], {'REQUIRED_MERGE_SURFACE_ONLY': 'one'})
         self.addCleanup(keeper.cleanup)
         self.assertEqual(result.returncode, 81)
         self.assertIn('NOT_PROVEN', result.stderr)
+        self.assertFalse(receipt.exists(), 'an early refusal must invalidate stale green proof')
 
     def test_missing_toolchain_is_not_green(self):
+        receipt = self.seed_stale_pass_receipt()
         keeper, result = run_with_tools(SCRIPT, ['cargo', 'git', 'python3', 'jq'])
         self.addCleanup(keeper.cleanup)
         self.assertEqual(result.returncode, 82)
         self.assertIn('required tool just is unavailable', result.stderr)
         self.assertIn('NOT_PROVEN', result.stderr)
+        self.assertFalse(receipt.exists(), 'an early refusal must invalidate stale green proof')
 
     def test_filtered_command_body_fails_equivalence_check(self):
         keeper = tempfile.TemporaryDirectory()
