@@ -16,11 +16,19 @@ async function loadWorkflowScript() {
   const lines = workflow.split(/\r?\n/);
   const start = lines.indexOf('          script: |');
   assert.notEqual(start, -1, 'the workflow keeps its executable github-script body');
-  return lines
-    .slice(start + 1)
-    .filter((line) => line.startsWith('            '))
-    .map((line) => line.slice(12))
-    .join('\n');
+  // Keep blank lines inside the block and stop at the first non-empty line
+  // that is not indented as script body. A filter would silently drop blank
+  // lines and could keep lines after the block that share the indent.
+  const body = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '') {
+      body.push('');
+      continue;
+    }
+    if (!line.startsWith('            ')) break;
+    body.push(line.slice(12));
+  }
+  return body.join('\n');
 }
 
 async function runQueue({ commits, totalCommits, currentTitles }) {
