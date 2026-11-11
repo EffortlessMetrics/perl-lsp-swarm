@@ -50,15 +50,33 @@ not authorize a second workflow or stopping after research, a plan, or green che
   a branch-local WIP commit when preservation is required.
 - Keep one coherent concern per PR. Commit count is not an acceptance rule; preserve
   useful published commits unless an authorized rewrite is required.
+- Keep formatting separate from compiled proof:
+
+  ```bash
+  cargo fmt -p <package> -- --check
+  ```
+
 - Before resource-bearing Cargo work, read
-  [Cargo storage admission](docs/agents/CARGO_STORAGE.md). Use
-  `scripts/cargo-admitted build|check|test|run|bench|doc ...` or an applicable
-  documented `just agent-*` command. Do not substitute an unadmitted raw Cargo retry,
-  lower a storage floor merely to pass, or treat preflight as capacity proof.
+  [Cargo storage admission](docs/agents/CARGO_STORAGE.md), choose the smallest exact
+  subject and target that can falsify the claim, then preflight and execute that same
+  request through the admitted route. For example:
+
+  ```bash
+  scripts/cargo-admitted --preflight check -p <package> --locked
+  scripts/cargo-admitted check -p <package> --locked
+  scripts/cargo-admitted --preflight test -p <package> --all-targets --locked
+  scripts/cargo-admitted test -p <package> --all-targets --locked
+  ```
+
+- Clippy has a separately qualified
+  [staged native route](docs/agents/CARGO_STORAGE.md#staged-native-clippy). Do not
+  substitute raw `cargo clippy` or legacy `just agent-clippy` for that qualification.
+  Legacy `cargo-safe` and `just agent-*` commands retain compatibility behavior; they
+  are not host admission for new agent work.
+- Broad claim-level commands run only when the selected route requires them and the
+  host is admitted for the actual work they perform.
 - Use focused proof first and never weaken tests, checks, support claims, or required
   evidence to obtain green status. Missing or contradictory evidence is `NOT_PROVEN`.
-- Use the [commands reference](docs/reference/COMMANDS_REFERENCE.md) for current command
-  names and roles; do not duplicate mutable command recipes here.
 
 ## Provider boundary
 
