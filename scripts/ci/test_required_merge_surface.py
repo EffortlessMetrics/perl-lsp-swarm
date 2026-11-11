@@ -46,7 +46,7 @@ def run_with_tools(script, tools, extra_env=None):
     tools_dir = Path(output_dir.name)
     env = os.environ.copy()
     for tool in ['bash', 'dirname', *tools]:
-        (tools_dir / tool).symlink_to(shutil.which(tool))
+        shutil.copy2(shutil.which(tool), tools_dir / tool)
     env['PATH'] = str(tools_dir)
     env['RUNNER_TEMP'] = str(tools_dir)
     if extra_env:
@@ -98,7 +98,7 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         self.addCleanup(keeper.cleanup)
         altered = Path(keeper.name) / 'required-merge-surface.sh'
         text = SCRIPT.read_text(encoding='utf-8').replace(
-            '    --test-threads=1 --color never', '    --test-threads=2 --color never', 1,
+            '  --test-threads=1 --color never', '  --test-threads=2 --color never', 1,
         )
         self.assertNotEqual(text, SCRIPT.read_text(encoding='utf-8'))
         altered.write_text(text, encoding='utf-8')
@@ -114,11 +114,11 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         fake_cargo = bin_dir / 'cargo'
         fake_cargo.write_text(
             '#!/usr/bin/env bash\n'
-            'printf "%s\\n" "$*" >> "$MERGE_SURFACE_SPY"\n'
+            'printf "cargo %s\\n" "$*" >> "$MERGE_SURFACE_SPY"\n'
             'exit 97\n', encoding='utf-8')
         fake_cargo.chmod(0o755)
         for tool in ['bash', 'git', 'just', 'python3', 'jq']:
-            (bin_dir / tool).symlink_to(shutil.which(tool))
+            shutil.copy2(shutil.which(tool), bin_dir / tool)
         env = os.environ.copy()
         env['PATH'] = str(bin_dir) + os.pathsep + env['PATH']
         env['RUNNER_TEMP'] = str(Path(keeper.name) / 'artifacts')
@@ -128,7 +128,7 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
             with self.subTest(command=command):
                 result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(spy.read_text(encoding='utf-8').count('cargo '), 1)
+                self.assertEqual(spy.read_text(encoding='utf-8').count('gates_1469_pr_required_static_checks'), 1)
         receipt = json.loads((ROOT / 'target/receipts/required-merge-surface.json').read_text(encoding='utf-8'))
         self.assertEqual(receipt['result'], 'not_proven')
         self.assertNotEqual(receipt['exit_code'], 0)
