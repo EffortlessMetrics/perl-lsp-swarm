@@ -381,7 +381,7 @@ gates:
     tier: merge_gate
     description: "Re-render the pinned Domain-6 release-history range and reject drift"
     required: true
-    command: python3 -m unittest scripts.tests.test_domain6_fragment.Domain6RerenderTest -v
+    command: python3 scripts/tests/test_domain6_fragment.py Domain6RerenderTest -v
     # The tested evidence is candidate-independent but remains a required
     # pre-merge admission check: both CRLF and deterministic re-render drift
     # fail. It is deliberately outside the affected/cheap pr_fast loop.
