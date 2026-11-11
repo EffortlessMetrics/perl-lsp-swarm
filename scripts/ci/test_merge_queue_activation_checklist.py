@@ -46,6 +46,25 @@ def _read() -> str:
     return CHECKLIST.read_text(encoding="utf-8")
 
 
+def _context_list() -> str:
+    """The exact enumeration the checklist must carry, in order."""
+    return ", ".join(f"`{context}`" for context in LIVE_REQUIRED_CONTEXTS)
+
+
+def _sections(text: str) -> dict[str, str]:
+    """Map each `## Heading` to its body, so a check can be scoped."""
+    sections: dict[str, list[str]] = {}
+    heading: str | None = None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip()
+            sections[heading] = []
+        elif heading is not None:
+            sections[heading].append(line)
+    return {name: "\n".join(body) for name, body in sections.items()}
+
+
+
 class MergeQueueActivationChecklistTests(unittest.TestCase):
     """Assert the activation checklist is structurally complete."""
 
@@ -107,6 +126,14 @@ class MergeQueueActivationChecklistTests(unittest.TestCase):
         for context in LIVE_REQUIRED_CONTEXTS:
             with self.subTest(context=context):
                 self.assertIn(context, self.text)
+        # The list itself must be exact: a renamed, added or dropped context
+        # inside the enumeration has to fail, not just a missing name.
+        self.assertEqual(
+            self.text.count(_context_list()),
+            1,
+            "the checklist must enumerate exactly the five live required "
+            "contexts, in order",
+        )
         self.assertIn("is repository policy", self.text)
         self.assertIn("not** installed on `16664791`", self.text)
 
@@ -126,6 +153,49 @@ class MergeQueueActivationChecklistTests(unittest.TestCase):
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.text)
+
+    def test_queue_state_is_stated_as_disabled(self) -> None:
+        """The queue must be described as disabled, in both places, literally.
+
+        A prose search for the word `disabled` is not enough: it also appears in
+        the reversion section, so inverting either statement would still pass.
+        """
+        self.assertEqual(
+            self.text.count("must stay **disabled**"),
+            1,
+            "the checklist must state that the queue must stay **disabled**",
+        )
+        self.assertEqual(
+            self.text.count("is **disabled**"),
+            1,
+            "the checklist must state that ruleset 17372329 is **disabled**",
+        )
+        self.assertNotIn(
+            "**enabled**",
+            self.text,
+            "the checklist must not describe the queue as enabled",
+        )
+
+    def test_reversion_section_records_the_steward_decision(self) -> None:
+        """The reversion policy must stay present and must not invite a revert."""
+        sections = _sections(self.text)
+        self.assertIn(
+            "Reverting #19257",
+            sections,
+            "the checklist must keep a `## Reverting #19257` section",
+        )
+        reversion = sections["Reverting #19257"]
+        for needle in ("steward decision", "no revert", "keep `1ec099411` on main"):
+            with self.subTest(needle=needle):
+                self.assertIn(
+                    needle,
+                    reversion,
+                    f"the reversion section must state `{needle}`",
+                )
+
+    def test_guard_section_is_present(self) -> None:
+        """The guard section must describe what the test actually enforces."""
+        self.assertIn("Guard", _sections(self.text))
 
 
 if __name__ == "__main__":
