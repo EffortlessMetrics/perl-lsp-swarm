@@ -497,12 +497,9 @@ jobs:
 
       # Established peter-evans/create-pull-request pattern (see
       # post-merge-corpus-ratchet.yml, version-bump.yml). A PR opened by
-      # GITHUB_TOKEN raises no pull_request events (GitHub loop prevention),
-      # so the next step explicitly dispatches CI on the branch —
-      # workflow_dispatch is the documented GITHUB_TOKEN exception — and the
-      # required checks populate on the PR head without any manual
-      # credential-backed touch (#11731; the twice-confirmed empty-commit
-      # remedy is the baseline this replaces).
+      # GITHUB_TOKEN raises no pull_request events. Publication is not an
+      # implicit qualification request: read back the open PR/head, then leave
+      # in-session proof/review and native enqueue to the owning session.
       - name: Create generated status PR
         id: create-pr
         if: steps.freshness.outputs.publish == 'true'

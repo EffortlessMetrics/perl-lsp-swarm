@@ -1,5 +1,7 @@
 # Pipeline Gates — Gate Model Reference
 
+> Cutover source boundary (#17903): six is the desired policy count, not an observed live ruleset count. On November 11, 2026, the observed main ruleset still had five Actions-bound contexts and merge queue remained disabled. Gate Enforcement Contract is the proposed sixth actual-G obligation. Ordinary Draft/Ready/publication must not start CI; use in-session proof and native merge-group qualification. See [qualification-cutover.md](../ci/qualification-cutover.md).
+
 <!-- authority-status:v1 -->
 > **Status: superseded.** Current authority: [Development method](../agents/DEVELOPMENT_METHOD.md).
 > Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
@@ -13,7 +15,7 @@
 
 The perl-lsp pipeline is organized into **7 lifecycle moments** (coarse stages, called "gates" throughout this document as organizational shorthand) with **multiple agents working within each**. Each is a boundary that blocks work at the earliest reliable point: unsettled context before mutation (Gates 1-2), structural defects before commit (Gates 3-4), missing proof before publication (Gate 5), stale review/integration defects before merge (Gate 6).
 
-Authority for these boundaries is **live evidence and the branch ruleset** — durable verdict comments and, where one exists, a review receipt (Gates 1-4); live PR CI (`statusCheckRollup`) plus the five required checks and 0 unresolved conversation threads (Gates 5-6) — not runtime role/label machinery. That machinery (the SubagentStop plan-reviewer label gate, the mechanical needs-label-gate, the M4b role gate) was retired in the #4005 subtraction. (The M4b *agent-capability* gate described [below](#gate-5--ci-green) is a different, surviving mechanism — an `xtask` policy check, not label machinery.) Labels remain useful **navigation**: they record which agents have already run their pass, but confer no authority on their own. See [Labels as Navigation, Not Authority](#labels-as-navigation-not-authority) below.
+Authority for these boundaries is **live evidence and the branch ruleset** — durable verdict comments and, where one exists, a review receipt (Gates 1-4); live PR CI (`statusCheckRollup`) plus the six required checks in the desired source policy and 0 unresolved conversation threads (Gates 5-6) — not runtime role/label machinery. That machinery (the SubagentStop plan-reviewer label gate, the mechanical needs-label-gate, the M4b role gate) was retired in the #4005 subtraction. (The M4b *agent-capability* gate described [below](#gate-5--ci-green) is a different, surviving mechanism — an `xtask` policy check, not label machinery.) Labels remain useful **navigation**: they record which agents have already run their pass, but confer no authority on their own. See [Labels as Navigation, Not Authority](#labels-as-navigation-not-authority) below.
 
 The key shift from a linear sequence to a gate model:
 
@@ -179,10 +181,10 @@ Gate 4 triangulates three axes. A PR that clears only one axis does not pass Gat
 
 **Purpose**: Verify the live required PR checks are green. Not a label from an earlier push — the real branch-protection state.
 
-**Exit condition**: Live CI (`statusCheckRollup`) reports all five required checks green for the PR's current revision, and the branch rules allow the merge. This keeps the merge decision tied to the live PR revision without making a branch-SHA comparison a separate merge gate. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
+**Exit condition**: The desired source policy requires six required checks on the actual native merge-group subject. Current source policy does not establish live protection installation; refresh the effective branch rules and verify the selected integration subject before accepting a merge. This keeps the merge decision tied to the live PR revision without making a branch-SHA comparison a separate merge gate. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
 
 The advisory M4b agent-capability gate is a front-door hygiene check, not one
-of the five required merge contexts. Its router keeps untrusted fork and bot
+of the six required merge contexts. Its router keeps untrusted fork and bot
 pull requests on `ubuntu-24.04`, sends trusted work to the labeled
 `workflow-nano` self-hosted lane when capacity is observed, and records an
 explicit hosted fallback for missing token, API, or capacity. A failure from
@@ -283,7 +285,7 @@ When to strictly sequence agents within a gate versus running them in parallel:
 
 Labels record what happened within each lifecycle moment. They are navigation aids for humans and agents — never the authority that decides whether a PR may proceed or merge.
 
-**Authority is live evidence and the branch's merge rules**: for Gates 1-4, the durable verdict *comment* (and, where one exists, a review receipt — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md)) is the record of what actually happened; for Gates 5-6, live PR CI (`statusCheckRollup`) plus the five required checks green and 0 unresolved conversation threads (this repo's conversation-resolution convention — enforced by the `main` branch ruleset's `required_review_thread_resolution` rule) decide whether GitHub will allow a squash merge. The post-merge squash commit is a new revision and is verified by its own post-merge automation where configured. No GitHub-enforced merge check depends on `needs-*`/`merge-ready` label state — the SubagentStop plan-reviewer label gate and the mechanical needs-label-gate that once blocked a GitHub merge on label presence were retired (#4005: #4095, #4096). Operators must query the current PR, review, thread, and check state directly; no lifecycle-label reconciler is a merge authority.
+**Authority is live evidence and the branch's merge rules**: for Gates 1-4, the durable verdict *comment* (and, where one exists, a review receipt — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md)) is the record of what actually happened; for Gates 5-6, live PR CI (`statusCheckRollup`) plus the six required checks in the desired source policy green and 0 unresolved conversation threads (this repo's conversation-resolution convention — enforced by the `main` branch ruleset's `required_review_thread_resolution` rule) decide whether GitHub will allow a squash merge. The post-merge squash commit is a new revision and is verified by its own post-merge automation where configured. No GitHub-enforced merge check depends on `needs-*`/`merge-ready` label state — the SubagentStop plan-reviewer label gate and the mechanical needs-label-gate that once blocked a GitHub merge on label presence were retired (#4005: #4095, #4096). Operators must query the current PR, review, thread, and check state directly; no lifecycle-label reconciler is a merge authority.
 
 **Labels answer a narrower, useful question**: "which agents within this stage have already completed their pass?" — routing and status bookkeeping, not a gate.
 

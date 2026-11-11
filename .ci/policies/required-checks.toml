@@ -86,6 +86,30 @@ workflow = ".github/workflows/authority-transfer-review.yml"
 required = false
 contract_role = "advisory-workflow-shape"
 
+[[check]]
+name = "Gate Enforcement Contract"
+workflow = ".github/workflows/gate-enforcement-contract.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+  [[check.exemption]]
+  clause = "pull-request-trigger"
+  status = "accepted"
+  reason = "#17903 prohibits ordinary development Actions; this offline contract runs in-session and on actual native merge-group G."
+  tracking = "17903"
+
+  [[check.exemption]]
+  clause = "push-targets-master"
+  status = "accepted"
+  reason = "#17903 prohibits routine main-push qualification; protected integration is proved on actual G before landing."
+  tracking = "17903"
+
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "No ordinary PR event exists to supersede; per-G concurrency with cancellation disabled preserves the required integration result."
+  tracking = "17903"
+
 # `[[checks]]` is the emitted status-context inventory. The fields answer
 # different questions and must not be inferred from each other:
 #
@@ -279,11 +303,25 @@ workflow = ".github/workflows/gate-enforcement-contract.yml"
 job = "contract"
 workflow_result = "propagate"
 events = ["merge_group"]
+required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "Desired sixth Actions-bound integration requirement. The deterministic offline contract validates policy and workflow emitters on actual merge-group G only; source promotion does not prove live ruleset installation. Ordinary development events and publication dispatch remain prohibited (#17903)."
+
+[[checks]]
+name = "Trusted-base workflow security ratchet"
+producer = "repository-job"
+workflow = ".github/workflows/workflow-security-ratchet.yml"
+job = "trusted-base-ratchet"
+workflow_result = "propagate"
+events = ["workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "The static contract reports repository policy drift but is not yet protected by GitHub."
+reason = "The ratchet rejects new workflow write-authority and injection findings against the trusted base baseline. It is designed to be ruleset-required (#10536), but its workflow does not yet meet the required-workflow shape (no merge_group trigger, path-filtered push, non-standard concurrency), so promotion needs its own workflow change."
 
 [[checks]]
 name = "Semantic close containment (advisory)"

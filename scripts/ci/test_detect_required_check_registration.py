@@ -63,6 +63,7 @@ REQUIRED = (
     "Compile All Targets (bit-rot guard)",
     "Conflict marker check",
     "validate-title",
+    "Gate Enforcement Contract",
 )
 CONDITIONAL_REQUIRED_JOBS = {
     ("Conflict marker check", "conflict-markers"),

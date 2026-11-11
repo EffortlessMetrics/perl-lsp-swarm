@@ -2,7 +2,8 @@ name: Gate Enforcement Contract
 
 on:
   # #17903: source checks run locally while a PR is mutable. Only the actual
-  # native integration subject invokes this advisory workflow.
+  # native integration subject invokes this desired required workflow.
+  # Live protection installation is separate from this source contract.
   merge_group:
     types: [checks_requested]
 
