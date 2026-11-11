@@ -7,12 +7,61 @@ if [[ "$script_dir" == "${BASH_SOURCE[0]}" ]]; then
     script_dir=.
 fi
 repo="$(cd -- "$script_dir/.." && pwd)"
+startup_dir="$(pwd -P)"
 shared="${PERL_LSP_CLOUD_SHARED:-/workspace/shared}"
+if [[ "$shared" != /* ]]; then
+    shared="$startup_dir/$shared"
+fi
 export CARGO_HOME="$shared/cargo"
 export RUSTUP_HOME="$shared/rustup"
 export DEVPLANE="$shared/devplane/perl-lsp-swarm"
 export npm_config_cache="$shared/npm-cache"
-export PATH="$CARGO_HOME/bin${PATH:+:$PATH}"
+
+# PATH entries are interpreted relative to the process working directory. Anchor
+# inherited relative and empty entries before changing directories so startup
+# validates and later invokes the same tools in the same order.
+normalize_path() {
+    local remaining="$1"
+    local base="$2"
+    local normalized=""
+    local entry
+    local has_more
+
+    while :; do
+        if [[ "$remaining" == *:* ]]; then
+            entry="${remaining%%:*}"
+            remaining="${remaining#*:}"
+            has_more=1
+        else
+            entry="$remaining"
+            has_more=0
+        fi
+
+        if [[ -z "$entry" ]]; then
+            entry="$base"
+        elif [[ "$entry" != /* ]]; then
+            entry="$base/$entry"
+        fi
+
+        if [[ -n "$normalized" ]]; then
+            normalized="$normalized:$entry"
+        else
+            normalized="$entry"
+        fi
+
+        if [[ "$has_more" -eq 0 ]]; then
+            break
+        fi
+    done
+
+    printf '%s' "$normalized"
+}
+
+inherited_path=""
+if [[ -n "${PATH:-}" ]]; then
+    inherited_path="$(normalize_path "$PATH" "$startup_dir")"
+fi
+export PATH="$CARGO_HOME/bin${inherited_path:+:$inherited_path}"
 
 # Parse the repository default before any setup command runs. An explicit task
 # selector remains authoritative; otherwise rustup resolves rust-toolchain.toml

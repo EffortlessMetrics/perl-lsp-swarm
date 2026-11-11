@@ -19,18 +19,23 @@ class SetupTests(unittest.TestCase):
         root = Path(cls.temp.name)
         repo = root / "repo"
         shared = root / "shared"
-        fake = root / "bin"
         active_node = root / "active-node/bin"
+        relative_node = repo / "relative-node/bin"
         stale_node = shared / "node-v26.6.0-linux-x64/bin"
+        rustup_home = shared / "rustup"
         for path in (
             repo / "vscode-extension",
             repo / "scripts",
             shared / "cargo/bin",
-            fake,
             active_node,
+            relative_node,
             stale_node,
+            rustup_home,
         ):
             path.mkdir(parents=True)
+        (rustup_home / "installed-toolchains.txt").write_text(
+            "stable\n1.96.0\n", encoding="utf-8"
+        )
         (repo / "rust-toolchain.toml").write_text(
             '[toolchain]\nchannel = "1.96.0"\n', encoding="utf-8"
         )
@@ -90,8 +95,9 @@ if name == "npm" and args == ["run", "doctor"]:
         for name in ("rustup", "rustc", "cargo", "just"):
             (shared / "cargo/bin" / name).symlink_to(driver)
         (shared / "cargo/bin/python3").symlink_to(sys.executable)
-        for name in ("node", "npm"):
-            (active_node / name).symlink_to(driver)
+        for directory in (active_node, relative_node):
+            for name in ("node", "npm"):
+                (directory / name).symlink_to(driver)
 
         stale_marker = root / "stale-node-selected"
         stale_driver = '''#!/bin/sh
@@ -125,16 +131,19 @@ exit 88
             and key not in ("MIN_FREE_GB", "MAX_USED_PCT")
         }
         env.update(
-            PATH=f"{active_node}:{fake}",
+            PATH=str(active_node),
             SETUP_LOG=str(log),
             SETUP_STALE_NODE_MARKER=str(stale_marker),
             PERL_LSP_CLOUD_SHARED=str(shared),
         )
         cls.repo = repo
+        cls.shared = shared
+        cls.rustup_home = rustup_home
         cls.candidate = candidate
         cls.env = env
         cls.log = log
         cls.active_node = active_node
+        cls.relative_node = relative_node
         cls.stale_marker = stale_marker
         cls.result = subprocess.run(
             ["/bin/bash", str(candidate)],
@@ -266,11 +275,24 @@ exit 88
         self.assertFalse(any(c["name"] == "npm" for c in calls))
 
     def test_repeated_startup_does_not_mutate_repository_or_toolchain_state(self):
+        def snapshot_tree(label, root):
+            snapshot = {f"{label}:exists": root.exists()}
+            if not root.exists():
+                return snapshot
+            for path in root.rglob("*"):
+                key = f"{label}:{path.relative_to(root)}"
+                if path.is_symlink():
+                    snapshot[key] = ("symlink", os.readlink(path))
+                elif path.is_file():
+                    snapshot[key] = ("file", path.read_bytes())
+                elif path.is_dir():
+                    snapshot[key] = ("dir",)
+            return snapshot
+
         def snapshot():
             return {
-                str(path.relative_to(self.repo)): path.read_bytes()
-                for path in self.repo.rglob("*")
-                if path.is_file()
+                **snapshot_tree("repo", self.repo),
+                **snapshot_tree("rustup", self.rustup_home),
             }
 
         before = snapshot()
@@ -304,6 +326,21 @@ exit 88
                 "node-v26.6.0-linux-x64/bin" in element
                 for element in node["path"].split(":")
             )
+        )
+
+    def test_relative_path_stays_bound_to_the_invocation_directory(self):
+        result, calls = self.run_with_pin(
+            '[toolchain]\nchannel = "1.96.0"\n', {"PATH": "relative-node/bin"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        node_calls = [c for c in calls if c["name"] in {"node", "npm"}]
+        self.assertTrue(node_calls)
+        self.assertTrue(
+            all(c["executable"].startswith(str(self.relative_node)) for c in node_calls)
+        )
+        expected_entry = str(self.relative_node)
+        self.assertTrue(
+            all(expected_entry in c["path"].split(":") for c in node_calls)
         )
 
     def test_wrong_node_or_npm_stops_before_npm_ci(self):
@@ -341,6 +378,40 @@ exit 88
         self.assertIn("required command not found on PATH: node", result.stderr)
         self.assertFalse(marker.exists())
         self.assertFalse(any(c["name"] == "history" for c in calls))
+
+    def test_empty_inherited_path_does_not_search_the_checkout(self):
+        poison = self.repo / "node"
+        marker = self.repo / "cwd-node-ran"
+        poison.write_text('#!/bin/sh\n: > cwd-node-ran\nexit 0\n', encoding="utf-8")
+        poison.chmod(0o755)
+        try:
+            result, calls = self.run_with_pin(
+                '[toolchain]\nchannel = "1.96.0"\n', {"PATH": ""}
+            )
+        finally:
+            poison.unlink()
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("required command not found on PATH: node", result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(calls, [])
+
+    def test_missing_npm_fails_actionably_before_setup(self):
+        npm = self.active_node / "npm"
+        saved = npm.readlink()
+        poison = self.repo / "npm"
+        marker = self.repo / "cwd-npm-ran"
+        poison.write_text('#!/bin/sh\n: > cwd-npm-ran\nexit 0\n', encoding="utf-8")
+        poison.chmod(0o755)
+        npm.unlink()
+        try:
+            result, calls = self.run_with_pin('[toolchain]\nchannel = "1.96.0"\n')
+        finally:
+            npm.symlink_to(saved)
+            poison.unlink()
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("required command not found on PATH: npm", result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(calls, [])
 
     def test_setup_preserves_capacity_jobs_and_operation_order(self):
         self.assertTrue(

@@ -31,17 +31,21 @@ change rustup's global default, or write a directory override. It sets
 stops before tool commands run.
 
 `PERL_LSP_CLOUD_SHARED` selects the existing host storage root; the default is
-`/workspace/shared`. The entry selects `cargo`, `rustup`,
+`/workspace/shared`. A relative value is anchored to the startup invocation
+directory before any directory change. The entry selects `cargo`, `rustup`,
 `devplane/perl-lsp-swarm`, and `npm-cache` beneath that root and prepends only
 its `cargo/bin` directory to `PATH`. It does not manufacture a Node patch-level
 path. The active `node` and `npm` commands must already be on the inherited
 `PATH`; supported versions remain owned by `vscode-extension`'s
 `npm run doctor`.
 
-An empty inherited `PATH` does not add the current directory to command lookup;
-checkout resolution uses Bash builtins before the selected tool paths are set.
-The TOML pin and fixture text are read explicitly as UTF-8, including under an
-ASCII locale.
+Before changing directories, startup anchors every relative or empty element of
+a nonempty inherited `PATH` to the invocation directory while preserving entry
+order. The Node/npm pair validated at startup is therefore the pair later used
+from `vscode-extension`. A fully empty inherited `PATH` adds no current-directory
+entry. Checkout resolution uses Bash builtins before the selected tool paths are
+set. The TOML pin and fixture text are read explicitly as UTF-8, including under
+an ASCII locale.
 
 ## Rust selection precedence and receipt
 
@@ -89,16 +93,17 @@ for exact-command preflight and the existing scoped-budget route; moving a path
 does not add capacity. The desktop admission/profile owner must supply the
 qualified workload basis before cloud compilation proceeds.
 
-The ten cheap regression tests execute the actual shell entry using a
+The thirteen cheap regression tests execute the actual shell entry using a
 temporary checkout and mocked tools. They cover repository-default selection,
 an explicit stable-only image without the repository pin installed, two distinct
 checkout pins, missing/malformed pin refusal before tool commands, active-PATH
-Node precedence over a stale shared patch directory, missing and unsupported
-Node/npm failures before `npm ci`, a missing repository-selected toolchain
-failing before setup, repeated startup without repository or toolchain-state
-mutation, disabled automatic Rust installation, absence of startup's capacity/job
-overrides, the complete operation sequence, empty-PATH command lookup, and UTF-8
-pin handling under an ASCII locale:
+Node precedence over a stale shared patch directory, stable relative-PATH
+selection across directory changes, empty-PATH lookup, missing Node and npm,
+unsupported Node/npm failures before `npm ci`, a missing repository-selected
+toolchain failing before setup, repeated startup without repository or shared
+rustup-state mutation, disabled automatic Rust installation, absence of startup's
+capacity/job overrides, the complete operation sequence, and UTF-8 pin handling
+under an ASCII locale:
 
 ```bash
 bash -n scripts/cloud-startup
