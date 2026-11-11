@@ -38,7 +38,9 @@ After task-shell activation, run the cheap layout/setup preflight:
 just agent-preflight
 ```
 
-That is not Cargo capacity proof. Formatting remains separate:
+That is not writer admission, hook-readiness proof, or Cargo capacity proof. Mutation
+ownership remains a separate fact established through the selected issue/PR route.
+Formatting remains separate:
 
 ```bash
 cargo fmt -p <package> -- --check
