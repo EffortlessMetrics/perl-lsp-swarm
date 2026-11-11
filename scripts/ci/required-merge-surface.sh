@@ -34,6 +34,30 @@ if ! git diff --quiet HEAD -- .; then
   echo '::error::required-merge-surface NOT_PROVEN: tracked-tree modifications invalidate exact-head proof' >&2
   exit 84
 fi
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  echo '::error::required-merge-surface NOT_PROVEN: non-ignored untracked files invalidate exact-head proof' >&2
+  exit 86
+fi
+# Command 22 reads every .rs file in this directory, including files ignored
+# by **/temp_*.rs. CI build artifacts remain allowed; proof inputs may not vary.
+python3 - <<'PY'
+from pathlib import Path
+import subprocess
+
+expected = set(subprocess.check_output([
+    'git', 'ls-files', '--', 'xtask/src/tasks/standalone_vectors/*.rs',
+], text=True).splitlines())
+actual = {
+    path.as_posix()
+    for path in Path('xtask/src/tasks/standalone_vectors').glob('*.rs')
+}
+if actual != expected:
+    difference = ', '.join(sorted(actual ^ expected))
+    raise SystemExit(
+        '::error::required-merge-surface NOT_PROVEN: '
+        f'standalone-vector inputs differ from HEAD: {difference}'
+    )
+PY
 subject_sha="$(git rev-parse HEAD)"
 if [[ ! "$subject_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo '::error::required-merge-surface NOT_PROVEN: subject is not an exact commit' >&2
@@ -96,8 +120,21 @@ source = pathlib.Path('scripts/ci/required-merge-surface.sh')
 text = source.read_text(encoding='utf-8')
 names = re.findall(r'^# required merge surface command \d+: (.*)$', text, re.M)
 current_head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-clean = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', '.']).returncode == 0
-passed = rc == 0 and attempted == len(names) and head == current_head and clean
+clean = (
+    subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', '.']).returncode == 0
+    and subprocess.check_output(
+        ['git', 'status', '--porcelain', '--untracked-files=normal'], text=True
+    ) == ''
+)
+expected = set(subprocess.check_output([
+    'git', 'ls-files', '--', 'xtask/src/tasks/standalone_vectors/*.rs',
+], text=True).splitlines())
+actual = {
+    path.as_posix()
+    for path in pathlib.Path('xtask/src/tasks/standalone_vectors').glob('*.rs')
+}
+proof_inputs_match = actual == expected
+passed = rc == 0 and attempted == len(names) and head == current_head and clean and proof_inputs_match
 rc = 0 if passed else 1
 packet = {
     'schema_version': 1,

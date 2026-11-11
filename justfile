@@ -980,6 +980,10 @@ ci-workflow-audit:
 
 # Complete, exact-head post-compile admission proof. Kept separate from the
 # <180-second pr_fast tier; missing tools or evidence must not become green.
+# Set RUNNER_TEMP to an existing artifact directory, for example
+# `RUNNER_TEMP="$(mktemp -d)" just prove-required-merge-surface`. Without it,
+# the proof deliberately exits 80 NOT_PROVEN rather than losing the original
+# tee/grep log assertions or silently using a caller-unowned temp directory.
 prove-required-merge-surface:
     bash scripts/ci/required-merge-surface.sh
 

@@ -360,13 +360,16 @@ fn required_parity_wiring_is_present(workflow: &str, shared_producer: &str) -> b
     let job = &section[..end];
     (job.contains("name: Legacy parity library authority (required merge surface)")
         && job.contains("name: Legacy parity CLI authority (required merge surface)")
-        || job.contains("Required merge surface")
-            && job.contains("run: bash scripts/ci/required-merge-surface.sh"))
-        && shared_producer.contains(
-            "cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture",
-        )
-        && shared_producer
-            .contains("cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture")
+        || job.lines().any(|line| line == "      - name: Required merge surface")
+            && job.lines().any(|line| line == "        run: bash scripts/ci/required-merge-surface.sh"))
+        && shared_producer.lines().any(|line| {
+            line.trim_start()
+                == "cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture"
+        })
+        && shared_producer.lines().any(|line| {
+            line.trim_start()
+                == "cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture"
+        })
         && !job.contains("continue-on-error: true")
 }
 
@@ -434,6 +437,17 @@ fn required_parity_wiring_rejects_missing_or_advisory_controls() {
     assert!(
         !required_parity_wiring_is_present(&workflow, &missing_library),
         "missing library parity command must fail the wiring contract"
+    );
+
+    let commented = workflow.replacen(
+        "        run: bash scripts/ci/required-merge-surface.sh",
+        "        # run: bash scripts/ci/required-merge-surface.sh",
+        1,
+    );
+    assert!(commented != workflow, "the comment mutant must alter the CI route");
+    assert!(
+        !required_parity_wiring_is_present(&commented, &producer),
+        "commented-out producer wiring must fail closed"
     );
 
     let advisory = workflow.replacen(

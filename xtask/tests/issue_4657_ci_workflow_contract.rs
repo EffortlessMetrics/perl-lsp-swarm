@@ -95,7 +95,7 @@ fn required_step_wiring(
     let contract_command = expected_command
         .trim_start()
         .strip_prefix("run: ")
-        .expect("expected command must use a run field");
+        .ok_or("expected command must use a run field")?;
     let expected_step =
         if shared_producer { "      - name: Required merge surface" } else { expected_step };
     let expected_command = if shared_producer {
@@ -151,6 +151,17 @@ fn required_step_wiring(
     }) {
         return Err("required contract step became conditional or optional");
     }
+    Ok(())
+}
+
+#[test]
+fn malformed_required_command_shape_returns_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    let ci =
+        fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    assert_eq!(
+        required_step_wiring(&ci, CACHE_HARNESS_STEP, "cargo test -p xtask --locked"),
+        Err("expected command must use a run field")
+    );
     Ok(())
 }
 

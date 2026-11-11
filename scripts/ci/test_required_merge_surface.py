@@ -64,7 +64,7 @@ def run_with_tools(script, tools, extra_env=None):
     if extra_env:
         env.update(extra_env)
     return output_dir, subprocess.run([shutil.which('bash'), str(script)], cwd=ROOT, env=env,
-                                      capture_output=True, text=True, timeout=30)
+                                      capture_output=True, text=True, timeout=120)
 
 
 class RequiredMergeSurfaceTests(unittest.TestCase):
@@ -143,6 +143,29 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         expected = [step['run'].strip() for step in original_steps()]
         self.assertNotEqual(producer_commands(altered)[:len(expected)], expected)
 
+    def test_missing_runner_temp_is_intentional_not_proven(self):
+        keeper, result = run_with_tools(SCRIPT, [], {'RUNNER_TEMP': ''})
+        self.addCleanup(keeper.cleanup)
+        self.assertEqual(result.returncode, 80)
+        self.assertIn('RUNNER_TEMP must name an existing artifact directory', result.stderr)
+        self.assertIn('NOT_PROVEN', result.stderr)
+
+    def test_untracked_and_ignored_foreign_inputs_are_not_green(self):
+        for relative in [
+            'proof-foreign-input-do-not-commit.md',
+            'xtask/src/tasks/standalone_vectors/temp_oracle.rs',
+        ]:
+            with self.subTest(relative=relative):
+                foreign = ROOT / relative
+                self.assertFalse(foreign.exists(), f'refusing to overwrite {relative}')
+                foreign.write_text('# Synthetic foreign input; proof must refuse it.\n', encoding='utf-8')
+                self.addCleanup(foreign.unlink)
+                tools = ['cargo', 'just', 'git', 'python3', 'jq']
+                keeper, result = run_with_tools(SCRIPT, tools)
+                self.addCleanup(keeper.cleanup)
+                self.assertEqual(result.returncode, 86, result.stderr)
+                self.assertIn('NOT_PROVEN', result.stderr)
+
     def test_deliberate_command_failure_is_red_in_script_and_local_admission(self):
         keeper = tempfile.TemporaryDirectory()
         self.addCleanup(keeper.cleanup)
@@ -169,7 +192,7 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         for command in [['bash', str(SCRIPT)], [shutil.which('just'), 'prove-required-merge-surface']]:
             with self.subTest(command=command):
                 spy.write_text('', encoding='utf-8')
-                result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
+                result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(spy.read_text(encoding='utf-8').count('gates_1469_pr_required_static_checks'), 1)
         receipt = json.loads((ROOT / 'target/receipts/required-merge-surface.json').read_text(encoding='utf-8'))
