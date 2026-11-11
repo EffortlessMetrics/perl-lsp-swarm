@@ -31,6 +31,16 @@ async function loadWorkflowScript() {
   return body.join('\n');
 }
 
+function associatedPr(number, sha, overrides = {}) {
+  return {
+    number,
+    state: 'open',
+    base: { ref: 'main' },
+    head: { sha },
+    ...overrides,
+  };
+}
+
 async function runQueue({
   commits,
   totalCommits,
@@ -40,21 +50,34 @@ async function runQueue({
 }) {
   const failures = [];
   const readTitles = [];
-  const associatedPulls = new Map(commits.map((commit, index) => [commit.sha, index + 101]));
+  const headShas = new Map();
+  const associatedPulls = new Map(
+    commits.map((commit, index) => [commit.sha, associatedPr(index + 101, commit.sha)]),
+  );
   const github = {
     rest: {
       repos: {
         compareCommitsWithBasehead: async () => ({
           data: { status, total_commits: totalCommits, commits },
         }),
-        listPullRequestsAssociatedWithCommit: async ({ commit_sha: sha }) => ({
-          data: pullsFor ? pullsFor(sha) : [{ number: associatedPulls.get(sha) }],
-        }),
+        listPullRequestsAssociatedWithCommit: async ({ commit_sha: sha }) => {
+          const pulls = pullsFor ? pullsFor(sha) : [associatedPulls.get(sha)];
+          for (const pr of pulls) headShas.set(pr.number, pr.head?.sha);
+          return { data: pulls };
+        },
       },
       pulls: {
         get: async ({ pull_number: number }) => {
           readTitles.push(number);
-          return { data: currentTitles.get(number) };
+          const current = currentTitles.has(number) ? currentTitles.get(number) : {};
+          return {
+            data: {
+              state: 'open',
+              base: { ref: 'main' },
+              head: { sha: headShas.get(number) },
+              ...current,
+            },
+          };
         },
       },
     },
@@ -62,7 +85,9 @@ async function runQueue({
   const context = {
     eventName: 'merge_group',
     repo: { owner: 'owner', repo: 'repo' },
-    payload: { merge_group: { base_sha: 'base', head_sha: 'group' } },
+    payload: {
+      merge_group: { base_sha: 'base', head_sha: 'group', base_ref: 'refs/heads/main' },
+    },
   };
   const core = {
     setFailed: (message) => failures.push(message),
@@ -126,7 +151,61 @@ async function runPr({ pr, existingComments = [] }) {
   return { failures, warnings, created, updated, addedLabels, removedLabels };
 }
 
-const title = (text) => ({ title: text, user: { login: 'author' }, labels: [] });
+const title = (text, login = 'author') => ({ title: text, user: { login }, labels: [] });
+
+test('a nonempty but incomplete association set fails before title validation', async () => {
+  const result = await runQueue({
+    commits: [{ sha: 'one' }, { sha: 'two' }],
+    totalCommits: 2,
+    pullsFor: (sha) => (sha === 'one' ? [associatedPr(101, sha)] : []),
+    currentTitles: new Map([[101, title('feat: visible member (#18255)')]]),
+  });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /two.*incomplete association set/);
+  assert.deepEqual(result.readTitles, []);
+});
+
+test('unrelated associations cannot reject exact-H members or replace their titles', async () => {
+  const unrelated = [
+    associatedPr(999, 'one', { state: 'closed', base: { ref: 'other' } }),
+    associatedPr(999, 'one', { base: { ref: 'other' } }),
+    associatedPr(999, 'different'),
+  ];
+  for (const candidate of unrelated) {
+    const result = await runQueue({
+      commits: [{ sha: 'one' }],
+      totalCommits: 1,
+      pullsFor: () => [associatedPr(101, 'one'), candidate],
+      currentTitles: new Map([
+        [101, title('feat: admitted member (#18255)')],
+        [999, title('unrelated title has no issue reference')],
+      ]),
+    });
+    assert.deepEqual(result.failures, []);
+    assert.deepEqual(result.readTitles, [101]);
+  }
+});
+
+test('a dependabot lookalike author gets no exemption', async () => {
+  const result = await runQueue({
+    commits: [{ sha: 'one' }],
+    totalCommits: 1,
+    currentTitles: new Map([[101, title('no issue reference', 'not-dependabot-person')]]),
+  });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /#101: no issue reference/);
+  assert.deepEqual(result.readTitles, [101]);
+});
+
+test('the exact dependabot identity remains exempt', async () => {
+  const result = await runQueue({
+    commits: [{ sha: 'one' }],
+    totalCommits: 1,
+    currentTitles: new Map([[101, title('dependency: automated update', 'dependabot[bot]')]]),
+  });
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.readTitles, [101]);
+});
 
 test('one-member group validates its complete commit graph', async () => {
   const result = await runQueue({
@@ -215,9 +294,8 @@ test('a commit with no associated PR fails closed', async () => {
     pullsFor: () => [],
     currentTitles: new Map(),
   });
-  assert.deepEqual(result.failures, [
-    'no constituent pull requests resolved for merge group head group',
-  ]);
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /one.*incomplete association set/);
   assert.deepEqual(result.readTitles, []);
 });
 

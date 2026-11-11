@@ -50,7 +50,7 @@ jobs:
               const login = loginOf(pr);
               const labels = labelsOf(pr);
 
-              if (login.includes('dependabot')) {
+              if (login === 'dependabot[bot]') {
                 return { ok: true, kind: 'exempt', reason: 'dependabot' };
               }
               if (labels.includes('skip-title-check')) {
@@ -95,6 +95,11 @@ jobs:
                 core.setFailed('merge_group payload is missing head_sha or base_sha');
                 return;
               }
+              const groupBaseRef = context.payload.merge_group.base_ref?.replace(/^refs\/heads\//, '');
+              if (!groupBaseRef) {
+                core.setFailed('merge_group payload is missing base_ref');
+                return;
+              }
 
               // Contradictory G/base: the base must be an ancestor of the
               // group head. A diverged or behind base is not a valid group.
@@ -131,9 +136,9 @@ jobs:
                 return;
               }
 
-              // Map each commit in the group to its PR by head SHA. The commit
-              // graph is authoritative; the gh-readonly-queue ref name is
-              // never parsed for membership.
+              // Every compared commit needs an exact-H candidate admitted to
+              // the same base: open state, matching target base and head SHA.
+              // A partial association set must never become a passing verdict.
               const seen = new Set();
               const members = [];
               for (const commit of commits) {
@@ -151,10 +156,23 @@ jobs:
                   );
                   return;
                 }
-                for (const pr of pulls) {
+                const admitted = pulls.filter((pr) =>
+                  pr.state === 'open' &&
+                  pr.base?.ref?.replace(/^refs\/heads\//, '') === groupBaseRef &&
+                  pr.head?.sha === commit.sha
+                );
+                if (admitted.length === 0) {
+                  core.setFailed(
+                    `merge_group commit ${commit.sha} has no admitted PR matching ` +
+                    `open state, base ${groupBaseRef}, and head SHA ${commit.sha}; ` +
+                    'refusing to infer membership from an incomplete association set'
+                  );
+                  return;
+                }
+                for (const pr of admitted) {
                   if (seen.has(pr.number)) continue;
                   seen.add(pr.number);
-                  members.push(pr);
+                  members.push({ number: pr.number, commitSha: commit.sha });
                 }
               }
 
@@ -180,6 +198,16 @@ jobs:
                     `#${member.number}: could not re-read current title (${e.message})`
                   );
                   continue;
+                }
+                if (
+                  current.state !== 'open' ||
+                  current.base?.ref?.replace(/^refs\/heads\//, '') !== groupBaseRef ||
+                  current.head?.sha !== member.commitSha
+                ) {
+                  core.setFailed(
+                    `#${member.number} changed state, base, or head SHA while queued; refusing to validate a different admission`
+                  );
+                  return;
                 }
                 const verdict = validateTitle(current);
                 if (!verdict.ok) {
