@@ -136,7 +136,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             'validate-baseline', '--root', str(ROOT),
             '--baseline', str(ROOT / '.ci/workflow-security-baseline.json'),
             '--baseline-root', str(ROOT),
-        ], capture_output=True, text=True, timeout=30)
+        ], capture_output=True, text=True, encoding='utf-8', timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_rollback_restores_every_changed_byte(self):
