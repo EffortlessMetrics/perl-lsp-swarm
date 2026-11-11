@@ -598,8 +598,8 @@ tagged "this PR" are #3649's own contribution.
 
 **Merge-gate note.** The six required status checks the `main` ruleset
 enforces (`Compile All Targets (bit-rot guard)`, `Conflict marker check`,
-`validate-title`, `Perl LSP Rust Small Result`, `ripr+ New Gap Gate` — the
-`required = true` rows of
+`validate-title`, `Perl LSP Rust Small Result`, `ripr+ New Gap Gate`,
+`Gate Enforcement Contract` — the `required = true` rows of
 [`.ci/policies/required-checks.toml`](../../.ci/policies/required-checks.toml))
 must be green on the SHA that lands each new test. The feature-gated integration tests (§7, §8) do NOT run
 under a bare `--test` invocation — any CI lane proving these must pass
