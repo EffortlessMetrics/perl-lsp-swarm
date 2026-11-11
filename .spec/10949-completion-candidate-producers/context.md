@@ -1,5 +1,9 @@
 # CAND-INV-01 context
 
+This records the original design and its implementation basis. The CI boundary
+below has been reconciled for #19126; current-tree counts and the dated GitHub
+enforcement observation are in [acceptance.md](acceptance.md).
+
 - Issue: #10949 (programme controller #8969, identity controller #8963).
 - Basis: main@30efa8a (2026-09-07), merged forward to main@8b945cf (2026-09-13).
   That merge moved the scanned surface and `check` refused on the digest, which is
@@ -150,7 +154,10 @@ behavior, so neither is fixed here.
 - Reachability is proven only for rows an entry point calls directly. Rows
   reached through the provider call declare their reach, and every row records
   which of the two it is.
-- The check is not registered as a CI gate in this PR. #14946 records that a
-  gate added on `main` refuses every older-based PR's shard at preflight, and
-  the closest analogue, `compat-inventory`, is likewise ungated. Gating is a
-  follow-up once #14946 lands.
+- CI registration was outside the original implementation's scope while
+  #14946 was open. That historical deferral is spent: #14946 closed on
+  2026-09-08 and `completion_candidate_ledger` is now registered as a required,
+  non-quarantined merge-gate-tier check selected by CI's policy shard.
+  Registration does not establish GitHub merge enforcement; see
+  [acceptance.md](acceptance.md#gate-registration-and-github-enforcement) for
+  the revision-bound source evidence and the separate #18495 / #17707 gap.

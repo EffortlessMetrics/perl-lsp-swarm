@@ -1,8 +1,72 @@
 # CAND-INV-01 acceptance
 
-Basis: main@30efa8a. All commands run from the repository root.
+Initial implementation basis: main@30efa8a. The historical inventory, migration
+observations and proof results below record that implementation; they are not
+standing claims about the latest tree. All commands were run from the repository
+root.
 
-## Current inventory state
+## Current-tree inventory snapshot
+
+Reconciled for #19126 against `fc5f238ccc6f74b42c1bf5e3dda7767ab7d23041`:
+
+```text
+60 producers across 18 candidate classes
+ 0 construction-only files
+ 2 delegated modules
+ 0 post-finalizer appends
+41 scanned source files
+ 2 shipped entry points
+```
+
+These are revision-bound counts, not fixed acceptance requirements. For another
+tree, reconcile the [ledger](../../policy/completion-candidate-producers.toml)
+with `cargo xtask completion-candidates check` and inspect the generated
+[projection](../../docs/architecture/completion-candidate-producers.md).
+
+The 42 → 41 file delta from the projection at `b8b41a260c6c` (#15015) is the
+repository deletion of
+`crates/perl-lsp-rs-core/src/providers/completion/completion/import_map/symbols.rs`;
+it is the only removed scan file, with no added scan files. This is not the
+stale-root falsifier below: the file no longer exists in the tracked tree.
+`validate_producer_population` also refuses a ledger row whose function is no
+longer declared by scanned source; the separate
+`every_scan_root_still_matches_tracked_source` fixture guards each scan root.
+
+## Gate registration and GitHub enforcement
+
+At the same revision, [gate policy](../../.ci/gate-policy.yaml) declares
+`completion_candidate_ledger` as `tier: merge_gate`, `required: true`,
+`quarantine: false`, running `cargo xtask completion-candidates check` with a
+120-second timeout. It selects the gate into the merge-gate lane, and
+[CI](../../.github/workflows/ci.yml)'s policy shard lists and executes it when
+that job is selected. A ledger/source digest or generated-projection mismatch
+fails the check and its runner invocation; CI registration is no longer deferred
+on #14946, which closed on 2026-09-08.
+
+Registration and `required: true` do **not** establish GitHub merge enforcement.
+The [status-context inventory](../../.ci/policies/required-checks.toml) records
+`CI Gate (Advisory Aggregate)` as `policy_role = "advisory"` and
+`enforcement = "neither"`. A GitHub connector read on 2026-11-11 (main at
+`1ec0994117198256485a20071c6f9ba2fdc698af`) found active default-branch
+[ruleset 16664791](https://github.com/EffortlessMetrics/perl-lsp-swarm/rules/16664791)
+requiring exactly `Compile All Targets (bit-rot guard)`, `Conflict marker check`,
+`validate-title`, `Perl LSP Rust Small Result`, and `ripr+ New Gap Gate`.
+The ruleset collection (including parents) listed no other active branch
+ruleset; the merge-queue ruleset was disabled. The
+[main branch response](https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/branches/main)
+reported empty classic-protection `contexts` and `checks` arrays. Neither the
+policy shard nor its aggregate was required in those observed surfaces. This
+is a dated observation, not a permanent settings guarantee. Actual enforcement
+requires the live union of classic protection and active applicable rulesets,
+as described by the
+[gate enforcement contract](../../docs/ci/gate-enforcement-contract.md).
+The separate enforcement gap remains with #18495 and #17707; this repair changes
+no gate, workflow, or GitHub setting.
+
+## Historical implementation snapshot (#15015, b8b41a260c6c)
+
+The following records the initial implementation based on main@30efa8a, as
+published in #15015. It is not an inventory of the base commit itself.
 
 ```text
 58 producers across 18 candidate classes
@@ -13,9 +77,9 @@ Basis: main@30efa8a. All commands run from the repository root.
  2 shipped entry points
 ```
 
-Every producer row currently carries `identity = legacy_label_compatibility`
+At that historical basis, every producer row carries `identity = legacy_label_compatibility`
 (routers and finalizer seams carry `not_applicable`), and every row but one
-carries `source_completeness = legacy_unreported`. That is the honest current state, not
+carries `source_completeness = legacy_unreported`. That is the recorded initial state, not
 a placeholder: no live producer uses the semantic or source-anchored
 constructors PR #10145 landed, and no live producer reports whether it finished.
 The second fact is what stops #10230 claiming a `Complete` outcome for any
@@ -276,4 +340,6 @@ mutated tree is the finding; the refusals above are its closure.
 - Row *dispositions* are an auditor's reading of the source, not a proof. The
   digest binds them to the exact source they were read against, so they cannot
   outlive it silently, but a wrong reading is only caught by review.
-- The check is not a CI gate in this PR (see `context.md` boundaries).
+- CI registration was outside the initial implementation's scope. The check is
+  now registered and required within its merge-gate runner invocation; the
+  separate GitHub enforcement limitation is described above.
