@@ -34,6 +34,40 @@ if [[ ! "$subject_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo '::error::required-merge-surface NOT_PROVEN: subject is not an exact commit' >&2
   exit 85
 fi
+
+# Reject a filtered or edited original command even if its marker survives.
+# New contract commands may be appended after the immutable existing prefix.
+python3 - <<'PY'
+import pathlib
+import re
+import subprocess
+import yaml
+
+baseline = subprocess.check_output([
+    'git', 'show', '032468df9b9912ab847e5f5243b7f4897b8465b9:.github/workflows/ci.yml'
+]).decode('utf-8')
+steps = yaml.safe_load(baseline)['jobs']['check-all-targets']['steps']
+original = [step for step in steps if step.get('name', '').endswith('(required merge surface)')]
+text = pathlib.Path('scripts/ci/required-merge-surface.sh').read_text(encoding='utf-8')
+markers = list(re.finditer(r'^# required merge surface command \d+: (.*)$', text, re.M))
+actual = []
+for index, marker in enumerate(markers):
+    segment = text[marker.end() + 1:markers[index + 1].start() if index + 1 < len(markers) else len(text)]
+    commands = '\n'.join(
+        line for line in segment.splitlines() if not line.startswith('_step_index=')
+    ).strip()
+    actual.append((marker.group(1), commands))
+expected = [(step['name'], step['run'].strip()) for step in original]
+if actual[:len(expected)] != expected:
+    position = next(
+        (index for index, pair in enumerate(actual)
+         if index >= len(expected) or pair != expected[index]),
+        'missing original command',
+    )
+    raise SystemExit(
+        f'::error::required-merge-surface NOT_PROVEN: original command missing or edited at {position}'
+    )
+PY
 mkdir -p target/receipts
 _step_index=0
 
@@ -270,5 +304,3 @@ cargo test -p xtask --test workflow_draft_snapshot_supersession --locked -- --no
 # required merge surface command 38: Activation inventory suite (required merge surface)
 _step_index=$((_step_index + 1))
 cargo test -p xtask --test activation --test activation_check --locked -- --nocapture
-
-_step_index=38
