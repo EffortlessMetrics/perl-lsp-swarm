@@ -238,7 +238,10 @@ fn required_wiring_is_present(workflow: &str) -> bool {
     let Ok(job) = check_all_targets_job(workflow) else {
         return false;
     };
-    job.contains(REQUIRED_STEP) && !job.contains("continue-on-error: true")
+    (job.contains(REQUIRED_STEP)
+        || job.contains("Required merge surface (38 commands)")
+            && job.contains("run: bash scripts/ci/required-merge-surface.sh"))
+        && !job.contains("continue-on-error: true")
 }
 
 /// `.github/dependabot.yml` is not in ci-scope's `CI_CONFIG_PATHS`, so this
@@ -259,7 +262,7 @@ fn required_merge_surface_executes_this_contract() -> Result<()> {
         );
     }
     let commented = workflow.replace(
-        REQUIRED_STEP,
+        "        run: bash scripts/ci/required-merge-surface.sh",
         "      # cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture",
     );
     if required_wiring_is_present(&commented) {

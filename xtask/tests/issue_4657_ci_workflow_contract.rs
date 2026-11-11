@@ -91,6 +91,22 @@ fn required_step_wiring(
         return Err("required job became optional");
     }
 
+    let shared_producer = matches!(expected_step, CACHE_HARNESS_STEP | WORKFLOW_POLICY_STEP);
+    let contract_command = expected_command
+        .trim_start()
+        .strip_prefix("run: ")
+        .expect("expected command must use a run field");
+    let expected_step = if shared_producer {
+        "      - name: Required merge surface (38 commands)"
+    } else {
+        expected_step
+    };
+    let expected_command = if shared_producer {
+        "        run: bash scripts/ci/required-merge-surface.sh"
+    } else {
+        expected_command
+    };
+
     let lines = job.lines().collect::<Vec<_>>();
     let starts = lines
         .iter()
@@ -119,6 +135,17 @@ fn required_step_wiring(
         .collect::<Vec<_>>();
     if run_fields.len() != 1 || *run_fields[0] != expected_command {
         return Err("required contract run command changed");
+    }
+    if shared_producer {
+        let producer = fs::read_to_string(
+            project_root()
+                .map_err(|_| "workspace root is missing")?
+                .join("scripts/ci/required-merge-surface.sh"),
+        )
+        .map_err(|_| "shared required merge-surface producer is missing")?;
+        if !producer.contains(contract_command.trim_start()) {
+            return Err("required command is missing from the shared producer");
+        }
     }
     if step.iter().any(|line| {
         line.starts_with("        ")
@@ -254,12 +281,14 @@ fn workflow_policy_cli_wiring_is_required() -> Result<(), Box<dyn std::error::Er
         fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
     required_step_wiring(&ci, WORKFLOW_POLICY_STEP, WORKFLOW_POLICY_COMMAND)?;
 
-    let removed_step =
-        ci.replace(&format!("{WORKFLOW_POLICY_STEP}\n{WORKFLOW_POLICY_COMMAND}\n"), "");
-    let removed_filter = ci.replace(WORKFLOW_POLICY_COMMAND, "        run: echo no-proof");
+    let removed_step = ci.replace("        run: bash scripts/ci/required-merge-surface.sh", "");
+    let removed_filter = ci.replace(
+        "        run: bash scripts/ci/required-merge-surface.sh",
+        "        run: echo no-proof",
+    );
     let compile_only = ci.replace(
-        WORKFLOW_POLICY_COMMAND,
-        "        run: cargo test -p xtask --bin xtask --locked --no-run -- workflow_policy_lint",
+        "        run: bash scripts/ci/required-merge-surface.sh",
+        "        run: just check-all-targets",
     );
     let unreachable_job = ci.replace(REQUIRED_JOB_IF, "    if: false");
     let optional_job = ci.replacen(
@@ -270,16 +299,23 @@ fn workflow_policy_cli_wiring_is_required() -> Result<(), Box<dyn std::error::Er
     let mut mutants =
         vec![removed_step, removed_filter, compile_only, unreachable_job, optional_job];
     for field in ["        if: false", "        continue-on-error: true"] {
-        mutants.push(
-            ci.replace(WORKFLOW_POLICY_COMMAND, &format!("{field}\n{WORKFLOW_POLICY_COMMAND}")),
-        );
+        mutants.push(ci.replace(
+            "        run: bash scripts/ci/required-merge-surface.sh",
+            &format!("{field}\n        run: bash scripts/ci/required-merge-surface.sh"),
+        ));
     }
-    for mutant in mutants {
-        if mutant == ci {
-            return Err("workflow-policy wiring mutation did not change the workflow".into());
+    for (index, mutant) in mutants.iter().enumerate() {
+        if mutant == &ci {
+            return Err(format!(
+                "workflow-policy wiring mutation {index} did not change the workflow"
+            )
+            .into());
         }
-        if required_step_wiring(&mutant, WORKFLOW_POLICY_STEP, WORKFLOW_POLICY_COMMAND).is_ok() {
-            return Err("disabled workflow-policy execution was accepted".into());
+        if required_step_wiring(mutant, WORKFLOW_POLICY_STEP, WORKFLOW_POLICY_COMMAND).is_ok() {
+            return Err(format!(
+                "disabled workflow-policy execution was accepted in mutation {index}"
+            )
+            .into());
         }
     }
     Ok(())
@@ -300,11 +336,15 @@ fn required_cache_harness_wiring_is_independently_enforced()
     );
     let copied_if = ci.replacen(job, &mutated_job, 1);
     assert!(cache_harness_wiring(&copied_if).is_err());
-    let orphaned = ci.replace(CACHE_HARNESS_COMMAND, "        run: echo orphaned");
+    let orphaned = ci.replacen(
+        "        run: bash scripts/ci/required-merge-surface.sh",
+        "        run: echo orphaned",
+        1,
+    );
     assert!(cache_harness_wiring(&orphaned).is_err());
     let block_scalar = ci.replace(
-        CACHE_HARNESS_COMMAND,
-        "        run: |\n          cargo test -p xtask --test direct_command_guidance --locked -- --nocapture",
+        "        run: bash scripts/ci/required-merge-surface.sh",
+        "        run: |\n          bash scripts/ci/required-merge-surface.sh",
     );
     assert!(cache_harness_wiring(&block_scalar).is_err());
     for field in [
@@ -314,8 +354,11 @@ fn required_cache_harness_wiring_is_independently_enforced()
         "        \"continue-on-error\": true",
         "        \"continue-on-error\" : true",
     ] {
-        let mutant =
-            ci.replacen(CACHE_HARNESS_COMMAND, &format!("{field}\n{CACHE_HARNESS_COMMAND}"), 1);
+        let mutant = ci.replacen(
+            "        run: bash scripts/ci/required-merge-surface.sh",
+            &format!("{field}\n        run: bash scripts/ci/required-merge-surface.sh"),
+            1,
+        );
         assert!(cache_harness_wiring(&mutant).is_err());
     }
     for field in [

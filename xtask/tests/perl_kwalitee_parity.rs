@@ -343,7 +343,7 @@ fn exit_code(output: &std::process::Output) -> i32 {
     output.status.code().unwrap_or(-1)
 }
 
-fn required_parity_wiring_is_present(workflow: &str) -> bool {
+fn required_parity_wiring_is_present(workflow: &str, shared_producer: &str) -> bool {
     // The checked-in workflow is CRLF on Windows, while the contract must
     // remain portable to the LF representation used by hosted CI.
     let Some(start) = workflow.find("\n  check-all-targets:") else {
@@ -358,12 +358,15 @@ fn required_parity_wiring_is_present(workflow: &str) -> bool {
         })
         .unwrap_or(section.len());
     let job = &section[..end];
-    job.contains("name: Legacy parity library authority (required merge surface)")
-        && job.contains(
+    (job.contains("name: Legacy parity library authority (required merge surface)")
+        && job.contains("name: Legacy parity CLI authority (required merge surface)")
+        || job.contains("Required merge surface (38 commands)")
+            && job.contains("run: bash scripts/ci/required-merge-surface.sh"))
+        && shared_producer.contains(
             "cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture",
         )
-        && job.contains("name: Legacy parity CLI authority (required merge surface)")
-        && job.contains("cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture")
+        && shared_producer
+            .contains("cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture")
         && !job.contains("continue-on-error: true")
 }
 
@@ -419,25 +422,27 @@ fn required_parity_wiring_rejects_missing_or_advisory_controls() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workflow_path = root.join("../.github/workflows/ci.yml");
     let workflow = fs::read_to_string(&workflow_path).expect("read CI workflow");
+    let producer = fs::read_to_string(root.join("../scripts/ci/required-merge-surface.sh"))
+        .expect("read shared required merge-surface producer");
     assert!(
-        required_parity_wiring_is_present(&workflow),
+        required_parity_wiring_is_present(&workflow, &producer),
         "both parity suites must run in the required Compile All Targets job"
     );
 
     let missing_library =
-        workflow.replace("cargo test -p perl-release-readiness --test legacy_parity", "");
+        producer.replace("cargo test -p perl-release-readiness --test legacy_parity", "");
     assert!(
-        !required_parity_wiring_is_present(&missing_library),
+        !required_parity_wiring_is_present(&workflow, &missing_library),
         "missing library parity command must fail the wiring contract"
     );
 
     let advisory = workflow.replacen(
-        "name: Legacy parity library authority (required merge surface)",
-        "continue-on-error: true\n      - name: Legacy parity library authority (required merge surface)",
+        "run: bash scripts/ci/required-merge-surface.sh",
+        "continue-on-error: true\n        run: bash scripts/ci/required-merge-surface.sh",
         1,
     );
     assert!(
-        !required_parity_wiring_is_present(&advisory),
+        !required_parity_wiring_is_present(&advisory, &producer),
         "advisory parity wiring must fail closed"
     );
 }
