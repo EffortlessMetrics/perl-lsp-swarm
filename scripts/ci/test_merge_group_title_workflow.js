@@ -89,15 +89,16 @@ async function runQueue({
       merge_group: { base_sha: 'base', head_sha: 'group', base_ref: 'refs/heads/main' },
     },
   };
+  const infos = [];
   const core = {
     setFailed: (message) => failures.push(message),
-    info: () => {},
+    info: (message) => infos.push(message),
   };
 
   // actions/github-script invokes this exact body as an async function.
   const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript());
   await execute(core, github, context);
-  return { failures, readTitles };
+  return { failures, readTitles, infos };
 }
 
 // PR-event path: the same body, driven by a pull_request payload. Records the
@@ -230,6 +231,12 @@ test('multi-member group re-reads and validates every member', async () => {
   });
   assert.deepEqual(result.failures, []);
   assert.deepEqual(result.readTitles, [101, 102]);
+  // The success log is the audit trail of which PRs were validated; it must
+  // name the real member numbers rather than `#undefined`.
+  const passed = result.infos.find((line) => line.includes('title validation passed'));
+  assert.ok(passed, 'expected a success log line');
+  assert.match(passed, /#101, #102/);
+  assert.doesNotMatch(passed, /undefined/);
 });
 
 test('one bad current title fails a multi-member group', async () => {

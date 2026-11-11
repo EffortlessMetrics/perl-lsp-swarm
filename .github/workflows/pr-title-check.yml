@@ -221,7 +221,7 @@ jobs:
               }
               core.info(
                 `merge group title validation passed for ${members.length} PR(s): ` +
-                members.map((p) => `#${p.number}`).join(', ')
+                members.map((n) => `#${n}`).join(', ')
               );
               return;
             }
