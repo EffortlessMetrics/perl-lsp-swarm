@@ -11,8 +11,6 @@ cd "$root"
 mkdir -p target/receipts
 rm -f target/receipts/required-merge-surface.json
 
-. scripts/lib/cargo-toolchain-guard.sh && cargo_toolchain_guard
-
 if [[ -z "${RUNNER_TEMP:-}" || ! -d "${RUNNER_TEMP:-}" ]]; then
   echo '::error::required-merge-surface NOT_PROVEN: RUNNER_TEMP must name an existing artifact directory' >&2
   exit 80
@@ -27,6 +25,7 @@ for tool in bash cargo just git python3 jq; do
     exit 82
   fi
 done
+. scripts/lib/cargo-toolchain-guard.sh && cargo_toolchain_guard
 if ! git ls-files --error-unmatch -- scripts/ci/required-merge-surface.sh >/dev/null 2>&1; then
   echo '::error::required-merge-surface NOT_PROVEN: producer is not tracked at the evaluated commit' >&2
   exit 83
