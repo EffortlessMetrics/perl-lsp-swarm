@@ -45,7 +45,7 @@ def run_with_tools(script, tools, extra_env=None):
     output_dir = tempfile.TemporaryDirectory()
     tools_dir = Path(output_dir.name)
     env = os.environ.copy()
-    for tool in ['bash', 'dirname', *tools]:
+    for tool in ['bash', 'dirname', 'mkdir', 'rm', *tools]:
         shutil.copy2(shutil.which(tool), tools_dir / tool)
     env['PATH'] = str(tools_dir)
     env['RUNNER_TEMP'] = str(tools_dir)
