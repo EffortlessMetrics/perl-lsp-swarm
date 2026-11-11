@@ -150,7 +150,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
         with staged_tree() as root:
             (root / '.github/workflows/new-wrapper.yml').write_text(
                 'name: new wrapper\non:\n  issue_comment:\n    types: [created]\njobs:\n'
-                '  no-op:\n    if: false\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n')
+                '  no-op:\n    if: false\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n', encoding='utf-8')
             git(root, 'add', '.github/workflows/new-wrapper.yml')
             with self.assertRaises(AssertionError):
                 self.assert_closed(root)

@@ -819,14 +819,22 @@ jobs:
       # run 37195503421 (2026-10-04) after the trim above. The preflight
       # guard derives its floor from this bound plus a reserve; update it
       # only with a fresh measured receipt, never to make a red lane pass.
-      PR_SMOKE_FOOTPRINT_GIB: "85"
+      # EXPIRED-UNVERIFIABLE (#19067): the originating run 37195503421's
+      # artifacts are expired (artifacts API total_count=0), so the 85 GiB
+      # value cannot be re-verified from that run. It is retained
+      # conservatively (85 GiB + 5 GiB reserve = 90 GiB floor unchanged).
+      # The committed provenance record is
+      # .ci/pr-smoke-footprint-baseline.json: the Resolve step below
+      # materializes it from the workflow SHA and the preflight guard
+      # reads it via --baseline-path, so this job carries no second
+      # literal copy of the bound.
       # #15528: one stable, cache-aligned target dir. The former per-run
       # `pr-smoke-${run_id}-${run_attempt}` path (unique per run and attempt)
       # made every run a full cold build, so the 45m watchdog reliably killed
       # the tier mid-compile. `target` is exactly the tree the rust-cache step
       # below restores and saves, so the lane warms like every other ci.yml
       # job. The #11943 arms: line-tables-only debuginfo above bounds the
-      # footprint (declared below as PR_SMOKE_FOOTPRINT_GIB), and the
+      # footprint (declared in the committed baseline below), and the
       # preflight guard's floor is derived from that bound plus a reserve
       # (#17231), plus the post-run disk guards, which probe this same
       # filesystem (hosted `df` shows /mnt on /dev/root, so the old /mnt
@@ -861,11 +869,20 @@ jobs:
           fi
           guard_path="${RUNNER_TEMP}/pr-smoke-disk-guard.py"
           guard_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-disk-guard.XXXXXX")"
-          trap 'rm -f "$guard_tmp"' EXIT
+          baseline_path="${RUNNER_TEMP}/pr-smoke-footprint-baseline.json"
+          baseline_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-footprint-baseline.XXXXXX")"
+          trap 'rm -f "$guard_tmp" "$baseline_tmp"' EXIT
           git show "${PR_SMOKE_WORKFLOW_SHA}:scripts/ci/pr_smoke_disk_guard.py" > "$guard_tmp"
           test -s "$guard_tmp"
           mv "$guard_tmp" "$guard_path"
+          # #19067: materialize the committed footprint baseline from the
+          # same workflow SHA, so the preflight guard evaluates the
+          # committed record instead of a duplicated workflow literal.
+          git show "${PR_SMOKE_WORKFLOW_SHA}:.ci/pr-smoke-footprint-baseline.json" > "$baseline_tmp"
+          test -s "$baseline_tmp"
+          mv "$baseline_tmp" "$baseline_path"
           echo "PR_SMOKE_DISK_GUARD=$guard_path" >> "$GITHUB_ENV"
+          echo "PR_SMOKE_BASELINE_PATH=$baseline_path" >> "$GITHUB_ENV"
           echo "PR Smoke disk guard source: $PR_SMOKE_WORKFLOW_SHA"
 
       - name: Fetch release tags from canonical repo
@@ -944,7 +961,7 @@ jobs:
           python3 "$PR_SMOKE_DISK_GUARD" preflight \
             --workspace-path . \
             --target-dir "${CARGO_TARGET_DIR:-target}" \
-            --footprint-bytes "${PR_SMOKE_FOOTPRINT_GIB}GiB"
+            --baseline-path "$PR_SMOKE_BASELINE_PATH"
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
@@ -1177,7 +1194,7 @@ jobs:
       # pr-fast-disk-pressure.log) and of the tier's gate verdicts. At 7 days
       # that record expires before anyone can review it, which made the guard's
       # own rule -- update the footprint bound only with a fresh measured
-      # receipt (PR_SMOKE_FOOTPRINT_GIB above) -- unsatisfiable: the bound's
+      # receipt (the committed footprint baseline above) -- unsatisfiable: the bound's
       # originating run (37195503421) has no surviving artifact and no job
       # log. Retain at least as long as both the CI Gate shard receipts
       # ("Upload gate receipt") and derived telemetry ("Upload CI actuals"),
@@ -1268,6 +1285,467 @@ jobs:
   # `compatibility_baseline` count (d7d4c5143 / #16011, #17212). This job
   # reuses that same checker on merge_group (queue combined tree) and push
   # to main/master (landed tree). It is not a new required GitHub context.
+  pr-fast-unblocked:
+    name: PR Fast (unblocked revival, advisory)
+    runs-on: ubuntu-24.04
+    # Same envelope as pr-smoke: 60m inner watchdog plus setup/receipt
+    # headroom for the routed-compile tail (#17459, #15915).
+    timeout-minutes: 75
+    # Advisory like pr-smoke: a pr-fast flake must not present as hard red.
+    continue-on-error: true
+    needs: [draft-pr-check, preflight-latest-check]
+    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # #19045: sibling of pr-smoke that runs the pr_fast tier without the
+    # fatal pre-flight floor, so the tier emits verdicts again. pr-smoke
+    # keeps its fatal guard for comparison; revert is deleting this job.
+    # No change to any required context; not in merge-gate needs.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # No explicit token: the default github.token applies. An explicit
+          # secrets.GITHUB_TOKEN reference in a PR-triggered job trips the
+          # workflow security ratchet (pr_secret_reference); default
+          # credentials already cover fetch-tags here (#19229).
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          # Fetch full history so the immutable subject can validate exact event ancestry.
+          fetch-depth: 0
+          # release_history --verify-git resolves every release tag locally.
+          fetch-tags: true
+
+      # The workflow can be newer than the candidate checkout (#17835).
+      # Pair its CLI and disk policy with the exact workflow definition,
+      # without replacing candidate files or changing immutable-subject ancestry.
+
+      - name: Resolve workflow-bound PR Smoke disk guard
+        id: pr-smoke-disk-guard
+        shell: bash
+        env:
+          PR_SMOKE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR_SMOKE_WORKFLOW_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::PR Smoke requires an exact workflow commit SHA"
+            exit 1
+          fi
+          if ! git cat-file -e "${PR_SMOKE_WORKFLOW_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$PR_SMOKE_WORKFLOW_SHA"
+          fi
+          guard_path="${RUNNER_TEMP}/pr-smoke-disk-guard.py"
+          guard_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-disk-guard.XXXXXX")"
+          baseline_path="${RUNNER_TEMP}/pr-smoke-footprint-baseline.json"
+          baseline_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-footprint-baseline.XXXXXX")"
+          trap 'rm -f "$guard_tmp" "$baseline_tmp"' EXIT
+          git show "${PR_SMOKE_WORKFLOW_SHA}:scripts/ci/pr_smoke_disk_guard.py" > "$guard_tmp"
+          test -s "$guard_tmp"
+          mv "$guard_tmp" "$guard_path"
+          # #19067: materialize the committed footprint baseline from the
+          # same workflow SHA, so the preflight guard evaluates the
+          # committed record instead of a duplicated workflow literal.
+          git show "${PR_SMOKE_WORKFLOW_SHA}:.ci/pr-smoke-footprint-baseline.json" > "$baseline_tmp"
+          test -s "$baseline_tmp"
+          mv "$baseline_tmp" "$baseline_path"
+          echo "PR_SMOKE_DISK_GUARD=$guard_path" >> "$GITHUB_ENV"
+          echo "PR_SMOKE_BASELINE_PATH=$baseline_path" >> "$GITHUB_ENV"
+          echo "PR Smoke disk guard source: $PR_SMOKE_WORKFLOW_SHA"
+
+      - name: Fetch release tags from canonical repo
+        run: |
+          # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none.
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Install just
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: just
+
+      # #15528: dedicated cache family for this lane. The shared `ci-gate-`
+      # entry is seeded by the merge-gate shards at full debuginfo, whose dep
+      # artifacts never fingerprint-match this lane's line-tables-only env, and
+      # both jobs saving under one key would nondeterministically overwrite
+      # each other's newest main entry. This lane uses its own shared key
+      # (same shape, separate family): on main pushes pr-smoke fails fast at
+      # its guard yet still saves first, which would pin the shared key to a
+      # compile-free entry and starve this lane's seed (#19229 review).
+      # A stable shared key (no lockfile hash —
+      # rust-cache already folds the lockfile into its internal keying,
+      # docs/ci/cache-policy.md) lets the push-to-main run of this job seed
+      # matching line-tables-only artifacts that PR and merge-group runs
+      # restore. Save authority is unchanged: candidate events restore only.
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: pr-fast-unblocked
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      # #15528 hardening: the dedicated cache family restores the whole
+      # target/ tree of the seeding main run, including receipts. Clear them so
+      # a run killed by the watchdog can never upload a stale receipt that
+      # reads as this run's verdict (same hygiene as the shard job's "Clear
+      # restored inventory evidence").
+
+      - name: Clear restored PR-fast receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts
+          mkdir -p target/receipts/logs
+
+      # The digest step below runs under `always()`, so it must never find a
+      # receipt this run did not write. `target/` is restored from a shared
+      # rust-cache (#12085), and `xtask gates` writes `receipt.json` only after
+      # the whole plan returns -- so any failure before that point (a degraded
+      # runner caught by the guard below, a timeout, a failed warm build) would
+      # otherwise leave an unrelated SHA's receipt in place for the digest to
+      # publish as this run's failure, `first_failure` and all. Rendering the
+      # wrong test as the cause is worse than rendering nothing, which is the
+      # whole premise of the digest. Cleared here, ahead of everything that can
+      # fail, rather than inside the step that produces them.
+
+      - name: Clear cache-restored PR-fast receipt surfaces (#12085)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts/receipt.json target/receipts/logs \
+            target/receipts/pr-fast-failure-digest.md \
+            || { echo "::error::cannot clear cache-restored PR-fast receipt surfaces (#12085); refusing to run over a possibly stale receipt"; exit 1; }
+          mkdir -p target/receipts
+
+      # Revival telemetry (#19045): observe the same floor without refusing
+      # to start. The guard's ::error:: verdict is relabeled warning-only:
+      # a breach is recorded, never fatal, and the tier proceeds so pr_fast
+      # emits verdicts again. Exoneration of ENOSPC stays with the advisory
+      # Classify step below; ground-truth df/du capture is unchanged.
+      - name: Observe disk budget (telemetry only)
+        id: pr-fast-disk-telemetry
+        continue-on-error: true
+        shell: bash
+        run: |
+          python3 "$PR_SMOKE_DISK_GUARD" preflight \
+            --workspace-path . \
+            --target-dir "${CARGO_TARGET_DIR:-target}" \
+            --baseline-path "$PR_SMOKE_BASELINE_PATH" 2>&1 \
+            | sed 's/^::error::/::warning::telemetry-only: /' || true
+          echo "::warning::disk observation is telemetry-only; the tier proceeds regardless (#19045)"
+          exit 0
+
+      - name: Warm xtask
+        run: cargo build -p xtask --locked
+
+      - name: Resolve immutable CI subject
+        env:
+          SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
+          SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
+        run: |
+          "$CARGO_TARGET_DIR/debug/xtask" ci-subject \
+            --base-sha "$SUBJECT_BASE_SHA" \
+            --head-sha "$SUBJECT_HEAD_SHA" \
+            --receipt target/receipts/ci-subject.json
+
+      - name: Determine inline-completion warm-up scope
+        id: inline-completion-scope
+        shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"
+          warm_inline_completion=true
+
+          if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --subject target/receipts/ci-subject.json --format json > "$scope_json"; then
+            echo "::warning::ci-scope failed; retaining inline-completion warm-up (fail-closed)"
+          elif ! diff_class="$(jq -er '
+            if type != "object" or (.diff_class | type) != "string" or
+               (.direct_crates | type) != "array" or
+               (any(.direct_crates[]?; type != "object" or (.name | type) != "string")) or
+               (.reverse_dep_closure | type) != "array" or
+               (any(.reverse_dep_closure[]?; type != "object" or (.name | type) != "string")) or
+               (.architecture_wideners | type) != "array" or
+               (any(.architecture_wideners[]?; type != "object" or (.name | type) != "string")) or
+               (.selected_lanes | type) != "array" or
+               (any(.selected_lanes[]?; type != "object" or (.scope | type) != "array" or any(.scope[]?; type != "string")))
+            then error("invalid ci-scope JSON")
+            else .diff_class
+            end
+          ' "$scope_json")"; then
+            echo "::warning::ci-scope returned invalid JSON; retaining inline-completion warm-up (fail-closed)"
+          else
+            case "$diff_class" in
+              prose_only|docs_as_code|ci_config)
+                warm_inline_completion=false
+                ;;
+              code|mixed)
+                if ! relevant="$(jq -r '
+                  [
+                    .direct_crates[]?.name,
+                    .reverse_dep_closure[]?.name,
+                    .architecture_wideners[]?.name,
+                    .selected_lanes[]?.scope[]?
+                  ]
+                  | any(. == "perl-lsp-rs" or . == "perl-lsp-rs-core")
+                ' "$scope_json")"; then
+                  echo "::warning::ci-scope package analysis failed; retaining inline-completion warm-up (fail-closed)"
+                elif [ "$relevant" = "false" ]; then
+                  warm_inline_completion=false
+                fi
+                ;;
+              *)
+                echo "::warning::ci-scope returned unknown diff_class '$diff_class'; retaining inline-completion warm-up (fail-closed)"
+                ;;
+            esac
+          fi
+
+          echo "diff_class=${diff_class:-unknown}"
+          echo "warm_inline_completion=$warm_inline_completion"
+          echo "warm_inline_completion=$warm_inline_completion" >> "$GITHUB_OUTPUT"
+
+      # Build the two cold inline-completion test targets before the independent
+      # pr-fast gates start when ci-scope identifies a relevant package change.
+      # The gates retain their separate 150s budgets and still execute the tests;
+      # scope failure intentionally keeps this warm-up enabled.
+
+      - name: Warm inline-completion test targets
+        if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'
+        run: |
+          cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
+          cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
+
+      # #17459: the retained main run spent 21m45s compiling routed targets
+      # after earlier gates consumed most of the 60m runtime watchdog. Prepare
+      # the exact canonical scope first, with independent compile-only evidence.
+      # The 75m job envelope and all runtime assertions remain unchanged.
+
+      - name: Prepare routed integration-test targets
+        # Preserve the full tier's independent facts even if preparation fails.
+        # Its separate failed receipt remains evidence; runtime gates still own
+        # the verdict, including the required compilation row on their retry.
+        continue-on-error: true
+        # Bound preparation inside the 75m job envelope so a cold routed
+        # build cannot silently consume the runtime watchdog's hour.
+        timeout-minutes: 25
+        run: |
+          set +e
+          "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast \
+            --gate unit_routed_full_build --subject target/receipts/ci-subject.json \
+            --receipt --receipt-path target/receipts/routed-test-build/receipt.json
+          preparation_status=$?
+          # The full tier writes the same gate log again. Keep the original
+          # preparation log beside its independent receipt, including failures,
+          # and point the preparation receipt at the preserved copy.
+          if [ -f target/receipts/logs/unit_routed_full_build.log ]; then
+            mkdir -p target/receipts/routed-test-build/logs || exit 1
+            cp target/receipts/logs/unit_routed_full_build.log \
+              target/receipts/routed-test-build/logs/unit_routed_full_build.log || exit 1
+            python3 -c 'import json, pathlib; p = pathlib.Path("target/receipts/routed-test-build/receipt.json"); d = json.loads(p.read_text()); gates = d.get("gates", d if isinstance(d, list) else []); rows = gates if isinstance(gates, list) else []; [r.__setitem__("log_path", "routed-test-build/logs/unit_routed_full_build.log") for r in rows if isinstance(r, dict) and str(r.get("log_path", "")).endswith("logs/unit_routed_full_build.log")]; p.write_text(json.dumps(d, indent=2) + "\n")' || exit 1
+          fi
+          exit "$preparation_status"
+
+      - name: Run PR-fast via shared xtask gate runner
+        id: pr-smoke-gate-runner
+        env:
+          PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
+        run: |
+          set +e
+          # Gate commands reuse the shared CARGO_TARGET_DIR=target build warmed
+          # by "Warm xtask" and the cache restore above (#15528).
+          # Gate receipts intentionally stay at target/receipts for upload steps.
+          echo "PR-fast timeout policy: GitHub job 75m, outer runner watchdog 60m, per-gate timeouts recorded in target/receipts/receipt.json"
+          # Share the existing 60m watchdog: run two in-process server targets
+          # that unit_routed_full otherwise reaches after DAP.
+          # Both targets and the broader tier retain their independent failures.
+          timeout --signal=TERM --kill-after=60s 3600s bash <<'PR_FAST'
+          set -uo pipefail
+          navigation_status=0
+          if [ "$PR_SMOKE_NAVIGATION_PROOF" = 'true' ]; then
+            source_sha="$(git rev-parse --verify HEAD)"
+            source_status=$?
+            echo "NAVIGATION_PROOF source=$source_sha"
+            for target in cross_file_goto_definition_tests navigation_regression_tests; do
+              log="target/receipts/logs/navigation-${target}.log"
+              target_status=1
+              if ! printf 'NAVIGATION_PROOF source=%s target=%s\n' "$source_sha" "$target" | tee "$log"; then
+                navigation_status=1
+              fi
+              if [ "$source_status" -eq 0 ]; then
+                cargo test -p perl-lsp-rs --locked --test "$target" -- --test-threads=1 --color never 2>&1 | tee -a "$log"
+                result=("${PIPESTATUS[@]}")
+                target_status="${result[0]}"
+                if [ "${result[1]}" -ne 0 ] || ! grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' "$log"; then
+                  target_status=1
+                fi
+              else
+                echo 'NOT_PROVEN: current source identity prerequisite failed' | tee -a "$log"
+              fi
+              if ! printf 'NAVIGATION_PROOF source=%s target=%s exit=%s\n' "$source_sha" "$target" "$target_status" | tee -a "$log"; then
+                navigation_status=1
+              fi
+              if [ "$target_status" -ne 0 ]; then navigation_status=1; fi
+            done
+          fi
+          "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
+          full_status=$?
+          if [ "$full_status" -ne 0 ]; then exit "$full_status"; fi
+          exit "$navigation_status"
+          PR_FAST
+          status=$?
+          case "$status" in
+            124)
+              echo "::error::PR-fast hit the 60m runner watchdog before xtask produced a final receipt"
+              ;;
+            137|143)
+              echo "::error::PR-fast was cancelled by the runner or process group (exit $status)"
+              ;;
+          esac
+          exit "$status"
+
+      - name: Capture PR-fast disk pressure
+        if: always()
+        shell: bash
+        run: |
+          # #11943: capture setup and gate failures, including ENOSPC -> ld SIGBUS,
+          # before the runner is discarded. This is advisory evidence only.
+          set +e
+          mkdir -p target/receipts/logs
+          {
+            echo "== $(date -u '+%Y-%m-%dT%H:%M:%SZ') PR-fast disk pressure snapshot =="
+            echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}"
+            echo "GITHUB_SHA=${GITHUB_SHA:-<unset>}"
+            echo "GITHUB_RUN_ID=${GITHUB_RUN_ID:-<unset>}"
+            echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-<unset>}"
+            df -h . "${CARGO_TARGET_DIR:-target}" || true
+            timeout --signal=TERM --kill-after=5s 30s \
+              bash -c 'du -h --max-depth=1 -- "$1" 2>/dev/null | sort -rh | head -n 20' \
+              _ "${CARGO_TARGET_DIR:-target}" || true
+          } >> target/receipts/logs/pr-fast-disk-pressure.log || true
+
+      # #11943 visible arm (post-run): classify gate-log exhaustion signatures
+      # into an explicit annotation naming the filled path family. Advisory
+      # only — the original gate outcome is preserved; this step never exits
+      # non-zero.
+
+      - name: Classify PR-fast disk exhaustion
+        if: >-
+          always()
+          && steps.pr-smoke-gate-runner.outcome != 'skipped'
+        shell: bash
+        run: |
+          python3 "$PR_SMOKE_DISK_GUARD" classify \
+            --logs-dir target/receipts/logs \
+            --target-dir "${CARGO_TARGET_DIR:-target}"
+
+      # PR Smoke is the lane a contributor reads first and it published no
+      # step summary at all: a red sent the reader straight to the job log.
+      # The receipt already carries each gate's command and first failure;
+      # this renders them. Advisory, and never changes the gate outcome.
+
+      - name: Explain PR-fast failures
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # target/ is restored from a shared cache (#12085), so anything
+          # already at this path belongs to another run, not this one.
+          rm -f target/receipts/pr-fast-failure-digest.md
+          if [ ! -f target/receipts/receipt.json ]; then
+            echo "no PR-fast receipt; nothing to explain"
+            exit 0
+          fi
+          "$CARGO_TARGET_DIR/debug/xtask" gate-failure-digest \
+            --summary target/receipts/receipt.json \
+            --logs target/receipts/logs \
+            --out target/receipts/pr-fast-failure-digest.md
+          cat target/receipts/pr-fast-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
+
+      # #19067: the PR Smoke receipt is the only durable record of what the
+      # runner actually offered (the free-bytes snapshot in
+      # pr-fast-disk-pressure.log) and of the tier's gate verdicts. At 7 days
+      # that record expires before anyone can review it, which made the guard's
+      # own rule -- update the footprint bound only with a fresh measured
+      # receipt (the committed footprint baseline above) -- unsatisfiable: the bound's
+      # originating run (37195503421) has no surviving artifact and no job
+      # log. Retain at least as long as both the CI Gate shard receipts
+      # ("Upload gate receipt") and derived telemetry ("Upload CI actuals"),
+      # so the related evidence cannot drift apart in lifetime.
+
+      - name: Upload PR-fast receipt
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pr-fast-unblocked-receipt-${{ github.sha }}
+          path: |
+            target/receipts/receipt.json
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
+            target/receipts/ci-subject.json
+            target/receipts/logs/*.log
+          if-no-files-found: error
+          retention-days: 30
+
+      # When the tier never produced receipt.json, publish diagnostics under a
+      # name that does not impersonate a completed pr-fast run (#17915).
+
+      - name: Upload PR-fast missing-receipt diagnostics
+        if: always() && hashFiles('target/receipts/receipt.json') == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pr-fast-unblocked-missing-receipt-${{ github.sha }}
+          path: |
+            target/receipts/logs/*.log
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
+            target/receipts/ci-subject.json
+            target/receipts/pr-fast-failure-digest.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Summarize PR-fast gate failures
+        if: always()
+        shell: bash
+        # Renders the gate table into GITHUB_STEP_SUMMARY, mirrors it to stdout
+        # for the job-log tail, and publishes one `::error` annotation per
+        # failing gate so the check-runs API can name the gate without the
+        # artifact download (#15492). The logic lives in a script rather than
+        # inline here because four of its branches -- the `skip` exclusion, the
+        # workflow-command escaping, the `::stop-commands::` fence and the
+        # ten-annotation fold -- are only falsifiable from a test harness:
+        # scripts/ci/test_summarize_pr_fast_gates.py, run by
+        # .github/workflows/ci-gate-self-tests.yml.
+        # Existence guard (#16375): the workflow definition is loaded from
+        # `main` even when the PR checkout predates the script, so an unguarded
+        # `python3 scripts/ci/summarize_pr_fast_gates.py` exits with
+        # `No such file or directory` and turns this advisory step red. Skip
+        # with an explicit annotation instead; the missing summary is not a
+        # gate failure, and re-basing restores the full behaviour without any
+        # other change to this step.
+        run: |
+          if [ -f scripts/ci/summarize_pr_fast_gates.py ]; then
+            python3 scripts/ci/summarize_pr_fast_gates.py
+          else
+            echo "::warning title=pr-fast summary::summarize_pr_fast_gates.py is not present on this checkout; skipping PR-fast gate summary (rebase onto current main to restore it; issue #16375)."
+          fi
+
+      - name: Convert PR-fast receipt to JUnit
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
+        run: |
+          python3 scripts/ci/receipts-to-junit.py \
+            --input target/receipts/receipt.json \
+            --output target/test-results/pr-fast-junit.xml \
+            --suite-name pr-fast
+
   source-commit-api-ledger:
     name: Source-commit API ledger (combined tree)
     runs-on: ubuntu-24.04

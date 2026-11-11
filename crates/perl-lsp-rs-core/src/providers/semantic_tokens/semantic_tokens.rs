@@ -1457,6 +1457,19 @@ pub fn collect_semantic_tokens_controlled(
                     );
                     return Ok(true);
                 }
+                NodeKind::Class { name_span: Some(span), .. } => {
+                    push_line_contained_segments(
+                        text,
+                        span.start,
+                        span.end,
+                        to_pos16,
+                        kind_idx(&leg, "class"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
+                    return Ok(true);
+                }
                 NodeKind::Class { .. } => {
                     // Whole-construct anchor: see push_single_line_anchor.
                     push_line_contained_token(
@@ -4018,10 +4031,10 @@ print "ok" foreach @ys;
     fn a_multiline_construct_anchor_does_not_paint_its_body()
     -> Result<(), Box<dyn std::error::Error>> {
         // Regression guard for the geometry repair itself. The class arm
-        // anchors on the whole construct because no narrower name span is
-        // available. Segmenting that anchor would paint every body line as a
-        // "class" token, and the longer-wins rule in remove_overlapping_tokens
-        // would then discard the tokens inside the body.
+        // paints only its name span (the whole-construct anchor remains only
+        // for a missing name span). Painting the body as "class" would let
+        // the longer-wins rule in remove_overlapping_tokens discard the
+        // tokens inside the body.
         let source = "class Foo {\n    field $x;\n    method go { return 1; }\n}\n";
         let anchor_kind = *legend().map.get("class").ok_or("class missing from legend")?;
         let painted = {
@@ -4052,6 +4065,45 @@ print "ok" foreach @ys;
             painted.iter().any(|(line, _, _, _)| *line == 1),
             format_args!("tokens inside the body must survive: {painted:?}"),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn single_line_class_paints_name_only_and_preserves_body_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "class Foo { method go { return 1; } }";
+        let tokens = absolute_tokens(source)?;
+        let class_type = *legend().map.get("class").ok_or("class missing from legend")?;
+        let method_type = *legend().map.get("method").ok_or("method missing from legend")?;
+        let number_type = *legend().map.get("number").ok_or("number missing from legend")?;
+
+        let class_tokens: Vec<(u32, u32, u32, u32, u32)> =
+            tokens.iter().copied().filter(|token| token.3 == class_type).collect();
+        assert_eq!(class_tokens, vec![(0, 6, 3, class_type, 1)], "tokens: {tokens:?}");
+        assert_eq!(painted_tokens(source, "class")?, vec!["Foo"]);
+        require_geometry(
+            tokens.iter().all(|token| token.2 < 10),
+            format_args!("no token may span the class construct: {tokens:?}"),
+        )?;
+        require_geometry(
+            tokens.iter().any(|token| *token == (0, 19, 2, method_type, 3)),
+            format_args!("method name `go` must survive as a method token: {tokens:?}"),
+        )?;
+        require_geometry(
+            tokens.iter().any(|token| *token == (0, 31, 1, number_type, 0)),
+            format_args!("`1` must survive as a number token: {tokens:?}"),
+        )?;
+        require_geometry(
+            painted_tokens(source, "keyword")?.iter().any(|token| token == "return"),
+            format_args!("`return` must survive as a keyword token: {tokens:?}"),
+        )?;
+        for pair in tokens.windows(2) {
+            let (prev, next) = (pair[0], pair[1]);
+            require_geometry(
+                (prev.0, prev.1) < (next.0, next.1) && prev.1.saturating_add(prev.2) <= next.1,
+                format_args!("tokens must be sorted and non-overlapping: {tokens:?}"),
+            )?;
+        }
         Ok(())
     }
 
