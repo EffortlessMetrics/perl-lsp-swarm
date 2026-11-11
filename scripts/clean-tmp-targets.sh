@@ -13,7 +13,8 @@
 #   APPLY=1 bash scripts/clean-tmp-targets.sh    # refused (exit 78)
 #
 # Contract:
-#   * only lists dirs matching /tmp/agent-*-target or /tmp/wt-*-target;
+#   * lists agent-*-target or wt-*-target under /tmp by default;
+#     CLEAN_TMP_TARGETS_SCAN_ROOT selects another advisory-only directory;
 #   * cross-checks basenames against live git worktree observations when Git
 #     succeeds — failed or missing Git observations refuse before listing;
 #   * never deletes; reports are not reclaim clearance.
@@ -118,10 +119,8 @@ printf '%s\n' "$worktree_names" | sort -u > "$SAFE_NAMES_FILE"
 
 # ── Find candidate dirs in /tmp ────────────────────────────────────────────────
 
-declare -a PATTERNS=(
-    "/tmp/agent-*-target"
-    "/tmp/wt-*-target"
-)
+SCAN_ROOT="${CLEAN_TMP_TARGETS_SCAN_ROOT:-/tmp}"
+declare -a PATTERNS=("$SCAN_ROOT/agent-*-target" "$SCAN_ROOT/wt-*-target")
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
@@ -134,8 +133,7 @@ live_count=0
 echo "=== clean-tmp-targets: ADVISORY (no deletion; not reclaim clearance) ==="
 echo ""
 
-for pattern in "${PATTERNS[@]}"; do
-    for candidate in $pattern; do
+for candidate in "$SCAN_ROOT"/agent-*-target "$SCAN_ROOT"/wt-*-target; do
         [[ -d "$candidate" ]] || continue
         found_any=1
 
@@ -161,7 +159,6 @@ for pattern in "${PATTERNS[@]}"; do
         candidate_count=$((candidate_count + 1))
 
         echo "  CANDIDATE  $candidate  ($dir_human; age/name only — not reclaim clearance)"
-    done
 done
 
 # ── Summary ───────────────────────────────────────────────────────────────────
