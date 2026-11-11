@@ -995,6 +995,7 @@ ci-contracts:
         scripts/ci/test_required_checks_doc_contract.py || status=1
     python3 scripts/ci/test_detect_required_check_registration.py || status=1
     python3 scripts/ci/required_checks_doc_contract.py --root . || status=1
+    python3 -m unittest scripts/ci/test_workflow_security_ratchet.py || status=1
     # `validate-baseline` (not `check`) so a stale baseline - a finding that was
     # fixed but not removed from the baseline - fails here exactly as it does in
     # the CI self-test. `check` tolerates resolved findings and would let the
