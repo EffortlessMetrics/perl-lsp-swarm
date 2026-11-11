@@ -45,8 +45,20 @@ def run_with_tools(script, tools, extra_env=None):
     output_dir = tempfile.TemporaryDirectory()
     tools_dir = Path(output_dir.name)
     env = os.environ.copy()
-    for tool in ['bash', 'dirname', 'mkdir', 'rm', *tools]:
+    for tool in ['bash', 'dirname', 'mkdir', 'rm', 'awk', 'grep', *tools]:
         shutil.copy2(shutil.which(tool), tools_dir / tool)
+    if 'cargo' in tools:
+        # This fixture checks the missing-tool refusal after the guard, not a
+        # real build. Keep the guard's version probe separate from executions.
+        fake_cargo = tools_dir / 'cargo'
+        fake_cargo.write_text(
+            '#!/usr/bin/env bash\n'
+            'if [[ "$*" == "--version" ]]; then\n'
+            '    printf "cargo 1.95.0\\n"\n'
+            '    exit 0\n'
+            'fi\n'
+            'exit 97\n', encoding='utf-8')
+        fake_cargo.chmod(0o755)
     env['PATH'] = str(tools_dir)
     env['RUNNER_TEMP'] = str(tools_dir)
     if extra_env:
@@ -140,6 +152,10 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         fake_cargo = bin_dir / 'cargo'
         fake_cargo.write_text(
             '#!/usr/bin/env bash\n'
+            'if [[ "$*" == "--version" ]]; then\n'
+            '    printf "cargo 1.95.0\\n"\n'
+            '    exit 0\n'
+            'fi\n'
             'printf "cargo %s\\n" "$*" >> "$MERGE_SURFACE_SPY"\n'
             'exit 97\n', encoding='utf-8')
         fake_cargo.chmod(0o755)

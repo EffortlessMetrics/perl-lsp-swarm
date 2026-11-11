@@ -11,6 +11,8 @@ cd "$root"
 mkdir -p target/receipts
 rm -f target/receipts/required-merge-surface.json
 
+. scripts/lib/cargo-toolchain-guard.sh && cargo_toolchain_guard
+
 if [[ -z "${RUNNER_TEMP:-}" || ! -d "${RUNNER_TEMP:-}" ]]; then
   echo '::error::required-merge-surface NOT_PROVEN: RUNNER_TEMP must name an existing artifact directory' >&2
   exit 80
