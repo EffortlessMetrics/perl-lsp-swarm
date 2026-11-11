@@ -23,7 +23,7 @@ class HostedGuidance(unittest.TestCase):
 printf '%s\\0' "$@" > "$LOG"
 [ "${FAIL_SUDO:-0}" = 0 ] || exit 43
 shift
-exec "$@"
+exec /usr/bin/env -i PATH="$PATH" FAIL_SCOPE="${FAIL_SCOPE:-0}" "$@"
 ''')
         self.write('systemd-run', '''#!/bin/bash
 [ "${FAIL_SCOPE:-0}" = 0 ] || exit 44
