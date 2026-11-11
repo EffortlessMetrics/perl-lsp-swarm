@@ -121,10 +121,10 @@ Legacy `cargo-safe` and `just agent-*` commands retain compatibility behavior; t
 not host admission for new agent work.
 
 Broad claim-level commands such as `just pr-fast`, `just ci-gate`, `just doctor`, and
-`just release-check` may perform compiled or wider proof. Use the
-[commands reference](../docs/reference/COMMANDS_REFERENCE.md) for their current role and
-run them only when the selected flow requires them and the host is admitted for the
-actual work they perform.
+`just release-check` may perform compiled or wider proof. Run them only when the
+selected route and current implementation require them and the host is admitted for the
+actual work they perform. The shared command-role inventory is still being reconciled
+under #9542; do not infer current authority from a historical name alone.
 
 Do not claim that a passing local command proves hosted CI, another platform, a
 packaged artifact, or a different command. Missing, partial, cancelled, timed-out,
