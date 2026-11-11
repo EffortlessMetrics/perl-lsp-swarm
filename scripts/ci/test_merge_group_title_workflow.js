@@ -31,7 +31,13 @@ async function loadWorkflowScript() {
   return body.join('\n');
 }
 
-async function runQueue({ commits, totalCommits, currentTitles }) {
+async function runQueue({
+  commits,
+  totalCommits,
+  currentTitles,
+  status = 'ahead',
+  pullsFor = null,
+}) {
   const failures = [];
   const readTitles = [];
   const associatedPulls = new Map(commits.map((commit, index) => [commit.sha, index + 101]));
@@ -39,10 +45,10 @@ async function runQueue({ commits, totalCommits, currentTitles }) {
     rest: {
       repos: {
         compareCommitsWithBasehead: async () => ({
-          data: { status: 'ahead', total_commits: totalCommits, commits },
+          data: { status, total_commits: totalCommits, commits },
         }),
         listPullRequestsAssociatedWithCommit: async ({ commit_sha: sha }) => ({
-          data: [{ number: associatedPulls.get(sha) }],
+          data: pullsFor ? pullsFor(sha) : [{ number: associatedPulls.get(sha) }],
         }),
       },
       pulls: {
@@ -137,4 +143,46 @@ test('a title edited after an earlier green validation fails the next run', asyn
   assert.equal(afterEdit.failures.length, 1);
   assert.match(afterEdit.failures[0], /#102: no issue reference/);
   assert.deepEqual(afterEdit.readTitles, [101, 102]);
+});
+
+test('a diverged base fails closed before membership', async () => {
+  const result = await runQueue({
+    commits: [{ sha: 'one' }],
+    totalCommits: 1,
+    status: 'diverged',
+    currentTitles: new Map([[101, title('feat: one member (#18255)')]]),
+  });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /not an ancestor/);
+  assert.deepEqual(result.readTitles, []);
+});
+
+test('a commit with no associated PR fails closed', async () => {
+  const result = await runQueue({
+    commits: [{ sha: 'one' }],
+    totalCommits: 1,
+    pullsFor: () => [],
+    currentTitles: new Map(),
+  });
+  assert.deepEqual(result.failures, [
+    'no constituent pull requests resolved for merge group head group',
+  ]);
+  assert.deepEqual(result.readTitles, []);
+});
+
+test('the exact compare cap is complete and one over is truncated', async () => {
+  const commits = Array.from({ length: 250 }, (_, index) => ({ sha: `c${index}` }));
+  const currentTitles = new Map(
+    commits.map((_, index) => [index + 101, title(`feat: member ${index} (#18255)`)]),
+  );
+
+  const complete = await runQueue({ commits, totalCommits: 250, currentTitles });
+  assert.deepEqual(complete.failures, []);
+  assert.equal(complete.readTitles.length, 250);
+
+  const truncated = await runQueue({ commits, totalCommits: 251, currentTitles });
+  assert.deepEqual(truncated.failures, [
+    'merge_group commit graph is truncated (250/251); refusing to infer membership',
+  ]);
+  assert.deepEqual(truncated.readTitles, []);
 });
