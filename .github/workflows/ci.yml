@@ -801,7 +801,8 @@ jobs:
     # headroom while staying inside the 75m GitHub job envelope (15m left for
     # setup plus always-run receipt/telemetry). unit_routed_full stays in the
     # pr-fast envelope because no required merge-gate shard executes the
-    # scope-aware --tests proof (shards run --lib only); splitting it out
+    # scope-aware --tests proof. Required shards run --lib plus named
+    # integration targets, not that scope-aware sweep; splitting it out
     # without a new required lane would drop required coverage.
     timeout-minutes: 75
     # Advisory: a pr-fast flake must not present as a hard red on an otherwise
