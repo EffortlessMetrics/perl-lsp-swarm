@@ -136,9 +136,11 @@ jobs:
                 return;
               }
 
-              // Every compared commit needs an exact-H candidate admitted to
-              // the same base: open state, matching target base and head SHA.
-              // A partial association set must never become a passing verdict.
+              // Every compared commit needs an open PR targeting the same base.
+              // The queue creates merge, squash, or rebase commits, so a group
+              // commit SHA normally differs from any PR head SHA; do not require
+              // them to match. A partial association set must never become a
+              // passing verdict.
               const seen = new Set();
               const members = [];
               for (const commit of commits) {
@@ -158,21 +160,20 @@ jobs:
                 }
                 const admitted = pulls.filter((pr) =>
                   pr.state === 'open' &&
-                  pr.base?.ref?.replace(/^refs\/heads\//, '') === groupBaseRef &&
-                  pr.head?.sha === commit.sha
+                  pr.base?.ref?.replace(/^refs\/heads\//, '') === groupBaseRef
                 );
                 if (admitted.length === 0) {
                   core.setFailed(
-                    `merge_group commit ${commit.sha} has no admitted PR matching ` +
-                    `open state, base ${groupBaseRef}, and head SHA ${commit.sha}; ` +
-                    'refusing to infer membership from an incomplete association set'
+                    `merge_group commit ${commit.sha} has no open PR targeting base ` +
+                    `${groupBaseRef}; refusing to infer membership from an incomplete ` +
+                    'association set'
                   );
                   return;
                 }
                 for (const pr of admitted) {
                   if (seen.has(pr.number)) continue;
                   seen.add(pr.number);
-                  members.push({ number: pr.number, commitSha: commit.sha });
+                  members.push(pr.number);
                 }
               }
 
@@ -190,28 +191,27 @@ jobs:
                   const { data } = await github.rest.pulls.get({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
-                    pull_number: member.number,
+                    pull_number: member,
                   });
                   current = data;
                 } catch (e) {
                   failures.push(
-                    `#${member.number}: could not re-read current title (${e.message})`
+                    `#${member}: could not re-read current title (${e.message})`
                   );
                   continue;
                 }
                 if (
                   current.state !== 'open' ||
-                  current.base?.ref?.replace(/^refs\/heads\//, '') !== groupBaseRef ||
-                  current.head?.sha !== member.commitSha
+                  current.base?.ref?.replace(/^refs\/heads\//, '') !== groupBaseRef
                 ) {
                   core.setFailed(
-                    `#${member.number} changed state, base, or head SHA while queued; refusing to validate a different admission`
+                    `#${member} changed state or base while queued; refusing to validate a different admission`
                   );
                   return;
                 }
                 const verdict = validateTitle(current);
                 if (!verdict.ok) {
-                  failures.push(`#${member.number}: ${verdict.reason}`);
+                  failures.push(`#${member}: ${verdict.reason}`);
                 }
               }
 

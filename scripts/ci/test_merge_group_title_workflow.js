@@ -165,11 +165,13 @@ test('a nonempty but incomplete association set fails before title validation', 
   assert.deepEqual(result.readTitles, []);
 });
 
-test('unrelated associations cannot reject exact-H members or replace their titles', async () => {
+test('closed or other-base associations cannot reject admitted members or replace their titles', async () => {
+  // The commit-associated PRs endpoint is authoritative for membership. A
+  // merge-queue commit SHA normally differs from the PR head SHA, so the code
+  // must not require them to match; it filters only on open state and base.
   const unrelated = [
     associatedPr(999, 'one', { state: 'closed', base: { ref: 'other' } }),
     associatedPr(999, 'one', { base: { ref: 'other' } }),
-    associatedPr(999, 'different'),
   ];
   for (const candidate of unrelated) {
     const result = await runQueue({
