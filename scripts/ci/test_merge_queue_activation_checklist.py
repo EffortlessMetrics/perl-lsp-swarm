@@ -3,10 +3,15 @@
 producer is the only `merge_group` title producer.
 
 This is a documentation guard, not a settings mutation. It asserts the
-activation checklist exists, that every precondition bullet carries exactly one
-stable marker, and that every documented precondition is present. It is a
-structural check: deleting a single bullet fails, and a file that merely
-contains the key phrases does not pass.
+activation checklist exists, that its precondition bullets sit under
+`## Preconditions`, that each carries exactly one stable marker and its
+load-bearing phrases, and that the queue is described as disabled. It is a
+structural check: deleting a bullet, moving one, or gutting its prose fails,
+and a file that merely contains the key phrases does not pass.
+
+Scope boundary: this guard reads one file. It does not query the live rulesets,
+does not verify that the prose is true, and does not enable or disable the
+queue. Those remain steward actions with their own read-back.
 """
 
 from __future__ import annotations
@@ -30,6 +35,20 @@ REQUIRED_PRECONDITIONS = (
     "shared-producer",
     "singleton-canary",
 )
+
+#: Phrases each precondition bullet must still carry, so that gutting the prose
+#: while leaving the marker behind fails. Kept deliberately small: one or two
+#: load-bearing phrases per bullet, not the whole sentence.
+PRECONDITION_TEXT = {
+    "superseded-producer": ("commit-to-PR association", "#19261"),
+    "ruleset-contexts": ("required_status_checks", "App-owned aggregate"),
+    "exact-h-receipt": ("exact-H admission receipt",),
+    "shared-producer": ("required-merge-surface commands", "NOT_PROVEN"),
+    "singleton-canary": ("exactly one pull request", "merge_group"),
+}
+
+#: The heading the precondition bullets must live under.
+PRECONDITIONS_HEADING = "Preconditions"
 
 #: The five contexts live main ruleset 16664791 actually requires, all bound to
 #: the GitHub Actions App. `Gate Enforcement Contract` is repo policy, not live.
@@ -76,7 +95,54 @@ class MergeQueueActivationChecklistTests(unittest.TestCase):
             "enabled without the activation checklist",
         )
         self.text = _read()
+        self.sections = _sections(self.text)
         self.bullets = [line for line in self.text.splitlines() if BULLET.match(line)]
+
+    def test_preconditions_heading_is_required(self) -> None:
+        """The bullets must live under one `## Preconditions` heading."""
+        self.assertEqual(
+            [line for line in self.text.splitlines() if line.strip() == "## Preconditions"],
+            ["## Preconditions"],
+            "the checklist must carry exactly one `## Preconditions` heading",
+        )
+        self.assertIn(PRECONDITIONS_HEADING, self.sections)
+
+    def test_preconditions_live_under_their_heading(self) -> None:
+        """A precondition moved into another section is not a precondition."""
+        body = self.sections[PRECONDITIONS_HEADING]
+        for name in REQUIRED_PRECONDITIONS:
+            with self.subTest(precondition=name):
+                self.assertIn(
+                    f"<!--precondition:{name}-->",
+                    body,
+                    f"precondition `{name}` must sit under `## Preconditions`",
+                )
+        outside = [
+            name
+            for heading, text in self.sections.items()
+            if heading != PRECONDITIONS_HEADING
+            for name in MARKER.findall(text)
+        ]
+        self.assertEqual(
+            outside, [], "no precondition marker may appear outside `## Preconditions`"
+        )
+
+    def test_each_bullet_keeps_its_load_bearing_phrases(self) -> None:
+        """Leaving a marker behind while gutting its prose must fail."""
+        bullets = {
+            name: line
+            for line in self.bullets
+            for name in MARKER.findall(line)
+        }
+        for name, phrases in PRECONDITION_TEXT.items():
+            with self.subTest(precondition=name):
+                self.assertIn(name, bullets, f"missing bullet for `{name}`")
+                for phrase in phrases:
+                    self.assertIn(
+                        phrase,
+                        bullets[name],
+                        f"precondition `{name}` must still state `{phrase}`",
+                    )
 
     def test_queue_identity_is_named(self) -> None:
         """The checklist must name the queue ruleset and its disabled state."""

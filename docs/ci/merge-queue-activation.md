@@ -18,7 +18,9 @@ Each precondition bullet carries a stable marker (`<!--precondition:...-->`). `s
 
 ## Guard
 
-`scripts/ci/test_merge_queue_activation_checklist.py` asserts this file exists, that every precondition bullet carries exactly one stable marker, and that every documented precondition marker is present. It does not enable or disable the queue; the settings change is a steward action. Deleting a bullet fails the guard; a file that merely contains the key phrases does not pass.
+`scripts/ci/test_merge_queue_activation_checklist.py` asserts this file exists, that the precondition bullets sit under `## Preconditions`, that each carries exactly one stable marker and its load-bearing phrases, and that the queue is described as disabled. It does not enable or disable the queue; the settings change is a steward action. Deleting a bullet, moving one out of `## Preconditions`, or gutting its prose fails the guard; a file that merely contains the key phrases does not pass.
+
+Scope boundary: the guard reads this file only. It does not query the live rulesets, does not verify that the prose below is true, and cannot detect a settings change. Those are steward actions with their own read-back.
 
 ## Reverting #19257
 
