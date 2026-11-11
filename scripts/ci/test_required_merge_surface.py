@@ -126,6 +126,7 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         env['MERGE_SURFACE_SPY'] = str(spy)
         for command in [['bash', str(SCRIPT)], [shutil.which('just'), 'prove-required-merge-surface']]:
             with self.subTest(command=command):
+                spy.write_text('', encoding='utf-8')
                 result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(spy.read_text(encoding='utf-8').count('gates_1469_pr_required_static_checks'), 1)
