@@ -923,18 +923,12 @@ jobs:
         # classifier fails closed to ripr-failure and never arms the retry.
         # The envelope itself fails closed — if sudo -n or systemd-run cannot
         # create the scope the step reds rather than running unbounded.
-        # --setenv forwards the step environment sudo strips (names filtered
-        # to what systemd accepts); --uid/--gid keep target/ runner-owned for
+        # A private in-memory snapshot restores the step environment after sudo;
+        # its values never enter sudo/systemd-run argv. --uid/--gid keep target/ runner-owned for
         # the host steps that follow. Same command and 3600s bound as before.
         shell: bash
         run: |
-          scope_env=()
-          while IFS= read -r -d '' pair; do
-            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
-          done < <(env -0)
-          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
-            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
-            bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+          bash scripts/ci/ripr-hosted-guidance.sh primary
 
       - name: Generate impacted evidence
         if: always()
@@ -1278,13 +1272,7 @@ jobs:
         # ubuntu-24.04 host with the same unbounded guidance child.
         shell: bash
         run: |
-          scope_env=()
-          while IFS= read -r -d '' pair; do
-            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
-          done < <(env -0)
-          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
-            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
-            cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+          bash scripts/ci/ripr-hosted-guidance.sh fallback
 
       - name: Generate impacted evidence
         if: always()
