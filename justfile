@@ -977,11 +977,42 @@ ci-check-no-nested-lock:
 ci-workflow-audit:
     @cargo xtask ci-audit-workflows
 
+# The checked-in contract validators that the `Gate Enforcement Contract` and
+# `Workflow Security Ratchet` CI jobs run. Run this on a committed tree: the
+# gate-enforcement contract proves the exact subject, so tracked modifications
+# are NOT_PROVEN rather than green.
+ci-contracts:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status=0
+    python3 -m unittest \
+        scripts/ci/test_validate_gate_enforcement_contract.py \
+        scripts/ci/test_gate_enforcement_app_bindings.py \
+        scripts/ci/test_reconcile_github_enforcement_snapshot.py \
+        scripts/ci/test_observe_github_enforcement.py \
+        scripts/ci/test_check_release_required_ci.py \
+        scripts/ci/test_required_checks_doc_contract.py || status=1
+    python3 scripts/ci/test_detect_required_check_registration.py || status=1
+    python3 scripts/ci/required_checks_doc_contract.py --root . || status=1
+    python3 scripts/ci/workflow_security_ratchet.py check \
+        --root . \
+        --baseline .ci/workflow-security-baseline.json \
+        --baseline-root . || status=1
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        echo "ci-contracts: tracked modifications present; commit, then rerun so the" >&2
+        echo "  gate-enforcement contract can prove the exact subject." >&2
+        status=1
+    else
+        python3 scripts/ci/validate_gate_enforcement_contract.py --root . || status=1
+    fi
+    exit "$status"
+
 # Fast merge gate (~2-5 min) - REQUIRED for all merges
 # The pre-push hook runs `just pr-fast`; this is the broader local merge gate.
 ci-gate:
     @echo "Running fast merge gate..."
     just ci-workflow-audit && \
+    just ci-contracts && \
     just ci-check-no-nested-lock && \
     just ci-format && \
     just ci-docs-check && \

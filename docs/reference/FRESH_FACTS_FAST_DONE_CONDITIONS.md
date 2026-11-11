@@ -596,7 +596,7 @@ tagged "this PR" are #3649's own contribution.
 | — | — real-async cross-provider canary (`…_real_async_worker`) | ✅ tracks #3618 (needs installed `ParseWorker`) | ✅ | — |
 | 8 | Neovim receipts (no full-parse/parent-map in didChange) | ✅ worker-shape variant tracks #3618 | ✅ `ux_neovim_ranged_typing_medium_file_receipt` (worker-shape assertions; see §8's two-tests-one-name caveat) | — |
 
-**Merge-gate note.** The five required status checks the `main` ruleset
+**Merge-gate note.** The six required status checks the `main` ruleset
 enforces (`Compile All Targets (bit-rot guard)`, `Conflict marker check`,
 `validate-title`, `Perl LSP Rust Small Result`, `ripr+ New Gap Gate` — the
 `required = true` rows of
