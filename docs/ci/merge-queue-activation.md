@@ -8,7 +8,7 @@ Queue ruleset `17372329` must stay **disabled** until every item below is true. 
 - [ ] The live main ruleset `16664791` and the queue ruleset `17372329` agree on the required contexts, including `Gate Enforcement Contract`.
 - [ ] A complete exact-H admission receipt exists for a real native G.
 - [ ] The local gate and CI invoke the same required-merge-surface commands, and a missing command or filtered step is `NOT_PROVEN`, not green.
-- [ ] The queue is enabled at `max_entries_to_build=1` for the canary, then raised only after B/G trust and group composition handle speculation.
+- [ ] The canary is a **singleton G**: exactly one pull request is queued, and the resulting `merge_group` G is read back and confirmed to contain that one PR. `max_entries_to_build=1` limits concurrent builds, not group size, so it does not by itself guarantee a singleton. Raise concurrency only after B/G trust and group composition handle speculation.
 
 ## Guard
 
