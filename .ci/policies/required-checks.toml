@@ -60,11 +60,11 @@ contract_role = "required-workflow-shape"
   tracking = "16164"
 
   # #18255: the merge-group trigger is now a real producer, not an exemption.
-  # The queue path resolves the group's constituent PRs from the live merge
-  # queue (authoritative) or the commit-associated PRs by head SHA, validates
-  # every member's title, and fails closed on absent or contradictory
-  # membership. It never checks out candidate contents and holds no PR
-  # comment/label write privilege.
+  # The queue path resolves the group's constituent PRs through the commit
+  # graph (compare to commits, then commits to their associated PRs), re-reads
+  # every member's current title, and fails closed on absent, truncated, or
+  # contradictory membership. It never checks out candidate contents and makes
+  # no PR write calls.
 
   [[check.exemption]]
   clause = "push-targets-master"

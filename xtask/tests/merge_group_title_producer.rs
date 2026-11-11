@@ -12,6 +12,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use serde_yaml_ng::Value;
 
@@ -180,4 +181,20 @@ fn policy_records_merge_group_as_a_real_producer() {
             "the merge-group-trigger exemption must be removed now that the producer exists"
         );
     }
+}
+
+#[test]
+fn queue_membership_executes_actual_workflow_behavior() {
+    let root = project_root();
+    let output = Command::new("node")
+        .arg(root.join("scripts/ci/test_merge_group_title_workflow.js"))
+        .current_dir(root)
+        .output()
+        .expect("run the merge-group title workflow behavior test");
+    assert!(
+        output.status.success(),
+        "workflow behavior failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

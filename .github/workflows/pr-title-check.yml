@@ -99,12 +99,13 @@ jobs:
               // Contradictory G/base: the base must be an ancestor of the
               // group head. A diverged or behind base is not a valid group.
               let commits;
+              let cmp;
               try {
-                const { data: cmp } = await github.rest.repos.compareCommitsWithBasehead({
+                ({ data: cmp } = await github.rest.repos.compareCommitsWithBasehead({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   basehead: `${baseSha}...${headSha}`,
-                });
+                }));
                 if (cmp.status !== 'ahead' && cmp.status !== 'identical') {
                   core.setFailed(
                     `merge_group base ${baseSha} is not an ancestor of head ${headSha} ` +
@@ -115,6 +116,11 @@ jobs:
                 commits = cmp.commits || [];
               } catch (e) {
                 core.setFailed(`could not read the merge_group commit graph: ${e.message}`);
+                return;
+              }
+
+              if (cmp.total_commits > commits.length) {
+                core.setFailed(`merge_group commit graph is truncated (${commits.length}/${cmp.total_commits}); refusing to infer membership`);
                 return;
               }
 
