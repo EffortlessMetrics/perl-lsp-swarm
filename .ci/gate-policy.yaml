@@ -363,32 +363,39 @@ gates:
     description: "Validate release-history surfaces"
     required: true
     command: just ci-release-history
-    # 480s/420000ms: #16419 appended scripts.tests.test_domain6_fragment to the
-    # `ci-release-history` recipe; its final two tests each shell out to
-    # `generate_domain6_fragment.py --check`, which re-renders the pinned
-    # f6b7b2c..10297415 range via `git log --full-history` — candidate-
-    # independent git grind that scales with history, not with the change
-    # under review. Pre-#16419 receipts ran the whole gate in 2.5s (run
-    # 36172362426 job 108194853240); after that merge every required meta
-    # shard kills the gate at the old 120s watchdog with the first traversal
-    # complete and the second in flight (first main-red run 36174358018 job
-    # 108207415263 at 120116ms; PR-family run 36186745952 job 108242179458 at
-    # 120084ms). A local Windows traversal measured 213s, bounding
-    # slow-runner checkout variance. The suite content is clean — the
-    # byte-identical re-render passes — so the envelope was the binding
-    # constraint. Sibling release_history_check (script only) still passes in
-    # ~1.4s and keeps its own bound. max_duration_ms is a declarative soft
-    # budget, not the enforced watchdog.
-    timeout_seconds: 480
+    # Candidate-independent deterministic re-rendering moved to the required
+    # release_history_domain6_rerender merge gate below. This pr_fast gate
+    # keeps the cheap checked-artifact and release-history validations.
+    timeout_seconds: 120
     retry_count: 0
     budgets:
-      max_duration_ms: 420000
+      max_duration_ms: 90000
     quarantine: false
     tags:
       - release
       - hygiene
     planning:
       role: always_on
+
+  - name: release_history_domain6_rerender
+    tier: merge_gate
+    description: "Re-render the pinned Domain-6 release-history range and reject drift"
+    required: true
+    command: python3 -m unittest scripts.tests.test_domain6_fragment.Domain6RerenderTest -v
+    # The tested evidence is candidate-independent but remains a required
+    # pre-merge admission check: both CRLF and deterministic re-render drift
+    # fail. It is deliberately outside the affected/cheap pr_fast loop.
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    tags:
+      - release
+      - hygiene
+      - expensive
+    planning:
+      role: static
 
   - name: readme_heading_check
     tier: pr_fast

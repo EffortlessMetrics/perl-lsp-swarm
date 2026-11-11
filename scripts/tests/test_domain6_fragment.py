@@ -1,8 +1,8 @@
 """Coverage and deterministic-render tests for the Domain-6 fragment (#16418).
 
-Static checks need only the checked-in artifact. The deterministic
-re-render check shells to scripts/generate_domain6_fragment.py --check and
-skips when the pinned history range is unavailable.
+Static checks need only the checked-in artifact. The two deterministic
+re-render tests live in Domain6RerenderTest so cheap checks and the separate
+deep admission gate can be selected independently of one another.
 """
 
 from __future__ import annotations
@@ -547,6 +547,10 @@ class Domain6FragmentTest(unittest.TestCase):
         raw = ARTIFACT.read_bytes()
         self.assertNotIn(b"\r", raw)
         self.assertTrue(raw.endswith(b"\n"))
+
+
+class Domain6RerenderTest(unittest.TestCase):
+    """Deep deterministic checks for a separate merge-gate admission lane."""
 
     def test_check_rejects_crlf_mutation(self) -> None:
         import tempfile
