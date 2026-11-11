@@ -120,6 +120,14 @@ proposition still needs its in-session or selected-G owner. Indirect completion 
 dispatch provenance, H publication, complete G membership, actual required checks and
 effective enforcement remain separate native acceptance obligations.
 
+The installed source also carries the canonical workflow-security baseline for
+its own control workflow. The trigger cutover removes 29 PR-only findings from
+the previous 87-finding baseline and leaves 58 existing findings; it accepts no
+new finding and changes neither the scanner nor its tests. Its control digest
+must track the actual cutover workflow. The baseline is part of the same source
+transaction and must be reverted with the workflow during rollback. The retained
+historical trigger patch does not replace this full-source rollback obligation.
+
 ## Protected obligations and independent missing joins
 
 The recorded ruleset requires these five contexts bound to GitHub Actions App

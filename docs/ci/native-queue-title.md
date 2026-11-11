@@ -46,6 +46,12 @@ enqueue, checks publication, labels, comments or merge.
    proposition before the Actions job can succeed. A changed H, title, author,
    exemption label, intake, expiry or authority generation invalidates that result.
 
+The Dependabot-author exemption matches only the exact `dependabot[bot]` login.
+A contributor whose login merely contains `dependabot` must satisfy the ordinary
+title rules. The archived prior rule is retained unchanged; regression coverage
+records this intentional tightening instead of claiming byte-for-byte parity.
+The merge-group actor still cannot exempt unrelated members.
+
 The queue, title-label and H-check connections are bounded to 100 complete entries.
 Truncation refuses; it never becomes a guessed member set. If `headCommit` exposes H
 instead of actual G, or multiple entries claim the same B/G, membership remains

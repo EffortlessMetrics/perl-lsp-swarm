@@ -74,7 +74,6 @@ class TitleValidatorSemanticsTests(unittest.TestCase):
                   "feat: #42.1", "feat: é#42", "feat: #42é", "#0000 (#00000)"]
         cases = [{"pr": pr(text)} for text in titles]
         cases += [{"pr": pr("no issue", login="dependabot[bot]")},
-                  {"pr": pr("no issue", login="dependabot-preview")},
                   {"pr": pr("no issue", labels=["skip-title-check"])},
                   {"pr": pr("real (#42)", labels=["needs-issue-link"])},
                   {"pr": pr("unknown (#42)"), "unavailable": True},
@@ -84,6 +83,19 @@ class TitleValidatorSemanticsTests(unittest.TestCase):
         for case, result in zip(cases, self.run_node(cases=cases, authoring=False)):
             with self.subTest(title=case["pr"]["title"]):
                 self.assertEqual(result["current"], result["legacy"])
+
+    def test_only_exact_dependabot_author_is_exempt_from_native_title_rules(self):
+        logins = ["dependabot", "dependabot-preview", "not-dependabot-person",
+                  "dependabot[bot]-lookalike", "dependabot[bot]"]
+        cases = [{"pr": pr("no issue", login=login)} for login in logins]
+        results = self.run_node(cases=cases, authoring=False)
+        for login, result in zip(logins, results):
+            with self.subTest(login=login):
+                # Preserve the archived rule as evidence of the bug rather than
+                # rewriting the old fixture to make parity appear unchanged.
+                self.assertFalse(result["legacy"]["failures"])
+                self.assertEqual(bool(result["current"]["failures"]),
+                                 login != "dependabot[bot]")
 
     def test_historical_actor_exemption_remains_explicit_authoring_only(self):
         cases = [{"pr": pr("no issue"), "actor": "dependabot[bot]"}]
