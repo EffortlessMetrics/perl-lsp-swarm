@@ -941,6 +941,7 @@ ci-gate-low-mem:
     @echo "   Using CARGO_BUILD_JOBS=1, RUST_TEST_THREADS=1, RUSTC_WRAPPER unset"
     @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 PROPTEST_CASES=32 \
         sh -c 'just ci-workflow-audit && \
+        just ci-contracts && \
         just ci-check-no-nested-lock && \
         just ci-format && \
         just ci-docs-check && \
@@ -994,12 +995,20 @@ ci-contracts:
         scripts/ci/test_required_checks_doc_contract.py || status=1
     python3 scripts/ci/test_detect_required_check_registration.py || status=1
     python3 scripts/ci/required_checks_doc_contract.py --root . || status=1
-    python3 scripts/ci/workflow_security_ratchet.py check \
+    # `validate-baseline` (not `check`) so a stale baseline - a finding that was
+    # fixed but not removed from the baseline - fails here exactly as it does in
+    # the CI self-test. `check` tolerates resolved findings and would let the
+    # local gate pass while the candidate self-test fails.
+    python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
         --root . \
         --baseline .ci/workflow-security-baseline.json \
         --baseline-root . || status=1
-    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-        echo "ci-contracts: tracked modifications present; commit, then rerun so the" >&2
+    # Include untracked, non-ignored files: an untracked workflow or doc can
+    # participate in validation, so a clean tracked tree is not proof that the
+    # working tree matches the committed subject. Gitignored build output does
+    # not appear here.
+    if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+        echo "ci-contracts: working-tree changes present; commit, then rerun so the" >&2
         echo "  gate-enforcement contract can prove the exact subject." >&2
         status=1
     else
