@@ -74,7 +74,8 @@ class GeneratedMetadataDispatchTests(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, run.stderr)
                 dispatches = [call for call in calls if call[:2] == ['workflow', 'run']]
                 self.assertEqual([call[2] for call in dispatches],
-                                 ['ci.yml', 'em-ci-routed-rust.yml', 'ripr.yml', *metadata])
+                                 ['ci.yml', 'em-ci-routed-rust.yml', 'ripr.yml', *metadata,
+                                  'gate-enforcement-contract.yml'])
                 self.assertEqual(dispatches[0][-4:], ['-f', 'base_sha=' + 'a' * 40,
                                                     '-f', 'head_sha=' + 'b' * 40])
 
