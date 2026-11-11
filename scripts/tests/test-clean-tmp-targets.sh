@@ -25,7 +25,33 @@ pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 FAKE_TMP="$(mktemp -d)"
-trap 'rm -rf "$FAKE_TMP"' EXIT
+trap '/bin/rm -rf "$FAKE_TMP"' EXIT
+SCAN_ROOT="$FAKE_TMP/scan dir"
+mkdir -p "$SCAN_ROOT" "$FAKE_TMP/guard"
+export CLEAN_TMP_TARGETS_SCAN_ROOT="$SCAN_ROOT" TMPDIR="$FAKE_TMP"
+export GUARD_LOG="$FAKE_TMP/blocked-removals.log"
+: > "$GUARD_LOG"
+# Only the subject's mktemp file may be removed. Test cleanup uses /bin/rm
+# directly outside the subject process.
+cat > "$FAKE_TMP/guard/rm" <<'GUARD'
+#!/usr/bin/env bash
+# The subject may remove only its own mktemp file, never a target or
+# arbitrary file. This is command interposition, not a filesystem sandbox.
+for arg in "$@"; do
+  case "$arg" in
+    -f|--) continue ;;
+    "$TMPDIR"/tmp.*)
+      name="${arg#"$TMPDIR"/}"
+      [[ "$name" != */* ]] && continue ;;
+  esac
+  printf '%s\n' "$*" >> "$GUARD_LOG"
+  echo "unexpected removal: $*" >&2
+  exit 97
+done
+exec /bin/rm "$@"
+GUARD
+chmod +x "$FAKE_TMP/guard/rm"
+export PATH="$FAKE_TMP/guard:$PATH"
 
 make_mock_git() {
     local mock_dir porcelain_output worktree_rc
@@ -56,7 +82,7 @@ TEST_PREFIX="clean-tmp-test-$$"
 
 make_live_target() {
     local wt_id="$1"
-    local full="/tmp/agent-${wt_id}-target"
+    local full="$SCAN_ROOT/agent-${wt_id}-target"
     mkdir -p "$full"
     touch -t 200001010000.00 "$full"
     echo "$full"
@@ -64,14 +90,14 @@ make_live_target() {
 
 make_orphan_target() {
     local suffix="$1"
-    local full="/tmp/agent-orphan-${TEST_PREFIX}-${suffix}-target"
+    local full="$SCAN_ROOT/agent-orphan-${TEST_PREFIX}-${suffix}-target"
     mkdir -p "$full"
     touch -t 200001010000.00 "$full"
     echo "$full"
 }
 
 remove_fake_targets() {
-    rm -rf /tmp/"${TEST_PREFIX}"-* 2>/dev/null || true
+    /bin/rm -rf "$SCAN_ROOT"/"${TEST_PREFIX}"-* 2>/dev/null || true
 }
 
 run_reaper_advisory() {
@@ -94,7 +120,7 @@ test_live_target_never_reported_as_candidate() {
 
     output="$(run_reaper_advisory "$mock_git" 2>&1)"
 
-    rm -rf "$live_dir" "$orphan_dir" "$mock_git"
+    /bin/rm -rf "$live_dir" "$orphan_dir" "$mock_git"
 
     if echo "$output" | grep "CANDIDATE" | grep -q "agent-${wt_id}-target"; then
         fail "live target incorrectly reported as CANDIDATE: $output"
@@ -116,7 +142,7 @@ test_orphan_target_is_reported() {
 
     output="$(run_reaper_advisory "$mock_git" 2>&1)"
 
-    rm -rf "$orphan_dir" "$mock_git"
+    /bin/rm -rf "$orphan_dir" "$mock_git"
 
     if echo "$output" | grep -q "CANDIDATE.*agent-orphan-${TEST_PREFIX}-report1-target"; then
         pass "age/name candidate correctly reported"
@@ -141,7 +167,7 @@ test_advisory_does_not_delete() {
     local still_exists=0
     [[ -d "$orphan_dir" ]] && still_exists=1
 
-    rm -rf "$orphan_dir" "$mock_git"
+    /bin/rm -rf "$orphan_dir" "$mock_git"
 
     if [[ "$still_exists" -eq 1 ]]; then
         pass "advisory run does NOT delete dirs"
@@ -166,7 +192,7 @@ test_mixed_dirs_only_candidates_reported() {
 
     output="$(run_reaper_advisory "$mock_git" 2>&1)"
 
-    rm -rf "$live_dir" "$orphan1" "$orphan2" "$mock_git"
+    /bin/rm -rf "$live_dir" "$orphan1" "$orphan2" "$mock_git"
 
     local ok=1
 
@@ -202,7 +228,7 @@ test_recent_dir_is_skipped() {
 
     output="$(run_reaper_advisory "$mock_git" 2>&1)"
 
-    rm -rf "$orphan_dir" "$mock_git"
+    /bin/rm -rf "$orphan_dir" "$mock_git"
 
     if echo "$output" | grep -q "RECENT.*agent-orphan-${TEST_PREFIX}-recent1-target"; then
         pass "recently-modified dir listed as RECENT (informational)"
@@ -232,7 +258,7 @@ test_prune_flag_refuses_exit_78() {
     local still_exists=0
     [[ -d "$orphan_dir" ]] && still_exists=1
 
-    rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
+    /bin/rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
 
     if [[ "$rc" -eq 78 && "$still_exists" -eq 1 ]]; then
         pass "--prune refuses with exit 78 and does not delete"
@@ -260,7 +286,7 @@ test_apply_env_refuses_exit_78() {
     local still_exists=0
     [[ -d "$orphan_dir" ]] && still_exists=1
 
-    rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
+    /bin/rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
 
     if [[ "$rc" -eq 78 && "$still_exists" -eq 1 ]]; then
         pass "APPLY=1 refuses with exit 78 and does not delete"
@@ -315,7 +341,7 @@ test_git_worktree_failure_refuses() {
     local still_exists=0
     [[ -d "$orphan_dir" ]] && still_exists=1
 
-    rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
+    /bin/rm -rf "$orphan_dir" "$mock_git" 2>/dev/null || true
 
     if [[ "$rc" -eq 75 && "$still_exists" -eq 1 ]] && echo "$output" | grep -qi 'REFUSING.*worktree'; then
         pass "git worktree observation failure refuses before listing"
@@ -324,9 +350,68 @@ test_git_worktree_failure_refuses() {
     fi
 }
 
+test_recursive_removal_guard() {
+    local canary="$FAKE_TMP/canary" rc=0
+    mkdir -p "$canary"; echo keep > "$canary/evidence"
+    rm -rf "$canary" >/dev/null 2>&1 || rc=$?
+    if [[ "$rc" -eq 97 && -f "$canary/evidence" && -s "$GUARD_LOG" ]]; then
+        pass "recursive removal guard preserves fixture"
+    else
+        fail "recursive removal guard failed: rc=$rc"
+    fi
+    : > "$GUARD_LOG"
+}
+
+test_refusal_does_not_discover() {
+    local spy="$FAKE_TMP/spy" rc output cmd
+    mkdir -p "$spy"
+    for cmd in git find du mktemp; do
+        cat > "$spy/$cmd" <<'SPY'
+#!/usr/bin/env bash
+printf '%s\n' "$(basename "$0")" >> "$DISCOVERY_LOG"
+exit 98
+SPY
+        chmod +x "$spy/$cmd"
+    done
+    export DISCOVERY_LOG="$FAKE_TMP/discovery.log"
+    local args
+    for args in "--prune --help" "--help --prune"; do
+        : > "$DISCOVERY_LOG"; rc=0
+        # Both argument lists are fixed literals, not external input.
+        output="$(PATH="$spy:$PATH" bash "$IMPL" $args 2>&1)" || rc=$?
+        if [[ "$rc" -eq 78 && ! -s "$DISCOVERY_LOG" ]]; then
+            pass "$args refuses before discovery"
+        else
+            fail "$args invoked discovery or returned $rc: $output"
+        fi
+    done
+    : > "$DISCOVERY_LOG"; rc=0
+    output="$(APPLY=1 PATH="$spy:$PATH" bash "$IMPL" --dry-run 2>&1)" || rc=$?
+    if [[ "$rc" -eq 78 && ! -s "$DISCOVERY_LOG" ]]; then
+        pass "APPLY=1 --dry-run refuses before discovery"
+    else
+        fail "APPLY=1 invoked discovery or returned $rc: $output"
+    fi
+}
+
+test_git_root_failure_refuses() {
+    local spy="$FAKE_TMP/root-fail" output rc=0
+    mkdir -p "$spy"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$spy/git"
+    chmod +x "$spy/git"
+    output="$(PATH="$spy:$PATH" bash "$IMPL" 2>&1)" || rc=$?
+    if [[ "$rc" -eq 75 ]] && [[ "$output" == *"cannot resolve git repository root"* ]] && [[ "$output" != *"CANDIDATE"* ]]; then
+        pass "git root failure refuses without listing"
+    else
+        fail "git root failure should refuse without listing: rc=$rc output=$output"
+    fi
+}
+
 test_advisory_disclaimer_present() {
     local output
-    output="$(bash "$IMPL" 2>&1)" || true
+    local mock_git
+    mock_git="$(make_mock_git "$(printf 'worktree /some/repo\nHEAD abc123\nbranch refs/heads/main\n')")"
+    output="$(PATH="$mock_git:$PATH" bash "$IMPL" 2>&1)" || true
 
     if echo "$output" | grep -q 'no ownership or reclaimability proof'; then
         pass "advisory disclaimer is present"
@@ -338,6 +423,7 @@ test_advisory_disclaimer_present() {
 echo "=== clean-tmp-targets safety test suite ==="
 echo ""
 
+test_recursive_removal_guard
 test_live_target_never_reported_as_candidate
 test_orphan_target_is_reported
 test_advisory_does_not_delete
@@ -348,7 +434,15 @@ test_apply_env_refuses_exit_78
 test_prune_before_help_still_refuses
 test_apply_with_dry_run_flag_still_refuses
 test_git_worktree_failure_refuses
+test_git_root_failure_refuses
+test_refusal_does_not_discover
 test_advisory_disclaimer_present
+
+if [[ -s "$GUARD_LOG" ]]; then
+    fail "subject attempted blocked removal: $(cat "$GUARD_LOG")"
+else
+    pass "subject attempted no blocked removal"
+fi
 
 remove_fake_targets
 
