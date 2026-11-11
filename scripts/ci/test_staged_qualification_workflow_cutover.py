@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -128,6 +129,15 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                             self.assertEqual(projected_body.count(entry), 1)
                             projected_body = projected_body.replace(entry, '')
                     self.assertEqual(original_body, projected_body, path)
+
+    def test_installed_security_baseline_matches_cutover_controls_and_findings(self):
+        result = subprocess.run([
+            sys.executable, str(ROOT / 'scripts/ci/workflow_security_ratchet.py'),
+            'validate-baseline', '--root', str(ROOT),
+            '--baseline', str(ROOT / '.ci/workflow-security-baseline.json'),
+            '--baseline-root', str(ROOT),
+        ], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_rollback_restores_every_changed_byte(self):
         with staged_tree() as root:
