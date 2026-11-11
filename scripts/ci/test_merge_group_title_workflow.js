@@ -75,6 +75,57 @@ async function runQueue({
   return { failures, readTitles };
 }
 
+// PR-event path: the same body, driven by a pull_request payload. Records the
+// mutations the placeholder branch is supposed to make so the non-blocking
+// contract (pass, comment, label) is asserted rather than assumed.
+async function runPr({ pr, existingComments = [] }) {
+  const failures = [];
+  const warnings = [];
+  const created = [];
+  const updated = [];
+  const addedLabels = [];
+  const removedLabels = [];
+  const github = {
+    rest: {
+      issues: {
+        listComments: async () => ({ data: existingComments }),
+        createComment: async ({ body }) => {
+          created.push(body);
+          return { data: { id: 1 } };
+        },
+        updateComment: async ({ comment_id: id, body }) => {
+          updated.push({ id, body });
+          return { data: { id } };
+        },
+        addLabels: async ({ labels }) => {
+          addedLabels.push(...labels);
+          return { data: [] };
+        },
+        removeLabel: async ({ name }) => {
+          removedLabels.push(name);
+          return { data: [] };
+        },
+        get: async () => ({ data: {} }),
+      },
+    },
+  };
+  const context = {
+    eventName: 'pull_request_target',
+    actor: 'author',
+    repo: { owner: 'owner', repo: 'repo' },
+    payload: { pull_request: pr },
+  };
+  const core = {
+    setFailed: (message) => failures.push(message),
+    warning: (message) => warnings.push(message),
+    info: () => {},
+  };
+
+  const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript());
+  await execute(core, github, context);
+  return { failures, warnings, created, updated, addedLabels, removedLabels };
+}
+
 const title = (text) => ({ title: text, user: { login: 'author' }, labels: [] });
 
 test('one-member group validates its complete commit graph', async () => {
@@ -168,6 +219,32 @@ test('a commit with no associated PR fails closed', async () => {
     'no constituent pull requests resolved for merge group head group',
   ]);
   assert.deepEqual(result.readTitles, []);
+});
+
+test('a PR-event placeholder title passes, comments, and labels needs-issue-link', async () => {
+  const result = await runPr({
+    pr: { number: 7, title: 'feat: pending issue (#0000)', user: { login: 'author' }, labels: [] },
+  });
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.created.length, 1);
+  assert.match(result.created[0], /placeholder issue reference/);
+  assert.match(result.created[0], /<!-- pr-title-check-bot -->/);
+  assert.deepEqual(result.addedLabels, ['needs-issue-link']);
+  assert.deepEqual(result.removedLabels, []);
+});
+
+test('a PR-event placeholder title reuses the existing bot comment', async () => {
+  const result = await runPr({
+    pr: { number: 7, title: 'feat: pending issue (#0000)', user: { login: 'author' }, labels: [] },
+    existingComments: [
+      { id: 42, user: { type: 'Bot' }, body: '<!-- pr-title-check-bot -->\nold' },
+    ],
+  });
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.created.length, 0);
+  assert.equal(result.updated.length, 1);
+  assert.equal(result.updated[0].id, 42);
+  assert.deepEqual(result.addedLabels, ['needs-issue-link']);
 });
 
 test('the exact compare cap is complete and one over is truncated', async () => {
