@@ -362,13 +362,13 @@ class RunTests(unittest.TestCase):
         findings = contract.run(ROOT, POLICY_PATH, contract.DEFAULT_DOC_ROOTS)
         self.assertEqual(findings, [], findings)
 
-    def test_real_main_policy_lists_five(self) -> None:
+    def test_source_policy_lists_six(self) -> None:
         if not POLICY_PATH.exists():
             self.skipTest(f"policy file missing at {POLICY_PATH}")
         count, _ = contract.extract_required_checks(
             POLICY_PATH.read_text(encoding="utf-8")
         )
-        self.assertEqual(count, 5)
+        self.assertEqual(count, 6)
 
     def test_missing_policy_reports_inventory_finding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -536,15 +536,16 @@ class QueueWorkflowWiringTests(unittest.TestCase):
         self.assertEqual(workflow.jobs["contract"].name, "Gate Enforcement Contract")
         self.assertFalse(workflow.jobs["contract"].continue_on_error)
 
-    def test_policy_matches_actual_advisory_producer(self):
+    def test_desired_sixth_policy_matches_actual_group_producer(self):
         policy = tomllib.loads((ROOT / POLICY).read_text(encoding="utf-8"))
         rows = [row for row in policy["checks"] if row["workflow"] == OWN_WORKFLOW]
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["events"], ["merge_group"])
-        self.assertFalse(row["required"])
-        self.assertEqual(row["policy_role"], "advisory")
-        self.assertEqual(row["enforcement"], "neither")
+        self.assertTrue(row["required"])
+        self.assertEqual(row["policy_role"], "required")
+        self.assertEqual(row["enforcement"], "github-ruleset")
+        self.assertEqual(row["ruleset_integration_id"], 15368)
         workflows = {OWN_WORKFLOW: contract.read_workflow(ROOT, OWN_WORKFLOW)}
         result, mapped = contract.validate_context(row, workflows,
                                                    contract.build_producer_index(workflows))

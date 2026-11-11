@@ -110,8 +110,9 @@ authority, receipt identity and failure propagation while rejecting restored ord
 event roots. The actual G source validator invokes `--no-development-events` with
 only the named Pages publication exception. Run the affected native contracts on the
 installed tree before activation. The installed-generation contract tests the actual
-closed catalog and all five G producers. It reconstructs the historical preimage only
-inside a disposable fixture, then applies/reverses the retained patch to verify rollback
+closed catalog and all six desired G producers. It reconstructs the historical preimage only
+inside a disposable fixture, then applies/reverses the retained patch and the additive
+`.ci/staged/17903-sixth-gate-composition.patch` to verify source rollback
 and the original failure controls. It never applies that patch to the owning checkout.
 Generated publication tests likewise compare historical dispatch with the installed
 bounded readback. PR-payload-dependent standalone bodies preserved as
@@ -130,6 +131,22 @@ historical trigger patch does not replace this full-source rollback obligation.
 
 ## Protected obligations and independent missing joins
 
+The current source composes #19258 at `861eef2875b43f05e163e3570a7bc8af8ef385e1`
+onto the staged #19259 merge `c7f2c99b4c6aa5e2778a3c1f0b3009054534b757`.
+It adds `Gate Enforcement Contract` as the desired sixth Actions-bound context,
+on `merge_group` only. Generated PR publication still dispatches no CI. The
+security ratchet remains advisory and explicitly dispatched. `just ci-contracts`
+uses the same no-development-event source profile as the actual-G contract job.
+The additive composition patch preserves the original trigger fixture unchanged;
+reverse the additive patch before the original fixture in source rehearsal.
+This is not runtime rollback or proof that GitHub installed the sixth context.
+
+The November 11, 2026 observation still showed main ruleset `16664791` with five
+Actions-bound contexts and disabled queue ruleset `17372329`. Desired source has
+six; live six-context enforcement is **NOT_PROVEN**. Install and measure the
+complete protection-facing admission/G obligation design together, without
+weakening the five existing requirements or substituting any-App checks.
+
 The recorded ruleset requires these five contexts bound to GitHub Actions App
 `15368`: `Compile All Targets (bit-rot guard)`, `Conflict marker check`,
 `validate-title`, `Perl LSP Rust Small Result`, and `ripr+ New Gap Gate`.
@@ -145,6 +162,7 @@ current merely because another executor cannot reproduce it.
 | `validate-title` | `pr-title-check.yml:validate-title` now has a read-only native G producer: complete ordered prefix, App-authenticated v2 H intake and admitted target closure, protected B execution, isolated Git composition, current per-member title rules and final readback. Its App policy remains disabled pending real publisher binding/native canary; see [native title proof](native-queue-title.md). |
 | `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result`, with actual-G skipped-route refusal. Preserve route execution and canonical receipt semantics; native producer/attempt acceptance remains unobserved. |
 | `ripr+ New Gap Gate` | `ripr.yml:ripr`, retained actual-G route and separately purposed cache seed. Native exact-subject execution and truthful no-gap/failure accounting remain to be observed. |
+| `Gate Enforcement Contract` | Desired sixth requirement: `gate-enforcement-contract.yml:contract`, actual G only and Actions-bound (`15368`). Offline source/contract proof is available; live required binding, native execution and final landing remain NOT_PROVEN. |
 
 ### Same-run integration dependencies
 

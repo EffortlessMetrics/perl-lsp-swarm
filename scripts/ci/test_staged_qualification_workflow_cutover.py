@@ -19,6 +19,8 @@ from scripts.ci import test_request_qualification as adapter_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / '.ci/staged/17903-root-triggers.patch'
+SIXTH_GATE_PATCH = ROOT / '.ci/staged/17903-sixth-gate-composition.patch'
+PATCHES = (PATCH, SIXTH_GATE_PATCH)
 POLICY = '.ci/policies/required-checks.toml'
 POST_LANDING = ('.github/workflows/docs-deploy.yml',)
 RETIRED = '.github/workflows/main-history-event.yml'
@@ -31,6 +33,7 @@ PROTECTED = {
     'validate-title': ('.github/workflows/pr-title-check.yml', 'validate-title'),
     'Perl LSP Rust Small Result': ('.github/workflows/em-ci-routed-rust.yml', 'rust-small-result'),
     'ripr+ New Gap Gate': ('.github/workflows/ripr.yml', 'ripr'),
+    'Gate Enforcement Contract': ('.github/workflows/gate-enforcement-contract.yml', 'contract'),
 }
 
 
@@ -50,7 +53,8 @@ def preimage_tree():
     """
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        changed_paths = [line[6:] for line in PATCH.read_text(encoding='utf-8').splitlines()
+        changed_paths = [line[6:] for patch in PATCHES
+                         for line in patch.read_text(encoding='utf-8').splitlines()
                          if line.startswith(('--- a/', '+++ b/'))]
         paths = {*catalog.read_workflow_catalog(ROOT), POLICY, *changed_paths}
         for name in sorted(paths):
@@ -60,8 +64,9 @@ def preimage_tree():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
         git(root, 'init', '-q', '--template=')
-        git(root, 'apply', '--reverse', '--check', str(PATCH))
-        git(root, 'apply', '--reverse', str(PATCH))
+        for patch in reversed(PATCHES):
+            git(root, 'apply', '--reverse', '--check', str(patch))
+            git(root, 'apply', '--reverse', str(patch))
         git(root, 'add', '.')
         git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
             'commit', '-qm', 'historical cutover preimage')
@@ -71,8 +76,9 @@ def preimage_tree():
 @contextmanager
 def staged_tree():
     with preimage_tree() as root:
-        git(root, 'apply', '--check', str(PATCH))
-        git(root, 'apply', str(PATCH))
+        for patch in PATCHES:
+            git(root, 'apply', '--check', str(patch))
+            git(root, 'apply', str(patch))
         yield root
 
 
@@ -141,8 +147,9 @@ class StagedTriggerCutoverTests(unittest.TestCase):
 
     def test_rollback_restores_every_changed_byte(self):
         with staged_tree() as root:
-            git(root, 'apply', '--reverse', '--check', str(PATCH))
-            git(root, 'apply', '--reverse', str(PATCH))
+            for patch in reversed(PATCHES):
+                git(root, 'apply', '--reverse', '--check', str(patch))
+                git(root, 'apply', '--reverse', str(patch))
             self.assertEqual(git(root, 'diff', '--exit-code'), '')
 
     def test_reintroduced_metadata_or_product_subscription_is_detected(self):
@@ -179,7 +186,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     retained -= {'workflow_dispatch'}
                 if path == '.github/workflows/gate-enforcement-contract.yml':
                     # Only the actual native integration subject invokes this
-                    # advisory validator; its manual root is retired (#17903).
+                    # contract validator; its manual root is retired (#17903).
                     retained -= {'workflow_dispatch'}
                 self.assertTrue(retained <= after[path].events, path)
             for path in POST_LANDING:
@@ -193,7 +200,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                              frozenset({'workflow_dispatch'}))
             self.assertNotIn(RETIRED, after)
 
-    def test_policy_changes_only_event_projection_preserves_all_five_producers(self):
+    def test_policy_projection_preserves_five_producers_and_adds_sixth_requirement(self):
         before = tomllib.loads((self.preimage / POLICY).read_text(encoding='utf-8'))
         with staged_tree() as root:
             after = tomllib.loads((root / POLICY).read_text(encoding='utf-8'))
@@ -201,7 +208,15 @@ class StagedTriggerCutoverTests(unittest.TestCase):
         self.assertEqual(before.keys(), after.keys())
         for key in before:
             if key == 'check':
-                for left, right in zip(before[key], after[key]):
+                self.assertEqual(len(before[key]) + 1, len(after[key]))
+                rows = {row['name']: row for row in after[key]}
+                gate = rows['Gate Enforcement Contract']
+                self.assertTrue(gate['required'])
+                self.assertEqual(gate['contract_role'], 'required-workflow-shape')
+                self.assertEqual({item['clause'] for item in gate['exemption']},
+                                 {'pull-request-trigger', 'push-targets-master', 'event-aware-concurrency'})
+                for left in before[key]:
+                    right = rows[left['name']]
                     if left['name'] != 'validate-title':
                         self.assertEqual(left, right)
                         continue
@@ -211,8 +226,10 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                                                                       if x['clause'] == 'pull-request-trigger'))
             elif key != 'checks':
                 self.assertEqual(before[key], after[key])
-        self.assertEqual(len(before['checks']), len(after['checks']))
-        for left, right in zip(before['checks'], after['checks']):
+        self.assertEqual(len(before['checks']) + 1, len(after['checks']))
+        after_by_name = {check['name']: check for check in after['checks']}
+        for left in before['checks']:
+            right = after_by_name[left['name']]
             expected = dict(left)
             if left.get('workflow') in workflows and 'events' in left:
                 events = [event for event in left['events'] if event not in catalog.DEVELOPMENT_EVENTS
@@ -225,8 +242,12 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 self.assertIn('Every selected shard and UX obligation', right['reason'])
             if left['name'] == 'Gate Enforcement Contract':
                 # The G-only validator's manual dispatch root is retired
-                # (#17903); every other field is projection-invariant.
-                expected['events'] = ['merge_group']
+                # (#17903); the additive source promotion remains separate
+                # from live protection installation.
+                expected.update(events=['merge_group'], required=True, policy_role='required',
+                                enforcement='github-ruleset', ruleset_integration_id=15368,
+                                reason=right['reason'])
+                self.assertIn('source promotion does not prove live ruleset installation', right['reason'])
             if left['name'] == 'validate-title':
                 expected['events'] = ['merge_group']
                 expected['reason'] = right['reason']
@@ -249,6 +270,11 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     self.assertIn('#17208', right['reason'])
                     self.assertIn('Detected breaks still fail', right['reason'])
             self.assertEqual(expected, right)
+        ratchet = after_by_name['Trusted-base workflow security ratchet']
+        self.assertEqual(ratchet['events'], ['workflow_dispatch'])
+        self.assertFalse(ratchet['required'])
+        self.assertEqual(ratchet['enforcement'], 'neither')
+        self.assertEqual({item['name'] for item in after['checks'] if item['required']}, set(PROTECTED))
         for name, producer in PROTECTED.items():
             entry = next(check for check in after['checks'] if check['name'] == name)
             self.assertEqual((entry['workflow'], entry['job']), producer)
