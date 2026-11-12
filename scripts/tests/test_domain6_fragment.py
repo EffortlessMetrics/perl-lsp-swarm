@@ -274,6 +274,8 @@ class Domain6BlobOidTest(unittest.TestCase):
             ("shape", b"not-an-ls-tree-record"),
             ("NUL-only", b"\0"),
             ("unterminated record", record[:-1]),
+            ("trailing junk", record + b"junk"),
+            ("trailing invalid utf8", record + b"\xff"),
             ("undecodable", b"100644 blob " + b"a" * 40 + b"\t\xff\0"),
         ]:
             with self.subTest(listing=label):

@@ -2932,7 +2932,7 @@ def tree_blob(commit: str, path: str) -> str | None:
     if proc.stdout == b"":
         return None  # Only zero bytes proves absence, never empty records.
     parts = proc.stdout.split(b"\0")
-    if len(parts) != 2:
+    if len(parts) != 2 or parts[1] != b"":
         raise FragmentError(f"ls-tree for {commit}:{path} was not one terminated record")
     record = parts[0]
     if not record:
