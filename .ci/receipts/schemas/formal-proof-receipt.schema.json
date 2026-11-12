@@ -1,0 +1,523 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp/.ci/receipts/schemas/formal-proof-receipt.schema.json",
+  "title": "Formal Proof Receipt",
+  "description": "Binds one bounded formal-method result to its exact claim, source, semantic closure, tools, bounds, obligations, raw artifacts, freshness, and production correspondence.",
+  "type": "object",
+  "required": [
+    "check",
+    "schema_version",
+    "claim",
+    "source",
+    "closure",
+    "toolchain",
+    "bounds",
+    "obligations",
+    "native",
+    "freshness",
+    "correspondence",
+    "artifacts",
+    "disposition"
+  ],
+  "properties": {
+    "check": {
+      "const": "formal-proof"
+    },
+    "schema_version": {
+      "const": "formal_proof.v1"
+    },
+    "claim": {
+      "type": "object",
+      "required": [
+        "id",
+        "generation",
+        "owner_issue",
+        "profile",
+        "method",
+        "binding",
+        "rollout"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^FV-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner_issue": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method": {
+          "enum": [
+            "model_checked",
+            "bounded_proved",
+            "interleaving_checked",
+            "deductively_proved"
+          ]
+        },
+        "binding": {
+          "enum": [
+            "model_only",
+            "substrate_only",
+            "live_consumer_bound"
+          ]
+        },
+        "rollout": {
+          "enum": [
+            "planned",
+            "runner_available",
+            "routed_advisory",
+            "selected_integration",
+            "required_consumption",
+            "retired"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "commit",
+        "tree",
+        "state",
+        "evaluated_content_digest"
+      ],
+      "properties": {
+        "commit": {
+          "$ref": "#/$defs/sha40"
+        },
+        "tree": {
+          "$ref": "#/$defs/sha40"
+        },
+        "state": {
+          "enum": [
+            "clean",
+            "dirty",
+            "unknown"
+          ]
+        },
+        "evaluated_content_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "closure": {
+      "type": "object",
+      "required": [
+        "algorithm",
+        "digest",
+        "members"
+      ],
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "members": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "toolchain": {
+      "type": "object",
+      "required": [
+        "provider",
+        "target",
+        "components",
+        "features",
+        "cfg"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "components": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/toolComponent"
+          }
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "cfg": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "bounds": {
+      "type": "object",
+      "required": [
+        "values",
+        "assumptions",
+        "fairness",
+        "wall_seconds",
+        "output_bytes"
+      ],
+      "properties": {
+        "values": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "integer",
+              "boolean"
+            ]
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "fairness": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "wall_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "obligations": {
+      "type": "object",
+      "required": [
+        "positive",
+        "harness_controls"
+      ],
+      "properties": {
+        "positive": {
+          "$ref": "#/$defs/expectedSet"
+        },
+        "harness_controls": {
+          "$ref": "#/$defs/expectedSet"
+        }
+      },
+      "additionalProperties": false
+    },
+    "native": {
+      "type": "object",
+      "required": [
+        "result",
+        "reason",
+        "process_settled",
+        "properties"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "pass",
+            "counterexample",
+            "not_proven",
+            "unsupported_host"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "timeout",
+                "resource_exhausted",
+                "skipped",
+                "zero_work",
+                "malformed_output",
+                "unrecognized_output",
+                "missing_control",
+                "tool_error",
+                "process_unsettled",
+                "unsupported_construct",
+                "missing_artifact",
+                "stale_input",
+                "incomplete_correspondence",
+                "unsupported_host"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "process_settled": {
+          "type": "boolean"
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "pass",
+              "counterexample",
+              "not_proven"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "freshness": {
+      "type": "object",
+      "required": [
+        "status",
+        "evaluated_source_commit",
+        "evaluated_closure_digest",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "current",
+            "stale",
+            "unknown",
+            "retired",
+            "superseded"
+          ]
+        },
+        "evaluated_source_commit": {
+          "$ref": "#/$defs/sha40"
+        },
+        "evaluated_closure_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "correspondence": {
+      "type": "object",
+      "required": [
+        "status",
+        "controls",
+        "artifact_ids",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "established",
+            "counterexample",
+            "not_proven",
+            "not_applicable"
+          ]
+        },
+        "controls": {
+          "$ref": "#/$defs/expectedSet"
+        },
+        "artifact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "required": [
+        "status",
+        "reason",
+        "superseded_by"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "active",
+            "retired",
+            "superseded"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "superseded_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^FV-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha40": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "toolComponent": {
+      "type": "object",
+      "required": [
+        "version",
+        "digest"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false
+    },
+    "expectedSet": {
+      "type": "object",
+      "required": [
+        "expected",
+        "observed",
+        "satisfied",
+        "ids"
+      ],
+      "properties": {
+        "expected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "satisfied": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "digest",
+        "path",
+        "required"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "stdout",
+            "stderr",
+            "structured_report",
+            "counterexample",
+            "process_receipt",
+            "correspondence",
+            "route",
+            "other"
+          ]
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
