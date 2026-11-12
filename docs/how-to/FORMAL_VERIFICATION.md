@@ -62,7 +62,7 @@ context, integration binding, and applicability.
 
 The inventory suite is appended as command 39 of
 [`required-merge-surface.sh`](../../scripts/ci/required-merge-surface.sh), which the
-`check-all-targets` job invokes after compilation. It requires all 21 named Linux
+`check-all-targets` job invokes after compilation. It requires all 22 named Linux
 controls, an exact passing denominator, no ignored or filtered tests, and the actual
 CLI check. All 38 original commands remain unchanged. The producer's extension test
 uses its current command count while separately preserving the frozen historical

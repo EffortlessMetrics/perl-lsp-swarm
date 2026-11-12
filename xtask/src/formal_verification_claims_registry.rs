@@ -23,9 +23,33 @@ pub const REGISTRY_JSON: &str = r##"{
         "source": {
           "path": "scripts/ci/required-merge-surface.sh",
           "marker": "cargo run -p xtask --bin formal-verification-claims --locked -- --check"
-        }
+        },
+        "inventory_controls": [
+          "registry_is_valid_at_committed_head",
+          "paths_reject_ambiguous_platform_and_pathspec_forms",
+          "bound_requires_a_positive_number_not_protocol_digits",
+          "claim_ids_have_closed_grammar",
+          "snapshot_reads_blobs_not_modified_working_files",
+          "dirty_and_untracked_inputs_refuse_commit_attribution",
+          "changed_head_refuses_mixed_identity",
+          "committed_symlink_is_not_an_evidence_source",
+          "source_markers_cannot_be_empty_or_stale",
+          "mutated_required_gate_markers_are_stale",
+          "removed_gate_with_surviving_comment_is_rejected",
+          "advisory_wrong_command_and_duplicate_gates_are_rejected",
+          "commented_or_optional_workflow_steps_are_rejected",
+          "forged_rollout_and_empty_runners_are_rejected",
+          "unknown_schema_fields_and_enum_values_fail_closed",
+          "reports_preserve_identity_limits_and_not_evaluated_result",
+          "native_proof_cannot_be_promoted_by_metadata",
+          "git_selectors_cannot_redirect_snapshot_or_fixture_mutations",
+          "containing_job_admission_cannot_be_disabled_or_replaced",
+          "required_gate_markers_bind_active_rows",
+          "removed_actual_unsafe_gate_with_retained_marker_is_rejected",
+          "inventory_surface_binds_declared_controls"
+        ]
       },
-      "bound": "The strict registry rows, validator, and consulted Git blobs at the evaluated commit; all 21 inventory controls are selected by the Linux canonical merge surface.",
+      "bound": "The strict registry rows, validator, and consulted Git blobs at the evaluated commit; all 22 inventory controls are selected by the Linux canonical merge surface.",
       "assumptions": "Source markers are structural bindings; the existing CI admission and execution contracts remain dependencies.",
       "limitations": "Inventory validation is not a native proof result. Enforced records the configured canonical route, not a successful run on the current candidate. Complete native proof closure and receipt admission remain #19297 work.",
       "counterexample": "The checker exits non-zero and names the malformed row or stale binding; canonical CI refuses zero, skipped, filtered, or missing named controls.",

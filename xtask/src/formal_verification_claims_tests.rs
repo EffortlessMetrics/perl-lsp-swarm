@@ -503,6 +503,7 @@ fn containing_job_admission_cannot_be_disabled_or_replaced() -> Result<()> {
         }),
         policy: None,
         workflow: None,
+        inventory_controls: None,
     });
     write_fixture(&fixture, ".github/workflows/ci.yml", WORKFLOW)?;
     commit(&fixture)?;
@@ -592,4 +593,39 @@ fn removed_actual_unsafe_gate_with_retained_marker_is_rejected() -> Result<()> {
     write_fixture(&fixture, &binding.path, &changed)?;
     commit(&fixture)?;
     rejects(validate_root(fixture.path(), &registry), "required gate is missing or duplicated")
+}
+
+#[test]
+fn inventory_surface_binds_declared_controls() -> Result<()> {
+    let fixture = fixture()?;
+    let mut registry = registry()?;
+    registry.claims.truncate(1);
+    registry.claims[0].target =
+        SourceRef { path: "source.rs".to_owned(), marker: "Original".to_owned() };
+    let producer = "scripts/ci/required-merge-surface.sh";
+    write_fixture(&fixture, producer, include_str!("../../scripts/ci/required-merge-surface.sh"))?;
+    write_fixture(
+        &fixture,
+        ".github/workflows/ci.yml",
+        &WORKFLOW.replace("run: cargo test", "run: bash scripts/ci/required-merge-surface.sh"),
+    )?;
+    commit(&fixture)?;
+    validate_root(fixture.path(), &registry)?;
+    let original = fs::read_to_string(fixture.path().join(producer))?;
+
+    let removed_name =
+        original.replacen("  paths_reject_ambiguous_platform_and_pathspec_forms \\\n", "", 1);
+    ensure!(removed_name != original, "named-control mutation did not apply");
+    write_fixture(&fixture, producer, &removed_name)?;
+    commit(&fixture)?;
+    rejects(
+        validate_root(fixture.path(), &registry),
+        "inventory control block differs from registry declaration",
+    )?;
+
+    let wrong_count = original.replacen("ok\\. 22 passed", "ok\\. 21 passed", 1);
+    ensure!(wrong_count != original, "denominator mutation did not apply");
+    write_fixture(&fixture, producer, &wrong_count)?;
+    commit(&fixture)?;
+    rejects(validate_root(fixture.path(), &registry), "test result: ok\\. 22 passed")
 }

@@ -84,6 +84,7 @@ struct Authority {
     source: Option<SourceRef>,
     policy: Option<SourceRef>,
     workflow: Option<SourceRef>,
+    inventory_controls: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -376,6 +377,45 @@ fn required_step(workflow: &str, job_name: &str, command: &str) -> Result<()> {
     Ok(())
 }
 
+fn required_inventory_controls(body: &str, controls: &[String]) -> Result<()> {
+    ensure!(!controls.is_empty(), "empty inventory control declaration");
+    let unique: BTreeSet<_> = controls.iter().collect();
+    ensure!(unique.len() == controls.len(), "duplicate inventory control declaration");
+    for line in [
+        "cargo test -p xtask --bin formal-verification-claims --locked -- \\".to_owned(),
+        "  --test-threads=1 --color never | tee \"$RUNNER_TEMP/formal-verification-inventory-tests.log\"".to_owned(),
+        format!(
+            "grep -Eq '^test result: ok\\. {} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \\",
+            controls.len()
+        ),
+    ] {
+        ensure!(
+            body.lines().filter(|candidate| *candidate == line).count() == 1,
+            "required inventory producer line missing or duplicated: {line}"
+        );
+    }
+    let declarations = controls
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            if index + 1 == controls.len() {
+                format!("  {name}; do")
+            } else {
+                format!("  {name} \\")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let block = format!(
+        "for test_name in \\\n{declarations}\n  grep -Fx \"test tests::$test_name ... ok\" \"$RUNNER_TEMP/formal-verification-inventory-tests.log\"\ndone"
+    );
+    ensure!(
+        body.matches(&block).count() == 1,
+        "inventory control block differs from registry declaration"
+    );
+    Ok(())
+}
+
 fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Result<()> {
     match authority.kind {
         AuthorityKind::SourceMarker => {
@@ -384,11 +424,19 @@ fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Resul
                 "unexpected gate fields"
             );
             let binding = authority.source.as_ref().context("missing authority source")?;
+            if binding.path != "scripts/ci/required-merge-surface.sh" {
+                ensure!(authority.inventory_controls.is_none(), "unexpected inventory controls");
+            }
             let body = snapshot.source(binding)?;
             let runner = claim.runner.as_deref().context("missing authority runner")?;
             match binding.path.as_str() {
                 ".github/workflows/ci.yml" => required_step(&body, "check-all-targets", runner)?,
                 "scripts/ci/required-merge-surface.sh" => {
+                    let controls = authority
+                        .inventory_controls
+                        .as_deref()
+                        .context("missing inventory control declarations")?;
+                    required_inventory_controls(&body, controls)?;
                     ensure!(
                         body.lines().any(|line| line == runner),
                         "required producer command missing"
@@ -404,7 +452,10 @@ fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Resul
             }
         }
         AuthorityKind::RequiredGate => {
-            ensure!(authority.source.is_none(), "unexpected source-only field");
+            ensure!(
+                authority.source.is_none() && authority.inventory_controls.is_none(),
+                "unexpected source-only or inventory fields"
+            );
             let policy = authority.policy.as_ref().context("missing gate policy")?;
             ensure!(
                 policy.path == ".ci/gate-policy.yaml",
