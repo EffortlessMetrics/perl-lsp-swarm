@@ -1,4 +1,4 @@
-"""Qualify complete generated dispatch with retained native Git push evidence.
+"""Qualify generated publication dispatch with retained native Git push evidence.
 
 The caller chooses --evidence and owns retention of every unique run directory,
 including successful mutation controls. This helper does not delete evidence.
@@ -40,18 +40,18 @@ selectors={k:v for k,v in os.environ.items() if k in ['GIT_DIR','GIT_COMMON_DIR'
 with (case/'calls.jsonl').open('a') as f:f.write(json.dumps(dict(label=label,argv=argv,selectors=selectors))+'\\n')
 if label=='cargo' and argv[:2]==['xtask','resolve-package-name']:print('fixture');raise SystemExit(0)
 if label=='cargo' and argv and argv[0] in ['fmt','clippy']:raise SystemExit(0)
-if os.environ.get('HOOK_PROOF_EXIT') and label=='just':raise SystemExit(int(os.environ['HOOK_PROOF_EXIT']))
+if os.environ.get('HOOK_PROOF_EXIT') and label=='cargo':raise SystemExit(int(os.environ['HOOK_PROOF_EXIT']))
 binary=os.environ.get('PERL_LSP_HOOK_LIBRARY_TEST_EXE')
 if binary:
     names=[x['test'] for x in json.loads(Path(os.environ['PERL_LSP_HOOK_LIBRARY_TEST_NAMES']).read_text())]
-    selected=names if os.environ['HOOK_PROOF_MODE']=='full' and label=='just' else ['git_ancestry::tests::complete_linear_history_is_ancestor']
+    selected=names if os.environ['HOOK_PROOF_MODE']=='publication' and label=='cargo' else ['git_ancestry::tests::complete_linear_history_is_ancestor']
     if label=='status':selected=['source_authority::verify::verify_tests::unclassified_files_in_the_tree_are_named']
     r=subprocess.run([binary,'--exact',*selected,'--nocapture','--test-threads=2'],capture_output=True)
     (case/(label+'-tests.stdout')).write_bytes(r.stdout);(case/(label+'-tests.stderr')).write_bytes(r.stderr)
     wanted=('test result: ok. '+str(len(selected))+' passed; 0 failed;').encode()
     if r.returncode!=0 or wanted not in r.stdout:raise SystemExit(1)
     bins=os.environ.get('PERL_LSP_HOOK_BIN_TEST_EXE')
-    if bins and os.environ['HOOK_PROOF_MODE']=='full' and label=='just':
+    if bins and os.environ['HOOK_PROOF_MODE']=='publication' and label=='cargo':
         bin_names=['tasks::gates::tests::'+n for n in ['plan_gates_threads_staged_tree_oid_into_non_commit_tiers','isolated_repo_helper_publishes_origin_main_and_seed_commit','is_latest_commit_compares_configured_upstream']]
         b=subprocess.run([bins,'--exact',*bin_names,'--nocapture','--test-threads=1'],capture_output=True)
         (case/'original-bin-tests.stdout').write_bytes(b.stdout);(case/'original-bin-tests.stderr').write_bytes(b.stderr)
@@ -71,8 +71,8 @@ assert not selectors,'validation inherited outer Git selectors'
         files = [p for p in common.rglob('*') if p.is_file()] + extra
         return {str(p): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_dev, p.stat().st_ino, p.stat().st_mtime_ns) for p in files}
     report = {'hook_sha256': hashlib.sha256(args.hook.read_bytes()).hexdigest(), 'preserved_binary_sha256': binary_sha,
-              'preserved_test_count': len(names), 'preserved_bin_count': 3 if bin_instrument else 0, 'qualification': 'complete generated shell dispatch with fixture gate recorders; no workspace portfolio', 'cases': []}
-    modes = ['full', 'single', 'status', 'full-removal', 'single-removal', 'status-removal', 'binding-refusal', 'gate-failure', 'docs', 'legacy-common-api']
+              'preserved_test_count': len(names), 'preserved_bin_count': 3 if bin_instrument else 0, 'qualification': 'generated publication dispatch with fake admission/Cargo; no native gate execution', 'cases': []}
+    modes = ['publication', 'single', 'status', 'selector-removal', 'binding-refusal', 'gate-failure', 'docs', 'legacy-common-api']
     for number, mode in enumerate(modes):
         case = run / mode; case.mkdir(); outer = case / 'outer'; outer.mkdir(); writer = case / 'writer'; remote = case / 'remote.git'
         command(outer, 'init', '--initial-branch=main')
@@ -90,6 +90,9 @@ assert not selectors,'validation inherited outer Git selectors'
         policy = writer / '.ci/gate-policy.yaml'; policy.parent.mkdir(); policy.write_text('gates:\n  - name: clippy_tests_kernel\n    command:\n      -p fixture\n')
         status = writer / 'scripts/update-current-status.py'; status.parent.mkdir()
         status.write_text('import runpy,sys\nsys.argv=[' + repr(str(recorder)) + ',"status"]\nrunpy.run_path(' + repr(str(recorder)) + ',run_name="__main__")\n')
+        admission = writer / 'scripts/cargo-admitted'
+        admission.write_text('#!/usr/bin/env bash\nexec cargo "$@"\n', newline='\n')
+        admission.chmod(0o755)
         tools = case / 'bin'; tools.mkdir()
         for label in ['cargo', 'just']:
             file = tools / label
@@ -103,9 +106,10 @@ assert not selectors,'validation inherited outer Git selectors'
             shell_tools = tools.as_posix()
             if os.name == 'nt': shell_tools = '/' + shell_tools[0].lower() + shell_tools[2:]
             selected = selected.replace('set -euo pipefail', 'set -euo pipefail\nPATH=' + shlex.quote(shell_tools) + ':"$PATH"\nexport PATH', 1)
-        if mode == 'full-removal': selected = selected.replace('run_validation_child run_gate 2>&1', 'run_gate 2>&1')
-        if mode == 'single-removal': selected = selected.replace('run_validation_child run_single_crate_gate 2>&1', 'run_single_crate_gate 2>&1')
-        if mode == 'status-removal': selected = selected.replace('run_validation_child python3 "$REPO_ROOT/scripts/update-current-status.py"', 'python3 "$REPO_ROOT/scripts/update-current-status.py"')
+        if mode == 'selector-removal':
+            call = 'run_validation_child bash "$REPO_ROOT/scripts/cargo-admitted"'
+            assert call in selected, 'selector control no longer targets the publication child'
+            selected = selected.replace(call, 'bash "$REPO_ROOT/scripts/cargo-admitted"', 1)
         if mode == 'binding-refusal': selected = selected.replace('VALIDATION_GIT_DIR="$(git rev-parse --absolute-git-dir)"', 'VALIDATION_GIT_DIR="deliberately-wrong"')
         hook = writer / '.githooks/pre-push'; hook.parent.mkdir(); hook.write_text(selected, encoding='utf-8', newline='\n'); hook.chmod(0o755)
         command(writer, 'config', 'core.hooksPath', '.githooks')
@@ -122,24 +126,23 @@ assert not selectors,'validation inherited outer Git selectors'
         calls = [json.loads(x) for x in (case / 'calls.jsonl').read_text().splitlines()] if (case / 'calls.jsonl').exists() else []
         validation = [x for x in calls if x['label'] != 'cargo' or x['argv'][:2] != ['xtask', 'resolve-package-name']]
         preserved = before == snapshot(common, [hook, writer / '.git', writer / 'sentinel.txt', outer / 'sentinel.txt'])
-        if mode in ['full-removal', 'single-removal']:
+        if mode == 'selector-removal':
             assert r.returncode != 0 and any(x['selectors'] for x in validation), (mode, r.stderr)
-        elif mode == 'status-removal':
-            assert any(x['label'] == 'status' and x['selectors'] for x in calls), 'status removal escaped control'
         elif mode == 'binding-refusal':
             assert r.returncode != 0 and not validation and b'worktree binding changed' in r.stderr + r.stdout
             assert preserved
         elif mode == 'gate-failure':
-            assert r.returncode != 0 and b'exit 23' in r.stdout + r.stderr and preserved
+            assert r.returncode != 0 and preserved
+            assert len(validation) == 1 and validation[0]['label'] == 'cargo', calls
         else:
             assert r.returncode == 0 and preserved, (mode, r.stderr, r.stdout)
             assert all(not x['selectors'] for x in validation), (mode, calls)
-            if mode == 'docs': assert not calls
-            elif mode == 'single':
-                assert [x['argv'][0] for x in validation] == ['fmt', 'clippy', 'test']
-                assert '--all-targets' in validation[1]['argv']
-            elif mode == 'status': assert [x['label'] for x in validation] == ['status', 'just']
-            else: assert [x['label'] for x in validation] == ['just']
+            assert len(validation) == 1 and validation[0]['label'] == 'cargo', calls
+            argv = validation[0]['argv']
+            assert argv[:7] == ['run', '--package', 'xtask', '--bin', 'xtask', '--locked', '--'], argv
+            assert argv[argv.index('--tier') + 1] == 'publication', argv
+            assert Path(argv[argv.index('--worktree-root') + 1]) == writer
+            assert argv[argv.index('--head') + 1] == command(writer, 'rev-parse', 'HEAD')
         if mode == 'legacy-common-api':
             assert len((case / 'common-lookups').read_text().splitlines()) >= 2, 'capture and recheck must use portable common-dir API'
         report['cases'].append({'mode': mode, 'push_exit': r.returncode, 'outer_preserved': preserved, 'calls': calls, 'control_detected': True})
