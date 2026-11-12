@@ -138,9 +138,7 @@ fn valid_repo_path(value: &str) -> bool {
     let path = Path::new(value);
     !path.is_absolute()
         && !value.starts_with("archive/")
-        && path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
+        && path.components().all(|component| matches!(component, Component::Normal(_)))
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<String> {
@@ -159,16 +157,9 @@ fn git_output(root: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn check_source(root: &Path, source: &SourceRef) -> Result<()> {
-    ensure!(
-        valid_repo_path(&source.path),
-        "unsafe repository path {}",
-        source.path
-    );
-    git_output(
-        root,
-        &["ls-files", "--error-unmatch", "--", &source.path],
-    )
-    .with_context(|| format!("{} is not tracked", source.path))?;
+    ensure!(valid_repo_path(&source.path), "unsafe repository path {}", source.path);
+    git_output(root, &["ls-files", "--error-unmatch", "--", &source.path])
+        .with_context(|| format!("{} is not tracked", source.path))?;
     let path = root.join(&source.path);
     let content = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     ensure!(
@@ -189,10 +180,7 @@ fn check_authority(root: &Path, authority: &Authority) -> Result<()> {
             );
             check_source(
                 root,
-                authority
-                    .source
-                    .as_ref()
-                    .context("source_marker authority has no source")?,
+                authority.source.as_ref().context("source_marker authority has no source")?,
             )
         }
         AuthorityKind::RequiredGate => {
@@ -221,15 +209,12 @@ fn check_authority(root: &Path, authority: &Authority) -> Result<()> {
 }
 
 fn source_identity(root: &Path) -> Result<SourceIdentity> {
-    for (path, compiled) in [
-        (REGISTRY_SOURCE_PATH, COMPILED_REGISTRY_SOURCE),
-        (VALIDATOR_PATH, COMPILED_VALIDATOR),
-    ] {
-        let runtime = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
-        ensure!(
-            runtime == compiled,
-            "binary was compiled from a different {path}"
-        );
+    for (path, compiled) in
+        [(REGISTRY_SOURCE_PATH, COMPILED_REGISTRY_SOURCE), (VALIDATOR_PATH, COMPILED_VALIDATOR)]
+    {
+        let runtime =
+            fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
+        ensure!(runtime == compiled, "binary was compiled from a different {path}");
     }
 
     let status = git_output(root, &["status", "--porcelain=v1", "--untracked-files=all"])?;
@@ -238,12 +223,8 @@ fn source_identity(root: &Path) -> Result<SourceIdentity> {
         "formal-verification claims require a clean working tree; dirty entries:\n{status}"
     );
 
-    let commit = git_output(root, &["rev-parse", "HEAD"])?
-        .trim()
-        .to_owned();
-    let tree = git_output(root, &["rev-parse", "HEAD^{tree}"])?
-        .trim()
-        .to_owned();
+    let commit = git_output(root, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let tree = git_output(root, &["rev-parse", "HEAD^{tree}"])?.trim().to_owned();
     ensure!(!commit.is_empty() && !tree.is_empty(), "git identity is empty");
     Ok(SourceIdentity { commit, tree })
 }
@@ -259,9 +240,7 @@ fn valid_claim_id(id: &str) -> bool {
         && suffix.bytes().all(|byte| byte.is_ascii_digit())
         && category.split('-').all(|segment| {
             !segment.is_empty()
-                && segment
-                    .bytes()
-                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+                && segment.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
         })
 }
 
@@ -320,10 +299,9 @@ fn validate(root: &Path, registry: &RegistryFile) -> Result<()> {
                 ensure!(claim.runner.is_some(), "{}: enforced claim has no runner", claim.id);
                 check_authority(
                     root,
-                    claim
-                        .authority
-                        .as_ref()
-                        .with_context(|| format!("{}: enforced claim has no authority", claim.id))?,
+                    claim.authority.as_ref().with_context(|| {
+                        format!("{}: enforced claim has no authority", claim.id)
+                    })?,
                 )
                 .with_context(|| format!("{}: stale authority", claim.id))?;
             }
@@ -441,10 +419,7 @@ mod tests {
             claims: &registry.claims,
         })?;
 
-        assert_eq!(
-            json["claims"].as_array().map(Vec::len),
-            Some(registry.claims.len())
-        );
+        assert_eq!(json["claims"].as_array().map(Vec::len), Some(registry.claims.len()));
         for claim in &registry.claims {
             assert!(rendered.contains(&claim.id), "Markdown omits {}", claim.id);
             assert!(rendered.contains(claim.status.as_str()));
@@ -473,15 +448,9 @@ mod tests {
         for claim in registry()?.claims {
             assert!(valid_claim_id(&claim.id));
         }
-        for invalid in [
-            "FV-!1",
-            "FV-A-1",
-            "FV-a-001",
-            "FV--001",
-            "FV-A B-001",
-            "FV-A-0001",
-            "XX-A-001",
-        ] {
+        for invalid in
+            ["FV-!1", "FV-A-1", "FV-a-001", "FV--001", "FV-A B-001", "FV-A-0001", "XX-A-001"]
+        {
             assert!(!valid_claim_id(invalid), "accepted malformed ID {invalid}");
         }
         Ok(())
