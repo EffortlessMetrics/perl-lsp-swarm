@@ -74,17 +74,23 @@ fn mutated_required_gate_markers_are_stale() -> Result<()> {
             .find(|claim| claim.id == "FV-UNSAFE-RATCHET-001")
             .context("unsafe ratchet claim")?;
         let authority = claim.authority.as_mut().context("unsafe ratchet authority")?;
+        {
+            let source = match field {
+                "policy" => authority.policy.as_mut(),
+                "workflow" => authority.workflow.as_mut(),
+                _ => bail!("unknown fixture field"),
+            }
+            .context("required-gate source")?;
+            let path = source.path.clone();
+            source.marker.push_str("\n    stale_marker_control: true");
+            rejects(validate(&snapshot, &registry), &format!("stale source marker: {path}"))?;
+        }
         let source = match field {
             "policy" => authority.policy.as_mut(),
             "workflow" => authority.workflow.as_mut(),
             _ => bail!("unknown fixture field"),
         }
         .context("required-gate source")?;
-        let path = source.path.clone();
-        let marker_len = source.marker.len();
-        source.marker.push_str("\n    stale_marker_control: true");
-        rejects(validate(&snapshot, &registry), &format!("stale source marker: {path}"))?;
-        source.marker.truncate(marker_len);
         source.path = "docs/how-to/FORMAL_VERIFICATION.md".to_owned();
         rejects(validate(&snapshot, &registry), &format!("required gate {field} path must be"))?;
     }
