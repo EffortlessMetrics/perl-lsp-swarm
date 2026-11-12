@@ -554,7 +554,10 @@ impl Scope {
                         // Auto-suppress unused $self in plain subs — it's the
                         // dominant Moose/Moo invocant idiom and flagging it is
                         // more noisy than useful (#5060 item 3).
-                        if name == "self" && idx == 0 {
+                        // `$class` is the same idiom for class methods and
+                        // constructors (`my ($class, %args) = @_;`), where the
+                        // invocant is routinely unused (#18765 item 7).
+                        if (name == "self" || name == "class") && idx == 0 {
                             // idx 0 = scalar sigil. Only skip if this scope's
                             // parent is a subroutine scope (not Method, which
                             // already pre-marks $self as used).

@@ -78,7 +78,10 @@ impl CriticRule for RequireUseStrictRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        if has_use_statement(ctx.source, "strict") || test2_provides_pragma(ctx.source, "strict") {
+        if has_use_statement(ctx.source, "strict")
+            || test2_provides_pragma(ctx.source, "strict")
+            || oo_framework_provides_pragma(ctx.source)
+        {
             return;
         }
 
@@ -124,6 +127,7 @@ impl CriticRule for RequireUseWarningsRule {
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
         if has_use_statement(ctx.source, "warnings")
             || test2_provides_pragma(ctx.source, "warnings")
+            || oo_framework_provides_pragma(ctx.source)
         {
             return;
         }
@@ -2517,6 +2521,107 @@ fn test2_provides_pragma(content: &str, feature: &str) -> bool {
     crate::providers::testing::test2::Test2Facts::from_source(content).provides_pragma(feature)
 }
 
+/// Modules whose `use` turns on `strict` and `warnings` for the importer
+/// (#18765). An idiomatic `use Moo;` / `use Moose;` / `use Mouse;` /
+/// `use Mojo::Base ...;` / `use Object::Pad;` / `use Mars;` module must not
+/// trip the require-use-strict/warnings rules the way an ordinary Test2
+/// test must not (`test2_provides_pragma`).  The list is exact-match so
+/// prefix-borrowing modules that do NOT import the pragmas (`MooX::…`,
+/// `MooseX::…`, `Mouse::Util::TypeConstraints`) keep firing.
+const OO_FRAMEWORKS_PROVIDING_PRAGMAS: &[&str] = &[
+    "Moo",
+    "Moo::Role",
+    "Moose",
+    "Moose::Role",
+    "Mouse",
+    "Mouse::Role",
+    "Mojo::Base",
+    "Object::Pad",
+    "Mars",
+    "Mars::Class",
+    "Mars::Role",
+];
+
+/// Whether an OO framework import in `content` provides `strict` and
+/// `warnings` implicitly (#18765).
+///
+/// Conservative in the false-negative direction:
+/// - `use Module ();` never calls `import`, so it provides no pragma;
+/// - `use Object::Pad 0.821;` (or later) opts out of the implicit pragmas,
+///   per Object::Pad's own documentation, so a versioned import at or above
+///   that threshold provides none;
+/// - `use feature 'class'` enables class syntax only, not `strict`, so it is
+///   not accepted here.
+fn oo_framework_provides_pragma(content: &str) -> bool {
+    content.lines().any(|line| {
+        let code_portion = line.split('#').next().unwrap_or_default();
+        let mut tokens = code_portion.split_whitespace();
+        if tokens.next() != Some("use") {
+            return false;
+        }
+        let Some(raw_module) = tokens.next() else {
+            return false;
+        };
+        let module = raw_module.trim_end_matches(';');
+        if !OO_FRAMEWORKS_PROVIDING_PRAGMAS.contains(&module) {
+            return false;
+        }
+        // Everything after the module name up to the statement end.
+        let after_module =
+            code_portion.split_once(raw_module).map(|(_, rest)| rest).unwrap_or_default();
+        let tail = after_module.split(';').next().unwrap_or_default().trim();
+        let (version, imports) = split_use_version(tail);
+        if is_empty_import_list(imports) {
+            return false;
+        }
+        if module == "Object::Pad" && object_pad_version_disables_pragmas(version) {
+            return false;
+        }
+        true
+    })
+}
+
+/// Split a `use Module` statement tail into its optional leading module
+/// version (`2.0`, `v1.2.3`) and the remaining import list text.
+fn split_use_version(tail: &str) -> (&str, &str) {
+    let first = tail.split_whitespace().next().unwrap_or_default();
+    let looks_like_version =
+        first.trim_start_matches('v').starts_with(|c: char| c.is_ascii_digit())
+            && !first.contains(['(', ',', '\'', '"']);
+    if looks_like_version { (first, tail[first.len()..].trim_start()) } else { ("", tail) }
+}
+
+/// Whether an import list is the explicit empty list (`()`, `( )`), which
+/// tells Perl not to call `import` at all.
+fn is_empty_import_list(imports: &str) -> bool {
+    imports
+        .strip_prefix('(')
+        .and_then(|rest| rest.split_once(')'))
+        .is_some_and(|(inside, after)| inside.trim().is_empty() && after.trim().is_empty())
+}
+
+/// Whether the token after `use Object::Pad` is a module version of 0.821
+/// or later, which disables Object::Pad's implicit `strict`/`warnings`.
+fn object_pad_version_disables_pragmas(token: &str) -> bool {
+    let version = token.trim_end_matches(';').trim_start_matches('v');
+    if !version.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    let mut parts = version.split('.');
+    let major: u64 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    if major > 0 {
+        return true;
+    }
+    let frac = parts.next().unwrap_or_default();
+    let frac_digits: String = frac.chars().take_while(char::is_ascii_digit).collect();
+    if frac_digits.is_empty() {
+        return false;
+    }
+    // Compare as a decimal fraction: "821" vs "8" / "82" / "8215".
+    let padded = format!("{frac_digits:0<6}");
+    padded.get(..6).and_then(|p| p.parse::<u64>().ok()).is_some_and(|n| n >= 821_000)
+}
+
 fn has_use_statement_line(line: &str, feature: &str) -> bool {
     let code_portion = line.split('#').next().unwrap_or_default();
     let mut tokens = code_portion.split_whitespace();
@@ -3378,6 +3483,121 @@ mod tests {
         assert!(registry.check(&exact_ctx).is_empty());
         assert_eq!(registry.check(&similar_ctx).len(), 1);
         assert_eq!(registry.check(&commented_ctx).len(), 1);
+    }
+
+    /// #18765: OO frameworks import strict and warnings implicitly, so an
+    /// idiomatic `use Moo;` module must not trip either require-use rule.
+    #[test]
+    fn require_use_rules_accept_oo_framework_imports() {
+        let ast = empty_program_node();
+        let config = CriticConfig::default();
+        let strict_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
+        let warnings_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseWarningsRule)]);
+
+        let sources = [
+            "package Store::Product;\nuse Moo;\nmy $x = 1;\n",
+            "package Store::Discount;\nuse Moo::Role;\nmy $x = 1;\n",
+            "package Store::Report;\nuse Moose;\nwith 'Store::Role';\nmy $x = 1;\n",
+            "package Store::Mouse;\nuse Mouse;\nmy $x = 1;\n",
+            "package Store::Mojo;\nuse Mojo::Base 'Store::Base';\nmy $x = 1;\n",
+            "package Store::Pad;\nuse Object::Pad;\nmy $x = 1;\n",
+            "package Store::Mars;\nuse Mars::Class;\nmy $x = 1;\n",
+        ];
+
+        for source in sources {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert!(
+                strict_registry.check(&ctx).is_empty(),
+                "require_use_strict must accept an OO framework module: {source:?}"
+            );
+            assert!(
+                warnings_registry.check(&ctx).is_empty(),
+                "require_use_warnings must accept an OO framework module: {source:?}"
+            );
+        }
+    }
+
+    /// Controls for the OO framework acceptance: prefix-borrowing modules
+    /// (`MooX::…`, `MooseX::…`, `Moom`) do NOT import the pragmas, and a
+    /// commented-out `use Moo;` still fires.
+    #[test]
+    fn require_use_rules_still_fire_without_a_real_oo_framework_import() {
+        let ast = empty_program_node();
+        let config = CriticConfig::default();
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
+
+        let sources = [
+            "use MooX::Options;\nmy $x = 1;\n",
+            "use MooseX::Types::Path::Class;\nmy $x = 1;\n",
+            "use Moom;\nmy $x = 1;\n",
+            "# use Moo;\nmy $x = 1;\n",
+            "package P;\nuse Mouse::Util::TypeConstraints;\nmy $x = 1;\n",
+        ];
+
+        for source in sources {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert_eq!(
+                registry.check(&ctx).len(),
+                1,
+                "require_use_strict must still fire without a real OO framework \
+                 import: {source:?}"
+            );
+        }
+    }
+
+    /// `use feature 'class'` enables class syntax, not the `strict` pragma,
+    /// so neither require-use rule may treat it as satisfying (#18765
+    /// review). A versioned `use Object::Pad 0.821;` (or later) opts out of
+    /// Object::Pad's implicit pragmas, and `use Moo ();` never calls
+    /// `import`: all three must keep both rules firing.
+    #[test]
+    fn require_use_rules_fire_for_imports_that_do_not_provide_pragmas() {
+        let ast = empty_program_node();
+        let config = CriticConfig::default();
+        let strict_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
+        let warnings_registry =
+            NativeCriticRegistry::with_rules(vec![Box::new(RequireUseWarningsRule)]);
+
+        let sources = [
+            "use feature 'class';\nclass Point { field $x; }\n",
+            "package P;\nuse Object::Pad 0.821;\nclass P;\n",
+            "package P;\nuse Object::Pad 0.825;\nclass P;\n",
+            "package P;\nuse Object::Pad 1.0;\nclass P;\n",
+            "package P;\nuse Moo ();\nmy $x = 1;\n",
+            "package P;\nuse Moose();\nmy $x = 1;\n",
+            "package P;\nuse Moo 2.0 ();\nmy $x = 1;\n",
+            "package P;\nuse Moo ( );\nmy $x = 1;\n",
+        ];
+        for source in sources {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert_eq!(
+                strict_registry.check(&ctx).len(),
+                1,
+                "require_use_strict must fire: {source:?}"
+            );
+            assert_eq!(
+                warnings_registry.check(&ctx).len(),
+                1,
+                "require_use_warnings must fire: {source:?}"
+            );
+        }
+
+        // Pre-0.821 versioned Object::Pad imports and import lists still
+        // provide the pragmas.
+        let accepted = [
+            "package P;\nuse Object::Pad 0.820;\nclass P;\n",
+            "package P;\nuse Object::Pad 0.66;\nclass P;\n",
+            "package P;\nuse Moo 2.004;\nmy $x = 1;\n",
+            "package P;\nuse Mojo::Base -base;\nmy $x = 1;\n",
+        ];
+        for source in accepted {
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert!(strict_registry.check(&ctx).is_empty(), "strict accepted: {source:?}");
+            assert!(warnings_registry.check(&ctx).is_empty(), "warnings accepted: {source:?}");
+        }
     }
 
     #[test]
