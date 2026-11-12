@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / '.ci/staged/17903-root-triggers.patch'
 SIXTH_GATE_PATCH = ROOT / '.ci/staged/17903-sixth-gate-composition.patch'
 TRIGGER_POLICY_PATCH = ROOT / '.ci/staged/17903-trigger-policy-composition.patch'
-PATCHES = (PATCH, SIXTH_GATE_PATCH, TRIGGER_POLICY_PATCH)
+HOSTED_RUST_PATCH = ROOT / '.ci/staged/19261-hosted-rust-composition.patch'
+TITLE_AUTHORITY_PATCH = ROOT / '.ci/staged/19261-title-authority.patch'
+PATCHES = (PATCH, SIXTH_GATE_PATCH, TRIGGER_POLICY_PATCH, HOSTED_RUST_PATCH, TITLE_AUTHORITY_PATCH)
 POLICY = '.ci/policies/required-checks.toml'
 POST_LANDING = ('.github/workflows/docs-deploy.yml',)
 RETIRED = '.github/workflows/main-history-event.yml'
@@ -116,6 +118,9 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     del right['integration-required']
                     right['check-all-targets']['name'] = left['check-all-targets']['name']
                     self.assertEqual(left, right)
+                elif path == '.github/workflows/em-ci-routed-rust.yml':
+                    self.assertEqual(set(changed.jobs), {'rust-small-github', 'rust-small-result'})
+                    self.assertEqual(changed.events, frozenset({'merge_group'}))
                 else:
                     self.assertEqual(original.jobs.keys(), changed.jobs.keys(), path)
                 if path not in (*GENERATORS, '.github/workflows/ci.yml', '.github/workflows/em-ci-routed-rust.yml',
@@ -185,7 +190,8 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     # The unqualified manual PR-association fallback is retired.
                     # Its exact original rule body remains a golden fixture.
                     retained -= {'workflow_dispatch'}
-                if path == '.github/workflows/gate-enforcement-contract.yml':
+                if path in ('.github/workflows/gate-enforcement-contract.yml',
+                            '.github/workflows/em-ci-routed-rust.yml'):
                     # Only the actual native integration subject invokes this
                     # contract validator; its manual root is retired (#17903).
                     retained -= {'workflow_dispatch'}
@@ -230,6 +236,14 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                             self.assertEqual(item['tracking'], '17903')
                             self.assertIn('actual', item['reason'])
                         expected['exemption'] = added + left.get('exemption', [])
+                        if left['name'] == 'Perl LSP Rust Small Result':
+                            native = [item for item in right['exemption']
+                                      if item['clause'] == 'event-aware-concurrency']
+                            self.assertEqual(len(native), 1)
+                            self.assertEqual(native[0]['status'], 'accepted')
+                            self.assertEqual(native[0]['tracking'], '19261')
+                            self.assertIn('actual G only', native[0]['reason'])
+                            expected['exemption'] += native
                         self.assertEqual(expected, right)
                         continue
                     if left['name'] != 'validate-title':
@@ -264,6 +278,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                                 reason=right['reason'])
                 self.assertIn('source promotion does not prove live ruleset installation', right['reason'])
             if left['name'] == 'Perl LSP Rust Small Result':
+                expected['events'] = ['merge_group']
                 expected['reason'] = right['reason']
                 self.assertIn('push baseline is retired by #17903', right['reason'])
                 self.assertIn('actual G', right['reason'])
@@ -340,12 +355,17 @@ class StagedTriggerCutoverTests(unittest.TestCase):
         self.assertEqual(set(workflow['permissions'].values()), {'read'})
         job = workflow['jobs']['validate-title']
         steps = job['steps']
-        self.assertEqual(steps[0]['with']['ref'], '${{ github.event.merge_group.base_sha }}')
-        self.assertEqual(steps[0]['with']['persist-credentials'], 'false')
-        self.assertEqual(steps[0]['with']['path'], 'trusted-title-source')
-        self.assertIn('native_queue_title.py observe', steps[1]['run'])
-        self.assertIn('pr_title_validator.js', steps[2]['with']['script'])
-        self.assertIn('validateMembers({github, core, context}, receipt)', steps[2]['with']['script'])
+        self.assertEqual(steps[0]['id'], 'evaluator')
+        self.assertIn('github.rest.repos.getBranch', steps[0]['with']['script'])
+        self.assertIn('github.rest.git.getRef', steps[0]['with']['script'])
+        self.assertEqual(steps[1]['with']['ref'], '${{ steps.evaluator.outputs.sha }}')
+        self.assertEqual(steps[1]['with']['persist-credentials'], 'false')
+        self.assertEqual(steps[1]['with']['path'], 'trusted-title-source')
+        self.assertIn('native_queue_title.py observe', steps[2]['run'])
+        self.assertEqual(steps[2]['env']['TRUSTED_TITLE_SHA'], '${{ steps.evaluator.outputs.sha }}')
+        self.assertEqual(steps[-1]['env']['TRUSTED_TITLE_SHA'], '${{ steps.evaluator.outputs.sha }}')
+        self.assertIn('pr_title_validator.js', steps[3]['with']['script'])
+        self.assertIn('validateMembers({github, core, context}, receipt)', steps[3]['with']['script'])
         self.assertIn('native_queue_title.py recheck', steps[-1]['run'])
         self.assertTrue(all('if' not in step and 'continue-on-error' not in step for step in steps))
         source = (ROOT / 'scripts/ci/pr_title_validator.js').read_text(encoding='utf-8')
@@ -411,18 +431,20 @@ class StagedIntegrationFanInTests(unittest.TestCase):
         mutant = self.step['run'].replace(' || [ "$INTEGRATION_RESULT" != success ]', '')
         self.assertEqual(self.run_finalizer('success', verdict.status, source=mutant).returncode, 0)
 
-    def test_actual_g_rust_small_router_skip_stays_unproven(self):
+    def test_actual_g_rust_small_missing_proof_stays_unproven(self):
         workflow = yaml.load((self.root / '.github/workflows/em-ci-routed-rust.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
         step = next(step for step in workflow['jobs']['rust-small-result']['steps']
                     if step.get('name') == 'Evaluate routed result')
         self.assertEqual(step['env']['EVENT_NAME'], '${{ github.event_name }}')
         with tempfile.TemporaryDirectory() as directory:
             env = {'PATH': os.environ['PATH'], 'ROUTE_RESULT': 'skipped', 'EVENT_NAME': 'merge_group',
-                   'GITHUB_STEP_SUMMARY': str(Path(directory) / 'summary')}
+                   'GITHUB_STEP_SUMMARY': str(Path(directory) / 'summary'),
+                   'GITHUB_RESULT': 'skipped', 'MERGE_GROUP_SHA': 'a' * 40,
+                   'GITHUB_SHA': 'a' * 40, 'PROOF_SHA': 'a' * 40}
             observed = subprocess.run(['bash', '--noprofile', '--norc', '-c', step['run']],
                                       env=env, capture_output=True, text=True, timeout=5)
             self.assertNotEqual(observed.returncode, 0)
-            self.assertIn('Merge-group Rust Small route skipped: NOT_PROVEN', observed.stdout)
+            self.assertIn('Rust Small hosted proof did not succeed: skipped. NOT_PROVEN', observed.stdout)
             # Unmodified production preimage really passed this same missing proof.
             with preimage_tree() as historical:
                 before = yaml.load((historical / '.github/workflows/em-ci-routed-rust.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)

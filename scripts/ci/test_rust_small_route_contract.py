@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Route-shape contract for the canonical Rust Small proof lane (#8407).
 
-Every required Rust Small route (`rust-small-cx53`, `rust-small-cx43`,
-`rust-small-github`, `rust-small-fallback`) must invoke exactly one shared,
+The hosted native-G Rust Small producer must invoke exactly one shared,
 candidate/toolchain/profile-honest command:
 
     cargo run -p xtask --profile agent --locked -- rust-small-proof
@@ -29,6 +28,7 @@ claim owns its placement and this file does not move it.
 
 from __future__ import annotations
 
+import copy
 import shlex
 import unittest
 from pathlib import Path
@@ -39,10 +39,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml"
 
 RUST_SMALL_LANE_JOBS = (
-    "rust-small-cx53",
-    "rust-small-cx43",
     "rust-small-github",
-    "rust-small-fallback",
 )
 RUST_SMALL_RESULT_JOB = "rust-small-result"
 CANONICAL_INVOCATION = "cargo run -p xtask --profile agent --locked -- rust-small-proof"
@@ -87,44 +84,16 @@ ALLOWED_CARGO_COMMANDS = (
 
 # This is deliberately a bounded shell-shape contract, not a Bash interpreter.
 # Parse the actual YAML run step, then admit only the existing straight-line
-# hosted body or Docker launch/payload. Counting text anywhere in the job cannot
+# hosted body. Counting text anywhere in the job cannot
 # distinguish a command from quoted data, a skipped branch or a shell function.
 # New shell structure needs an explicit contract update and negative controls.
 # Other run steps conservatively exclude literal proof-command references, even
 # quoted data. This is not universal execution-count proof: dynamically built
 # commands, action internals and environment-supplied code are outside the check.
-DOCKER_RESOURCES = {
-    "rust-small-cx53": ("14", "28g"),
-    "rust-small-cx43": ("8", "16g"),
-}
-DOCKER_ARGUMENT_LINES = r'''
--e CARGO_HOME=/cargo-home \
--e SCCACHE_DIR=/sccache \
--e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
--e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
--e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
--e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
--e CARGO_TARGET_DIR=/target \
--e RUST_TEST_THREADS="$RUST_TEST_THREADS" \
--e RUST_BACKTRACE=1 \
--e CARGO_TERM_COLOR=always \
--e TMPDIR=/tmp/jobtmp \
--e GITHUB_JOB="$GITHUB_JOB" \
--v "$GITHUB_WORKSPACE:/workspace" \
--v "$CARGO_HOME:/cargo-home" \
--v "$SCCACHE_DIR:/sccache" \
--v "$CARGO_TARGET_DIR:/target" \
--v "$TMPDIR:/tmp/jobtmp" \
--w /workspace \
-em-ci-rust:1.95 \
-bash -eu -o pipefail -c '
-'''.strip().splitlines()
 
 
 def validate_proof_step(job_id: str, job: dict) -> None:
     name = "Run Rust small lane"
-    if job_id == "rust-small-fallback":
-        name += " (fallback)"
     steps = job.get("steps", [])
     if not isinstance(steps, list):
         raise AssertionError(f"{job_id} (field: proof-step) steps must be a YAML sequence")
@@ -158,24 +127,7 @@ def validate_proof_step(job_id: str, job: dict) -> None:
         raise AssertionError(f"{job_id} (field: proof-step) run must be a shell script")
 
     expected = ["set -euo pipefail"]
-    if job_id in DOCKER_RESOURCES:
-        cpus, memory = DOCKER_RESOURCES[job_id]
-        docker_launcher = [
-            "docker run --rm \\",
-            f'--cpus="{cpus}" \\',
-            f'--memory="{memory}" \\',
-            *DOCKER_ARGUMENT_LINES,
-        ]
-        expected += [
-            *docker_launcher,
-            "rustc --version",
-            "cargo --version",
-            "sccache --version || true",
-            "git config --global --add safe.directory /workspace",
-        ]
     expected += ["cargo fmt --all -- --check", CANONICAL_INVOCATION]
-    if job_id in DOCKER_RESOURCES:
-        expected += ["sccache --show-stats || true", "'"]
     # Use Bash's physical newline and indentation characters, not splitlines()
     # or strip()'s additional Unicode/control-character separators.
     physical_lines = step["run"].split("\n")
@@ -187,27 +139,6 @@ def validate_proof_step(job_id: str, job: dict) -> None:
             "proof body; quoting, control flow, indirection or extra commands "
             "cannot stand in for one canonical invocation"
         )
-    if job_id in DOCKER_RESOURCES:
-        launch_start = lines.index("docker run --rm \\")
-        opening = lines.index("bash -eu -o pipefail -c '")
-        # A blank/comment line ends the continued Docker command, and spaces
-        # after a backslash escape whitespace instead of the physical newline.
-        # Preserve both adjacency and literal line endings in this region.
-        launcher_lines = [line.lstrip(" \t") for line in physical_lines[launch_start:opening + 1]]
-        if launcher_lines != docker_launcher:
-            raise AssertionError(
-                f"{job_id} (field: proof-shell-body) must retain contiguous Docker "
-                "continuations with no whitespace after a continuation backslash"
-            )
-        closing = lines.index("'", opening + 1)
-        # A # inside this outer single-quoted argument is data until the inner
-        # Bash runs. An apostrophe in a purported comment would close the outer
-        # quote first, so it cannot be discarded as an inert shell comment.
-        if any("'" in line for line in lines[opening + 1:closing]):
-            raise AssertionError(
-                f"{job_id} (field: proof-shell-body) must retain the literal "
-                "single-quoted Docker proof payload"
-            )
 
 
 def load_workflow_text() -> str:
@@ -328,6 +259,8 @@ def validate_rust_small_route_contract(workflow_text: str) -> None:
             raise AssertionError(f"{job_id} (field: proof-step) must be a YAML job mapping")
         validate_proof_step(job_id, job)
 
+    validate_hosted_queue_contract(workflow_text)
+
     result_job = jobs.get(RUST_SMALL_RESULT_JOB)
     if not isinstance(result_job, str):
         raise AssertionError(
@@ -340,6 +273,96 @@ def validate_rust_small_route_contract(workflow_text: str) -> None:
             f"{CONTRACT_TEST_FILE} so a silent revert of the canonical-route "
             "consolidation fails a required check (#8407)"
         )
+
+
+def validate_hosted_queue_contract(text: str) -> None:
+    """Pin the native event, hosted jobs, bounds and same-run G proof wiring."""
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+    assert workflow["on"] == {"merge_group": {"types": ["checks_requested"]}}, "native G is the only Rust Small trigger"
+    assert workflow["permissions"] == {"actions": "read", "checks": "read", "contents": "read"}, "read-only workflow permissions"
+    assert workflow["concurrency"] == {
+        "group": "em-ci-routed-rust-${{ github.repository }}-${{ github.event.merge_group.head_sha }}",
+        "cancel-in-progress": "false",
+    }, "per-G bounded concurrency without development-event cancellation"
+    jobs = workflow["jobs"]
+    assert set(jobs) == {"rust-small-github", "rust-small-result"}, "only hosted producer and result, no fallback route"
+    for job_id, job in jobs.items():
+        assert job["runs-on"] == "ubuntu-latest", f"{job_id}: GitHub-hosted only"
+        assert "continue-on-error" not in job, f"{job_id}: failure must propagate"
+        checkouts = [step for step in job["steps"] if str(step.get("uses", "")).startswith("actions/checkout@")]
+        assert len(checkouts) == 1, f"{job_id}: one exact-G checkout"
+        assert checkouts[0]["with"] == {"persist-credentials": "false", "fetch-depth": "1",
+            "ref": "${{ github.event.merge_group.head_sha }}"}, f"{job_id}: checkout must bind actual G without persisted credentials"
+    producer = jobs["rust-small-github"]
+    assert producer["if"] == "github.event_name == 'merge_group'", "producer requires G"
+    assert producer["timeout-minutes"] == "60", "producer resource budget"
+    assert producer["env"] == {"CARGO_BUILD_JOBS": "2", "CARGO_INCREMENTAL": "0", "RUST_TEST_THREADS": "2"}, "bounded hosted Rust concurrency"
+    assert producer["outputs"] == {
+        "subject_sha": "${{ steps.subject.outputs.subject_sha }}",
+        "run_id": "${{ steps.subject.outputs.run_id }}",
+        "run_attempt": "${{ steps.subject.outputs.run_attempt }}",
+    }, "producer exact G/run/attempt binding"
+    steps = producer["steps"]
+    binding = next(step for step in steps if step.get("name") == "Verify merge-group source")
+    assert binding["id"] == "subject" and "if" not in binding and "continue-on-error" not in binding, "unconditional subject verification"
+    proof = next(step for step in steps if step.get("name") == "Run Rust small lane")
+    assert steps.index(binding) < steps.index(proof), "verify exact G before proof"
+    result = jobs["rust-small-result"]
+    assert result["needs"] == ["rust-small-github"], "same-run hosted producer required"
+    assert result["if"] == "always()", "G result must run even for skipped or cancelled proof"
+    assert result["timeout-minutes"] == "35", "result/refusal bounded wait"
+    for retired in ("EM_RUNNER_READ_TOKEN", "self-hosted", "force_target", "rust-small-cx53", "rust-small-cx43", "rust-small-fallback", "route-rust-small", "secrets."):
+        assert retired not in text, f"retired runner routing must not return: {retired}"
+
+
+class HostedQueueContractTests(unittest.TestCase):
+    def setUp(self):
+        self.text = load_workflow_text()
+        self.workflow = yaml.load(self.text, Loader=yaml.BaseLoader)
+
+    def test_hosted_queue_source_is_positive_control(self):
+        validate_hosted_queue_contract(self.text)
+
+    def reject(self, mutate):
+        workflow = copy.deepcopy(self.workflow)
+        mutate(workflow)
+        with self.assertRaises(AssertionError):
+            validate_hosted_queue_contract(yaml.safe_dump(workflow, sort_keys=False))
+
+    def test_draft_ready_synchronize_and_other_prequeue_roots_are_rejected(self):
+        for event, value in (
+            ("pull_request", {"types": ["opened", "ready_for_review", "synchronize"]}),
+            ("pull_request_target", {"types": ["opened", "ready_for_review", "synchronize"]}),
+            ("push", {}), ("workflow_dispatch", {}), ("repository_dispatch", {}),
+            ("workflow_call", {}), ("issue_comment", {"types": ["created"]}),
+        ):
+            with self.subTest(event=event):
+                self.reject(lambda w: w["on"].update({event: value}))
+
+    def test_self_hosted_direct_dynamic_and_fallback_routes_are_rejected(self):
+        for runner in (["self-hosted", "linux", "x64"], {"group": "em-ci-small"},
+                       "${{ needs.route.outputs.runner }}"):
+            with self.subTest(runner=runner):
+                self.reject(lambda w: w["jobs"]["rust-small-github"].update({"runs-on": runner}))
+        self.reject(lambda w: w["jobs"].update({"rust-small-fallback": {"runs-on": "ubuntu-latest"}}))
+        self.reject(lambda w: w["jobs"]["rust-small-github"]["env"].update({"GH_TOKEN": "${{ secrets.EM_RUNNER_READ_TOKEN }}"}))
+
+    def test_missing_or_rebound_producer_run_attempt_outputs_are_rejected(self):
+        for field in ("subject_sha", "run_id", "run_attempt"):
+            with self.subTest(field=field):
+                self.reject(lambda w: w["jobs"]["rust-small-github"]["outputs"].pop(field))
+                self.reject(lambda w: w["jobs"]["rust-small-github"]["outputs"].update(
+                    {field: "${{ github.run_attempt }}"}))
+
+    def test_missing_producer_wrong_checkout_and_resource_drift_are_rejected(self):
+        for key, value in (("needs", []), ("if", "success()"), ("continue-on-error", "true"),
+                           ("timeout-minutes", "360")):
+            with self.subTest(key=key):
+                self.reject(lambda w: w["jobs"]["rust-small-result"].update({key: value}))
+        self.reject(lambda w: w["jobs"]["rust-small-github"]["steps"][0]["with"].update({"ref": "main"}))
+        self.reject(lambda w: w["jobs"]["rust-small-github"]["env"].update({"CARGO_BUILD_JOBS": "32"}))
+        self.reject(lambda w: w["concurrency"].update({"cancel-in-progress": "true"}))
+        self.reject(lambda w: w["permissions"].update({"contents": "write"}))
 
 
 class RustSmallRouteContractTests(unittest.TestCase):
@@ -483,7 +506,7 @@ class RustSmallRouteContractTests(unittest.TestCase):
         lines = [
             line
             for line in self.workflow_text.splitlines()
-            if not line.startswith(("  rust-small-fallback:", "  rust-small-cx53:"))
+            if not line.startswith("  rust-small-github:")
         ]
         broken = "\n".join(lines)
         with self.assertRaisesRegex(AssertionError, "lane jobs missing"):
@@ -619,56 +642,6 @@ class RustSmallRouteContractTests(unittest.TestCase):
                     + indent + CANONICAL_INVOCATION,
                 )
                 validate_rust_small_route_contract(changed)
-
-    def test_docker_payload_comment_cannot_escape_the_outer_quote(self) -> None:
-        for job_id in ("rust-small-cx53", "rust-small-cx43"):
-            with self.subTest(site=job_id):
-                broken = mutate_first_in_job(
-                    self.workflow_text, job_id, CANONICAL_INVOCATION,
-                    "# ' ; false; echo '\n              " + CANONICAL_INVOCATION,
-                )
-                with self.assertRaisesRegex(AssertionError, job_id):
-                    validate_rust_small_route_contract(broken)
-
-    def test_docker_continuations_cannot_have_gaps_or_trailing_whitespace(self) -> None:
-        for job_id in DOCKER_RESOURCES:
-            body = job_bodies(self.workflow_text)[job_id]
-            proof_start = body.index("      - name: Run Rust small lane")
-            launch_start = body.index("          docker run --rm", proof_start)
-            payload_start = body.index("            bash -eu -o pipefail -c '", launch_start)
-            continued_lines = body[launch_start:payload_start].split("\n")[:-1]
-            self.assertTrue(continued_lines)
-            for line in continued_lines:
-                self.assertTrue(line.endswith("\\"), line)
-                indent = line[: len(line) - len(line.lstrip(" \t"))]
-                for label, suffix in (
-                    ("blank line", "\n"),
-                    ("comment line", "\n" + indent + "# continuation is interrupted"),
-                    ("trailing space", " "),
-                    ("trailing tab", "\t"),
-                ):
-                    with self.subTest(site=job_id, line=line.strip(), mutation=label):
-                        position = body.index(line, launch_start)
-                        changed = body[:position] + line + suffix + body[position + len(line):]
-                        broken = self.workflow_text.replace(body, changed, 1)
-                        with self.assertRaisesRegex(AssertionError, job_id):
-                            validate_rust_small_route_contract(broken)
-
-    def test_docker_comments_and_blank_lines_at_command_boundaries_are_allowed(self) -> None:
-        for job_id in DOCKER_RESOURCES:
-            body = job_bodies(self.workflow_text)[job_id]
-            proof_start = body.index("      - name: Run Rust small lane")
-            launch_start = body.index("          docker run --rm", proof_start)
-            payload_start = body.index("            bash -eu -o pipefail -c '", launch_start)
-            payload_end = body.index("\n            '\n", payload_start) + len("\n            '")
-            for label, position in (
-                ("before Docker", launch_start),
-                ("inside payload", body.index("\n", payload_start) + 1),
-                ("after Docker", payload_end),
-            ):
-                with self.subTest(site=job_id, boundary=label):
-                    changed = body[:position] + "\n          # safe command boundary\n\n" + body[position:]
-                    validate_rust_small_route_contract(self.workflow_text.replace(body, changed, 1))
 
     def test_result_job_without_contract_reference_fails_closed(self) -> None:
         broken = self.workflow_text.replace(CONTRACT_TEST_FILE, "scripts/ci/removed.py")

@@ -1,6 +1,8 @@
 """Discriminating native-subject and real Git controls for the G title leaf."""
+from contextlib import redirect_stdout
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import io
 import json
 import os
 from pathlib import Path
@@ -16,7 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts/ci"))
 import native_queue_title as title
 
 REPO = "EffortlessMetrics/perl-lsp-swarm"
-B, G, H1, H2 = (letter * 40 for letter in "abcd")
+B, G, H1, H2, T = (letter * 40 for letter in "abcd7")
 NOW = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
 
 
@@ -75,6 +77,9 @@ class API:
                 "name": configured()["publisher_check_name"], "app": {"id": configured()["publisher_app_id"]},
                 "head_sha": head, "external_id": "hermes-queue:admit-" + str(number) + ":H",
                 "status": "completed", "conclusion": "success", "output": {"text": title.canonical(data)}}]}
+        self.repository = {"id": 91, "node_id": "R_91", "full_name": REPO, "default_branch": "main"}
+        self.branch = {"name": "main", "protected": True, "commit": {"sha": T}}
+        self.main_ref = {"ref": "refs/heads/main", "object": {"type": "commit", "sha": T}}
         self.calls = []
         self.observations = 0
         self.on_observe = None
@@ -94,6 +99,12 @@ class API:
     def get(self, repository, suffix):
         assert repository == REPO
         self.calls.append(("GET", suffix))
+        if suffix == "":
+            return deepcopy(self.repository)
+        if suffix == "/branches/main":
+            return deepcopy(self.branch)
+        if suffix == "/git/ref/heads/main":
+            return deepcopy(self.main_ref)
         if suffix == "/actions/runs/501":
             return deepcopy(self.run)
         if suffix == "/actions/runs/501/attempts/2":
@@ -122,13 +133,13 @@ class Proof:
         assert [member["head_sha"] for member in members] == [H1, H2]
         generation, closure = title.admitted_generation(members, policy)
         return {"tree_sha": "9" * 40, "composition": "ordered_source_tree_equivalence",
-                "producer_generation": subject["base_sha"], "producer_generation_sha256": generation,
+                "producer_generation_sha256": generation,
                 "producer_closure": closure}
 
 
 class NativeTitleSubjectTests(unittest.TestCase):
     def observe(self, api):
-        return title.observe(api, api.subject, configured(), Proof, clock=lambda: NOW)
+        return title.observe(api, api.subject, configured(), T, Proof, clock=lambda: NOW)
 
     def test_complete_native_group_requires_every_current_acknowledged_head(self):
         api = API()
@@ -136,10 +147,85 @@ class NativeTitleSubjectTests(unittest.TestCase):
         self.assertEqual([m["pull_number"] for m in receipt["members"]], [1, 2])
         self.assertEqual(receipt["subject"]["base_sha"], B)
         self.assertEqual(receipt["members"][0]["admission"]["intake"]["base_sha"], "f" * 40)
-        self.assertEqual(receipt["producer_generation"], B)
+        self.assertEqual(receipt["trusted_evaluator"]["sha"], T)
+        self.assertNotEqual(T, B)
+        self.assertNotIn("producer_generation", receipt)
         self.assertEqual(receipt["producer_generation_sha256"], "5" * 64)
-        self.assertEqual(len(title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW)), 64)
+        self.assertEqual(len(title.recheck(api, receipt, api.subject, configured(), T, clock=lambda: NOW)), 64)
         self.assertTrue(all(method in {"GET", "GRAPHQL_READ"} for method, _ in api.calls))
+
+    def test_event_B_is_not_executable_authority_even_when_checkout_equals_B(self):
+        api = API()
+        # A speculative B passes the old HEAD == B gate but lacks independent
+        # protected-main authority. T is deliberately different from B and G.
+        with patch.object(title.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, B, "")):
+            title.checkout_generation(B)
+        with self.assertRaisesRegex(title.Refused, "protected main evaluator"):
+            title.observe(api, api.subject, configured(), B, Proof, clock=lambda: NOW)
+        self.assertEqual(self.observe(api)["trusted_evaluator"]["sha"], T)
+
+    def test_protected_evaluator_requires_exact_repository_branch_ref_and_immutable_SHA(self):
+        controls = [lambda a: a.repository.update(id=92), lambda a: a.repository.update(node_id="R_OTHER"),
+            lambda a: a.repository.update(full_name="Other/repo"),
+            lambda a: a.repository.update(default_branch="other"), lambda a: a.branch.update(name="other"),
+            lambda a: a.branch.pop("protected"), lambda a: a.branch.update(protected=False),
+            lambda a: a.branch.update(protected="true"), lambda a: a.branch["commit"].update(sha=B),
+            lambda a: a.main_ref.update(ref="refs/heads/other"),
+            lambda a: a.main_ref["object"].update(type="tag"),
+            lambda a: a.main_ref["object"].update(sha=G)]
+        for i, mutate in enumerate(controls):
+            api = API(); mutate(api)
+            with self.subTest(control=i), self.assertRaisesRegex(title.Refused, "protected main evaluator"):
+                self.observe(api)
+        for sha in (None, "main", "7" * 39, "A" * 40):
+            with self.subTest(sha=sha), self.assertRaisesRegex(title.Refused, "immutable trusted"):
+                title.trusted_evaluator(API(), API().subject, configured(), sha)
+
+    def test_checkout_must_match_independent_selection_not_event_subject(self):
+        for head, code, accepted in ((T, 0, True), (B, 0, False), (G, 0, False), (T, 1, False)):
+            with self.subTest(head=head, code=code), patch.object(title.subprocess, "run",
+                    return_value=subprocess.CompletedProcess([], code, head + "\n", "")) as run:
+                if accepted:
+                    title.checkout_generation(T)
+                else:
+                    with self.assertRaisesRegex(title.Refused, "independently selected"):
+                        title.checkout_generation(T)
+                self.assertEqual(run.call_args.kwargs["env"]["GIT_NO_REPLACE_OBJECTS"], "1")
+        with patch.object(title.subprocess, "run") as run, self.assertRaises(title.Refused):
+            title.checkout_generation(None)
+        run.assert_not_called()
+
+    def test_evaluator_movement_or_protection_loss_invalidates_observation_and_recheck(self):
+        def move(api):
+            api.branch["commit"]["sha"] = "8" * 40
+            api.main_ref["object"]["sha"] = "8" * 40
+        for mutate in (move, lambda a: a.branch.update(protected=False)):
+            api = API(); receipt = self.observe(api); mutate(api)
+            with self.assertRaisesRegex(title.Refused, "protected main evaluator"):
+                title.recheck(api, receipt, api.subject, configured(), T, clock=lambda: NOW)
+            api = API()
+            def during(current):
+                if current.observations == 1:
+                    mutate(current)
+            api.on_observe = during
+            with self.assertRaisesRegex(title.Refused, "protected main evaluator"):
+                self.observe(api)
+        api = API(); receipt = self.observe(api)
+        receipt["trusted_evaluator"]["sha"] = B
+        with self.assertRaisesRegex(title.Refused, "changed before success"):
+            title.recheck(api, receipt, api.subject, configured(), T, clock=lambda: NOW)
+
+    def test_documentation_keeps_T_authority_distinct_from_B_G_and_installation(self):
+        source = (ROOT / "docs/ci/native-queue-title.md").read_text()
+        for retained in ("immutable evaluator **T**", "`trusted_evaluator`", "`producer_generation_sha256`",
+                         "checked-in policy remains disabled", "full effective protection union",
+                         "event B or G", "protected-main movement"):
+            self.assertIn(retained, source)
+        for retired in ("immutable protected B", "B supplies the executed", "`producer_generation=B`"):
+            self.assertNotIn(retired, source)
+        cutover = (ROOT / "docs/ci/qualification-cutover.md").read_text()
+        self.assertIn("independently selected protected-main T execution", cutover)
+        self.assertIn("event B and G remain subjects, never evaluator authority", cutover)
 
     def test_uninstalled_binding_cannot_green_the_title_leaf(self):
         with self.assertRaisesRegex(title.Refused, "not activated"):
@@ -270,7 +356,7 @@ class NativeTitleSubjectTests(unittest.TestCase):
                 data = title.decode(check["output"]["text"]); mutate(data)
                 check["output"]["text"] = title.canonical(data)
             with self.subTest(control=i), self.assertRaisesRegex(title.Refused, "changed before success"):
-                title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW)
+                title.recheck(api, receipt, api.subject, configured(), T, clock=lambda: NOW)
 
     def test_changed_title_author_skip_label_intake_or_authority_invalidates_observed_receipt(self):
         def label(api):
@@ -285,10 +371,10 @@ class NativeTitleSubjectTests(unittest.TestCase):
         for i, mutate in enumerate(controls):
             api = API(); receipt = self.observe(api); mutate(api)
             with self.subTest(control=i), self.assertRaises(title.Refused):
-                title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW)
+                title.recheck(api, receipt, api.subject, configured(), T, clock=lambda: NOW)
         api = API(); receipt = self.observe(api)
         with self.assertRaisesRegex(title.Refused, "expired"):
-            title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW + timedelta(hours=2))
+            title.recheck(api, receipt, api.subject, configured(), T, clock=lambda: NOW + timedelta(hours=2))
 
     def test_metadata_race_during_composition_cannot_pass(self):
         api = API()
@@ -303,7 +389,7 @@ class NativeTitleSubjectTests(unittest.TestCase):
         api = API(); receipt = self.observe(api)
         api.nodes[0]["pullRequest"]["labels"] = {"totalCount": 1, "pageInfo": {"hasNextPage": False},
                                                    "nodes": [{"name": "needs-issue-link"}]}
-        title.recheck(api, receipt, api.subject, configured(), clock=lambda: NOW)
+        title.recheck(api, receipt, api.subject, configured(), T, clock=lambda: NOW)
 
     def test_native_membership_bound_accepts_100_and_refuses_101_or_incomplete_counts(self):
         def api_with(count):
@@ -339,6 +425,79 @@ class NativeTitleSubjectTests(unittest.TestCase):
         response.stdout = b'{"errors":[{"message":"unsupported native field"}]}'
         with patch.object(title.queue.subprocess, "run", return_value=response), self.assertRaises(title.queue.Uncertain):
             title.GitHub().observe_group(REPO, "main")
+
+
+class NativeTitleMainTests(unittest.TestCase):
+    def run_main(self, operation, *, trusted_sha=T, checkout_sha=T, receipt=None):
+        # Exercise main, custody, observe and recheck unchanged. Only external
+        # service/custody observations and Git composition are fixture inputs;
+        # the real Git composition has its separate production-path suite below.
+        api = API()
+        event, env = event_environment()
+        with tempfile.TemporaryDirectory() as home:
+            root = Path(home)
+            policy_path, event_path, target = root / "policy.json", root / "event.json", root / "receipt.json"
+            policy_path.write_text(title.canonical(configured()))
+            event_path.write_text(title.canonical(event))
+            if receipt is not None:
+                target.write_text(title.canonical(receipt))
+            env["GITHUB_EVENT_PATH"] = str(event_path)
+            if trusted_sha is not None:
+                env["TRUSTED_TITLE_SHA"] = trusted_sha
+            real_run, custody_calls = subprocess.run, []
+            def git_observation(command, **kwargs):
+                if command == ["git", "-C", str(title.ROOT), "rev-parse", "HEAD"]:
+                    custody_calls.append(command)
+                    return subprocess.CompletedProcess(command, 0, checkout_sha + "\n", "")
+                # GitProof initializes only a fresh local bare store; its
+                # composition method is replaced below, so no fetch is possible.
+                self.assertIn("init", command)
+                self.assertIn("--bare", command)
+                return real_run(command, **kwargs)
+            output = io.StringIO()
+            with patch.object(title, "POLICY", policy_path), patch.dict(os.environ, env, clear=True), \
+                    patch.object(title, "GitHub", return_value=api), \
+                    patch.object(title.GitProof, "prove", Proof.prove), \
+                    patch.object(title, "datetime", wraps=datetime) as clock, \
+                    patch.object(title.subprocess, "run", side_effect=git_observation), redirect_stdout(output):
+                clock.now.return_value = NOW
+                status = title.main([operation, "--receipt", str(target)])
+            observed = title.decode(target.read_text()) if target.exists() else None
+            return status, output.getvalue(), observed, api.calls, custody_calls
+
+    def test_main_observe_and_recheck_use_independent_T_not_subject_B(self):
+        self.assertNotEqual(T, B)
+        status, output, receipt, calls, custody = self.run_main("observe")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(receipt["subject"]["base_sha"], B)
+        self.assertEqual(receipt["trusted_evaluator"]["sha"], T)
+        self.assertEqual(len(custody), 1)
+        self.assertIn(("GET", "/branches/main"), calls)
+        status, output, retained, calls, custody = self.run_main("recheck", receipt=receipt)
+        self.assertEqual(status, 0, output)
+        self.assertIn("Current native title subject:", output)
+        self.assertEqual(retained, receipt)
+        self.assertEqual(len(custody), 1)
+        self.assertIn(("GET", "/branches/main"), calls)
+
+    def test_main_refuses_missing_mismatched_or_subject_selected_T(self):
+        receipt = title.observe(API(), API().subject, configured(), T, Proof, clock=lambda: NOW)
+        controls = [(None, T, "immutable trusted", False),
+                    (T, B, "independently selected", False),
+                    (T, G, "independently selected", False),
+                    (B, B, "protected main evaluator", True)]
+        for operation in ("observe", "recheck"):
+            for selected, checkout, refusal, reads in controls:
+                with self.subTest(operation=operation, selected=selected, checkout=checkout):
+                    prior = receipt if operation == "recheck" else None
+                    status, output, retained, calls, custody = self.run_main(
+                        operation, trusted_sha=selected, checkout_sha=checkout, receipt=prior)
+                    self.assertEqual(status, 1, output)
+                    self.assertIn("NOT_PROVEN:", output)
+                    self.assertIn(refusal, output)
+                    self.assertEqual(retained, prior)
+                    self.assertEqual(bool(calls), reads)
+                    self.assertEqual(len(custody), int(selected is not None))
 
 
 @unittest.skipUnless(shutil.which("git"), "native Git is required")
@@ -410,8 +569,8 @@ class NativeTitleCompositionTests(unittest.TestCase):
     def pipeline_api(self, heads, group):
         """Synthetic service observations, real local Git composition and workflow body.
 
-        These fixtures do not authenticate a live native queue or establish that
-        event B is protected. Speculative-B executable trust remains unresolved.
+        Protected-main observations are synthetic; these fixtures do not
+        authenticate a live native queue or a deployed protection/App binding.
         """
         api = API()
         api.subject.update(base_sha=self.base, head_sha=group)
@@ -451,10 +610,10 @@ class NativeTitleCompositionTests(unittest.TestCase):
         return result
 
     def pipeline_observe(self, api):
-        return title.observe(api, api.subject, self.configured, self.Proof, clock=lambda: NOW)
+        return title.observe(api, api.subject, self.configured, T, self.Proof, clock=lambda: NOW)
 
     def assert_pipeline_current(self, api, receipt):
-        self.assertEqual(len(title.recheck(api, receipt, api.subject, self.configured,
+        self.assertEqual(len(title.recheck(api, receipt, api.subject, self.configured, T,
                                           clock=lambda: NOW)), 64)
         self.assertTrue(all(method in {"GET", "GRAPHQL_READ"} for method, _ in api.calls))
         self.assertFalse(any("/pulls" in target or "/compare/" in target for _, target in api.calls))
@@ -555,16 +714,16 @@ class NativeTitleCompositionTests(unittest.TestCase):
             proof.prove({"base_sha": head, "head_sha": group},
                         self.admitted_members([head]), self.configured)
 
-    def test_reviewed_new_producer_generation_can_differ_from_protected_B(self):
+    def test_reviewed_new_producer_generation_can_differ_from_subject_B(self):
         head = self.head("reviewed-generation", {
             ".github/workflows/proof.yml": "reviewed new workflow\n",
             "scripts/ci/native_queue_title.py": "reviewed next evaluator; not executed for this G\n",
-            ".ci/policies/native-queue-title.json": "reviewed next policy; current trust still comes from B\n"})
+            ".ci/policies/native-queue-title.json": "reviewed next policy; current trust comes from independent protected main\n"})
         group = self.group([head])
         target = self.closure(group)
         self.assertNotEqual(target, self.closure(self.base))
         result = self.prove([head], group, target)
-        self.assertEqual(result["producer_generation"], self.base)
+        self.assertNotIn("producer_generation", result)
         self.assertEqual(result["producer_closure"], target)
         self.assertEqual(result["producer_generation_sha256"], "5" * 64)
         original = self.Proof

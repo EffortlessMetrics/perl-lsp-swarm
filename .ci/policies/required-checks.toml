@@ -41,6 +41,12 @@ contract_role = "required-workflow-shape"
   reason = "#17903 retires routine main-push qualification; protected integration is proved on actual G before landing."
   tracking = "17903"
 
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "#19261 qualifies actual G only, with per-G concurrency and no cancellation by Draft, Ready or synchronize events. Cancelled native proof remains blocking."
+  tracking = "19261"
+
 [[check]]
 name = "ripr+ New Gap Gate"
 workflow = ".github/workflows/ripr.yml"
@@ -173,7 +179,7 @@ producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
 job = "rust-small-result"
 workflow_result = "propagate"
-events = ["merge_group", "workflow_dispatch"]
+events = ["merge_group"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"

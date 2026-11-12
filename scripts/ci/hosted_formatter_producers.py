@@ -38,10 +38,7 @@ RUST_SMALL_WORKFLOW = ".github/workflows/em-ci-routed-rust.yml"
 CI_WORKFLOW = ".github/workflows/ci.yml"
 RUST_SMALL_LANE_JOBS = frozenset(
     {
-        "rust-small-cx53",
-        "rust-small-cx43",
         "rust-small-github",
-        "rust-small-fallback",
     }
 )
 PARITY_REASON_NEEDLES = (

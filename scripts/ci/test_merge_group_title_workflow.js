@@ -10,12 +10,13 @@ const test = require('node:test');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const root = path.resolve(__dirname, '../..');
 
-function loadWorkflowScript(raw = fs.readFileSync(path.join(root, '.github/workflows/pr-title-check.yml'), 'utf8')) {
+function loadWorkflowScript(raw = fs.readFileSync(path.join(root, '.github/workflows/pr-title-check.yml'), 'utf8'), selected = 1) {
   const lines = raw.split(/\r?\n/);
   const marker = '          script: |';
-  assert.equal(lines.filter(line => line === marker).length, 1, 'one actual title script body');
+  const markers = lines.flatMap((line, index) => line === marker ? [index] : []);
+  assert.ok(markers[selected] !== undefined, 'the selected actual workflow script exists');
   const body = [];
-  for (const line of lines.slice(lines.indexOf(marker) + 1)) {
+  for (const line of lines.slice(markers[selected] + 1)) {
     if (line.trim() === '') { body.push(''); continue; }
     if (!line.startsWith('            ')) break;
     body.push(line.slice(12));
@@ -86,8 +87,46 @@ if (process.argv.includes('--receipt-stdin')) {
   );
 } else {
   test('extractor retains blank lines and stops before later workflow steps', () => {
-    assert.equal(loadWorkflowScript('          script: |\n            first();\n\n            second();\n      - name: next\n            notScript();'),
+    assert.equal(loadWorkflowScript('          script: |\n            first();\n\n            second();\n      - name: next\n            notScript();', 0),
       'first();\n\nsecond();');
+  });
+  test('bootstrap selects protected immutable main independently of speculative event B/G', async () => {
+    const sha = '7'.repeat(40), base = 'a'.repeat(40), group = 'b'.repeat(40);
+    async function bootstrap(mutate = () => {}) {
+      const fixture = {
+        repository: {id: 91, node_id: 'R_91', full_name: 'EffortlessMetrics/perl-lsp-swarm', default_branch: 'main'},
+        branch: {name: 'main', protected: true, commit: {sha}},
+        ref: {ref: 'refs/heads/main', object: {type: 'commit', sha}},
+      };
+      mutate(fixture);
+      const calls = [], outputs = [];
+      const github = {rest: {repos: {
+        get: async args => { calls.push(['repo', args]); return {data: fixture.repository}; },
+        getBranch: async args => { calls.push(['branch', args]); return {data: fixture.branch}; },
+      }, git: {getRef: async args => { calls.push(['ref', args]); return {data: fixture.ref}; }}}};
+      const context = {eventName: 'merge_group', repo: {owner: 'EffortlessMetrics', repo: 'perl-lsp-swarm'},
+        payload: {action: 'checks_requested',
+          repository: {id: 91, node_id: 'R_91', full_name: 'EffortlessMetrics/perl-lsp-swarm'},
+          merge_group: {base_sha: base, head_sha: group, base_ref: 'refs/heads/main'}}};
+      const execute = new AsyncFunction('core', 'github', 'context', loadWorkflowScript(undefined, 0));
+      await execute({setOutput: (...args) => outputs.push(args)}, github, context);
+      assert.deepEqual(outputs, [['sha', sha]]);
+      assert.deepEqual(calls, [
+        ['repo', {owner: 'EffortlessMetrics', repo: 'perl-lsp-swarm'}],
+        ['branch', {owner: 'EffortlessMetrics', repo: 'perl-lsp-swarm', branch: 'main'}],
+        ['ref', {owner: 'EffortlessMetrics', repo: 'perl-lsp-swarm', ref: 'heads/main'}],
+      ]);
+    }
+    await bootstrap();
+    for (const mutate of [f => { f.repository.id = 92; }, f => { f.repository.node_id = 'R_OTHER'; },
+      f => { f.repository.full_name = 'Other/repo'; }, f => { f.repository.default_branch = 'other'; },
+      f => { f.branch.name = 'other'; }, f => { f.branch.protected = false; },
+      f => { delete f.branch.protected; }, f => { f.branch.protected = 'true'; },
+      f => { f.branch.commit.sha = base; }, f => { f.branch.commit.sha = 'main'; },
+      f => { f.ref.ref = 'refs/heads/other'; }, f => { f.ref.object.type = 'tag'; },
+      f => { f.ref.object.sha = group; }]) {
+      await assert.rejects(bootstrap(mutate), /protected immutable evaluator/);
+    }
   });
   test('the actual workflow validates a singleton receipt without association lookup', async () => {
     const result = await runReceipt({receipt: receipt([member(101, 'feat: one member (#42)')])});

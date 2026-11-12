@@ -246,22 +246,6 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "echo \"::warning::Primary runner (${{ needs.route-rust-small.outputs.target }}) failed preflight \u2014 falling back to GitHub-hosted. Check runner disk and em-ci-rust image before next run.\"",
-      "fingerprint": "01d4dd93e7c75e33b2cb7d4d39d013fc5cc63559bbe4a76b2ab90f1214378a05",
-      "line": 597,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/em-ci-routed-rust.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"Primary runner \\`${{ needs.route-rust-small.outputs.target }}\\` failed\"",
-      "fingerprint": "0e0645be7ca72df8cbf978618176558ddf46af6dd600ac2ebb8675c63d5ef066",
-      "line": 601,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/em-ci-routed-rust.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
       "evidence": "BRANCH=\"chore/auto-quarantine-${{ github.run_number }}\"",
       "fingerprint": "11a932e44c284875c10f08dedbf2982e84f812563b959d1c388ea26acb4d304d",
       "line": 307,

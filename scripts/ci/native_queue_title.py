@@ -133,7 +133,7 @@ def event_subject(event, env, configured):
 
 class GitHub(queue.GitHub):
     def get(self, repository, suffix):
-        require(repository == "EffortlessMetrics/perl-lsp-swarm" and suffix.startswith("/"),
+        require(repository == "EffortlessMetrics/perl-lsp-swarm" and (suffix == "" or suffix.startswith("/")),
                 "read scope differs from configured repository")
         try:
             result = subprocess.run(
@@ -143,6 +143,44 @@ class GitHub(queue.GitHub):
             return decode(result.stdout)
         except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError):
             raise Refused("native read unavailable; no automatic mutation or fallback") from None
+
+
+def trusted_evaluator(api, subject, configured, expected_sha):
+    """Revalidate independently selected protected main, never event B or G.
+
+    GitHub's protected branch and exact main ref must still name the immutable
+    bootstrap generation. Missing observations or concurrent movement refuse;
+    this is not evidence that the disabled App policy has been installed.
+    """
+    require(queue.oid(expected_sha), "immutable trusted evaluator SHA is missing")
+    repository = api.get(configured["repository"], "")
+    branch = api.get(configured["repository"], "/branches/main")
+    ref = api.get(configured["repository"], "/git/ref/heads/main")
+    require(isinstance(repository, dict)
+            and repository.get("full_name") == configured["repository"] == subject["repository"]
+            and repository.get("id") == subject["repository_id"]
+            and repository.get("node_id") == subject["repository_node_id"]
+            and repository.get("default_branch") == configured["base_branch"] == "main"
+            and isinstance(branch, dict) and branch.get("name") == "main"
+            and branch.get("protected") is True
+            and branch.get("commit", {}).get("sha") == expected_sha
+            and isinstance(ref, dict) and ref.get("ref") == "refs/heads/main"
+            and ref.get("object", {}).get("type") == "commit"
+            and ref.get("object", {}).get("sha") == expected_sha,
+            "protected main evaluator generation changed or is not proven")
+    return {"repository": configured["repository"], "repository_id": subject["repository_id"],
+            "ref": "refs/heads/main", "sha": expected_sha, "protected": True}
+
+
+def checkout_generation(expected_sha):
+    require(queue.oid(expected_sha), "immutable trusted evaluator SHA is missing")
+    custody_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    custody_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                       GIT_CONFIG_SYSTEM=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
+    process = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], env=custody_env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=30)
+    require(process.returncode == 0 and process.stdout.strip() == expected_sha,
+            "title evaluator checkout differs from independently selected immutable generation")
 
 
 def native_run(api, subject, configured):
@@ -314,8 +352,8 @@ class GitProof(AbstractContextManager):
         self.run(["fetch", "--no-tags", "--no-write-fetch-head", self.origin(),
                   *dict.fromkeys([base, *heads, group])])
         self.run(["merge-base", "--is-ancestor", base, group])
-        # B supplies the executed evaluator and current App/policy trust. G may
-        # contain a reviewed next generation; its authority comes from every
+        # B/G are composition subjects, not executable evaluator authority. G
+        # may contain a reviewed next generation; its authority comes from every
         # current H intake, not equality with B or candidate-provided policy.
         for path, expected in closure.items():
             actual = self.run(["rev-parse", "--verify", group + ":" + path])
@@ -336,17 +374,18 @@ class GitProof(AbstractContextManager):
         require(expected_tree is not None and actual_tree == expected_tree,
                 "actual G differs from complete ordered B/H tree composition")
         return {"tree_sha": actual_tree, "composition": "ordered_source_tree_equivalence",
-                "producer_generation": base, "producer_generation_sha256": generation,
+                "producer_generation_sha256": generation,
                 "producer_closure": closure}
 
 
-def snapshot(api, subject, configured, now):
+def snapshot(api, subject, configured, now, evaluator_sha):
+    evaluator = trusted_evaluator(api, subject, configured, evaluator_sha)
     run = native_run(api, subject, configured)
     observed = group_members(api, subject, configured)
     for member in observed["members"]:
         member["admission"] = intake(api, subject, member, configured, now)
     admitted_generation(observed["members"], configured)
-    return {"subject": subject, "run": run, **observed}
+    return {"subject": subject, "trusted_evaluator": evaluator, "run": run, **observed}
 
 
 def proposition(value):
@@ -359,22 +398,22 @@ def proposition(value):
     return result
 
 
-def observe(api, subject, configured, proof_factory=GitProof, clock=lambda: datetime.now(timezone.utc)):
-    before = snapshot(api, subject, configured, clock())
+def observe(api, subject, configured, evaluator_sha, proof_factory=GitProof, clock=lambda: datetime.now(timezone.utc)):
+    before = snapshot(api, subject, configured, clock(), evaluator_sha)
     with proof_factory(subject["repository"]) as proof:
         composition = proof.prove(subject, before["members"], configured)
-    after = snapshot(api, subject, configured, clock())
+    after = snapshot(api, subject, configured, clock(), evaluator_sha)
     require(proposition(before) == proposition(after), "native G subject changed during composition proof")
     return {"schema_id": "perl.native-queue-title.v1", "schema_version": 1,
             **before, **composition, "claim_boundary": "title subject only; no protected landing claim"}
 
 
-def recheck(api, receipt, subject, configured, clock=lambda: datetime.now(timezone.utc)):
+def recheck(api, receipt, subject, configured, evaluator_sha, clock=lambda: datetime.now(timezone.utc)):
     require(isinstance(receipt, dict) and receipt.get("schema_id") == "perl.native-queue-title.v1"
             and receipt.get("schema_version") == 1 and receipt.get("subject") == subject,
             "title receipt belongs to another native subject")
-    before = {key: receipt[key] for key in ("subject", "run", "queue_id", "members")}
-    current = snapshot(api, subject, configured, clock())
+    before = {key: receipt[key] for key in ("subject", "trusted_evaluator", "run", "queue_id", "members")}
+    current = snapshot(api, subject, configured, clock(), evaluator_sha)
     require(proposition(before) == proposition(current),
             "native membership, H intake or current title metadata changed before success")
     return hashlib.sha256(canonical(receipt).encode()).hexdigest()
@@ -389,24 +428,18 @@ def main(argv=None):
         configured = policy(decode(POLICY.read_text()))
         event = decode(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
         subject = event_subject(event, os.environ, configured)
-        # Actions checks out only immutable protected B; candidate G is never an
-        # executable worktree. The separate bare proof verifies G against the
-        # authenticated target closure; it does not execute that next generation.
-        custody_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        custody_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-                           GIT_CONFIG_SYSTEM=os.devnull, GIT_NO_REPLACE_OBJECTS="1")
-        process = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], env=custody_env,
-                                 capture_output=True, text=True, encoding="utf-8", timeout=30)
-        require(process.returncode == 0 and process.stdout.strip() == subject["base_sha"],
-                "title evaluator is not running from protected immutable B")
+        # Bootstrap pinned a SHA selected by independent protected-main reads.
+        # Checking HEAD against event B would authenticate a speculative subject.
+        evaluator_sha = os.environ.get("TRUSTED_TITLE_SHA")
+        checkout_generation(evaluator_sha)
         api, target = GitHub(), Path(args.receipt)
         if args.operation == "observe":
-            receipt = observe(api, subject, configured)
+            receipt = observe(api, subject, configured, evaluator_sha)
             target.write_text(canonical(receipt) + "\n")
             print("Proved actual G title subject for " + ", ".join("#" + str(m["pull_number"])
                                                                     for m in receipt["members"]))
         else:
-            digest = recheck(api, decode(target.read_text()), subject, configured)
+            digest = recheck(api, decode(target.read_text()), subject, configured, evaluator_sha)
             print("Current native title subject: " + digest)
         return 0
     except (Refused, queue.Uncertain) as error:

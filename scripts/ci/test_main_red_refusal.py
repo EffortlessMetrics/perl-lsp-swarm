@@ -387,15 +387,13 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         evaluate_start = self.workflow.index("      - name: Evaluate routed result")
         probe = self.workflow[probe_start:evaluate_start]
         self.assertIn(
-            "(github.event_name != 'pull_request' || github.event.pull_request.draft != true)",
+            "github.event_name == 'merge_group'",
             probe,
         )
-        # #16168: landed main commits now carry their own `Perl LSP Rust Small
-        # Result` baseline run, so this workflow declares a push trigger. The
-        # refusal probe stays candidate-vs-main; on push the candidate IS main,
-        # so there is no distinct subject to compare and the probe must stay
-        # non-applicable instead of comparing main against itself. Pin the
-        # trigger and the subject binding that keep those two facts together.
+        # #17903 retires routine PR/main qualification. Only actual G reaches
+        # the hosted producer and refusal probe; neither Draft nor Ready nor
+        # synchronize starts this workflow. Keep the classifier subject
+        # expressions distinct and unchanged while retiring those event roots.
         on_start = self.workflow.index("\non:\n")
         permissions_start = self.workflow.index("\npermissions:\n")
         triggers = self.workflow[on_start:permissions_start]

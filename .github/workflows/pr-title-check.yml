@@ -17,16 +17,46 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # Bootstrap only from independent GitHub repository/protection/ref reads.
+      # An event B can be speculative; neither B nor G selects executable code.
+      - name: Resolve protected main evaluator generation
+        id: evaluator
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
+            const fullName = owner + '/' + repo;
+            const eventRepo = context.payload.repository;
+            if (context.eventName !== 'merge_group' || context.payload.action !== 'checks_requested' ||
+                context.repo.owner !== owner || context.repo.repo !== repo ||
+                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
+                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
+                context.payload.merge_group?.base_ref !== 'refs/heads/main') {
+              throw new Error('NOT_PROVEN: native repository/main identity required');
+            }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const sha = protectedBranch.commit?.sha;
+            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
+                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
+                protectedBranch.name !== branch || protectedBranch.protected !== true ||
+                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
+                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
+              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
+            }
+            core.setOutput('sha', sha);
       - name: Load immutable protected title evaluator
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.merge_group.base_sha }}
+          ref: ${{ steps.evaluator.outputs.sha }}
           path: trusted-title-source
           persist-credentials: false
           fetch-depth: 1
       - name: Prove current complete native G title subject
         env:
           GH_TOKEN: ${{ github.token }}
+          TRUSTED_TITLE_SHA: ${{ steps.evaluator.outputs.sha }}
         run: >-
           python3 trusted-title-source/scripts/ci/native_queue_title.py observe
           --receipt "$RUNNER_TEMP/native-queue-title.json"
@@ -45,6 +75,7 @@ jobs:
       - name: Recheck exact G membership, intake and current title metadata
         env:
           GH_TOKEN: ${{ github.token }}
+          TRUSTED_TITLE_SHA: ${{ steps.evaluator.outputs.sha }}
         run: >-
           python3 trusted-title-source/scripts/ci/native_queue_title.py recheck
           --receipt "$RUNNER_TEMP/native-queue-title.json"

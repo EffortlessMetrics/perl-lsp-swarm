@@ -44,10 +44,7 @@ SUBJECT_EXPRESSION = (
     "github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha"
 )
 RUST_SMALL_LANE_JOBS = (
-    "rust-small-cx53",
-    "rust-small-cx43",
     "rust-small-github",
-    "rust-small-fallback",
 )
 RUST_SMALL_RESULT_JOB = "rust-small-result"
 FMT_COMMAND = "cargo fmt --all -- --check"
@@ -717,16 +714,13 @@ def validate_rust_small_fmt_contract(workflow_text: str) -> None:
     if re.search(r"^\s+if:", prove, re.MULTILINE):
         raise AssertionError(
             "rustfmt prevention contract must not be skipped with if: "
-            "(draft-skip stays in the evaluate step, #10006)"
+            "(missing G proof stays blocking in the evaluate step)"
         )
     if "continue-on-error: true" in prove:
         raise AssertionError("rustfmt prevention contract must not continue on error")
-    if "RUST_SMALL_GATE_VERDICT=draft-no-proof" not in _named_step_body(
-        result_job, "Evaluate routed result"
-    ):
-        raise AssertionError(
-            "draft-skip must remain explicit no-proof in the evaluate step (#9603)"
-        )
+    evaluate = _named_step_body(result_job, "Evaluate routed result")
+    if 'if [ "${GITHUB_RESULT:-}" != success ]; then' not in evaluate:
+        raise AssertionError("missing hosted G proof must remain blocking in the evaluate step")
 
 
 def _named_step_body(job_text: str, step_name: str) -> str:

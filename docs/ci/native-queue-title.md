@@ -3,7 +3,8 @@
 `scripts/ci/native_queue_title.py` and `scripts/ci/pr_title_validator.js` supply the
 actual-G source for the existing `validate-title` context. This source candidate
 contains the applied cutover; `.ci/staged/17903-root-triggers.patch` remains its
-historical rollback fixture. Ordinary PR/metadata/manual roots
+historical rollback fixture, with `.ci/staged/19261-title-authority.patch`
+retaining the independent evaluator-selection delta. Ordinary PR/metadata/manual roots
 are removed from this workflow; its only entry is native `merge_group.checks_requested`.
 
 The source is built and tested, but **not activated**. The checked-in
@@ -19,6 +20,11 @@ The existing `native_queue.GitHub` transport now has a second fixed **read** que
 `Repository.mergeQueue(branch: ...)`. Its existing immediate-enqueue interface and
 trusted authorization callback retain their meanings. This title leaf never invokes
 enqueue, checks publication, labels, comments or merge.
+
+Before subject proof, independently select immutable evaluator **T** from the
+fixed repository's protected `main` branch and matching `refs/heads/main` ref.
+GitHub repository identity and protection/ref observations, not event B or G,
+establish that selection. Missing observations, lost protection or movement refuse.
 
 1. Bind actual event B/G/ref, repository identity, run ID and attempt. Read both the
    current Actions run and exact attempt, the Actions App `15368` check suite, and
@@ -125,16 +131,24 @@ and mixed generations refuse. The old v1 intake cannot authorize this path.
 ## Source custody and title behavior
 
 The G workflow has only contents/actions/checks/pull-requests/issues **read**
-permissions. It checks out immutable protected B into `trusted-title-source` with
-credentials unpersisted. Python and JavaScript execute only from that checkout;
-candidate G is fetched only into a private bare Git store. B supplies the executed
-Python/JavaScript and the current configured publisher App/name/policy. The intake
+permissions. Before checkout, its pinned bootstrap action reads the fixed
+repository identity, default branch, protected `main` branch and exact
+`refs/heads/main` commit ref. They must agree on immutable evaluator SHA **T**.
+The checkout pins T into `trusted-title-source` with credentials unpersisted;
+Python verifies its checkout HEAD equals that independently selected SHA.
+Python and JavaScript execute only from T. Candidate B/G are composition subjects,
+not evaluator authority; G is fetched only into a private bare Git store.
+
+T supplies the executed Python/JavaScript and current App/name/policy. The intake
 supplies the separately authorized target generation at G. A reviewed G may change
-the workflow tree, helpers or future policy while this run continues to execute
-only B's evaluator and current trust configuration. Requiring the target closure to
-equal B would prevent both the first final cutover and later governed CI changes.
-The receipt retains `producer_generation=B` for execution provenance and the
-separate `producer_generation_sha256` for target authorization.
+the workflow tree, helpers or future policy while this run still executes T's
+evaluator and trust configuration. Requiring the target closure to equal B or T
+would prevent governed CI changes. The receipt's `trusted_evaluator` records T's
+repository, protected main ref and immutable SHA, separately from the admitted
+`producer_generation_sha256` and closure. It never labels event B as execution
+provenance. Protected-main identity, protection and SHA are re-read before and
+after composition and at final recheck. A moved SHA, mismatched ref or lost
+protection invalidates the receipt, even if B/G and every H remain unchanged.
 
 The independent trusted admission/qualification owner still enforces the actual
 G caller's reviewed workflow/helper closure and exact native run/attempt/jobs:
@@ -143,12 +157,14 @@ announcing this helper passed. The title leaf's read-only result does not replac
 that installed protection boundary or authorize a new current App binding.
 
 Before the first cutover G, the additive preparation must be installed on protected
-B with this v2 reader and the actual qualified App/name policy. The checked-in
-policy remains disabled until that authorized native installation. The root-owned
-publisher then admits the reviewed final G closure, which can differ from B.
-This resolves the source-generation cycle; it does not supply the first protected
-installation, native workflow registration or effective settings authority, and
-it does not authorize an ordinary-lifecycle CI bootstrap.
+main as T, with this v2 reader and the actual qualified App/name policy. The
+checked-in policy remains disabled until that authorized native installation. The
+root-owned publisher then admits the reviewed final G closure, which can differ
+from T and event B. Protected-branch metadata is an independent source-selection
+input, not proof of the full effective protection union or installed publisher.
+This resolves the source-level evaluator-selection cycle; it does not supply the
+first protected installation, native workflow registration or effective settings
+authority, and it does not authorize an ordinary-lifecycle CI bootstrap.
 
 The JavaScript preserves the prior production rule body. Its exact archived source
 is `.ci/retired-workflows/pr-title-check.yml`; native Node tests compare pass/fail,
@@ -179,6 +195,11 @@ stacked edit/revert, omitted/extra/conflicted members and transitive producer
 substitution. An executed mutant that drops consumed H ancestry must fail the
 stacked fixtures. API controls cover incomplete/ambiguous membership, stale attempts,
 wrong Apps, missing/copied/expired intake, same-tree H rewriting and metadata races.
-The workflow contract requires protected B execution, read-only permissions, all
-members, and a final currentness read with no skip/continue-on-error escape. These
-are source receipts; native qualification and protected M still need actual readback.
+The workflow contract requires independently selected protected-main T execution,
+read-only permissions, all members, and final currentness reads with no
+skip/continue-on-error escape. Controls accept T distinct from B/G and reject
+speculative-B authority, wrong repository/ref, missing protection, checkout
+substitution and protected-main movement. The actual bootstrap body is executed
+under positive and adversarial API fixtures. These are source receipts; native
+qualification, deployed evaluator authority and protected M still need actual
+readback.

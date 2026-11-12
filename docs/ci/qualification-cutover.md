@@ -141,16 +141,22 @@ on `merge_group` only. Generated PR publication still dispatches no CI. The
 security ratchet remains advisory and explicitly dispatched. `just ci-contracts`
 uses the same no-development-event source profile as the actual-G contract job.
 The additive composition patches preserve the original trigger fixture unchanged.
-For source rehearsal, apply root-triggers, sixth-gate-composition, then
-trigger-policy-composition. Reverse trigger-policy-composition first, then
-sixth-gate-composition, then root-triggers. This is not runtime rollback or proof
-that GitHub installed the sixth context.
+For source rehearsal, apply root-triggers, sixth-gate-composition,
+trigger-policy-composition, `19261-hosted-rust-composition.patch`, then
+`19261-title-authority.patch`. Reverse title-authority first, followed by
+hosted-rust-composition, trigger-policy-composition, sixth-gate-composition,
+and root-triggers. This is not runtime rollback or proof that GitHub installed
+the sixth context.
 
-The November 11, 2026 observation still showed main ruleset `16664791` with five
-Actions-bound contexts and disabled queue ruleset `17372329`. Desired source has
-six; live six-context enforcement is **NOT_PROVEN**. Install and measure the
-complete protection-facing admission/G obligation design together, without
-weakening the five existing requirements or substituting any-App checks.
+The November 12, 2026 read of repository rulesets `16664791` and `17372329`
+showed five Actions-bound requirements and an active native queue. Queue
+configuration was SQUASH/ALLGREEN, one build and one landing at a time, a
+three-minute wait and a sixty-minute check timeout. This observation does not
+attribute the activation or establish the full additive protection union.
+Desired source has six obligations; live six-context enforcement remains
+**NOT_PROVEN**. Install and measure the complete protection-facing admission/G
+design together, without weakening the five requirements or substituting
+any-App checks.
 
 The recorded ruleset requires these five contexts bound to GitHub Actions App
 `15368`: `Compile All Targets (bit-rot guard)`, `Conflict marker check`,
@@ -164,17 +170,19 @@ current merely because another executor cannot reproduce it.
 | --- | --- |
 | `Compile All Targets (bit-rot guard)` | `ci.yml:integration-required` joins unchanged `check-all-targets` execution and the existing `merge-gate` selected integration aggregate in one run/attempt. Native execution remains unobserved. |
 | `Conflict marker check` | `ci.yml:conflict-markers`, retained on actual G. Applicability and execution must be observed on the canary. |
-| `validate-title` | `pr-title-check.yml:validate-title` now has a read-only native G producer: complete ordered prefix, App-authenticated v2 H intake and admitted target closure, protected B execution, isolated Git composition, current per-member title rules and final readback. Its App policy remains disabled pending real publisher binding/native canary; see [native title proof](native-queue-title.md). |
-| `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result`, with actual-G skipped-route refusal. Preserve route execution and canonical receipt semantics; native producer/attempt acceptance remains unobserved. |
+| `validate-title` | `pr-title-check.yml:validate-title` now has a read-only native G producer: complete ordered prefix, App-authenticated v2 H intake and admitted target closure, independently selected protected-main T execution, isolated Git composition, current per-member title rules and final readback. Its App policy remains disabled pending real publisher binding/native canary; see [native title proof](native-queue-title.md). |
+| `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result` joins the sole GitHub-hosted Rust Small producer in the same run, with exact-G checkout and producer run/attempt output binding and fail-closed missing/cancelled proof. Canonical fmt and typed Rust receipt semantics stay with their existing owners; native producer/attempt acceptance remains unobserved. |
 | `ripr+ New Gap Gate` | `ripr.yml:ripr`, retained actual-G route and separately purposed cache seed. Native exact-subject execution and truthful no-gap/failure accounting remain to be observed. |
 | `Gate Enforcement Contract` | Desired sixth requirement: `gate-enforcement-contract.yml:contract`, actual G only and Actions-bound (`15368`). Offline source/contract proof is available; live required binding, native execution and final landing remain NOT_PROVEN. |
 
-Two source-to-activation findings remain open. Existing Actions-bound H
-requirements cannot be treated as satisfied by G-only workflows before enqueue.
-The title/non-Rust source's event-B checkout also does not establish independently
-trusted protected code when B is a speculative earlier group. Native admission
-and trusted evaluator selection must resolve these findings before activation;
-the disabled App policy is not evidence that either join is complete.
+The native admission source-to-activation finding remains open: existing
+Actions-bound H requirements cannot be treated as satisfied by G-only workflows
+before enqueue. The title source now independently selects immutable evaluator T
+from GitHub's protected main branch and exact ref, then rechecks that authority;
+event B and G remain subjects, never evaluator authority by themselves. This
+source proof does not install the evaluator or establish the full protection
+union. Non-Rust evaluator custody and verified native admission still require
+their own activation proof; the disabled App policy does not complete those joins.
 
 ### Same-run integration dependencies
 
@@ -197,11 +205,27 @@ The other protected aggregates retain their own native dependencies:
 
 | Aggregate | Direct native needs |
 | --- | --- |
-| `rust-small-result` | `route-rust-small`, `rust-small-cx53`, `rust-small-cx43`, `rust-small-github`, `rust-small-fallback` |
+| `rust-small-result` | `rust-small-github` (GitHub-hosted, exact G only) |
 | `ripr` | `route-ripr`, `ripr-selfhosted`, `ripr-github`, `ripr-fallback` |
 
-Those aggregates preserve their route selection, fallback and receipt checks. The
-historical main-red probe remains a diagnostic/refusal owner; missing main evidence
+Rust Small now uses only the existing GitHub-hosted producer. Its old runner
+inventory/token, forced-target dispatcher, self-hosted pools and fallback are
+retired. Workspace fmt and the canonical `rust-small-proof` command remain
+mandatory, with a 60-minute producer budget, two build jobs, two test threads
+and disabled incremental builds. The 35-minute result budget still covers the
+existing bounded main-red refusal. Native-group concurrency cannot be cancelled
+by ordinary Draft, Ready or synchronize events because none are subscribed.
+The old PR supersession API path no longer applies; cancelled G proof stays
+blocking and is not reported as a product failure. A result-only partial rerun
+cannot reuse an older producer attempt on the same G: the producer's run ID and
+attempt must equal the current result's run ID and attempt. Rerun the producer
+with its dependent result when fresh qualification is needed. RIPR's separate routing and
+receipt checks are unchanged by this Rust-only composition.
+
+The canonical task still owns its typed receipt; this routing change does not
+add artifact custody or an App publisher. Candidate/G workflow execution also
+does not establish independently trusted evaluator selection. Those activation
+joins remain separate and NOT_PROVEN. The historical main-red probe remains a diagnostic/refusal owner; missing main evidence
 is not a request to restore routine main Actions. It cannot replace current G proof.
 
 ### Existing API and semver advisory boundaries
@@ -255,14 +279,15 @@ no supported route is established. Keep affected admissions held; independent
 local implementation, review and verified safe source preservation may continue.
 
 The Perl additive preparation must place the v2 title reader and its actual
-qualified App/name policy on protected B before the first final cutover G. The
-publisher's root-authorized H request freezes the intended producer generation;
+qualified App/name policy on protected main before the first final cutover G.
+The job independently resolves and pins that branch's immutable evaluator T.
+The publisher's root-authorized H request freezes the intended producer generation;
 its authenticated intake carries the exact target closure, including object kinds,
-OIDs and modes. B remains the executable helper/current-policy source, while the
-reviewed target `.github` tree and helpers at G may differ. This permits governed
-CI changes without requiring the final cutover to have already landed on B.
-The checked-in policy remains disabled: publishing this reader neither installs
-the real binding nor supplies the permitted protected operation that puts it on B.
+OIDs and modes. T supplies the executable helper/current policy; B and G remain
+composition subjects. The reviewed target `.github` tree and helpers at G may differ,
+permitting governed CI changes without requiring the final cutover to have already
+landed at T. The checked-in policy remains disabled: publishing this reader neither
+installs the real binding nor supplies the permitted protected installation.
 
 The packet contains three coordinated generations:
 
