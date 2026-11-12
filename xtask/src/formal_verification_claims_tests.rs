@@ -4,14 +4,18 @@ use super::*;
 use std::fs;
 use tempfile::{TempDir, tempdir};
 
-const POLICY: &str = "gates:\n  - name: sample\n    tier: merge_gate\n    required: true\n    command: cargo test\n";
+const POLICY: &str =
+    "gates:\n  - name: sample\n    tier: merge_gate\n    required: true\n    command: cargo test\n";
 const WORKFLOW: &str = "jobs:\n  check-all-targets:\n    steps:\n      - run: cargo test\n";
 
 fn rejects<T>(result: Result<T>, expected: &str) -> Result<()> {
     match result {
         Ok(_) => bail!("negative control unexpectedly passed; expected {expected}"),
         Err(error) => {
-            ensure!(format!("{error:#}").contains(expected), "wrong failure: {error:#}; expected {expected}");
+            ensure!(
+                format!("{error:#}").contains(expected),
+                "wrong failure: {error:#}; expected {expected}"
+            );
             Ok(())
         }
     }
@@ -19,8 +23,20 @@ fn rejects<T>(result: Result<T>, expected: &str) -> Result<()> {
 
 fn commit(root: &Path) -> Result<()> {
     git(root, &["add", "--all"])?;
-    git(root, &["-c", "user.name=Formal fixture", "-c", "user.email=formal@example.invalid",
-        "-c", "commit.gpgsign=false", "commit", "-m", "fixture"])?;
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=Formal fixture",
+            "-c",
+            "user.email=formal@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+    )?;
     Ok(())
 }
 
@@ -43,8 +59,22 @@ fn registry_is_valid_at_committed_head() -> Result<()> {
 
 #[test]
 fn paths_reject_ambiguous_platform_and_pathspec_forms() {
-    for path in ["", "/tmp/x", "../x", "a/../x", "a/./x", "a//x", "a/", "C:/x",
-        "a\\x", ":(glob)*", "a*", "archive/x", "a\nx", "./source.rs"] {
+    for path in [
+        "",
+        "/tmp/x",
+        "../x",
+        "a/../x",
+        "a/./x",
+        "a//x",
+        "a/",
+        "C:/x",
+        "a\\x",
+        ":(glob)*",
+        "a*",
+        "archive/x",
+        "a\nx",
+        "./source.rs",
+    ] {
         assert!(!valid_path(path), "accepted {path:?}");
     }
     assert!(valid_path(".github/workflows/ci.yml"));
@@ -109,8 +139,13 @@ fn committed_symlink_is_not_an_evidence_source() -> Result<()> {
 fn source_markers_cannot_be_empty_or_stale() -> Result<()> {
     let directory = fixture()?;
     let snapshot = Snapshot::open(directory.path())?;
-    for (marker, failure) in [("", "empty source marker"), ("pub struct Absent;", "stale source marker")] {
-        rejects(snapshot.source(&SourceRef { path: "source.rs".to_owned(), marker: marker.to_owned() }), failure)?;
+    for (marker, failure) in
+        [("", "empty source marker"), ("pub struct Absent;", "stale source marker")]
+    {
+        rejects(
+            snapshot.source(&SourceRef { path: "source.rs".to_owned(), marker: marker.to_owned() }),
+            failure,
+        )?;
     }
     Ok(())
 }
@@ -119,16 +154,31 @@ fn source_markers_cannot_be_empty_or_stale() -> Result<()> {
 fn removed_gate_with_surviving_comment_is_rejected() -> Result<()> {
     required_gate(POLICY, "sample", "cargo test")?;
     let commented = POLICY.lines().map(|line| format!("# {line}\n")).collect::<String>();
-    rejects(required_gate(&format!("gates: []\n{commented}"), "sample", "cargo test"), "missing or duplicated")
+    rejects(
+        required_gate(&format!("gates: []\n{commented}"), "sample", "cargo test"),
+        "missing or duplicated",
+    )
 }
 
 #[test]
 fn advisory_wrong_command_and_duplicate_gates_are_rejected() -> Result<()> {
-    rejects(required_gate(&POLICY.replace("required: true", "required: false"), "sample", "cargo test"), "not required")?;
-    rejects(required_gate(&POLICY.replace("merge_gate", "advisory"), "sample", "cargo test"), "wrong tier")?;
-    rejects(required_gate(&POLICY.replace("cargo test", "echo skipped"), "sample", "cargo test"), "command differs")?;
+    rejects(
+        required_gate(&POLICY.replace("required: true", "required: false"), "sample", "cargo test"),
+        "not required",
+    )?;
+    rejects(
+        required_gate(&POLICY.replace("merge_gate", "advisory"), "sample", "cargo test"),
+        "wrong tier",
+    )?;
+    rejects(
+        required_gate(&POLICY.replace("cargo test", "echo skipped"), "sample", "cargo test"),
+        "command differs",
+    )?;
     let (_, row) = POLICY.split_once('\n').context("fixture policy row")?;
-    rejects(required_gate(&format!("{POLICY}{row}"), "sample", "cargo test"), "missing or duplicated")
+    rejects(
+        required_gate(&format!("{POLICY}{row}"), "sample", "cargo test"),
+        "missing or duplicated",
+    )
 }
 
 #[test]
@@ -148,7 +198,8 @@ fn forged_rollout_and_empty_runners_are_rejected() -> Result<()> {
     let snapshot = Snapshot::open(directory.path())?;
     let mut registry = registry()?;
     registry.claims.truncate(1);
-    registry.claims[0].target = SourceRef { path: "source.rs".to_owned(), marker: "Original".to_owned() };
+    registry.claims[0].target =
+        SourceRef { path: "source.rs".to_owned(), marker: "Original".to_owned() };
     registry.claims[0].status = Status::Planned;
     rejects(validate(&snapshot, &registry), "planned claim advertises evidence")?;
     registry.claims[0].status = Status::ImplementedUnwired;
@@ -179,7 +230,9 @@ fn reports_preserve_identity_limits_and_not_evaluated_result() -> Result<()> {
     assert_eq!(json["inventory_inputs"]["source.rs"], snapshot.inputs.borrow()["source.rs"]);
     assert!(text.contains(&snapshot.commit) && text.contains(&snapshot.tree));
     for claim in &registry.claims {
-        for value in [&claim.id, &claim.bound, &claim.assumptions, &claim.limitations, &claim.counterexample] {
+        for value in
+            [&claim.id, &claim.bound, &claim.assumptions, &claim.limitations, &claim.counterexample]
+        {
             assert!(text.contains(value), "report omitted {value}");
         }
         assert!(text.contains(claim.status.as_str()));
