@@ -235,7 +235,11 @@ fn explicit_bound(bound: &str) -> bool {
     bound.split_whitespace().any(|word| word.parse::<u64>().is_ok_and(|value| value > 0))
 }
 
-fn required_gate(policy: &str, name: &str, runner: &str) -> Result<()> {
+fn required_gate(policy: &str, declaration: &str, runner: &str) -> Result<String> {
+    let expected: Vec<serde_yaml_ng::Value> = serde_yaml_ng::from_str(declaration)?;
+    ensure!(expected.len() == 1, "gate declaration must name exactly one policy row");
+    let declared = expected[0].as_mapping().context("gate declaration is not a mapping")?;
+    let name = expected[0]["name"].as_str().context("gate declaration has no name")?;
     let policy: serde_yaml_ng::Value = serde_yaml_ng::from_str(policy)?;
     let gates = policy["gates"].as_sequence().context("gate policy has no gates sequence")?;
     let matching: Vec<_> =
@@ -246,7 +250,12 @@ fn required_gate(policy: &str, name: &str, runner: &str) -> Result<()> {
     ensure!(gate["tier"].as_str() == Some("merge_gate"), "gate has wrong tier: {name}");
     ensure!(gate["command"].as_str() == Some(runner), "gate command differs: {name}");
     ensure!(gate["quarantine"].as_bool() == Some(false), "gate is quarantined: {name}");
-    Ok(())
+    let active = gate.as_mapping().context("required gate is not a mapping")?;
+    ensure!(
+        declared.iter().all(|(key, value)| active.get(key) == Some(value)),
+        "gate marker differs from active policy row: {name}"
+    );
+    Ok(name.to_owned())
 }
 
 const CI_ADMISSION_PREDICATE: &str = "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
@@ -272,7 +281,19 @@ fn required_ci_admission(
     Ok(())
 }
 
-fn required_gate_selected(workflow: &str, name: &str) -> Result<()> {
+fn required_gate_selected(workflow: &str, name: &str, declaration: &str) -> Result<()> {
+    let expected: serde_yaml_ng::Value = serde_yaml_ng::from_str(declaration)?;
+    ensure!(
+        expected.as_mapping().is_some_and(|row| row.len() == 1)
+            && expected["gates"].as_str().is_some(),
+        "workflow marker must declare exactly one gates field"
+    );
+    let expected_gates: Vec<_> = expected["gates"]
+        .as_str()
+        .context("workflow marker gates are not text")?
+        .split_whitespace()
+        .collect();
+    ensure!(expected_gates.contains(&name), "workflow marker does not name its gate");
     let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(workflow)?;
     let job = &workflow["jobs"]["merge-gate-shards"];
     ensure!(job.as_mapping().is_some(), "merge-gate-shards job missing");
@@ -287,15 +308,25 @@ fn required_gate_selected(workflow: &str, name: &str) -> Result<()> {
     ensure!(matrix.len() == 1, "unsupported shard matrix expansion or exclusion");
     let rows =
         job["strategy"]["matrix"]["include"].as_sequence().context("shard matrix missing")?;
-    let count = rows
+    let selected_rows: Vec<_> = rows
         .iter()
         .filter(|row| {
             row["gates"]
                 .as_str()
                 .is_some_and(|value| value.split_whitespace().any(|gate| gate == name))
         })
-        .count();
-    ensure!(count == 1, "gate must be selected by exactly one shard: {name}");
+        .collect();
+    ensure!(selected_rows.len() == 1, "gate must be selected by exactly one shard: {name}");
+    let active_gates: Vec<_> = selected_rows[0]["gates"]
+        .as_str()
+        .context("selected shard gates are not text")?
+        .split_whitespace()
+        .collect();
+    // The shipped marker declares a row prefix, not every unrelated gate in the shard.
+    ensure!(
+        active_gates.starts_with(&expected_gates),
+        "workflow marker differs from active shard row: {name}"
+    );
     let steps = job["steps"].as_sequence().context("shard steps missing")?;
     let selected: Vec<_> = steps
         .iter()
@@ -379,17 +410,14 @@ fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Resul
                 policy.path == ".ci/gate-policy.yaml",
                 "required gate policy path must be .ci/gate-policy.yaml"
             );
-            let expected: Vec<serde_yaml_ng::Value> = serde_yaml_ng::from_str(&policy.marker)?;
-            ensure!(expected.len() == 1, "gate declaration must name exactly one policy row");
-            let name = expected[0]["name"].as_str().context("gate declaration has no name")?;
             let runner = claim.runner.as_deref().context("gate runner missing")?;
-            required_gate(&snapshot.source(policy)?, name, runner)?;
+            let name = required_gate(&snapshot.source(policy)?, &policy.marker, runner)?;
             let workflow = authority.workflow.as_ref().context("missing workflow binding")?;
             ensure!(
                 workflow.path == ".github/workflows/ci.yml",
                 "required gate workflow path must be .github/workflows/ci.yml"
             );
-            required_gate_selected(&snapshot.source(workflow)?, name)?;
+            required_gate_selected(&snapshot.source(workflow)?, &name, &workflow.marker)?;
         }
     }
     Ok(())

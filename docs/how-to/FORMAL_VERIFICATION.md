@@ -62,7 +62,7 @@ context, integration binding, and applicability.
 
 The inventory suite is appended as command 39 of
 [`required-merge-surface.sh`](../../scripts/ci/required-merge-surface.sh), which the
-`check-all-targets` job invokes after compilation. It requires all 17 named Linux
+`check-all-targets` job invokes after compilation. It requires all 21 named Linux
 controls, an exact passing denominator, no ignored or filtered tests, and the actual
 CLI check. All 38 original commands remain unchanged. The producer's extension test
 uses its current command count while separately preserving the frozen historical
@@ -151,9 +151,11 @@ The existing #19147 resource-rejection pilot is a separate, bounded historical
 candidate. Its native TLC controls, production controls, and current source binding
 must be qualified; Python adapter tests alone cannot qualify the model.
 
-The unsafe policy's ten semantic sites and the executable baseline's twelve syntax
-occurrences require reconciliation under #19307. Do not raise a ceiling or discard a
-site merely to make those counts equal. Cryptographic identity checks concern the
+The unsafe policy explicitly permits ten counted production unsafe sites, while
+the executable syntax baseline is twelve. The discrepancy between policy and
+enforcement remains unresolved under #19307; no validated semantic/syntax mapping
+explains it. Do not raise a ceiling or discard a site merely to make those counts
+equal. Cryptographic identity checks concern the
 encoding and domain contracts; they must not claim SHA-256 is mathematically injective.
 
 ## Native execution: the next implementation slices

@@ -354,7 +354,7 @@ cargo test -p xtask --bin formal-verification-claims --locked -- \
   --test-threads=1 --color never | tee "$RUNNER_TEMP/formal-verification-inventory-tests.log"
 # This canonical producer runs on Linux, including the Unix symlink control.
 # Keep the exact denominator and named controls synchronized with the suite.
-grep -Eq '^test result: ok\. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+grep -Eq '^test result: ok\. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
   "$RUNNER_TEMP/formal-verification-inventory-tests.log"
 for test_name in \
   registry_is_valid_at_committed_head \
@@ -373,7 +373,11 @@ for test_name in \
   forged_rollout_and_empty_runners_are_rejected \
   unknown_schema_fields_and_enum_values_fail_closed \
   reports_preserve_identity_limits_and_not_evaluated_result \
-  native_proof_cannot_be_promoted_by_metadata; do
+  native_proof_cannot_be_promoted_by_metadata \
+  git_selectors_cannot_redirect_snapshot_or_fixture_mutations \
+  containing_job_admission_cannot_be_disabled_or_replaced \
+  required_gate_markers_bind_active_rows \
+  removed_actual_unsafe_gate_with_retained_marker_is_rejected; do
   grep -Fx "test tests::$test_name ... ok" "$RUNNER_TEMP/formal-verification-inventory-tests.log"
 done
 cargo run -p xtask --bin formal-verification-claims --locked -- --check

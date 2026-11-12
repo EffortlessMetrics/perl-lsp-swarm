@@ -25,7 +25,7 @@ pub const REGISTRY_JSON: &str = r##"{
           "marker": "cargo run -p xtask --bin formal-verification-claims --locked -- --check"
         }
       },
-      "bound": "The strict registry rows, validator, and consulted Git blobs at the evaluated commit; all 17 inventory controls are selected by the Linux canonical merge surface.",
+      "bound": "The strict registry rows, validator, and consulted Git blobs at the evaluated commit; all 21 inventory controls are selected by the Linux canonical merge surface.",
       "assumptions": "Source markers are structural bindings; the existing CI admission and execution contracts remain dependencies.",
       "limitations": "Inventory validation is not a native proof result. Enforced records the configured canonical route, not a successful run on the current candidate. Complete native proof closure and receipt admission remain #19297 work.",
       "counterexample": "The checker exits non-zero and names the malformed row or stale binding; canonical CI refuses zero, skipped, filtered, or missing named controls.",
@@ -103,7 +103,7 @@ pub const REGISTRY_JSON: &str = r##"{
       },
       "bound": "The production/test selection and numeric syntax baseline owned by perl-ci-hygiene and ci/unsafe_prod_baseline.txt.",
       "assumptions": "The checker completely classifies the Rust files in its policy scope.",
-      "limitations": "The syntax baseline is 12 while policy describes ten semantic sites; the ratchet does not prove soundness or reconcile that mapping.",
+      "limitations": "The executable syntax baseline is 12 while policy explicitly permits ten counted production unsafe sites; this discrepancy between policy and enforcement remains unresolved, and the ratchet does not prove soundness.",
       "counterexample": "The checker identifies an over-ceiling, unclassified, or undocumented unsafe site.",
       "issue": "#19307"
     },
