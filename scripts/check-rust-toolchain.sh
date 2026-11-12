@@ -8,9 +8,21 @@ if [[ "$#" -gt 1 ]] || [[ "$MODE" != check && "$MODE" != doctor ]]; then
   exit 2
 fi
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
+# Doctor diagnoses the task's selected environment. Do not replace an explicit
+# stable/direct toolchain with the repository pin before inspecting it. This
+# legacy xtask wrapper can compile; it does not itself admit Cargo work.
+if [[ "$MODE" == doctor ]]; then
+  cd "$REPO_ROOT"
+  export RUSTUP_AUTO_INSTALL=0
+  . "$SCRIPT_DIR/lib/cargo-toolchain-guard.sh"
+  cargo_toolchain_guard
+  exec cargo xtask check-toolchain --doctor
+fi
+
+# Default/check retains its existing pin-selection and fallback semantics.
 TOOLCHAIN=""
 if [ -f "$REPO_ROOT/rust-toolchain.toml" ]; then
   TOOLCHAIN=$(awk -F'"' '/channel/{print $2; exit}' "$REPO_ROOT/rust-toolchain.toml")
@@ -34,13 +46,5 @@ else
   . "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 fi
 
-case "$MODE" in
-  check)
-    cd "$REPO_ROOT"
-    exec "${CARGO_CMD[@]}" xtask check-toolchain
-    ;;
-  doctor)
-    cd "$REPO_ROOT"
-    exec "${CARGO_CMD[@]}" xtask check-toolchain --doctor
-    ;;
-esac
+cd "$REPO_ROOT"
+exec "${CARGO_CMD[@]}" xtask check-toolchain

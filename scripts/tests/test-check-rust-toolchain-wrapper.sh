@@ -108,7 +108,7 @@ ARGS
 code=0
 (
   cd "$REPO_ROOT"
-  PATH="${FAKE_BIN}:$PATH" bash "$WRAPPER"
+  PATH="${FAKE_BIN}:$PATH" RUSTUP_TOOLCHAIN=stable bash "$WRAPPER"
 ) > "${CHECK_DIR}/out.txt" 2> "${CHECK_DIR}/err.txt" || code=$?
 assert_exit_zero "delegates default check through pinned rustup toolchain" "$code"
 assert_args_equal "defaults to check-toolchain" "$EXPECTED_CHECK_ARGS" "$FAKE_LOG"
@@ -117,21 +117,88 @@ DOCTOR_DIR="${TMPDIR_BASE}/doctor"
 mkdir -p "$DOCTOR_DIR"
 EXPECTED_DOCTOR_ARGS="${DOCTOR_DIR}/expected-args.txt"
 cat > "$EXPECTED_DOCTOR_ARGS" <<ARGS
-run
-${TOOLCHAIN}
-cargo
 xtask
 check-toolchain
 --doctor
 ARGS
 
+# A stable-only installation must not touch the unavailable repository pin.
+# Keep the Cargo and manager stubs distinct so the existing guard classifies
+# this as direct Cargo; actual rustup-proxy safety has its own guard suite.
+CARGO_LOG="${DOCTOR_DIR}/cargo-args.txt"
+CARGO_ENV_LOG="${DOCTOR_DIR}/cargo-env.txt"
+cat > "${FAKE_BIN}/cargo" <<FAKE
+#!/usr/bin/env bash
+if [[ "\${1:-}" == --version ]]; then
+  printf 'cargo %s (fixture)\n' "\${FAKE_CARGO_VERSION:-1.99.1}"
+  exit 0
+fi
+printf '%s\n' "\$@" > "$CARGO_LOG"
+printf '%s\n' "\${RUSTUP_TOOLCHAIN-<unset>}" "\${RUSTUP_AUTO_INSTALL-<unset>}" "\$PWD" > "$CARGO_ENV_LOG"
+exit "\${FAKE_CARGO_EXIT:-0}"
+FAKE
+chmod +x "${FAKE_BIN}/cargo"
+rm -f "$FAKE_LOG"
 code=0
 (
   cd "$REPO_ROOT"
+  PATH="${FAKE_BIN}:$PATH" RUSTUP_TOOLCHAIN=stable FAKE_RUSTUP_EXIT=87 \
+    bash "$WRAPPER" doctor
+) > "${DOCTOR_DIR}/out.txt" 2> "${DOCTOR_DIR}/err.txt" || code=$?
+assert_exit_zero "doctor uses selected stable with unavailable repository pin" "$code"
+if [[ -f "$CARGO_LOG" ]]; then
+  assert_args_equal "doctor delegates to active Cargo with doctor flag" "$EXPECTED_DOCTOR_ARGS" "$CARGO_LOG"
+else
+  fail "doctor must invoke the selected Cargo"
+fi
+if [[ ! -e "$FAKE_LOG" ]]; then
+  pass "doctor does not select the repository pin through rustup"
+else
+  fail "doctor selected a different toolchain"
+fi
+printf 'stable\n0\n%s\n' "$REPO_ROOT" > "${DOCTOR_DIR}/expected-env.txt"
+if [[ -f "$CARGO_ENV_LOG" ]]; then
+  assert_args_equal "doctor preserves selector, disables auto-install and enters repository" \
+    "${DOCTOR_DIR}/expected-env.txt" "$CARGO_ENV_LOG"
+else
+  fail "doctor must expose its delegated environment"
+fi
+
+# An active diagnostic must not manufacture a selector when none was supplied.
+rm -f "$CARGO_ENV_LOG"
+code=0
+(
+  unset RUSTUP_TOOLCHAIN
   PATH="${FAKE_BIN}:$PATH" bash "$WRAPPER" doctor
 ) > "${DOCTOR_DIR}/out.txt" 2> "${DOCTOR_DIR}/err.txt" || code=$?
-assert_exit_zero "delegates doctor mode through pinned rustup toolchain" "$code"
-assert_args_equal "adds doctor flag" "$EXPECTED_DOCTOR_ARGS" "$FAKE_LOG"
+assert_exit_zero "doctor supports ordinary repository-context resolution" "$code"
+printf '<unset>\n0\n%s\n' "$REPO_ROOT" > "${DOCTOR_DIR}/expected-env.txt"
+if [[ -f "$CARGO_ENV_LOG" ]]; then
+  assert_args_equal "doctor leaves an absent selector absent" \
+    "${DOCTOR_DIR}/expected-env.txt" "$CARGO_ENV_LOG"
+else
+  fail "doctor must invoke Cargo without manufacturing a selector"
+fi
+
+code=0
+PATH="${FAKE_BIN}:$PATH" FAKE_CARGO_EXIT=39 bash "$WRAPPER" doctor \
+  > "${DOCTOR_DIR}/out.txt" 2> "${DOCTOR_DIR}/err.txt" || code=$?
+if [[ "$code" -eq 39 ]]; then
+  pass "doctor preserves delegated failure 39"
+else
+  fail "doctor must preserve delegated failure 39 (got ${code})"
+fi
+
+# A healthy manager on PATH must not hide stale active Cargo from diagnosis.
+rm -f "$CARGO_LOG" "$FAKE_LOG"
+code=0
+PATH="${FAKE_BIN}:$PATH" FAKE_CARGO_VERSION=1.75.0 bash "$WRAPPER" doctor \
+  > "${DOCTOR_DIR}/out.txt" 2> "${DOCTOR_DIR}/err.txt" || code=$?
+if [[ "$code" -eq 78 && ! -e "$CARGO_LOG" && ! -e "$FAKE_LOG" ]]; then
+  pass "doctor rejects stale active Cargo before xtask even with rustup available"
+else
+  fail "doctor must reject stale active Cargo before dispatch (got ${code})"
+fi
 
 FAIL_DIR="${TMPDIR_BASE}/fail"
 mkdir -p "$FAIL_DIR"
@@ -218,12 +285,12 @@ done
 
 # A healthy delegate must not hide excess arguments or execute work for them.
 for mode in check doctor; do
-  rm -f "$FAKE_LOG"
+  rm -f "$FAKE_LOG" "$CARGO_LOG"
   code=0
   PATH="${FAKE_BIN}:$PATH" bash "$WRAPPER" "$mode" extra \
     > "${USAGE_DIR}/out.txt" 2> "${USAGE_DIR}/err.txt" || code=$?
   if [[ "$code" -eq 2 ]] && grep -Fq "Usage:" "${USAGE_DIR}/err.txt" && \
-      [[ ! -e "$FAKE_LOG" && ! -s "${USAGE_DIR}/out.txt" ]]; then
+      [[ ! -e "$FAKE_LOG" && ! -e "$CARGO_LOG" && ! -s "${USAGE_DIR}/out.txt" ]]; then
     pass "rejects excess arguments for $mode without delegation"
   else
     fail "rejects excess arguments for $mode without delegation (got ${code})"
