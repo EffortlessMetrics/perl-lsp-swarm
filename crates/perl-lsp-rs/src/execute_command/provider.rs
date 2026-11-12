@@ -1,6 +1,6 @@
 //! Backend command implementations for run/debug/test and analyzer actions.
 
-use crate::perl_critic::{BuiltInAnalyzer, CriticAnalyzer, CriticConfig, NativeCriticProfile};
+use crate::perl_critic::{BuiltInAnalyzer, CriticAnalyzer, CriticConfig};
 use crate::perl_remediation::PERL_REMEDIATION;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
@@ -311,7 +311,10 @@ impl ExecuteCommandProvider {
     /// service exactly as the pull-diagnostics path sees them. It takes
     /// precedence over the raw sibling fields set by
     /// [`Self::with_native_critic_config`].
-    pub fn with_accepted_critic_snapshot(mut self, snapshot: AcceptedCriticSnapshot) -> Self {
+    pub(crate) fn with_accepted_critic_snapshot(
+        mut self,
+        snapshot: AcceptedCriticSnapshot,
+    ) -> Self {
         self.accepted_critic_snapshot = Some(snapshot);
         self
     }
@@ -321,7 +324,7 @@ impl ExecuteCommandProvider {
     /// request time for the owning workspace root (see
     /// [`Self::effective_critic_state`]). An explicitly attached snapshot
     /// takes precedence.
-    pub fn with_accepted_critic_config(
+    pub(crate) fn with_accepted_critic_config(
         mut self,
         config: perl_lsp_rs_core::config::ServerConfig,
     ) -> Self {
