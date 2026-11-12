@@ -907,6 +907,21 @@ def resource_plan(env, *, git_output_reader=None):
         git_options["output_reader"] = git_output_reader
     worktree = git_path("--show-toplevel", **git_options)
     common = git_path("--path-format=absolute", "--git-common-dir", **git_options)
+    return resource_plan_for(worktree, common, env)
+
+
+def resource_plan_for(worktree, common, env):
+    """Compose paths for an explicit subject, not proof that Git binds the pair.
+
+    Callers supplying another worktree must independently authenticate its
+    worktree/common-dir association and current identities before using the
+    result for retirement or mutation. Path computation grants no ownership.
+    """
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+        if name in env:
+            raise Denied(name + " repository-location override is unsupported; unset it and invoke from the intended worktree")
+    worktree = native_path(os.fspath(worktree))
+    common = native_path(os.fspath(common))
     identity = str(common).casefold() if os.name == "nt" else str(common)
     key = hashlib.sha256(os.fsencode(identity)).hexdigest()[:16]
     base = native_path(env.get("DEVPLANE", str(Path.home() / ".cache" / "devplane")))
