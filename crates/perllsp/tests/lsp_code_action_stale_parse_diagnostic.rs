@@ -2,6 +2,7 @@
 //! Complete output is an independent literal oracle: clean reparse alone also
 //! accepts the wrong edit that closes an empty subroutine at its opening brace.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #[path = "support/real_process.rs"]
 mod real_process;
 
