@@ -17,7 +17,6 @@ and meant to stay in sync with it.
 | `preflight_latest` | `ci.yml` | `preflight-latest-check` | `ubuntu-24.04` | 1 | yes |
 | `conflict_markers` | `ci.yml` | `conflict-markers` | `ubuntu-24.04` | 1 | yes |
 | `pr_title_check` | `pr-title-check.yml` | `validate-title` | `ubuntu-24.04` | 1 | yes |
-| `pr_title_advisory` | `pr-title-advisory.yml` | `title-advisory` | `ubuntu-24.04` | 1 | no |
 | `methodology_gate` | `methodology-gate.yml` | `methodology` | `ubuntu-24.04` | 2 | yes |
 | `pr_smoke` | `ci.yml` | `pr-smoke` | `ubuntu-24.04` | 4 | yes |
 | `merge_gate_shards` | `ci.yml` | `merge-gate-shards` | `ubuntu-24.04` | 24 | yes |

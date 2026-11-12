@@ -599,10 +599,10 @@
     },
     {
       "evidence": "pull-requests: write",
-      "fingerprint": "09ec53b5706798353dc7966047c17adac7966227a1599ffa4c177d0da78863e2",
-      "line": 9,
+      "fingerprint": "c0a31992a5e696706836703e8e58304f045fa68db9c3171c5fa97693a36ef319",
+      "line": 11,
       "message": "PR-triggered workflow grants write authority",
-      "path": ".github/workflows/pr-title-check.yml",
+      "path": ".github/workflows/pr-title-advisory.yml",
       "rule": "pr_write_permission"
     },
     {
