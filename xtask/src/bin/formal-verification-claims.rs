@@ -19,8 +19,7 @@ mod claim_registry;
 const REGISTRY_SOURCE_PATH: &str = "xtask/src/formal_verification_claims_registry.rs";
 const VALIDATOR_PATH: &str = "xtask/src/bin/formal-verification-claims.rs";
 const COMPILED_REGISTRY: &str = claim_registry::REGISTRY_JSON;
-const COMPILED_REGISTRY_SOURCE: &str =
-    include_str!("../formal_verification_claims_registry.rs");
+const COMPILED_REGISTRY_SOURCE: &str = include_str!("../formal_verification_claims_registry.rs");
 const COMPILED_VALIDATOR: &str = include_str!("formal-verification-claims.rs");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
