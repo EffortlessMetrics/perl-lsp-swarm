@@ -8,9 +8,9 @@ const path = require('node:path');
 const test = require('node:test');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-async function loadWorkflowScript() {
+async function loadWorkflowScript(filename) {
   const workflow = fs.readFileSync(
-    path.join(__dirname, '..', '..', '.github', 'workflows', 'pr-title-check.yml'),
+    path.join(__dirname, '..', '..', '.github', 'workflows', filename),
     'utf8',
   );
   const lines = workflow.split(/\r?\n/);
@@ -96,7 +96,12 @@ async function runQueue({
   };
 
   // actions/github-script invokes this exact body as an async function.
-  const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript());
+  const execute = new AsyncFunction(
+    'core',
+    'github',
+    'context',
+    await loadWorkflowScript('pr-title-check.yml'),
+  );
   await execute(core, github, context);
   return { failures, readTitles, infos };
 }
@@ -147,8 +152,18 @@ async function runPr({ pr, existingComments = [] }) {
     info: () => {},
   };
 
-  const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript());
-  await execute(core, github, context);
+  // Validation and advisory writes are separate trusted/base workflows. Drive
+  // both real bodies with the same PR payload so the externally visible result
+  // stays covered without restoring write authority to the required context.
+  for (const filename of ['pr-title-check.yml', 'pr-title-advisory.yml']) {
+    const execute = new AsyncFunction(
+      'core',
+      'github',
+      'context',
+      await loadWorkflowScript(filename),
+    );
+    await execute(core, github, context);
+  }
   return { failures, warnings, created, updated, addedLabels, removedLabels };
 }
 
@@ -332,6 +347,33 @@ test('a PR-event placeholder title reuses the existing bot comment', async () =>
   assert.equal(result.updated.length, 1);
   assert.equal(result.updated[0].id, 42);
   assert.deepEqual(result.addedLabels, ['needs-issue-link']);
+});
+
+test('a missing issue fails required validation while the advisory workflow comments', async () => {
+  const result = await runPr({
+    pr: { number: 7, title: 'feat: missing issue reference', user: { login: 'author' }, labels: [] },
+  });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /must reference an issue/);
+  assert.equal(result.created.length, 1);
+  assert.match(result.created[0], /PR Title Check Failed/);
+  assert.deepEqual(result.addedLabels, []);
+});
+
+test('a real issue reference clears needs-issue-link without an advisory comment', async () => {
+  const result = await runPr({
+    pr: {
+      number: 7,
+      title: 'feat: linked issue (#18255)',
+      user: { login: 'author' },
+      labels: [{ name: 'needs-issue-link' }],
+    },
+  });
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.created, []);
+  assert.deepEqual(result.updated, []);
+  assert.deepEqual(result.addedLabels, []);
+  assert.deepEqual(result.removedLabels, ['needs-issue-link']);
 });
 
 test('the exact compare cap is complete and one over is truncated', async () => {

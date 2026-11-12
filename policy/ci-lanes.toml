@@ -13,7 +13,7 @@ schema_version = 1
 policy = "ci-lanes"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-29"
+updated = "2026-11-12"
 
 # -----------------------------------------------------------------------------
 # Frontdoor / control lanes
@@ -57,6 +57,17 @@ base_lem = 1
 default_pr = true
 blocking = true
 duplicate_of = ["gate:check_conflict_markers"]
+
+[lane.pr_title_advisory]
+description = "Reconcile advisory title comments and placeholder labels on trusted pull_request_target events."
+intent = "PR metadata hygiene"
+runner = "ubuntu_24_04"
+base_lem = 1
+default_pr = true
+blocking = false
+labels = []
+outputs = ["job output"]
+duplicate_of = []
 
 [lane.commit_checks]
 description = "Local staged-tree hygiene gates run via cargo xtask gates --tier commit."

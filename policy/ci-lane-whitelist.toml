@@ -22,7 +22,7 @@ schema_version = 1
 policy = "ci-lane-whitelist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-29"
+updated = "2026-11-12"
 
 # =============================================================================
 # Swarm routed Rust small lanes
@@ -877,6 +877,27 @@ expensive = false
 duplicate_of = []
 review_after = "2026-06-07"
 expires = "2026-11-07"
+
+[[lane]]
+id = "pr_title_advisory"
+workflow = ".github/workflows/pr-title-advisory.yml"
+job = "title-advisory"
+tier = "frontdoor"
+kind = "automation"
+blocking = false
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "ci"
+intent = "Reconcile advisory title comments and needs-issue-link labels without giving the candidate-defined queue validator write authority."
+failure_mode = "Missing issue guidance is absent or stale placeholder labels survive a corrected title."
+proof_obligation = "Create or update the marker comment and add or remove needs-issue-link only on pull_request_target; never emit validate-title or run on merge_group."
+evidence = ["job output"]
+allowed_triggers = ["pull_request_target"]
+expensive = false
+duplicate_of = []
+review_after = "2026-11-12"
+expires = "2027-02-12"
 
 # =============================================================================
 # Lanes added by follow-up B (closing PR 11 LANE_WHITELIST_MISSING warnings)

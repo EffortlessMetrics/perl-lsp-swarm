@@ -49,9 +49,9 @@ required = true
 contract_role = "required-workflow-shape"
 
   # A metadata-only check. It reads the PR title through the API and never
-  # checks out or executes candidate contents, which is what lets it run on
-  # `pull_request_target` with write permission without crossing the trust
-  # boundary. The contract's remaining clauses assume a workflow that builds
+  # checks out or executes candidate contents. Validation is read-only on every
+  # event; advisory PR writes stay in the separate pull_request_target-only
+  # pr-title-advisory.yml workflow. The contract's remaining clauses assume a workflow that builds
   # the candidate; they are the wrong requirements here rather than unmet ones.
   [[check.exemption]]
   clause = "pull-request-trigger"

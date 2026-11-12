@@ -10,9 +10,14 @@ on:
   merge_group: {}
   workflow_dispatch: {}
 
+# Candidate-authored merge-group definitions inherit this read-only boundary.
+# Advisory PR comments and labels live in pr-title-advisory.yml, whose sole
+# pull_request_target trigger keeps its write token trusted-sourced.
 permissions:
-  pull-requests: write
   checks: write
+  contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
   validate-title:
@@ -262,108 +267,22 @@ jobs:
               return;
             }
 
-            const BOT_MARKER = '<!-- pr-title-check-bot -->';
-            const issueGuidance = [
-              'For Codex or other agent-authored PRs: prefer filing the plan as a GitHub issue first, then reference it in the title (e.g. `(#1234)`).',
-              '',
-              'The issue should preserve the plan context: problem, scope, constraints, files or surfaces, validation, and explicit non-goals.',
-              '',
-              'If you genuinely cannot determine the issue number, use the placeholder `(#0000)` — do NOT guess a real issue number, because a wrong-but-real reference silently pollutes an unrelated issue. `(#0000)` passes this check (non-blocking) but flags the PR with `needs-issue-link`; a real issue must be linked before merge.',
-              '',
-              '`skip-title-check` is reserved for maintainer-owned exceptions.',
-            ].join('\n');
-            const upsertTitleCheckComment = async (commentBody) => {
-              // Deduplicate: find and update existing bot comment instead of posting a new one.
-              const { data: comments } = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-              });
-
-              const existing = comments.find(c =>
-                c.user.type === 'Bot' && c.body && c.body.includes(BOT_MARKER)
-              );
-
-              if (existing) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: existing.id,
-                  body: commentBody,
-                });
-                core.info('Updated existing bot comment.');
-              } else {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pr.number,
-                  body: commentBody,
-                });
-                core.info('Posted new bot comment.');
-              }
-            };
-
             if (verdict.kind === 'missing-issue') {
               core.setFailed(
                 `PR title must reference an issue (e.g. "feat: add thing (#42)"). ` +
                 `Codex/agent PRs should file the plan as an issue first. Got: "${title}"`
               );
-
-              const commentBody = [
-                '## \u26a0\ufe0f PR Title Check Failed',
-                '',
-                BOT_MARKER,
-                '',
-                'This PR\'s title does not include an **issue reference** (`#<number>` outside of version strings).',
-                '',
-                '**Expected format:** `type: description (#1234)`',
-                '',
-                issueGuidance,
-                '',
-                `Current title: \`${title}\``,
-              ].join('\n');
-
-              await upsertTitleCheckComment(commentBody);
               return;
             }
 
             // Zero-valued references (#0 / #0000) are the sanctioned placeholder
-            // for "issue number not yet known" (issue #724). They are NON-BLOCKING:
-            // the check passes, but the PR is flagged with `needs-issue-link` and a
-            // real issue must be linked before merge (ops is the backstop). This
-            // removes any incentive to guess a real issue number \u2014 a wrong-but-real
-            // reference silently pollutes an unrelated issue's thread.
+            // for "issue number not yet known" (issue #724). They are NON-BLOCKING.
+            // The separate pull_request_target-only advisory workflow owns the
+            // comment and needs-issue-link reconciliation.
             if (verdict.kind === 'placeholder') {
               core.info(
-                `Placeholder issue reference "${verdict.placeholder}" accepted (non-blocking). ` +
-                `Flagging needs-issue-link.`
+                `Placeholder issue reference "${verdict.placeholder}" accepted (non-blocking).`
               );
-              const commentBody = [
-                '## \u2139\ufe0f PR Title \u2014 placeholder issue reference',
-                '',
-                BOT_MARKER,
-                '',
-                `This PR title uses the placeholder issue reference \`${verdict.placeholder}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
-                '',
-                'If you know the issue, update the title to reference it, e.g. `(#1234)`. Never guess a real issue number.',
-                '',
-                issueGuidance,
-                '',
-                `Current title: \`${title}\``,
-              ].join('\n');
-
-              await upsertTitleCheckComment(commentBody);
-              try {
-                await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pr.number,
-                  labels: ['needs-issue-link'],
-                });
-              } catch (e) {
-                core.warning(`Could not add needs-issue-link label: ${e.message}`);
-              }
-              core.info('PR title passes validation (placeholder reference).');
               return;
             }
 
@@ -381,28 +300,6 @@ jobs:
                 `Referenced issue #${issueNumber} was not found. Please verify the issue number.`
               );
               // Don't fail the check for this — it may be a private/internal reference
-            }
-
-            // Self-clearing needs-issue-link: this check re-runs on `edited` and
-            // `synchronize`, so once a PR's title carries a real (non-placeholder)
-            // issue reference, drop the label instead of leaving it for a manual
-            // clear at merge time. Per #3356: the title was fixed (a real issue
-            // ref added, this check went green) but `needs-issue-link` survived
-            // and blocked an ops merge under the "no needs-* label may merge"
-            // doctrine — the label-writer never reconciled its own label.
-            const labels = labelsOf(pr);
-            if (labels.includes('needs-issue-link')) {
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pr.number,
-                  name: 'needs-issue-link',
-                });
-                core.info(`Removed needs-issue-link: title now references real issue #${issueNumber}.`);
-              } catch (e) {
-                core.warning(`Could not remove needs-issue-link label: ${e.message}`);
-              }
             }
 
             core.info('PR title passes validation.');
