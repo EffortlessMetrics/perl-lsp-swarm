@@ -2,7 +2,7 @@
 //! All source bindings are read from one immutable Git tree; no target code runs.
 //! Maintainer runbook: docs/how-to/FORMAL_VERIFICATION.md.
 
-#![allow(clippy::print_stderr, clippy::print_stdout)]
+#![expect(clippy::print_stdout, clippy::print_stderr, reason = "Usage, JSON/Markdown, NOT_PROVEN")]
 
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
