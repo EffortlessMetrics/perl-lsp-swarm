@@ -44,35 +44,38 @@ jobs:
               "                if stat.S_ISDIR(metadata.st_mode):\n                    if depth >= max_depth:\n",
               "                if stat.S_ISDIR(metadata.st_mode):\n                    directories.append((path, observation[2]))\n                    if depth >= max_depth:\n",
           )
-          replace_once(
-              "scripts/storage_observation.py",
-              "            except (OSError, Denied, Unknown, ValueError):\n                errors.add(\"unreadable_linked_or_unsupported_entry\")\n        allocated_known = all(value[1] is not None for value in seen.values())\n",
-              """            except (OSError, Denied, Unknown, ValueError):
-                  errors.add("unreadable_linked_or_unsupported_entry")
-          # A directory can change after its own listing without changing the
-          # named root. Recheck every traversed directory under the same finite
-          # budget before treating retained byte totals as complete.
-          for directory, recorded in directories:
-              try:
-                  budget.take()
-              except Unknown:
-                  errors.add("traversal_clipped")
-                  break
-              try:
-                  native_path(str(directory))
-                  current = directory.lstat()
-                  if (linked(current) or not stat.S_ISDIR(current.st_mode)
-                          or not current.st_ino):
-                      raise Unknown("directory_recheck_invalid")
-                  if facts(current) != recorded:
-                      errors.add("entry_changed")
-              except FileNotFoundError:
-                  errors.add("missing_or_changed_entry")
-              except (OSError, Denied, Unknown, ValueError):
-                  errors.add("unreadable_linked_or_unsupported_entry")
-          allocated_known = all(value[1] is not None for value in seen.values())
-          """,
+          old_tail = (
+              "            except (OSError, Denied, Unknown, ValueError):\n"
+              "                errors.add(\"unreadable_linked_or_unsupported_entry\")\n"
+              "        allocated_known = all(value[1] is not None for value in seen.values())\n"
           )
+          new_tail = (
+              "            except (OSError, Denied, Unknown, ValueError):\n"
+              "                errors.add(\"unreadable_linked_or_unsupported_entry\")\n"
+              "        # A directory can change after its own listing without changing the\n"
+              "        # named root. Recheck every traversed directory under the same finite\n"
+              "        # budget before treating retained byte totals as complete.\n"
+              "        for directory, recorded in directories:\n"
+              "            try:\n"
+              "                budget.take()\n"
+              "            except Unknown:\n"
+              "                errors.add(\"traversal_clipped\")\n"
+              "                break\n"
+              "            try:\n"
+              "                native_path(str(directory))\n"
+              "                current = directory.lstat()\n"
+              "                if (linked(current) or not stat.S_ISDIR(current.st_mode)\n"
+              "                        or not current.st_ino):\n"
+              "                    raise Unknown(\"directory_recheck_invalid\")\n"
+              "                if facts(current) != recorded:\n"
+              "                    errors.add(\"entry_changed\")\n"
+              "            except FileNotFoundError:\n"
+              "                errors.add(\"missing_or_changed_entry\")\n"
+              "            except (OSError, Denied, Unknown, ValueError):\n"
+              "                errors.add(\"unreadable_linked_or_unsupported_entry\")\n"
+              "        allocated_known = all(value[1] is not None for value in seen.values())\n"
+          )
+          replace_once("scripts/storage_observation.py", old_tail, new_tail)
 
           replace_once(
               "scripts/tests/test_storage_doctor.py",
@@ -95,8 +98,6 @@ jobs:
                       with real_scandir(path) as children:
                           entries = list(children)
                           if Path(path) == root:
-                              # DFS pops the last child first: list src then dst so
-                              # dst is observed empty before the payload moves there.
                               entries.sort(key=lambda child: child.name == "dst")
                           if Path(path) == destination:
                               destination_listed = True
