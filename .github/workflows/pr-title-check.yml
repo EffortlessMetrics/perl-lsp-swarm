@@ -148,11 +148,12 @@ jobs:
                 return;
               }
 
+              // The group base may be an earlier synthetic commit. A PR's
+              // recorded base SHA is not required to equal that queue base.
               if (
                 current.number !== member ||
                 current.state !== 'open' ||
                 current.base?.ref?.replace(/^refs\/heads\//, '') !== groupBaseRef ||
-                current.base?.sha !== baseSha ||
                 typeof current.head?.sha !== 'string' ||
                 !shaPattern.test(current.head.sha)
               ) {

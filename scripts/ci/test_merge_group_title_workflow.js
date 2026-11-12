@@ -182,6 +182,19 @@ test('the canonical full queue ref form is accepted', async () => {
   assert.deepEqual(result.legacyCalls, []);
 });
 
+test('a queued PR keeps its recorded base SHA when the group builds on an earlier synthetic commit', async () => {
+  const result = await runQueue({
+    mergeGroup: {
+      base_sha: GROUP_SHA,
+      head_ref: `refs/heads/gh-readonly-queue/main/pr-${PR_NUMBER}-${GROUP_SHA}`,
+    },
+    currentPr: queuePr({ base: { sha: BASE_SHA } }),
+  });
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.readPrs, [PR_NUMBER]);
+  assert.deepEqual(result.legacyCalls, []);
+});
+
 test('a base branch with regex metacharacters is matched literally', async () => {
   const baseRef = 'release/1.0';
   const result = await runQueue({
@@ -241,7 +254,6 @@ test('contradictory current PR identity fails closed', async (t) => {
     ['wrong number', queuePr({ number: PR_NUMBER + 1 })],
     ['closed state', queuePr({ state: 'closed' })],
     ['edited base branch', queuePr({ base: { ref: 'other' } })],
-    ['moved base SHA', queuePr({ base: { sha: GROUP_SHA } })],
     ['missing current head SHA', queuePr({ head: { sha: null } })],
     ['malformed current head SHA', queuePr({ head: { sha: 'head' } })],
   ];

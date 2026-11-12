@@ -120,7 +120,6 @@ fn queue_branch_resolves_the_ref_named_pr_and_fails_closed() {
         "gh-readonly-queue/",
         "pulls.get",
         "current.number !== member",
-        "current.base?.sha !== baseSha",
         "merge group title validation failed",
     ] {
         assert!(queue.contains(needle), "queue branch must contain `{needle}`");
