@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
+import runpy
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "policy" / "validate_non_rust_allowlist.py"
@@ -203,6 +205,42 @@ class PolicyValidatorBuildRoutingTests(unittest.TestCase):
                     result, records, self.repo / "policy/non-rust-allowlist.toml",
                     self.repo / "policy/non-rust-debt.toml", status=status,
                 )
+
+    def test_windows_drive_relative_paths_are_frozen_before_changing_cwd(self):
+        # Portable path-contract control, not a native Windows execution claim.
+        # Each drive has its own current directory. Keep the tail lexical so a
+        # symlink followed by '..' is still interpreted by the filesystem.
+        class WindowsPathOracle(PureWindowsPath):
+            @classmethod
+            def cwd(cls):
+                return cls(r"C:\outside")
+
+            def resolve(self):
+                return type(self)(r"D:\checkout\scripts\policy\validate_non_rust_allowlist.py")
+
+            def absolute(self):
+                if self.is_absolute():
+                    return self
+                # Match Python 3.11: a different drive remains relative.
+                return self.cwd() / self
+
+        module = runpy.run_path(str(SOURCE), run_name="policy_route_contract")
+        args = type("Arguments", (), {
+            "allowlist": WindowsPathOracle(r"D:link\..\allow.toml"),
+            "debt": WindowsPathOracle(r"policy\debt.toml"),
+        })()
+        with mock.patch("argparse.ArgumentParser.parse_args", return_value=args), \
+             mock.patch("pathlib.Path", WindowsPathOracle), \
+             mock.patch("os.path.abspath", return_value=r"D:\original-context") as drive_cwd, \
+             mock.patch("subprocess.run") as dispatch:
+            dispatch.return_value.returncode = 75
+            self.assertEqual(module["main"](), 75)
+        drive_cwd.assert_called_once_with("D:")
+        dispatch.assert_called_once()
+        command = dispatch.call_args.args[0]
+        self.assertEqual(command[-3], r"D:\original-context\link\..\allow.toml")
+        self.assertEqual(command[-1], r"C:\outside\policy\debt.toml")
+        self.assertEqual(str(dispatch.call_args.kwargs["cwd"]), r"D:\checkout")
 
     def test_help_needs_no_build_or_admission(self):
         result, records = self.invoke(["--help"], cwd=self.outside)

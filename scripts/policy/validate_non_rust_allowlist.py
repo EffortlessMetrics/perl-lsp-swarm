@@ -9,9 +9,18 @@ uses the existing Cargo admission owner; it does not select build storage itself
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import subprocess
 import sys
+
+
+def caller_absolute(path: pathlib.Path) -> pathlib.Path:
+    # Python 3.11 Path.absolute() does not anchor a different drive's relative
+    # path. Resolve only the drive's cwd, never the symlink-sensitive tail.
+    if path.drive and not path.root:
+        return pathlib.Path(os.path.abspath(path.drive)).joinpath(*path.parts[1:])
+    return path.absolute()
 
 
 def main() -> int:
@@ -29,10 +38,9 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = pathlib.Path(__file__).resolve().parents[2]
-    caller = pathlib.Path.cwd()
-    # Anchor the producer to this checkout, but retain the caller's policy-file
-    # referents. Joining an absolute cwd preserves symlink/.. filesystem
-    # semantics; resolve()/abspath() would unnecessarily rewrite those paths.
+    # Freeze caller-relative and Windows drive-relative referents before changing
+    # cwd. Anchoring preserves symlink/.. components without normalization;
+    # resolve()/abspath() would rewrite their filesystem meaning.
     command = [
         sys.executable,
         "-B",
@@ -45,9 +53,9 @@ def main() -> int:
         "non-rust",
         "validate-policy",
         "--allowlist",
-        str(caller / args.allowlist),
+        str(caller_absolute(args.allowlist)),
         "--debt",
-        str(caller / args.debt),
+        str(caller_absolute(args.debt)),
     ]
     return subprocess.run(command, check=False, cwd=repo_root).returncode
 
