@@ -264,6 +264,7 @@ def inventory_roots(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
     for name, root in paths.items():
         errors = set()
         seen = {}
+        directories = []
         stack = [(root, 0)]
         while stack:
             if budget.exhausted():
@@ -304,6 +305,7 @@ def inventory_roots(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
                 else:
                     combined[identity] = observation
                 if stat.S_ISDIR(metadata.st_mode):
+                    directories.append((path, observation[2]))
                     if depth >= max_depth:
                         errors.add("depth_clipped")
                         continue
@@ -343,6 +345,27 @@ def inventory_roots(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
                     finally:
                         if facts(path.lstat()) != facts(metadata):
                             errors.add("entry_changed")
+            except FileNotFoundError:
+                errors.add("missing_or_changed_entry")
+            except (OSError, Denied, Unknown, ValueError):
+                errors.add("unreadable_linked_or_unsupported_entry")
+        # A directory can change after its own listing without changing the
+        # named root. Recheck every traversed directory under the same finite
+        # budget before treating retained byte totals as complete.
+        for directory, recorded in directories:
+            try:
+                budget.take()
+            except Unknown:
+                errors.add("traversal_clipped")
+                break
+            try:
+                native_path(str(directory))
+                current = directory.lstat()
+                if (linked(current) or not stat.S_ISDIR(current.st_mode)
+                        or not current.st_ino):
+                    raise Unknown("directory_recheck_invalid")
+                if facts(current) != recorded:
+                    errors.add("entry_changed")
             except FileNotFoundError:
                 errors.add("missing_or_changed_entry")
             except (OSError, Denied, Unknown, ValueError):

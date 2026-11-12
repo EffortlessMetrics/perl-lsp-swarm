@@ -309,6 +309,51 @@ class DescriptorInventoryTests(unittest.TestCase):
             self.assertIsNone(row["apparent_bytes"])
             self.assertIsNone(row["allocated_bytes"])
 
+    def test_move_between_already_and_not_yet_listed_directories_invalidates_totals(self):
+        root = self.paths["build"]
+        source = root / "src"
+        destination = root / "dst"
+        source.mkdir()
+        destination.mkdir()
+        payload = source / "payload"
+        payload.write_bytes(b"must not disappear from a complete observation")
+        real_scandir, real_lstat = os.scandir, Path.lstat
+        destination_listed = False
+        moved = False
+
+        @contextmanager
+        def ordered_scandir(path):
+            nonlocal destination_listed
+            with real_scandir(path) as children:
+                entries = list(children)
+                if Path(path) == root:
+                    entries.sort(key=lambda child: child.name == "dst")
+                if Path(path) == destination:
+                    destination_listed = True
+                yield iter(entries)
+
+        def lstat(path):
+            nonlocal moved
+            if Path(path) == source and destination_listed and not moved:
+                before = real_lstat(destination)
+                payload.rename(destination / payload.name)
+                os.utime(destination, ns=(before.st_atime_ns,
+                                         before.st_mtime_ns + 1_000_000_000))
+                moved = True
+            return real_lstat(path)
+
+        with mock.patch.object(self.observer.os, "scandir", ordered_scandir),              mock.patch.object(Path, "lstat", lstat):
+            result = self.observer.inventory_roots(
+                {"build": root}, collect_fingerprints=False)
+        self.assertTrue(moved)
+        build = result["resources"]["build"]
+        self.assertFalse(build["inventory_complete"])
+        self.assertIn("entry_changed", build["reasons"])
+        self.assertIsNone(build["apparent_bytes"])
+        self.assertIsNone(build["allocated_bytes"])
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+        self.assertIsNone(result["combined"]["allocated_bytes"])
+
     def test_empty_is_known_only_when_all_named_roots_are_present(self):
         result = self.observe()
         self.assertTrue(result["inventory_complete"])

@@ -174,6 +174,8 @@ class AdmissionTests(unittest.TestCase):
     def run_safe(self, args, call=None):
         with patch.dict(os.environ, self.env, clear=True), \
              patch.object(safe, "resource_plan", return_value=(self.root, self.slot, self.paths)), \
+             patch.object(safe.subprocess, "run", return_value=
+                          subprocess.CompletedProcess([], 0, b"", b"")), \
              patch.object(safe.subprocess, "call", side_effect=call or (lambda *a, **kw: 0)):
             return safe.main(args)
 
@@ -279,6 +281,10 @@ class AdmissionTests(unittest.TestCase):
 
                 self.assertEqual(self.run_safe(["check"], cargo), 0)
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "setup-failure settlement uses the Linux owned-tree path",
+    )
     def test_setup_failure_never_launches_product_and_uses_original_owner_settlement(self):
         import contextlib
         import io
