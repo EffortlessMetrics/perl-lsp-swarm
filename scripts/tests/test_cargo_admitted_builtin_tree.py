@@ -94,9 +94,12 @@ os._exit(status)
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux ownership only')
 class BuiltinNativeTreeTests(unittest.TestCase):
-    def fixture(self, mode='normal', status=0, terminal=False):
-        # Native fixture covers the default profile; absent kernel capability is not a pass.
-        if not (Path('/proc/self/task') / str(os.getpid()) / 'children').exists():
+    def fixture(self, mode='normal', status=0, terminal=False,
+                outer_child_discovery='proc-children'):
+        # Only default-profile fixtures require the proc-children interface.
+        # An explicit alternate owner must prove its own capability at runtime.
+        if (outer_child_discovery == 'proc-children'
+                and not (Path('/proc/self/task') / str(os.getpid()) / 'children').exists()):
             self.skipTest('default proc-children interface unavailable on this host')
         with tempfile.TemporaryDirectory(prefix='builtin-tree-control-') as name:
             root=Path(name);(root/'bin').mkdir()
@@ -104,7 +107,7 @@ class BuiltinNativeTreeTests(unittest.TestCase):
             cargo.write_text('#!'+sys.executable+'\n'+FAKE);cargo.chmod(0o700)
             outer=PRELUDE+'''
 import signal
-tree=owner.ClippyTree();root=Path(sys.argv[2]);mode=sys.argv[3]
+tree=owner.ClippyTree(child_discovery=sys.argv[7]);root=Path(sys.argv[2]);mode=sys.argv[3]
 sentinel=None
 if sys.argv[6]=='terminal':
  sentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)'])
@@ -125,6 +128,7 @@ if sentinel is not None:
  signal.pidfd_send_signal(tree.handles[sentinel.pid][0],signal.SIGTERM)
 settlement=tree.finish(timeout=2)
 assert settlement['tree_settled'],settlement
+result['outer_child_discovery']=settlement['child_discovery']
 if mode!='cancel':
  result['helper_end']=(root/'helper-end').read_text()
 else:
@@ -137,7 +141,7 @@ print(json.dumps(result))
             # admitted owner's descendants; cancellation must leave it alive.
             terminal=terminal or mode=='terminal'
             command=[sys.executable,'-c',outer,str(OWNER),str(root),mode,str(status),CHILD,
-                     'terminal' if terminal else 'ordinary']
+                     'terminal' if terminal else 'ordinary',outer_child_discovery]
             if terminal:
                 import fcntl,pty,termios
                 master,slave=pty.openpty()

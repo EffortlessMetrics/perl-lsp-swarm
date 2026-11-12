@@ -332,7 +332,9 @@ print(json.dumps({'byte_bound':True,'non_utf8_preserved':True}))
         child = builtin.CHILD.replace('original=owner.ClippyTree.finish',
                                      "env['CARGO_ADMITTED_CHILD_DISCOVERY']='proc-parent-pidfd'\noriginal=owner.ClippyTree.finish")
         with patch.object(builtin, 'CHILD', child):
-            row = builtin.BuiltinNativeTreeTests().fixture(mode='cancel', terminal=True)
+            row = builtin.BuiltinNativeTreeTests().fixture(
+                mode='cancel', terminal=True, outer_child_discovery='proc-parent-pidfd')
+        self.assertEqual(row['outer_child_discovery'], 'proc-parent-pidfd')
         self.assertEqual(row['result'], 130, row['stderr'])
         self.assertTrue(row['caller_group_survived'])
         self.assertEqual(row['settlement']['child_discovery'], 'proc-parent-pidfd')
