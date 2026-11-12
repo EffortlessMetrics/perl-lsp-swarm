@@ -6,7 +6,7 @@ script_dir="${BASH_SOURCE[0]%/*}"
 if [[ "$script_dir" == "${BASH_SOURCE[0]}" ]]; then
     script_dir=.
 fi
-repo="$(cd -- "$script_dir/.." && pwd)"
+repo="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 startup_dir="$(pwd -P)"
 shared="${PERL_LSP_CLOUD_SHARED:-/workspace/shared}"
 if [[ "$shared" != /* ]]; then
@@ -103,6 +103,38 @@ printf 'cloud-startup: rust-toolchain source=%s selector=%s repository-default=%
     "$toolchain_source" "$toolchain_selector" "$repo_toolchain"
 for command in rustup rustc cargo just node npm; do
     require_command "$command"
+done
+
+# A no-install environment variable is insufficient for rustup <= 1.27.
+# Reuse the Cargo guard's non-selecting help probe for the selected manager
+# and any distinct managers behind the actual rustc/cargo proxies. A newer
+# unrelated PATH rustup cannot validate an older proxy in another installation.
+. "$repo/scripts/lib/cargo-toolchain-guard.sh"
+checked_managers=()
+for tool in rustup rustc cargo; do
+    resolved="$(command -v -- "$tool")"
+    if [[ "$tool" == rustup ]]; then
+        manager="$resolved"
+    else
+        manager="$(cargo_guard_proxy_manager "$resolved" || true)"
+    fi
+    [[ -n "$manager" ]] || continue
+    already_checked=0
+    for checked in "${checked_managers[@]}"; do
+        if [[ "$manager" -ef "$checked" ]]; then
+            already_checked=1
+            break
+        fi
+    done
+    [[ "$already_checked" -eq 0 ]] || continue
+    if ! manager_version="$(cargo_guard_probe_rustup_manager "$manager")"; then
+        printf 'cloud-startup: rustup >= 1.28.0 required before probing %s; manager=%s version=%s\n' \
+            "$tool" "$manager" "${manager_version:-unverified}" >&2
+        printf 'cloud-startup: update the manager explicitly; no toolchain-selecting probe was run.\n' >&2
+        exit "$CARGO_GUARD_EXIT_CODE"
+    fi
+    checked_managers+=("$manager")
+    printf 'cloud-startup: rustup-manager=%s version=%s\n' "$manager" "$manager_version"
 done
 
 # Version/identity output is the startup receipt. The extension doctor below

@@ -112,6 +112,20 @@ cargo_guard_version_ge() {
   [ "$a_patch" -ge "$r_patch" ]
 }
 
+# Probe only manager help, which returns before toolchain selection even in
+# old rustup. Print the parsed version, including on an unsafe-version refusal,
+# and succeed only when no-install probes are supported. Call in a condition.
+# Usage: cargo_guard_probe_rustup_manager <manager-path>
+cargo_guard_probe_rustup_manager() {
+  local manager="$1" manager_help manager_version=""
+  if manager_help="$(RUSTUP_AUTO_INSTALL=0 "$manager" --help 2>&1)" &&
+    [[ "${manager_help%%$'\n'*}" =~ ^rustup[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$) ]]; then
+    manager_version="${BASH_REMATCH[1]}"
+  fi
+  printf '%s' "$manager_version"
+  cargo_guard_version_ge "$manager_version" 1.28.0
+}
+
 # Normalize Windows separators to forward slashes, then succeed when the path
 # looks rustup-managed: a ~/.cargo/bin shim (cargo or cargo.exe, any home,
 # including /mnt/c/... views) or a rustup-installed toolchain binary.
@@ -183,7 +197,7 @@ cargo_guard_print_refusal() {
 # exit CARGO_GUARD_EXIT_CODE. Returns 0 on pass (silent, or with a stderr
 # note for a non-shim cargo that diverges from the pin).
 cargo_toolchain_guard() {
-  local required pin resolved probe actual manager manager_help manager_version
+  local required pin resolved probe actual manager manager_version
   required="$(cargo_guard_required_version)"
   required="${required:-1.95}"
   pin="$(cargo_guard_pin_version)"
@@ -207,12 +221,7 @@ cargo_toolchain_guard() {
   # 1.28.0 removed implicit installs; 1.28.1 restored them with the opt-out.
   manager="$(cargo_guard_proxy_manager "$resolved" || true)"
   if [ -n "$manager" ]; then
-    manager_version=""
-    if manager_help="$(RUSTUP_AUTO_INSTALL=0 "$manager" --help 2>&1)" &&
-      [[ "${manager_help%%$'\n'*}" =~ ^rustup[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$) ]]; then
-      manager_version="${BASH_REMATCH[1]}"
-    fi
-    if ! cargo_guard_version_ge "$manager_version" 1.28.0; then
+    if ! manager_version="$(cargo_guard_probe_rustup_manager "$manager")"; then
       printf 'cargo-toolchain-guard: REFUSED: rustup proxy at %s needs rustup >= 1.28.0 for a probe without toolchain installation (found: %s).\n' "$resolved" "${manager_version:-unverified}" >&2
       printf '  fix: update rustup explicitly, then retry; the guard will not invoke this cargo proxy.\n' >&2
       exit "$CARGO_GUARD_EXIT_CODE"

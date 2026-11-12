@@ -23,12 +23,21 @@ this entry.
 
 ## Provisioned tools and paths
 
-The image must already contain Bash, Python 3.11+ (`tomllib`), Git, `rustup`, the
-selected Rust toolchain, `just`, and the extension's supported Node/npm tools.
+The image must already contain Bash, Python 3.11+ (`tomllib`), Git, `rustup`
+1.28.0 or newer, the selected Rust toolchain, `just`, and the extension's supported
+Node/npm tools.
 Startup does not install or switch a toolchain, compile a missing utility,
 change rustup's global default, or write a directory override. It sets
 `RUSTUP_AUTO_INSTALL=0`. Missing or malformed repository toolchain configuration
 stops before tool commands run.
+
+Before any toolchain-selecting probe, startup uses the shared Cargo guard's
+safe `rustup --help` check for the selected manager and every distinct manager
+backing the resolved `rustc`/`cargo` proxies. Older or unverified managers fail
+with exit 78 and an explicit update instruction; startup does not update them.
+Rustup 1.27 and earlier can install a missing toolchain despite
+`RUSTUP_AUTO_INSTALL=0`, so the environment variable alone is not the safeguard.
+A modern `rustup` on PATH cannot bless a compiler proxy backed by an older manager.
 
 `PERL_LSP_CLOUD_SHARED` selects the existing host storage root; the default is
 `/workspace/shared`. A relative value is anchored to the startup invocation
@@ -44,8 +53,8 @@ a nonempty inherited `PATH` to the invocation directory while preserving entry
 order. The Node/npm pair validated at startup is therefore the pair later used
 from `vscode-extension`. A fully empty inherited `PATH` adds no current-directory
 entry. Checkout resolution uses Bash builtins before the selected tool paths are
-set. The TOML pin and fixture text are read explicitly as UTF-8, including under
-an ASCII locale.
+set and does not consult inherited `CDPATH`. The TOML pin and fixture text are
+read explicitly as UTF-8, including under an ASCII locale.
 
 ## Rust selection precedence and receipt
 
@@ -70,6 +79,7 @@ The startup receipt records:
 - whether the Rust selector came from the environment or rustup resolution;
 - the explicit selector, when present, and the repository default;
 - resolved paths for `rustup`, `rustc`, `cargo`, `just`, `node`, and `npm`;
+- safely verified manager paths and versions before any selecting probe;
 - `rustup show active-toolchain` plus Rust, Cargo, Node, npm, and just versions.
 
 This receipt reports selection; it does not redefine MSRV, repository-default
@@ -93,7 +103,7 @@ for exact-command preflight and the existing scoped-budget route; moving a path
 does not add capacity. The desktop admission/profile owner must supply the
 qualified workload basis before cloud compilation proceeds.
 
-The thirteen cheap regression tests execute the actual shell entry using a
+The focused regression tests execute the actual shell entry using a
 temporary checkout and mocked tools. They cover repository-default selection,
 an explicit stable-only image without the repository pin installed, two distinct
 checkout pins, missing/malformed pin refusal before tool commands, active-PATH
@@ -102,16 +112,20 @@ selection across directory changes, empty-PATH lookup, missing Node and npm,
 unsupported Node/npm failures before `npm ci`, a missing repository-selected
 toolchain failing before setup, repeated startup without repository or shared
 rustup-state mutation, disabled automatic Rust installation, absence of startup's
-capacity/job overrides, the complete operation sequence, and UTF-8 pin handling
-under an ASCII locale:
+capacity/job overrides, preservation of explicit capacity/job settings, the complete
+operation sequence, and UTF-8 pin handling under an ASCII locale. Effect-sentinel
+fixtures also require refusal of legacy or unverified managers before any implicit
+install, including a modern PATH manager with a different old compiler-proxy manager.
+A relative-invocation fixture exercises inherited `CDPATH`:
 
 ```bash
 bash -n scripts/cloud-startup
+bash -n scripts/lib/cargo-toolchain-guard.sh
 python3 -B -m unittest discover -s scripts/tests -p test_cloud_startup.py -v
 ```
 
 The tests do not establish real provisioning, network/npm success, build
 admission, peak disk growth, cold/warm Cargo timing, or publication of the
 external cloud configuration. No new required CI gate is activated. Revert the
-entry, tests, and this guide together to roll back the repository change;
+entry, shared guard helper, tests, and this guide together to roll back this repair;
 restore any external saved setup configuration separately.

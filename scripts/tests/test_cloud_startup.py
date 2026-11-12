@@ -25,7 +25,7 @@ class SetupTests(unittest.TestCase):
         rustup_home = shared / "rustup"
         for path in (
             repo / "vscode-extension",
-            repo / "scripts",
+            repo / "scripts/lib",
             shared / "cargo/bin",
             active_node,
             relative_node,
@@ -39,6 +39,10 @@ class SetupTests(unittest.TestCase):
         (repo / "rust-toolchain.toml").write_text(
             '[toolchain]\nchannel = "1.96.0"\n', encoding="utf-8"
         )
+        (repo / "scripts/lib/cargo-toolchain-guard.sh").write_bytes(
+            (ROOT / "scripts/lib/cargo-toolchain-guard.sh").read_bytes()
+        )
+        install_marker = root / "implicit-toolchain-install"
         log = root / "calls.jsonl"
         driver = root / "tool-driver"
         driver.write_text(
@@ -61,6 +65,13 @@ with open(os.environ["SETUP_LOG"], "a", encoding="utf-8") as stream:
         "auto_install": os.environ.get("RUSTUP_AUTO_INSTALL"),
         "path": os.environ.get("PATH"),
     }) + "\\n")
+if name == "rustup" and args == ["--help"]:
+    print(os.environ.get("SETUP_RUSTUP_HELP", "rustup 1.28.1 (fixture)"))
+    sys.exit(int(os.environ.get("SETUP_RUSTUP_HELP_EXIT", "0")))
+# Older managers ignore RUSTUP_AUTO_INSTALL=0. Record the forbidden effect,
+# not just the environment variable that was intended to prevent it.
+if name in {"rustup", "rustc", "cargo"} and os.environ.get("SETUP_LEGACY_AUTO_INSTALL"):
+    pathlib.Path(os.environ["SETUP_INSTALL_MARKER"]).write_text("implicit install", encoding="utf-8")
 if os.environ.get("SETUP_STABLE_ONLY") and name in {"rustup", "rustc", "cargo"}:
     if os.environ.get("RUSTUP_TOOLCHAIN") != "stable":
         sys.exit(86)
@@ -134,6 +145,7 @@ exit 88
             PATH=str(active_node),
             SETUP_LOG=str(log),
             SETUP_STALE_NODE_MARKER=str(stale_marker),
+            SETUP_INSTALL_MARKER=str(install_marker),
             PERL_LSP_CLOUD_SHARED=str(shared),
         )
         cls.repo = repo
@@ -145,6 +157,7 @@ exit 88
         cls.active_node = active_node
         cls.relative_node = relative_node
         cls.stale_marker = stale_marker
+        cls.install_marker = install_marker
         cls.result = subprocess.run(
             ["/bin/bash", str(candidate)],
             cwd=repo,
@@ -158,19 +171,20 @@ exit 88
             json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
         ]
 
-    def run_with_pin(self, contents, extra_env=None):
+    def run_with_pin(self, contents, extra_env=None, *, script_path=None):
         pin = self.repo / "rust-toolchain.toml"
         previous = pin.read_bytes()
         log = self.log.with_name("alternate.jsonl")
         log.unlink(missing_ok=True)
         self.stale_marker.unlink(missing_ok=True)
+        self.install_marker.unlink(missing_ok=True)
         try:
             if contents is None:
                 pin.unlink()
             else:
                 pin.write_text(contents, encoding="utf-8")
             result = subprocess.run(
-                ["/bin/bash", str(self.candidate)],
+                ["/bin/bash", str(script_path or self.candidate)],
                 cwd=self.repo,
                 env=dict(self.env, SETUP_LOG=str(log), **(extra_env or {})),
                 text=True,
@@ -191,6 +205,7 @@ exit 88
         self.assertEqual(
             [(c["name"], c["args"]) for c in self.calls],
             [
+                ("rustup", ["--help"]),
                 ("rustup", ["show", "active-toolchain"]),
                 ("rustc", ["--version"]),
                 ("cargo", ["--version"]),
@@ -233,7 +248,7 @@ exit 88
         )
         self.assertIn("rustc 1.99.1", result.stdout)
         rustup_args = [c["args"] for c in calls if c["name"] == "rustup"]
-        self.assertEqual(rustup_args, [["show", "active-toolchain"]])
+        self.assertEqual(rustup_args, [["--help"], ["show", "active-toolchain"]])
 
     def test_second_pin_is_reported_without_overriding_explicit_selection(self):
         result, calls = self.run_with_pin(
@@ -268,7 +283,7 @@ exit 88
         self.assertEqual(result.returncode, 87)
         self.assertEqual(
             [(c["name"], c["args"]) for c in calls],
-            [("rustup", ["show", "active-toolchain"])],
+            [("rustup", ["--help"]), ("rustup", ["show", "active-toolchain"])],
         )
         self.assertEqual(calls[0]["auto_install"], "0")
         self.assertFalse(any(c["name"] == "history" for c in calls))
@@ -312,7 +327,7 @@ exit 88
         self.assertEqual(middle, after)
         for calls in (first_calls, second_calls):
             rustup_args = [c["args"] for c in calls if c["name"] == "rustup"]
-            self.assertEqual(rustup_args, [["show", "active-toolchain"]])
+            self.assertEqual(rustup_args, [["--help"], ["show", "active-toolchain"]])
 
     def test_active_node_wins_over_stale_shared_patch_directory(self):
         self.assertEqual(self.result.returncode, 0, self.result.stderr)
@@ -324,8 +339,7 @@ exit 88
         self.assertFalse(
             any(
                 "node-v26.6.0-linux-x64/bin" in element
-                for element in node["path"].split(":")
-            )
+                for element in node["path"].split(":"))
         )
 
     def test_relative_path_stays_bound_to_the_invocation_directory(self):
@@ -412,6 +426,109 @@ exit 88
         self.assertIn("required command not found on PATH: npm", result.stderr)
         self.assertFalse(marker.exists())
         self.assertEqual(calls, [])
+
+    def test_legacy_rustup_cannot_install_before_refusal(self):
+        for selection in ({}, {"RUSTUP_TOOLCHAIN": "stable"}):
+            with self.subTest(selection=selection):
+                result, calls = self.run_with_pin(
+                    '[toolchain]\nchannel = "1.96.0"\n',
+                    dict(selection, SETUP_RUSTUP_HELP="rustup 1.27.1 (fixture)",
+                         SETUP_LEGACY_AUTO_INSTALL="1"),
+                )
+                self.assertFalse(self.install_marker.exists(), "startup reached implicit installation")
+                self.assertEqual(result.returncode, 78, result.stderr)
+                self.assertIn("rustup >= 1.28.0", result.stderr)
+                self.assertEqual([(c["name"], c["args"]) for c in calls], [("rustup", ["--help"])])
+
+    def test_unverified_manager_fails_before_toolchain_selection(self):
+        cases = (
+            {"SETUP_RUSTUP_HELP": ""},
+            {"SETUP_RUSTUP_HELP": "unrecognized manager"},
+            {"SETUP_RUSTUP_HELP": "warning\nrustup 1.28.1 (fixture)"},
+            {"SETUP_RUSTUP_HELP": "rustup 1.28.0-beta (fixture)"},
+            {"SETUP_RUSTUP_HELP_EXIT": "42"},
+        )
+        for extra in cases:
+            with self.subTest(extra=extra):
+                result, calls = self.run_with_pin(
+                    '[toolchain]\nchannel = "1.96.0"\n',
+                    dict(extra, SETUP_LEGACY_AUTO_INSTALL="1"),
+                )
+                self.assertFalse(self.install_marker.exists(), "unverified manager selected a toolchain")
+                self.assertEqual(result.returncode, 78, result.stderr)
+                self.assertEqual([(c["name"], c["args"]) for c in calls], [("rustup", ["--help"])])
+
+    def test_supported_manager_preserves_missing_toolchain_failure(self):
+        for version in ("1.28.0", "1.28.1", "1.29.3"):
+            with self.subTest(version=version):
+                result, calls = self.run_with_pin(
+                    '[toolchain]\nchannel = "1.96.0"\n',
+                    {"SETUP_RUSTUP_HELP": f"rustup {version} (fixture)", "SETUP_PIN_MISSING": "1"},
+                )
+                self.assertEqual(result.returncode, 87, result.stderr)
+                self.assertFalse(self.install_marker.exists())
+                self.assertEqual(
+                    [(c["name"], c["args"]) for c in calls],
+                    [("rustup", ["--help"]), ("rustup", ["show", "active-toolchain"])],
+                )
+                self.assertTrue(all(c["auto_install"] == "0" for c in calls))
+
+    def test_new_path_manager_cannot_validate_an_old_rust_proxy(self):
+        # The PATH manager can be modern while rustc or cargo resolves to a
+        # proxy from a second, older installation. Verify every real manager.
+        for tool in ("rustc", "cargo"):
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as directory:
+                other_bin = Path(directory)
+                manager = other_bin / "rustup"
+                manager.write_text(
+                    "#!/usr/bin/python3\n"
+                    "import json, os, pathlib, sys\n"
+                    "with open(os.environ['SETUP_LOG'], 'a', encoding='utf-8') as stream:\n"
+                    "    stream.write(json.dumps({'name': pathlib.Path(sys.argv[0]).name, "
+                    "'args': sys.argv[1:], 'executable': sys.argv[0]}) + '\\n')\n"
+                    "if sys.argv[1:] == ['--help']:\n"
+                    "    print('rustup 1.27.1 (old fixture)')\n"
+                    "else:\n"
+                    "    pathlib.Path(os.environ['SETUP_INSTALL_MARKER']).write_text('implicit install')\n",
+                    encoding="utf-8",
+                )
+                manager.chmod(0o755)
+                (other_bin / tool).symlink_to(manager)
+                current = self.shared / "cargo/bin" / tool
+                target = current.readlink()
+                current.unlink()
+                try:
+                    result, calls = self.run_with_pin(
+                        '[toolchain]\nchannel = "1.96.0"\n',
+                        {"PATH": f"{other_bin}:{self.active_node}"},
+                    )
+                finally:
+                    current.symlink_to(target)
+                self.assertFalse(self.install_marker.exists(), "unverified proxy installed a toolchain")
+                self.assertEqual(result.returncode, 78, result.stderr)
+                self.assertIn(str(manager), result.stderr)
+                self.assertEqual(
+                    [(c["name"], c["args"]) for c in calls],
+                    [("rustup", ["--help"]), ("rustup", ["--help"])],
+                )
+
+    def test_relative_invocation_is_independent_of_cdpath(self):
+        result, calls = self.run_with_pin(
+            '[toolchain]\nchannel = "1.96.0"\n',
+            {"CDPATH": str(self.repo)}, script_path="scripts/cloud-startup",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[-1]["args"], ["ci"])
+
+    def test_explicit_capacity_settings_survive_startup(self):
+        result, calls = self.run_with_pin(
+            '[toolchain]\nchannel = "1.96.0"\n',
+            {"MIN_FREE_GB": "12", "CARGO_BUILD_JOBS": "2"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        probes = [c for c in calls if "floor" in c]
+        self.assertTrue(probes)
+        self.assertTrue(all(c["floor"] == "12" and c["jobs"] == "2" for c in probes))
 
     def test_setup_preserves_capacity_jobs_and_operation_order(self):
         self.assertTrue(
