@@ -853,22 +853,21 @@ pub fn host_run(
     // freshness binding (#15338 review). The observation-level judgment
     // stays in `OutcomeJudgment`/`HostRunOutcome`; the receipt records the
     // evidence-boundary verdict its schema can carry.
-    let (receipt_result, receipt_failure_class) =
-        if outcome.result == ObservationResult::Pass
-            && (capabilities.position_encoding_basis == PositionEncodingBasis::NotProven
-                || diagnostics.advertised_mode == DiagnosticMode::NotProven)
-        {
-            limitations.push(
-                "observation-level pass recorded as not_proven: the substrate's position-encoding \
+    let (receipt_result, receipt_failure_class) = if outcome.result == ObservationResult::Pass
+        && (capabilities.position_encoding_basis == PositionEncodingBasis::NotProven
+            || diagnostics.advertised_mode == DiagnosticMode::NotProven)
+    {
+        limitations.push(
+            "observation-level pass recorded as not_proven: the substrate's position-encoding \
                  and diagnostic evidence is not_proven, so the receipt cannot carry the proven \
                  support evidence a pass requires (client support verdicts belong to \
                  #7126/#7721/#7727)"
-                    .to_string(),
-            );
-            (ObservationResult::NotProven, Some(FailureClass::Environment))
-        } else {
-            (outcome.result, outcome.failure_class)
-        };
+                .to_string(),
+        );
+        (ObservationResult::NotProven, Some(FailureClass::Environment))
+    } else {
+        (outcome.result, outcome.failure_class)
+    };
     let receipt = build_receipt(
         &plan,
         &observation,
@@ -1097,8 +1096,7 @@ mod pass_receipt_law_tests {
     #[test]
     fn pass_observation_validates_only_in_the_demoted_receipt_shape() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let (plan, _layout) =
-            emacs_host_runner::supervision_plan(root.path(), "passlaw", 30_000)?;
+        let (plan, _layout) = emacs_host_runner::supervision_plan(root.path(), "passlaw", 30_000)?;
         let planned_digest = plan
             .identity
             .client
@@ -1176,9 +1174,7 @@ mod pass_receipt_law_tests {
             "a Pass receipt over NotProven support evidence must fail its own validation",
         );
         anyhow::ensure!(
-            error
-                .to_string()
-                .contains("passing receipt requires a proven position encoding basis"),
+            error.to_string().contains("passing receipt requires a proven position encoding basis"),
             "the refusal must name the pass law, got: {error:#}"
         );
 
@@ -1200,9 +1196,8 @@ mod pass_receipt_law_tests {
             ],
             claim,
         );
-        validate_receipt_binding(&demoted, &plan).context(
-            "the demoted producer shape must satisfy the validator and its own binding",
-        )?;
+        validate_receipt_binding(&demoted, &plan)
+            .context("the demoted producer shape must satisfy the validator and its own binding")?;
         Ok(())
     }
 }
