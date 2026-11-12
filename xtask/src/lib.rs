@@ -68,6 +68,7 @@ pub mod vim_lsp_subject_refresh;
 pub mod worktree_cleanup;
 pub mod worktree_forensic_recovery;
 pub mod writer_preflight;
+pub mod zed_host_compat;
 
 pub mod pre_freeze_public_beta_acceptance;
 #[cfg(test)]

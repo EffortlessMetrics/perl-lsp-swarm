@@ -1,7 +1,6 @@
 //! Bind managed-route observations to independently validated asset and host receipts.
 
-#[path = "zed_host_compat.rs"]
-mod zed_host_compat;
+use xtask::zed_host_compat;
 
 use serde_json::Value;
 

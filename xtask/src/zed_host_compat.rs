@@ -1,13 +1,14 @@
 //! Shared fail-closed validators for Zed host receipts.
 //!
-//! These helpers live under `xtask/tests/support` so the host and public-registry
-//! programme contracts can reject the same false-green mutations without inventing
-//! a live Zed run.
+//! The host and public-registry contracts and validator binaries share this
+//! library owner, avoiding repeated compilation of the same receipt rules.
+//! These checks do not establish that a live Zed run occurred.
 
 use chrono::DateTime;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+/// Repository-relative location of the canonical public-registry subject.
 pub const PUBLIC_SUBJECT_RELATIVE_PATH: &str =
     ".ci/fixtures/zed-perl-upstream/receipts/public-registry-subject.v1.json";
 
@@ -127,10 +128,12 @@ const CELL_FIELDS: &[&str] = &["result", "evidence"];
 const CELL_RESULTS: &[&str] =
     &["pass", "fail", "not_proven", "unsupported", "legitimate_empty", "instrument_failed"];
 
+/// Whether the JSON pointer resolves to a nonblank string.
 pub fn nonempty_string(value: &Value, pointer: &str) -> bool {
     value.pointer(pointer).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty())
 }
 
+/// Whether the JSON pointer contains a canonical, prefixed SHA-256 digest.
 pub fn exact_sha256(value: &Value, pointer: &str) -> bool {
     value.pointer(pointer).and_then(Value::as_str).is_some_and(is_sha256_digest)
 }
@@ -151,6 +154,7 @@ fn is_full_commit(text: &str) -> bool {
     text.len() == 40 && text.bytes().all(is_ascii_lowercase_hexdigit)
 }
 
+/// Hash bytes using the receipt contract's `sha256:` encoding.
 pub fn content_sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut encoded = String::with_capacity("sha256:".len() + 64);

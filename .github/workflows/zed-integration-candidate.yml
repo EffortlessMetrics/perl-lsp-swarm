@@ -19,7 +19,7 @@ on:
       - 'xtask/src/source_authority/**'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/zed_*.rs'
-      - 'xtask/tests/support/zed_host_compat.rs'
+      - 'xtask/src/zed_host_compat.rs'
       - 'xtask/tests/support/zed_managed_*.rs'
   workflow_dispatch:
 
@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          tests=(xtask/tests/zed_*.rs xtask/tests/support/zed_host_compat.rs xtask/tests/support/zed_managed_*.rs)
+          tests=(xtask/tests/zed_*.rs xtask/src/zed_host_compat.rs xtask/tests/support/zed_managed_*.rs)
           if [[ ${#tests[@]} -eq 0 ]]; then
             echo 'error: no Zed contract tests found' >&2
             exit 1

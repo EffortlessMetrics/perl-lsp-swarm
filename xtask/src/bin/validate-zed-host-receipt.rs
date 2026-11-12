@@ -1,5 +1,4 @@
-#[path = "../../tests/support/zed_host_compat.rs"]
-mod zed_host_compat;
+use xtask::zed_host_compat;
 
 use std::env;
 use std::error::Error;

@@ -2,8 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-#[path = "zed_host_compat.rs"]
-mod zed_host_compat;
+use xtask::zed_host_compat;
 
 fn text<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(Value::as_str).filter(|text| !text.trim().is_empty())

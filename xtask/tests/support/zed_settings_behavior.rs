@@ -1,5 +1,4 @@
-#[path = "zed_host_compat.rs"]
-mod zed_host_compat;
+use xtask::zed_host_compat;
 
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
