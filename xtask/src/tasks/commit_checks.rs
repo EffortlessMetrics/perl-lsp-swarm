@@ -861,10 +861,10 @@ const RUSTFMT_CONFIG_FILE: &str = "rustfmt.toml";
 /// unlike file-path mode (`--check <path>` exits non-zero on a real diff),
 /// rustfmt's stdin `--check` mode exits `0` even when stdout carries an
 /// actual diff — an exit-code check alone would silently report every
-/// unformatted file as clean. A genuine tool failure (a bad
-/// `--config-path`, a syntax error in the staged content itself) writes to
-/// stderr and must surface as a real `Err` — the "error" gate status, not a
-/// silently-wrong "clean" or a misleading "needs reformatting".
+/// unformatted file as clean. A genuine tool failure may write stderr
+/// (a bad configuration path or syntax error) or exit unsuccessfully without
+/// any output. Both must surface as an instrument error, not a silently-wrong
+/// "clean" or a misleading "needs reformatting".
 fn rustfmt_would_reformat(config_text: Option<&str>, text: &str) -> Result<bool> {
     use std::io::Write;
     use std::process::Stdio;
@@ -901,9 +901,19 @@ fn rustfmt_would_reformat(config_text: Option<&str>, text: &str) -> Result<bool>
         .context("failed to write staged content to rustfmt stdin")?;
     let output = child.wait_with_output().context("failed to wait for rustfmt")?;
 
+    rustfmt_output_would_reformat(&output)
+}
+
+/// An unsuccessful formatter is an instrument failure even when it emits
+/// nothing. Successful stdin checks still report formatting differences in
+/// stdout rather than through a nonzero exit status.
+fn rustfmt_output_would_reformat(output: &std::process::Output) -> Result<bool> {
     if !output.stderr.is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("rustfmt reported a failure rather than a formatting diff: {stderr}");
+    }
+    if !output.status.success() {
+        bail!("rustfmt exited unsuccessfully: {}", output.status);
     }
     Ok(!output.stdout.is_empty())
 }
@@ -1749,6 +1759,23 @@ mod tests {
                 )
             }
         }
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn rustfmt_silent_failed_exit_is_not_clean() -> Result<()> {
+        #[cfg(windows)]
+        let output = Command::new("cmd").args(["/d", "/c", "exit", "23"]).output()?;
+        #[cfg(unix)]
+        let output = Command::new("sh").args(["-c", "exit 23"]).output()?;
+        assert_eq!(output.status.code(), Some(23));
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let error = rustfmt_output_would_reformat(&output).err();
+        assert!(
+            error.is_some_and(|error| error.to_string().contains("exited unsuccessfully")),
+            "a failed formatter must not be reported as clean"
+        );
         Ok(())
     }
 

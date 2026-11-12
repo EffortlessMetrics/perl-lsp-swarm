@@ -115,6 +115,68 @@ class PublicationHookTests(unittest.TestCase):
             self.assertEqual(call[1:8], ["run", "--package", "xtask", "--bin", "xtask", "--locked", "--"])
         return publications
 
+    def install_hook(self, content):
+        self.hook = self.root / ".githooks/pre-push"
+        self.hook.parent.mkdir(exist_ok=True)
+        self.hook.write_text(content, encoding="utf-8", newline="\n")
+        self.hook.chmod(0o755)
+
+    def test_v3_installation_upgrades_before_publication_and_retries(self):
+        head = self.change("scripts/example.py")
+        current = (self.root / "hooks/pre-push").read_text(encoding="utf-8")
+        self.assertIn("# pre-push-hook-version: 4", current)
+        # Retain the production self-upgrade implementation, then make any
+        # execution under the old guards fail. Historical v3 bytes are also
+        # exercised separately during migration qualification.
+        old = current.replace("# pre-push-hook-version: 4", "# pre-push-hook-version: 3")
+        old = old.replace("# stdin provides:", "exit 91\n# stdin provides:", 1)
+        self.install_hook(old)
+        result, calls = self.invoke([(head, "refs/heads/topic", self.base)])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("v3 -> v4", result.stdout)
+        self.assertEqual(calls, [], "upgrade push must run no publication command")
+        self.assertEqual(self.hook.read_text(encoding="utf-8"), current)
+        result, calls = self.invoke([(head, "refs/heads/topic", self.base)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        publication = self.assert_publication_only(calls)[0]
+        self.assertEqual(publication[publication.index("--head") + 1], head)
+        self.assertEqual(publication[publication.index("--base") + 1], self.base)
+
+    def test_equal_or_older_checkout_never_overwrites_installed_bytes(self):
+        head = self.change("scripts/example.py")
+        checkout = self.root / "hooks/pre-push"
+        current = checkout.read_text(encoding="utf-8")
+        installed = current.replace("# stdin provides:", "exit 91\n# stdin provides:", 1)
+        self.install_hook(installed)
+        for version in (4, 3):
+            with self.subTest(checkout_version=version):
+                checkout.write_text(current.replace("# pre-push-hook-version: 4",
+                                                    f"# pre-push-hook-version: {version}"),
+                                    encoding="utf-8", newline="\n")
+                result, calls = self.invoke([(head, "refs/heads/topic", self.base)])
+                self.assertEqual(result.returncode, 91)
+                self.assertIn("keeping the installed hook", result.stderr)
+                self.assertEqual(calls, [])
+                self.assertEqual(self.hook.read_text(encoding="utf-8"), installed)
+
+    def test_failed_upgrade_preserves_installed_hook_and_refuses(self):
+        head = self.change("scripts/example.py")
+        current = (self.root / "hooks/pre-push").read_text(encoding="utf-8")
+        old = current.replace("# pre-push-hook-version: 4", "# pre-push-hook-version: 3")
+        self.install_hook(old)
+        # Git Bash can prepend its coreutils directory to PATH. A shell
+        # function makes this declared copy failure deterministic there too.
+        env_file = self.tools / "fail-copy.bash"
+        env_file.write_text('cp() { printf "partial copy" > "$2"; return 73; }\n',
+                            encoding="utf-8", newline="\n")
+        self.env["BASH_ENV"] = env_file.as_posix()
+        result, calls = self.invoke([(head, "refs/heads/topic", self.base)])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not be self-updated", result.stderr)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.hook.read_text(encoding="utf-8"), old)
+        self.assertEqual(list(self.hook.parent.glob("pre-push.tmp.*")), [])
+
     def test_python_and_rust_pushes_use_same_publication_role(self):
         for path in ("scripts/cargo_admitted.py", "crates/example/src/lib.rs"):
             with self.subTest(path=path):

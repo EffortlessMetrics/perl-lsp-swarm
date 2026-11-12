@@ -2055,7 +2055,9 @@ fn build_agent_receipt_for_subject(
 fn commit_advisories(results: &[GateResult]) -> Vec<AgentAdvisory> {
     results
         .iter()
-        .filter(|result| result.tier == "commit" || result.tier == "publication")
+        .filter(|result| {
+            (result.tier == "commit" || result.tier == "publication") && result.status == "pass"
+        })
         .filter_map(|result| {
             let report =
                 result.output_summary.as_deref().and_then(super::commit_checks::parse_report)?;
@@ -3399,7 +3401,7 @@ fn output_human(receipt: &Receipt) -> Result<()> {
 
     // Results by tier
     if let Some(ref tier_results) = receipt.summary.tier_results {
-        for tier in &["pr_fast", "merge_gate", "nightly"] {
+        for tier in &["publication", "pr_fast", "merge_gate", "nightly"] {
             if let Some(summary) = tier_results.get(*tier) {
                 let status_style = if summary.failed > 0 { red.clone() } else { green.clone() };
                 writeln!(
@@ -7116,10 +7118,13 @@ gates:
     #[test]
     fn publication_not_proven_is_blocking_but_commit_advisory_semantics_remain()
     -> color_eyre::eyre::Result<()> {
-        let gate =
-            tier_gate("rustfmt_staged", "publication", "cargo xtask commit-check rustfmt_staged");
         let tmp = tempdir()?;
         for (strict, expected) in [(true, "fail"), (false, "pass")] {
+            let gate = tier_gate(
+                "rustfmt_staged",
+                if strict { "publication" } else { "commit" },
+                "cargo xtask commit-check rustfmt_staged",
+            );
             let report = CheckReport {
                 check: "rustfmt_staged".into(),
                 posture: Posture::NotProven,
@@ -7139,6 +7144,10 @@ gates:
                 || Ok(CommitCheckOutcome::Flagged(report)),
             )?;
             assert_eq!(result.status, expected);
+            let results = std::slice::from_ref(&result);
+            let (failures, _) = failure_guidance(results);
+            assert_eq!(failures.len(), usize::from(strict));
+            assert_eq!(commit_advisories(results).len(), usize::from(!strict));
         }
         Ok(())
     }
@@ -7278,7 +7287,7 @@ gates:
             guidance.contains("Behavioral proof, review and required late qualification remain")
         );
         assert!(!guidance.contains("Proceed with review or merge"));
-        for posture in [Posture::Blocked, Posture::ClassificationRequired] {
+        for posture in [Posture::Blocked, Posture::NotProven, Posture::ClassificationRequired] {
             let report = CheckReport {
                 check: "from_raw_staged".into(),
                 posture,
@@ -7305,13 +7314,17 @@ gates:
                 true,
                 || Ok(outcome),
             )?;
-            let json = serde_json::to_value(super::build_agent_receipt_for_subject(
+            let receipt = super::build_agent_receipt_for_subject(
                 &root,
                 &[result.clone()],
                 &plan,
                 Some(&head),
-            )?)?;
-            let rerun = if posture == Posture::Blocked {
+            )?;
+            let failed = result.status == "fail";
+            assert_eq!(receipt.failures.len(), usize::from(failed));
+            assert_eq!(receipt.advisories.len(), usize::from(!failed));
+            let json = serde_json::to_value(receipt)?;
+            let rerun = if failed {
                 json["failures"][0]["repro"].as_str().unwrap()
             } else {
                 json["advisories"][0]["rerun"].as_str().unwrap()

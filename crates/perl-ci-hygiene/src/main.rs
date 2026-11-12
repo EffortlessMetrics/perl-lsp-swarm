@@ -3795,11 +3795,12 @@ mod tests {
     fn pre_push_hook_keeps_runtime_root_and_child_selector_isolation() {
         let hook = pre_push_hook_script();
         assert!(hook.contains("--worktree-root \"$REPO_ROOT\""));
-        assert!(hook.contains("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE"));
+        assert!(hook.contains("VALIDATION_LOCAL_ENV=\"$(git rev-parse --local-env-vars)\""));
+        assert!(hook.contains("for name in $VALIDATION_LOCAL_ENV; do"));
+        assert!(hook.contains("unset \"$name\""));
+        assert!(hook.contains("run_validation_child bash \"$REPO_ROOT/scripts/cargo-admitted\""));
         assert!(hook.contains("NOT PROVEN: Cargo is unavailable"));
-        assert!(
-            hook.contains("scripts/cargo-admitted\" run --package xtask --bin xtask --locked --")
-        );
+        assert!(hook.contains("run --package xtask --bin xtask --locked --"));
         assert!(hook.contains("cargo-admitted front door is unavailable"));
     }
 
