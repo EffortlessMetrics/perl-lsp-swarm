@@ -5943,6 +5943,19 @@ created = "2026-10-10"
 review_after = "2027-01-10"
 
 [[allow]]
+id = "non-rust-cargo-admitted-frontdoor-proof"
+path = "scripts/tests/test_cargo_admitted_frontdoor.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Real Git/Bash/Just fixtures prove read-only storage planning and literal focused recipe delegation before any Rust build (#19215)."
+covered_by = ["python3 -B -m unittest scripts.tests.test_cargo_admitted_frontdoor"]
+created = "2026-11-09"
+review_after = "2026-12-09"
+
+[[allow]]
 id = "non-rust-cleanup-fetch-maintenance-proof"
 path = "scripts/tests/test_cleanup_fetch_maintenance.py"
 kind = "ci_tooling"

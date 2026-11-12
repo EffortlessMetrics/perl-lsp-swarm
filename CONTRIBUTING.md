@@ -192,15 +192,30 @@ and intermediate paths, resource ownership and supported commands; see
 [constrained-host guidance](docs/how-to/CONSTRAINED_CARGO_BUILDS.md) if capacity
 refuses the request. Do not lower limits merely to pass.
 
+`just agent-check <package> [args...]` and `just agent-test <package> <selector> [args...]`
+delegate to that route with `-p <package> --profile agent --locked`, followed by
+your literal arguments. Both require a package. For tests, put a target selector
+such as `--lib` or `--test NAME` immediately after the package; a runtime test-name
+filter alone still compiles the package's default targets. Explicit broad selectors
+such as `--tests` remain available. Preflight the exact underlying request,
+including its profile:
+
+```bash
+scripts/cargo-admitted --preflight check -p perl-token --profile agent --locked --lib
+just agent-check perl-token --lib
+```
+
 | Situation | Command |
 | --- | --- |
 | Tool or environment problem | `just devex` |
 | Repository health or generated drift | `just doctor` |
 | Fast inner loop | `just pr-fast` |
 | Full local merge gate | `just ci-gate` |
-| New agent package check/test | `scripts/cargo-admitted check -p <package> --locked` / `scripts/cargo-admitted test -p <package> --locked`, after exact-command preflight |
+| Plan build storage | `just devplane-init` — prints admitted paths without allocating directories or assessing capacity |
+| New agent package check/test | `scripts/cargo-admitted check -p <package> --profile agent --locked` / `scripts/cargo-admitted test -p <package> --profile agent --locked`, after exact-command preflight |
+| Focused agent shortcuts | `just agent-check <package> [args...]` / `just agent-test <package> <selector> [args...]` — the same admitted agent-profile commands |
 | Agent Clippy | Follow the separately qualified [staged native Clippy route](docs/agents/CARGO_STORAGE.md#staged-native-clippy): Linux, installed repository pin 1.95.0, exact supported command |
-| Legacy compatibility callers | `just cached <cargo args>`, `just agent-check`, `just agent-test`, `just agent-clippy`, `just agent-nextest`, `just agent-pr-fast` — retain existing behavior; not host admission or the route for new agent work |
+| Legacy compatibility callers | `just cached <cargo args>`, `just agent-clippy`, `just agent-nextest`, `just agent-pr-fast` — retain existing behavior; not host admission or the route for new agent work |
 | Build disk grew / stale target trees | `just target-gc` (advisory report), then request an exact owner-verified cleanup proposal; `--apply` is retired |
 | Parser or generated status changed | `just status-update` then `just status-check` |
 | Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
@@ -210,7 +225,7 @@ refuses the request. Do not lower limits merely to pass.
 Do not run broad workspace proof after every edit. Escalate when the dependency graph,
 risk, changed public surface, or selected merge gate requires it.
 
-The compatibility recipes still delegate to `scripts/cargo-safe`; they do not
+The remaining compatibility recipes still delegate to `scripts/cargo-safe`; they do not
 establish the admitted route's isolation or lifecycle guarantees. Do not mechanically
 replace that wrapper in recipes: aliases such as `xtask` and external commands such
 as `nextest` are not admitted. Unsupported commands need a separately admitted route,
@@ -218,6 +233,8 @@ not a raw-Cargo fallback. See [legacy build caching](docs/how-to/MULTI_WORKTREE_
 for the compatibility boundary. This guidance does not qualify the host or activate
 the ordinary build loop; host-owner qualification remains a prerequisite under
 [#3230](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3230).
+The `cargo agent-*` aliases also retain raw, workspace-wide compatibility behavior;
+they do not use the admitted Just recipes.
 
 ### 5. Inspect the proposed change
 

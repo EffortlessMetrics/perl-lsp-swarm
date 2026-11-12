@@ -19,6 +19,9 @@ class ConstrainedAdmissionTests(unittest.TestCase):
 
     def setUp(self):
         # These fixtures mock the launch/owner; native discovery is tested separately.
+        # The arithmetic fixtures do not assert private Git allocation provenance.
+        self.enterContext(patch.object(safe, "PrivateAllocation", return_value=Mock(
+            receipt={"status": "unknown", "reason": "synthetic_admission_fixture"})))
         self.enterContext(patch.object(safe, "child_discovery_capability", return_value={}))
         import hashlib
         import json
@@ -50,6 +53,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.budget.write_text(json.dumps(self.document), encoding="utf-8")
         # Arithmetic fixtures mock execution; native route tests prove ownership.
         tree = Mock()
+        tree.probe.return_value = subprocess.CompletedProcess([], 0, b"{}\n", b"")
         tree.finish.return_value = {"tree_settled": True, "cancelled": False}
         self.enterContext(patch.object(safe, "ClippyTree", return_value=tree))
         self.enterContext(patch.object(safe, "call_clippy", side_effect=
@@ -68,6 +72,8 @@ class ConstrainedAdmissionTests(unittest.TestCase):
              patch.object(safe, "resource_plan", return_value=(self.root, self.slot, self.paths)), \
              patch.object(safe.shutil, "disk_usage", side_effect=disk,
                           return_value=self.Usage(32*self.gib, 32*self.gib-free, free)), \
+             patch.object(safe.subprocess, "run", return_value=
+                          subprocess.CompletedProcess([], 0, b"", b"")), \
              patch.object(safe.subprocess, "call", side_effect=call, return_value=0) as cargo, \
              contextlib.redirect_stderr(output):
             result = safe.main(args)
@@ -276,10 +282,12 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertIn("docs/how-to/CONSTRAINED_CARGO_BUILDS.md", section)
         rows = [line for line in section.splitlines() if line.startswith("| ")]
         for operation in ("check", "test"):
-            command = f"scripts/cargo-admitted {operation} -p <package> --locked"
+            command = f"scripts/cargo-admitted {operation} -p <package> --profile agent --locked"
             self.assertTrue(any("New agent" in row and command in row for row in rows), command)
-        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
-                       "agent-nextest", "agent-pr-fast"):
+            selector = " <selector>" if operation == "test" else ""
+            shortcut = f"just agent-{operation} <package>{selector} [args...]"
+            self.assertTrue(any(shortcut in row and "admitted" in row for row in rows), shortcut)
+        for recipe in ("cached", "agent-clippy", "agent-nextest", "agent-pr-fast"):
             matching = [row for row in rows if f"`just {recipe}" in row]
             self.assertTrue(matching, recipe)
             self.assertTrue(all("compatibility" in row.lower() for row in matching), recipe)
@@ -290,8 +298,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
 
     def test_legacy_recipe_help_does_not_promise_admission(self):
         justfile = (ROOT / "justfile").read_text(encoding="utf-8")
-        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
-                       "agent-nextest", "agent-pr-fast"):
+        for recipe in ("cached", "agent-clippy", "agent-nextest", "agent-pr-fast"):
             with self.subTest(recipe=recipe):
                 match = re.search(r"((?:^#[^\n]*\n)+)^" + re.escape(recipe)
                                   + r"(?: [^\n:]*)?:", justfile, re.MULTILINE)
@@ -302,7 +309,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
                 self.assertIn("not host admission", help_text)
                 self.assertNotIn("Agent-safe", help_text)
                 self.assertNotIn("Documented default", help_text)
-                if recipe in ("cached", "agent-check", "agent-test"):
+                if recipe == "cached":
                     self.assertIn("scripts/cargo-admitted", help_text)
                 elif recipe == "agent-clippy":
                     self.assertIn("CARGO_STORAGE.md#staged-native-clippy", help_text)

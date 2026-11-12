@@ -58,7 +58,6 @@ cleanup() {
     if [[ -d "${TMPDIR_BASE}/wt2" ]]; then
       git -C "$REPO_ROOT" worktree remove --force "${TMPDIR_BASE}/wt2" >/dev/null 2>&1 || true
     fi
-    git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1 || true
     rm -rf "${TMPDIR_BASE}"
   fi
 }
@@ -73,6 +72,35 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+has_incremental_payload() {
+  local root="$1"
+  local file
+  while IFS= read -r -d '' file; do
+    if [[ -s "$file" ]]; then
+      return 0
+    fi
+  done < <(find "$root" -type f -path '*/incremental/*' -print0)
+  return 1
+}
+
+run_incremental_cell() {
+  local target_dir="$1"
+  local opt_in="$2"
+  (
+    cd "$FIXTURE_DIR"
+    unset CI CARGO_INCREMENTAL CARGO_BUILD_INCREMENTAL CARGO_PROFILE_DEV_INCREMENTAL
+    unset CARGO_TARGET_DIR CARGO_BUILD_BUILD_DIR RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
+    unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
+    export CARGO_HOME="${TMPDIR_BASE}/cargo-home"
+    export CARGO_NET_OFFLINE=true
+    export RUSTUP_AUTO_INSTALL=0
+    if [[ "$opt_in" == "1" ]]; then
+      export CARGO_INCREMENTAL=1
+    fi
+    cargo check --quiet --offline --target-dir "$target_dir"
+  )
+}
+
 echo "=== per-worktree cargo target-dir isolation self-test (#3854) ==="
 echo ""
 
@@ -82,14 +110,14 @@ CURRENT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 echo "Cutting throwaway worktrees from the checked-out commit: ${CURRENT_SHA}"
 echo ""
 
-if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt1" "$CURRENT_SHA" -q 2>/tmp/wt1-add.err; then
+if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt1" "$CURRENT_SHA" -q 2>"${TMPDIR_BASE}/wt1-add.err"; then
   echo "ERROR: failed to create throwaway worktree 1:"
-  cat /tmp/wt1-add.err
+  cat "${TMPDIR_BASE}/wt1-add.err"
   exit 1
 fi
-if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt2" "$CURRENT_SHA" -q 2>/tmp/wt2-add.err; then
+if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt2" "$CURRENT_SHA" -q 2>"${TMPDIR_BASE}/wt2-add.err"; then
   echo "ERROR: failed to create throwaway worktree 2:"
-  cat /tmp/wt2-add.err
+  cat "${TMPDIR_BASE}/wt2-add.err"
   exit 1
 fi
 
@@ -152,6 +180,45 @@ if [[ "$TARGET_DIR_1_SUBDIR" == "$TARGET_DIR_1" ]]; then
   pass "resolution from a subdirectory inside worktree 1 matches the worktree root's resolution"
 else
   fail "subdirectory resolution ($TARGET_DIR_1_SUBDIR) differs from worktree-root resolution ($TARGET_DIR_1)"
+fi
+
+# 4. Raw Cargo still exists as a compatibility route. The tracked fallback
+#    must suppress incremental rustc state unless an operator explicitly opts
+#    in for one command. Use a dependency-free standalone workspace below the
+#    candidate worktree so this proves config behavior without compiling the
+#    repository or retaining either target root.
+FIXTURE_DIR="${TMPDIR_BASE}/wt1/.cargo-incremental-policy-fixture"
+mkdir -p "$FIXTURE_DIR/src" "${TMPDIR_BASE}/cargo-home"
+cat >"$FIXTURE_DIR/Cargo.toml" <<'TOML'
+[package]
+name = "cargo-incremental-policy-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+TOML
+cat >"$FIXTURE_DIR/src/lib.rs" <<'RS'
+pub fn policy_fixture() -> u8 {
+    1
+}
+RS
+
+OFF_TARGET="${TMPDIR_BASE}/incremental-off"
+ON_TARGET="${TMPDIR_BASE}/incremental-on"
+run_incremental_cell "$OFF_TARGET" 0
+run_incremental_cell "$ON_TARGET" 1
+
+if has_incremental_payload "$OFF_TARGET"; then
+  fail "raw Cargo produced incremental payload without an explicit override"
+else
+  pass "tracked config disables raw-Cargo incremental payload by default"
+fi
+
+if has_incremental_payload "$ON_TARGET"; then
+  pass "CARGO_INCREMENTAL=1 remains an explicit local opt-in"
+else
+  fail "CARGO_INCREMENTAL=1 did not produce an incremental payload"
 fi
 
 echo ""
