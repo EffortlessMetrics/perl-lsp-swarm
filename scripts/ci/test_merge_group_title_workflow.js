@@ -31,53 +31,58 @@ async function loadWorkflowScript() {
   return body.join('\n');
 }
 
-function associatedPr(number, sha, overrides = {}) {
+// Captured from native squash-queue run 43158183620. PR #19295 was open when
+// this event ran; its current merged state is deliberately not replayed here.
+const BASE_SHA = '5dfecf1602bbcd83494893840c0f8795dba492e0';
+const GROUP_SHA = '3b7cb31996c2c75a6c96dc22d365a70aedd8d138';
+const PR_HEAD_SHA = 'd1ea95fd0c2d7166c6943d9cd1f870e7bc304fb1';
+const PR_NUMBER = 19295;
+const HEAD_REF = `refs/heads/gh-readonly-queue/main/pr-${PR_NUMBER}-${BASE_SHA}`;
+
+const title = (text, login = 'author') => ({ title: text, user: { login }, labels: [] });
+
+function queuePr(overrides = {}) {
   return {
-    number,
+    number: PR_NUMBER,
     state: 'open',
-    base: { ref: 'main' },
-    head: { sha },
+    ...title('perf(release): reuse Domain6 listing object ids (#19262)'),
     ...overrides,
+    base: { ref: 'main', sha: BASE_SHA, ...(overrides.base || {}) },
+    head: { sha: PR_HEAD_SHA, ...(overrides.head || {}) },
   };
 }
 
-async function runQueue({
-  commits,
-  totalCommits,
-  currentTitles,
-  status = 'ahead',
-  pullsFor = null,
-}) {
+async function runQueue({ mergeGroup = {}, currentPr = queuePr(), pullsGet = null } = {}) {
   const failures = [];
-  const readTitles = [];
-  const headShas = new Map();
-  const associatedPulls = new Map(
-    commits.map((commit, index) => [commit.sha, associatedPr(index + 101, commit.sha)]),
-  );
+  const readPrs = [];
+  const legacyCalls = [];
+  const infos = [];
   const github = {
     rest: {
       repos: {
-        compareCommitsWithBasehead: async () => ({
-          data: { status, total_commits: totalCommits, commits },
-        }),
-        listPullRequestsAssociatedWithCommit: async ({ commit_sha: sha }) => {
-          const pulls = pullsFor ? pullsFor(sha) : [associatedPulls.get(sha)];
-          for (const pr of pulls) headShas.set(pr.number, pr.head?.sha);
-          return { data: pulls };
+        // The native control has one synthetic G commit and no associated PR.
+        // The repaired path must neither call nor depend on these legacy APIs.
+        compareCommitsWithBasehead: async () => {
+          legacyCalls.push('compare');
+          return {
+            data: {
+              status: 'ahead',
+              total_commits: 1,
+              commits: [{ sha: GROUP_SHA, parents: [{ sha: BASE_SHA }] }],
+            },
+          };
+        },
+        listPullRequestsAssociatedWithCommit: async () => {
+          legacyCalls.push('association');
+          return { data: [] };
         },
       },
       pulls: {
         get: async ({ pull_number: number }) => {
-          readTitles.push(number);
-          const current = currentTitles.has(number) ? currentTitles.get(number) : {};
-          return {
-            data: {
-              state: 'open',
-              base: { ref: 'main' },
-              head: { sha: headShas.get(number) },
-              ...current,
-            },
-          };
+          readPrs.push(number);
+          if (pullsGet) return pullsGet(number);
+          if (!currentPr) throw new Error('PR not found');
+          return { data: currentPr };
         },
       },
     },
@@ -86,10 +91,15 @@ async function runQueue({
     eventName: 'merge_group',
     repo: { owner: 'owner', repo: 'repo' },
     payload: {
-      merge_group: { base_sha: 'base', head_sha: 'group', base_ref: 'refs/heads/main' },
+      merge_group: {
+        base_sha: BASE_SHA,
+        head_sha: GROUP_SHA,
+        base_ref: 'refs/heads/main',
+        head_ref: HEAD_REF,
+        ...mergeGroup,
+      },
     },
   };
-  const infos = [];
   const core = {
     setFailed: (message) => failures.push(message),
     info: (message) => infos.push(message),
@@ -98,7 +108,7 @@ async function runQueue({
   // actions/github-script invokes this exact body as an async function.
   const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript());
   await execute(core, github, context);
-  return { failures, readTitles, infos };
+  return { failures, readPrs, legacyCalls, infos };
 }
 
 // PR-event path: the same body, driven by a pull_request payload. Records the
@@ -152,160 +162,127 @@ async function runPr({ pr, existingComments = [] }) {
   return { failures, warnings, created, updated, addedLabels, removedLabels };
 }
 
-const title = (text, login = 'author') => ({ title: text, user: { login }, labels: [] });
-
-test('a nonempty but incomplete association set fails before title validation', async () => {
+test('the captured native squash group passes even when its synthetic commit has no associated PR', async () => {
+  assert.notEqual(PR_HEAD_SHA, GROUP_SHA, 'the native PR head and synthetic group head differ');
   const result = await runQueue({
-    commits: [{ sha: 'one' }, { sha: 'two' }],
-    totalCommits: 2,
-    pullsFor: (sha) => (sha === 'one' ? [associatedPr(101, sha)] : []),
-    currentTitles: new Map([[101, title('feat: visible member (#18255)')]]),
+    mergeGroup: { head_ref: HEAD_REF.replace(/^refs\/heads\//, '') },
   });
-  assert.equal(result.failures.length, 1);
-  assert.match(result.failures[0], /two.*incomplete association set/);
-  assert.deepEqual(result.readTitles, []);
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.readPrs, [PR_NUMBER]);
+  assert.deepEqual(result.legacyCalls, []);
+  const passed = result.infos.find((line) => line.includes('title validation passed'));
+  assert.ok(passed, 'expected a success log line');
+  assert.match(passed, /#19295/);
 });
 
-test('closed or other-base associations cannot reject admitted members or replace their titles', async () => {
-  // The commit-associated PRs endpoint is authoritative for membership. A
-  // merge-queue commit SHA normally differs from the PR head SHA, so the code
-  // must not require them to match; it filters only on open state and base.
-  const unrelated = [
-    associatedPr(999, 'one', { state: 'closed', base: { ref: 'other' } }),
-    associatedPr(999, 'one', { base: { ref: 'other' } }),
+test('the canonical full queue ref form is accepted', async () => {
+  const result = await runQueue();
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.readPrs, [PR_NUMBER]);
+  assert.deepEqual(result.legacyCalls, []);
+});
+
+test('a base branch with regex metacharacters is matched literally', async () => {
+  const baseRef = 'release/1.0';
+  const result = await runQueue({
+    mergeGroup: {
+      base_ref: `refs/heads/${baseRef}`,
+      head_ref: `refs/heads/gh-readonly-queue/${baseRef}/pr-${PR_NUMBER}-${BASE_SHA}`,
+    },
+    currentPr: queuePr({ base: { ref: baseRef } }),
+  });
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.readPrs, [PR_NUMBER]);
+});
+
+test('missing, malformed, ambiguous, and contradictory queue identities fail before a PR read', async (t) => {
+  const queuePrefix = 'refs/heads/gh-readonly-queue/main';
+  const cases = [
+    ['missing head_ref', { head_ref: null }],
+    ['missing base_sha', { base_sha: null }],
+    ['missing head_sha', { head_sha: null }],
+    ['missing base_ref', { base_ref: null }],
+    ['malformed base_sha', { base_sha: 'base' }],
+    ['malformed head_sha', { head_sha: 'group' }],
+    ['double ref prefix', { head_ref: `refs/heads/${HEAD_REF}` }],
+    ['missing PR number', { head_ref: `${queuePrefix}/pr--${BASE_SHA}` }],
+    ['zero PR number', { head_ref: `${queuePrefix}/pr-0-${BASE_SHA}` }],
+    ['unsafe PR number', { head_ref: `${queuePrefix}/pr-9007199254740992-${BASE_SHA}` }],
+    ['multiple PR components', { head_ref: `${queuePrefix}/pr-19295-pr-19296-${BASE_SHA}` }],
+    ['trailing data', { head_ref: `${HEAD_REF}-extra` }],
+    ['base branch contradiction', { head_ref: `refs/heads/gh-readonly-queue/other/pr-${PR_NUMBER}-${BASE_SHA}` }],
+    ['base SHA contradiction', { head_ref: `${queuePrefix}/pr-${PR_NUMBER}-${GROUP_SHA}` }],
+    ['regex is not a base branch wildcard', {
+      base_ref: 'refs/heads/release/1.0',
+      head_ref: `refs/heads/gh-readonly-queue/release/1x0/pr-${PR_NUMBER}-${BASE_SHA}`,
+    }],
   ];
-  for (const candidate of unrelated) {
-    const result = await runQueue({
-      commits: [{ sha: 'one' }],
-      totalCommits: 1,
-      pullsFor: () => [associatedPr(101, 'one'), candidate],
-      currentTitles: new Map([
-        [101, title('feat: admitted member (#18255)')],
-        [999, title('unrelated title has no issue reference')],
-      ]),
+  for (const [name, mergeGroup] of cases) {
+    await t.test(name, async () => {
+      const result = await runQueue({ mergeGroup });
+      assert.equal(result.failures.length, 1);
+      assert.match(result.failures[0], /merge_group/);
+      assert.deepEqual(result.readPrs, []);
+      assert.deepEqual(result.legacyCalls, []);
     });
-    assert.deepEqual(result.failures, []);
-    assert.deepEqual(result.readTitles, [101]);
   }
+});
+
+test('an absent PR fails closed instead of producing a zero-member success', async () => {
+  const result = await runQueue({ currentPr: null });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /#19295.*could not re-read current title/);
+  assert.deepEqual(result.readPrs, [PR_NUMBER]);
+  assert.deepEqual(result.legacyCalls, []);
+});
+
+test('contradictory current PR identity fails closed', async (t) => {
+  const cases = [
+    ['wrong number', queuePr({ number: PR_NUMBER + 1 })],
+    ['closed state', queuePr({ state: 'closed' })],
+    ['edited base branch', queuePr({ base: { ref: 'other' } })],
+    ['moved base SHA', queuePr({ base: { sha: GROUP_SHA } })],
+    ['missing current head SHA', queuePr({ head: { sha: null } })],
+    ['malformed current head SHA', queuePr({ head: { sha: 'head' } })],
+  ];
+  for (const [name, currentPr] of cases) {
+    await t.test(name, async () => {
+      const result = await runQueue({ currentPr });
+      assert.equal(result.failures.length, 1);
+      assert.match(result.failures[0], /#19295.*changed state, base, or identity/);
+      assert.deepEqual(result.readPrs, [PR_NUMBER]);
+      assert.deepEqual(result.legacyCalls, []);
+    });
+  }
+});
+
+test('a title edited after an earlier green validation fails the next run', async () => {
+  const beforeEdit = await runQueue();
+  assert.deepEqual(beforeEdit.failures, []);
+
+  const afterEdit = await runQueue({
+    currentPr: queuePr(title('edited to remove the issue reference')),
+  });
+  assert.equal(afterEdit.failures.length, 1);
+  assert.match(afterEdit.failures[0], /#19295: no issue reference/);
+  assert.deepEqual(afterEdit.readPrs, [PR_NUMBER]);
 });
 
 test('a dependabot lookalike author gets no exemption', async () => {
   const result = await runQueue({
-    commits: [{ sha: 'one' }],
-    totalCommits: 1,
-    currentTitles: new Map([[101, title('no issue reference', 'not-dependabot-person')]]),
+    currentPr: queuePr(title('no issue reference', 'not-dependabot-person')),
   });
   assert.equal(result.failures.length, 1);
-  assert.match(result.failures[0], /#101: no issue reference/);
-  assert.deepEqual(result.readTitles, [101]);
+  assert.match(result.failures[0], /#19295: no issue reference/);
+  assert.deepEqual(result.readPrs, [PR_NUMBER]);
 });
 
 test('the exact dependabot identity remains exempt', async () => {
   const result = await runQueue({
-    commits: [{ sha: 'one' }],
-    totalCommits: 1,
-    currentTitles: new Map([[101, title('dependency: automated update', 'dependabot[bot]')]]),
+    currentPr: queuePr(title('dependency: automated update', 'dependabot[bot]')),
   });
   assert.deepEqual(result.failures, []);
-  assert.deepEqual(result.readTitles, [101]);
-});
-
-test('one-member group validates its complete commit graph', async () => {
-  const result = await runQueue({
-    commits: [{ sha: 'one' }],
-    totalCommits: 1,
-    currentTitles: new Map([[101, title('feat: one member (#18255)')]]),
-  });
-  assert.deepEqual(result.failures, []);
-  assert.deepEqual(result.readTitles, [101]);
-});
-
-test('multi-member group re-reads and validates every member', async () => {
-  const result = await runQueue({
-    commits: [{ sha: 'one' }, { sha: 'two' }],
-    totalCommits: 2,
-    currentTitles: new Map([
-      [101, title('feat: first member (#18255)')],
-      [102, title('fix: second member (#18255)')],
-    ]),
-  });
-  assert.deepEqual(result.failures, []);
-  assert.deepEqual(result.readTitles, [101, 102]);
-  // The success log is the audit trail of which PRs were validated; it must
-  // name the real member numbers rather than `#undefined`.
-  const passed = result.infos.find((line) => line.includes('title validation passed'));
-  assert.ok(passed, 'expected a success log line');
-  assert.match(passed, /#101, #102/);
-  assert.doesNotMatch(passed, /undefined/);
-});
-
-test('one bad current title fails a multi-member group', async () => {
-  const result = await runQueue({
-    commits: [{ sha: 'one' }, { sha: 'two' }],
-    totalCommits: 2,
-    currentTitles: new Map([
-      [101, title('feat: first member (#18255)')],
-      [102, title('bad title without an issue')],
-    ]),
-  });
-  assert.equal(result.failures.length, 1);
-  assert.match(result.failures[0], /#102: no issue reference/);
-  assert.deepEqual(result.readTitles, [101, 102]);
-});
-
-test('truncated compare fails closed instead of inferring membership', async () => {
-  const result = await runQueue({
-    commits: [{ sha: 'one' }],
-    totalCommits: 2,
-    currentTitles: new Map([[101, title('feat: visible member (#18255)')]]),
-  });
-  assert.deepEqual(result.failures, [
-    'merge_group commit graph is truncated (1/2); refusing to infer membership',
-  ]);
-  assert.deepEqual(result.readTitles, []);
-});
-
-test('a title edited after an earlier green validation fails the next run', async () => {
-  const fixture = {
-    commits: [{ sha: 'one' }, { sha: 'two' }],
-    totalCommits: 2,
-    currentTitles: new Map([
-      [101, title('feat: first member (#18255)')],
-      [102, title('fix: initially valid (#18255)')],
-    ]),
-  };
-  const beforeEdit = await runQueue(fixture);
-  assert.deepEqual(beforeEdit.failures, []);
-
-  fixture.currentTitles.set(102, title('edited to remove the issue reference'));
-  const afterEdit = await runQueue(fixture);
-  assert.equal(afterEdit.failures.length, 1);
-  assert.match(afterEdit.failures[0], /#102: no issue reference/);
-  assert.deepEqual(afterEdit.readTitles, [101, 102]);
-});
-
-test('a diverged base fails closed before membership', async () => {
-  const result = await runQueue({
-    commits: [{ sha: 'one' }],
-    totalCommits: 1,
-    status: 'diverged',
-    currentTitles: new Map([[101, title('feat: one member (#18255)')]]),
-  });
-  assert.equal(result.failures.length, 1);
-  assert.match(result.failures[0], /not an ancestor/);
-  assert.deepEqual(result.readTitles, []);
-});
-
-test('a commit with no associated PR fails closed', async () => {
-  const result = await runQueue({
-    commits: [{ sha: 'one' }],
-    totalCommits: 1,
-    pullsFor: () => [],
-    currentTitles: new Map(),
-  });
-  assert.equal(result.failures.length, 1);
-  assert.match(result.failures[0], /one.*incomplete association set/);
-  assert.deepEqual(result.readTitles, []);
+  assert.deepEqual(result.readPrs, [PR_NUMBER]);
 });
 
 test('a PR-event placeholder title passes, comments, and labels needs-issue-link', async () => {
@@ -332,21 +309,4 @@ test('a PR-event placeholder title reuses the existing bot comment', async () =>
   assert.equal(result.updated.length, 1);
   assert.equal(result.updated[0].id, 42);
   assert.deepEqual(result.addedLabels, ['needs-issue-link']);
-});
-
-test('the exact compare cap is complete and one over is truncated', async () => {
-  const commits = Array.from({ length: 250 }, (_, index) => ({ sha: `c${index}` }));
-  const currentTitles = new Map(
-    commits.map((_, index) => [index + 101, title(`feat: member ${index} (#18255)`)]),
-  );
-
-  const complete = await runQueue({ commits, totalCommits: 250, currentTitles });
-  assert.deepEqual(complete.failures, []);
-  assert.equal(complete.readTitles.length, 250);
-
-  const truncated = await runQueue({ commits, totalCommits: 251, currentTitles });
-  assert.deepEqual(truncated.failures, [
-    'merge_group commit graph is truncated (250/251); refusing to infer membership',
-  ]);
-  assert.deepEqual(truncated.readTitles, []);
 });

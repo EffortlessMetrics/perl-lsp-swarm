@@ -1,8 +1,9 @@
 //! #18255: the merge queue must receive `validate-title` on the actual G.
 //!
-//! The queue path resolves the group's constituent PRs from the commit graph,
-//! re-reads each current title, and applies the same policy as the PR path. It
-//! must not check out candidate contents or mutate PR state.
+//! The queue path resolves the PR named by the merge-group head ref, re-reads
+//! its current title and metadata, and applies the same policy as the PR path.
+//! It must not use commit association as membership authority, check out
+//! candidate contents, or mutate PR state.
 //!
 //! The required context has exactly one static producer: a single
 //! unconditionally reachable job whose event split lives inside the script. A
@@ -110,18 +111,25 @@ fn policy_is_defined_once_in_the_workflow() {
 }
 
 #[test]
-fn queue_branch_resolves_members_from_the_commit_graph_and_fails_closed() {
+fn queue_branch_resolves_the_ref_named_pr_and_fails_closed() {
     let queue = queue_branch();
     for needle in [
-        "merge_group?.head_sha",
-        "merge_group?.base_sha",
-        "compareCommitsWithBasehead",
-        "listPullRequestsAssociatedWithCommit",
+        "mergeGroup.head_sha",
+        "mergeGroup.base_sha",
+        "mergeGroup.head_ref",
+        "gh-readonly-queue/",
         "pulls.get",
-        "no constituent pull requests resolved",
+        "current.number !== member",
+        "current.base?.sha !== baseSha",
         "merge group title validation failed",
     ] {
         assert!(queue.contains(needle), "queue branch must contain `{needle}`");
+    }
+    for forbidden in ["compareCommitsWithBasehead", "listPullRequestsAssociatedWithCommit"] {
+        assert!(
+            !queue.contains(forbidden),
+            "commit association must not be membership authority: `{forbidden}`"
+        );
     }
 }
 
