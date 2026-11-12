@@ -1,0 +1,106 @@
+name: Prove bootstrap carrier on current main
+
+on:
+  push:
+    branches: [codex/19325-current-main-proof-20261112]
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout proof branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/19325-current-main-proof-20261112
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact current-main subject
+        shell: bash
+        env:
+          EXPECTED_MAIN: fe7eeb53e30b9c6747ef4ff244982a923ac72ba3
+          EXPECTED_HEAD: e0a1b3250ca09b90025eae9530fda40f71b0023a
+          EXPECTED_SUBJECT: 5376a62b28e502fbad282964e9bf8274ed951f12
+          EXPECTED_TREE: 8bcbfb7c5b22cc4fe28b8c3257ba9f292128f036
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          actual_main="$(git rev-parse FETCH_HEAD)"
+          [ "$actual_main" = "$EXPECTED_MAIN" ] || {
+            echo "::error::protected main moved: expected $EXPECTED_MAIN, got $actual_main"
+            exit 1
+          }
+          [ "$(git rev-parse "$EXPECTED_SUBJECT^1")" = "$EXPECTED_MAIN" ]
+          [ "$(git rev-parse "$EXPECTED_SUBJECT^2")" = "$EXPECTED_HEAD" ]
+          [ "$(git rev-parse "$EXPECTED_SUBJECT^{tree}")" = "$EXPECTED_TREE" ]
+          git merge-base --is-ancestor "$EXPECTED_MAIN" "$EXPECTED_SUBJECT"
+          git merge-base --is-ancestor "$EXPECTED_HEAD" "$EXPECTED_SUBJECT"
+          git checkout --detach "$EXPECTED_SUBJECT"
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_SUBJECT" ]
+          test -z "$(git status --porcelain)"
+          git diff --check "$EXPECTED_MAIN...$EXPECTED_SUBJECT"
+
+      - name: Install pinned Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Admission contract tests
+        run: python3 -B scripts/ci/test_hosted_queue_admission.py
+
+      - name: Publication transport tests
+        run: python3 -B scripts/tests/test_publication_consistency_hook.py
+
+      - name: Native pre-push fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/pre-push-proof"
+          mkdir -p "$evidence"
+          python3 -B scripts/tests/test_pre_push_validation_child.py \
+            --hook hooks/pre-push \
+            --evidence "$evidence"
+          test "$(find "$evidence" -name report.json -type f | wc -l)" -eq 1
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Strict file-policy unit qualification
+        run: >-
+          cargo test --locked -p xtask --bin xtask
+          tasks::file_policy::tests -- --nocapture
+
+      - name: File-policy integration qualification
+        run: cargo test --locked -p xtask --test file_policy -- --nocapture
+
+      - name: Publication and staged-route unit qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xtask --bin xtask tasks::gates -- --nocapture
+          cargo test --locked -p xtask --bin xtask tasks::commit_checks -- --nocapture
+          cargo test --locked -p xtask --bin xtask tasks::staged -- --nocapture
+
+      - name: Hook library qualification
+        run: cargo test --locked -p perl-ci-hygiene -- --nocapture
+
+      - name: Actual blocking file-policy checker
+        run: >-
+          cargo run --locked -p xtask --bin xtask --
+          check-file-policy --mode blocking-allowlist
+
+      - name: Final exact-subject hygiene
+        shell: bash
+        env:
+          EXPECTED_SUBJECT: 5376a62b28e502fbad282964e9bf8274ed951f12
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_SUBJECT" ]
+          git diff --check
+          test -z "$(git status --porcelain --untracked-files=no)"
