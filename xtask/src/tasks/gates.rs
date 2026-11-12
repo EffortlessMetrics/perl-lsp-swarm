@@ -6306,6 +6306,37 @@ gates:
     }
 
     #[test]
+    #[cfg(unix)]
+    fn run_single_gate_omits_partial_counts_after_summary_timeout() -> color_eyre::eyre::Result<()>
+    {
+        let command = "printf 'running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored\n'; sleep 3; exit 0; true && cargo test never-executed";
+        let mut gate = pr_gate("partial-count-timeout", GatePlanningRole::AlwaysOn, command);
+        gate.tags.push("test".to_string());
+        gate.timeout_seconds = 1;
+        gate.retry_count = 0;
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        assert!(is_cargo_test_command(command));
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+        assert_eq!(result.status, "timeout");
+        let serialized = serde_json::to_value(&result)?;
+        for field in ["tests_total", "tests_passed", "tests_failed", "tests_ignored"] {
+            assert!(
+                serialized.pointer(&format!("/metrics/{field}")).is_none(),
+                "timeout must not retain partial counts: {serialized}"
+            );
+        }
+        let metrics = must_some_with(result.metrics, "execution evidence remains available");
+        assert_eq!(metrics.test_execution_reached, Some(true));
+        assert!(
+            std::fs::read_to_string(tmp.path().join("partial-count-timeout.log"))?
+                .contains("test result: ok.")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn receipt_write_and_load_roundtrip_reports_missing_file() -> color_eyre::eyre::Result<()> {
         let tmp = tempdir()?;
         let receipt_path = tmp.path().join("nested").join("receipt.json");
