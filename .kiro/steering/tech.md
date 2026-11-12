@@ -1,95 +1,51 @@
-# Tech Stack and Build System
+# Toolchain and proof routes
 
-## Language and Toolchain
-- **Language**: Rust (Edition 2024)
-- **MSRV**: 1.95 (pinned in `rust-toolchain.toml`)
-- **Toolchain components**: rustfmt, clippy (minimal profile)
+Use root `AGENTS.md`, `CONTRIBUTING.md`, and package-local guidance as the current
+contract. Read dependency versions, workspace membership, lint policy, and formatting
+settings from their manifests/configuration rather than copying them into steering.
 
-## Build System
-- **Cargo** workspace with ~35 member crates under `crates/`
-- **just** task runner for all build/test/lint/CI commands (install: `cargo install just`)
-- **Nix** flake for reproducible dev environment (optional but recommended)
-- **cargo xtask** for custom build tasks (formatting, CI hygiene, etc.)
+## Tool selection
 
-## Key Dependencies
-- `lsp-types` 0.97 — LSP protocol types
-- `tokio` 1.x — async runtime (multi-thread, net, io-util, sync, time)
-- `serde` / `serde_json` — serialization
-- `ropey` — rope data structure for text manipulation
-- `tree-sitter` 0.26 — tree-sitter bindings (for tree-sitter-perl crates)
-- `clap` 4.x — CLI argument parsing
-- `tracing` — structured logging (use instead of println/eprintln)
-- `proptest` — property-based testing
-- `criterion` — benchmarking
-- `parking_lot` — synchronization primitives
-- `regex` — regular expressions (must be `static LazyLock<Regex>`, never per-call)
-- `thiserror` — error derive macros
-- `anyhow` — error handling
+Keep the workspace `Cargo.toml` MSRV separate from the default selected by
+`rust-toolchain.toml`. An explicit `RUSTUP_TOOLCHAIN` can select a different compiler;
+compatibility and exact-pin qualification are different claims. Follow the active
+setup/doctor owner's limitations rather than changing the pin to make diagnosis green.
+Node/npm acceptance belongs to the extension manifest and its doctor.
 
-## Common Commands
+Provisioning tools, activating an independent task shell, inspecting repository layout,
+and admitting a build are separate steps. Follow the contributor quick start and
+`docs/how-to/AGENT_CONTRIBUTING.md`; do not install utilities or compile the whole
+workspace merely to inspect a source change.
+
+## Focused proof
+
+`just agent-preflight` is layout inspection, not writer ownership or Cargo capacity.
+Before compiled work, read `docs/agents/CARGO_STORAGE.md`. Select the package and target
+required by the claim. From the same shell and worktree, preflight and execute matching
+requests, for example:
 
 ```bash
-# Fast PR validation (~1-2 min) — run before every push
-just pr-fast
-
-# Full pre-merge gate (~3-5 min) — required before merge
-nix develop -c just ci-gate
-# or without Nix:
-just ci-gate
-
-# Build the LSP server binary
-cargo build -p perl-lsp-rs --release
-
-# Test a specific crate
-cargo test -p <crate>
-
-# Test full workspace (lib tests only)
-cargo test --workspace --lib
-
-# Check all targets compile (catches integration test bit-rot)
-cargo check --all-targets -p <crate>
-
-# Format code (Windows-safe, per-crate)
-cargo xtask fmt
-
-# Lint
-cargo clippy -p <crate>
-cargo clippy --workspace          # full workspace
-
-# Workspace health check / diagnostics
-just doctor
-
-# Show all available just commands
-just --list
-
-# Quick reference of common workflows
-just quick-ref
+scripts/cargo-admitted --preflight check -p <package> --profile agent --locked --lib
+just agent-check <package> --lib
+scripts/cargo-admitted --preflight test -p <package> --profile agent --locked --test <target>
+just agent-test <package> --test <target>
 ```
 
-## Formatting Config (rustfmt.toml)
-- `max_width = 100`
-- `use_small_heuristics = "Max"`
+These two Just recipes use `cargo-admitted`; the test recipe requires a target selector.
+A test-name filter alone does not restrict compilation targets. Keep extra arguments
+identical in both requests. Use the direct admitted route for wrapper-specific options.
 
-## Clippy Config (clippy.toml)
-- `msrv = "1.95"`
-- `too-many-arguments-threshold = 8`
-- `cognitive-complexity-threshold = 50`
+Clippy follows the separately qualified staged native route in `CARGO_STORAGE.md`.
+Raw Cargo aliases, `cargo-safe`, and the remaining legacy Just recipes are not admission.
+Broad gates run only for claims that need them on a host admitted for their actual work;
+there is no universal every-push workspace gate or timing promise in this adapter.
 
-## Workspace Lints (enforced via Cargo.toml)
-These are **denied** at the workspace level:
-- `clippy::unwrap_used`
-- `clippy::expect_used`
-- `clippy::panic`
-- `clippy::todo`
-- `clippy::unimplemented`
-- `clippy::dbg_macro`
+Formatting stays separate:
 
-## Code Quality Rules
-- No `unwrap()`, `expect()`, `panic!()`, `todo!()`, `unimplemented!()`, `dbg!()` in any code
-- No `println!()` / `eprintln!()` in library code — use `tracing` instead
-- Tests must return `Result<()>` or use `perl_tdd_support::must` / `must_some`
-- Regex must be `static LazyLock<Regex>` — never `Regex::new()` per invocation
-- Public API on facade crates: add `#[non_exhaustive]` to enums and structs
-- Do not hold a lock across `.await`
-- Every `#[allow(...)]` must have a justification comment
-- Prefer `.first()` over `.get(0)`, `.push(ch)` over `.push_str("x")` for single chars, `.or_default()` over `.or_insert_with(Vec::new)`
+```bash
+cargo fmt -p <package> -- --check
+```
+
+Read current `AGENTS.md` and the owning test package for assertion-helper policy. Keep
+explanatory assertion context; do not replace a diagnostic assertion with a bare helper.
+Do not weaken production-code rules, tests, or support claims to obtain green results.

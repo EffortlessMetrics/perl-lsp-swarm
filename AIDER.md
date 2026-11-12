@@ -1,65 +1,69 @@
-# Aider Instructions
+# Aider repository bridge
 
-This file provides quick-start guidance for contributors using [Aider](https://aider.chat/) on this repository.
+Aider loads this file and [`AGENTS.md`](AGENTS.md) as persistent read-only context.
+This file supplies Aider-specific mechanics only; it is not a second repository
+operating contract.
 
-## Session startup
+## Start or resume
 
-Before changing code, load core context into Aider:
+Establish the current issue or pull request, branch, candidate, and mutation owner before
+editing. Preserve unrelated work. Use Aider's repo map to locate likely files, then add
+only task-specific material with `/read`, including applicable package-local
+`AGENTS.md` or `CLAUDE.md`, the controlling issue/specification, and the selected
+`.agents/skills/*/SKILL.md` procedure.
 
-```text
-/read AGENTS.md
-/read README.md
-/read CONTRIBUTING.md
-/read docs/project/ROADMAP.md
-/read docs/project/CURRENT_STATUS.md
-/read features.toml
-```
+Do not preload README, roadmaps, status projections, the capability catalog, or broad
+source trees merely because they may become relevant. Read them when the current claim
+actually depends on them.
 
-If you are changing a specific crate, also load that crate's `Cargo.toml` and relevant `src/` files.
+Aider does not need a parallel lifecycle. Follow the route selected by `AGENTS.md` and
+open the corresponding `.agents/skills/` procedure directly when provider-native skill
+discovery is unavailable.
 
-## Ground rules
+## Mutation and commits
 
-- Keep scope narrow: one concern per PR.
-- Prefer canonical sources over hardcoded project metrics:
-  - `Cargo.toml` for workspace/package metadata
-  - `docs/project/CURRENT_STATUS.md` for live metrics
-  - `docs/project/ROADMAP.md` for planning state
-  - `features.toml` for capability catalog
-- Avoid banned patterns (`unwrap`, `expect`, `todo`, `panic`, debug prints in library code).
-- Do not use `git stash` in this repository workflow.
+Repository configuration intentionally disables Aider auto-commits, dirty-repository
+commits, automatic lint, and automatic tests. Keep those actions explicit so the current
+flow can preserve unrelated state, stage intended paths, use the governed commit/PR
+contract, and admit the exact proof command.
 
-## Verification commands
+Never use `git stash` in this shared multi-worktree repository. One writer may mutate a
+candidate at a time; read-only research and review remain non-exclusive.
 
-Run at minimum for the crate you changed:
+## Proof
 
-```bash
-cargo test -p <crate>
-cargo check --all-targets -p <crate>
-cargo fmt -p <crate> -- --check
-cargo clippy -p <crate>
-just pr-fast
-```
-
-Before merge, use the canonical local gate:
+After task-shell activation, run `just agent-preflight` for layout/setup inspection.
+That is not writer admission, hook-readiness proof, or Cargo capacity proof. Mutation
+ownership remains a separate fact established through the selected issue/PR route.
+Formatting remains separate:
 
 ```bash
-nix develop -c just ci-gate
+cargo fmt -p <package> -- --check
 ```
 
-## Commit/PR format
+Before compiled work, read [Cargo storage admission](docs/agents/CARGO_STORAGE.md).
+Choose the package and target needed by the claim. Preflight the exact underlying
+request, then execute from the same shell and worktree:
 
-- Commit title: `type(scope): description (#NNNN)`
-- If issue number is unknown, use `(#0000)`.
-- Keep PR body short:
-
-```text
-Problem: <one sentence>
-Fix: <one sentence>
-Verification: <command/results>
+```bash
+scripts/cargo-admitted --preflight check -p <package> --profile agent --locked --lib
+just agent-check <package> --lib
+scripts/cargo-admitted --preflight test -p <package> --profile agent --locked --test <target>
+just agent-test <package> --test <target>
 ```
 
-## Notes for Aider users
+These two Just recipes use the admitted route; `agent-test` requires a target selector.
+A test-name filter does not restrict compilation targets. Keep extra arguments identical
+in preflight and execution; use the direct admitted route for wrapper-specific options.
 
-- Use `/drop` and targeted `/read` to keep context focused.
-- Ask Aider to summarize planned edits before applying them when working across multiple files.
-- Prefer small, reviewable patches over broad rewrites.
+Clippy uses the separately qualified
+[staged native route](docs/agents/CARGO_STORAGE.md#staged-native-clippy). Raw Cargo
+aliases, `cargo-safe`, and the remaining legacy Just recipes are not admission. Broad
+gates run only when the claim requires them and the host is admitted for their work.
+
+## Provider boundary
+
+Repository configuration does not choose an Aider model, store API keys, grant network
+access, or alter global/user configuration. Unavailable remote state, credentials, or
+provider capability remains `NOT_PROVEN`; it does not block local reversible work that
+does not depend on it.
