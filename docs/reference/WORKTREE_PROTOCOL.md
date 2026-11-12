@@ -129,9 +129,14 @@ just agent-test perl-token --lib
 Choose the actual owning package/target and preserve all arguments in preflight and
 execution. The package is mandatory for `just agent-check` and `just agent-test`.
 `agent-test` also requires an explicit target selector immediately after the package;
-a runtime filter alone does not narrow compilation. The remaining legacy recipes
-and `scripts/cargo-safe` retain compatibility behavior, without these admission or
-isolation guarantees. Do not mix their outputs through inherited overrides.
+a runtime filter alone does not narrow compilation.
+
+The repository's `scripts/cargo-safe` and `just agent-*` commands are a deliberate
+mixed compatibility surface, not one equivalent route: `agent-check` and `agent-test`
+delegate to focused `cargo-admitted` commands, while `agent-clippy`, `agent-nextest`,
+`agent-pr-fast`, and `cached` remain legacy compatibility entrypoints without
+host-admission or output-isolation guarantees. Do not mix their outputs through
+inherited overrides.
 
 ## Ownership before mutation
 
