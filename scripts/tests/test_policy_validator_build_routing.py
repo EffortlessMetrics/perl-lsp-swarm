@@ -14,6 +14,7 @@ import os
 from pathlib import Path, PureWindowsPath
 import subprocess
 import runpy
+import shutil
 import sys
 import tempfile
 import unittest
@@ -58,7 +59,7 @@ class PolicyValidatorBuildRoutingTests(unittest.TestCase):
         self.repo = self.root / "candidate repo"
         self.script = self.repo / "scripts" / "policy" / SOURCE.name
         self.script.parent.mkdir(parents=True)
-        self.script.write_bytes(SOURCE.read_bytes())
+        shutil.copy2(SOURCE, self.script)
         (self.repo / "scripts" / "cargo_admitted.py").write_text(DELEGATE)
         self.outside = self.root / "outside caller"
         self.outside.mkdir()
@@ -241,6 +242,19 @@ class PolicyValidatorBuildRoutingTests(unittest.TestCase):
         self.assertEqual(command[-3], r"D:\original-context\link\..\allow.toml")
         self.assertEqual(command[-1], r"C:\outside\policy\debt.toml")
         self.assertEqual(str(dispatch.call_args.kwargs["cwd"]), r"D:\checkout")
+
+    @unittest.skipIf(os.name == "nt", "Unix executable-bit contract")
+    def test_direct_executable_help_preserves_source_mode(self):
+        # copy2 preserves the source mode: do not chmod the fixture executable,
+        # which would hide a tracked-mode regression in the real entrypoint.
+        (self.repo / "scripts" / "cargo_admitted.py").unlink()
+        result = subprocess.run(
+            [str(self.script), "--help"], cwd=self.outside,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--allowlist", result.stdout)
+        self.assertIn("--debt", result.stdout)
 
     def test_help_needs_no_build_or_admission(self):
         result, records = self.invoke(["--help"], cwd=self.outside)
