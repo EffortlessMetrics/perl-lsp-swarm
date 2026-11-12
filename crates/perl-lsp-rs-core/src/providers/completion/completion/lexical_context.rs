@@ -350,33 +350,27 @@ fn count_unescaped_slashes(s: &str) -> usize {
 
 /// Check if position is inside a line comment.
 ///
-/// Scans the portion of the current line before `position` with a simple
-/// quote-state machine so that a `#` inside a string literal is NOT treated as
-/// a comment start (#4956 bug 4). Previously this was a naive `line.contains('#')`
-/// check, which suppressed completion whenever a `#` appeared anywhere on the
-/// line — including inside strings like `my $x = "a # b";`.
+/// Scans the portion of the current line before `position` so that a `#`
+/// inside a string or regex literal is NOT treated as a comment start
+/// (#4956 bug 4, #19206). Previously this was a naive `line.contains('#')`
+/// check, which suppressed completion whenever a `#` appeared anywhere on
+/// the line — including inside strings like `my $x = "a # b";`.
 pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
-    let line_start = source[..position].rfind('\n').map_or(0, |p| p + 1);
-    let line = &source[line_start..position];
-    let bytes = line.as_bytes();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'\\' && (in_single || in_double) {
-            i += 2; // skip escaped char
-            continue;
-        }
-        match b {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            b'#' if !in_single && !in_double => return true,
-            _ => {}
-        }
-        i += 1;
+    if invalid_string_position(source, position) {
+        return false;
     }
-    false
+    let position = position.min(source.len());
+    let line_start = source[..position].rfind('\n').map_or(0, |p| p + 1);
+    // A `#` only opens a comment when the literal scanner proves it sits in
+    // code: `#` inside a string or regex literal is literal text (#19206).
+    // Classify each candidate with the same scanners used for `in_string` /
+    // `in_regex` so all three context flags share one authority.
+    source[line_start..position]
+        .bytes()
+        .enumerate()
+        .filter(|(_, byte)| *byte == b'#')
+        .map(|(offset, _)| line_start + offset)
+        .any(|candidate| !is_in_string(source, candidate) && !is_in_regex(source, candidate))
 }
 
 /// Check if position is inside a heredoc literal.
@@ -828,6 +822,9 @@ struct QuoteLikeLiteral {
     sections: usize,
     consumed: usize,
     kind: QuoteLikeLiteralKind,
+    /// `tr///`/`y///`: the search list is not a regex pattern, so `[`
+    /// does not open a character class there.
+    transliteration: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -846,6 +843,15 @@ struct ActiveLiteral {
     depth: usize,
     awaiting_section_opener: bool,
     kind: QuoteLikeLiteralKind,
+    /// Inside a `[...]` character class in a regex pattern, where the
+    /// pattern delimiter does not close the literal (#19206 review).
+    /// Depth counts nested POSIX classes; `class_fresh` marks that no
+    /// class content has been consumed yet, so a leading `]` (after an
+    /// optional `^`) reads as a literal.
+    class_depth: u8,
+    class_fresh: bool,
+    class_caret: bool,
+    transliteration: bool,
 }
 
 impl ActiveLiteral {
@@ -858,6 +864,10 @@ impl ActiveLiteral {
             depth: 1,
             awaiting_section_opener: false,
             kind: literal.kind,
+            class_depth: 0,
+            class_fresh: false,
+            class_caret: false,
+            transliteration: literal.transliteration,
         }
     }
 
@@ -874,6 +884,8 @@ impl ActiveLiteral {
     fn advance(&mut self, byte: u8, escaped: &mut bool) -> bool {
         if *escaped {
             *escaped = false;
+            // An escaped token is class content, never a leading `]`.
+            self.class_fresh = false;
             return false;
         }
 
@@ -892,6 +904,31 @@ impl ActiveLiteral {
                 self.depth = 1;
             }
             return false;
+        }
+
+        if self.kind == QuoteLikeLiteralKind::Regex
+            && !self.transliteration
+            && self.in_pattern_section()
+        {
+            if byte == b'[' {
+                self.class_depth = self.class_depth.saturating_add(1);
+                self.class_fresh = true;
+                self.class_caret = false;
+                return false;
+            }
+            if self.class_depth > 0 {
+                match byte {
+                    // A leading `]` (after an optional `^`) is literal.
+                    b']' if self.class_fresh => self.class_fresh = false,
+                    b']' => {
+                        self.class_depth = self.class_depth.saturating_sub(1);
+                        self.class_fresh = false;
+                    }
+                    b'^' if self.class_fresh && !self.class_caret => self.class_caret = true,
+                    _ => self.class_fresh = false,
+                }
+                return false;
+            }
         }
 
         if self.opener != self.closer && byte == self.opener {
@@ -963,6 +1000,11 @@ impl LiteralScanState {
 
             if self.escaped {
                 self.escaped = false;
+                // An escaped byte is literal content (e.g. class content),
+                // consumed here without reaching `advance`.
+                if let Some(active_literal) = self.literal.as_mut() {
+                    active_literal.class_fresh = false;
+                }
                 index += 1;
                 continue;
             }
@@ -1051,7 +1093,7 @@ fn quote_like_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLiter
         return None;
     }
 
-    let (delimiter_offset, sections, allow_space, kind) =
+    let (delimiter_offset, sections, allow_space, kind, transliteration) =
         quote_like_operator_parameters(bytes.get(index).copied()?, bytes.get(index + 1).copied())?;
 
     let delimiter_index = index + delimiter_offset;
@@ -1066,20 +1108,28 @@ fn quote_like_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLiter
 
     let opener = bytes.get(delimiter_index).copied()?;
     let closer = quote_like_closer(opener)?;
-    Some(QuoteLikeLiteral { opener, closer, sections, consumed: delimiter_index + 1 - index, kind })
+    Some(QuoteLikeLiteral {
+        opener,
+        closer,
+        sections,
+        consumed: delimiter_index + 1 - index,
+        kind,
+        transliteration,
+    })
 }
 
 fn quote_like_operator_parameters(
     byte: u8,
     next: Option<u8>,
-) -> Option<(usize, usize, bool, QuoteLikeLiteralKind)> {
+) -> Option<(usize, usize, bool, QuoteLikeLiteralKind, bool)> {
     match (byte, next) {
-        (b'q', Some(b'r')) => Some((2, 1, true, QuoteLikeLiteralKind::Regex)),
-        (b'q', Some(b'q' | b'w' | b'x')) => Some((2, 1, true, QuoteLikeLiteralKind::String)),
-        (b't', Some(b'r')) => Some((2, 2, true, QuoteLikeLiteralKind::Regex)),
-        (b'q', _) => Some((1, 1, true, QuoteLikeLiteralKind::String)),
-        (b'm', _) => Some((1, 1, true, QuoteLikeLiteralKind::Regex)),
-        (b's' | b'y', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex)),
+        (b'q', Some(b'r')) => Some((2, 1, true, QuoteLikeLiteralKind::Regex, false)),
+        (b'q', Some(b'q' | b'w' | b'x')) => Some((2, 1, true, QuoteLikeLiteralKind::String, false)),
+        (b't', Some(b'r')) => Some((2, 2, true, QuoteLikeLiteralKind::Regex, true)),
+        (b'q', _) => Some((1, 1, true, QuoteLikeLiteralKind::String, false)),
+        (b'm', _) => Some((1, 1, true, QuoteLikeLiteralKind::Regex, false)),
+        (b's', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex, false)),
+        (b'y', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex, true)),
         _ => None,
     }
 }
@@ -1155,6 +1205,7 @@ fn slash_regex_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLite
         sections: 1,
         consumed: 1,
         kind: QuoteLikeLiteralKind::Regex,
+        transliteration: false,
     })
 }
 
@@ -1265,7 +1316,7 @@ pub(super) fn quote_like_literal_span(bytes: &[u8], operator_index: usize) -> Op
     {
         return None;
     }
-    let (delimiter_offset, sections, allow_space, _) = quote_like_operator_parameters(
+    let (delimiter_offset, sections, allow_space, ..) = quote_like_operator_parameters(
         bytes.get(operator_index).copied()?,
         bytes.get(operator_index + 1).copied(),
     )?;
@@ -1670,6 +1721,62 @@ mod tests {
     }
 
     #[test]
+    fn hash_inside_string_or_regex_is_not_a_comment_19206() {
+        // Cursor after the closing delimiter: code, not comment.
+        let qr = "my $ready = 1;\nmy $pat = qr/a#b/; $re\n";
+        assert!(!is_in_comment(qr, qr.len() - 1), "qr # must not open a comment");
+        let matched = "my $ready = 1;\nmy $ok = (\"x\" =~ /a#b/); $re\n";
+        assert!(!is_in_comment(matched, matched.len() - 1), "match # must not open a comment");
+        let string = "my $ready = 1;\nmy $m = \"a#b\"; $re\n";
+        assert!(!is_in_comment(string, string.len() - 1), "string # must not open a comment");
+        // A `/` inside a character class must not close the regex early.
+        let class = "my $ok = (\"y\" =~ /[/#]/); $re\n";
+        assert!(!is_in_comment(class, class.len() - 1), "char-class # must not open a comment");
+        assert!(!is_in_regex(class, class.len() - 1), "cursor after regex is code");
+        // Leading `]` is a literal; POSIX classes nest.
+        for source in [
+            "my $ok = (\"y\" =~ /[]/#]/); $re\n",
+            "my $ok = (\"y\" =~ /[^]/]/); $re\n",
+            "my $ok = (\"y\" =~ /[[:alpha:]/]/); $re\n",
+        ] {
+            assert!(
+                !is_in_comment(source, source.len() - 1),
+                "class edge must not open a comment: {source}"
+            );
+            assert!(
+                !is_in_regex(source, source.len() - 1),
+                "cursor after class regex is code: {source}"
+            );
+        }
+        // `tr///` search lists are not regex classes: `/` still delimits.
+        let tr = "my $x = tr/[/X/; $re\n";
+        assert!(!is_in_regex(tr, tr.len() - 1), "tr search list must close: {tr}");
+        // Escaped first class content and a doubled caret still close.
+        for source in [
+            "my $ok = (\"y\" =~ /[\\d]/); $re\n",
+            "my $ok = (\"y\" =~ /[\\]]/); $re\n",
+            "my $ok = (\"y\" =~ /[^^]/); $re\n",
+        ] {
+            assert!(
+                !is_in_regex(source, source.len() - 1),
+                "escaped/caret class must close: {source}"
+            );
+            assert!(
+                !is_in_comment(source, source.len() - 1),
+                "cursor after escaped/caret class is code: {source}"
+            );
+        }
+        // Negative control: a real trailing comment still classifies.
+        let comment = "my $ready = 1; # tail $re\n";
+        assert!(is_in_comment(comment, comment.len() - 1), "real comment must classify");
+        let after_regex_comment = "my $pat = qr/a#b/; # tail\n";
+        assert!(
+            is_in_comment(after_regex_comment, after_regex_comment.len() - 1),
+            "comment after a closed regex must classify"
+        );
+    }
+
+    #[test]
     fn is_in_string_tracks_quote_parity_and_escapes() {
         assert!(is_in_string("\"", 1));
         assert!(!is_in_string("\"\"", 2));
@@ -1989,6 +2096,7 @@ my $after = "op"#;
             sections: 1,
             consumed: 2,
             kind: QuoteLikeLiteralKind::String,
+            transliteration: false,
         };
         let mut active = ActiveLiteral::new(literal);
         let mut escaped = true;
@@ -2070,7 +2178,7 @@ my $after = "op"#;
         assert_eq!(Some(&b'r'), b"qr{abc}".get(1));
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'r')),
-            Some((2, 1, true, QuoteLikeLiteralKind::Regex))
+            Some((2, 1, true, QuoteLikeLiteralKind::Regex, false))
         );
 
         let qr_literal = quote_like_literal_start(b"qr{abc}", 0);
@@ -2089,15 +2197,15 @@ my $after = "op"#;
     fn quote_like_literal_start_discriminates_q_string_variants() {
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'q')),
-            Some((2, 1, true, QuoteLikeLiteralKind::String))
+            Some((2, 1, true, QuoteLikeLiteralKind::String, false))
         );
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'w')),
-            Some((2, 1, true, QuoteLikeLiteralKind::String))
+            Some((2, 1, true, QuoteLikeLiteralKind::String, false))
         );
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'x')),
-            Some((2, 1, true, QuoteLikeLiteralKind::String))
+            Some((2, 1, true, QuoteLikeLiteralKind::String, false))
         );
 
         assert_quote_like_start(b"qq{abc}", 0, 3, 1, QuoteLikeLiteralKind::String);
@@ -2111,7 +2219,7 @@ my $after = "op"#;
         assert_eq!(Some(&b'r'), b"tr/a/b".get(1));
         assert_eq!(
             quote_like_operator_parameters(b't', Some(b'r')),
-            Some((2, 2, true, QuoteLikeLiteralKind::Regex))
+            Some((2, 2, true, QuoteLikeLiteralKind::Regex, true))
         );
         assert_eq!(quote_like_operator_parameters(b't', Some(b'/')), None);
 

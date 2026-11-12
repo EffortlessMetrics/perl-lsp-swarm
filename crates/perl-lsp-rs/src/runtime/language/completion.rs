@@ -1626,15 +1626,12 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                if super::navigation::is_in_comment_naive(offset, &doc.text) {
+                // Mirrors the goto-definition comment guard (#5066) at
+                // navigation.rs. Only a proven line comment blocks
+                // (#19206): a `#` inside a string/regex no longer kills the
+                // rest of the line.
+                let guard_snapshot = doc.current_parsed();
+                if super::navigation::is_in_comment(offset, &doc.text, guard_snapshot.as_deref()) {
                     break 'completion_response None;
                 }
 
@@ -1994,15 +1991,13 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
+                // Mirrors the goto-definition comment guard (#5066) at
+                // navigation.rs. Only a proven line comment blocks
+                // (#19206): a `#` inside a string/regex no longer kills the
+                // rest of the line.
+                let guard_snapshot = doc.current_parsed();
+                let in_comment =
+                    super::navigation::is_in_comment(offset, &doc.text, guard_snapshot.as_deref());
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead
@@ -6138,5 +6133,77 @@ our $single_root_var;
                 "subsequence package {bogus} must not appear for prefix Thing0; got {labels:?}"
             );
         }
+    }
+
+    /// #19206: completion after `#` inside a string/regex on the same line
+    /// must still offer completions.
+    #[test]
+    fn completion_after_hash_inside_string_or_regex_19206() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let cases: [(&str, &str, u32); 5] = [
+            ("plain", "my $ready = 1;\nmy $m = \"ab\"; $re\n", 17),
+            ("string", "my $ready = 1;\nmy $m = \"a#b\"; $re\n", 18),
+            ("regex", "my $ready = 1;\nmy $pat = qr/a#b/; $re\n", 22),
+            // EOF without trailing newline (#19206 review).
+            ("string_eof", "my $ready = 1;\nmy $m = \"a#b\"; $re", 18),
+            ("class", "my $ready = 1;\nmy $ok = (\"y\" =~ /[/#]/); $re\n", 29),
+        ];
+        for (case, text, character) in cases {
+            let uri = format!("file:///workspace/comp-hash-19206-{case}.pl");
+            let server = LspServer::default();
+            server.test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": text
+                }
+            })))?;
+            let response = server.handle_completion(Some(json!({
+                "textDocument": { "uri": &uri, "version": 1 },
+                "position": { "line": 1, "character": character }
+            })))?;
+            let hit = response.as_ref().is_some_and(|value| {
+                value.get("items").and_then(Value::as_array).is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item.get("label").and_then(Value::as_str) == Some("$ready"))
+                })
+            });
+            assert!(hit, "#19206 case {case}: completion must offer $ready, got {response:?}");
+        }
+        Ok(())
+    }
+
+    /// #19206 negative control: completion inside a real trailing comment
+    /// must stay refused (#5066 guard must not regress).
+    #[test]
+    fn completion_inside_real_trailing_comment_still_refused_19206()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = "my $ready = 1; # tail $re\n";
+        let uri = "file:///workspace/comp-hash-19206-comment.pl";
+        let server = LspServer::default();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": text
+            }
+        })))?;
+        let response = server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 0, "character": 25 }
+        })))?;
+        let hit = response.as_ref().is_some_and(|value| {
+            value.get("items").and_then(Value::as_array).is_some_and(|items| {
+                items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("$ready"))
+            })
+        });
+        assert!(
+            !hit,
+            "#19206 comment control: completion inside a real comment must refuse, got {response:?}"
+        );
+        Ok(())
     }
 }
