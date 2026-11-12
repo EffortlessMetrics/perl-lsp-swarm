@@ -164,22 +164,17 @@ class Domain6BlobOidTest(unittest.TestCase):
             "folder with spaces/nested/deep file.txt",
             "docs/delete on merge.txt",
         ]
-        for relative in [cls.files[2], "docs/initial.txt"]:
+        for relative in [*cls.files[2:], "docs/initial.txt"]:
             path = cls.repo / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(relative, encoding="utf-8")
         cls.git("add", "--all")
         cls.base = cls.commit("base")
         cls.deleted = "docs/delete on merge.txt"
-        # Build a real merge whose branch first adds and then removes the file.
-        # Add glob-bearing paths to its index directly afterward: NTFS cannot
-        # create '*' or '?' files, but Git lookup must handle them exactly.
+        # The main parent contains the deleted file; merging the topic branch
+        # removes it from the merged result. Add glob-bearing paths afterward:
+        # NTFS cannot create '*' or '?' files, but Git lookup must handle them.
         cls.git("checkout", "-q", "-b", "topic")
-        path = cls.repo / cls.deleted
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("delete at the merge", encoding="utf-8")
-        cls.git("add", cls.deleted)
-        cls.added = cls.commit("add on topic")
         cls.git("rm", cls.deleted)
         topic = cls.commit("delete on topic")
         cls.git("checkout", "-q", "main")
@@ -238,8 +233,8 @@ class Domain6BlobOidTest(unittest.TestCase):
                 self.assertEqual(self.generator.tree_blob(self.merge, relative), expected)
         self.assertIsNone(self.generator.tree_blob(self.base, "docs/never present.txt"))
         self.assertEqual(
-            self.generator.tree_blob(self.added, self.deleted),
-            self.git("rev-parse", f"{self.added}:{self.deleted}"),
+            self.generator.tree_blob(self.base, self.deleted),
+            self.git("rev-parse", f"{self.base}:{self.deleted}"),
         )
         self.assertIsNone(self.generator.tree_blob(self.merge, self.deleted))
         directory = "folder with spaces/nested"
@@ -277,6 +272,8 @@ class Domain6BlobOidTest(unittest.TestCase):
             ("uppercase oid", b"100644 blob " + b"A" * 40 + b"\tdocs/initial.txt\0"),
             ("duplicate", record + record),
             ("shape", b"not-an-ls-tree-record"),
+            ("NUL-only", b"\0"),
+            ("unterminated record", record[:-1]),
             ("undecodable", b"100644 blob " + b"a" * 40 + b"\t\xff\0"),
         ]:
             with self.subTest(listing=label):

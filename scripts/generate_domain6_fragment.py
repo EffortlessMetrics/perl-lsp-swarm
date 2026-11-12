@@ -2929,12 +2929,15 @@ def tree_blob(commit: str, path: str) -> str | None:
             ) from exc
         raise FragmentError(f"git ls-tree {commit} {path} failed: {err}")
 
-    records = [record for record in proc.stdout.split(b"\0") if record]
-    if not records:
-        return None  # Only an empty listing proves absence.
-    if len(records) != 1:
-        raise FragmentError(f"ls-tree for {commit}:{path} was not singular")
-    header, separator, raw_path = records[0].partition(b"\t")
+    if proc.stdout == b"":
+        return None  # Only zero bytes proves absence, never empty records.
+    parts = proc.stdout.split(b"\0")
+    if len(parts) != 2:
+        raise FragmentError(f"ls-tree for {commit}:{path} was not one terminated record")
+    record = parts[0]
+    if not record:
+        raise FragmentError(f"ls-tree found an empty record for {commit}:{path}")
+    header, separator, raw_path = record.partition(b"\t")
     fields = header.split()
     if not separator or len(fields) != 3:
         raise FragmentError(f"malformed ls-tree entry for {commit}:{path}")
