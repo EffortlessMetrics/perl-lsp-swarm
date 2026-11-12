@@ -8,6 +8,7 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     env,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -516,7 +517,9 @@ fn run() -> Result<()> {
         _ => bail!("usage: formal-verification-claims [--check|--json|--markdown|--help]"),
     };
     if matches!(mode, Mode::Help) {
-        println!("usage: formal-verification-claims [--check|--json|--markdown|--help]");
+        std::io::stdout()
+            .lock()
+            .write_all(b"usage: formal-verification-claims [--check|--json|--markdown|--help]\n")?;
         return Ok(());
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().context("missing repository root")?;
@@ -537,15 +540,18 @@ fn run() -> Result<()> {
         Mode::Help => String::new(),
     };
     snapshot.finish()?;
-    print!("{output}");
+    std::io::stdout().lock().write_all(output.as_bytes())?;
     Ok(())
 }
 
-fn main() {
+fn main() -> Result<()> {
     if let Err(error) = run() {
-        eprintln!("formal-verification-claims NOT_PROVEN: {error:#}");
+        std::io::stderr()
+            .lock()
+            .write_all(format!("formal-verification-claims NOT_PROVEN: {error:#}\n").as_bytes())?;
         std::process::exit(1);
     }
+    Ok(())
 }
 
 #[cfg(test)]

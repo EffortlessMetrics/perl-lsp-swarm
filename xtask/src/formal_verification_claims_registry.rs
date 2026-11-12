@@ -159,7 +159,7 @@ pub const REGISTRY_JSON: &str = r##"{
       "id": "FV-POSITION-LAWS-001",
       "status": "planned",
       "evidence": "bounded_model",
-      "subject": "byte, UTF-16, range, and edit laws",
+      "subject": "byte and UTF-16 position laws",
       "assertion": "Within the recorded symbolic domain, production position conversion preserves its declared byte and UTF-16 clamping and rejection contracts and cannot overflow or escape source bounds.",
       "target": {
         "path": "crates/perl-line-index/src/lib.rs",
