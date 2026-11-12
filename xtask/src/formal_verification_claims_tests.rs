@@ -627,5 +627,18 @@ fn inventory_surface_binds_declared_controls() -> Result<()> {
     ensure!(wrong_count != original, "denominator mutation did not apply");
     write_fixture(&fixture, producer, &wrong_count)?;
     commit(&fixture)?;
-    rejects(validate_root(fixture.path(), &registry), "test result: ok\\. 22 passed")
+    rejects(validate_root(fixture.path(), &registry), "test result: ok\\. 22 passed")?;
+
+    write_fixture(&fixture, producer, &original)?;
+    commit(&fixture)?;
+    let mut sibling = registry()?;
+    sibling.claims.retain(|claim| claim.id == "FV-WORKSPACE-OWNERSHIP-001");
+    ensure!(sibling.claims.len() == 1, "workspace ownership row missing or duplicated");
+    sibling.claims[0].target =
+        SourceRef { path: "source.rs".to_owned(), marker: "Original".to_owned() };
+    validate_root(fixture.path(), &sibling)?;
+
+    sibling.claims[0].authority.as_mut().context("sibling authority")?.inventory_controls =
+        Some(vec!["registry_is_valid_at_committed_head".to_owned()]);
+    rejects(validate_root(fixture.path(), &sibling), "unexpected inventory controls")
 }

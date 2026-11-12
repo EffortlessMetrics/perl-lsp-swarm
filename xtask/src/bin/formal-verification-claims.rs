@@ -432,11 +432,18 @@ fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Resul
             match binding.path.as_str() {
                 ".github/workflows/ci.yml" => required_step(&body, "check-all-targets", runner)?,
                 "scripts/ci/required-merge-surface.sh" => {
-                    let controls = authority
-                        .inventory_controls
-                        .as_deref()
-                        .context("missing inventory control declarations")?;
-                    required_inventory_controls(&body, controls)?;
+                    if claim.id == "FV-INFRA-001" {
+                        let controls = authority
+                            .inventory_controls
+                            .as_deref()
+                            .context("missing inventory control declarations")?;
+                        required_inventory_controls(&body, controls)?;
+                    } else {
+                        ensure!(
+                            authority.inventory_controls.is_none(),
+                            "unexpected inventory controls"
+                        );
+                    }
                     ensure!(
                         body.lines().any(|line| line == runner),
                         "required producer command missing"
