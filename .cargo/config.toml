@@ -16,6 +16,10 @@ agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D 
 t2 = "test -- --test-threads=2"
 
 [build]
+# Direct Cargo is a fallback while heavy callers migrate to cargo-admitted.
+# Do not multiply path-bound incremental state across agent worktrees by default.
+# A deliberate local experiment may opt in with CARGO_INCREMENTAL=1.
+incremental = false
 rustflags = []
 
 # Lossless ELF debug compression on the pinned native Linux compiler-driver
