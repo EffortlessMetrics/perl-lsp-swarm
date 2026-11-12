@@ -2,13 +2,14 @@
 //! All source bindings are read from one immutable Git tree; no target code runs.
 //! Maintainer runbook: docs/how-to/FORMAL_VERIFICATION.md.
 
+#![allow(clippy::print_stderr, clippy::print_stdout)]
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     env,
-    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -517,9 +518,7 @@ fn run() -> Result<()> {
         _ => bail!("usage: formal-verification-claims [--check|--json|--markdown|--help]"),
     };
     if matches!(mode, Mode::Help) {
-        std::io::stdout()
-            .lock()
-            .write_all(b"usage: formal-verification-claims [--check|--json|--markdown|--help]\n")?;
+        println!("usage: formal-verification-claims [--check|--json|--markdown|--help]");
         return Ok(());
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().context("missing repository root")?;
@@ -540,18 +539,15 @@ fn run() -> Result<()> {
         Mode::Help => String::new(),
     };
     snapshot.finish()?;
-    std::io::stdout().lock().write_all(output.as_bytes())?;
+    print!("{output}");
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() {
     if let Err(error) = run() {
-        std::io::stderr()
-            .lock()
-            .write_all(format!("formal-verification-claims NOT_PROVEN: {error:#}\n").as_bytes())?;
+        eprintln!("formal-verification-claims NOT_PROVEN: {error:#}");
         std::process::exit(1);
     }
-    Ok(())
 }
 
 #[cfg(test)]
