@@ -1,0 +1,38 @@
+diff --git a/.github/workflows/non-rust-policy.yml b/.github/workflows/non-rust-policy.yml
+index d7fec21cf..9988a168e 100644
+--- a/.github/workflows/non-rust-policy.yml
++++ b/.github/workflows/non-rust-policy.yml
+@@ -178,12 +178,10 @@ jobs:
+           fi
+           echo "failure_stage=trusted-workflow-contract" >> "$GITHUB_OUTPUT"
+           workflow=.github/workflows/non-rust-policy.yml
+-          grep -q '^  merge_group:' "$workflow"
+-          grep -q 'name: Non-Rust policy exact-tree' "$workflow"
+-          grep -q 'ref: .*steps.evaluator.outputs.sha' "$workflow"
+-          grep -q 'actions/upload-artifact@' "$workflow"
+-          grep -q 'if: always()' "$workflow"
+-          grep -q 'persist-credentials: false' "$workflow"
++          # T is the independently resolved protected-main executable generation.
++          # During bootstrap its live workflow is still v9; do not require it to
++          # have the candidate carrier's operational shape. The trusted compiled
++          # checker below validates the candidate contract, not candidate code.
+           # Inspect executable run bodies only.  Event metadata is expected in
+           # trusted environment declarations, while direct interpolation in a
+           # command would allow candidate-controlled code or refs to reach the
+diff --git a/scripts/ci/test_staged_qualification_workflow_cutover.py b/scripts/ci/test_staged_qualification_workflow_cutover.py
+index 1b9b91a8d..b15fc8273 100644
+--- a/scripts/ci/test_staged_qualification_workflow_cutover.py
++++ b/scripts/ci/test_staged_qualification_workflow_cutover.py
+@@ -121,6 +121,12 @@ class StagedTriggerCutoverTests(unittest.TestCase):
+         checkout = steps['Checkout trusted evaluator']['with']
+         self.assertEqual(checkout['ref'], '${{ steps.evaluator.outputs.sha }}')
+         checkout['ref'] = '${{ env.EVALUATOR_SHA }}'
++        # Undo only the reviewed bootstrap guard delta before whole-job equality.
++        bootstrap = "# T is the independently resolved protected-main executable generation.\n# During bootstrap its live workflow is still v9; do not require it to\n# have the candidate carrier's operational shape. The trusted compiled\n# checker below validates the candidate contract, not candidate code.\n"
++        prior_shape = 'grep -q \'^  merge_group:\' "$workflow"\ngrep -q \'name: Non-Rust policy exact-tree\' "$workflow"\ngrep -q \'ref: .*steps.evaluator.outputs.sha\' "$workflow"\ngrep -q \'actions/upload-artifact@\' "$workflow"\ngrep -q \'if: always()\' "$workflow"\ngrep -q \'persist-credentials: false\' "$workflow"\n'
++        contract = steps['Verify trusted workflow contract']
++        self.assertEqual(contract['run'].count(bootstrap), 1)
++        contract['run'] = contract['run'].replace(bootstrap, prior_shape)
+         edits = {
+             'Fetch and bind subject Git object': (
+                 'git fetch --no-tags origin "$BASE_SHA" "$SUBJECT_SHA"',

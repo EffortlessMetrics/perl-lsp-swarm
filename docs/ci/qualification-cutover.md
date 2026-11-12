@@ -144,7 +144,9 @@ The additive composition patches preserve the original trigger fixture unchanged
 For source rehearsal, apply root-triggers, sixth-gate-composition,
 trigger-policy-composition, `19261-hosted-rust-composition.patch`, then
 `19261-title-authority.patch`, `19261-nonrust-authority.patch`, then
-`19261-hosted-ripr-composition.patch`. Reverse hosted-ripr-composition first,
+`19261-hosted-ripr-composition.patch`, then `19261-nonrust-bootstrap.patch`, then
+`19261-integration-attempt-composition.patch`. Reverse integration-attempt-composition
+first, then nonrust-bootstrap, then hosted-ripr-composition,
 then nonrust-authority, title-authority, followed by
 hosted-rust-composition, trigger-policy-composition, sixth-gate-composition,
 and root-triggers. This is not runtime rollback or proof that GitHub installed
@@ -170,7 +172,7 @@ current merely because another executor cannot reproduce it.
 
 | Protected context | Candidate producer and remaining proof boundary |
 | --- | --- |
-| `Compile All Targets (bit-rot guard)` | `ci.yml:integration-required` joins unchanged `check-all-targets` execution and the existing `merge-gate` selected integration aggregate in one run/attempt. Native execution remains unobserved. |
+| `Compile All Targets (bit-rot guard)` | `ci.yml:integration-required` joins identity-bound `check-all-targets` execution and the existing `merge-gate` selected integration aggregate in one run/attempt. Native execution remains unobserved. |
 | `Conflict marker check` | `ci.yml:conflict-markers`, retained on actual G. Applicability and execution must be observed on the canary. |
 | `validate-title` | `pr-title-check.yml:validate-title` now has a read-only native G producer: complete ordered prefix, App-authenticated v2 H intake and admitted target closure, independently selected protected-main T execution, isolated Git composition, current per-member title rules and final readback. Its App policy remains disabled pending real publisher binding/native canary; see [native title proof](native-queue-title.md). |
 | `Perl LSP Rust Small Result` | `em-ci-routed-rust.yml:rust-small-result` joins the sole GitHub-hosted Rust Small producer in the same run, with exact-G checkout and producer run/attempt output binding and fail-closed missing/cancelled proof. Canonical fmt and typed Rust receipt semantics stay with their existing owners; native producer/attempt acceptance remains unobserved. |
@@ -189,7 +191,18 @@ their own activation proof; the disabled App policy does not complete those join
 ### Same-run integration dependencies
 
 `integration-required` requires successful `check-all-targets` and `merge-gate` results
-in its own native workflow run and attempt. The compiler producer retains its exact
+in its own native workflow run and attempt. Success-only producer outputs bind exact
+G, run ID and attempt through every scalar dependency. The draft and preflight
+metadata guards bind the native event without requiring a checkout; product
+producers additionally verify their checked-out G. Each of the eight matrix
+shards publishes a separate success-only identity artifact named by G/run/attempt
+and shard; the aggregate requires the complete set and checks every payload.
+Matrix outputs alone cannot prove all members after a partial rerun. Rerun all
+selected producers and dependent aggregates together; a result-only or partial
+rerun cannot borrow earlier-attempt proof. These identities establish native
+workflow composition, not independently trusted evaluator or artifact custody.
+The retained `workflow_dispatch` diagnostic route uses its existing result checks;
+G-only identity production and artifact checks do not apply to manual diagnostics. The compiler producer retains its exact
 integration checkout, compile commands, 35-minute budget and existing contract steps;
 its display name becomes `Compile All Targets execution`. The protected name belongs
 to the finalizer above.
@@ -208,7 +221,7 @@ The other protected aggregates retain their own native dependencies:
 | Aggregate | Direct native needs |
 | --- | --- |
 | `rust-small-result` | `rust-small-github` (GitHub-hosted, exact G only) |
-| `ripr` | `route-ripr`, `ripr-selfhosted`, `ripr-github`, `ripr-fallback` |
+| `ripr` | `ripr-github` (GitHub-hosted, exact G only) |
 
 Rust Small now uses only the existing GitHub-hosted producer. Its old runner
 inventory/token, forced-target dispatcher, self-hosted pools and fallback are
@@ -221,8 +234,8 @@ The old PR supersession API path no longer applies; cancelled G proof stays
 blocking and is not reported as a product failure. A result-only partial rerun
 cannot reuse an older producer attempt on the same G: the producer's run ID and
 attempt must equal the current result's run ID and attempt. Rerun the producer
-with its dependent result when fresh qualification is needed. RIPR's separate routing and
-receipt checks are unchanged by this Rust-only composition.
+with its dependent result when fresh qualification is needed. RIPR likewise uses its sole GitHub-hosted producer with exact-G/run/attempt
+binding; its retained domain receipt checks remain mandatory.
 
 The canonical task still owns its typed receipt; this routing change does not
 add artifact custody or an App publisher. Candidate/G workflow execution also

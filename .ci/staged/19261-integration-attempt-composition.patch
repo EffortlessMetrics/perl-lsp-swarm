@@ -1,0 +1,363 @@
+diff --git a/.github/workflows/ci-gate-self-tests.yml b/.github/workflows/ci-gate-self-tests.yml
+index 5a8a9dc..d911c16 100644
+--- a/.github/workflows/ci-gate-self-tests.yml
++++ b/.github/workflows/ci-gate-self-tests.yml
+@@ -693,6 +693,9 @@ jobs:
+       - name: Run RIPR cache-writer authority self-test
+         run: python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py
+
++      - name: Run integration exact-attempt controls
++        run: python3 -B -m unittest scripts.ci.test_integration_attempt_binding
++
+       - name: Run hosted-only RIPR exact-attempt controls
+         run: python3 -B -m unittest scripts.ci.test_ripr_hosted_queue
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 784ae6e..a939a7c 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -44,6 +44,9 @@ jobs:
+     runs-on: ubuntu-24.04
+     timeout-minutes: 1
+     outputs:
++      subject_sha: ${{ steps.subject.outputs.subject_sha }}
++      run_id: ${{ steps.subject.outputs.run_id }}
++      run_attempt: ${{ steps.subject.outputs.run_attempt }}
+       run_ci: ${{ steps.guard.outputs.run_ci }}
+       # #2266: true when the PR diff touches a published facade crate surface
+       # or the committed public-API baseline set. Consumed by the
+@@ -264,6 +267,26 @@ jobs:
+           fi
+
+   # ── Preflight: skip superseded SHAs to save cost ─────────────────────
++
++      - name: Bind successful native integration producer
++        if: success() && github.event_name == 'merge_group'
++        id: subject
++        shell: bash
++        env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++        run: |
++          set -euo pipefail
++          test "$GITHUB_EVENT_NAME" = merge_group
++          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++          test "$GITHUB_SHA" = "$MERGE_GROUP_SHA"
++          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++          {
++            echo "subject_sha=$MERGE_GROUP_SHA"
++            echo "run_id=$GITHUB_RUN_ID"
++            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
++          } >> "$GITHUB_OUTPUT"
++
+   preflight-latest-check:
+     name: Preflight — is this SHA latest?
+     runs-on: ubuntu-24.04
+@@ -271,6 +294,9 @@ jobs:
+     needs: draft-pr-check
+     if: needs.draft-pr-check.outputs.run_ci == 'true'
+     outputs:
++      subject_sha: ${{ steps.subject.outputs.subject_sha }}
++      run_id: ${{ steps.subject.outputs.run_id }}
++      run_attempt: ${{ steps.subject.outputs.run_attempt }}
+       is_latest: ${{ steps.check.outputs.is_latest }}
+     steps:
+       - name: Check if this SHA is latest on the ref
+@@ -305,6 +331,26 @@ jobs:
+
+   # Resolve platform widening once on Linux so the Windows job is allocated
+   # only when ci-scope identifies a known portability seam.
++
++      - name: Bind successful native integration producer
++        if: success() && github.event_name == 'merge_group'
++        id: subject
++        shell: bash
++        env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++        run: |
++          set -euo pipefail
++          test "$GITHUB_EVENT_NAME" = merge_group
++          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++          test "$GITHUB_SHA" = "$MERGE_GROUP_SHA"
++          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++          {
++            echo "subject_sha=$MERGE_GROUP_SHA"
++            echo "run_id=$GITHUB_RUN_ID"
++            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
++          } >> "$GITHUB_OUTPUT"
++
+   platform-overrides:
+     name: CI scope platform overrides
+     runs-on: ubuntu-24.04
+@@ -553,6 +599,10 @@ jobs:
+           needs.preflight-latest-check.outputs.is_latest == 'true'
+         )
+       )
++    outputs:
++      subject_sha: ${{ steps.subject.outputs.subject_sha }}
++      run_id: ${{ steps.subject.outputs.run_id }}
++      run_attempt: ${{ steps.subject.outputs.run_attempt }}
+     steps:
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+         with:
+@@ -589,6 +639,27 @@ jobs:
+   # selector; RUN_API_RATCHET is the one step-level decision. semver-pr stays
+   # PR-only. Schedule/manual coverage stays on ci-nightly.yml. Preflight
+   # superseded-SHA skipping is the cost control on stacked main pushes.
++
++      - name: Bind successful native integration producer
++        if: success() && github.event_name == 'merge_group'
++        id: subject
++        shell: bash
++        env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++        run: |
++          set -euo pipefail
++          test "$GITHUB_EVENT_NAME" = merge_group
++          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++          test "$GITHUB_SHA" = "$MERGE_GROUP_SHA"
++          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++          test "$(git rev-parse HEAD)" = "$MERGE_GROUP_SHA"
++          {
++            echo "subject_sha=$MERGE_GROUP_SHA"
++            echo "run_id=$GITHUB_RUN_ID"
++            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
++          } >> "$GITHUB_OUTPUT"
++
+   public-api-pr:
+     name: Public API Surface (facade PR)
+     runs-on: ubuntu-24.04
+@@ -2298,6 +2369,36 @@ jobs:
+   # `.ci/policies/required-checks.toml` records this advisory truth.
+   # `pr-smoke` remains intentionally outside `needs`: it is advisory, flaky, and
+   # redundant with the deterministic shard base (see the pr-smoke job).
++
++      - name: Bind successful native integration producer
++        if: success() && github.event_name == 'merge_group'
++        shell: bash
++        env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++          SHARD_NAME: ${{ matrix.name }}
++        run: |
++          set -euo pipefail
++          test "$GITHUB_EVENT_NAME" = merge_group
++          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++          test "$GITHUB_SHA" = "$MERGE_GROUP_SHA"
++          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++          test "$(git rev-parse HEAD)" = "$MERGE_GROUP_SHA"
++          {
++            echo "subject_sha=$MERGE_GROUP_SHA"
++            echo "run_id=$GITHUB_RUN_ID"
++            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
++          } > "$RUNNER_TEMP/integration-$SHARD_NAME.txt"
++
++      - name: Preserve successful shard identity
++        if: success() && github.event_name == 'merge_group'
++        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
++        with:
++          name: integration-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
++          path: ${{ runner.temp }}/integration-${{ matrix.name }}.txt
++          if-no-files-found: error
++          retention-days: 1
++
+   merge-gate:
+     name: CI Gate (Advisory Aggregate)
+     runs-on: ubuntu-24.04
+@@ -2328,6 +2429,10 @@ jobs:
+     # successful by GitHub protection. The classifier emits explicit scoped
+     # no-ops for draft/superseded routes and fails closed otherwise.
+     if: always()
++    outputs:
++      subject_sha: ${{ steps.subject.outputs.subject_sha }}
++      run_id: ${{ steps.subject.outputs.run_id }}
++      run_attempt: ${{ steps.subject.outputs.run_attempt }}
+     steps:
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+@@ -2448,6 +2553,70 @@ jobs:
+         run: python3 scripts/ci/evaluate_ci_gate.py
+
+   # ── UX Tests: first-5-minutes scenario regression suite ──────────────
++
++      # A matrix job's merged outputs cannot attest every member. Require a
++      # success-only artifact for each shard in this exact run AND attempt.
++      - name: Download current-attempt shard identities
++        if: success() && github.event_name == 'merge_group'
++        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
++        with:
++          pattern: integration-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-*
++          path: ${{ runner.temp }}/integration-proofs
++          merge-multiple: true
++
++      - name: Verify every selected producer identity
++        if: success() && github.event_name == 'merge_group'
++        shell: bash
++        env:
++          NEEDS_JSON: ${{ toJson(needs) }}
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++        run: |
++          python3 - <<'PY'
++          import json, os
++          from pathlib import Path
++          expected = dict(subject_sha=os.environ['MERGE_GROUP_SHA'],
++                          run_id=os.environ['GITHUB_RUN_ID'],
++                          run_attempt=os.environ['GITHUB_RUN_ATTEMPT'])
++          needs = json.loads(os.environ['NEEDS_JSON'])
++          for name in ('draft-pr-check', 'preflight-latest-check', 'conflict-markers',
++                       'check-all-targets', 'ux-tests'):
++              proof = needs.get(name, {})
++              if proof.get('result') != 'success' or any(
++                      proof.get('outputs', {}).get(key) != value for key, value in expected.items()):
++                  raise SystemExit(f'NOT_PROVEN: missing or stale producer {name}')
++          # All eight families are selected on G. PR-only scoped no-ops never
++          # qualify this native route; advisory jobs outside needs stay outside.
++          root = Path(os.environ['RUNNER_TEMP']) / 'integration-proofs'
++          shards = ('meta', 'foundation', 'parser_stack', 'analysis', 'lsp', 'support', 'corpus', 'policy')
++          files = {f'integration-{name}.txt' for name in shards}
++          if not root.is_dir() or {p.name for p in root.iterdir()} != files:
++              raise SystemExit('NOT_PROVEN: incomplete current-attempt shard identities')
++          wanted = ''.join(f'{key}={value}\n' for key, value in expected.items())
++          for name in files:
++              if (root / name).read_text() != wanted:
++                  raise SystemExit(f'NOT_PROVEN: stale shard identity {name}')
++          PY
++
++      - name: Bind successful native integration producer
++        if: success() && github.event_name == 'merge_group'
++        id: subject
++        shell: bash
++        env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++        run: |
++          set -euo pipefail
++          test "$GITHUB_EVENT_NAME" = merge_group
++          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++          test "$GITHUB_SHA" = "$MERGE_GROUP_SHA"
++          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++          test "$(git rev-parse HEAD)" = "$MERGE_GROUP_SHA"
++          {
++            echo "subject_sha=$MERGE_GROUP_SHA"
++            echo "run_id=$GITHUB_RUN_ID"
++            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
++          } >> "$GITHUB_OUTPUT"
++
+   ux-tests:
+     name: UX Regression Tests
+     runs-on: ubuntu-24.04
+@@ -2466,6 +2635,10 @@ jobs:
+     # job, yet branch protection does not require it; failures surface in the advisory
+     # CI aggregate only. Quarantine enforcement (reading the registry to generate --skip
+     # flags) is a follow-up; see .ci/ux-flakes.json for per-row state.
++    outputs:
++      subject_sha: ${{ steps.subject.outputs.subject_sha }}
++      run_id: ${{ steps.subject.outputs.run_id }}
++      run_attempt: ${{ steps.subject.outputs.run_attempt }}
+     steps:
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+         with:
+@@ -2681,6 +2854,27 @@ jobs:
+         run: exit 1
+
+   # ── Compile All Targets: catch integration-test + bench bit-rot ───────
++
++      - name: Bind successful native integration producer
++        if: success() && github.event_name == 'merge_group'
++        id: subject
++        shell: bash
++        env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++        run: |
++          set -euo pipefail
++          test "$GITHUB_EVENT_NAME" = merge_group
++          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++          test "$GITHUB_SHA" = "$MERGE_GROUP_SHA"
++          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++          test "$(git rev-parse HEAD)" = "$MERGE_GROUP_SHA"
++          {
++            echo "subject_sha=$MERGE_GROUP_SHA"
++            echo "run_id=$GITHUB_RUN_ID"
++            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
++          } >> "$GITHUB_OUTPUT"
++
+   check-all-targets:
+     name: Compile All Targets execution
+     runs-on: ubuntu-24.04
+@@ -2698,6 +2892,10 @@ jobs:
+     timeout-minutes: 35
+     needs: [draft-pr-check, preflight-latest-check]
+     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
++    outputs:
++      subject_sha: ${{ steps.subject.outputs.subject_sha }}
++      run_id: ${{ steps.subject.outputs.run_id }}
++      run_attempt: ${{ steps.subject.outputs.run_attempt }}
+     steps:
+       # INTENTIONAL: no `ref:` override here — see #9594.
+       #
+@@ -2750,6 +2948,25 @@ jobs:
+       - name: Required merge surface
+         run: bash scripts/ci/required-merge-surface.sh
+
++      - name: Bind successful native integration producer
++        if: success() && github.event_name == 'merge_group'
++        id: subject
++        shell: bash
++        env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++        run: |
++          set -euo pipefail
++          test "$GITHUB_EVENT_NAME" = merge_group
++          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++          test "$GITHUB_SHA" = "$MERGE_GROUP_SHA"
++          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++          test "$(git rev-parse HEAD)" = "$MERGE_GROUP_SHA"
++          {
++            echo "subject_sha=$MERGE_GROUP_SHA"
++            echo "run_id=$GITHUB_RUN_ID"
++            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
++          } >> "$GITHUB_OUTPUT"
+
+   lsp-memory-smoke:
+     name: LSP Memory Smoke
+@@ -2938,15 +3155,33 @@ jobs:
+       - name: Require current-attempt compile and selected integration proof
+         shell: bash
+         env:
++          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
++          COMPILE_PROOF_SHA: ${{ needs.check-all-targets.outputs.subject_sha }}
++          COMPILE_PROOF_RUN_ID: ${{ needs.check-all-targets.outputs.run_id }}
++          COMPILE_PROOF_RUN_ATTEMPT: ${{ needs.check-all-targets.outputs.run_attempt }}
++          INTEGRATION_PROOF_SHA: ${{ needs.merge-gate.outputs.subject_sha }}
++          INTEGRATION_PROOF_RUN_ID: ${{ needs.merge-gate.outputs.run_id }}
++          INTEGRATION_PROOF_RUN_ATTEMPT: ${{ needs.merge-gate.outputs.run_attempt }}
+           COMPILE_RESULT: ${{ needs.check-all-targets.result }}
+           INTEGRATION_RESULT: ${{ needs.merge-gate.result }}
+         run: |
+           set -euo pipefail
+-          # `needs` is scoped to this workflow run/attempt. No cross-run check
+-          # lookup, main-history colour, or empty/skipped result supplies proof.
++          # Partial reruns retain earlier dependency results. Bind the original
++          # producer identities, not the attempt when this finalizer was rerun.
++          if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
++            [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
++            test "$MERGE_GROUP_SHA" = "$GITHUB_SHA"
++            [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
++            [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
++            for prefix in COMPILE INTEGRATION; do
++              key="${prefix}_PROOF_SHA"; test "${!key}" = "$MERGE_GROUP_SHA"
++              key="${prefix}_PROOF_RUN_ID"; test "${!key}" = "$GITHUB_RUN_ID"
++              key="${prefix}_PROOF_RUN_ATTEMPT"; test "${!key}" = "$GITHUB_RUN_ATTEMPT"
++            done
++          fi
+           if [ "$COMPILE_RESULT" != success ] || [ "$INTEGRATION_RESULT" != success ]; then
+             printf '::error::Required integration proof incomplete: compile=%s integration=%s\n' \
+               "$COMPILE_RESULT" "$INTEGRATION_RESULT"
+             exit 1
+           fi
+-          echo 'Compile and selected integration obligations succeeded in this native run.'
++          echo 'Compile and selected integration obligations succeeded; native G identities are checked when applicable.'

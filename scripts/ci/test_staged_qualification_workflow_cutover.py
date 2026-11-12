@@ -25,7 +25,9 @@ HOSTED_RUST_PATCH = ROOT / '.ci/staged/19261-hosted-rust-composition.patch'
 TITLE_AUTHORITY_PATCH = ROOT / '.ci/staged/19261-title-authority.patch'
 NONRUST_AUTHORITY_PATCH = ROOT / '.ci/staged/19261-nonrust-authority.patch'
 HOSTED_RIPR_PATCH = ROOT / '.ci/staged/19261-hosted-ripr-composition.patch'
-PATCHES = (PATCH, SIXTH_GATE_PATCH, TRIGGER_POLICY_PATCH, HOSTED_RUST_PATCH, TITLE_AUTHORITY_PATCH, NONRUST_AUTHORITY_PATCH, HOSTED_RIPR_PATCH)
+NONRUST_BOOTSTRAP_PATCH = ROOT / '.ci/staged/19261-nonrust-bootstrap.patch'
+INTEGRATION_ATTEMPT_PATCH = ROOT / ".ci/staged/19261-integration-attempt-composition.patch"
+PATCHES = (PATCH, SIXTH_GATE_PATCH, TRIGGER_POLICY_PATCH, HOSTED_RUST_PATCH, TITLE_AUTHORITY_PATCH, NONRUST_AUTHORITY_PATCH, HOSTED_RIPR_PATCH, NONRUST_BOOTSTRAP_PATCH, INTEGRATION_ATTEMPT_PATCH)
 POLICY = '.ci/policies/required-checks.toml'
 POST_LANDING = ('.github/workflows/docs-deploy.yml',)
 RETIRED = '.github/workflows/main-history-event.yml'
@@ -121,6 +123,12 @@ class StagedTriggerCutoverTests(unittest.TestCase):
         checkout = steps['Checkout trusted evaluator']['with']
         self.assertEqual(checkout['ref'], '${{ steps.evaluator.outputs.sha }}')
         checkout['ref'] = '${{ env.EVALUATOR_SHA }}'
+        # Undo only the reviewed bootstrap guard delta before whole-job equality.
+        bootstrap = "# T is the independently resolved protected-main executable generation.\n# During bootstrap its live workflow is still v9; do not require it to\n# have the candidate carrier's operational shape. The trusted compiled\n# checker below validates the candidate contract, not candidate code.\n"
+        prior_shape = 'grep -q \'^  merge_group:\' "$workflow"\ngrep -q \'name: Non-Rust policy exact-tree\' "$workflow"\ngrep -q \'ref: .*steps.evaluator.outputs.sha\' "$workflow"\ngrep -q \'actions/upload-artifact@\' "$workflow"\ngrep -q \'if: always()\' "$workflow"\ngrep -q \'persist-credentials: false\' "$workflow"\n'
+        contract = steps['Verify trusted workflow contract']
+        self.assertEqual(contract['run'].count(bootstrap), 1)
+        contract['run'] = contract['run'].replace(bootstrap, prior_shape)
         edits = {
             'Fetch and bind subject Git object': (
                 'git fetch --no-tags origin "$BASE_SHA" "$SUBJECT_SHA"',
@@ -173,6 +181,20 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     self.assertEqual(set(original.jobs) | {'integration-required'}, set(changed.jobs), path)
                     left = yaml.load((self.preimage / path).read_text(encoding='utf-8'), Loader=yaml.BaseLoader)['jobs']
                     right = yaml.load((root / path).read_text(encoding='utf-8'), Loader=yaml.BaseLoader)['jobs']
+                    # Only additive identity wiring may differ; every original
+                    # proof command, condition, permission and timeout is equal.
+                    identity_steps = {'Bind successful native integration producer',
+                                      'Preserve successful shard identity',
+                                      'Download current-attempt shard identities',
+                                      'Verify every selected producer identity'}
+                    for name in ('draft-pr-check', 'preflight-latest-check', 'conflict-markers',
+                                 'check-all-targets', 'ux-tests', 'merge-gate', 'merge-gate-shards'):
+                        right[name]['steps'] = [step for step in right[name]['steps']
+                                                if step.get('name') not in identity_steps]
+                        for key in ('subject_sha', 'run_id', 'run_attempt'):
+                            right[name].get('outputs', {}).pop(key, None)
+                        if not right[name].get('outputs'):
+                            right[name].pop('outputs', None)
                     del right['integration-required']
                     right['check-all-targets']['name'] = left['check-all-targets']['name']
                     self.assertEqual(left, right)
@@ -192,6 +214,10 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                     original_body = (self.preimage / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1]
                     projected_body = (root / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1]
                     if path == '.github/workflows/ci-gate-self-tests.yml':
+                        binding_step = ('      - name: Run integration exact-attempt controls\n'
+                                        '        run: python3 -B -m unittest scripts.ci.test_integration_attempt_binding\n\n')
+                        self.assertEqual(projected_body.count(binding_step), 1)
+                        projected_body = projected_body.replace(binding_step, '')
                         inserted = ('      - name: Run hosted-only RIPR exact-attempt controls\n'
                                     '        run: python3 -B -m unittest scripts.ci.test_ripr_hosted_queue\n\n')
                         self.assertEqual(projected_body.count(inserted), 1)
@@ -481,14 +507,19 @@ class StagedIntegrationFanInTests(unittest.TestCase):
 
     def run_finalizer(self, compile_result='success', integration_result='success', *, source=None):
         return subprocess.run(['bash', '--noprofile', '--norc', '-c', source or self.step['run']],
-                              env={'COMPILE_RESULT': compile_result, 'INTEGRATION_RESULT': integration_result},
+                              env=dict(os.environ, COMPILE_RESULT=compile_result, INTEGRATION_RESULT=integration_result,
+                                       GITHUB_EVENT_NAME='merge_group', MERGE_GROUP_SHA='a'*40, GITHUB_SHA='a'*40,
+                                       GITHUB_RUN_ID='1234', GITHUB_RUN_ATTEMPT='2',
+                                       COMPILE_PROOF_SHA='a'*40, INTEGRATION_PROOF_SHA='a'*40,
+                                       COMPILE_PROOF_RUN_ID='1234', INTEGRATION_PROOF_RUN_ID='1234',
+                                       COMPILE_PROOF_RUN_ATTEMPT='2', INTEGRATION_PROOF_RUN_ATTEMPT='2'),
                               capture_output=True, text=True, timeout=5)
 
     def test_existing_protected_name_depends_on_same_run_compile_and_selected_aggregate(self):
         self.assertEqual(self.job['name'], 'Compile All Targets (bit-rot guard)')
         self.assertEqual(self.job['needs'], ['check-all-targets', 'merge-gate'])
         self.assertEqual(self.job['if'], 'always()')
-        self.assertEqual(self.step['env'], {
+        self.assertEqual({k: v for k, v in self.step['env'].items() if k.endswith('_RESULT')}, {
             'COMPILE_RESULT': '${{ needs.check-all-targets.result }}',
             'INTEGRATION_RESULT': '${{ needs.merge-gate.result }}',
         })

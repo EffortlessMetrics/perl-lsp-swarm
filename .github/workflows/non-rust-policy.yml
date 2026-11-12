@@ -178,12 +178,10 @@ jobs:
           fi
           echo "failure_stage=trusted-workflow-contract" >> "$GITHUB_OUTPUT"
           workflow=.github/workflows/non-rust-policy.yml
-          grep -q '^  merge_group:' "$workflow"
-          grep -q 'name: Non-Rust policy exact-tree' "$workflow"
-          grep -q 'ref: .*steps.evaluator.outputs.sha' "$workflow"
-          grep -q 'actions/upload-artifact@' "$workflow"
-          grep -q 'if: always()' "$workflow"
-          grep -q 'persist-credentials: false' "$workflow"
+          # T is the independently resolved protected-main executable generation.
+          # During bootstrap its live workflow is still v9; do not require it to
+          # have the candidate carrier's operational shape. The trusted compiled
+          # checker below validates the candidate contract, not candidate code.
           # Inspect executable run bodies only.  Event metadata is expected in
           # trusted environment declarations, while direct interpolation in a
           # command would allow candidate-controlled code or refs to reach the
