@@ -346,3 +346,33 @@ cargo test -p xtask --test workflow_draft_snapshot_supersession --locked -- --no
 # required merge surface command 38: Activation inventory suite (required merge surface)
 _step_index=$((_step_index + 1))
 cargo test -p xtask --test activation --test activation_check --locked -- --nocapture
+
+# required merge surface command 39: Formal verification inventory and refusal controls (required merge surface)
+_step_index=$((_step_index + 1))
+set -o pipefail
+cargo test -p xtask --bin formal-verification-claims --locked -- \
+  --test-threads=1 --color never | tee "$RUNNER_TEMP/formal-verification-inventory-tests.log"
+# This canonical producer runs on Linux, including the Unix symlink control.
+# Keep the exact denominator and named controls synchronized with the suite.
+grep -Eq '^test result: ok\. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+  "$RUNNER_TEMP/formal-verification-inventory-tests.log"
+for test_name in \
+  registry_is_valid_at_committed_head \
+  paths_reject_ambiguous_platform_and_pathspec_forms \
+  bound_requires_a_positive_number_not_protocol_digits \
+  claim_ids_have_closed_grammar \
+  snapshot_reads_blobs_not_modified_working_files \
+  dirty_and_untracked_inputs_refuse_commit_attribution \
+  changed_head_refuses_mixed_identity \
+  committed_symlink_is_not_an_evidence_source \
+  source_markers_cannot_be_empty_or_stale \
+  removed_gate_with_surviving_comment_is_rejected \
+  advisory_wrong_command_and_duplicate_gates_are_rejected \
+  commented_or_optional_workflow_steps_are_rejected \
+  forged_rollout_and_empty_runners_are_rejected \
+  unknown_schema_fields_and_enum_values_fail_closed \
+  reports_preserve_identity_limits_and_not_evaluated_result \
+  native_proof_cannot_be_promoted_by_metadata; do
+  grep -Fx "test tests::$test_name ... ok" "$RUNNER_TEMP/formal-verification-inventory-tests.log"
+done
+cargo run -p xtask --bin formal-verification-claims --locked -- --check
