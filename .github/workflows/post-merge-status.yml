@@ -573,7 +573,7 @@ jobs:
           # remains failing when any dispatch failed.
           set +e
           failed=0
-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
+          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml gate-enforcement-contract.yml; do
             if [ "$workflow" = ci.yml ]; then
               if gh workflow run "$workflow" --ref "$BRANCH" \
                 -f "base_sha=$BASE_SHA" \

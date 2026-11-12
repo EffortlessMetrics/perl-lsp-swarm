@@ -275,7 +275,7 @@ fn pragma_duplicate_authority_is_visible_and_uncollapsed() -> TestResult {
 fn critic_quickfixes_are_never_published_without_an_edit() -> TestResult {
     let uri = "file:///cac_parity_critic.pl";
     let mut harness = harness_with(None)?;
-    harness.open(uri, NO_PRAGMAS)?;
+    harness.open(uri, "sub f { return 1; print 2; }\n")?;
     harness.barrier();
 
     let actions = code_actions(&mut harness, uri, ((0, 0), (1, 12)), Some(&["quickfix"]))?;
@@ -296,7 +296,7 @@ fn critic_quickfixes_are_never_published_without_an_edit() -> TestResult {
 
     assert!(
         !critic.is_empty(),
-        "{SUCCESS_CRITIC_SAFE_ONLY}: the native critic generation published no quick fix for a source missing both pragmas, so this fixture would prove nothing: {:?}",
+        "{SUCCESS_CRITIC_SAFE_ONLY}: the native critic generation published no quick fix for a source containing unreachable code, so this fixture would prove nothing: {:?}",
         titles(&actions)
     );
 

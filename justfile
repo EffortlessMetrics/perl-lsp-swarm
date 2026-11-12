@@ -962,6 +962,7 @@ ci-gate-low-mem:
     @echo "   Using CARGO_BUILD_JOBS=1, RUST_TEST_THREADS=1, RUSTC_WRAPPER unset"
     @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 PROPTEST_CASES=32 \
         sh -c 'just ci-workflow-audit && \
+        just ci-contracts && \
         just ci-check-no-nested-lock && \
         just ci-format && \
         just ci-docs-check && \
@@ -998,11 +999,61 @@ ci-check-no-nested-lock:
 ci-workflow-audit:
     @cargo xtask ci-audit-workflows
 
+# Complete, exact-head post-compile admission proof. Kept separate from the
+# <180-second pr_fast tier; missing tools or evidence must not become green.
+# Set RUNNER_TEMP to an existing artifact directory, for example
+# `RUNNER_TEMP="$(mktemp -d)" just prove-required-merge-surface`. Without it,
+# the proof deliberately exits 80 NOT_PROVEN rather than losing the original
+# tee/grep log assertions or silently using a caller-unowned temp directory.
+prove-required-merge-surface:
+    bash scripts/ci/required-merge-surface.sh
+
+# The checked-in contract validators that the `Gate Enforcement Contract` and
+# `Workflow Security Ratchet` CI jobs run. Run this on a committed tree: the
+# gate-enforcement contract proves the exact subject, so tracked modifications
+# are NOT_PROVEN rather than green.
+ci-contracts: prove-required-merge-surface
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status=0
+    python3 -m unittest \
+        scripts/ci/test_validate_gate_enforcement_contract.py \
+        scripts/ci/test_gate_enforcement_app_bindings.py \
+        scripts/ci/test_reconcile_github_enforcement_snapshot.py \
+        scripts/ci/test_observe_github_enforcement.py \
+        scripts/ci/test_check_release_required_ci.py \
+        scripts/ci/test_required_checks_doc_contract.py \
+        scripts/ci/test_merge_queue_activation_checklist.py || status=1
+    python3 scripts/ci/test_detect_required_check_registration.py || status=1
+    python3 scripts/ci/required_checks_doc_contract.py --root . || status=1
+    python3 -m unittest scripts/ci/test_workflow_security_ratchet.py || status=1
+    # `validate-baseline` (not `check`) so a stale baseline - a finding that was
+    # fixed but not removed from the baseline - fails here exactly as it does in
+    # the CI self-test. `check` tolerates resolved findings and would let the
+    # local gate pass while the candidate self-test fails.
+    python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+        --root . \
+        --baseline .ci/workflow-security-baseline.json \
+        --baseline-root . || status=1
+    # Include untracked, non-ignored files: an untracked workflow or doc can
+    # participate in validation, so a clean tracked tree is not proof that the
+    # working tree matches the committed subject. Gitignored build output does
+    # not appear here.
+    if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+        echo "ci-contracts: working-tree changes present; commit, then rerun so the" >&2
+        echo "  gate-enforcement contract can prove the exact subject." >&2
+        status=1
+    else
+        python3 scripts/ci/validate_gate_enforcement_contract.py --root . || status=1
+    fi
+    exit "$status"
+
 # Fast merge gate (~2-5 min) - REQUIRED for all merges
 # The pre-push hook runs `just pr-fast`; this is the broader local merge gate.
 ci-gate:
     @echo "Running fast merge gate..."
     just ci-workflow-audit && \
+    just ci-contracts && \
     just ci-check-no-nested-lock && \
     just ci-format && \
     just ci-docs-check && \
@@ -1049,7 +1100,7 @@ gates tier='merge-gate' *args='':
 # Validate release-history surfaces (tags ↔ ledger ↔ notes ↔ changelog).
 ci-release-history:
     bash scripts/check_release_history.sh
-    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json         scripts.tests.test_domain6_fragment -v
+    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json         scripts.tests.test_domain6_fragment.Domain6FragmentTest -v
 
 # Validate installer Linux libc target selection without downloading artifacts.
 ci-install-target-selection:

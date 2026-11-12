@@ -3,6 +3,11 @@ name: PR Title Check
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
+  # #18255: the merge queue requires `validate-title` on the merge-group ref.
+  # The queue path resolves the group's constituent PRs from the commit graph,
+  # re-reads each current title, and applies the same policy as the PR path.
+  # It never checks out candidate contents and never mutates PR state.
+  merge_group: {}
   workflow_dispatch: {}
 
 permissions:
@@ -11,17 +16,219 @@ permissions:
 
 jobs:
   validate-title:
-    # This metadata-only pull_request_target check must remain available even
-    # when the optional self-hosted nano pool is offline. It never checks out
-    # or executes candidate contents, so a hosted runner preserves the trust
-    # boundary while making the required context live.
+    # One job, one static producer of the required `validate-title` context.
+    # The job is unconditional so the context is always reachable; the event
+    # split lives inside the script. This metadata-only check must remain
+    # available even when the optional self-hosted nano pool is offline. It
+    # never checks out or executes candidate contents, so a hosted runner
+    # preserves the trust boundary while making the required context live.
+    name: validate-title
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Check PR title
+      - name: Validate PR title
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
+            'use strict';
+
+            // Shared title policy. Defined once here so the PR path and the
+            // queue path cannot drift. Pure: reads a PR-shaped object and
+            // returns a verdict; never mutates GitHub state.
+            const RELEASE_STAMP = /^v?\d+\.\d+\.\d+$/;
+            const ISSUE_REFERENCE = /\B#(\d+)\b/g;
+
+            const labelsOf = (pr) => {
+              const labels = pr.labels || [];
+              return labels.map((label) => (typeof label === 'string' ? label : label.name));
+            };
+            const loginOf = (pr) =>
+              (pr.user && pr.user.login) || (pr.author && pr.author.login) || '';
+
+            const validateTitle = (pr) => {
+              const title = pr.title || '';
+              const login = loginOf(pr);
+              const labels = labelsOf(pr);
+
+              if (login === 'dependabot[bot]') {
+                return { ok: true, kind: 'exempt', reason: 'dependabot' };
+              }
+              if (labels.includes('skip-title-check')) {
+                return { ok: true, kind: 'exempt', reason: 'skip-title-check' };
+              }
+              if (RELEASE_STAMP.test(title.trim())) {
+                return { ok: true, kind: 'exempt', reason: 'release stamp' };
+              }
+
+              const matches = [...title.matchAll(ISSUE_REFERENCE)];
+              if (matches.length === 0) {
+                return { ok: false, kind: 'missing-issue', reason: 'no issue reference' };
+              }
+
+              const nonZero = matches.find((match) => parseInt(match[1], 10) !== 0);
+              if (!nonZero) {
+                const placeholder = matches.find((match) => parseInt(match[1], 10) === 0);
+                return {
+                  ok: true,
+                  kind: 'placeholder',
+                  reason: 'placeholder issue reference',
+                  placeholder: placeholder[0],
+                };
+              }
+
+              const issueNumber = parseInt(nonZero[1], 10);
+              return { ok: true, kind: 'issue', reason: `issue #${issueNumber}`, issueNumber };
+            };
+
+            // ---------------------------------------------------------------
+            // Queue path (#18255). Membership comes from the commit graph
+            // between the group base and head, never from the ref name. Each
+            // member's CURRENT title is re-read so a title edited while queued
+            // cannot pass on an earlier green run. Absent or contradictory
+            // membership fails closed. This branch never mutates PR state.
+            // ---------------------------------------------------------------
+            if (context.eventName === 'merge_group') {
+              const headSha = context.payload.merge_group?.head_sha;
+              const baseSha = context.payload.merge_group?.base_sha;
+
+              if (!headSha || !baseSha) {
+                core.setFailed('merge_group payload is missing head_sha or base_sha');
+                return;
+              }
+              const groupBaseRef = context.payload.merge_group.base_ref?.replace(/^refs\/heads\//, '');
+              if (!groupBaseRef) {
+                core.setFailed('merge_group payload is missing base_ref');
+                return;
+              }
+
+              // Contradictory G/base: the base must be an ancestor of the
+              // group head. A diverged or behind base is not a valid group.
+              let commits;
+              let cmp;
+              try {
+                ({ data: cmp } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead: `${baseSha}...${headSha}`,
+                }));
+                if (cmp.status !== 'ahead' && cmp.status !== 'identical') {
+                  core.setFailed(
+                    `merge_group base ${baseSha} is not an ancestor of head ${headSha} ` +
+                    `(compare status: ${cmp.status})`
+                  );
+                  return;
+                }
+                commits = cmp.commits || [];
+              } catch (e) {
+                core.setFailed(`could not read the merge_group commit graph: ${e.message}`);
+                return;
+              }
+
+              if (cmp.total_commits > commits.length) {
+                core.setFailed(`merge_group commit graph is truncated (${commits.length}/${cmp.total_commits}); refusing to infer membership`);
+                return;
+              }
+
+              if (commits.length === 0) {
+                core.setFailed(
+                  `merge_group has no commits between base ${baseSha} and head ${headSha}`
+                );
+                return;
+              }
+
+              // Every compared commit needs an open PR targeting the same base.
+              // The queue creates merge, squash, or rebase commits, so a group
+              // commit SHA normally differs from any PR head SHA; do not require
+              // them to match. A partial association set must never become a
+              // passing verdict.
+              const seen = new Set();
+              const members = [];
+              for (const commit of commits) {
+                let pulls;
+                try {
+                  const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    commit_sha: commit.sha,
+                  });
+                  pulls = data;
+                } catch (e) {
+                  core.setFailed(
+                    `could not map commit ${commit.sha} to a pull request: ${e.message}`
+                  );
+                  return;
+                }
+                const admitted = pulls.filter((pr) =>
+                  pr.state === 'open' &&
+                  pr.base?.ref?.replace(/^refs\/heads\//, '') === groupBaseRef
+                );
+                if (admitted.length === 0) {
+                  core.setFailed(
+                    `merge_group commit ${commit.sha} has no open PR targeting base ` +
+                    `${groupBaseRef}; refusing to infer membership from an incomplete ` +
+                    'association set'
+                  );
+                  return;
+                }
+                for (const pr of admitted) {
+                  if (seen.has(pr.number)) continue;
+                  seen.add(pr.number);
+                  members.push(pr.number);
+                }
+              }
+
+              if (members.length === 0) {
+                core.setFailed(
+                  `no constituent pull requests resolved for merge group head ${headSha}`
+                );
+                return;
+              }
+
+              const failures = [];
+              for (const member of members) {
+                let current;
+                try {
+                  const { data } = await github.rest.pulls.get({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: member,
+                  });
+                  current = data;
+                } catch (e) {
+                  failures.push(
+                    `#${member}: could not re-read current title (${e.message})`
+                  );
+                  continue;
+                }
+                if (
+                  current.state !== 'open' ||
+                  current.base?.ref?.replace(/^refs\/heads\//, '') !== groupBaseRef
+                ) {
+                  core.setFailed(
+                    `#${member} changed state or base while queued; refusing to validate a different admission`
+                  );
+                  return;
+                }
+                const verdict = validateTitle(current);
+                if (!verdict.ok) {
+                  failures.push(`#${member}: ${verdict.reason}`);
+                }
+              }
+
+              if (failures.length > 0) {
+                core.setFailed(`merge group title validation failed: ${failures.join('; ')}`);
+                return;
+              }
+              core.info(
+                `merge group title validation passed for ${members.length} PR(s): ` +
+                members.map((n) => `#${n}`).join(', ')
+              );
+              return;
+            }
+
+            // ---------------------------------------------------------------
+            // PR and manual-dispatch path.
+            // ---------------------------------------------------------------
             const actor = context.actor;
             let pr = context.payload.pull_request;
             if (!pr) {
@@ -43,21 +250,15 @@ jobs:
               pr = pulls[0];
             }
             const title = pr.title;
-            const login = pr.user.login;
 
-            if (actor === 'dependabot[bot]' || login.includes('dependabot')) {
+            if (actor === 'dependabot[bot]') {
               core.info('Exempt: dependabot PR');
               return;
             }
 
-            const labels = pr.labels.map(l => l.name);
-            if (labels.includes('skip-title-check')) {
-              core.info('Exempt: skip-title-check label present');
-              return;
-            }
-
-            if (/^v?\d+\.\d+\.\d+$/.test(title.trim())) {
-              core.info('Exempt: release stamp title');
+            const verdict = validateTitle(pr);
+            if (verdict.kind === 'exempt') {
+              core.info(`Exempt: ${verdict.reason}`);
               return;
             }
 
@@ -101,9 +302,8 @@ jobs:
                 core.info('Posted new bot comment.');
               }
             };
-            const issueMatches = [...title.matchAll(/\B#(\d+)\b/g)];
 
-            if (issueMatches.length === 0) {
+            if (verdict.kind === 'missing-issue') {
               core.setFailed(
                 `PR title must reference an issue (e.g. "feat: add thing (#42)"). ` +
                 `Codex/agent PRs should file the plan as an issue first. Got: "${title}"`
@@ -133,12 +333,9 @@ jobs:
             // real issue must be linked before merge (ops is the backstop). This
             // removes any incentive to guess a real issue number \u2014 a wrong-but-real
             // reference silently pollutes an unrelated issue's thread.
-            const nonZeroMatch = issueMatches.find((match) => parseInt(match[1], 10) !== 0);
-            const zeroIssueMatch = issueMatches.find((match) => parseInt(match[1], 10) === 0);
-
-            if (!nonZeroMatch && zeroIssueMatch) {
+            if (verdict.kind === 'placeholder') {
               core.info(
-                `Placeholder issue reference "${zeroIssueMatch[0]}" accepted (non-blocking). ` +
+                `Placeholder issue reference "${verdict.placeholder}" accepted (non-blocking). ` +
                 `Flagging needs-issue-link.`
               );
               const commentBody = [
@@ -146,7 +343,7 @@ jobs:
                 '',
                 BOT_MARKER,
                 '',
-                `This PR title uses the placeholder issue reference \`${zeroIssueMatch[0]}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
+                `This PR title uses the placeholder issue reference \`${verdict.placeholder}\`. The title check **passes** (non-blocking), but a **real issue must be linked before merge** \u2014 this PR is labeled \`needs-issue-link\`.`,
                 '',
                 'If you know the issue, update the title to reference it, e.g. `(#1234)`. Never guess a real issue number.',
                 '',
@@ -171,7 +368,7 @@ jobs:
             }
 
             // Validate the first real (non-placeholder) issue reference.
-            const issueNumber = parseInt(nonZeroMatch[1], 10);
+            const issueNumber = verdict.issueNumber;
             try {
               await github.rest.issues.get({
                 owner: context.repo.owner,
@@ -193,6 +390,7 @@ jobs:
             // ref added, this check went green) but `needs-issue-link` survived
             // and blocked an ops merge under the "no needs-* label may merge"
             // doctrine — the label-writer never reconciled its own label.
+            const labels = labelsOf(pr);
             if (labels.includes('needs-issue-link')) {
               try {
                 await github.rest.issues.removeLabel({

@@ -72,6 +72,8 @@ class ConstrainedAdmissionTests(unittest.TestCase):
              patch.object(safe, "resource_plan", return_value=(self.root, self.slot, self.paths)), \
              patch.object(safe.shutil, "disk_usage", side_effect=disk,
                           return_value=self.Usage(32*self.gib, 32*self.gib-free, free)), \
+             patch.object(safe.subprocess, "run", return_value=
+                          subprocess.CompletedProcess([], 0, b"", b"")), \
              patch.object(safe.subprocess, "call", side_effect=call, return_value=0) as cargo, \
              contextlib.redirect_stderr(output):
             result = safe.main(args)

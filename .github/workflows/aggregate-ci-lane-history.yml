@@ -417,7 +417,7 @@ jobs:
           else
             identity_ok=1
           fi
-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
+          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml gate-enforcement-contract.yml; do
             if [ "$workflow" = ci.yml ]; then
               if [ "$identity_ok" = 1 ] \
                 && resolve_identity \
