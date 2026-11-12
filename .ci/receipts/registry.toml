@@ -77,3 +77,10 @@ schema = ".ci/receipts/schemas/droid-live-run.schema.json"
 description = "Records the Droid review lane runtime shape for live-run evidence."
 producer = "Droid PR Review"
 required_fields = ["check", "schema_version", "event", "verdict", "workflow", "model", "runner_labels", "action", "review_posted", "debug_artifacts_uploaded", "anthropic_env_cleared"]
+
+[[receipt]]
+check = "formal-proof"
+schema = ".ci/receipts/schemas/formal-proof-receipt.schema.json"
+description = "Binds one bounded formal-method result to its exact claim, semantic closure, toolchain, controls, raw artifacts, freshness, and production correspondence."
+producer = "cargo xtask gate-receipts validate"
+required_fields = ["check", "schema_version", "claim", "source", "closure", "toolchain", "bounds", "obligations", "native", "freshness", "correspondence", "artifacts", "disposition"]
