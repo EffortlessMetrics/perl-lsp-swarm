@@ -134,8 +134,12 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
         .current_dir(root)
         .output()
         .with_context(|| format!("run git {}", args.join(" ")))?;
-    ensure!(output.status.success(), "git {} failed: {}", args.join(" "),
-        String::from_utf8_lossy(&output.stderr).trim());
+    ensure!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
     String::from_utf8(output.stdout).context("Git returned non-UTF-8 evidence")
 }
 
@@ -166,14 +170,18 @@ impl Snapshot {
 
     fn read(&self, path: &str) -> Result<String> {
         ensure!(valid_path(path), "noncanonical repository path: {path:?}");
-        let listing = git(&self.root, &["--literal-pathspecs", "ls-tree", "-z", &self.tree, "--", path])?;
+        let listing =
+            git(&self.root, &["--literal-pathspecs", "ls-tree", "-z", &self.tree, "--", path])?;
         let entries: Vec<_> = listing.split('\0').filter(|line| !line.is_empty()).collect();
         ensure!(entries.len() == 1, "missing or ambiguous committed input: {path}");
-        let (metadata, actual_path) = entries[0].split_once('\t').context("malformed Git tree entry")?;
+        let (metadata, actual_path) =
+            entries[0].split_once('\t').context("malformed Git tree entry")?;
         let fields: Vec<_> = metadata.split_whitespace().collect();
         ensure!(
-            actual_path == path && fields.len() == 3
-                && matches!(fields[0], "100644" | "100755") && fields[1] == "blob",
+            actual_path == path
+                && fields.len() == 3
+                && matches!(fields[0], "100644" | "100755")
+                && fields[1] == "blob",
             "input is not a regular committed file: {path}"
         );
         let content = git(&self.root, &["cat-file", "blob", fields[2]])?;
@@ -189,7 +197,9 @@ impl Snapshot {
     }
 
     fn bind_binary(&self) -> Result<()> {
-        for (path, compiled) in [(REGISTRY_PATH, COMPILED_REGISTRY), (VALIDATOR_PATH, COMPILED_VALIDATOR)] {
+        for (path, compiled) in
+            [(REGISTRY_PATH, COMPILED_REGISTRY), (VALIDATOR_PATH, COMPILED_VALIDATOR)]
+        {
             ensure!(self.read(path)? == compiled, "compiled source differs from snapshot: {path}");
         }
         Ok(())
@@ -204,11 +214,17 @@ impl Snapshot {
 }
 
 fn valid_claim_id(id: &str) -> bool {
-    let Some(rest) = id.strip_prefix("FV-") else { return false; };
-    let Some((category, suffix)) = rest.rsplit_once('-') else { return false; };
-    suffix.len() == 3 && suffix.bytes().all(|b| b.is_ascii_digit())
+    let Some(rest) = id.strip_prefix("FV-") else {
+        return false;
+    };
+    let Some((category, suffix)) = rest.rsplit_once('-') else {
+        return false;
+    };
+    suffix.len() == 3
+        && suffix.bytes().all(|b| b.is_ascii_digit())
         && category.split('-').all(|segment| {
-            !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+            !segment.is_empty()
+                && segment.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
         })
 }
 
@@ -220,7 +236,8 @@ fn explicit_bound(bound: &str) -> bool {
 fn required_gate(policy: &str, name: &str, runner: &str) -> Result<()> {
     let policy: serde_yaml_ng::Value = serde_yaml_ng::from_str(policy)?;
     let gates = policy["gates"].as_sequence().context("gate policy has no gates sequence")?;
-    let matching: Vec<_> = gates.iter().filter(|gate| gate["name"].as_str() == Some(name)).collect();
+    let matching: Vec<_> =
+        gates.iter().filter(|gate| gate["name"].as_str() == Some(name)).collect();
     ensure!(matching.len() == 1, "required gate is missing or duplicated: {name}");
     let gate = matching[0];
     ensure!(gate["required"].as_bool() == Some(true), "gate is not required: {name}");
@@ -235,24 +252,41 @@ fn required_gate_selected(workflow: &str, name: &str) -> Result<()> {
     ensure!(job.as_mapping().is_some(), "merge-gate-shards job missing");
     ensure!(job["continue-on-error"].is_null(), "shard job may ignore failure");
     // The surrounding draft/preflight predicate remains an explicit CI-contract dependency.
-    ensure!(job["if"].as_str() == Some(
-        "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'"
-    ), "shard job admission predicate changed; requalify the binding");
+    ensure!(
+        job["if"].as_str()
+            == Some(
+                "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'"
+            ),
+        "shard job admission predicate changed; requalify the binding"
+    );
     let matrix = job["strategy"]["matrix"].as_mapping().context("shard matrix missing")?;
     ensure!(matrix.len() == 1, "unsupported shard matrix expansion or exclusion");
-    let rows = job["strategy"]["matrix"]["include"].as_sequence().context("shard matrix missing")?;
-    let count = rows.iter().filter(|row| {
-        row["gates"].as_str().is_some_and(|value| value.split_whitespace().any(|gate| gate == name))
-    }).count();
+    let rows =
+        job["strategy"]["matrix"]["include"].as_sequence().context("shard matrix missing")?;
+    let count = rows
+        .iter()
+        .filter(|row| {
+            row["gates"]
+                .as_str()
+                .is_some_and(|value| value.split_whitespace().any(|gate| gate == name))
+        })
+        .count();
     ensure!(count == 1, "gate must be selected by exactly one shard: {name}");
     let steps = job["steps"].as_sequence().context("shard steps missing")?;
-    let selected: Vec<_> = steps.iter().filter(|step| {
-        step["name"].as_str() == Some("Run merge-gate shard with receipts")
-    }).collect();
+    let selected: Vec<_> = steps
+        .iter()
+        .filter(|step| step["name"].as_str() == Some("Run merge-gate shard with receipts"))
+        .collect();
     ensure!(selected.len() == 1, "canonical shard execution step missing or duplicated");
     let step = selected[0];
-    ensure!(step["if"].is_null() && step["continue-on-error"].is_null(), "shard execution is optional");
-    ensure!(step["env"]["SHARD_GATES"].as_str() == Some("${{ matrix.gates }}"), "shard gate input changed");
+    ensure!(
+        step["if"].is_null() && step["continue-on-error"].is_null(),
+        "shard execution is optional"
+    );
+    ensure!(
+        step["env"]["SHARD_GATES"].as_str() == Some("${{ matrix.gates }}"),
+        "shard gate input changed"
+    );
     ensure!(step["shell"].as_str() == Some("bash"), "shard executor shell changed");
     let run = step["run"].as_str().context("shard has no executable body")?;
     for line in [
@@ -261,7 +295,10 @@ fn required_gate_selected(workflow: &str, name: &str) -> Result<()> {
         "$SHARD_GATES",
         "exit \"$status\"",
     ] {
-        ensure!(run.lines().any(|candidate| candidate.trim() == line), "shard command binding missing: {line}");
+        ensure!(
+            run.lines().any(|candidate| candidate.trim() == line),
+            "shard command binding missing: {line}"
+        );
     }
     // This does not interpret arbitrary Bash; native workflow results are still required.
     Ok(())
@@ -273,25 +310,39 @@ fn required_step(workflow: &str, job_name: &str, command: &str) -> Result<()> {
     ensure!(job.as_mapping().is_some(), "required job missing: {job_name}");
     ensure!(job["continue-on-error"].is_null(), "required job may ignore failure");
     let steps = job["steps"].as_sequence().context("required job steps missing")?;
-    let matching: Vec<_> = steps.iter().filter(|step| step["run"].as_str() == Some(command)).collect();
+    let matching: Vec<_> =
+        steps.iter().filter(|step| step["run"].as_str() == Some(command)).collect();
     ensure!(matching.len() == 1, "required execution step missing or duplicated: {command}");
-    ensure!(matching[0]["if"].is_null() && matching[0]["continue-on-error"].is_null(), "required execution step is optional");
+    ensure!(
+        matching[0]["if"].is_null() && matching[0]["continue-on-error"].is_null(),
+        "required execution step is optional"
+    );
     Ok(())
 }
 
 fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Result<()> {
     match authority.kind {
         AuthorityKind::SourceMarker => {
-            ensure!(authority.policy.is_none() && authority.workflow.is_none(), "unexpected gate fields");
+            ensure!(
+                authority.policy.is_none() && authority.workflow.is_none(),
+                "unexpected gate fields"
+            );
             let binding = authority.source.as_ref().context("missing authority source")?;
             let body = snapshot.source(binding)?;
             let runner = claim.runner.as_deref().context("missing authority runner")?;
             match binding.path.as_str() {
                 ".github/workflows/ci.yml" => required_step(&body, "check-all-targets", runner)?,
                 "scripts/ci/required-merge-surface.sh" => {
-                    ensure!(body.lines().any(|line| line == runner), "required producer command missing");
+                    ensure!(
+                        body.lines().any(|line| line == runner),
+                        "required producer command missing"
+                    );
                     let workflow = snapshot.read(".github/workflows/ci.yml")?;
-                    required_step(&workflow, "check-all-targets", "bash scripts/ci/required-merge-surface.sh")?;
+                    required_step(
+                        &workflow,
+                        "check-all-targets",
+                        "bash scripts/ci/required-merge-surface.sh",
+                    )?;
                 }
                 _ => bail!("unsupported source authority: {}", binding.path),
             }
@@ -322,38 +373,74 @@ fn validate(snapshot: &Snapshot, registry: &Registry) -> Result<()> {
     for claim in &registry.claims {
         ensure!(valid_claim_id(&claim.id), "invalid claim ID: {}", claim.id);
         ensure!(ids.insert(&claim.id), "duplicate claim ID: {}", claim.id);
-        ensure!(claim.issue.strip_prefix('#').is_some_and(|n| {
-            !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n.parse::<u64>().is_ok_and(|n| n > 0)
-        }), "invalid owner issue: {}", claim.id);
+        ensure!(
+            claim.issue.strip_prefix('#').is_some_and(|n| {
+                !n.is_empty()
+                    && n.bytes().all(|b| b.is_ascii_digit())
+                    && n.parse::<u64>().is_ok_and(|n| n > 0)
+            }),
+            "invalid owner issue: {}",
+            claim.id
+        );
         snapshot.source(&claim.target).with_context(|| format!("{}: target", claim.id))?;
         for (field, text) in [
-            ("subject", &claim.subject), ("assertion", &claim.assertion), ("bound", &claim.bound),
-            ("assumptions", &claim.assumptions), ("limitations", &claim.limitations),
+            ("subject", &claim.subject),
+            ("assertion", &claim.assertion),
+            ("bound", &claim.bound),
+            ("assumptions", &claim.assumptions),
+            ("limitations", &claim.limitations),
             ("counterexample", &claim.counterexample),
         ] {
-            ensure!(!text.trim().is_empty() && !text.contains(['\n', '\r']), "{}: invalid {field}", claim.id);
+            ensure!(
+                !text.trim().is_empty() && !text.contains(['\n', '\r']),
+                "{}: invalid {field}",
+                claim.id
+            );
         }
         if claim.evidence == Evidence::BoundedModel {
-            ensure!(explicit_bound(&claim.bound), "{}: no explicit positive numeric bound", claim.id);
+            ensure!(
+                explicit_bound(&claim.bound),
+                "{}: no explicit positive numeric bound",
+                claim.id
+            );
         }
         if let Some(runner) = &claim.runner {
-            ensure!(!runner.trim().is_empty() && !runner.contains(['\n', '\r']), "{}: empty/multiline runner", claim.id);
+            ensure!(
+                !runner.trim().is_empty() && !runner.contains(['\n', '\r']),
+                "{}: empty/multiline runner",
+                claim.id
+            );
         }
         for forbidden in ["all possible", "fully proven", "unconditionally correct"] {
-            ensure!(!claim.assertion.to_ascii_lowercase().contains(forbidden), "{}: universal wording", claim.id);
+            ensure!(
+                !claim.assertion.to_ascii_lowercase().contains(forbidden),
+                "{}: universal wording",
+                claim.id
+            );
         }
         match claim.status {
             Status::Enforced => {
-                ensure!(matches!(claim.evidence, Evidence::BuildCheck | Evidence::StructuralInvariant),
-                    "{}: native proof admission is not implemented", claim.id);
+                ensure!(
+                    matches!(claim.evidence, Evidence::BuildCheck | Evidence::StructuralInvariant),
+                    "{}: native proof admission is not implemented",
+                    claim.id
+                );
                 ensure!(claim.runner.is_some(), "{}: missing runner", claim.id);
                 authority(snapshot, claim, claim.authority.as_ref().context("missing authority")?)?;
             }
             Status::ImplementedUnwired => {
-                ensure!(claim.runner.is_some() && claim.authority.is_none(), "{}: invalid unwired metadata", claim.id);
+                ensure!(
+                    claim.runner.is_some() && claim.authority.is_none(),
+                    "{}: invalid unwired metadata",
+                    claim.id
+                );
             }
             Status::Planned => {
-                ensure!(claim.runner.is_none() && claim.authority.is_none(), "{}: planned claim advertises evidence", claim.id);
+                ensure!(
+                    claim.runner.is_none() && claim.authority.is_none(),
+                    "{}: planned claim advertises evidence",
+                    claim.id
+                );
             }
         }
     }
@@ -388,19 +475,35 @@ fn markdown(report: &Report<'_>) -> Result<String> {
              **Claim:** {}\n\n**Scope/bound:** {}\n\n**Assumptions:** {}\n\n\
              **Limitations:** {}\n\n**Counterexample/replay:** {}\n\n\
              Target: `{}`\n\nRunner: `{}`\n\n",
-            claim.id, claim.subject, claim.status.as_str(), claim.evidence.as_str(), claim.issue,
-            claim.assertion, claim.bound, claim.assumptions, claim.limitations, claim.counterexample,
-            claim.target.path, claim.runner.as_deref().unwrap_or("not implemented")
+            claim.id,
+            claim.subject,
+            claim.status.as_str(),
+            claim.evidence.as_str(),
+            claim.issue,
+            claim.assertion,
+            claim.bound,
+            claim.assumptions,
+            claim.limitations,
+            claim.counterexample,
+            claim.target.path,
+            claim.runner.as_deref().unwrap_or("not implemented")
         ));
     }
     text.push_str("## Exact inventory inputs\n\n```json\n");
     text.push_str(&serde_json::to_string_pretty(&report.inventory_inputs)?);
-    text.push_str("\n```\n\nThese blobs are inventory inputs, not a complete native proof closure.\n");
+    text.push_str(
+        "\n```\n\nThese blobs are inventory inputs, not a complete native proof closure.\n",
+    );
     Ok(text)
 }
 
 #[derive(Clone, Copy)]
-enum Mode { Check, Json, Markdown, Help }
+enum Mode {
+    Check,
+    Json,
+    Markdown,
+    Help,
+}
 
 fn run() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
@@ -423,8 +526,12 @@ fn run() -> Result<()> {
     validate(&snapshot, &registry)?;
     let report = report(&snapshot, &registry);
     let output = match mode {
-        Mode::Check => format!("inventory_validated; native_proof=not_evaluated; claims={}; head={}; tree={}\n",
-            registry.claims.len(), snapshot.commit, snapshot.tree),
+        Mode::Check => format!(
+            "inventory_validated; native_proof=not_evaluated; claims={}; head={}; tree={}\n",
+            registry.claims.len(),
+            snapshot.commit,
+            snapshot.tree
+        ),
         Mode::Json => format!("{}\n", serde_json::to_string_pretty(&report)?),
         Mode::Markdown => markdown(&report)?,
         Mode::Help => String::new(),
