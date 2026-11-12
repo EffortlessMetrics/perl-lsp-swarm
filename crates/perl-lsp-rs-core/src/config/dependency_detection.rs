@@ -186,7 +186,7 @@ mod tests {
     use super::detect_dependency_include_paths;
     use super::{
         CARMEL_DEV_STATE, CARMEL_ROLLOUT_SENTINEL, DependencyIncludeDetection,
-        LOCAL_INSTALL_INCLUDE_PATH, MarkerPresence, detect_dependency_include_paths_result,
+        LOCAL_INSTALL_INCLUDE_PATH, MarkerPresence,
         detect_dependency_include_paths_with_declaration, probe_marker_file, resolve_detection,
     };
 
@@ -506,12 +506,12 @@ mod tests {
         );
 
         assert_eq!(
-            detect_dependency_include_paths_result(&not_a_directory, None),
+            super::detect_dependency_include_paths_result(&not_a_directory, None),
             DependencyIncludeDetection::Indeterminate,
             "all five probes unreadable can hide a present carton.lock"
         );
         assert_eq!(
-            detect_dependency_include_paths_result(&not_a_directory, Some(false)),
+            super::detect_dependency_include_paths_result(&not_a_directory, Some(false)),
             DependencyIncludeDetection::Detected(Vec::new()),
             "Some(false) still proves absence even when disk probes cannot answer"
         );

@@ -306,7 +306,16 @@ fn is_multi_delim_regex_at_close(text: &str) -> bool {
     };
     let body_after_op = &text[op_len..];
     let slash_count = count_unescaped_slashes(body_after_op);
-    slash_count == required_slashes
+    // The flag position is adjacent to the closing delimiter. Both callers
+    // pass text that ends at the cursor with trailing flag characters and
+    // whitespace already stripped (`is_in_regex_flags` strips both before
+    // trimming; the `=~`/`!~` recursion passes suffixes of that same
+    // stripped body), so the body must end at the closing `/`. Counting
+    // slashes alone admits any later cursor after a closed `s///`/`tr///`:
+    // everything from the statement's `;` onward is inside the counted
+    // region, so one earlier find-replace edit poisoned every later
+    // position with regex-flag keywords (#18760).
+    slash_count == required_slashes && body_after_op.ends_with('/')
 }
 
 fn is_m_or_qr_closed(text: &str) -> bool {
@@ -2324,6 +2333,55 @@ my $after = "op"#;
             assert!(
                 is_in_regex_flags(source, source.len()),
                 "flags after a later closed regex must still be detected: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn slash_delim_flag_positions_adjacent_to_closer_still_detected() {
+        // The closing-delimiter anchor must keep every legitimate flag
+        // position: after flag stripping the body ends at the closing `/`.
+        for source in [
+            "s/a/b/",
+            "s/a/b/g",
+            "s/a/b/gi",
+            "$x =~ s/a/b/e",
+            "tr/a-z/A-Z/",
+            "tr/a-z/A-Z/d",
+            "tr/a-z/A-Z/ds",
+            "$x =~ y/a-z/A-Z/s",
+        ] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "legit flag position adjacent to the closing delimiter must stay flags: {source}"
+            );
+        }
+        let mid_flag = "s/a/b/gi";
+        assert!(
+            is_in_regex_flags(mid_flag, mid_flag.len() - 1),
+            "cursor inside typed flags must stay flags: {mid_flag}"
+        );
+    }
+
+    #[test]
+    fn closed_slash_substitution_does_not_claim_later_cursors() {
+        // One earlier find-replace statement must not turn every later
+        // cursor into a regex-flag position (#18760): after the closing
+        // delimiter the counted region is over, so a slash count of 3
+        // further along the buffer no longer means "flag position".
+        for source in [
+            // statement-terminator and later lines
+            "$sku =~ s/A1/B2/g;\nprint $inv->",
+            "$sku =~ s/A1/B2/g;\n$inv->re",
+            "$sku =~ s/A1/B2/g;\nmy $count",
+            "$sku =~ s/A1/B2/g; my $x",
+            "s/find/replace/g;\nmy $low = $inv->re",
+            "$y =~ tr/a-z/A-Z/;\nprint $inv->",
+            "$y =~ y/a-z/A-Z/;\nmy $low = $inv->",
+        ] {
+            assert!(
+                !is_in_regex_flags(source, source.len()),
+                "cursor after a closed s///tr///y/// is not a flag position: {source}"
             );
         }
     }
