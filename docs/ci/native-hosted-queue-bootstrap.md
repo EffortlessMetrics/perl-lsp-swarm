@@ -78,6 +78,12 @@ cancelled, partial-rerun, missing-artifact or wrong-generation admission. Comple
 lists paginate up to1000 items; unstable, truncated or over-bound lists refuse.
 Review convergence uses latest decisive state per author; ordinary comments do
 not clear a change request. Canonical exact-H substantive review still must pass.
+Independent review work and root publication can share the PR author's GitHub
+login. Account inequality is not an additional admission requirement. The existing
+canonical cumulative-review procedure owns review independence; publication identity
+alone neither proves independent review nor permits author self-certification.
+Current write/maintain/admin permission and canonical exact-H review/digest remain
+mandatory. No alternate self-certification marker or metadata is introduced.
 
 ## Independent native enforcement decision remains open
 

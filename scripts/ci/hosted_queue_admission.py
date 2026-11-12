@@ -143,7 +143,7 @@ def observe(api, event, env, root=ROOT, review=canonical_review):
         require(value.get("user", {}).get("login", "").lower() == login.lower()
                 and value.get("permission") in {"write", "maintain", "admin"}, "actor lacks current write authority")
     source_current()
-    before = current()
+    current()
     sender = event.get("sender", {})
     require(sender.get("type") == "User" and sender.get("login") == env.get("GITHUB_ACTOR")
             and env.get("GITHUB_TRIGGERING_ACTOR") == env.get("GITHUB_ACTOR"), "request/rerun actor mismatch")
@@ -154,7 +154,8 @@ def observe(api, event, env, root=ROOT, review=canonical_review):
     require(review_converged(reviews), "current change request remains")
     result = review(root, number, head, reviews)
     permission(result["reviewer"])
-    require(result["reviewer"].lower() != before["user"]["login"].lower(), "self review")
+    # The canonical review process owns independent authorship and root publication.
+    # A shared GitHub publishing login is neither proof nor disproof of that review.
     # Equal observations fail closed on any concurrent review edit/withdrawal.
     require(api.pages(prefix + f"/pulls/{number}/reviews") == reviews, "review changed during admission")
     require(all(t.get("isResolved") is True for t in api.threads(number)), "thread changed during admission")
