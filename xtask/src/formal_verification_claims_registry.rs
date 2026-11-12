@@ -9,7 +9,7 @@ pub const REGISTRY_JSON: &str = r##"{
   "claims": [
     {
       "id": "FV-INFRA-001",
-      "status": "implemented_unwired",
+      "status": "enforced",
       "evidence": "structural_invariant",
       "subject": "formal-verification claim registry",
       "assertion": "Every row has a unique ID, live target, explicit evidence class, scope, assumptions, limitations, replay contract, and truthful enforcement state.",
@@ -18,10 +18,17 @@ pub const REGISTRY_JSON: &str = r##"{
         "marker": "\"schema_version\": \"formal_verification_claims.v1\""
       },
       "runner": "cargo run -p xtask --bin formal-verification-claims --locked -- --check",
-      "bound": "The strict registry rows, validator, and repository files at the evaluated commit.",
-      "assumptions": "Source markers identify the intended live implementation surface.",
-      "limitations": "The registry describes evidence but does not prove a planned claim; it is not merge authority until #19297 wires it.",
-      "counterexample": "The checker exits non-zero and names the malformed row or stale binding.",
+      "authority": {
+        "kind": "source_marker",
+        "source": {
+          "path": "scripts/ci/required-merge-surface.sh",
+          "marker": "cargo run -p xtask --bin formal-verification-claims --locked -- --check"
+        }
+      },
+      "bound": "The strict registry rows, validator, and consulted Git blobs at the evaluated commit; all 16 inventory controls are selected by the Linux canonical merge surface.",
+      "assumptions": "Source markers are structural bindings; the existing CI admission and execution contracts remain dependencies.",
+      "limitations": "Inventory validation is not a native proof result. Enforced records the configured canonical route, not a successful run on the current candidate. Complete native proof closure and receipt admission remain #19297 work.",
+      "counterexample": "The checker exits non-zero and names the malformed row or stale binding; canonical CI refuses zero, skipped, filtered, or missing named controls.",
       "issue": "#19297"
     },
     {
@@ -153,7 +160,7 @@ pub const REGISTRY_JSON: &str = r##"{
       "status": "planned",
       "evidence": "bounded_model",
       "subject": "byte, UTF-16, range, and edit laws",
-      "assertion": "Within the recorded symbolic domain, production position conversion preserves its byte and UTF-16 contracts, rejects invalid coordinates, and cannot overflow or escape source bounds.",
+      "assertion": "Within the recorded symbolic domain, production position conversion preserves its declared byte and UTF-16 clamping and rejection contracts and cannot overflow or escape source bounds.",
       "target": {
         "path": "crates/perl-line-index/src/lib.rs",
         "marker": "pub struct LineIndex"
