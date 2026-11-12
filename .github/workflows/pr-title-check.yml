@@ -11,10 +11,10 @@ on:
   workflow_dispatch: {}
 
 # Candidate-authored merge-group definitions inherit this read-only boundary.
-# Advisory PR comments and labels live in pr-title-advisory.yml, whose sole
-# pull_request_target trigger keeps its write token trusted-sourced.
+# Advisory PR comment and label reconciliation is intentionally outside this
+# candidate; no event in this workflow mutates PR state.
 permissions:
-  checks: write
+  checks: read
   contents: read
   issues: read
   pull-requests: read
@@ -277,8 +277,7 @@ jobs:
 
             // Zero-valued references (#0 / #0000) are the sanctioned placeholder
             // for "issue number not yet known" (issue #724). They are NON-BLOCKING.
-            // The separate pull_request_target-only advisory workflow owns the
-            // comment and needs-issue-link reconciliation.
+            // Comment and needs-issue-link reconciliation are outside this candidate.
             if (verdict.kind === 'placeholder') {
               core.info(
                 `Placeholder issue reference "${verdict.placeholder}" accepted (non-blocking).`

@@ -28,17 +28,8 @@ fn workflow_raw() -> String {
     fs::read_to_string(&path).expect("read pr-title-check.yml")
 }
 
-fn advisory_workflow_raw() -> String {
-    let path = project_root().join(".github/workflows/pr-title-advisory.yml");
-    fs::read_to_string(&path).expect("read pr-title-advisory.yml")
-}
-
 fn workflow() -> Value {
     serde_yaml_ng::from_str(&workflow_raw()).expect("parse pr-title-check.yml")
-}
-
-fn advisory_workflow() -> Value {
-    serde_yaml_ng::from_str(&advisory_workflow_raw()).expect("parse pr-title-advisory.yml")
 }
 
 fn job<'a>(workflow: &'a Value, id: &str) -> &'a Value {
@@ -52,18 +43,6 @@ fn queue_branch() -> String {
     let end = raw.find("// PR and manual-dispatch path.").expect("PR path marker");
     assert!(start < end, "queue branch must precede the PR path");
     raw[start..end].to_string()
-}
-
-/// The executable policy shared by required validation and advisory writes.
-/// Comments outside this block may differ; these bytes may not.
-fn title_policy(raw: &str) -> &str {
-    let start = raw.find("const RELEASE_STAMP =").expect("title policy start");
-    let terminator = "return { ok: true, kind: 'issue', reason: `issue #${issueNumber}`, issueNumber };\n            };";
-    let end = raw[start..]
-        .find(terminator)
-        .map(|offset| start + offset + terminator.len())
-        .expect("title policy end");
-    &raw[start..end]
 }
 
 #[test]
@@ -104,39 +83,30 @@ fn producer_job_is_unconditionally_reachable() {
 
 #[test]
 fn job_never_checks_out_candidate_contents() {
-    for raw in [workflow_raw(), advisory_workflow_raw()] {
-        assert!(
-            !raw.contains("actions/checkout"),
-            "neither workflow may check out anything; the policy is defined inline"
-        );
-    }
+    let raw = workflow_raw();
+    assert!(
+        !raw.contains("actions/checkout"),
+        "the job must not check out anything; the policy is defined inline"
+    );
 }
 
 #[test]
 fn policy_is_defined_once_in_the_workflow() {
     let raw = workflow_raw();
-    let advisory = advisory_workflow_raw();
-    for policy_owner in [&raw, &advisory] {
-        assert_eq!(
-            policy_owner.matches("const validateTitle =").count(),
-            1,
-            "each consumer must contain one title-policy definition"
-        );
-        for needle in [
-            "dependabot",
-            "skip-title-check",
-            "release stamp",
-            "placeholder issue reference",
-            "no issue reference",
-        ] {
-            assert!(policy_owner.contains(needle), "the inline policy must contain `{needle}`");
-        }
-    }
     assert_eq!(
-        title_policy(&raw),
-        title_policy(&advisory),
-        "required validation and advisory writes must execute the identical title policy"
+        raw.matches("const validateTitle =").count(),
+        1,
+        "the title policy must be defined exactly once so the paths cannot drift"
     );
+    for needle in [
+        "dependabot",
+        "skip-title-check",
+        "release stamp",
+        "placeholder issue reference",
+        "no issue reference",
+    ] {
+        assert!(raw.contains(needle), "the inline policy must contain `{needle}`");
+    }
 }
 
 #[test]
@@ -171,12 +141,21 @@ fn queue_branch_never_mutates_pr_state() {
 }
 
 #[test]
-fn required_validation_is_read_only_and_advisory_writes_stay_trusted_sourced() {
+fn required_validation_is_read_only_on_every_event() {
     let workflow = workflow();
     let perms = workflow.get("permissions").expect("validation permissions");
     assert_eq!(perms.get("pull-requests").and_then(Value::as_str), Some("read"));
     assert_eq!(perms.get("contents").and_then(Value::as_str), Some("read"));
-    assert_eq!(perms.get("checks").and_then(Value::as_str), Some("write"));
+    assert_eq!(perms.get("issues").and_then(Value::as_str), Some("read"));
+    assert_eq!(perms.get("checks").and_then(Value::as_str), Some("read"));
+    for (scope, permission) in perms.as_mapping().expect("permission mapping") {
+        assert_ne!(
+            permission.as_str(),
+            Some("write"),
+            "validation must not retain write authority for {}",
+            scope.as_str().unwrap_or("unknown scope")
+        );
+    }
     for forbidden in [
         "createComment",
         "updateComment",
@@ -190,20 +169,6 @@ fn required_validation_is_read_only_and_advisory_writes_stay_trusted_sourced() {
             "required validation must not call `{forbidden}`"
         );
     }
-
-    let advisory = advisory_workflow();
-    let on = advisory.get("on").expect("advisory triggers");
-    assert!(on.get("pull_request_target").is_some());
-    assert!(on.get("merge_group").is_none());
-    assert!(on.get("workflow_dispatch").is_none());
-    let perms = advisory.get("permissions").expect("advisory permissions");
-    assert_eq!(perms.get("pull-requests").and_then(Value::as_str), Some("write"));
-    let jobs = advisory.get("jobs").and_then(Value::as_mapping).expect("advisory jobs");
-    assert_eq!(jobs.len(), 1, "advisory writes must have one bounded owner");
-    assert!(
-        jobs.values().all(|job| job.get("name").and_then(Value::as_str) != Some("validate-title")),
-        "the advisory workflow must not duplicate the required context"
-    );
 }
 
 #[test]

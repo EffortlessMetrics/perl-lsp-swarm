@@ -598,22 +598,6 @@
       "rule": "floating_cargo_install"
     },
     {
-      "evidence": "pull-requests: write",
-      "fingerprint": "c0a31992a5e696706836703e8e58304f045fa68db9c3171c5fa97693a36ef319",
-      "line": 11,
-      "message": "PR-triggered workflow grants write authority",
-      "path": ".github/workflows/pr-title-advisory.yml",
-      "rule": "pr_write_permission"
-    },
-    {
-      "evidence": "checks: write",
-      "fingerprint": "97d62e39a6ce2d06608fc4438ee0a47d1f1d07b48d0191a4acdfc39036b97165",
-      "line": 10,
-      "message": "PR-triggered workflow grants write authority",
-      "path": ".github/workflows/pr-title-check.yml",
-      "rule": "pr_write_permission"
-    },
-    {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "3dc672f00c311a31c4546a6636ca6e24a7c92d86e343c81a018475e675c92a16",
       "line": 185,

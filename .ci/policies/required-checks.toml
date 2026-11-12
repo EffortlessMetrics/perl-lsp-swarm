@@ -50,13 +50,13 @@ contract_role = "required-workflow-shape"
 
   # A metadata-only check. It reads the PR title through the API and never
   # checks out or executes candidate contents. Validation is read-only on every
-  # event; advisory PR writes stay in the separate pull_request_target-only
-  # pr-title-advisory.yml workflow. The contract's remaining clauses assume a workflow that builds
-  # the candidate; they are the wrong requirements here rather than unmet ones.
+  # event; advisory PR writes are intentionally outside this candidate. The
+  # contract's remaining clauses assume a workflow that builds the candidate;
+  # they are the wrong requirements here rather than unmet ones.
   [[check.exemption]]
   clause = "pull-request-trigger"
   status = "accepted"
-  reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
+  reason = "pull_request_target permits read-only title and issue validation for fork PRs; the job never checks out candidate contents or mutates PR state."
   tracking = "16164"
 
   # #18255: the merge-group trigger is now a real producer, not an exemption.

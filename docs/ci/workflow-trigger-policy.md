@@ -94,11 +94,10 @@ also produces the context on `merge_group`: the queue path resolves the
 group's constituent PRs through the commit graph (compare to commits, then
 commits to their associated PRs), validates every member's current title, and
 fails closed on absent, truncated, or contradictory membership. Validation is
-read-only on both events. Advisory comment and `needs-issue-link` writes live
-in the separately named `title-advisory` job in `pr-title-advisory.yml`, which
-runs only on trusted-source `pull_request_target` and never emits the required
-context. `ripr` keeps `cancel-in-progress: false` on purpose, because a
-cancelled run becomes a false red on a required context (#16087).
+read-only on both events. Advisory comment and `needs-issue-link` reconciliation
+is intentionally outside this candidate. `ripr` keeps `cancel-in-progress:
+false` on purpose, because a cancelled run becomes a false red on a required
+context (#16087).
 
 A `[[check]]` row may record such a divergence per clause:
 
