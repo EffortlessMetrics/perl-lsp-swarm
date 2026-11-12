@@ -885,7 +885,12 @@ class AdmissionTests(unittest.TestCase):
 class ResourceIdentityPreflightTests(unittest.TestCase):
     """Real Git and CLI proof; preflight never launches Cargo or acquires a lease."""
 
+    child_discovery = None  # Keep the original implicit-default caller covered.
+
     def setUp(self):
+        if (sys.platform == "linux" and self.child_discovery is None
+                and not (Path("/proc/self/task") / str(os.getpid()) / "children").exists()):
+            self.skipTest("default proc-children interface unavailable on this host")
         self.temp = tempfile.TemporaryDirectory(prefix="admission identity ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -902,6 +907,8 @@ class ResourceIdentityPreflightTests(unittest.TestCase):
                         # Fixture-only disk policy; this is identity proof, not
                         # qualification of a real build's capacity envelope.
                         MIN_FREE_GB="0.001", MAX_USED_PCT="100")
+        if self.child_discovery is not None:
+            self.env["CARGO_ADMITTED_CHILD_DISCOVERY"] = self.child_discovery
         for repo in (self.repo, self.foreign):
             subprocess.run(["git", "init", "-q", str(repo)], env=self.env,
                            check=True, capture_output=True)
@@ -921,6 +928,14 @@ class ResourceIdentityPreflightTests(unittest.TestCase):
         self.assertEqual(len(lines), 1, result.stderr)
         report = json.loads(lines[0][len(prefix):])
         self.assertEqual(report["verdict"], "PASS")
+        # Discovery is an explicit input to the native request's environment digest.
+        scoped_keys = {"PATH", "CC", "CXX", "AR", "CFLAGS", "CXXFLAGS", "LDFLAGS"}
+        scoped_env = {key: value for key, value in self.env.items() if key in scoped_keys}
+        if self.child_discovery is not None:
+            scoped_env["CARGO_ADMITTED_CHILD_DISCOVERY"] = self.child_discovery
+        encoded = json.dumps(scoped_env, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self.assertEqual(report["scope"]["build_environment_sha256"],
+                         hashlib.sha256(encoded).hexdigest())
         self.assertFalse(report["lease_acquired"])
         self.assertFalse(Path(report["lease"]).exists())
         self.assertEqual(Path(report["scope"]["working_directory"]), cwd.resolve())
@@ -1029,6 +1044,13 @@ class ResourceIdentityPreflightTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows junction control")
     def test_junction_alias_cannot_adopt_owned_storage(self):
         self.check_linked_storage(junction=True)
+
+
+@unittest.skipUnless(sys.platform == "linux", "alternate discovery requires native Linux")
+class ProcParentResourceIdentityPreflightTests(ResourceIdentityPreflightTests):
+    """Exercise the same identity contract with the explicitly selected profile."""
+
+    child_discovery = "proc-parent-pidfd"
 
 
 @unittest.skipUnless(sys.platform == "linux", "creation provenance is qualified on native Linux")
