@@ -1,0 +1,290 @@
+name: Repair 19325 reviewed bootstrap findings
+
+on:
+  push:
+    branches: [codex/19325-review-fixes-20261112]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/19325-review-fixes-20261112
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply exact reviewed repairs
+        shell: bash
+        env:
+          SOURCE_HEAD: e0a1b3250ca09b90025eae9530fda40f71b0023a
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$SOURCE_HEAD" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one exact match, found {count}")
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          replace_once(
+              "scripts/ci/hosted_queue_admission.py",
+              '''    current()
+              source_current()
+              require(re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", ""))
+          ''',
+              '''    current()
+              source_current()
+              permission(sender.get("login"))
+              permission(result["reviewer"])
+              require(re.fullmatch(r"[1-9][0-9]*", env.get("GITHUB_RUN_ID", ""))
+          ''',
+          )
+
+          replace_once(
+              "scripts/ci/test_hosted_queue_admission.py",
+              '''    def test_authority_refuses(self):
+                  for role in ['read','triage','none']:
+                      with self.subTest(role=role):
+                          self.api.role=role
+                          with self.assertRaises(RuntimeError):self.run_admission()
+              def test_rerun_actor_refuses(self):
+          ''',
+              '''    def test_authority_refuses(self):
+                  for role in ['read','triage','none']:
+                      with self.subTest(role=role):
+                          self.api.role=role
+                          with self.assertRaises(RuntimeError):self.run_admission()
+              def test_authority_revoked_before_receipt_refuses(self):
+                  for revoked in ['requester','reviewer']:
+                      with self.subTest(revoked=revoked):
+                          api=Fake()
+                          event=copy.deepcopy(self.event)
+                          event['repository']=api.repo
+                          event['pull_request']=api.pr
+                          env=self.env.copy()
+                          original=api.get
+                          checks={}
+                          def get(path):
+                              value=original(path)
+                              if '/collaborators/' in path:
+                                  login=path.split('/')[-2]
+                                  checks[login]=checks.get(login,0)+1
+                                  if login==revoked and checks[login]>1:
+                                      value['permission']='read'
+                              return value
+                          api.get=get
+                          with self.assertRaisesRegex(RuntimeError,'write authority'):
+                              q.observe(api,event,env,review=lambda *a:{'reviewer':'reviewer'})
+              def test_rerun_actor_refuses(self):
+          ''',
+          )
+
+          replace_once(
+              "scripts/tests/test_publication_consistency_hook.py",
+              '''    def test_missing_cargo_does_not_pass_publication(self):
+                  head = self.change("scripts/example.py")
+                  (self.tools / "cargo").unlink()
+                  result, calls = self.invoke([(head, "refs/heads/topic", self.base)])
+                  self.assertNotEqual(result.returncode, 0, calls)
+          ''',
+              '''    def test_missing_cargo_does_not_pass_publication(self):
+                  head = self.change("scripts/example.py")
+                  (self.tools / "cargo").unlink()
+                  result, calls = self.invoke([(head, "refs/heads/topic", self.base)])
+                  self.assertNotEqual(result.returncode, 0, calls)
+                  self.assertEqual(calls, [])
+                  self.assertIn("NOT PROVEN: Cargo is unavailable", result.stderr)
+          ''',
+          )
+
+          replace_once(
+              "xtask/src/tasks/gates.rs",
+              '''#[cfg(test)]
+          fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> AgentReceipt {
+              build_agent_receipt_for_subject(root, results, plan, None)
+                  .expect("legacy non-publication receipt fixture")
+          }
+          ''',
+              '''#[cfg(test)]
+          fn build_agent_receipt(
+              root: &Path,
+              results: &[GateResult],
+              plan: &GatePlan,
+          ) -> Result<AgentReceipt> {
+              build_agent_receipt_for_subject(root, results, plan, None)
+          }
+          ''',
+          )
+
+          replace_once(
+              "xtask/src/tasks/gates.rs",
+              '''        let receipt = build_agent_receipt(
+                      &root,
+                      &[gate_result("fmt", "pass", true), gate_result("mutation_diff", "fail", false)],
+                      &plan,
+                  );
+          ''',
+              '''        let receipt = build_agent_receipt(
+                      &root,
+                      &[gate_result("fmt", "pass", true), gate_result("mutation_diff", "fail", false)],
+                      &plan,
+                  )?;
+          ''',
+          )
+
+          replace_once(
+              "xtask/src/tasks/gates.rs",
+              '''        let guidance = empty["suggested_next_actions"][0].as_str().unwrap();
+          ''',
+              '''        let guidance = empty["suggested_next_actions"][0]
+                      .as_str()
+                      .ok_or_else(|| eyre!("publication guidance missing"))?;
+          ''',
+          )
+
+          replace_once(
+              "xtask/src/tasks/gates.rs",
+              '''            let rerun = if failed {
+                          json["failures"][0]["repro"].as_str().unwrap()
+                      } else {
+                          json["advisories"][0]["rerun"].as_str().unwrap()
+                      };
+          ''',
+              '''            let rerun = if failed {
+                          json["failures"][0]["repro"].as_str()
+                      } else {
+                          json["advisories"][0]["rerun"].as_str()
+                      };
+                      let rerun = rerun.ok_or_else(|| eyre!("publication rerun missing"))?;
+          ''',
+          )
+
+          replace_once(
+              "xtask/src/tasks/gates.rs",
+              '''            let raw = crate::tasks::commit_checks::parse_report(
+                          result.output_summary.as_deref().unwrap(),
+                      )
+                      .unwrap();
+          ''',
+              '''            let output_summary = result
+                          .output_summary
+                          .as_deref()
+                          .ok_or_else(|| eyre!("publication gate output missing"))?;
+                      let raw = crate::tasks::commit_checks::parse_report(output_summary)
+                          .ok_or_else(|| eyre!("publication gate report missing"))?;
+          ''',
+          )
+
+          replace_once(
+              "xtask/src/tasks/gates/publication.rs",
+              '''            let deferred = plan
+                          .skipped
+                          .iter()
+                          .find(|row| row.name == gate.name)
+                          .expect("retained disposition");
+          ''',
+              '''            let deferred = plan
+                          .skipped
+                          .iter()
+                          .find(|row| row.name == gate.name)
+                          .context("retained disposition")?;
+          ''',
+          )
+
+          replace_once(
+              "xtask/src/tasks/gates/publication.rs",
+              '''        policy.gates.iter_mut().find(|gate| is_mechanical_gate(gate)).unwrap().required = false;
+          ''',
+              '''        policy
+                      .gates
+                      .iter_mut()
+                      .find(|gate| is_mechanical_gate(gate))
+                      .context("mechanical gate present")?
+                      .required = false;
+          ''',
+          )
+          PY
+          git rm .github/workflows/repair-19325-review-findings-20261112.yml
+
+          expected=$'scripts/ci/hosted_queue_admission.py\nscripts/ci/test_hosted_queue_admission.py\nscripts/tests/test_publication_consistency_hook.py\nxtask/src/tasks/gates.rs\nxtask/src/tasks/gates/publication.rs'
+          actual="$(git diff --name-only "$SOURCE_HEAD" | LC_ALL=C sort)"
+          [ "$actual" = "$expected" ] || {
+            printf 'expected changed files:\n%s\nactual:\n%s\n' "$expected" "$actual"
+            exit 1
+          }
+          git diff --check
+
+      - name: Install pinned Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Format repaired Rust
+        run: cargo fmt --all
+
+      - name: Admission authority regression
+        run: python3 -B scripts/ci/test_hosted_queue_admission.py
+
+      - name: Publication transport regression
+        run: python3 -B scripts/tests/test_publication_consistency_hook.py
+
+      - name: Gate and publication unit qualification
+        run: cargo test --locked -p xtask --bin xtask tasks::gates -- --nocapture
+
+      - name: Denied shortcut lint qualification
+        run: >-
+          cargo clippy --locked -p xtask --bin xtask --tests --
+          -D clippy::unwrap_used -D clippy::expect_used
+
+      - name: Final exact repair boundary
+        shell: bash
+        env:
+          SOURCE_HEAD: e0a1b3250ca09b90025eae9530fda40f71b0023a
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          git diff --check
+          test ! -e .github/workflows/repair-19325-review-findings-20261112.yml
+          expected=$'scripts/ci/hosted_queue_admission.py\nscripts/ci/test_hosted_queue_admission.py\nscripts/tests/test_publication_consistency_hook.py\nxtask/src/tasks/gates.rs\nxtask/src/tasks/gates/publication.rs'
+          actual="$(git diff --name-only "$SOURCE_HEAD" | LC_ALL=C sort)"
+          [ "$actual" = "$expected" ]
+
+      - name: Publish repaired source tree
+        shell: bash
+        env:
+          TARGET_REF: refs/heads/codex/19325-review-fixes-20261112
+        run: |
+          set -euo pipefail
+          git config user.name EffortlessSteven
+          git config user.email 15812269+EffortlessSteven@users.noreply.github.com
+          git add scripts/ci/hosted_queue_admission.py \
+            scripts/ci/test_hosted_queue_admission.py \
+            scripts/tests/test_publication_consistency_hook.py \
+            xtask/src/tasks/gates.rs \
+            xtask/src/tasks/gates/publication.rs \
+            .github/workflows/repair-19325-review-findings-20261112.yml
+          git commit -m 'ci: close bootstrap review findings (#19325)'
+          commit="$(git rev-parse HEAD)"
+          tree="$(git rev-parse HEAD^{tree})"
+          echo "REPAIRED_COMMIT=$commit"
+          echo "REPAIRED_TREE=$tree"
+          {
+            echo '### Reviewed bootstrap repair'
+            echo
+            echo "- commit: \`$commit\`"
+            echo "- tree: \`$tree\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          git push origin "HEAD:$TARGET_REF"
