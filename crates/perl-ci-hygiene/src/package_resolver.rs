@@ -30,6 +30,16 @@ pub(crate) fn normalize_metadata_path(path: &str) -> String {
     normalized
 }
 
+fn manifest_crate_directory<'a>(
+    root_normalized: &str,
+    manifest_normalized: &'a str,
+) -> Option<&'a str> {
+    manifest_normalized
+        .strip_prefix(root_normalized.trim_end_matches('/'))
+        .and_then(|path| path.strip_prefix('/'))
+        .and_then(|path| path.strip_suffix("/Cargo.toml"))
+}
+
 /// Map crate directories to package names using Cargo's authoritative workspace metadata.
 pub fn resolve_package_names(
     project_root: &Path,
@@ -47,10 +57,8 @@ pub fn resolve_package_names(
         ));
     }
 
-    let stdout =
-        String::from_utf8(output.stdout).context("cargo metadata output was not valid UTF-8")?;
     let metadata: serde_json::Value =
-        serde_json::from_str(&stdout).context("Failed to parse cargo metadata JSON")?;
+        serde_json::from_slice(&output.stdout).context("Failed to parse cargo metadata JSON")?;
     let packages = metadata
         .get("packages")
         .and_then(|packages| packages.as_array())
@@ -69,12 +77,8 @@ pub fn resolve_package_names(
         };
 
         let manifest_normalized = normalize_metadata_path(manifest_path);
-        let relative = manifest_normalized
-            .strip_prefix(root_normalized.as_str())
-            .and_then(|path| path.strip_prefix('/'))
-            .and_then(|path| path.strip_suffix("/Cargo.toml"));
-
-        if let Some(relative_directory) = relative
+        if let Some(relative_directory) =
+            manifest_crate_directory(&root_normalized, &manifest_normalized)
             && crate_dirs.contains(relative_directory)
         {
             names.insert(package_name.to_string());
@@ -97,7 +101,7 @@ pub fn resolve_single_package_name(project_root: &Path, crate_dir: &str) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_metadata_path;
+    use super::{manifest_crate_directory, normalize_metadata_path};
 
     #[test]
     fn metadata_path_spellings_preserve_namespace_boundaries() {
@@ -117,5 +121,23 @@ mod tests {
         ] {
             assert_eq!(normalize_metadata_path(unsupported), unsupported);
         }
+    }
+
+    #[test]
+    fn manifest_directory_requires_a_root_segment_boundary() {
+        assert_eq!(
+            manifest_crate_directory(
+                "/work/repo/",
+                "/work/repo/crates/perl-token/Cargo.toml"
+            ),
+            Some("crates/perl-token")
+        );
+        assert_eq!(
+            manifest_crate_directory(
+                "/work/repo",
+                "/work/repository/crates/perl-token/Cargo.toml"
+            ),
+            None
+        );
     }
 }
