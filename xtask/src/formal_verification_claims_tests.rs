@@ -2,11 +2,17 @@
 
 use super::*;
 use std::fs;
-use tempfile::{TempDir, tempdir};
+use tempfile::{tempdir, TempDir};
 
 const POLICY: &str =
-    "gates:\n  - name: sample\n    tier: merge_gate\n    required: true\n    command: cargo test\n";
-const WORKFLOW: &str = "jobs:\n  check-all-targets:\n    steps:\n      - run: cargo test\n";
+    "gates:\n  - name: sample\n    tier: merge_gate\n    required: true\n    command: cargo test\n    quarantine: false\n";
+const WORKFLOW: &str = r#"jobs:
+  check-all-targets:
+    needs: [draft-pr-check, preflight-latest-check]
+    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    steps:
+      - run: cargo test
+"#;
 
 fn rejects<T>(result: Result<T>, expected: &str) -> Result<()> {
     match result {
@@ -76,8 +82,12 @@ fn mutated_required_gate_markers_are_stale() -> Result<()> {
         }
         .context("required-gate source")?;
         let path = source.path.clone();
+        let marker_len = source.marker.len();
         source.marker.push_str("\n    stale_marker_control: true");
         rejects(validate(&snapshot, &registry), &format!("stale source marker: {path}"))?;
+        source.marker.truncate(marker_len);
+        source.path = "docs/how-to/FORMAL_VERIFICATION.md".to_owned();
+        rejects(validate(&snapshot, &registry), &format!("required gate {field} path must be"))?;
     }
     Ok(())
 }
@@ -199,6 +209,14 @@ fn advisory_wrong_command_and_duplicate_gates_are_rejected() -> Result<()> {
         required_gate(&POLICY.replace("cargo test", "echo skipped"), "sample", "cargo test"),
         "command differs",
     )?;
+    rejects(
+        required_gate(
+            &POLICY.replace("quarantine: false", "quarantine: true"),
+            "sample",
+            "cargo test",
+        ),
+        "quarantined",
+    )?;
     let (_, row) = POLICY.split_once('\n').context("fixture policy row")?;
     rejects(
         required_gate(&format!("{POLICY}{row}"), "sample", "cargo test"),
@@ -209,12 +227,24 @@ fn advisory_wrong_command_and_duplicate_gates_are_rejected() -> Result<()> {
 #[test]
 fn commented_or_optional_workflow_steps_are_rejected() -> Result<()> {
     required_step(WORKFLOW, "check-all-targets", "cargo test")?;
-    let comment = "jobs:\n  check-all-targets:\n    steps: []\n# - run: cargo test\n";
-    rejects(required_step(comment, "check-all-targets", "cargo test"), "missing or duplicated")?;
+    let comment = WORKFLOW
+        .replace("    steps:\n      - run: cargo test\n", "    steps: []\n# - run: cargo test\n");
+    rejects(required_step(&comment, "check-all-targets", "cargo test"), "missing or duplicated")?;
     let optional = WORKFLOW.replace("      - run:", "      - if: false\n        run:");
     rejects(required_step(&optional, "check-all-targets", "cargo test"), "is optional")?;
     let ignored = WORKFLOW.replace("      - run:", "      - continue-on-error: true\n        run:");
-    rejects(required_step(&ignored, "check-all-targets", "cargo test"), "is optional")
+    rejects(required_step(&ignored, "check-all-targets", "cargo test"), "is optional")?;
+    let skipped = WORKFLOW.replace(CI_ADMISSION_PREDICATE, "false");
+    rejects(
+        required_step(&skipped, "check-all-targets", "cargo test"),
+        "admission predicate changed",
+    )?;
+    let missing_dependency = WORKFLOW
+        .replace("needs: [draft-pr-check, preflight-latest-check]", "needs: [draft-pr-check]");
+    rejects(
+        required_step(&missing_dependency, "check-all-targets", "cargo test"),
+        "dependencies changed",
+    )
 }
 
 #[test]

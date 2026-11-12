@@ -4,7 +4,7 @@
 
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
@@ -130,7 +130,7 @@ struct Snapshot {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = xtask::git_environment::isolate(Command::new("git"))
         .arg("--no-replace-objects")
         .args(args)
         .current_dir(root)
@@ -245,6 +245,26 @@ fn required_gate(policy: &str, name: &str, runner: &str) -> Result<()> {
     ensure!(gate["required"].as_bool() == Some(true), "gate is not required: {name}");
     ensure!(gate["tier"].as_str() == Some("merge_gate"), "gate has wrong tier: {name}");
     ensure!(gate["command"].as_str() == Some(runner), "gate command differs: {name}");
+    ensure!(gate["quarantine"].as_bool() == Some(false), "gate is quarantined: {name}");
+    Ok(())
+}
+
+const CI_ADMISSION_PREDICATE: &str = "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+
+fn required_ci_admission(job: &serde_yaml_ng::Value, label: &str) -> Result<()> {
+    ensure!(
+        job["needs"].as_sequence().is_some_and(|needs| {
+            needs
+                .iter()
+                .map(serde_yaml_ng::Value::as_str)
+                .eq([Some("draft-pr-check"), Some("preflight-latest-check")])
+        }),
+        "{label} dependencies changed; requalify the binding"
+    );
+    ensure!(
+        job["if"].as_str() == Some(CI_ADMISSION_PREDICATE),
+        "{label} admission predicate changed; requalify the binding"
+    );
     Ok(())
 }
 
@@ -253,14 +273,8 @@ fn required_gate_selected(workflow: &str, name: &str) -> Result<()> {
     let job = &workflow["jobs"]["merge-gate-shards"];
     ensure!(job.as_mapping().is_some(), "merge-gate-shards job missing");
     ensure!(job["continue-on-error"].is_null(), "shard job may ignore failure");
-    // The surrounding draft/preflight predicate remains an explicit CI-contract dependency.
-    ensure!(
-        job["if"].as_str()
-            == Some(
-                "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'"
-            ),
-        "shard job admission predicate changed; requalify the binding"
-    );
+    // The surrounding draft/preflight dependencies remain an explicit CI contract.
+    required_ci_admission(job, "shard job")?;
     let matrix = job["strategy"]["matrix"].as_mapping().context("shard matrix missing")?;
     ensure!(matrix.len() == 1, "unsupported shard matrix expansion or exclusion");
     let rows =
@@ -311,6 +325,7 @@ fn required_step(workflow: &str, job_name: &str, command: &str) -> Result<()> {
     let job = &workflow["jobs"][job_name];
     ensure!(job.as_mapping().is_some(), "required job missing: {job_name}");
     ensure!(job["continue-on-error"].is_null(), "required job may ignore failure");
+    required_ci_admission(job, "required job")?;
     let steps = job["steps"].as_sequence().context("required job steps missing")?;
     let matching: Vec<_> =
         steps.iter().filter(|step| step["run"].as_str() == Some(command)).collect();
@@ -352,12 +367,20 @@ fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Resul
         AuthorityKind::RequiredGate => {
             ensure!(authority.source.is_none(), "unexpected source-only field");
             let policy = authority.policy.as_ref().context("missing gate policy")?;
+            ensure!(
+                policy.path == ".ci/gate-policy.yaml",
+                "required gate policy path must be .ci/gate-policy.yaml"
+            );
             let expected: Vec<serde_yaml_ng::Value> = serde_yaml_ng::from_str(&policy.marker)?;
             ensure!(expected.len() == 1, "gate declaration must name exactly one policy row");
             let name = expected[0]["name"].as_str().context("gate declaration has no name")?;
             let runner = claim.runner.as_deref().context("gate runner missing")?;
             required_gate(&snapshot.source(policy)?, name, runner)?;
             let workflow = authority.workflow.as_ref().context("missing workflow binding")?;
+            ensure!(
+                workflow.path == ".github/workflows/ci.yml",
+                "required gate workflow path must be .github/workflows/ci.yml"
+            );
             required_gate_selected(&snapshot.source(workflow)?, name)?;
         }
     }
