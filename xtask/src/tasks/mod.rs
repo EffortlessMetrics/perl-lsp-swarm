@@ -92,6 +92,7 @@ pub mod finalize_check;
 pub mod fix_forward;
 pub mod fmt;
 pub mod forbid_fatal_constructs;
+pub mod formal_receipt;
 pub mod forensics;
 pub mod freshness_check;
 pub mod gate_policy;
