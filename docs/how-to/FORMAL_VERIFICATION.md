@@ -36,7 +36,7 @@ Do not equate these separate questions:
 | --- | --- |
 | Method | What was checked: model, bounded Rust, interleavings, deduction, property tests, fuzzing, Miri, or ordinary tests? |
 | Production binding | Model only, shared production kernel, or independently demonstrated live consumer? |
-| Rollout | Planned, implemented but unwired, or admitted to a required route? |
+| Rollout | Planned, implemented but unwired, or configured for execution? |
 | Result | What did a particular native execution establish, fail, or leave unproved? |
 | Freshness | Are its exact semantic inputs still applicable to this candidate? |
 
@@ -44,6 +44,36 @@ The first inventory schema does not implement the complete multidimensional rece
 schema. In particular, its `enforced` rollout label records a configured authority;
 it does not assert that the current candidate passed that authority. The JSON input
 blob map describes **inventory inputs**, not a complete transitive proof closure.
+
+### Execution is not the same as protected merge enforcement
+
+The current `enforced` inventory label describes a structurally bound execution
+route; it does **not** report live branch-protection enforcement. The validator does
+not query GitHub rulesets and must not be used as an enforcement-audit receipt.
+
+[`.ci/policies/required-checks.toml`](../../.ci/policies/required-checks.toml) separates
+workflow-shape contracts (`[[check]]`) from status-context enforcement (`[[checks]]`).
+Its `[[check]].required` flag is not a branch-protection claim. The checked-in
+status inventory records `Compile All Targets (bit-rot guard)` as ruleset-required
+and `CI Gate (Advisory Aggregate)` as advisory. Do not infer one from the other or
+from a `required: true` entry in the internal gate policy. These are recorded policy
+facts; a live enforcement audit must independently confirm the current ruleset,
+context, integration binding, and applicability.
+
+The inventory suite is appended as command 39 of
+[`required-merge-surface.sh`](../../scripts/ci/required-merge-surface.sh), which the
+`check-all-targets` job invokes after compilation. It requires all 16 named Linux
+controls, an exact passing denominator, no ignored or filtered tests, and the actual
+CLI check. All 38 original commands remain unchanged. The producer's extension test
+uses its current command count while separately preserving the frozen historical
+prefix. Additions must update the named-control denominator and that route together.
+
+The unsafe ratchet's policy and shard bindings establish configured execution, not
+independent protected enforcement. This distinction remains required even when a
+workflow run is green. The validator checks selected workflow structure; it does not
+interpret arbitrary shell programs or all GitHub expression and job-selection
+semantics. Actual execution results and an independently verified admission route
+remain necessary.
 
 ## Run the existing checks
 
