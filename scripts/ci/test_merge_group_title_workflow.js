@@ -8,9 +8,9 @@ const path = require('node:path');
 const test = require('node:test');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-async function loadWorkflowScript() {
+async function loadWorkflowScript(workflowFile) {
   const workflow = fs.readFileSync(
-    path.join(__dirname, '..', '..', '.github', 'workflows', 'pr-title-check.yml'),
+    path.join(__dirname, '..', '..', '.github', 'workflows', workflowFile),
     'utf8',
   );
   const lines = workflow.split(/\r?\n/);
@@ -106,7 +106,7 @@ async function runQueue({ mergeGroup = {}, currentPr = queuePr(), pullsGet = nul
   };
 
   // actions/github-script invokes this exact body as an async function.
-  const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript());
+  const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript('merge-group-title-check.yml'));
   await execute(core, github, context);
   return { failures, readPrs, legacyCalls, infos };
 }
@@ -157,7 +157,7 @@ async function runPr({ pr, existingComments = [] }) {
     info: () => {},
   };
 
-  const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript());
+  const execute = new AsyncFunction('core', 'github', 'context', await loadWorkflowScript('pr-title-check.yml'));
   await execute(core, github, context);
   return { failures, warnings, created, updated, addedLabels, removedLabels };
 }

@@ -59,12 +59,11 @@ contract_role = "required-workflow-shape"
   reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
   tracking = "16164"
 
-  # #18255: the merge-group trigger is now a real producer, not an exemption.
-  # The queue path resolves the group's constituent PRs through the commit
-  # graph (compare to commits, then commits to their associated PRs), re-reads
-  # every member's current title, and fails closed on absent, truncated, or
-  # contradictory membership. It never checks out candidate contents and makes
-  # no PR write calls.
+  # #18255: one producer per event. The pull_request_target/workflow_dispatch
+  # workflow retains advisory comment and label writes. Its dedicated
+  # merge-group workflow is read-only and resolves only the PR named by the
+  # queue ref, re-reading that PR's current metadata and title. Same-event
+  # duplicates remain forbidden; cross-event registrations must be explicit.
 
   [[check.exemption]]
   clause = "push-targets-master"
@@ -77,6 +76,12 @@ contract_role = "required-workflow-shape"
   status = "accepted"
   reason = "A five-minute metadata job with no runner cost worth cancelling; the clause exists to stop long candidate builds stacking up."
   tracking = "16164"
+
+[[check]]
+name = "validate-title"
+workflow = ".github/workflows/merge-group-title-check.yml"
+required = true
+contract_role = "required-workflow-shape"
 
 [[check]]
 name = "Methodology Gate"
@@ -192,13 +197,27 @@ producer = "repository-job"
 workflow = ".github/workflows/pr-title-check.yml"
 job = "validate-title"
 workflow_result = "propagate"
-events = ["pull_request_target", "merge_group", "workflow_dispatch"]
+events = ["pull_request_target", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
 reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
+
+[[checks]]
+name = "validate-title"
+producer = "repository-job"
+workflow = ".github/workflows/merge-group-title-check.yml"
+job = "validate-title"
+workflow_result = "propagate"
+events = ["merge_group"]
+required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "The same required context on merge_group has a separate read-only producer while the pull_request_target/workflow_dispatch producer preserves comment and label writes. Cross-event registration does not weaken same-event uniqueness (#18255)."
 
 [[checks]]
 name = "Rust formatting"

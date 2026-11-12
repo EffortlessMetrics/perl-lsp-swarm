@@ -5,10 +5,10 @@
 //! It must not use commit association as membership authority, check out
 //! candidate contents, or mutate PR state.
 //!
-//! The required context has exactly one static producer: a single
-//! unconditionally reachable job whose event split lives inside the script. A
-//! second job emitting the same name would violate the gate-enforcement
-//! contract (`duplicate_emitted_context`) and a job-level `if` would violate
+//! The required context has one static producer per event: the PR workflow
+//! preserves its comment/label writes, while the merge-group-only workflow is
+//! read-only and unconditionally reachable. A second producer on the same event
+//! violates `duplicate_emitted_context`; a required-job event guard would violate
 //! `always-or-scoped-noop` reachability.
 
 use std::fs;
@@ -25,25 +25,29 @@ fn project_root() -> PathBuf {
 }
 
 fn workflow_raw() -> String {
-    let path = project_root().join(".github/workflows/pr-title-check.yml");
-    fs::read_to_string(&path).expect("read pr-title-check.yml")
+    let path = project_root().join(".github/workflows/merge-group-title-check.yml");
+    fs::read_to_string(&path).expect("read merge-group-title-check.yml")
 }
 
 fn workflow() -> Value {
-    serde_yaml_ng::from_str(&workflow_raw()).expect("parse pr-title-check.yml")
+    serde_yaml_ng::from_str(&workflow_raw()).expect("parse merge-group-title-check.yml")
+}
+
+fn pr_workflow() -> Value {
+    let path = project_root().join(".github/workflows/pr-title-check.yml");
+    let raw = fs::read_to_string(path).expect("read pr-title-check.yml");
+    serde_yaml_ng::from_str(&raw).expect("parse pr-title-check.yml")
 }
 
 fn job<'a>(workflow: &'a Value, id: &str) -> &'a Value {
     workflow.get("jobs").and_then(|jobs| jobs.get(id)).unwrap_or_else(|| panic!("job {id} missing"))
 }
 
-/// The queue branch of the single script, from its guard to the PR-path marker.
+/// The merge-group-only workflow's queue branch, from its guard to EOF.
 fn queue_branch() -> String {
     let raw = workflow_raw();
     let start = raw.find("if (context.eventName === 'merge_group')").expect("queue branch guard");
-    let end = raw.find("// PR and manual-dispatch path.").expect("PR path marker");
-    assert!(start < end, "queue branch must precede the PR path");
-    raw[start..end].to_string()
+    raw[start..].to_string()
 }
 
 #[test]
@@ -149,10 +153,34 @@ fn queue_branch_never_mutates_pr_state() {
 
 #[test]
 fn pr_path_keeps_its_write_boundary() {
-    let workflow = workflow();
+    let workflow = pr_workflow();
     let perms = workflow.get("permissions").expect("workflow permissions");
     assert_eq!(perms.get("pull-requests").and_then(Value::as_str), Some("write"));
     assert_eq!(perms.get("checks").and_then(Value::as_str), Some("write"));
+}
+
+#[test]
+fn merge_group_producer_is_read_only() {
+    let workflow = workflow();
+    let perms = workflow.get("permissions").expect("workflow permissions");
+    for scope in ["checks", "contents", "issues", "pull-requests"] {
+        assert_eq!(perms.get(scope).and_then(Value::as_str), Some("read"));
+    }
+    for forbidden in ["createComment", "updateComment", "addLabels", "removeLabel"] {
+        assert!(
+            !workflow_raw().contains(forbidden),
+            "the merge-group producer must not call `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn pr_path_does_not_subscribe_to_merge_group() {
+    let workflow = pr_workflow();
+    let on = workflow.get("on").expect("on block");
+    assert!(on.get("merge_group").is_none(), "merge_group has one dedicated producer");
+    assert!(on.get("pull_request_target").is_some());
+    assert!(on.get("workflow_dispatch").is_some());
 }
 
 #[test]
@@ -164,8 +192,11 @@ fn policy_records_merge_group_as_a_real_producer() {
     let checks = policy.get("checks").and_then(toml::Value::as_array).expect("checks");
     let row = checks
         .iter()
-        .find(|row| row.get("name").and_then(toml::Value::as_str) == Some("validate-title"))
-        .expect("validate-title row");
+        .find(|row| {
+            row.get("workflow").and_then(toml::Value::as_str)
+                == Some(".github/workflows/merge-group-title-check.yml")
+        })
+        .expect("merge-group validate-title row");
     let events: Vec<&str> = row
         .get("events")
         .and_then(toml::Value::as_array)

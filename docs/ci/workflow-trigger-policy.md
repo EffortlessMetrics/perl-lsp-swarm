@@ -90,12 +90,14 @@ For each `[[check]]` row with `required = true`, the workflow must:
 Not every required context is produced by a workflow the clauses above suit.
 `validate-title` is a metadata-only check that must run on
 `pull_request_target` and never checks out candidate contents. Since #18255 it
-also produces the context on `merge_group`: the queue path resolves the
-group's constituent PRs through the commit graph (compare to commits, then
-commits to their associated PRs), validates every member's current title, and
-fails closed on absent, truncated, or contradictory membership. `ripr` keeps
-`cancel-in-progress: false` on purpose, because a cancelled run becomes a
-false red on a required context (#16087).
+has one producer per event: the `pull_request_target` workflow retains comment
+and label writes, while `merge-group-title-check.yml` holds only read scopes.
+The queue producer matches the full native queue ref, re-reads the named PR's
+current metadata and title, and fails closed on absent, ambiguous, or
+contradictory identity. Cross-event context registration must not duplicate a
+producer on the same event. `ripr` keeps `cancel-in-progress: false` on
+purpose, because a cancelled run becomes a false red on a required context
+(#16087).
 
 A `[[check]]` row may record such a divergence per clause:
 
