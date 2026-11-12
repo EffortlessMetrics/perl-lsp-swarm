@@ -22,7 +22,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ripr.yml"
 GUARD = ROOT / "scripts/ci/require-ripr-subject.sh"
-LANES = ("ripr-selfhosted", "ripr-github", "ripr-fallback")
+LANES = ("ripr-github",)
 A = "022a38b47cf27baf086611017cc522b89ec1df2f"
 H = "7db766bf1941a7faa960074e63ed5b204d7fe04b"
 E = "b193a7840cf3e9df7c9883dff94d5bdc90cffbf3"
@@ -238,37 +238,9 @@ class RiprEventOperands(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "origin/main"), E)
         self.assertEqual(self.git("rev-parse", "FETCH_HEAD"), H)
 
-    def test_selfhosted_docker_transports_one_valid_script_and_badge_json(self):
-        text = lane_text("ripr-selfhosted")
-        block = re.search(
-            r"      - name: Run ripr evidence and gate \(Docker\)\n"
-            r"        shell: bash\n        run: \|\n(.*?)(?=      - name:)",
-            text, re.S).group(1)
-        capture = Path(self.temp.name) / "docker.json"
-        docker = self.bin / "docker"
-        docker.write_text(
-            "#!/usr/bin/env python3\nimport json,os,sys\n"
-            "open(os.environ['TEST_DOCKER_ARGS'],'w').write(json.dumps(sys.argv[1:]))\n")
-        docker.chmod(0o755)
-        env = self.env | {name: "fixture" for name in (
-            "RIPR_MAX_DIFF_INDEX_FILES", "RIPR_FRESHNESS_TOKEN", "PR_LABELS",
-            "SCCACHE_DIR", "SCCACHE_CACHE_SIZE", "RIPR_CACHE_DIR",
-            "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS", "CARGO_TARGET_DIR",
-            "CARGO_HOME", "TMPDIR", "RIPR_FRESHNESS_HANDOFF")}
-        env.update(RIPR_VERSION="0.10.0", GITHUB_WORKSPACE=str(self.repo),
-                   TEST_DOCKER_ARGS=str(capture))
-        wrapper = textwrap.dedent(block)
-        syntax = subprocess.run(["bash", "-n"], input=wrapper, text=True, capture_output=True)
-        self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        result = subprocess.run(["bash", "-euo", "pipefail", "-c", wrapper],
-                                cwd=self.repo, env=env, text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        args = json.loads(capture.read_text())
-        command_index = args.index("-c")
-        self.assertEqual(len(args[command_index + 1:]), 1)
-        script = args[command_index + 1]
-        syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
-        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+    def test_hosted_badge_records_exact_producer(self):
+        script = lane_text("ripr-github")
+        env = self.env | {"RIPR_VERSION": "0.10.0"}
         badge_command = re.search(r"^\s*printf .*ripr_badge_producer.*$", script, re.M).group(0)
         (self.repo / "target/receipts/quality").mkdir(parents=True)
         subprocess.run(["bash", "-euo", "pipefail", "-c", badge_command],
@@ -283,8 +255,8 @@ class RiprEventOperands(unittest.TestCase):
         for lane in LANES:
             text = lane_text(lane)
             with self.subTest(lane=lane):
-                self.assertIn("RIPR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base_sha }}", text)
-                self.assertIn("RIPR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha) || inputs.head_sha }}", text)
+                self.assertIn("RIPR_BASE_SHA: ${{ github.event.merge_group.base_sha }}", text)
+                self.assertIn("RIPR_EVENT_HEAD_SHA: ${{ github.event.merge_group.head_sha }}", text)
                 self.assertIn("RIPR_EVALUATED_SHA: ${{ github.sha }}", text)
                 self.assertNotIn("origin/$BASE_REF", text)
                 self.assertNotIn("--head HEAD", text)
@@ -297,9 +269,8 @@ class RiprEventOperands(unittest.TestCase):
                 self.assertIn('--ripr-base "$RIPR_BASE_SHA"', text)
                 self.assertIn('--ripr-head "$RIPR_EVALUATED_SHA"', text)
                 self.assertIn('--ripr-pr-head "$PR_HEAD_SHA"', text)
-                if lane != "ripr-fallback":
-                    for name in ("RIPR_BASE_SHA", "RIPR_EVALUATED_SHA", "RIPR_EVENT_HEAD_SHA", "GITHUB_EVENT_NAME"):
-                        self.assertRegex(text, r"-e " + name + r"(?:=|\s)")
+                for name in ("RIPR_BASE_SHA", "RIPR_EVALUATED_SHA", "RIPR_EVENT_HEAD_SHA", "GITHUB_EVENT_NAME"):
+                    self.assertRegex(text, r"-e " + name + r"(?:=|\s)")
 
     def test_module_import_succeeds_without_git_on_path(self):
         mod_path = Path(__file__).resolve()

@@ -66,6 +66,7 @@ REQUIRED = (
     "Gate Enforcement Contract",
 )
 CONDITIONAL_REQUIRED_JOBS = {
+    ("ripr+ New Gap Gate", "ripr"),
     ("Conflict marker check", "conflict-markers"),
 }
 
@@ -448,7 +449,7 @@ class LiveWorkflowStructureTests(unittest.TestCase):
                 mismatched.append((row["name"], job.condition_class))
         self.assertEqual([], mismatched)
 
-    def test_conditional_required_jobs_are_the_known_draft_or_superseded_pair(self) -> None:
+    def test_conditional_required_jobs_are_the_known_native_conditions(self) -> None:
         observed = {
             (row["name"], row["job"])
             for row in self.required_rows
@@ -459,6 +460,38 @@ class LiveWorkflowStructureTests(unittest.TestCase):
             row = next(item for item in self.required_rows if item["name"] == name)
             job = self.workflows[row["workflow"]].jobs[job_id]
             self.assertEqual("conditional", job.condition_class, name)
+            if name == "ripr+ New Gap Gate":
+                self.assert_ripr_native_finalizer(row, job)
+
+    def assert_ripr_native_finalizer(self, row, job) -> None:
+        # Recognizing a conditional job is not permission to weaken the
+        # required native-G finalizer into any arbitrary predicate.
+        self.assertTrue(row["required"])
+        self.assertEqual(row["ruleset_integration_id"], GITHUB_ACTIONS_APP)
+        self.assertEqual(row["workflow"], ".github/workflows/ripr.yml")
+        self.assertEqual(row["job"], "ripr")
+        self.assertEqual(job.condition, "always() && github.event_name == 'merge_group'")
+
+    def test_ripr_known_condition_refuses_weakened_native_predicates(self) -> None:
+        row = next(row for row in self.required_rows if row["name"] == "ripr+ New Gap Gate")
+        job = self.workflows[row["workflow"]].jobs[row["job"]]
+        self.assert_ripr_native_finalizer(row, job)
+        for condition in (
+            "github.event_name == 'merge_group'",
+            "always()",
+            "always() && github.event_name == 'workflow_dispatch'",
+            "always() && github.event_name != 'pull_request'",
+            "always() && github.event_name == 'merge_group' && false",
+        ):
+            with self.subTest(condition=condition):
+                # Preserve the parser's conditional classification: merely
+                # adding this context to the known set must not accept these.
+                with self.assertRaises(AssertionError):
+                    self.assert_ripr_native_finalizer(row, job._replace(condition=condition))
+        for field, value in (("required", False), ("ruleset_integration_id", 999)):
+            with self.subTest(field=field):
+                with self.assertRaises(AssertionError):
+                    self.assert_ripr_native_finalizer(dict(row, **{field: value}), job)
 
     def test_required_events_are_not_path_filtered(self) -> None:
         filtered = []

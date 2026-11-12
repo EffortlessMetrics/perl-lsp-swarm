@@ -55,30 +55,12 @@ OBSERVED_RECEIPT_SCAN = (
     '"$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- ' + RECEIPT_SCAN
 )
 RECEIPT_MARKER_NAME = ".ripr-plus-fresh"
-RECEIPT_CACHE_JOBS = ("ripr-github", "ripr-fallback")
-SELFHOSTED_CACHE_DIR = "RIPR_CACHE_DIR: /mnt/ci-cache/" + FACT_CACHE_DIRNAME
-# #16209: the job-level RIPR_CACHE_DIR above is a host-side declaration only.
-# docker does not inherit arbitrary host environment variables, so the
-# analysis container needs its own explicit forward plus a bind mount to the
-# same host directory -- without both, the container falls back to its
-# workspace-local default and loses the cache during per-run cleanup.
-SELFHOSTED_CONTAINER_CACHE_DIR = "/ripr-facts"
-SELFHOSTED_CACHE_FORWARD_LINE = (
-    "            -e RIPR_CACHE_DIR=" + SELFHOSTED_CONTAINER_CACHE_DIR + " \\\n"
-)
-SELFHOSTED_CACHE_MOUNT_LINE = (
-    '            -v "$RIPR_CACHE_DIR:' + SELFHOSTED_CONTAINER_CACHE_DIR + '" \\\n'
-)
-HOSTED_FACT_CACHE_JOBS = ("ripr-github", "ripr-fallback", "seed-cache")
+RECEIPT_CACHE_JOBS = ("ripr-github",)
+HOSTED_FACT_CACHE_JOBS = ("ripr-github", "seed-cache")
 CANONICAL_REFS = "github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'"
 SAVE_GUARD = (
     "(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && "
     "inputs.seed_cache == true)) && (" + CANONICAL_REFS + ")"
-)
-EXPECTED_ROUTER = (
-    "(github.event.pull_request.draft != true || github.event_name != 'pull_request') && "
-    "github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || "
-    "inputs.seed_cache != true)"
 )
 ATOM = re.compile(
     r"(?:github\.(?:event_name|ref)\s*(?:==|!=)\s*'[^']+'|"
@@ -218,10 +200,12 @@ def receipt_cache_steps(source: list[str]) -> list[list[str]]:
 def validate_static_contract(source: list[str]) -> None:
     """Fail closed on the workflow mutations this contract is meant to catch."""
     text = "\n".join(source)
-    router = field(block(source, "route-ripr", 2), "if", 4)
-    if router != EXPECTED_ROUTER:
-        raise AssertionError("router dispatch boundary drifted")
-    if len(cache_steps(source)) != 3 or "hashFiles('Cargo.lock')" in text:
+    producer = field(block(source, "ripr-github", 2), "if", 4)
+    if producer != "github.event_name == 'merge_group'":
+        raise AssertionError("qualification must run only on merge_group")
+    if any("  " + name + ":" in source for name in ("route-ripr", "ripr-selfhosted", "ripr-fallback")):
+        raise AssertionError("retired routing lane returned")
+    if len(cache_steps(source)) != 2 or "hashFiles('Cargo.lock')" in text:
         raise AssertionError("cache identity or seed cardinality drifted")
     if "ripr-fallback-" in text or text.count("seed-cache:") != 1:
         raise AssertionError("legacy key or duplicate seed survived")
@@ -232,7 +216,7 @@ def validate_static_contract(source: list[str]) -> None:
             raise AssertionError("cache consumers do not share the stable key")
         if "cache-workspace-crates: true" not in "\n".join(step):
             raise AssertionError("workspace crate cache retention is missing")
-    jobs = {name: block(source, name, 2) for name in ("ripr-github", "ripr-fallback")}
+    jobs = {name: block(source, name, 2) for name in ("ripr-github",)}
     if any("save-if: ${{ false }}" not in "\n".join(cache_steps(job)[0]) for job in jobs.values()):
         raise AssertionError("analysis cache writer became reachable")
     seed = block(source, "seed-cache", 2)
@@ -266,7 +250,7 @@ def validate_fact_cache_contract(source: list[str]) -> None:
     *writer* would still burn the shared quota that docs/ci/cache-policy.md
     reserves to the canonical seed. That is what these rules hold.
     """
-    for job in ("ripr-github", "ripr-fallback"):
+    for job in ("ripr-github",):
         steps = fact_cache_steps(block(source, job, 2))
         if len(steps) != 1:
             raise AssertionError(f"{job} must carry exactly one fact-cache step")
@@ -280,7 +264,7 @@ def validate_fact_cache_contract(source: list[str]) -> None:
     # states its own event/ref authority instead of inheriting the job's.
     if field(seed_steps[0], "if", 8) != SAVE_GUARD:
         raise AssertionError("fact-cache writer does not carry its own save guard")
-    if len(fact_cache_steps(source)) != 3:
+    if len(fact_cache_steps(source)) != 2:
         raise AssertionError("an unaccounted fact-cache step appeared")
     for step in fact_cache_steps(source):
         text = "\n".join(step)
@@ -415,7 +399,7 @@ def validate_cache_family_accounting(source: list[str]) -> None:
             "an unaccounted actions/cache step appeared: "
             + "; ".join(action_reference(step) or step[0] for step in unknown)
         )
-    if len(cache) != 3 + 2 * len(RECEIPT_CACHE_JOBS):
+    if len(cache) != 2 + 2 * len(RECEIPT_CACHE_JOBS):
         raise AssertionError("cache family cardinality drifted")
 
 
@@ -439,43 +423,15 @@ def validate_fact_cache_path_agreement(source: list[str]) -> None:
             raise AssertionError(f"{job} declares a fact cache path that nothing reads")
         if declared[0] > min(consumers):
             raise AssertionError(f"{job} reads the fact cache path before declaring it")
-    # The self-hosted lane keeps durable state on the mount beside CARGO_HOME,
-    # so it needs no action and no export -- but it must still point ripr
-    # outside the per-run checkout.
-    if SELFHOSTED_CACHE_DIR not in "\n".join(block(source, "ripr-selfhosted", 2)):
-        raise AssertionError("the self-hosted lane lost its durable fact cache path")
-    validate_selfhosted_container_boundary(source)
     # The mistake this rule exists to catch, made while writing this change:
     # `runner` is a step-level context, and no other job-level `env:` in this
     # repository reaches for it.
-    for job in ("ripr-selfhosted",) + HOSTED_FACT_CACHE_JOBS:
+    for job in HOSTED_FACT_CACHE_JOBS:
         for line in block(source, job, 2):
             stripped = line.lstrip()
             if (line.startswith(" " * 6) and not line.startswith(" " * 7)
                     and "runner." in line and not stripped.startswith(("#", "-"))):
                 raise AssertionError(f"{job} uses the runner context in a job-level field")
-
-
-def validate_selfhosted_container_boundary(source: list[str]) -> None:
-    """#16209: the job-level env is not a container-visible one.
-
-    `RIPR_CACHE_DIR` set in the job's `env:` block only sets a host-side shell
-    variable. `docker run` does not inherit arbitrary host environment
-    variables into the container, so the analysis container needs its own
-    explicit `-e RIPR_CACHE_DIR=...` forward *and* a `-v` bind mount to the
-    same host directory the job-level env names -- either one missing means
-    every ripr command inside the container reads/writes its workspace-local
-    default instead, which is deleted by the next run's workspace cleanup.
-    """
-    job_text = "\n".join(block(source, "ripr-selfhosted", 2))
-    if SELFHOSTED_CACHE_FORWARD_LINE not in job_text:
-        raise AssertionError(
-            "self-hosted docker run does not forward RIPR_CACHE_DIR into the container"
-        )
-    if SELFHOSTED_CACHE_MOUNT_LINE not in job_text:
-        raise AssertionError(
-            "self-hosted docker run does not mount the host fact-cache directory"
-        )
 
 
 class RiprCacheAuthorityTests(unittest.TestCase):
@@ -493,20 +449,18 @@ class RiprCacheAuthorityTests(unittest.TestCase):
         self.assertIn("        type: boolean", seed)
         self.assertIn("        default: false", seed)
 
-    def test_router_skips_only_opt_in_seed_dispatch(self) -> None:
-        router = block(self.source, "route-ripr", 2)
-        condition = field(router, "if", 4) or ""
-        self.assertEqual(EXPECTED_ROUTER, condition)
+    def test_analysis_is_merge_group_only(self) -> None:
+        condition = field(block(self.source, "ripr-github", 2), "if", 4)
+        self.assertEqual("github.event_name == 'merge_group'", condition)
 
     def test_self_test_trigger_reaches_this_contract(self) -> None:
         trigger = block(self_test_lines(), "on", 0)
-        pull_request = block(trigger, "pull_request", 2)
-        paths = block(pull_request, "paths", 4)
-        self.assertIn("      - 'scripts/ci/test_ripr_cache_authority_15055.py'", paths)
+        self.assertIn("  workflow_dispatch: {}", trigger)
+        self.assertIn("scripts/ci/test_ripr_cache_authority_15055.py", "\n".join(self_test_lines()))
 
     def test_seed_is_one_canonical_writer_and_analysis_is_restore_only(self) -> None:
         steps = cache_steps(self.source)
-        self.assertEqual(3, len(steps), "primary, fallback, and one seed cache step")
+        self.assertEqual(2, len(steps), "one producer and one seed cache step")
         seed = block(self.source, "seed-cache", 2)
         seed_condition = field(seed, "if", 4) or ""
         self.assertIn("github.event_name == 'schedule'", seed_condition)
@@ -519,17 +473,7 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             self.assertIn("shared-key: ripr-${{ env.RIPR_VERSION }}", with_text)
             self.assertIn("cache-workspace-crates: true", with_text)
         self.assertIn("save-if: ${{ false }}", "\n".join(cache_steps(block(self.source, "ripr-github", 2))[0]))
-        self.assertIn("save-if: ${{ false }}", "\n".join(cache_steps(block(self.source, "ripr-fallback", 2))[0]))
         self.assertIn(f"save-if: ${{{{ {SAVE_GUARD} }}}}", "\n".join(steps[-1]))
-
-    def test_selfhosted_container_receives_forwarded_cache_and_mount(self) -> None:
-        job_text = "\n".join(block(self.source, "ripr-selfhosted", 2))
-        self.assertIn(SELFHOSTED_CACHE_FORWARD_LINE, job_text)
-        self.assertIn(SELFHOSTED_CACHE_MOUNT_LINE, job_text)
-        # forwarded env and mount must name the same container path so the
-        # process ripr runs actually reads from where the mount lands.
-        self.assertIn(SELFHOSTED_CONTAINER_CACHE_DIR, SELFHOSTED_CACHE_FORWARD_LINE)
-        self.assertIn(SELFHOSTED_CONTAINER_CACHE_DIR, SELFHOSTED_CACHE_MOUNT_LINE)
 
     def test_negative_controls_do_not_authorize_saves(self) -> None:
         seed_condition = field(block(self.source, "seed-cache", 2), "if", 4) or ""
@@ -551,8 +495,8 @@ class RiprCacheAuthorityTests(unittest.TestCase):
                          "duplicate seed jobs are not allowed")
         self.assertNotIn("pull_request_target", text)
         save_values = re.findall(r"^\s+save-if: (.+)$", text, re.MULTILINE)
-        self.assertEqual(3, len(save_values))
-        self.assertEqual(2, save_values.count("${{ false }}"))
+        self.assertEqual(2, len(save_values))
+        self.assertEqual(1, save_values.count("${{ false }}"))
         self.assertEqual(1, sum(SAVE_GUARD in value for value in save_values))
         self.assertNotIn("save-if: ${{ github.event_name == 'workflow_dispatch' }}", text)
 
@@ -567,12 +511,8 @@ class RiprCacheAuthorityTests(unittest.TestCase):
         validate_static_contract(source)
         text = "\n".join(source)
         mutations = {
-            "disabled normal manual analysis": text.replace(
-                "inputs.seed_cache != true)", "inputs.seed_cache != true) && false", 1
-            ),
-            "manual dispatch clause narrowed incorrectly": text.replace(
-                "github.event_name != 'workflow_dispatch' || inputs.seed_cache != true",
-                "github.event_name != 'workflow_dispatch' && inputs.seed_cache != true", 1
+            "qualification on dispatch": text.replace(
+                "if: github.event_name == 'merge_group'", "if: true", 1
             ),
             "weakened analysis writer": text.replace("save-if: ${{ false }}", "save-if: ${{ true }}", 1),
             "removed seed ref guard": text.replace(SAVE_GUARD, "true", 1),
@@ -634,18 +574,6 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             "    env:\n      RIPR_VERSION: \"0.10.0\"\n"
             "      RIPR_CACHE_DIR: ${{ runner.temp }}/ripr-facts\n", 1
         )
-        mutations["self-hosted lane loses its durable fact cache path"] = text.replace(
-            SELFHOSTED_CACHE_DIR, "RIPR_CACHE_DIR: target/ripr/cache", 1
-        )
-        # #16209: the job-level declaration alone is not enough -- docker run
-        # must also forward the env var and mount the host directory into the
-        # container, or the container silently uses its own default cache.
-        mutations["self-hosted container never receives the forwarded cache env"] = text.replace(
-            SELFHOSTED_CACHE_FORWARD_LINE, "", 1
-        )
-        mutations["self-hosted container never receives the cache mount"] = text.replace(
-            SELFHOSTED_CACHE_MOUNT_LINE, "", 1
-        )
         mutations["fact-cache writer inherits instead of stating its guard"] = text.replace(
             seed_text,
             re.sub(
@@ -692,12 +620,6 @@ class RiprCacheAuthorityTests(unittest.TestCase):
                 self.assertNotEqual(text, mutated)
                 with self.assertRaises(AssertionError):
                     validate_receipt_cache_contract(mutated.splitlines())
-        fallback = "\n".join(block(self.source, "ripr-fallback", 2))
-        self.assertIn(RECEIPT_SCAN, fallback)
-        with self.assertRaises(AssertionError):
-            validate_receipt_cache_contract(text.replace(
-                fallback, fallback.replace(RECEIPT_SCAN, OBSERVED_RECEIPT_SCAN, 1), 1
-            ).splitlines())
 
     def test_receipt_cache_mutations_fail_closed(self) -> None:
         """#16431 negative controls for the exact-head receipt memoization."""

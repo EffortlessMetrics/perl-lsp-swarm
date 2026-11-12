@@ -84,7 +84,7 @@ required = true
 contract_role = "required-workflow-shape"
 
   # The actual-G leaf reads complete native membership and authenticated H
-  # intake, executes only protected B source and never receives write authority.
+  # intake, executes only independently verified protected-main T source and never receives write authority.
   [[check.exemption]]
   clause = "pull-request-trigger"
   status = "accepted"
@@ -196,10 +196,10 @@ workflow_result = "propagate"
 events = ["merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
-applicability = "always-or-scoped-noop"
+applicability = "conditional"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; named new gaps in changed production files block, while sensor availability remains advisory."
+reason = "Mandatory on every actual native merge_group/checks_requested G: one GitHub-hosted producer and its exact-G/run/attempt finalizer retain deterministic RIPR receipts. Missing, failed, skipped or cancelled native proof cannot satisfy this required Actions context. Unrelated cache-maintenance events do not run the finalizer. Named new gaps in changed production files block; sensor availability remains advisory."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"
@@ -241,7 +241,7 @@ policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "The existing Actions-bound validate-title context now proves the complete current native G prefix, every App-authenticated H-to-entry intake, ordered B/H tree equivalence and current per-member title semantics from protected B. No PR association or queued-ref number supplies membership. Publisher binding and effective protection still require explicit activation (#18255/#17903)."
+reason = "The existing Actions-bound validate-title context now proves the complete current native G prefix, every App-authenticated H-to-entry intake, ordered B/H tree equivalence and current per-member title semantics from independently verified protected-main T. No PR association or queued-ref number supplies membership. Publisher binding and effective protection still require explicit activation (#18255/#17903)."
 
 [[checks]]
 name = "Rust formatting"

@@ -1,0 +1,404 @@
+--- a/.github/workflows/non-rust-policy.yml
++++ b/.github/workflows/non-rust-policy.yml
+@@ -24,16 +24,50 @@
+     env:
+       BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
+       SUBJECT_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}
+-      EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
+       PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+       PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
+     steps:
++      # B/G are subjects only; executable authority is independently read main T.
++      - name: Resolve protected main evaluator generation
++        id: evaluator
++        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
++        with:
++          script: |
++            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
++            const fullName = owner + '/' + repo;
++            const eventRepo = context.payload.repository;
++            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
++                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
++                context.repo.owner !== owner || context.repo.repo !== repo ||
++                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
++                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
++                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
++                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
++              throw new Error('NOT_PROVEN: native repository/main identity required');
++            }
++            const {data: repository} = await github.rest.repos.get({owner, repo});
++            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
++            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
++            const sha = protectedBranch.commit?.sha;
++            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
++                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
++                protectedBranch.name !== branch || protectedBranch.protected !== true ||
++                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
++                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
++              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
++            }
++            core.setOutput('sha', sha);
+       - name: Checkout trusted evaluator
+         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+         with:
+-          ref: ${{ env.EVALUATOR_SHA }}
++          ref: ${{ steps.evaluator.outputs.sha }}
+           fetch-depth: 0
+           persist-credentials: false
++
++      - name: Bind immutable evaluator identity
++        env:
++          EVALUATOR_SHA: ${{ steps.evaluator.outputs.sha }}
++        run: echo "EVALUATOR_SHA=$EVALUATOR_SHA" >> "$GITHUB_ENV"
+
+       - name: Fetch and bind subject Git object
+         id: bind
+@@ -98,7 +132,7 @@
+                 -m "non-rust policy exact subject"
+             )" || fail_bind "synthetic-commit-creation" "commit-tree failed for merge_tree=$merge_tree base=$BASE_SHA head=$PR_HEAD_SHA"
+           else
+-            git fetch --no-tags origin "$SUBJECT_SHA" \
++            git fetch --no-tags origin "$BASE_SHA" "$SUBJECT_SHA" \
+               || fail_bind "subject-fetch" "fetch of workflow_dispatch subject=$SUBJECT_SHA failed"
+           fi
+           git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA" \
+@@ -146,7 +180,7 @@
+           workflow=.github/workflows/non-rust-policy.yml
+           grep -q '^  merge_group:' "$workflow"
+           grep -q 'name: Non-Rust policy exact-tree' "$workflow"
+-          grep -q 'ref: .*EVALUATOR_SHA' "$workflow"
++          grep -q 'ref: .*steps.evaluator.outputs.sha' "$workflow"
+           grep -q 'actions/upload-artifact@' "$workflow"
+           grep -q 'if: always()' "$workflow"
+           grep -q 'persist-credentials: false' "$workflow"
+@@ -276,9 +310,89 @@
+               json.dump(receipt, handle, indent=2, sort_keys=True)
+           PY
+
++      - name: Revalidate protected evaluator before execution
++        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
++        with:
++          script: |
++            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
++            const fullName = owner + '/' + repo;
++            const eventRepo = context.payload.repository;
++            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
++                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
++                context.repo.owner !== owner || context.repo.repo !== repo ||
++                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
++                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
++                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
++                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
++              throw new Error('NOT_PROVEN: native repository/main identity required');
++            }
++            const {data: repository} = await github.rest.repos.get({owner, repo});
++            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
++            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
++            const sha = protectedBranch.commit?.sha;
++            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
++                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
++                protectedBranch.name !== branch || protectedBranch.protected !== true ||
++                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
++                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
++              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
++            }
++            if (sha !== process.env.EVALUATOR_SHA) {
++              throw new Error('NOT_PROVEN: protected main evaluator generation changed');
++            }
++            const {execFileSync} = require('node:child_process');
++            const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
++            Object.assign(env, {GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
++              GIT_CONFIG_SYSTEM: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1'});
++            const head = execFileSync('git', ['rev-parse', 'HEAD'], {env, encoding: 'utf8'}).trim();
++            const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {env, encoding: 'utf8'}).trim();
++            if (head !== sha || dirty) {
++              throw new Error('NOT_PROVEN: evaluator checkout custody differs from protected T');
++            }
++
+       - name: Run trusted exact-tree evaluator
+         if: steps.bind.outcome == 'success'
+         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
++
++      - name: Revalidate protected evaluator after execution
++        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
++        with:
++          script: |
++            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
++            const fullName = owner + '/' + repo;
++            const eventRepo = context.payload.repository;
++            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
++                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
++                context.repo.owner !== owner || context.repo.repo !== repo ||
++                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
++                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
++                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
++                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
++              throw new Error('NOT_PROVEN: native repository/main identity required');
++            }
++            const {data: repository} = await github.rest.repos.get({owner, repo});
++            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
++            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
++            const sha = protectedBranch.commit?.sha;
++            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
++                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
++                protectedBranch.name !== branch || protectedBranch.protected !== true ||
++                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
++                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
++              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
++            }
++            if (sha !== process.env.EVALUATOR_SHA) {
++              throw new Error('NOT_PROVEN: protected main evaluator generation changed');
++            }
++            const {execFileSync} = require('node:child_process');
++            const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
++            Object.assign(env, {GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
++              GIT_CONFIG_SYSTEM: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1'});
++            const head = execFileSync('git', ['rev-parse', 'HEAD'], {env, encoding: 'utf8'}).trim();
++            const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {env, encoding: 'utf8'}).trim();
++            if (head !== sha || dirty) {
++              throw new Error('NOT_PROVEN: evaluator checkout custody differs from protected T');
++            }
+
+       - name: Upload exact-tree receipt
+         if: always()
+--- a/.ci/policies/required-checks.toml
++++ b/.ci/policies/required-checks.toml
+@@ -84,7 +84,7 @@
+ contract_role = "required-workflow-shape"
+
+   # The actual-G leaf reads complete native membership and authenticated H
+-  # intake, executes only protected B source and never receives write authority.
++  # intake, executes only independently verified protected-main T source and never receives write authority.
+   [[check.exemption]]
+   clause = "pull-request-trigger"
+   status = "accepted"
+@@ -241,7 +241,7 @@
+ applicability = "always-or-scoped-noop"
+ enforcement = "github-ruleset"
+ ruleset_integration_id = 15368
+-reason = "The existing Actions-bound validate-title context now proves the complete current native G prefix, every App-authenticated H-to-entry intake, ordered B/H tree equivalence and current per-member title semantics from protected B. No PR association or queued-ref number supplies membership. Publisher binding and effective protection still require explicit activation (#18255/#17903)."
++reason = "The existing Actions-bound validate-title context now proves the complete current native G prefix, every App-authenticated H-to-entry intake, ordered B/H tree equivalence and current per-member title semantics from independently verified protected-main T. No PR association or queued-ref number supplies membership. Publisher binding and effective protection still require explicit activation (#18255/#17903)."
+
+ [[checks]]
+ name = "Rust formatting"
+--- a/xtask/tests/non_rust_policy_exact_subject.rs
++++ b/xtask/tests/non_rust_policy_exact_subject.rs
+@@ -687,3 +687,23 @@
+     );
+     Ok(())
+ }
++
++/// The compiler-free authority suite executes the production bootstrap/recheck
++/// JavaScript and subject-binding Bash with local Git objects and API doubles.
++#[test]
++fn protected_main_evaluator_is_independent_of_speculative_base() -> Result<()> {
++    let python = if cfg!(windows) { "python" } else { "python3" };
++    let output = Command::new(python)
++        .args(["scripts/ci/test_non_rust_evaluator_authority.py", "-v"])
++        .env("NON_RUST_POLICY_BASH", bash_executable())
++        .current_dir(project_root())
++        .output()
++        .context("running protected evaluator authority controls")?;
++    ensure!(
++        output.status.success(),
++        "authority controls failed:\n{}\n{}",
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr)
++    );
++    Ok(())
++}
+--- /dev/null
++++ b/scripts/ci/test_non_rust_evaluator_authority.py
+@@ -0,0 +1,192 @@
++#!/usr/bin/env python3
++"""Execute production workflow JS with read-only API doubles and real local Git.
++
++No GitHub calls or Cargo builds. These tests prove source wiring and authority
++refusal, not deployed workflow integrity, protection installation or Rust policy.
++"""
++import json
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++from unittest.mock import patch
++
++ROOT = Path(__file__).resolve().parents[2]
++WORKFLOW = ROOT / ".github/workflows/non-rust-policy.yml"
++
++
++def bash_executable():
++    return os.environ.get("NON_RUST_POLICY_BASH", "bash")
++
++
++def script(name):
++    # Exact workflow literal, not a fixture reimplementation of the checks.
++    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
++    start = lines.index("      - name: " + name)
++    end = next((i for i in range(start + 1, len(lines))
++                if lines[i].startswith("      - name:")), len(lines))
++    block = lines[start:end]
++    offset = block.index("          script: |") + 1
++    return "\n".join(line[12:] for line in block[offset:] if line.strip())
++
++
++class Authority(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory(prefix="nonrust-\u00e9-")
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
++        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
++        self.git("init", "-q", "--template=")
++        (self.root / "source").write_text("trusted evaluator \u00e9", encoding="utf-8")
++        self.git("add", "source")
++        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
++                 "-c", "commit.gpgsign=false", "-c", "core.hooksPath=", "commit", "-qm", "T")
++        self.t = self.git("rev-parse", "HEAD").strip()
++        self.b, self.g = "b" * 40, "c" * 40
++        self.repo = {"full_name": "EffortlessMetrics/perl-lsp-swarm", "id": 42,
++                     "node_id": "R_fixture", "default_branch": "main"}
++        self.context = {"eventName": "merge_group", "repo": {"owner": "EffortlessMetrics", "repo": "perl-lsp-swarm"},
++                        "payload": {"repository": self.repo, "action": "checks_requested",
++                                    "merge_group": {"base_ref": "refs/heads/main", "base_sha": self.b, "head_sha": self.g}}}
++        self.branch = {"name": "main", "protected": True, "commit": {"sha": self.t}}
++        self.ref = {"ref": "refs/heads/main", "object": {"type": "commit", "sha": self.t}}
++
++    def git(self, *args):
++        return subprocess.run(["git", *args], cwd=self.root, env=self.env,
++                              check=True, capture_output=True, text=True, encoding="utf-8").stdout
++
++    def execute(self, name, expected=None):
++        fixture = json.dumps({"repository": self.repo, "branch": self.branch,
++                              "ref": self.ref, "context": self.context})
++        harness = "const f=" + fixture + "; const context=f.context; const calls=[];" + """
++const read = key => async args => {
++  if (args.owner !== 'EffortlessMetrics' || args.repo !== 'perl-lsp-swarm') throw Error('scope');
++  calls.push(key); return {data: f[key]};
++};
++const github={rest:{repos:{get:read('repository'),getBranch:read('branch')},git:{getRef:read('ref')}}};
++const core={setOutput:(key,value)=>console.log(key+'='+value)};
++(async()=>{
++""" + script(name) + """
++if (calls.join(',') !== 'repository,branch,ref') throw Error('read custody');
++})().catch(e=>{console.error(e.message);process.exitCode=1});
++"""
++        env = dict(self.env)
++        if expected is not None:
++            env["EVALUATOR_SHA"] = expected
++        else:
++            env.pop("EVALUATOR_SHA", None)
++        return subprocess.run(["node", "-e", harness], cwd=self.root, env=env,
++                              capture_output=True, text=True, encoding="utf-8")
++
++    def test_distinct_t_bootstrap_and_before_after_execution(self):
++        out = self.execute("Resolve protected main evaluator generation")
++        self.assertEqual(out.returncode, 0, out.stderr)
++        self.assertEqual(out.stdout.strip(), "sha=" + self.t)
++        self.assertNotEqual(self.t, self.b)
++        for name in ("Revalidate protected evaluator before execution", "Revalidate protected evaluator after execution"):
++            out = self.execute(name, self.t)
++            self.assertEqual(out.returncode, 0, out.stderr)
++
++    def test_wrong_missing_stale_and_unprotected_t_refuse(self):
++        for expected in (None, self.b, "a" * 40):
++            out = self.execute("Revalidate protected evaluator before execution", expected)
++            self.assertNotEqual(out.returncode, 0)
++            self.assertIn("generation changed", out.stderr)
++        self.branch["commit"]["sha"] = self.b
++        self.ref["object"]["sha"] = self.b
++        out = self.execute("Revalidate protected evaluator after execution", self.t)
++        self.assertNotEqual(out.returncode, 0)
++        self.assertIn("generation changed", out.stderr)
++        self.branch["commit"]["sha"] = self.t
++        self.ref["object"]["sha"] = self.b
++        out = self.execute("Resolve protected main evaluator generation")
++        self.assertNotEqual(out.returncode, 0)
++        self.assertIn("unavailable", out.stderr)
++        self.ref["object"]["sha"] = self.t
++        self.branch["commit"].pop("sha")
++        self.assertNotEqual(self.execute("Resolve protected main evaluator generation").returncode, 0)
++        self.branch["commit"]["sha"] = self.t
++        self.branch["protected"] = False
++        self.assertNotEqual(self.execute("Resolve protected main evaluator generation").returncode, 0)
++
++    def test_checkout_custody_refuses_modified_source_and_wrong_head(self):
++        (self.root / "source").write_text("modified evaluator", encoding="utf-8")
++        out = self.execute("Revalidate protected evaluator before execution", self.t)
++        self.assertNotEqual(out.returncode, 0)
++        self.assertIn("custody", out.stderr)
++        # An independently verified main T cannot authorize a different checkout.
++        self.branch["commit"]["sha"] = self.b
++        self.ref["object"]["sha"] = self.b
++        out = self.execute("Revalidate protected evaluator before execution", self.b)
++        self.assertNotEqual(out.returncode, 0)
++        self.assertIn("custody", out.stderr)
++
++    def test_speculative_base_and_group_remain_exact_subjects(self):
++        # Real local B/G objects differ from T; production binding must not
++        # check out either object or mutate the independently verified source.
++        for label in ("B", "G"):
++            (self.root / "source").write_text(label, encoding="utf-8")
++            self.git("add", "source")
++            self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
++                     "-c", "commit.gpgsign=false", "-c", "core.hooksPath=", "commit", "-qm", label)
++            setattr(self, label.lower(), self.git("rev-parse", "HEAD").strip())
++        self.git("checkout", "--detach", self.t)
++        self.git("remote", "add", "origin", str(self.root))
++        lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
++        start = lines.index("      - name: Fetch and bind subject Git object")
++        end = lines.index("      - name: Verify trusted workflow contract")
++        block = lines[start:end]
++        offset = block.index("        run: |") + 1
++        body = "\n".join(line[10:] for line in block[offset:])
++        output, exported = self.root / "output", self.root / "env"
++        env = dict(self.env, BASE_SHA=self.b, SUBJECT_SHA=self.g, PR_HEAD_SHA="",
++                   PR_NUMBER="", GITHUB_OUTPUT=str(output), GITHUB_ENV=str(exported))
++        result = subprocess.run([bash_executable(), "--noprofile", "--norc", "-c", body],
++                                env=env, cwd=self.root, capture_output=True, text=True, encoding="utf-8")
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertIn("subject_sha=" + self.g, output.read_text(encoding="utf-8"))
++        self.assertEqual(self.git("rev-parse", "HEAD").strip(), self.t)
++        self.assertNotEqual(self.t, self.b)
++        self.assertEqual(self.git("rev-parse", "non-rust-policy-subject").strip(), self.g)
++        out = self.execute("Revalidate protected evaluator before execution", self.t)
++        self.assertEqual(out.returncode, 0, out.stderr)
++
++    def test_utf8_subprocess_output_does_not_use_platform_default(self):
++        # A real Unicode checkout path and output exercise the bytes boundary.
++        # Refuse fallback decoding even on hosts whose default is already UTF-8.
++        with patch("subprocess._text_encoding", side_effect=AssertionError("implicit decoder")):
++            self.assertEqual(self.git("show", "HEAD:source"), "trusted evaluator \u00e9")
++            out = self.execute("Revalidate protected evaluator before execution", self.t)
++            self.assertEqual(out.returncode, 0, out.stderr)
++
++    def test_explicit_bash_selection_is_preserved(self):
++        with patch.dict(os.environ, {"NON_RUST_POLICY_BASH": "/fixture/Git Bash/bash.exe"}):
++            self.assertEqual(bash_executable(), "/fixture/Git Bash/bash.exe")
++        with patch.dict(os.environ, {}, clear=True):
++            self.assertEqual(bash_executable(), "bash")
++
++    def test_dispatch_is_main_only(self):
++        self.context.update(eventName="workflow_dispatch", ref="refs/heads/main")
++        self.assertEqual(self.execute("Resolve protected main evaluator generation").returncode, 0)
++        self.context["ref"] = "refs/heads/candidate"
++        self.assertNotEqual(self.execute("Resolve protected main evaluator generation").returncode, 0)
++
++    def test_production_order_and_subject_separation(self):
++        text = WORKFLOW.read_text(encoding="utf-8")
++        self.assertIn("ref: ${{ steps.evaluator.outputs.sha }}", text)
++        self.assertNotIn("ref: ${{ env.EVALUATOR_SHA }}", text)
++        self.assertIn('git fetch --no-tags origin "$BASE_SHA" "$SUBJECT_SHA"', text)
++        self.assertIn('--base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA"', text)
++        names = ["Resolve protected main evaluator generation", "Checkout trusted evaluator",
++                 "Fetch and bind subject Git object", "Revalidate protected evaluator before execution",
++                 "Run trusted exact-tree evaluator", "Revalidate protected evaluator after execution"]
++        positions = [text.index("      - name: " + name) for name in names]
++        self.assertEqual(positions, sorted(positions))
++        self.assertNotIn("contents: write", text)
++        self.assertIn("persist-credentials: false", text)
++
++
++if __name__ == "__main__":
++    unittest.main()

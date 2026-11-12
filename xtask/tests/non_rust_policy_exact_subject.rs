@@ -687,3 +687,23 @@ fn pull_request_target_merging_with_real_conflict_emits_named_failure_stage() ->
     );
     Ok(())
 }
+
+/// The compiler-free authority suite executes the production bootstrap/recheck
+/// JavaScript and subject-binding Bash with local Git objects and API doubles.
+#[test]
+fn protected_main_evaluator_is_independent_of_speculative_base() -> Result<()> {
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let output = Command::new(python)
+        .args(["scripts/ci/test_non_rust_evaluator_authority.py", "-v"])
+        .env("NON_RUST_POLICY_BASH", bash_executable())
+        .current_dir(project_root())
+        .output()
+        .context("running protected evaluator authority controls")?;
+    ensure!(
+        output.status.success(),
+        "authority controls failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}

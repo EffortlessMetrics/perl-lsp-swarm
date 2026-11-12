@@ -143,7 +143,9 @@ uses the same no-development-event source profile as the actual-G contract job.
 The additive composition patches preserve the original trigger fixture unchanged.
 For source rehearsal, apply root-triggers, sixth-gate-composition,
 trigger-policy-composition, `19261-hosted-rust-composition.patch`, then
-`19261-title-authority.patch`. Reverse title-authority first, followed by
+`19261-title-authority.patch`, `19261-nonrust-authority.patch`, then
+`19261-hosted-ripr-composition.patch`. Reverse hosted-ripr-composition first,
+then nonrust-authority, title-authority, followed by
 hosted-rust-composition, trigger-policy-composition, sixth-gate-composition,
 and root-triggers. This is not runtime rollback or proof that GitHub installed
 the sixth context.

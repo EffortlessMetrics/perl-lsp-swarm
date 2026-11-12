@@ -23,7 +23,9 @@ SIXTH_GATE_PATCH = ROOT / '.ci/staged/17903-sixth-gate-composition.patch'
 TRIGGER_POLICY_PATCH = ROOT / '.ci/staged/17903-trigger-policy-composition.patch'
 HOSTED_RUST_PATCH = ROOT / '.ci/staged/19261-hosted-rust-composition.patch'
 TITLE_AUTHORITY_PATCH = ROOT / '.ci/staged/19261-title-authority.patch'
-PATCHES = (PATCH, SIXTH_GATE_PATCH, TRIGGER_POLICY_PATCH, HOSTED_RUST_PATCH, TITLE_AUTHORITY_PATCH)
+NONRUST_AUTHORITY_PATCH = ROOT / '.ci/staged/19261-nonrust-authority.patch'
+HOSTED_RIPR_PATCH = ROOT / '.ci/staged/19261-hosted-ripr-composition.patch'
+PATCHES = (PATCH, SIXTH_GATE_PATCH, TRIGGER_POLICY_PATCH, HOSTED_RUST_PATCH, TITLE_AUTHORITY_PATCH, NONRUST_AUTHORITY_PATCH, HOSTED_RIPR_PATCH)
 POLICY = '.ci/policies/required-checks.toml'
 POST_LANDING = ('.github/workflows/docs-deploy.yml',)
 RETIRED = '.github/workflows/main-history-event.yml'
@@ -95,6 +97,62 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             catalog.read_workflow_catalog(root), post_landing_sources=POST_LANDING)
         self.assertEqual(findings, [])
 
+    def assert_nonrust_authority_composition(self, original_body, projected_body):
+        # Invert only the reviewed T-authority edits; every pre-existing job,
+        # subject-binding command, receipt and evaluator argument must survive.
+        left = yaml.load(original_body, Loader=yaml.BaseLoader)
+        right = yaml.load(projected_body, Loader=yaml.BaseLoader)
+        job = right['exact-tree']
+        self.assertNotIn('EVALUATOR_SHA', job['env'])
+        job['env']['EVALUATOR_SHA'] = left['exact-tree']['env']['EVALUATOR_SHA']
+        additions = {
+            'Resolve protected main evaluator generation',
+            'Bind immutable evaluator identity',
+            'Revalidate protected evaluator before execution',
+            'Revalidate protected evaluator after execution',
+        }
+        observed = [step['name'] for step in job['steps'] if step['name'] in additions]
+        self.assertEqual(set(observed), additions)
+        self.assertEqual(len(observed), len(additions))
+        # Added authority bodies are exercised by the production-path controls,
+        # not accepted as authority merely because they appear in this fixture.
+        job['steps'] = [step for step in job['steps'] if step['name'] not in additions]
+        steps = {step['name']: step for step in job['steps']}
+        checkout = steps['Checkout trusted evaluator']['with']
+        self.assertEqual(checkout['ref'], '${{ steps.evaluator.outputs.sha }}')
+        checkout['ref'] = '${{ env.EVALUATOR_SHA }}'
+        edits = {
+            'Fetch and bind subject Git object': (
+                'git fetch --no-tags origin "$BASE_SHA" "$SUBJECT_SHA"',
+                'git fetch --no-tags origin "$SUBJECT_SHA"'),
+            'Verify trusted workflow contract': (
+                "grep -q 'ref: .*steps.evaluator.outputs.sha'",
+                "grep -q 'ref: .*EVALUATOR_SHA'"),
+        }
+        for name, (new, old) in edits.items():
+            self.assertEqual(steps[name]['run'].count(new), 1)
+            steps[name]['run'] = steps[name]['run'].replace(new, old)
+        self.assertEqual(left, right)
+
+    def test_nonrust_composition_rejects_changed_evaluator_obligation(self):
+        path = '.github/workflows/non-rust-policy.yml'
+        old = (self.preimage / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1]
+        current = (ROOT / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1]
+        self.assert_nonrust_authority_composition(old, current)
+        self.assertEqual(current.count('--subject-sha "$SUBJECT_SHA"'), 1)
+        weakened = current.replace('--subject-sha "$SUBJECT_SHA"', '--subject-sha "$BASE_SHA"')
+        with self.assertRaises(AssertionError):
+            self.assert_nonrust_authority_composition(old, weakened)
+
+    def test_nonrust_added_authority_steps_execute_real_controls(self):
+        result = subprocess.run([
+            sys.executable, str(ROOT / 'scripts/ci/test_non_rust_evaluator_authority.py'),
+            'Authority.test_distinct_t_bootstrap_and_before_after_execution',
+            'Authority.test_wrong_missing_stale_and_unprotected_t_refuse',
+            'Authority.test_checkout_custody_refuses_modified_source_and_wrong_head',
+        ], capture_output=True, text=True, encoding='utf-8', timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_whole_catalog_closes_development_roots_and_retains_actual_groups(self):
         before = catalog.read_workflow_catalog(self.preimage)
         self.assertTrue(catalog.development_source_findings(before, post_landing_sources=POST_LANDING))
@@ -121,12 +179,23 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 elif path == '.github/workflows/em-ci-routed-rust.yml':
                     self.assertEqual(set(changed.jobs), {'rust-small-github', 'rust-small-result'})
                     self.assertEqual(changed.events, frozenset({'merge_group'}))
+                elif path == '.github/workflows/ripr.yml':
+                    self.assertEqual(set(changed.jobs), {'ripr-github', 'seed-cache', 'ripr'})
+                    left = yaml.load((self.preimage / path).read_text(encoding='utf-8'), Loader=yaml.BaseLoader)['jobs']
+                    right = yaml.load((root / path).read_text(encoding='utf-8'), Loader=yaml.BaseLoader)['jobs']
+                    self.assertEqual(left['seed-cache'], right['seed-cache'])
+                    self.assertEqual(left['ripr-github']['steps'][1:], right['ripr-github']['steps'][2:])
                 else:
                     self.assertEqual(original.jobs.keys(), changed.jobs.keys(), path)
                 if path not in (*GENERATORS, '.github/workflows/ci.yml', '.github/workflows/em-ci-routed-rust.yml',
-                                '.github/workflows/pr-title-check.yml'):
+                                '.github/workflows/pr-title-check.yml', '.github/workflows/ripr.yml'):
                     original_body = (self.preimage / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1]
                     projected_body = (root / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1]
+                    if path == '.github/workflows/ci-gate-self-tests.yml':
+                        inserted = ('      - name: Run hosted-only RIPR exact-attempt controls\n'
+                                    '        run: python3 -B -m unittest scripts.ci.test_ripr_hosted_queue\n\n')
+                        self.assertEqual(projected_body.count(inserted), 1)
+                        projected_body = projected_body.replace(inserted, '')
                     if path == '.github/workflows/gate-enforcement-contract.yml':
                         # The real integration-source validator must enforce the
                         # same whole-catalog profile exercised by these fixtures.
@@ -140,7 +209,10 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                             entry = f'            scripts/ci/{owner} \\\n'
                             self.assertEqual(projected_body.count(entry), 1)
                             projected_body = projected_body.replace(entry, '')
-                    self.assertEqual(original_body, projected_body, path)
+                    if path == '.github/workflows/non-rust-policy.yml':
+                        self.assert_nonrust_authority_composition(original_body, projected_body)
+                    else:
+                        self.assertEqual(original_body, projected_body, path)
 
     def test_installed_security_baseline_matches_cutover_controls_and_findings(self):
         result = subprocess.run([
@@ -264,6 +336,23 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 events = [event for event in left['events'] if event not in catalog.DEVELOPMENT_EVENTS
                           and not (event == 'push' and left['workflow'] not in POST_LANDING)]
                 expected['events'] = events or ['workflow_dispatch']
+            if left['name'] == 'ripr+ New Gap Gate':
+                # Only this reviewed native-G applicability/reason delta is
+                # permitted. The complete row comparison below retains the
+                # required flag, Actions binding and every other policy field.
+                expected['applicability'] = 'conditional'
+                expected['reason'] = (
+                    'Mandatory on every actual native merge_group/checks_requested G: '
+                    'one GitHub-hosted producer and its exact-G/run/attempt finalizer retain '
+                    'deterministic RIPR receipts. Missing, failed, skipped or cancelled native '
+                    'proof cannot satisfy this required Actions context. Unrelated '
+                    'cache-maintenance events do not run the finalizer. Named new gaps in '
+                    'changed production files block; sensor availability remains advisory.'
+                )
+                self.assertTrue(right['required'])
+                self.assertEqual(right['ruleset_integration_id'], 15368)
+                self.assertEqual(workflows[right['workflow']].jobs[right['job']].condition,
+                                 "always() && github.event_name == 'merge_group'")
             if left['name'] == 'Compile All Targets (bit-rot guard)':
                 expected['job'] = 'integration-required'
                 expected['applicability'] = 'always-or-scoped-noop'

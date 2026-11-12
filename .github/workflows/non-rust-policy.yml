@@ -24,16 +24,50 @@ jobs:
     env:
       BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
       SUBJECT_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}
-      EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
       PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
     steps:
+      # B/G are subjects only; executable authority is independently read main T.
+      - name: Resolve protected main evaluator generation
+        id: evaluator
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
+            const fullName = owner + '/' + repo;
+            const eventRepo = context.payload.repository;
+            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
+                context.repo.owner !== owner || context.repo.repo !== repo ||
+                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
+                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
+                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
+                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
+              throw new Error('NOT_PROVEN: native repository/main identity required');
+            }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const sha = protectedBranch.commit?.sha;
+            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
+                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
+                protectedBranch.name !== branch || protectedBranch.protected !== true ||
+                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
+                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
+              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
+            }
+            core.setOutput('sha', sha);
       - name: Checkout trusted evaluator
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.EVALUATOR_SHA }}
+          ref: ${{ steps.evaluator.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Bind immutable evaluator identity
+        env:
+          EVALUATOR_SHA: ${{ steps.evaluator.outputs.sha }}
+        run: echo "EVALUATOR_SHA=$EVALUATOR_SHA" >> "$GITHUB_ENV"
 
       - name: Fetch and bind subject Git object
         id: bind
@@ -98,7 +132,7 @@ jobs:
                 -m "non-rust policy exact subject"
             )" || fail_bind "synthetic-commit-creation" "commit-tree failed for merge_tree=$merge_tree base=$BASE_SHA head=$PR_HEAD_SHA"
           else
-            git fetch --no-tags origin "$SUBJECT_SHA" \
+            git fetch --no-tags origin "$BASE_SHA" "$SUBJECT_SHA" \
               || fail_bind "subject-fetch" "fetch of workflow_dispatch subject=$SUBJECT_SHA failed"
           fi
           git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA" \
@@ -146,7 +180,7 @@ jobs:
           workflow=.github/workflows/non-rust-policy.yml
           grep -q '^  merge_group:' "$workflow"
           grep -q 'name: Non-Rust policy exact-tree' "$workflow"
-          grep -q 'ref: .*EVALUATOR_SHA' "$workflow"
+          grep -q 'ref: .*steps.evaluator.outputs.sha' "$workflow"
           grep -q 'actions/upload-artifact@' "$workflow"
           grep -q 'if: always()' "$workflow"
           grep -q 'persist-credentials: false' "$workflow"
@@ -276,9 +310,89 @@ jobs:
               json.dump(receipt, handle, indent=2, sort_keys=True)
           PY
 
+      - name: Revalidate protected evaluator before execution
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
+            const fullName = owner + '/' + repo;
+            const eventRepo = context.payload.repository;
+            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
+                context.repo.owner !== owner || context.repo.repo !== repo ||
+                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
+                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
+                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
+                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
+              throw new Error('NOT_PROVEN: native repository/main identity required');
+            }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const sha = protectedBranch.commit?.sha;
+            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
+                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
+                protectedBranch.name !== branch || protectedBranch.protected !== true ||
+                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
+                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
+              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
+            }
+            if (sha !== process.env.EVALUATOR_SHA) {
+              throw new Error('NOT_PROVEN: protected main evaluator generation changed');
+            }
+            const {execFileSync} = require('node:child_process');
+            const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+            Object.assign(env, {GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+              GIT_CONFIG_SYSTEM: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1'});
+            const head = execFileSync('git', ['rev-parse', 'HEAD'], {env, encoding: 'utf8'}).trim();
+            const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {env, encoding: 'utf8'}).trim();
+            if (head !== sha || dirty) {
+              throw new Error('NOT_PROVEN: evaluator checkout custody differs from protected T');
+            }
+
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
+
+      - name: Revalidate protected evaluator after execution
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm', branch = 'main';
+            const fullName = owner + '/' + repo;
+            const eventRepo = context.payload.repository;
+            if (!['merge_group', 'workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'merge_group' && context.payload.action !== 'checks_requested') ||
+                context.repo.owner !== owner || context.repo.repo !== repo ||
+                eventRepo?.full_name !== fullName || !Number.isSafeInteger(eventRepo.id) || eventRepo.id <= 0 ||
+                typeof eventRepo.node_id !== 'string' || !eventRepo.node_id ||
+                (context.eventName === 'merge_group' && context.payload.merge_group?.base_ref !== 'refs/heads/main') ||
+                (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/main')) {
+              throw new Error('NOT_PROVEN: native repository/main identity required');
+            }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            const {data: protectedBranch} = await github.rest.repos.getBranch({owner, repo, branch});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const sha = protectedBranch.commit?.sha;
+            if (repository.full_name !== fullName || repository.id !== eventRepo.id ||
+                repository.node_id !== eventRepo.node_id || repository.default_branch !== branch ||
+                protectedBranch.name !== branch || protectedBranch.protected !== true ||
+                typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha) ||
+                ref.ref !== 'refs/heads/main' || ref.object?.type !== 'commit' || ref.object?.sha !== sha) {
+              throw new Error('NOT_PROVEN: protected immutable evaluator generation unavailable');
+            }
+            if (sha !== process.env.EVALUATOR_SHA) {
+              throw new Error('NOT_PROVEN: protected main evaluator generation changed');
+            }
+            const {execFileSync} = require('node:child_process');
+            const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+            Object.assign(env, {GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+              GIT_CONFIG_SYSTEM: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1'});
+            const head = execFileSync('git', ['rev-parse', 'HEAD'], {env, encoding: 'utf8'}).trim();
+            const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {env, encoding: 'utf8'}).trim();
+            if (head !== sha || dirty) {
+              throw new Error('NOT_PROVEN: evaluator checkout custody differs from protected T');
+            }
 
       - name: Upload exact-tree receipt
         if: always()

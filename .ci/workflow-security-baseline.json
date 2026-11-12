@@ -422,22 +422,6 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "echo \"::warning::Primary runner (${{ needs.route-ripr.outputs.target }}) failed \u2014 falling back to GitHub-hosted for ripr. Reclaim runner disk before next run.\"",
-      "fingerprint": "446e1c1a0d5437b8aef182ef818da5a221952ca2cc7d94336e3678bd6837b30a",
-      "line": 1121,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/ripr.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"Primary runner \\`${{ needs.route-ripr.outputs.target }}\\` failed its disk\"",
-      "fingerprint": "8bd4415c724715188434a77c7957fb0f733548eb4c3c8d54fa3ad632f30aa24c",
-      "line": 1125,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/ripr.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
       "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
       "fingerprint": "e3297a11a1ee61f55bc3ecde0a35f3031638708bc9bd2fb5704a0d470e6a8117",
       "line": 18,
