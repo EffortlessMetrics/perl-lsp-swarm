@@ -251,13 +251,17 @@ fn required_gate(policy: &str, name: &str, runner: &str) -> Result<()> {
 
 const CI_ADMISSION_PREDICATE: &str = "needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
 
-fn required_ci_admission(job: &serde_yaml_ng::Value, label: &str) -> Result<()> {
+fn required_ci_admission(
+    job: &serde_yaml_ng::Value,
+    label: &str,
+    dependencies: &[&str],
+) -> Result<()> {
     ensure!(
         job["needs"].as_sequence().is_some_and(|needs| {
             needs
                 .iter()
                 .map(serde_yaml_ng::Value::as_str)
-                .eq([Some("draft-pr-check"), Some("preflight-latest-check")])
+                .eq(dependencies.iter().map(|name| Some(*name)))
         }),
         "{label} dependencies changed; requalify the binding"
     );
@@ -274,7 +278,11 @@ fn required_gate_selected(workflow: &str, name: &str) -> Result<()> {
     ensure!(job.as_mapping().is_some(), "merge-gate-shards job missing");
     ensure!(job["continue-on-error"].is_null(), "shard job may ignore failure");
     // The surrounding draft/preflight dependencies remain an explicit CI contract.
-    required_ci_admission(job, "shard job")?;
+    required_ci_admission(
+        job,
+        "shard job",
+        &["draft-pr-check", "conflict-markers", "preflight-latest-check"],
+    )?;
     let matrix = job["strategy"]["matrix"].as_mapping().context("shard matrix missing")?;
     ensure!(matrix.len() == 1, "unsupported shard matrix expansion or exclusion");
     let rows =
@@ -325,7 +333,7 @@ fn required_step(workflow: &str, job_name: &str, command: &str) -> Result<()> {
     let job = &workflow["jobs"][job_name];
     ensure!(job.as_mapping().is_some(), "required job missing: {job_name}");
     ensure!(job["continue-on-error"].is_null(), "required job may ignore failure");
-    required_ci_admission(job, "required job")?;
+    required_ci_admission(job, "required job", &["draft-pr-check", "preflight-latest-check"])?;
     let steps = job["steps"].as_sequence().context("required job steps missing")?;
     let matching: Vec<_> =
         steps.iter().filter(|step| step["run"].as_str() == Some(command)).collect();
