@@ -119,7 +119,8 @@ fn require_single_canonical_container_installer(script: &str) -> Result<(), Stri
         .map(str::trim)
         .filter(|line| line.starts_with("cargo install ripr"))
         .collect();
-    let expected = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    let expected =
+        r#"cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked"#;
     if installers.len() != 1 || installers.first().copied() != Some(expected) {
         return Err(format!(
             "normal hosted producer must have exactly one canonical container RIPR installer; \
@@ -132,7 +133,8 @@ fn require_single_canonical_container_installer(script: &str) -> Result<(), Stri
 #[test]
 fn container_installer_contract_rejects_extra_or_mismatched_installers()
 -> Result<(), Box<dyn std::error::Error>> {
-    let canonical = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    let canonical =
+        r#"cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked"#;
     require_single_canonical_container_installer(canonical)?;
 
     for extra in [r#"cargo install ripr --version "0.9.0" --locked"#, "cargo install ripr"] {
@@ -980,6 +982,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
         "Generate PR evidence summary",
         "Generate warning annotations",
         "Validate PR evidence contracts",
+        "Validate advisory review guidance",
         "Enforce new RIPR gap quality gate",
         "Append PR evidence summary",
     ];
@@ -1090,7 +1093,9 @@ sudo() {
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("PR_LABELS", "ci")
-        .env("RIPR_VERSION", "0.10.0")
+        .env("RIPR_VERSION", "0.11.0")
+        .env("RIPR_GIT_REPOSITORY", "https://github.com/EffortlessMetrics/ripr-swarm.git")
+        .env("RIPR_GIT_REV", "9b9143798615bbf1a14c2dbd23a2359a29942078")
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("RIPR_FRESHNESS_HANDOFF", &freshness_handoff)
         .env("RIPR_FRESHNESS_TOKEN", freshness_token)
@@ -1124,8 +1129,9 @@ sudo() {
     let checkout_text = fs::read_to_string(&checkout_marker)?;
     let calls_text = fs::read_to_string(&calls)?;
     let summary_text = fs::read_to_string(&summary)?;
-    let quality_summary_text =
-        fs::read_to_string(&quality_summary).context("reading fallback quality-gate summary")?;
+    let quality_summary_text = fs::read_to_string(&quality_summary).with_context(|| {
+        format!("reading fallback quality-gate summary; transcript:\n{combined}")
+    })?;
     let quality_receipt_text = match fs::read_to_string(&quality_receipt) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -1458,7 +1464,7 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
     );
     if workflow_run_block("ripr-github", "Install ripr")?.trim()
-        != r#"cargo install ripr --version "$RIPR_VERSION" --locked"#
+        != r#"cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked"#
     {
         return Err(anyhow!(
             "normal hosted job must retain its pinned host-side ripr installer for downstream consumers"
@@ -1527,13 +1533,16 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     for check_command in [
         "cargo xtask ripr-pr --base",
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base",
     ] {
         assert!(
             validate_step.contains(check_command) && validate_step.contains("--check"),
             "PR1 validate step must check `{check_command}`"
         );
     }
+    assert!(
+        !validate_step.contains("cargo xtask ripr-review-comments"),
+        "advisory guidance validation must not red the required validation step"
+    );
     let upload_step =
         workflow_step(&workflow, "Upload ripr PR evidence").ok_or("missing upload step")?;
     for artifact_path in [
@@ -1593,6 +1602,45 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "RIPR summary step must publish only current evidence after a successful handoff"
     );
 
+    Ok(())
+}
+
+#[test]
+fn guarded_ripr_pin_and_advisory_guidance_are_explicit() -> Result<()> {
+    for job in ["ripr-selfhosted", "ripr-github", "ripr-fallback", "seed-cache"] {
+        ensure!(
+            workflow_job_env_value(job, "RIPR_VERSION")? == "0.11.0",
+            "{job} must declare the guarded ripr release"
+        );
+        ensure!(
+            workflow_job_env_value(job, "RIPR_GIT_REV")?
+                == "9b9143798615bbf1a14c2dbd23a2359a29942078",
+            "{job} must pin the exact source commit carrying the guidance guard"
+        );
+    }
+
+    for lane in ["ripr-github", "ripr-fallback"] {
+        for step_name in ["Generate review guidance", "Validate advisory review guidance"] {
+            let step = workflow_step_value(lane, step_name)?;
+            ensure!(
+                step.get("continue-on-error").and_then(Value::as_bool) == Some(true),
+                "{lane} {step_name} must stay advisory"
+            );
+        }
+        let required_validation = workflow_run_block(lane, "Validate PR evidence contracts")?;
+        ensure!(
+            !required_validation.contains("ripr-review-comments"),
+            "{lane} required evidence validation must not depend on advisory guidance"
+        );
+    }
+
+    let self_hosted = workflow_run_block("ripr-selfhosted", "Run ripr evidence and gate (Docker)")?;
+    for line in self_hosted.lines().filter(|line| line.contains("ripr-review-comments")) {
+        ensure!(
+            line.trim_end().ends_with("|| true"),
+            "self-hosted guidance generation/check must stay advisory: {line}"
+        );
+    }
     Ok(())
 }
 
