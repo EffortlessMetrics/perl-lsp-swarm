@@ -2911,14 +2911,10 @@ def resolution_files(sha: str, first_parent: str) -> list[str]:
 
 
 def tree_blob(commit: str, path: str) -> str | None:
-    # Absence is proven by ls-tree (empty output), never by a failed
-    # rev-parse: any git error below raises instead of masquerading as a
-    # deletion. Error direction stays fail-closed toward unit creation.
-    listing = git("ls-tree", commit, "--", path)
-    if not [line for line in listing.splitlines() if line.strip()]:
-        return None
+    # ls-tree already carries the exact object identity. Read its NUL-safe
+    # record rather than spawning a second Git process for rev-parse.
     proc = subprocess.run(
-        ["git", "rev-parse", f"{commit}:{path}"],
+        ["git", "ls-tree", "-z", commit, "--", path],
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2929,15 +2925,31 @@ def tree_blob(commit: str, path: str) -> str | None:
             err = proc.stderr.decode("utf-8", errors="strict").strip()
         except UnicodeDecodeError as exc:
             raise FragmentError(
-                f"git rev-parse produced undecodable stderr: {exc}"
+                f"git ls-tree produced undecodable stderr: {exc}"
             ) from exc
-        raise FragmentError(f"git rev-parse {commit}:{path} failed: {err}")
+        raise FragmentError(f"git ls-tree {commit} {path} failed: {err}")
+
+    records = [record for record in proc.stdout.split(b"\0") if record]
+    if not records:
+        return None  # Only an empty listing proves absence.
+    if len(records) != 1:
+        raise FragmentError(f"ls-tree for {commit}:{path} was not singular")
+    header, separator, raw_path = records[0].partition(b"\t")
+    fields = header.split()
+    if not separator or len(fields) != 3:
+        raise FragmentError(f"malformed ls-tree entry for {commit}:{path}")
     try:
-        return proc.stdout.decode("utf-8", errors="strict").strip()
+        object_id = fields[2].decode("utf-8", errors="strict")
+        returned_path = raw_path.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
-        raise FragmentError(
-            f"undecodable blob id for {commit}:{path}: {exc}"
-        ) from exc
+        raise FragmentError(f"undecodable ls-tree entry for {commit}:{path}: {exc}")
+    if returned_path != path:
+        raise FragmentError(f"ls-tree returned the wrong path for {commit}:{path}")
+    if len(object_id) != 40 or any(c not in "0123456789abcdef" for c in object_id):
+        raise FragmentError(f"malformed object id for {commit}:{path}: {object_id}")
+    # Preserve Git's object semantics: directory paths retain tree ids; no
+    # additional blob-only restriction belongs at this lookup boundary.
+    return object_id
 
 
 class RangeHolderCache:
