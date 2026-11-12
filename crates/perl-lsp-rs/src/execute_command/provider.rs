@@ -311,6 +311,7 @@ impl ExecuteCommandProvider {
     /// service exactly as the pull-diagnostics path sees them. It takes
     /// precedence over the raw sibling fields set by
     /// [`Self::with_native_critic_config`].
+    #[cfg(test)]
     pub(crate) fn with_accepted_critic_snapshot(
         mut self,
         snapshot: AcceptedCriticSnapshot,
