@@ -58,6 +58,31 @@ fn registry_is_valid_at_committed_head() -> Result<()> {
 }
 
 #[test]
+fn mutated_required_gate_markers_are_stale() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().context("repo root")?;
+    for field in ["policy", "workflow"] {
+        let snapshot = Snapshot::open(root)?;
+        let mut registry = registry()?;
+        let claim = registry
+            .claims
+            .iter_mut()
+            .find(|claim| claim.id == "FV-UNSAFE-RATCHET-001")
+            .context("unsafe ratchet claim")?;
+        let authority = claim.authority.as_mut().context("unsafe ratchet authority")?;
+        let source = match field {
+            "policy" => authority.policy.as_mut(),
+            "workflow" => authority.workflow.as_mut(),
+            _ => bail!("unknown fixture field"),
+        }
+        .context("required-gate source")?;
+        let path = source.path.clone();
+        source.marker.push_str("\n    stale_marker_control: true");
+        rejects(validate(&snapshot, &registry), &format!("stale source marker: {path}"))?;
+    }
+    Ok(())
+}
+
+#[test]
 fn paths_reject_ambiguous_platform_and_pathspec_forms() {
     for path in [
         "",

@@ -356,9 +356,9 @@ fn authority(snapshot: &Snapshot, claim: &Claim, authority: &Authority) -> Resul
             ensure!(expected.len() == 1, "gate declaration must name exactly one policy row");
             let name = expected[0]["name"].as_str().context("gate declaration has no name")?;
             let runner = claim.runner.as_deref().context("gate runner missing")?;
-            required_gate(&snapshot.read(&policy.path)?, name, runner)?;
+            required_gate(&snapshot.source(policy)?, name, runner)?;
             let workflow = authority.workflow.as_ref().context("missing workflow binding")?;
-            required_gate_selected(&snapshot.read(&workflow.path)?, name)?;
+            required_gate_selected(&snapshot.source(workflow)?, name)?;
         }
     }
     Ok(())
