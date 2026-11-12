@@ -34,42 +34,19 @@ default Rust build.
 
 ## 2. Set up the development environment
 
-With Nix, use the reproducible environment:
-
-```bash
-nix develop
-just devex
-just doctor
-```
-
-Without Nix, install the pinned Rust toolchain through
-[rustup](https://rustup.rs/), install `just`, and run the same checks:
-
-```bash
-# Install rustup first if the toolchain manager is not present
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# The installer does not modify the shell that ran it
-source "$HOME/.cargo/env"
-
-rustup show
-cargo install just
-just devex
-just doctor
-```
-
-The repository pins Rust channel `1.95.0` and currently requires MSRV 1.95.
+Follow [Development environment](../how-to/DEVELOPMENT_ENVIRONMENT.md) in order:
+acquire Nix or native tools, activate the current shell, inspect prerequisites
+without building, then admit and run the hook installer and currency check.
+Continue to focused proof after those steps; the guide distinguishes the
+advisory `just doctor` report from build admission and test results.
+The repository pins Rust `1.95.0` and requires MSRV 1.95; see
+[rust-toolchain.toml](../../rust-toolchain.toml).
 
 On Windows, prefer `cargo xtask fmt` or package-scoped `cargo fmt`; bare
 `cargo fmt --all` can exceed the `CreateProcessW` command-line limit in this workspace.
 Symlink-rejection tests print a visible skip when the session lacks
 `SeCreateSymbolicLinkPrivilege`; enabling Developer Mode opts the machine into those
 tests but is not required for ordinary contribution work.
-
-Install the pre-push hook when you want the fast gate before every push:
-
-```bash
-bash scripts/install-githooks.sh
-```
 
 ## 3. Choose one issue and one claim
 
@@ -199,11 +176,12 @@ restarting every prior judgment merely because the commit SHA changed.
 
 | Need | Command or document |
 | --- | --- |
-| New checkout health | `just doctor` |
-| Tool and environment check | `just devex` |
+| New checkout setup | [Development environment](../how-to/DEVELOPMENT_ENVIRONMENT.md) |
+| Repository health report | `just doctor` (advisory) |
+| Tool diagnostics after build admission | `just devex` (compiles `xtask`; see the setup guide's Nix limitation) |
 | Fast pull-request loop | `just pr-fast` |
 | Full local merge gate | `just ci-gate` |
-| Agent-safe compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
+| Agent Cargo admission | [Cargo storage admission](../agents/CARGO_STORAGE.md) |
 | Parser or generated status | `just status-update`, then `just status-check` |
 | Public API documentation | `just ci-docs-check`, then `just docs-verify` |
 | Contributor-topology projection | `cargo run --locked -p xtask --bin contributor-topology` |
