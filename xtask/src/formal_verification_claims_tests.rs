@@ -2,10 +2,9 @@
 
 use super::*;
 use std::fs;
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 
-const POLICY: &str =
-    "gates:\n  - name: sample\n    tier: merge_gate\n    required: true\n    command: cargo test\n    quarantine: false\n";
+const POLICY: &str = "gates:\n  - name: sample\n    tier: merge_gate\n    required: true\n    command: cargo test\n    quarantine: false\n";
 const WORKFLOW: &str = r#"jobs:
   check-all-targets:
     needs: [draft-pr-check, preflight-latest-check]

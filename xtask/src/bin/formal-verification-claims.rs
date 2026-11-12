@@ -4,7 +4,7 @@
 
 #![expect(clippy::print_stdout, clippy::print_stderr, reason = "Usage, JSON/Markdown, NOT_PROVEN")]
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
