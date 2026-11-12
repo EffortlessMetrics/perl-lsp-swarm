@@ -22,10 +22,7 @@ fn missing_observation_is_not_proven() {
         projection.static_topology.development_repository,
         "EffortlessMetrics/perl-lsp-swarm"
     );
-    assert_eq!(
-        projection.static_topology.issue_repository,
-        "EffortlessMetrics/perl-lsp-swarm"
-    );
+    assert_eq!(projection.static_topology.issue_repository, "EffortlessMetrics/perl-lsp-swarm");
     assert_eq!(projection.static_topology.pull_request_repository, "EffortlessMetrics/perl-lsp");
     let human = render_human(&projection);
     assert!(

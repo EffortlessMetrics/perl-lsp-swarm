@@ -26,7 +26,9 @@ fn rejects_when(file: &str, edit: impl Fn(&str) -> String) {
     let temp = fixture_root();
     let path = temp.path().join(file);
     let original = fs::read_to_string(&path).expect("read fixture source");
-    fs::write(&path, edit(&original)).expect("write mutated fixture source");
+    let mutated = edit(&original);
+    assert_ne!(mutated, original, "fixture mutation did not change {file}");
+    fs::write(&path, mutated).expect("write mutated fixture source");
     assert!(
         build_projection(temp.path(), None).is_err(),
         "projection accepted a {file} mutation it must reject"
@@ -101,7 +103,9 @@ fn duplicate_authority_rows_are_rejected() {
 
 #[test]
 fn missing_authority_row_is_rejected() {
-    rejects_when(PROTOCOL, |text| text.replace("| `perl-lsp/master` | Release lineage |", ""));
+    rejects_when(PROTOCOL, |text| {
+        text.replace("| `perl-lsp/master` | Release lineage; public pull-request ingress |", "")
+    });
 }
 
 #[test]
@@ -126,9 +130,9 @@ fn missing_public_pull_request_ingress_role_is_rejected() {
 #[test]
 fn contradictory_authority_labels_are_rejected() {
     rejects_when(PROTOCOL, |text| {
-        text.replace("| Active development |", "| Temporary role |")
-            .replace("| Release lineage |", "| Active development |")
-            .replace("| Temporary role |", "| Release lineage |")
+        text.replace("| Active development", "| Temporary role")
+            .replace("| Release lineage", "| Active development")
+            .replace("| Temporary role", "| Release lineage")
     });
 }
 
@@ -290,4 +294,51 @@ fn cli_check_rejects_stale_output() {
         ])
         .assert()
         .failure();
+}
+
+#[test]
+fn ingress_detached_mention_is_not_authority() {
+    rejects_when(PROTOCOL, |text| text.replace("; public pull-request ingress", ""));
+}
+
+#[test]
+fn ingress_wrong_owner_is_not_authority() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("; public pull-request ingress", "").replace(
+            "| Active development |",
+            "| Active development; public pull-request ingress |",
+        )
+    });
+}
+
+#[test]
+fn ingress_negated_role_is_not_authority() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("; public pull-request ingress", "; not public pull-request ingress")
+    });
+}
+
+#[test]
+fn ingress_suffixed_role_is_not_authority() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("; public pull-request ingress", "; public pull-request ingress disabled")
+    });
+}
+
+#[test]
+fn ingress_exact_role_accepts_whitespace_and_neighbor_roles() {
+    let temp = fixture_root();
+    let path = temp.path().join(PROTOCOL);
+    let original = fs::read_to_string(&path).expect("read fixture source");
+    fs::write(
+        &path,
+        original.replace(
+            "; public pull-request ingress",
+            ";  public pull-request ingress  ; publication policy",
+        ),
+    )
+    .expect("write role fixture");
+    let projection = build_projection(temp.path(), None).expect("exact ingress role remains valid");
+    assert_eq!(projection.static_topology.issue_repository, "EffortlessMetrics/perl-lsp-swarm");
+    assert_eq!(projection.static_topology.pull_request_repository, "EffortlessMetrics/perl-lsp");
 }

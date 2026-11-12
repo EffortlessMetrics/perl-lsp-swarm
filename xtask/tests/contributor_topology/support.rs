@@ -39,7 +39,7 @@ release, history, and canonical package-lineage repo. It is the public pull-requ
 | Repo | Authority |
 |---|---|
 | `perl-lsp-swarm/main` | Active development |
-| `perl-lsp/master` | Release lineage |
+| `perl-lsp/master` | Release lineage; public pull-request ingress |
 
 #### Mechanics: history-preserving complete-tree merge
 
