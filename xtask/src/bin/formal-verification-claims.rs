@@ -13,10 +13,14 @@ use std::{
 };
 
 const SCHEMA_VERSION: &str = "formal_verification_claims.v1";
-const REGISTRY_PATH: &str = "policy/formal-verification-claims.v1.json";
+#[path = "../formal_verification_claims_registry.rs"]
+mod claim_registry;
+
+const REGISTRY_SOURCE_PATH: &str = "xtask/src/formal_verification_claims_registry.rs";
 const VALIDATOR_PATH: &str = "xtask/src/bin/formal-verification-claims.rs";
-const COMPILED_REGISTRY: &str =
-    include_str!("../../../policy/formal-verification-claims.v1.json");
+const COMPILED_REGISTRY: &str = claim_registry::REGISTRY_JSON;
+const COMPILED_REGISTRY_SOURCE: &str =
+    include_str!("../formal_verification_claims_registry.rs");
 const COMPILED_VALIDATOR: &str = include_str!("formal-verification-claims.rs");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -219,7 +223,7 @@ fn check_authority(root: &Path, authority: &Authority) -> Result<()> {
 
 fn source_identity(root: &Path) -> Result<SourceIdentity> {
     for (path, compiled) in [
-        (REGISTRY_PATH, COMPILED_REGISTRY),
+        (REGISTRY_SOURCE_PATH, COMPILED_REGISTRY_SOURCE),
         (VALIDATOR_PATH, COMPILED_VALIDATOR),
     ] {
         let runtime = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
