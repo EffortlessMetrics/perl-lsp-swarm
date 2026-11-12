@@ -174,8 +174,7 @@ class AdmissionTests(unittest.TestCase):
     def run_safe(self, args, call=None):
         with patch.dict(os.environ, self.env, clear=True), \
              patch.object(safe, "resource_plan", return_value=(self.root, self.slot, self.paths)), \
-             patch.object(safe.subprocess, "run", return_value=
-                          subprocess.CompletedProcess([], 0, b"", b"")), \
+             patch.object(safe.subprocess, "run", side_effect=self.tree.probe), \
              patch.object(safe.subprocess, "call", side_effect=call or (lambda *a, **kw: 0)):
             return safe.main(args)
 
@@ -596,6 +595,14 @@ class AdmissionTests(unittest.TestCase):
                    CARGO_HOME=str(self.root / "cargo"), TMPDIR=str(self.root / "tmp"))
         for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
             env.pop(key, None)
+        # Only the Cargo configuration probe is synthetic. Keep Git discovery
+        # real so the nested/linked identity assertions still exercise Git.
+        real_run = subprocess.run
+        def probe_or_run(command, *args, **kwargs):
+            if (command[0] == "cargo" and
+                    command[-2:] == ["locate-project", "--message-format=json"]):
+                return self.tree.probe(command, *args, **kwargs)
+            return real_run(command, *args, **kwargs)
         descriptors = []
         previous = Path.cwd()
         try:
@@ -604,7 +611,10 @@ class AdmissionTests(unittest.TestCase):
                 nested.mkdir(parents=True)
                 os.chdir(nested)
                 output = io.StringIO()
-                with patch.dict(os.environ, env, clear=True), patch.object(safe.subprocess, "call", return_value=0), contextlib.redirect_stderr(output):
+                with patch.dict(os.environ, env, clear=True), \
+                     patch.object(safe.subprocess, "call", return_value=0), \
+                     patch.object(safe.subprocess, "run", side_effect=probe_or_run), \
+                     contextlib.redirect_stderr(output):
                     self.assertEqual(safe.main(["check"]), 0)
                 descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
                 self.assertEqual(Path(descriptor["worktree"]), worktree.resolve())
