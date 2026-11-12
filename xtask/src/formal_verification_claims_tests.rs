@@ -631,7 +631,7 @@ fn inventory_surface_binds_declared_controls() -> Result<()> {
 
     write_fixture(&fixture, producer, &original)?;
     commit(&fixture)?;
-    let mut sibling = registry()?;
+    let mut sibling = super::registry()?;
     sibling.claims.retain(|claim| claim.id == "FV-WORKSPACE-OWNERSHIP-001");
     ensure!(sibling.claims.len() == 1, "workspace ownership row missing or duplicated");
     sibling.claims[0].target =
