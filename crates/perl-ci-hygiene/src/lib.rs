@@ -39,7 +39,7 @@ pub fn binary_path(root: &Path) -> PathBuf {
 ///
 /// This is the canonical include-predicate used by all Rust-source walks in the
 /// CI hygiene tool.  Using a positive include test (`ext == "rs"`) rather than a
-/// negative skip test (`ext != "rs")` avoids the subtle bug where
+/// negative skip test (`ext != "rs"`) avoids the subtle bug where
 /// `is_some_and(|ext| ext != "rs")` returns `false` for extensionless files,
 /// accidentally admitting them into the walk.
 #[must_use]
