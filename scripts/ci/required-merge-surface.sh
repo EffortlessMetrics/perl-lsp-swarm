@@ -354,7 +354,7 @@ cargo test -p xtask --bin formal-verification-claims --locked -- \
   --test-threads=1 --color never | tee "$RUNNER_TEMP/formal-verification-inventory-tests.log"
 # This canonical producer runs on Linux, including the Unix symlink control.
 # Keep the exact denominator and named controls synchronized with the suite.
-grep -Eq '^test result: ok\. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+grep -Eq '^test result: ok\. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
   "$RUNNER_TEMP/formal-verification-inventory-tests.log"
 for test_name in \
   registry_is_valid_at_committed_head \
@@ -366,6 +366,7 @@ for test_name in \
   changed_head_refuses_mixed_identity \
   committed_symlink_is_not_an_evidence_source \
   source_markers_cannot_be_empty_or_stale \
+  mutated_required_gate_markers_are_stale \
   removed_gate_with_surviving_comment_is_rejected \
   advisory_wrong_command_and_duplicate_gates_are_rejected \
   commented_or_optional_workflow_steps_are_rejected \
