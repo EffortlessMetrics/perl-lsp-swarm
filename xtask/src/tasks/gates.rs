@@ -5365,7 +5365,11 @@ gates:
                 "manifest_path": "/workspace/xtask/Cargo.toml"}],
             "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
         });
-        for file in [".ci/gate-policy.yaml", ".ci/policies/required-checks.toml"] {
+        for file in [
+            ".ci/gate-policy.yaml",
+            ".ci/policies/required-checks.toml",
+            ".ci/schemas/ci-route-plan.v1.schema.json",
+        ] {
             let scope = crate::tasks::ci_scope::classify_files(
                 &[file.to_string()],
                 &metadata,
