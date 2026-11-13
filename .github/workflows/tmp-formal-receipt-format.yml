@@ -36,12 +36,21 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+          import textwrap
 
           path = Path("xtask/src/tasks/formal_receipt.rs")
           source = path.read_text()
 
-          complete_anchor = '''                complete("positive", &self.obligations.positive, errors);
-          '''
+          def replace_once(pattern: str, replacement, label: str) -> None:
+              global source
+              source, count = re.subn(pattern, replacement, source, count=1, flags=re.MULTILINE)
+              if count != 1:
+                  raise SystemExit(f"{label} matched {count} times; expected exactly one")
+
+          positive_anchor = '                complete("positive", &self.obligations.positive, errors);'
+          if source.count(positive_anchor) != 1:
+              raise SystemExit("positive-completion anchor must occur exactly once")
           identity_law = '''                let expected_properties = self
                       .obligations
                       .positive
@@ -62,15 +71,17 @@ jobs:
                       );
                   }
           '''
-          if complete_anchor not in source:
-              raise SystemExit("positive-completion anchor no longer matches reviewed head")
-          source = source.replace(complete_anchor, identity_law + complete_anchor, 1)
+          source = source.replace(positive_anchor, identity_law + positive_anchor, 1)
 
-          old_artifact = '''                if !self.artifacts.iter().any(|artifact| artifact.required) {
-                      errors.push("native pass requires a required raw artifact".to_string());
-                  }
-          '''
-          new_artifact = '''                if !self.artifacts.iter().any(|artifact| {
+          artifact_pattern = (
+              r'^(?P<indent>[ \t]*)if !self\.artifacts\.iter\(\)\.any\(\|artifact\| artifact\.required\) \{\n'
+              r'(?P=indent)    errors\.push\("native pass requires a required raw artifact"\.to_string\(\)\);\n'
+              r'(?P=indent)\}$'
+          )
+
+          def artifact_replacement(match: re.Match[str]) -> str:
+              block = textwrap.dedent('''
+                  if !self.artifacts.iter().any(|artifact| {
                       artifact.required
                           && matches!(
                               artifact.kind,
@@ -84,21 +95,25 @@ jobs:
                               .to_string(),
                       );
                   }
-          '''
-          if old_artifact not in source:
-              raise SystemExit("native-artifact anchor no longer matches reviewed head")
-          source = source.replace(old_artifact, new_artifact, 1)
+              ''').strip('\n')
+              return textwrap.indent(block, match.group('indent'))
 
-          old_active = '''                    || self.disposition.superseded_by.is_some()
-                      || matches!(
-          '''
-          new_active = '''                    || self.disposition.superseded_by.is_some()
-                      || self.claim.rollout == RolloutState::Retired
-                      || matches!(
-          '''
-          if old_active not in source:
-              raise SystemExit("active-disposition anchor no longer matches reviewed head")
-          source = source.replace(old_active, new_active, 1)
+          replace_once(artifact_pattern, artifact_replacement, "native-artifact admission")
+
+          active_pattern = (
+              r'^(?P<indent>[ \t]*)\|\| self\.disposition\.superseded_by\.is_some\(\)\n'
+              r'(?P=indent)\|\| matches!\('
+          )
+
+          def active_replacement(match: re.Match[str]) -> str:
+              indent = match.group('indent')
+              return (
+                  f"{indent}|| self.disposition.superseded_by.is_some()\n"
+                  f"{indent}|| self.claim.rollout == RolloutState::Retired\n"
+                  f"{indent}|| matches!("
+              )
+
+          replace_once(active_pattern, active_replacement, "active-disposition admission")
 
           tests = '''
               #[test]
@@ -183,8 +198,8 @@ jobs:
               #[test]
               fn counterexample_requires_bound_trace() {
           '''
-          if marker not in source:
-              raise SystemExit("test insertion anchor no longer matches reviewed head")
+          if source.count(marker) != 1:
+              raise SystemExit("test insertion anchor must occur exactly once")
           source = source.replace(marker, tests + marker, 1)
           path.write_text(source)
           PY
