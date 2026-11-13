@@ -1,0 +1,136 @@
+name: Temporary formal currentness qualification
+
+on:
+  push:
+    branches: [agent/formal-currentness-19314]
+    paths:
+      - .github/workflows/tmp-formal-currentness-qualification.yml
+      - xtask/src/formal_closure/**
+      - xtask/src/bin/formal-closure.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-formal-currentness-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  closure:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned formatting and test toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+      - name: Format only the owned closure sources and retain exact content
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-currentness-qualification/source
+          git rev-parse HEAD > target/formal-currentness-qualification/subject.txt
+          rustc +1.95.0 -vV > target/formal-currentness-qualification/rustc.txt
+          rustfmt +1.95.0 --edition 2024 xtask/src/bin/formal-closure.rs xtask/src/formal_closure/mod.rs xtask/src/formal_closure/snapshot.rs xtask/src/formal_closure/unique_json.rs xtask/src/formal_closure/tests.rs
+          python3 - <<'PY'
+          import pathlib, shutil, subprocess
+          owned = {
+              'xtask/src/bin/formal-closure.rs',
+              'xtask/src/formal_closure/mod.rs',
+              'xtask/src/formal_closure/snapshot.rs',
+              'xtask/src/formal_closure/unique_json.rs',
+              'xtask/src/formal_closure/tests.rs',
+          }
+          changed = subprocess.check_output(['git', 'diff', '--name-only', '-z']).decode().split('\0')
+          for path in filter(None, changed):
+              if path not in owned:
+                  subprocess.run(['git', 'restore', '--', path], check=True)
+          for path in sorted(owned):
+              dest = pathlib.Path('target/formal-currentness-qualification/source') / path
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(path, dest)
+          PY
+          git diff --check
+          git diff --binary -- xtask/src/bin/formal-closure.rs xtask/src/formal_closure > target/formal-currentness-qualification/format.patch
+          sha256sum xtask/src/bin/formal-closure.rs xtask/src/formal_closure/*.rs > target/formal-currentness-qualification/source-sha256.txt
+      - name: Execute focused closure suite through existing admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          scripts/cargo-admitted test -p xtask --bin formal-closure --profile agent --locked formal_closure::tests -- --test-threads=1 --color never 2>&1 | tee target/formal-currentness-qualification/tests.log
+          code=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$code" > target/formal-currentness-qualification/test-exit.txt
+          test "$code" -eq 0
+          grep -Eq 'test result: ok\. 33 passed; 0 failed; 0 ignored;' target/formal-currentness-qualification/tests.log
+      - name: Preserve qualification evidence, never publish source
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: formal-currentness-qualification-${{ github.sha }}
+          path: target/formal-currentness-qualification/
+          retention-days: 7
+          if-no-files-found: error
+  native-position:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Read immutable position candidate without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 4e713e85d0db1a3fb124bd2ffbfa63d5e6308383
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install exact verifier release for diagnostic qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-position-native
+          git rev-parse HEAD > target/formal-position-native/subject.txt
+          test "$(uname -m)" = x86_64
+          test "$(df --output=avail -B1 "$RUNNER_TEMP" | tail -1)" -gt 8589934592
+          rustup toolchain install 1.95.0 --profile minimal
+          cargo +1.95.0 install kani-verifier --version 0.68.0 --locked --jobs 2 --root "$RUNNER_TEMP/kani-launcher"
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 180 https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/kani-0.68.0.tar.gz"
+          printf '32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3  %s\n' "$RUNNER_TEMP/kani-0.68.0.tar.gz" | sha256sum -c -
+          "$RUNNER_TEMP/kani-launcher/bin/kani" setup --use-local-bundle "$RUNNER_TEMP/kani-0.68.0.tar.gz"
+          "$RUNNER_TEMP/kani-launcher/bin/kani" --version > target/formal-position-native/kani-version.txt
+          rustup toolchain list -v > target/formal-position-native/rust-toolchains.txt
+          sha256sum "$RUNNER_TEMP/kani-0.68.0.tar.gz" > target/formal-position-native/bundle-sha256.txt
+          sha256sum crates/perl-line-index/src/lib.rs crates/perl-line-index/tests/formal/*.rs > target/formal-position-native/source-sha256.txt
+      - name: Capture real positive and false-theorem runs without admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Diagnostic experiment only. The canonical #19315 supervisor is not
+          # implemented here, and no process-custody or accepted-proof receipt
+          # is produced. Job/OS limits prevent an unbounded solver experiment.
+          ulimit -v 6291456
+          ulimit -f 262144
+          set +e
+          timeout --kill-after=10s 600s "$RUNNER_TEMP/kani-launcher/bin/kani" crates/perl-line-index/tests/formal/line_index_kani.rs -Z unstable-options -Z concrete-playback --export-json target/formal-position-native/positive.json --concrete-playback=print > target/formal-position-native/positive.log 2>&1
+          positive=$?
+          printf '%s\n' "$positive" > target/formal-position-native/positive-exit.txt
+          timeout --kill-after=10s 180s "$RUNNER_TEMP/kani-launcher/bin/kani" crates/perl-line-index/tests/formal/false_scalar_boundary.rs -Z unstable-options -Z concrete-playback --export-json target/formal-position-native/false-theorem.json --concrete-playback=print > target/formal-position-native/false-theorem.log 2>&1
+          negative=$?
+          printf '%s\n' "$negative" > target/formal-position-native/false-theorem-exit.txt
+          set -e
+          printf '{"proof_accepted":false,"evidence_class":"diagnostic_native_execution","custody_qualified":false,"positive_exit":%s,"false_theorem_exit":%s}\n' "$positive" "$negative" > target/formal-position-native/observation.json
+          git diff --exit-code
+          # This step cannot pass merely because a negative invocation failed.
+          # Its actual property, cover and witness output must be inspected.
+          test "$positive" -eq 0
+      - name: Preserve actual native output, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: formal-position-native-qualification-${{ github.sha }}
+          path: target/formal-position-native/
+          retention-days: 7
+          if-no-files-found: error
