@@ -1,0 +1,81 @@
+name: Rust 1.100 migration inventory
+
+on:
+  push:
+    branches: [chore/rust-1.100]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-1-100-inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Inventory Rust 1.95 references
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee rust-1-100-inventory.txt
+          from __future__ import annotations
+          import re
+          import subprocess
+          from collections import Counter
+          from pathlib import Path
+
+          tracked = subprocess.check_output(["git", "ls-files", "-z"], text=False).split(b"\0")
+          paths = [Path(raw.decode("utf-8")) for raw in tracked if raw]
+          version_re = re.compile(r"(?<![0-9])1\.95(?:\.0)?(?![0-9])")
+          historical_prefixes = (
+              ".spec/", "benchmarks/results/", "docs/forensics/",
+              "docs/learnings/", "docs/performance/",
+          )
+          historical_name = re.compile(r"(?:^|/)(?:19|20)\d{2}[-_]\d{2}[-_]\d{2}")
+          active = []
+          historical = []
+          for path in paths:
+              try:
+                  lines = path.read_text(encoding="utf-8").splitlines()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for lineno, line in enumerate(lines, 1):
+                  if not version_re.search(line):
+                      continue
+                  item = (path.as_posix(), lineno, line.rstrip())
+                  if item[0].startswith(historical_prefixes) or historical_name.search(item[0]):
+                      historical.append(item)
+                  else:
+                      active.append(item)
+
+          print("=== ACTIVE ===")
+          for path, lineno, line in active:
+              print(f"{path}:{lineno}:{line}")
+          print("\n=== ACTIVE PATH COUNTS ===")
+          for path, count in sorted(Counter(x[0] for x in active).items()):
+              print(f"{count:4d} {path}")
+          print("\n=== HISTORICAL PATH COUNTS ===")
+          for path, count in sorted(Counter(x[0] for x in historical).items()):
+              print(f"{count:4d} {path}")
+          print(
+              f"\nSUMMARY active_matches={len(active)} active_paths={len(set(x[0] for x in active))} "
+              f"historical_matches={len(historical)} historical_paths={len(set(x[0] for x in historical))}"
+          )
+          PY
+
+      - name: Upload inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-1-100-inventory
+          path: rust-1-100-inventory.txt
+          retention-days: 1
