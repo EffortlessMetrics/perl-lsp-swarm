@@ -49,7 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/populate-book.sh >/tmp/populate-book.log
-          git add -- \
+          git add -f -- \
             book/src/ci/overview.md \
             book/src/ci/local-validation.md \
             book/src/developer/development-workflow.md \
