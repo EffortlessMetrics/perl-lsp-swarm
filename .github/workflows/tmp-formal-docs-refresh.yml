@@ -1,0 +1,148 @@
+name: Temporary formal documentation refresh
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: temporary-formal-docs-refresh-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: Refresh and validate formal documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      HEAD_BRANCH: ${{ github.head_ref }}
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Refresh executable programme map
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "docs/formal-methods/README.md",
+              "> **Current status:** the formal-methods control plane is under construction. No TLA+/TLC, Kani, Loom, or deductive claim is currently qualified as a current, production-bound formal `PASS` on `main`. Issue #19296 owns the programme; #19297 owns the infrastructure; PR #19305 is the active claim-inventory candidate. The existing #19147 TLA+/TLC source candidate remains `NOT_PROVEN` until its native checker, production correspondence, and required controls run successfully.",
+              "> **Current status:** the formal-methods control plane is under construction. No TLA+/TLC, Kani, Loom, or deductive claim is currently qualified as a current, production-bound formal `PASS` on `main`. Issue #19296 owns the programme and #19297 owns the infrastructure. PR #19305 is the claim-inventory candidate; PR #19323 is the receipt-admission candidate and cannot self-mint a native `PASS`; PR #19342 is the first production-source position-law candidate, with ordinary Rust regression checks distinct from native Kani execution. The existing #19147 TLA+/TLC source candidate remains `NOT_PROVEN` until its native checker, production correspondence, and required controls run successfully."
+          )
+
+          replace_once(
+              "docs/formal-methods/README.md",
+              "- #19305 — typed claim inventory and rollout scaffold; active candidate, not native proof execution.\n- #19308 — proof receipts, semantic implementation closure, native result, freshness, and correspondence.\n- #19309 — immutable TLC/Kani/Loom tool identity, process custody, native result adapters, and #19147 migration.\n- #19310 — impact routing, smoke/full profiles, artifacts, queue integration, and generated current status.\n- #19311 — these contributor, operations, trust, upgrade, and maintenance documents.",
+              "- #19305 — typed claim inventory and rollout scaffold; active candidate, not native proof execution.\n- #19313 — registered formal-proof receipt and fail-closed internal-consistency validation; PR #19323 is the active candidate.\n- #19314 — versioned semantic closure, evaluated-source identity, freshness, and production correspondence.\n- #19315 — immutable tool manifests, host support, isolated process custody, and retained raw evidence.\n- #19316 — TLC result adapter and bounded #19147 migration.\n- #19317 — Kani result adapter and exact harness/property/cover/unwind accounting.\n- #19318 — Loom result adapter and exact exploration-bound accounting.\n- #19319 — conservative impact routing and smoke/full claim selection.\n- #19320 — common execution, artifact, replay, and counterexample packets.\n- #19321 — generated non-scalar current-status projection.\n- #19322 — shadow, selected, and eventually required protected-integration consumption.\n- #19311 — these contributor, operations, trust, upgrade, and maintenance documents."
+          )
+
+          replace_once(
+              "docs/formal-methods/ARCHITECTURE.md",
+              "#19308 owns the versioned closure algorithm.",
+              "#19314 owns the versioned closure and currentness algorithm."
+          )
+          replace_once(
+              "docs/formal-methods/ARCHITECTURE.md",
+              "#19308 owns a formal-proof receipt registered through the existing `.ci/receipts/registry.toml` authority.",
+              "#19313 owns a formal-proof receipt registered through the existing `.ci/receipts/registry.toml` authority."
+          )
+          replace_once(
+              "docs/formal-methods/ARCHITECTURE.md",
+              "#19309 owns common process custody and tool-specific result admission.",
+              "#19315 owns immutable tool identity and common process custody. #19316, #19317, and #19318 own TLC, Kani, and Loom result admission respectively."
+          )
+          replace_once(
+              "docs/formal-methods/ARCHITECTURE.md",
+              "#19310 owns deterministic selection.",
+              "#19319 owns deterministic impact selection. #19320 owns execution and artifacts; #19321 owns current-status generation; #19322 owns protected-integration consumption."
+          )
+          replace_once(
+              "docs/formal-methods/ARCHITECTURE.md",
+              "#19305 claim inventory\n  → #19308 receipts, closure, result, freshness\n  → #19309 native tool adapters\n  → first TLC and Kani pilots\n  → #19310 routing, artifacts, status, queue integration\n  → wider domain proof qualification",
+              "#19305 claim inventory\n  → #19313 receipt vocabulary and internal admission laws\n  → #19314 semantic closure, freshness, and correspondence\n  → #19315 immutable tools and process custody\n  → #19316–#19318 native TLC/Kani/Loom adapters\n  → first native TLC and Kani qualification runs\n  → #19319 routing and profile selection\n  → #19320 execution, artifacts, replay, and counterexamples\n  → #19321 generated current status\n  → #19322 protected-integration consumption\n  → wider domain proof qualification"
+          )
+
+          replace_once(
+              "docs/formal-methods/OPERATIONS.md",
+              "This runbook describes how formal claims are expected to be executed, inspected, triaged, and replayed. It distinguishes current repository behavior from the command surface planned by #19308–#19310.",
+              "This runbook describes how formal claims are expected to be executed, inspected, triaged, and replayed. It distinguishes current repository behavior from the command surface implemented in dependency order by #19313–#19322."
+          )
+          replace_once(
+              "docs/formal-methods/OPERATIONS.md",
+              "- PR #19305 is the active claim-inventory candidate and is not proof execution;",
+              "- PR #19305 is the active claim-inventory candidate and is not proof execution;\n- PR #19323 is the receipt-admission candidate; receipt validation establishes envelope consistency, not native legitimacy;\n- PR #19342 is the first position-law production-source candidate; ordinary Rust checks do not count as a native Kani result;"
+          )
+          replace_once(
+              "docs/formal-methods/OPERATIONS.md",
+              "> **PLANNED — not yet available on `main`.** Exact spelling may change while #19308–#19310 are implemented.",
+              "> **PLANNED — not yet available on `main`.** Exact spelling may change while #19313–#19322 are implemented. A command becomes current only after its owning slice lands on `main` and the documentation check verifies it."
+          )
+          replace_once(
+              "docs/formal-methods/OPERATIONS.md",
+              "- Add retained old/new captures and parser controls under #19309.",
+              "- Add retained old/new captures and parser controls under the common tool/process owner #19315 and the affected adapter owner #19316, #19317, or #19318."
+          )
+
+          replace_once(
+              "docs/formal-methods/MAINTENANCE.md",
+              "Formal verification remains useful only when claims, tools, production bindings, receipts, and documentation stay current. This document defines the maintenance contract owned by #19311 and the execution infrastructure in #19308–#19310.",
+              "Formal verification remains useful only when claims, tools, production bindings, receipts, and documentation stay current. This document defines the maintenance contract owned by #19311 and the executable infrastructure slices #19313–#19322."
+          )
+          replace_once(
+              "docs/formal-methods/MAINTENANCE.md",
+              "> **Planned candidates, not yet machine-qualified on `main`.** #19309 owns immutable installation and compatibility qualification.",
+              "> **Planned candidates, not yet machine-qualified on `main`.** #19315 owns immutable installation and process qualification; #19316–#19318 own tool-specific semantic compatibility."
+          )
+          replace_once(
+              "docs/formal-methods/MAINTENANCE.md",
+              "Prefer generated vocabulary/reference tables over duplicated constants.",
+              "Prefer generated vocabulary/reference tables over duplicated constants. The programme map must also name the current executable child issues (#19313–#19322), not only superseded umbrella issues; an issue split or ownership transfer updates these documents in the same change."
+          )
+          PY
+
+      - name: Remove temporary workflow before validation
+        run: git rm .github/workflows/tmp-formal-docs-refresh.yml
+
+      - name: Install repository Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install 1.95.0 --profile minimal
+
+      - name: Validate documentation
+        run: cargo xtask docs-check
+
+      - name: Validate workflow policy without temporary carrier
+        run: cargo xtask workflow-policy
+
+      - name: Verify clean patch shape
+        run: git diff --check
+
+      - name: Commit refreshed documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Steven Zimmerman, CPA"
+          git config user.email "15812269+EffortlessSteven@users.noreply.github.com"
+          git add docs/formal-methods/README.md docs/formal-methods/ARCHITECTURE.md docs/formal-methods/OPERATIONS.md docs/formal-methods/MAINTENANCE.md
+          if git diff --cached --quiet; then
+            echo "No documentation delta was produced" >&2
+            exit 1
+          fi
+          git commit -m "docs(formal): map executable verification slices (#19311)"
+          git push origin "HEAD:${HEAD_BRANCH}"
