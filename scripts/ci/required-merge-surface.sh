@@ -382,3 +382,48 @@ for test_name in \
   grep -Fx "test tests::$test_name ... ok" "$RUNNER_TEMP/formal-verification-inventory-tests.log"
 done
 cargo run -p xtask --bin formal-verification-claims --locked -- --check
+
+# required merge surface command 40: Kani structured output refusal controls (required merge surface)
+_step_index=$((_step_index + 1))
+set -o pipefail
+cargo test -p xtask --bin formal-kani-output --locked -- \
+  --test-threads=1 --color never | tee "$RUNNER_TEMP/formal-kani-output-tests.log"
+grep -Eq '^test result: ok\. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+  "$RUNNER_TEMP/formal-kani-output-tests.log"
+for test_name in \
+  complete_positive_report_is_not_a_proof_receipt \
+  duplicate_json_keys_cannot_overwrite_native_failure \
+  malformed_empty_oversized_and_trailing_json_are_rejected \
+  tool_version_target_and_schema_mismatches_are_rejected \
+  unknown_or_null_used_tool_identity_is_not_accepted \
+  every_harness_array_rejects_missing_duplicate_and_foreign_rows \
+  arrays_join_by_harness_identity_not_position \
+  summary_counts_cannot_hide_missing_or_failed_work \
+  zero_work_and_vacuous_expectations_are_rejected \
+  each_property_count_is_recomputed_including_cover_statuses \
+  missing_foreign_and_duplicate_covers_are_rejected \
+  unsatisfied_and_unreachable_covers_defeat_aggregate_success \
+  unreachable_required_assertion_is_not_vacuously_positive \
+  ordinary_unreachable_safety_check_is_preserved_separately \
+  wrong_status_vocabularies_and_cover_classifications_are_rejected \
+  should_panic_automatic_and_loop_contract_semantics_are_not_reinterpreted \
+  native_assertion_failure_is_reported_but_never_admitted \
+  undetermined_unknown_and_solver_errors_never_become_positive \
+  error_details_cannot_contradict_the_native_result \
+  missing_null_fractional_and_negative_property_counts_are_rejected \
+  duplicate_out_of_range_and_zero_check_ids_are_rejected \
+  assertion_identity_cannot_be_missing_duplicated_or_reclassified \
+  source_identity_requires_the_exact_emitted_path \
+  coverage_external_solver_and_unknown_semantic_fields_fail_closed \
+  expectation_files_have_closed_schema_and_no_duplicate_keys \
+  unknown_metadata_changes_the_retained_raw_identity \
+  no_cover_counterexample_control_requires_its_named_assertion \
+  unrelated_failure_does_not_satisfy_a_negative_control \
+  timeout_or_crash_is_not_a_successful_negative_control \
+  inspection_binds_the_expectation_not_just_the_supplied_export \
+  unwind_and_unsupported_failures_are_not_production_counterexamples \
+  a_new_property_category_requires_explicit_profile_review \
+  a_negative_control_cannot_hide_an_unsatisfied_required_cover \
+  object_bit_configuration_cannot_be_omitted_or_changed; do
+  grep -Fx "test formal_kani::tests::$test_name ... ok" "$RUNNER_TEMP/formal-kani-output-tests.log"
+done
