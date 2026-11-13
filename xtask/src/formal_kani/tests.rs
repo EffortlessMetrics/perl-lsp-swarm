@@ -10,18 +10,41 @@ fn expected() -> ExpectedRun {
     ExpectedRun {
         target: "x86_64-unknown-linux-gnu".to_owned(),
         tools: [
-            ("kani", "0.68.0"), ("rustc", "fixture rustc"), ("cbmc", "fixture cbmc"),
-            ("goto_cc", "fixture goto-cc"), ("goto_instrument", "fixture goto-instrument"),
-        ].into_iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect(),
+            ("kani", "0.68.0"),
+            ("rustc", "fixture rustc"),
+            ("cbmc", "fixture cbmc"),
+            ("goto_cc", "fixture goto-cc"),
+            ("goto_instrument", "fixture goto-instrument"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect(),
         cbmc_version: "fixture cbmc metadata".to_owned(),
         solver: "cadical".to_owned(),
         object_bits: 16,
-        property_categories: ["assertion", "cover", "overflow", "unwind", "recursion",
-            "unsupported_construct", "missing_definition"].into_iter().map(str::to_owned).collect(),
-        harnesses: [("h".to_owned(), ExpectedHarness {
-            goal: Goal::Positive, source: "proof.rs".to_owned(), assertions: vec!["FV_ASSERT".to_owned()],
-            covers: vec!["FV_COVER".to_owned()],
-        })].into_iter().collect(),
+        property_categories: [
+            "assertion",
+            "cover",
+            "overflow",
+            "unwind",
+            "recursion",
+            "unsupported_construct",
+            "missing_definition",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        harnesses: [(
+            "h".to_owned(),
+            ExpectedHarness {
+                goal: Goal::Positive,
+                source: "proof.rs".to_owned(),
+                assertions: vec!["FV_ASSERT".to_owned()],
+                covers: vec!["FV_COVER".to_owned()],
+            },
+        )]
+        .into_iter()
+        .collect(),
     }
 }
 
@@ -64,7 +87,10 @@ fn rejects<T>(result: Result<T>, fragment: &str) -> TestResult {
     match result {
         Ok(_) => bail!("incorrectly accepted negative control: {fragment}"),
         Err(error) => {
-            ensure!(format!("{error:#}").contains(fragment), "wrong refusal: {error:#}; expected {fragment}");
+            ensure!(
+                format!("{error:#}").contains(fragment),
+                "wrong refusal: {error:#}; expected {fragment}"
+            );
             Ok(())
         }
     }
@@ -106,9 +132,18 @@ fn malformed_empty_oversized_and_trailing_json_are_rejected() -> TestResult {
 
 #[test]
 fn tool_version_target_and_schema_mismatches_are_rejected() -> TestResult {
-    for path in ["/metadata/version", "/metadata/kani_version", "/metadata/target",
-        "/tools/kani", "/tools/rustc", "/tools/cbmc", "/tools/goto_cc", "/tools/goto_instrument",
-        "/cbmc/0/cbmc_metadata/version", "/cbmc/0/configuration/solver"] {
+    for path in [
+        "/metadata/version",
+        "/metadata/kani_version",
+        "/metadata/target",
+        "/tools/kani",
+        "/tools/rustc",
+        "/tools/cbmc",
+        "/tools/goto_cc",
+        "/tools/goto_instrument",
+        "/cbmc/0/cbmc_metadata/version",
+        "/cbmc/0/configuration/solver",
+    ] {
         let mut value = fixture();
         *value.pointer_mut(path).context("fixture path")? = json!("foreign");
         rejects(inspect_value(&value), "mismatch")?;
@@ -131,8 +166,11 @@ fn unknown_or_null_used_tool_identity_is_not_accepted() -> TestResult {
 #[test]
 fn every_harness_array_rejects_missing_duplicate_and_foreign_rows() -> TestResult {
     for (path, id) in [
-        ("/harness_metadata", "pretty_name"), ("/verification_results/results", "harness_id"),
-        ("/property_details", "harness_id"), ("/error_details", "harness_id"), ("/cbmc", "harness_id"),
+        ("/harness_metadata", "pretty_name"),
+        ("/verification_results/results", "harness_id"),
+        ("/property_details", "harness_id"),
+        ("/error_details", "harness_id"),
+        ("/cbmc", "harness_id"),
     ] {
         let mut value = fixture();
         *value.pointer_mut(path).context("fixture path")? = json!([]);
@@ -154,8 +192,11 @@ fn two_harnesses() -> Result<(ExpectedRun, Value)> {
     expected.harnesses.insert("second".to_owned(), second);
     let mut value = fixture();
     for (path, id) in [
-        ("/harness_metadata", "pretty_name"), ("/verification_results/results", "harness_id"),
-        ("/property_details", "harness_id"), ("/error_details", "harness_id"), ("/cbmc", "harness_id"),
+        ("/harness_metadata", "pretty_name"),
+        ("/verification_results/results", "harness_id"),
+        ("/property_details", "harness_id"),
+        ("/error_details", "harness_id"),
+        ("/cbmc", "harness_id"),
     ] {
         let rows = value.pointer_mut(path).and_then(Value::as_array_mut).context("fixture rows")?;
         let mut second = rows[0].clone();
@@ -224,7 +265,8 @@ fn missing_foreign_and_duplicate_covers_are_rejected() -> TestResult {
     value["verification_results"]["results"][0]["checks"][1]["description"] = json!("foreign");
     rejects(inspect_value(&value), "foreign cover")?;
     let mut value = fixture();
-    let checks = value["verification_results"]["results"][0]["checks"].as_array_mut().context("checks")?;
+    let checks =
+        value["verification_results"]["results"][0]["checks"].as_array_mut().context("checks")?;
     checks[2] = checks[1].clone();
     checks[2]["id"] = json!(3);
     rejects(inspect_value(&value), "duplicate cover")
@@ -236,7 +278,8 @@ fn unsatisfied_and_unreachable_covers_defeat_aggregate_success() -> TestResult {
         let mut value = fixture();
         value["verification_results"]["results"][0]["checks"][1]["status"] = json!(status);
         value["property_details"][0]["property_details"]["satisfied"] = json!(0);
-        value["property_details"][0]["property_details"][counter] = json!(if counter == "unreachable" { 2 } else { 1 });
+        value["property_details"][0]["property_details"][counter] =
+            json!(if counter == "unreachable" { 2 } else { 1 });
         assert_eq!(inspect_value(&value)?.kind, ObservationKind::NotProven);
     }
     Ok(())
@@ -275,8 +318,13 @@ fn wrong_status_vocabularies_and_cover_classifications_are_rejected() -> TestRes
 
 #[test]
 fn should_panic_automatic_and_loop_contract_semantics_are_not_reinterpreted() -> TestResult {
-    for path in ["/harness_metadata/0/attributes/should_panic", "/harness_metadata/0/is_automatically_generated",
-        "/harness_metadata/0/has_loop_contracts", "/harness_metadata/0/is_ctor_based", "/harness_metadata/0/is_bounded"] {
+    for path in [
+        "/harness_metadata/0/attributes/should_panic",
+        "/harness_metadata/0/is_automatically_generated",
+        "/harness_metadata/0/has_loop_contracts",
+        "/harness_metadata/0/is_ctor_based",
+        "/harness_metadata/0/is_bounded",
+    ] {
         let mut value = fixture();
         *value.pointer_mut(path).context("path")? = json!(true);
         assert!(inspect_value(&value).is_err());
@@ -291,13 +339,20 @@ fn native_assertion_failure_is_reported_but_never_admitted() -> TestResult {
     value["verification_results"]["results"][0]["status"] = json!("Failure");
     value["verification_results"]["summary"]["successful"] = json!(0);
     value["verification_results"]["summary"]["failed"] = json!(1);
-    value["error_details"][0] = json!({"harness_id": "h", "has_errors": true, "exit_status": "properties_failed"});
+    value["error_details"][0] = json!({"harness_id": "h", "has_errors": true,
+        "error_type": "assertion_failure", "failed_properties_type": "PanicsOnly",
+        "exit_status": "properties_failed"});
     value["property_details"][0]["property_details"]["passed"] = json!(0);
     value["property_details"][0]["property_details"]["failed"] = json!(1);
     let observation = inspect_value(&value)?;
     assert_eq!(observation.kind, ObservationKind::ReportedCounterexample);
     assert!(!observation.proof_accepted);
-    assert!(observation.harnesses["h"].findings.iter().any(|f| f.description == "FV_ASSERT" && f.status == "Failure"));
+    assert!(
+        observation.harnesses["h"]
+            .findings
+            .iter()
+            .any(|f| f.description == "FV_ASSERT" && f.status == "Failure")
+    );
     Ok(())
 }
 
@@ -333,7 +388,8 @@ fn error_details_cannot_contradict_the_native_result() -> TestResult {
     rejects(inspect_value(&value), "error/result contradiction")?;
     let mut value = fixture();
     value["error_details"][0]["exit_status"] = json!("timeout");
-    rejects(inspect_value(&value), "success carries failure details")
+    rejects(inspect_value(&value), "success carries failure details")?;
+    error_classes_cannot_disagree_with_observed_properties()
 }
 
 #[test]
@@ -359,13 +415,15 @@ fn duplicate_out_of_range_and_zero_check_ids_are_rejected() -> TestResult {
 #[test]
 fn assertion_identity_cannot_be_missing_duplicated_or_reclassified() -> TestResult {
     let mut value = fixture();
-    value["verification_results"]["results"][0]["checks"][0]["description"] = json!("not the assertion");
+    value["verification_results"]["results"][0]["checks"][0]["description"] =
+        json!("not the assertion");
     rejects(inspect_value(&value), "assertion set incomplete")?;
     let mut value = fixture();
     value["verification_results"]["results"][0]["checks"][0]["category"] = json!("overflow");
     rejects(inspect_value(&value), "assertion category mismatch")?;
     let mut value = fixture();
-    value["verification_results"]["results"][0]["checks"][2] = json!({"id": 3, "category": "assertion", "description": "FV_ASSERT", "status": "Success"});
+    value["verification_results"]["results"][0]["checks"][2] =
+        json!({"id": 3, "category": "assertion", "description": "FV_ASSERT", "status": "Success"});
     rejects(inspect_value(&value), "duplicate required assertion")
 }
 
@@ -426,7 +484,9 @@ fn negative_fixture() -> Result<(ExpectedRun, Value)> {
     ]);
     value["verification_results"]["summary"]["successful"] = json!(0);
     value["verification_results"]["summary"]["failed"] = json!(1);
-    value["error_details"][0] = json!({"harness_id": "h", "has_errors": true, "exit_status": "properties_failed"});
+    value["error_details"][0] = json!({"harness_id": "h", "has_errors": true,
+        "error_type": "assertion_failure", "failed_properties_type": "PanicsOnly",
+        "exit_status": "properties_failed"});
     value["property_details"][0]["property_details"] = json!({
         "total_properties": 1, "passed": 0, "failed": 1, "unreachable": 0,
         "undetermined": 0, "solver_error": 0, "satisfied": 0, "unsatisfiable": 0,
@@ -452,9 +512,11 @@ fn unrelated_failure_does_not_satisfy_a_negative_control() -> TestResult {
     harness.goal = Goal::Counterexample { assertion: "FV_OTHER".to_owned() };
     harness.assertions.push("FV_OTHER".to_owned());
     let mut value = value;
-    value["verification_results"]["results"][0]["checks"].as_array_mut().context("checks")?.push(
-        json!({"id": 2, "category": "assertion", "description": "FV_OTHER", "status": "Success"})
-    );
+    let check = json!({"id": 2, "category": "assertion", "description": "FV_OTHER", "status": "Success"});
+    value["verification_results"]["results"][0]["checks"]
+        .as_array_mut()
+        .context("checks")?
+        .push(check);
     value["property_details"][0]["property_details"]["total_properties"] = json!(2);
     value["property_details"][0]["property_details"]["passed"] = json!(1);
     let report = inspect(&serde_json::to_vec(&value)?, &expected)?;
@@ -479,7 +541,10 @@ fn inspection_binds_the_expectation_not_just_the_supplied_export() -> TestResult
     let value = serde_json::to_vec(&fixture())?;
     let expected = expected();
     let report = inspect(&value, &expected)?;
-    assert_eq!(report.expectation_sha256, format!("{:x}", Sha256::digest(serde_json::to_vec(&expected)?)));
+    assert_eq!(
+        report.expectation_sha256,
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&expected)?))
+    );
     Ok(())
 }
 
@@ -494,6 +559,7 @@ fn unwind_and_unsupported_failures_are_not_production_counterexamples() -> TestR
         value["verification_results"]["summary"]["successful"] = json!(0);
         value["verification_results"]["summary"]["failed"] = json!(1);
         value["error_details"][0] = json!({"harness_id": "h", "has_errors": true,
+            "error_type": "verification_failure", "failed_properties_type": "Other",
             "exit_status": "properties_failed"});
         value["property_details"][0]["property_details"]["unreachable"] = json!(0);
         value["property_details"][0]["property_details"]["failed"] = json!(1);
@@ -507,7 +573,8 @@ fn unwind_and_unsupported_failures_are_not_production_counterexamples() -> TestR
 #[test]
 fn a_new_property_category_requires_explicit_profile_review() -> TestResult {
     let mut value = fixture();
-    value["verification_results"]["results"][0]["checks"][2]["category"] = json!("new_safety_class");
+    value["verification_results"]["results"][0]["checks"][2]["category"] =
+        json!("new_safety_class");
     rejects(inspect_value(&value), "unrecognized property category")
 }
 
@@ -515,9 +582,11 @@ fn a_new_property_category_requires_explicit_profile_review() -> TestResult {
 fn a_negative_control_cannot_hide_an_unsatisfied_required_cover() -> TestResult {
     let (mut expected, mut value) = negative_fixture()?;
     expected.harnesses.get_mut("h").context("h")?.covers.push("FV_COVER".to_owned());
-    value["verification_results"]["results"][0]["checks"].as_array_mut().context("checks")?.push(
-        json!({"id": 2, "category": "cover", "description": "FV_COVER", "status": "Unsatisfiable"})
-    );
+    let check = json!({"id": 2, "category": "cover", "description": "FV_COVER", "status": "Unsatisfiable"});
+    value["verification_results"]["results"][0]["checks"]
+        .as_array_mut()
+        .context("checks")?
+        .push(check);
     value["property_details"][0]["property_details"]["total_properties"] = json!(2);
     value["property_details"][0]["property_details"]["unsatisfiable"] = json!(1);
     let report = inspect(&serde_json::to_vec(&value)?, &expected)?;
@@ -536,4 +605,23 @@ fn object_bit_configuration_cannot_be_omitted_or_changed() -> TestResult {
     let mut profile = expected();
     profile.object_bits = 0;
     rejects(inspect(&serde_json::to_vec(&fixture())?, &profile), "invalid expected object bits")
+}
+
+fn error_classes_cannot_disagree_with_observed_properties() -> TestResult {
+    let (expected, value) = negative_fixture()?;
+    for (field, replacement) in [
+        ("error_type", "property_error"),
+        ("failed_properties_type", "Other"),
+        ("failed_properties_type", "unknown_future_class"),
+    ] {
+        let mut changed = value.clone();
+        changed["error_details"][0][field] = json!(replacement);
+        rejects(inspect(&serde_json::to_vec(&changed)?, &expected), "classification mismatch")?;
+    }
+    for field in ["error_type", "failed_properties_type"] {
+        let mut changed = value.clone();
+        changed["error_details"][0].as_object_mut().context("error object")?.remove(field);
+        rejects(inspect(&serde_json::to_vec(&changed)?, &expected), "expected JSON string")?;
+    }
+    Ok(())
 }

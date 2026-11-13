@@ -26,7 +26,9 @@ impl<'de> Deserialize<'de> for Unique {
                 Ok(Unique(Value::Number(value.into())))
             }
             fn visit_f64<E: de::Error>(self, value: f64) -> Result<Unique, E> {
-                Number::from_f64(value).map(|n| Unique(Value::Number(n))).ok_or_else(|| E::custom("non-finite number"))
+                Number::from_f64(value)
+                    .map(|n| Unique(Value::Number(n)))
+                    .ok_or_else(|| E::custom("non-finite number"))
             }
             fn visit_str<E: de::Error>(self, value: &str) -> Result<Unique, E> {
                 Ok(Unique(Value::String(value.to_owned())))
@@ -42,13 +44,17 @@ impl<'de> Deserialize<'de> for Unique {
             }
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Unique, A::Error> {
                 let mut result = Vec::new();
-                while let Some(Unique(value)) = seq.next_element()? { result.push(value); }
+                while let Some(Unique(value)) = seq.next_element()? {
+                    result.push(value);
+                }
                 Ok(Unique(Value::Array(result)))
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Unique, A::Error> {
                 let mut result = Map::new();
                 while let Some(key) = map.next_key::<String>()? {
-                    if result.contains_key(&key) { return Err(de::Error::custom("duplicate JSON key")); }
+                    if result.contains_key(&key) {
+                        return Err(de::Error::custom("duplicate JSON key"));
+                    }
                     let Unique(value) = map.next_value()?;
                     result.insert(key, value);
                 }

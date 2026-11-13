@@ -1,5 +1,9 @@
 //! Inspect a pinned Kani structured export without claiming authenticated proof.
-#![expect(clippy::print_stderr, clippy::print_stdout, reason = "Inspection JSON and diagnostics are CLI output")]
+#![expect(
+    clippy::print_stderr,
+    clippy::print_stdout,
+    reason = "Inspection JSON and diagnostics are CLI output"
+)]
 
 #[path = "../formal_kani/mod.rs"]
 mod formal_kani;
@@ -9,7 +13,10 @@ use formal_kani::{MAX_INPUT_BYTES, ObservationKind};
 use std::{env, fs::File, io::Read, path::Path};
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>> {
-    ensure!(std::fs::symlink_metadata(path)?.is_file(), "input is not a regular non-symlink file");
+    ensure!(
+        std::fs::symlink_metadata(path)?.is_file(),
+        "input is not a regular non-symlink file"
+    );
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     ensure!(file.metadata()?.is_file(), "input is not a regular file");
     let mut bytes = Vec::new();
@@ -24,7 +31,9 @@ fn run() -> Result<bool> {
         println!("usage: formal-kani-output <expected.json> <kani-export.json>\nInspects untrusted artifacts; never emits an accepted proof receipt.");
         return Ok(true);
     }
-    if args.len() != 2 { bail!("usage: formal-kani-output <expected.json> <kani-export.json>"); }
+    if args.len() != 2 {
+        bail!("usage: formal-kani-output <expected.json> <kani-export.json>");
+    }
     let expected = formal_kani::parse_expected(&read_bounded(Path::new(&args[0]))?)?;
     let report = formal_kani::inspect(&read_bounded(Path::new(&args[1]))?, &expected)?;
     println!("{}", serde_json::to_string_pretty(&report)?);

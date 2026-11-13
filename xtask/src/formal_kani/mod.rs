@@ -17,8 +17,15 @@ const MAX_HARNESSES: usize = 256;
 const MAX_CHECKS: usize = 100_000;
 const TOOLS: [&str; 5] = ["kani", "rustc", "cbmc", "goto_cc", "goto_instrument"];
 const COUNTS: [&str; 9] = [
-    "passed", "failed", "unreachable", "undetermined", "solver_error", "satisfied",
-    "unsatisfiable", "covered", "uncovered",
+    "passed",
+    "failed",
+    "unreachable",
+    "undetermined",
+    "solver_error",
+    "satisfied",
+    "unsatisfiable",
+    "covered",
+    "uncovered",
 ];
 
 /// The run owner's expected identities, not identities learned from the report.
@@ -143,8 +150,13 @@ fn validate_expected(expected: &ExpectedRun) -> Result<()> {
     );
     let keys: BTreeSet<_> = expected.tools.keys().map(String::as_str).collect();
     ensure!(keys == TOOLS.into_iter().collect(), "expected tool identity set differs");
-    ensure!(expected.tools.get("kani").map(String::as_str) == Some("0.68.0"), "unsupported Kani version");
-    for value in expected.tools.values().chain([&expected.target, &expected.cbmc_version, &expected.solver]) {
+    ensure!(
+        expected.tools.get("kani").map(String::as_str) == Some("0.68.0"),
+        "unsupported Kani version"
+    );
+    for value in
+        expected.tools.values().chain([&expected.target, &expected.cbmc_version, &expected.solver])
+    {
         ensure!(!value.trim().is_empty(), "blank expected tool/target identity");
     }
     ensure!(
@@ -156,11 +168,17 @@ fn validate_expected(expected: &ExpectedRun) -> Result<()> {
     );
     ensure!((1..=64).contains(&expected.object_bits), "invalid expected object bits");
     for (id, harness) in &expected.harnesses {
-        ensure!(!id.trim().is_empty() && !harness.source.trim().is_empty(), "blank expected harness/source");
+        ensure!(
+            !id.trim().is_empty() && !harness.source.trim().is_empty(),
+            "blank expected harness/source"
+        );
         let assertions = unique_messages(&harness.assertions, "assertion")?;
         let covers = expected_covers(harness)?;
         if let Goal::Counterexample { assertion } = &harness.goal {
-            ensure!(assertions.contains(assertion), "counterexample target is not a required assertion");
+            ensure!(
+                assertions.contains(assertion),
+                "counterexample target is not a required assertion"
+            );
         }
         ensure!(assertions.is_disjoint(&covers), "assertion/cover identities overlap");
     }
@@ -176,7 +194,11 @@ fn expected_covers(harness: &ExpectedHarness) -> Result<BTreeSet<String>> {
 }
 
 /// Join independently ordered native arrays by ID, never by their position.
-fn rows<'a>(value: &'a Value, key: &str, expected: &ExpectedRun) -> Result<BTreeMap<String, &'a Value>> {
+fn rows<'a>(
+    value: &'a Value,
+    key: &str,
+    expected: &ExpectedRun,
+) -> Result<BTreeMap<String, &'a Value>> {
     let values = array(value)?;
     ensure!(values.len() == expected.harnesses.len(), "native harness denominator differs");
     let mut result = BTreeMap::new();
@@ -204,12 +226,34 @@ fn count_key(status: &str) -> Result<&'static str> {
     })
 }
 
-fn inspect_properties(result: &Value, details: &Value, expected: &ExpectedHarness, categories: &BTreeSet<String>) -> Result<HarnessObservation> {
+fn inspect_properties(
+    result: &Value,
+    details: &Value,
+    expected: &ExpectedHarness,
+    categories: &BTreeSet<String>,
+) -> Result<HarnessObservation> {
     fields(result, &["harness_id", "status", "duration_ms", "checks"])?;
-    fields(details, &["total_properties", "passed", "failed", "unreachable", "undetermined",
-        "solver_error", "satisfied", "unsatisfiable", "covered", "uncovered", "error"])?;
+    fields(
+        details,
+        &[
+            "total_properties",
+            "passed",
+            "failed",
+            "unreachable",
+            "undetermined",
+            "solver_error",
+            "satisfied",
+            "unsatisfiable",
+            "covered",
+            "uncovered",
+            "error",
+        ],
+    )?;
     let checks = array(&result["checks"])?;
-    ensure!(!checks.is_empty() && checks.len() <= MAX_CHECKS, "invalid native property denominator");
+    ensure!(
+        !checks.is_empty() && checks.len() <= MAX_CHECKS,
+        "invalid native property denominator"
+    );
     let required_assertions = unique_messages(&expected.assertions, "assertion")?;
     let required_covers = expected_covers(expected)?;
     let positive = matches!(&expected.goal, Goal::Positive);
@@ -224,7 +268,10 @@ fn inspect_properties(result: &Value, details: &Value, expected: &ExpectedHarnes
     for check in checks {
         fields(check, &["id", "function", "status", "description", "location", "category"])?;
         let id = number(&check["id"])?;
-        ensure!(id > 0 && id <= checks.len() as u64 && ids.insert(id), "duplicate/invalid native check ID");
+        ensure!(
+            id > 0 && id <= checks.len() as u64 && ids.insert(id),
+            "duplicate/invalid native check ID"
+        );
         let status = string(&check["status"])?;
         let category = string(&check["category"])?;
         ensure!(categories.contains(category), "unrecognized property category: {category}");
@@ -236,25 +283,46 @@ fn inspect_properties(result: &Value, details: &Value, expected: &ExpectedHarnes
             ensure!(required_covers.contains(description), "foreign cover: {description}");
             ensure!(cover_seen.insert(description.to_owned()), "duplicate cover description");
             ensure!(
-                matches!(status, "Satisfied" | "Unsatisfiable" | "Unreachable" | "Undetermined" | "Unknown" | "Error"),
+                matches!(
+                    status,
+                    "Satisfied"
+                        | "Unsatisfiable"
+                        | "Unreachable"
+                        | "Undetermined"
+                        | "Unknown"
+                        | "Error"
+                ),
                 "invalid status for Kani cover"
             );
             incomplete |= status != "Satisfied";
         } else {
             ensure!(
-                matches!(status, "Success" | "Failure" | "Unreachable" | "Undetermined" | "Unknown" | "Error"),
+                matches!(
+                    status,
+                    "Success"
+                        | "Failure"
+                        | "Unreachable"
+                        | "Undetermined"
+                        | "Unknown"
+                        | "Error"
+                ),
                 "invalid status for non-cover property"
             );
             if required_assertions.contains(description) {
                 ensure!(category == "assertion", "required assertion category mismatch");
-                ensure!(assertion_seen.insert(description.to_owned()), "duplicate required assertion");
+                ensure!(
+                    assertion_seen.insert(description.to_owned()),
+                    "duplicate required assertion"
+                );
                 incomplete |= positive && status == "Unreachable";
                 if let Goal::Counterexample { assertion } = &expected.goal {
                     expected_failure_observed |= assertion == description && status == "Failure";
                 }
             }
-            let limit_or_unsupported = matches!(category,
-                "unwind" | "recursion" | "unsupported_construct" | "missing_definition");
+            let limit_or_unsupported = matches!(
+                category,
+                "unwind" | "recursion" | "unsupported_construct" | "missing_definition"
+            );
             incomplete |= limit_or_unsupported && status == "Failure";
             counterexample |= status == "Failure" && !limit_or_unsupported;
             incomplete |= matches!(status, "Undetermined" | "Unknown" | "Error");
@@ -262,28 +330,59 @@ fn inspect_properties(result: &Value, details: &Value, expected: &ExpectedHarnes
         // Unreachable ordinary checks remain distinguishable from required covers
         // and required assertions; they do not satisfy a required witness.
         if !matches!(status, "Success" | "Satisfied") {
-            findings.push(Finding { check_id: id, category: category.to_owned(), description: description.to_owned(), status: status.to_owned() });
+            findings.push(Finding {
+                check_id: id,
+                category: category.to_owned(),
+                description: description.to_owned(),
+                status: status.to_owned(),
+            });
         }
     }
     ensure!(assertion_seen == required_assertions, "required assertion set incomplete");
     ensure!(cover_seen == required_covers, "required cover set incomplete");
-    ensure!(number(&details["total_properties"])? == checks.len() as u64, "property total contradicts checks");
+    ensure!(
+        number(&details["total_properties"])? == checks.len() as u64,
+        "property total contradicts checks"
+    );
     for (key, observed) in &counts {
         ensure!(number(&details[*key])? == *observed, "property count contradicts checks: {key}");
     }
     ensure!(details.get("error").is_none(), "unmeasured properties cannot be admitted");
     incomplete |= !positive && !expected_failure_observed;
-    let kind = if incomplete { ObservationKind::NotProven } else if counterexample {
+    let kind = if incomplete {
+        ObservationKind::NotProven
+    } else if counterexample {
         ObservationKind::ReportedCounterexample
-    } else { ObservationKind::PositiveReport };
+    } else {
+        ObservationKind::PositiveReport
+    };
     Ok(HarnessObservation {
-        kind, properties: checks.len() as u64,
+        kind,
+        properties: checks.len() as u64,
         required_assertions: required_assertions.len() as u64,
         required_covers: required_covers.len() as u64,
         satisfied_covers: *counts.get("satisfied").context("missing cover counter")?,
         expected_failure_observed,
-        duration_ms: number(&result["duration_ms"] )?, findings,
+        duration_ms: number(&result["duration_ms"])?,
+        findings,
     })
+}
+
+// Kani 0.68 call_cbmc::determine_failed_properties gives Error precedence,
+// then separates assertion-only failures from other failed properties.
+fn reconcile_error_class(error: &Value, observation: &HarnessObservation) -> Result<()> {
+    let failed: Vec<_> = observation.findings.iter().filter(|f| f.status == "Failure").collect();
+    let (kind, description) = if observation.findings.iter().any(|f| f.status == "Error") {
+        ("Error", "property_error")
+    } else if failed.is_empty() {
+        ("None", "unknown_failure")
+    } else if failed.iter().all(|f| f.category == "assertion") {
+        ("PanicsOnly", "assertion_failure")
+    } else {
+        ("Other", "verification_failure")
+    };
+    same(&error["failed_properties_type"], kind, "failed property classification")?;
+    same(&error["error_type"], description, "error classification")
 }
 
 /// Parse an expectation file without allowing duplicate JSON keys or extra fields.
@@ -300,8 +399,20 @@ pub fn parse_expected(bytes: &[u8]) -> Result<ExpectedRun> {
 pub fn inspect(bytes: &[u8], expected: &ExpectedRun) -> Result<Inspection> {
     validate_expected(expected)?;
     let doc = unique_json::parse(bytes, MAX_INPUT_BYTES)?;
-    fields(&doc, &["metadata", "project", "tools", "coverage", "harness_metadata",
-        "verification_results", "property_details", "error_details", "cbmc"])?;
+    fields(
+        &doc,
+        &[
+            "metadata",
+            "project",
+            "tools",
+            "coverage",
+            "harness_metadata",
+            "verification_results",
+            "property_details",
+            "error_details",
+            "cbmc",
+        ],
+    )?;
     fields(&doc["tools"], &["kani", "rustc", "cbmc", "goto_cc", "goto_instrument", "solvers"])?;
     fields(&doc["verification_results"], &["summary", "results"])?;
     same(&doc["metadata"]["version"], "1.0", "export schema")?;
@@ -316,7 +427,10 @@ pub fn inspect(bytes: &[u8], expected: &ExpectedRun) -> Result<Inspection> {
     same(&solvers[0]["name"], &expected.solver, "solver")?;
     // The first profile admits only CBMC's bundled solver. External solver
     // identity requires its own executable custody, not a nullable version.
-    ensure!(matches!(expected.solver.as_str(), "cadical" | "minisat"), "external solver unsupported");
+    ensure!(
+        matches!(expected.solver.as_str(), "cadical" | "minisat"),
+        "external solver unsupported"
+    );
     ensure!(solvers[0].get("version") == Some(&Value::Null), "bundled solver version must be null");
     fields(&doc["coverage"], &["enabled"])?;
     ensure!(doc["coverage"]["enabled"].as_bool() == Some(false), "coverage mode unsupported");
@@ -326,10 +440,16 @@ pub fn inspect(bytes: &[u8], expected: &ExpectedRun) -> Result<Inspection> {
     let errors = rows(&doc["error_details"], "harness_id", expected)?;
     let cbmc = rows(&doc["cbmc"], "harness_id", expected)?;
     let summary = &doc["verification_results"]["summary"];
-    fields(summary, &["total_harnesses", "executed", "status", "successful", "failed", "duration_ms"])?;
+    fields(
+        summary,
+        &["total_harnesses", "executed", "status", "successful", "failed", "duration_ms"],
+    )?;
     same(&summary["status"], "completed", "native completion")?;
     for field in ["total_harnesses", "executed"] {
-        ensure!(number(&summary[field])? == expected.harnesses.len() as u64, "summary harness denominator differs");
+        ensure!(
+            number(&summary[field])? == expected.harnesses.len() as u64,
+            "summary harness denominator differs"
+        );
     }
     let mut observations = BTreeMap::new();
     let mut successes = 0;
@@ -338,25 +458,48 @@ pub fn inspect(bytes: &[u8], expected: &ExpectedRun) -> Result<Inspection> {
         let meta = metadata.get(id).context("missing metadata")?;
         same(&meta["source"]["file"], &required.source, "harness source")?;
         same(&meta["attributes"]["kind"], "Proof", "harness kind")?;
-        for value in [&meta["attributes"]["should_panic"], &meta["is_automatically_generated"], &meta["has_loop_contracts"], &meta["is_ctor_based"], &meta["is_bounded"]] {
-            ensure!(value.as_bool() == Some(false), "panic/automatic/loop-contract harness unsupported");
+        for value in [
+            &meta["attributes"]["should_panic"],
+            &meta["is_automatically_generated"],
+            &meta["has_loop_contracts"],
+            &meta["is_ctor_based"],
+            &meta["is_bounded"],
+        ] {
+            ensure!(
+                value.as_bool() == Some(false),
+                "panic/automatic/loop-contract harness unsupported"
+            );
         }
         fields(&meta["attributes"], &["kind", "should_panic"])?;
         fields(&meta["contract"], &["contracted_function_name", "recursion_tracker"])?;
         for field in ["contracted_function_name", "recursion_tracker"] {
-            ensure!(meta["contract"].get(field) == Some(&Value::Null), "contract harness unsupported");
+            ensure!(
+                meta["contract"].get(field) == Some(&Value::Null),
+                "contract harness unsupported"
+            );
         }
         let result = results.get(id).context("missing result")?;
         let error = errors.get(id).context("missing error details")?;
-        fields(error, &["harness_id", "has_errors", "error_type", "failed_properties_type", "exit_status"])?;
+        fields(
+            error,
+            &["harness_id", "has_errors", "error_type", "failed_properties_type", "exit_status"],
+        )?;
         let native_success = match string(&result["status"])? {
             "Success" => true,
             "Failure" => false,
             other => bail!("unknown native harness status: {other}"),
         };
-        ensure!(error["has_errors"].as_bool() == Some(!native_success), "error/result contradiction");
+        ensure!(
+            error["has_errors"].as_bool() == Some(!native_success),
+            "error/result contradiction"
+        );
         if native_success {
-            ensure!(error.get("error_type").is_none() && error.get("exit_status").is_none() && error.get("failed_properties_type").is_none(), "success carries failure details");
+            ensure!(
+                error.get("error_type").is_none()
+                    && error.get("exit_status").is_none()
+                    && error.get("failed_properties_type").is_none(),
+                "success carries failure details"
+            );
             successes += 1;
         } else {
             same(&error["exit_status"], "properties_failed", "native termination")?;
@@ -365,30 +508,56 @@ pub fn inspect(bytes: &[u8], expected: &ExpectedRun) -> Result<Inspection> {
         fields(&tool["configuration"], &["object_bits", "solver"])?;
         same(&tool["cbmc_metadata"]["version"], &expected.cbmc_version, "CBMC version")?;
         same(&tool["configuration"]["solver"], &expected.solver, "harness solver")?;
-        ensure!(number(&tool["configuration"]["object_bits"])? == u64::from(expected.object_bits), "object bits mismatch");
+        ensure!(
+            number(&tool["configuration"]["object_bits"])? == u64::from(expected.object_bits),
+            "object bits mismatch"
+        );
         let detail = details.get(id).context("missing property details")?;
         fields(detail, &["harness_id", "property_details"])?;
-        let observation = inspect_properties(result, &detail["property_details"], required, &expected.property_categories)
-            .with_context(|| format!("harness {id}"))?;
+        let observation = inspect_properties(
+            result,
+            &detail["property_details"],
+            required,
+            &expected.property_categories,
+        )
+        .with_context(|| format!("harness {id}"))?;
         if native_success {
-            ensure!(!observation.findings.iter().any(|f| matches!(f.status.as_str(), "Failure" | "Error")), "native success contradicts properties");
+            ensure!(
+                !observation
+                    .findings
+                    .iter()
+                    .any(|f| matches!(f.status.as_str(), "Failure" | "Error")),
+                "native success contradicts properties"
+            );
         } else {
-            ensure!(observation.kind != ObservationKind::PositiveReport, "native failure has only positive properties");
+            ensure!(
+                observation.kind != ObservationKind::PositiveReport,
+                "native failure has only positive properties"
+            );
+            reconcile_error_class(error, &observation)?;
         }
         duration = duration.checked_add(observation.duration_ms).context("duration overflow")?;
         observations.insert(id.clone(), observation);
     }
     ensure!(number(&summary["successful"])? == successes, "successful count contradicts harnesses");
-    ensure!(number(&summary["failed"])? == expected.harnesses.len() as u64 - successes, "failed count contradicts harnesses");
+    ensure!(
+        number(&summary["failed"])? == expected.harnesses.len() as u64 - successes,
+        "failed count contradicts harnesses"
+    );
     ensure!(number(&summary["duration_ms"])? == duration, "duration contradicts harnesses");
     let kind = if observations.values().any(|o| o.kind == ObservationKind::NotProven) {
         ObservationKind::NotProven
     } else if observations.values().any(|o| o.kind == ObservationKind::ReportedCounterexample) {
         ObservationKind::ReportedCounterexample
-    } else { ObservationKind::PositiveReport };
+    } else {
+        ObservationKind::PositiveReport
+    };
     Ok(Inspection {
-        schema_version: "kani_export_inspection.v1", evidence_class: "untrusted_artifact_inspection",
-        proof_accepted: false, input_sha256: format!("{:x}", Sha256::digest(bytes)), kind,
+        schema_version: "kani_export_inspection.v1",
+        evidence_class: "untrusted_artifact_inspection",
+        proof_accepted: false,
+        input_sha256: format!("{:x}", Sha256::digest(bytes)),
+        kind,
         expectation_sha256: format!("{:x}", Sha256::digest(serde_json::to_vec(expected)?)),
         harnesses: observations,
     })
