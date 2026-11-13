@@ -228,6 +228,95 @@ class DescriptorInventoryTests(unittest.TestCase):
                     "vhdx_allocated_bytes", "host_backing_free_bytes"):
             self.assertIsNone(result[key])
 
+    def test_cargo_1100_native_custom_cross_target_and_mixed_fingerprints(self):
+        # Cargo 1.100's own build_dir.rs fixtures establish these paths;
+        # retain old output too because an upgrade need not clean the cache.
+        fixtures = (
+            ("target", "debug/.fingerprint/old-0123456789abcdef/lib-old.json", 11),
+            ("build", "debug/build/native/0123456789abcdef/fingerprint/lib-native.json", 12),
+            ("build", "agent/build/custom/fedcba9876543210/fingerprint/test-lib-custom.json", 13),
+            ("build", "aarch64-unknown-linux-gnu/custom/build/cross/0123456789abcdef/fingerprint/lib-cross.json", 14),
+        )
+        for resource, relative, value in fixtures:
+            path = self.paths[resource] / relative
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"path": value, "rustflags": ["SENSITIVE"]}))
+        result = self.observe()
+        self.assertTrue(result["descriptor_valid"], result)
+        self.assertTrue(result["inventory_complete"], result)
+        self.assertTrue(result["fingerprints_complete"], result)
+        self.assertEqual(len(result["fingerprints"]), len(fixtures))
+        self.assertEqual({item["hashes"]["path"] for item in result["fingerprints"]},
+                         {"11", "12", "13", "14"})
+        self.assertNotIn("SENSITIVE", json.dumps(result))
+        self.assertNotIn(str(self.root), json.dumps(result))
+
+    def test_cargo_1100_fingerprint_name_alone_does_not_select_unrelated_json(self):
+        for relative in (
+                "fingerprint/lib.json",
+                "debug/build/pkg/0123456789abcdef/out/lib.json",
+                "debug/build/pkg/0123456789abcdef/out/fingerprint/lib.json",
+                "debug/other/pkg/0123456789abcdef/fingerprint/lib.json",
+                "debug/build/pkg/not-a-unit-hash/fingerprint/lib.json",
+                "debug/build/pkg/0123456789abcdef/fingerprint/nested/lib.json",
+                "debug/.fingerprint-backup/pkg/lib.json"):
+            path = self.paths["build"] / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"path":99}')
+        result = self.observe()
+        self.assertTrue(result["inventory_complete"], result)
+        self.assertTrue(result["fingerprints_complete"], result)
+        self.assertEqual(result["fingerprints"], [])
+
+    def test_cargo_1100_fingerprints_obey_count_and_byte_limits(self):
+        for package in ("first", "second"):
+            path = self.paths["build"] / f"agent/build/{package}/0123456789abcdef/fingerprint/lib.json"
+            path.parent.mkdir(parents=True)
+            path.write_text('{"path":5}')
+        for limits in ({"max_fingerprints": 1}, {"max_fingerprint_bytes": 2}):
+            with self.subTest(limits=limits):
+                result = self.observer.inventory(self.paths, **limits)
+                self.assertTrue(result["inventory_complete"], result)
+                self.assertFalse(result["fingerprints_complete"], result)
+                self.assertLess(len(result["fingerprints"]), 2)
+                self.assertTrue(result["fingerprint_reasons"], result)
+
+    def test_cargo_1100_changing_fingerprint_cannot_claim_complete_observation(self):
+        path = self.paths["build"] / "debug/build/pkg/0123456789abcdef/fingerprint/lib.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"path":5}')
+        original_read = self.observer.read_file
+
+        def change_after_read(candidate, *args, **kwargs):
+            raw = original_read(candidate, *args, **kwargs)
+            if candidate == path:
+                path.write_text('{"path":500}')
+            return raw
+
+        with mock.patch.object(self.observer, "read_file", side_effect=change_after_read):
+            result = self.observer.inventory(self.paths)
+        self.assertFalse(result["inventory_complete"], result)
+        self.assertFalse(result["fingerprints_complete"], result)
+        self.assertIn("entry_changed", result["resources"]["build"]["reasons"])
+        self.assertIsNone(result["combined"]["apparent_bytes"])
+
+    def test_cargo_1100_linked_fingerprint_is_not_read(self):
+        source = self.paths["build"] / "private.json"
+        source.write_text('{"rustflags":["SENSITIVE"]}')
+        path = self.paths["build"] / "debug/build/pkg/0123456789abcdef/fingerprint/lib.json"
+        path.parent.mkdir(parents=True)
+        try:
+            path.symlink_to(source)
+        except OSError:
+            self.skipTest("symlink creation not permitted on this host")
+        with mock.patch.object(self.observer, "read_file", wraps=self.observer.read_file) as reader:
+            result = self.observer.inventory(self.paths)
+        self.assertFalse(result["inventory_complete"], result)
+        self.assertFalse(result["fingerprints_complete"], result)
+        self.assertEqual(result["fingerprints"], [])
+        self.assertNotIn(path, [call.args[0] for call in reader.call_args_list])
+        self.assertNotIn("SENSITIVE", json.dumps(result))
+
     def test_clippy_descriptor_scope_accepts_bounded_clippy_setup(self):
         import copy
 
