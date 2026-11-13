@@ -1,0 +1,37 @@
+name: Temporary formal receipt formatter
+
+on:
+  push:
+    branches:
+      - feat/formal-proof-receipt-19313
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format formal receipt sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned formatter
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Format xtask sources
+        run: cargo +1.95.0 fmt --manifest-path xtask/Cargo.toml
+
+      - name: Upload exact formatted sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: formal-receipt-rustfmt-${{ github.sha }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            xtask/src/tasks/formal_receipt.rs
+            xtask/src/tasks/gate_receipts.rs
+            xtask/src/tasks/mod.rs
