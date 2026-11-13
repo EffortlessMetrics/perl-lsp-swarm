@@ -1,0 +1,178 @@
+name: Repair current queue PR findings
+
+on:
+  push:
+    branches: [codex/repair-queue-prs-20261113]
+
+permissions:
+  contents: write
+
+jobs:
+  repair-19332:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: openbot/18255-merge-group-head-ref
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Repair scoped pull_request_target law
+        shell: bash
+        env:
+          EXPECTED_HEAD: 0a5d8d0e13d92d76d6ec889223b6a7169631df71
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('xtask/src/tasks/workflow_trigger_lint.rs')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''            let pull_request_target =
+                events.is_some_and(|events| event_is_required(events, "pull_request_target"));
+'''
+          new = '''            let pull_request_target = events.is_some_and(|events| {
+                events.iter().any(|candidate| candidate == "pull_request_target")
+            });
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one pull_request_target law, found {text.count(old)}')
+          text = text.replace(old, new)
+
+          anchor = '''    #[test]
+    fn pull_request_target_registration_accepts_its_actual_event() -> Result<()> {
+'''
+          regression = '''    #[test]
+    fn empty_event_scope_keeps_legacy_ordinary_events_without_pr_target() -> Result<()> {
+        let metadata: Value = serde_yaml_ng::from_str(
+            "on:\\n  pull_request: {}\\njobs:\\n  required:\\n    name: required\\n    steps: []\\n",
+        )?;
+        let events: Vec<String> = Vec::new();
+        let evaluated = evaluate_scoped_entry(
+            "required",
+            "required.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            &[],
+            Some(&events),
+        );
+        assert!(
+            !evaluated
+                .violations
+                .iter()
+                .any(|item| item == "missing pull_request_target trigger"),
+            "an empty scope keeps the legacy ordinary events, not pull_request_target: {:?}",
+            evaluated.violations
+        );
+        assert!(
+            evaluated
+                .violations
+                .iter()
+                .any(|item| item == "missing merge_group trigger"),
+            "an empty scope must retain the legacy ordinary-event contract: {:?}",
+            evaluated.violations
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_request_target_registration_accepts_its_actual_event() -> Result<()> {
+'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected one test anchor, found {text.count(anchor)}')
+          text = text.replace(anchor, regression)
+          path.write_text(text, encoding='utf-8')
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Qualify focused trigger contracts
+        run: cargo test --locked -p xtask --bin xtask workflow_trigger_lint -- --nocapture
+
+      - name: Publish reviewed repair
+        shell: bash
+        env:
+          EXPECTED_HEAD: 0a5d8d0e13d92d76d6ec889223b6a7169631df71
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
+          test "$(git diff --name-only | wc -l)" -eq 1
+          [ "$(git diff --name-only)" = "xtask/src/tasks/workflow_trigger_lint.rs" ]
+          git config user.name EffortlessSteven
+          git config user.email 15812269+EffortlessSteven@users.noreply.github.com
+          git add xtask/src/tasks/workflow_trigger_lint.rs
+          git commit -m 'fix(ci): require pull_request_target only when declared (#18255)'
+          git push origin HEAD:refs/heads/openbot/18255-merge-group-head-ref
+
+  repair-19349:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/17903-staged-fixture-rebase
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Make the projected metadata set explicit
+        shell: bash
+        env:
+          EXPECTED_HEAD: 86daa3a33b3f06726c44d56a26c3412f948831e9
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.ci/staged/17903-root-triggers.patch')
+          text = path.read_text(encoding='utf-8')
+          old = '''@@ -425 +400,4 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+-    let required_workflows = required_workflows(&policy)?;
++    let mut required_workflows = required_workflows(&policy)?;
++    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
++        required_workflows.remove(product);
++    }
+'''
+          new = '''@@ -425 +400 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+-    let required_workflows = required_workflows(&policy)?;
++    let required_workflows = BTreeSet::from(["pr-title-check.yml".to_string()]);
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one inconsistent projected set, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git diff --check
+          git apply --unidiff-zero --check .ci/staged/17903-root-triggers.patch
+
+      - name: Qualify staged cutover fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest \
+            scripts.ci.test_staged_qualification_workflow_cutover \
+            scripts.ci.test_generated_pr_metadata_dispatch
+          git apply --unidiff-zero .ci/staged/17903-root-triggers.patch
+          cargo test --locked -p xtask --test post_merge_status_regen_tests \
+            test_post_merge_workflow_dispatches_metadata_only -- --exact --nocapture
+          git reset --hard HEAD
+
+      - name: Publish reviewed fixture repair
+        shell: bash
+        env:
+          EXPECTED_HEAD: 86daa3a33b3f06726c44d56a26c3412f948831e9
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
+          [ "$(git diff --name-only)" = ".ci/staged/17903-root-triggers.patch" ]
+          git diff --check
+          git config user.name EffortlessSteven
+          git config user.email 15812269+EffortlessSteven@users.noreply.github.com
+          git add .ci/staged/17903-root-triggers.patch
+          git commit -m 'fix(ci): bind staged metadata dispatch set (#17903)'
+          git push origin HEAD:refs/heads/fix/17903-staged-fixture-rebase
