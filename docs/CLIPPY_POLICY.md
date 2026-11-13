@@ -24,6 +24,12 @@ Every governed lint has exactly one current state:
 
 A lint cannot appear in two states. A Cargo lint without a ledger entry fails, as does an active ledger entry missing from Cargo. Due lints cannot remain ordinary planned work indefinitely.
 
+### Core denial ratchet (#19093)
+
+The established `clippy::unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, and `dbg_macro` rules are required at `deny` in an `active` ledger row. The checker rejects deleting any of these identities, lowering a level even when Cargo and the ledger change together, or moving a row to `debt`, `tracked`, `planned`, or `deferred_due`. `cargo xtask policy cadence` applies the same ledger invariant before projecting policy state.
+
+These pins preserve the existing production and test policy. Changing that contract requires an explicit change to the checker's required dispositions as well as the Cargo and ledger policy.
+
 ### Split-tool coverage
 
 One invariant sometimes needs a row in both `[workspace.lints.rust]` and `[workspace.lints.clippy]`, because rustc and Clippy each cover part of the surface. The rows share a name but are distinct governed identities, and neither is redundant:
@@ -57,12 +63,11 @@ A row whose lint is already deny-by-default upstream is still stated explicitly.
 
 ### What the ledger does and does not enforce
 
-`cargo xtask check-lint-policy` compares the workspace-root `Cargo.toml` against the ledger. That is the whole of its reach, and the required-disposition pins inherit the same boundary: they guarantee a governed row cannot be deleted, downgraded, or demoted **in those two files**. Two things sit outside it and are not caught by any current repository check:
+`cargo xtask check-lint-policy` reconciles the workspace-root `Cargo.toml` with the merged ledger. Required-disposition pins additionally preserve the named identities, levels, and statuses even when both authorities change together.
 
-- a crate-level `#![allow(...)]` for a governed lint — the strict Clippy gates run `-D warnings`, which respects an `allow` rather than piercing it (only `--force-warn`, used for measurement sweeps, does that);
-- a member crate replacing `[lints] workspace = true` with its own table that omits a governed row.
+The checker also reads every literal path listed in root `[workspace].members` and requires its manifest to set `[lints] workspace = true`. Replacing that inheritance setting with a local lint table is rejected. This declared-member check does not expand Cargo member globs or discover implicit members through path dependencies.
 
-This is a property of the mechanism, not of any one lint, and closing it means a separate check over member manifests and source attributes. Read a pin as "the workspace policy cannot silently lose this row," not as "no crate can opt out."
+Source attributes remain a separate boundary: a crate-level `#![allow(...)]` can override an inherited lint, and the strict gates' `-D warnings` respects that allowance. Measurement sweeps use `--force-warn` to pierce it. Source-suppression admission remains owned by #11217. Read required-disposition pins as guarantees about workspace policy rows; source exceptions require their own governance.
 
 ## Workspace posture
 
