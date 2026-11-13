@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16533,
-  "reason": "Reject empty internal-mirror tag pins before fetching using the shared GitHub pin remedy; rebuild the bundled extension",
-  "base_baseline_file_sha256": "8f59aee55b10f9591492546398192bb3b9a57b1b8dfd3b5669ba804f0c14b3b5",
-  "candidate_baseline_file_sha256": "da6796d3f285c415d0b3016fd8bdee2f8991a80c728fbb25090071ad4a194650",
-  "base_inventory_sha256": "e6447adf919f4272ee259fc6d618ee851faf2f28370f8568da53d4e85ad0f07a",
-  "candidate_inventory_sha256": "16d16af12d4ff899c299d91d487d0b2297d12ec6fdb0a906b7187051b39019b3"
+  "owner_issue": 9864,
+  "reason": "Distinguish the published crate Rust 1.95 minimum from the Rust 1.100 repository source-build minimum, with measured package inventory.",
+  "base_baseline_file_sha256": "da6796d3f285c415d0b3016fd8bdee2f8991a80c728fbb25090071ad4a194650",
+  "candidate_baseline_file_sha256": "7b0036ac1ceb3334d5609f8f5a64f9df105d859b555d085b631f5b90b2089f0c",
+  "base_inventory_sha256": "16d16af12d4ff899c299d91d487d0b2297d12ec6fdb0a906b7187051b39019b3",
+  "candidate_inventory_sha256": "356109712a653634ea40a1c6eca935b55f315162257f65d29f469e57bdb6df9b"
 }
