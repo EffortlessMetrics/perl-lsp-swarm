@@ -1222,8 +1222,8 @@ verify_source_install_identity() {
 # INSTALL_MODE=source. In the standalone remote bootstrap (the root install.sh
 # runs this file without its scripts/ siblings) the library cannot be sourced,
 # so an inline floor check refuses the same confusing pre-1.85 failures instead
-# of silently skipping the guard; from 1.85 up to the workspace rust-version,
-# cargo's own rust-version enforcement reports the requirement cleanly.
+# of silently skipping the guard. The 1.85 boundary retains the edition-2024
+# diagnostic; 1.85 through 1.99 are also refused below the 1.100 source floor.
 # The guard must run before resolve_version() because the GitHub release query
 # is network work that would otherwise mask the toolchain refusal from a user
 # who has a stale cargo and no internet (#15030).
@@ -1240,6 +1240,8 @@ run_cargo_toolchain_guard() {
         _guard_minor="${_guard_minor%%.*}"
         if [ -z "$_guard_major" ] || [ "$_guard_major" -lt 1 ] || { [ "$_guard_major" -eq 1 ] && [ "$_guard_minor" -lt 85 ]; }; then
             err "cargo-toolchain-guard: REFUSED: cargo ${_guard_version:-unknown} predates edition-2024 support (needs >= 1.85; this workspace pins rustc 1.100). A stale cargo reports this as 'feature edition2024 is required' -- a toolchain problem, not a manifest problem. Install a current toolchain (https://rustup.rs)."
+        elif [ "$_guard_major" -eq 1 ] && [ "$_guard_minor" -lt 100 ]; then
+            err "cargo-toolchain-guard: REFUSED: cargo ${_guard_version:-unknown} predates this workspace's source-build requirement (needs >= 1.100). Install a current toolchain (https://rustup.rs)."
         fi
     fi
     unset _guard_lib _guard_version _guard_major _guard_minor

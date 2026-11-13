@@ -30,52 +30,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  repair-rust-1-100-installer-probe:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'build/rust-1.100-upgrade'
-    permissions:
-      contents: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Checkout migration branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: build/rust-1.100-upgrade
-          fetch-depth: 1
-          persist-credentials: true
-
-      - name: Isolate installer command-requirement probe
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('scripts/tests/test-installer-archive-safety.sh')
-          text = path.read_text(encoding='utf-8')
-          old = '''        configure_claude() { :; }
-        INSTALL_MODE="$1"
-'''
-          new = '''        configure_claude() { :; }
-        run_cargo_toolchain_guard() { :; }
-        INSTALL_MODE="$1"
-'''
-          if new in text:
-              raise SystemExit(0)
-          if text.count(old) != 1:
-              raise SystemExit('installer requirement-probe insertion point changed')
-          path.write_text(text.replace(old, new), encoding='utf-8')
-          PY
-          git add scripts/tests/test-installer-archive-safety.sh
-          git diff --cached --check
-          if git diff --cached --quiet; then
-            echo "Installer command-requirement probe was already repaired."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "test(installer): isolate command-requirement probe"
-          git push origin HEAD:build/rust-1.100-upgrade
-
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

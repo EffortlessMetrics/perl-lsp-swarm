@@ -1818,8 +1818,27 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
                 line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.100")
             })
             .count(),
-        1,
-        "the self-hosted rust-standard lane must check the required Docker image before running ripr"
+        2,
+        "the self-hosted rust-standard lane must check the required Docker image before cleanup and again before running ripr"
+    );
+    let cleanup = workflow
+        .split("- name: Fix workspace ownership (pre-checkout)")
+        .nth(1)
+        .and_then(|tail| tail.split("- name: Checkout").next())
+        .expect("self-hosted pre-checkout cleanup must be present");
+    let missing_image_guard = cleanup
+        .find("if ! docker image inspect em-ci-rust:1.100")
+        .expect("missing-image admission must precede Docker cleanup");
+    let recorded_refusal = cleanup
+        .find("preflight_ok=false")
+        .expect("missing-image admission must record the fallback refusal");
+    let docker_cleanup =
+        cleanup.find("docker run --rm").expect("available-image cleanup must remain present");
+    assert!(
+        missing_image_guard < recorded_refusal
+            && recorded_refusal < docker_cleanup
+            && cleanup.contains("exit 0"),
+        "missing-image admission must record preflight_ok=false and skip the image-dependent cleanup"
     );
     assert!(
         workflow.contains(

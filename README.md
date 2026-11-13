@@ -73,9 +73,11 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-**Cargo** (supported Linux, macOS, and Windows platforms; Rust 1.100 or newer) —
-installs the `perllsp` language-server binary from crates.io. This installs
-`perllsp` only, not the `perl-dap` debug adapter; use a release archive if you
+**Cargo** (supported Linux, macOS, and Windows platforms; the current published
+crate requires Rust 1.95 or newer) — installs the `perllsp` language-server
+binary from crates.io. Building from this repository requires Rust 1.100 or
+newer. This installs `perllsp` only, not the `perl-dap` debug adapter; use a
+release archive if you
 need the debugger. Support on other Rust targets is not established here.
 crates.io is an independently versioned channel, so compare
 `perllsp --version` with the latest

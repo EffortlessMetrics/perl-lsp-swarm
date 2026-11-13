@@ -547,7 +547,17 @@ STUB
   fi
 
   code=0
-  run_installer_fixture ./install.sh 1.101.1 "${TMPDIR_BASE}/new-sentinel.log" \
+  run_installer_fixture ./install.sh 1.95.0 "${TMPDIR_BASE}/old-minimum-sentinel.log" \
+    "${TMPDIR_BASE}/standalone-old-minimum" || code=$?
+  if [[ "$code" -ne 0 ]] && grep -Fq "needs >= 1.100" "${TMPDIR_BASE}/standalone-old-minimum.err" &&
+    [[ ! -s "${TMPDIR_BASE}/old-minimum-sentinel.log" ]]; then
+    pass "install.sh standalone: pre-1.100 cargo refused before network or install"
+  else
+    fail "install.sh standalone: cargo 1.95 must not reach the unsupported source build"
+  fi
+
+  code=0
+  run_installer_fixture ./install.sh 1.100.0 "${TMPDIR_BASE}/new-sentinel.log" \
     "${TMPDIR_BASE}/standalone-new" || code=$?
   if [[ "$code" -ne 0 ]] && ! grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone-new.err" &&
     [[ "$(cat "${TMPDIR_BASE}/new-sentinel.log")" == 'cargo install' ]] &&
