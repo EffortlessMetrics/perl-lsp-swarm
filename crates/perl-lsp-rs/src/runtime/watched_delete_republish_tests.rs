@@ -785,7 +785,7 @@ fn file_operation_create_and_rename_refresh_pull_clients() -> Result<(), Box<dyn
             .client_session
             .client_supports_pull_diags
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+        server.client_session.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
         // The client may finish the first pull before the second event arrives.
         // A leading-edge debounce must not swallow that second invalidation.
         for attempt in 0..2 {
@@ -837,7 +837,7 @@ fn dependency_save_refreshes_pull_clients_after_reconciliation()
         .client_session
         .client_supports_pull_diags
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
     let before = save_output_boundary(&server, &output, "pull-save-before")?;
     server.handle_did_save(Some(json!({
         "textDocument": { "uri": role_uri }, "text": SAVE_ROLE_CONFLICT

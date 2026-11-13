@@ -86,33 +86,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8041"
     ),
     row!(
-        "initialize_requested",
-        ClientSession,
-        "AtomicBool",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
-        "initialized",
-        ClientSession,
-        "AtomicBool",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
-        "shutdown_received",
-        ClientSession,
-        "AtomicBool",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
         "exit_policy",
         ProductComposition,
         "immutable",
@@ -129,15 +102,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "connection serve-loop wake (#17331)",
         false,
         "#17331"
-    ),
-    row!(
-        "pending_startup_log",
-        ClientSession,
-        "Arc<Mutex>",
-        "initialized or connection shutdown",
-        "client session",
-        false,
-        "#8386"
     ),
     row!(
         "index_coordinator",
@@ -451,6 +415,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
+        "workspace_progress_install_observation",
+        RuntimeServices,
+        "owned test observation",
+        "test gate release / server drop",
+        "test runtime",
+        true,
+        "#8386"
+    ),
+    row!(
         "workspace_indexing_start_gate",
         RuntimeServices,
         "Arc<std::sync::Mutex>",
@@ -593,24 +566,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "workspace + session",
         false,
         "#8385"
-    ),
-    row!(
-        "root_undetected_shown",
-        ClientSession,
-        "Arc<AtomicBool>",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
-        "core_module_notice_shown",
-        ClientSession,
-        "Arc<AtomicBool>",
-        "server session",
-        "server session",
-        false,
-        "#16551"
     ),
     row!(
         "module_ambiguity_notices",

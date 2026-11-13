@@ -185,13 +185,6 @@ use crate::fallback::text::extract_text_based_symbols;
 pub struct LspServer {
     /// Document contents indexed by URI
     pub(crate) documents: Arc<Mutex<HashMap<String, DocumentState>>>,
-    /// Whether the `initialize` request has been received
-    initialize_requested: AtomicBool,
-    /// Whether the server is initialized
-    initialized: AtomicBool,
-    /// Server-owned coordinate authority, published only after initialize succeeds.
-    pub(crate) position_encoding_session_context:
-        Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
     /// What an `exit` notification ends: the process (stdio default) or only
     /// this connection (socket mode, #17331). Set once at construction.
     exit_policy: exit_policy::ExitPolicy,
@@ -200,11 +193,6 @@ pub struct LspServer {
     /// permit, so a notify that races an ingress loop not yet parked on the
     /// select arm is never lost.
     connection_exit: Arc<tokio::sync::Notify>,
-    /// Pending `window/logMessage` text to emit once the client has sent the
-    /// `initialized` notification (notifications must not be sent before the
-    /// initialize response is delivered). Currently used for the JetBrains
-    /// dynamic-registration override notice (#4630).
-    pub(crate) pending_startup_log: Arc<Mutex<Option<String>>>,
     /// Connection/client-session owner (#8386).
     ///
     /// Owns lifecycle phase, negotiated capabilities, trace/progress/session

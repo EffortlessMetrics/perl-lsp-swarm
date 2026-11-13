@@ -46,12 +46,8 @@ impl LspServer {
 
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
-            initialize_requested: AtomicBool::new(false),
-            initialized: AtomicBool::new(false),
-            position_encoding_session_context: Mutex::new(None),
             exit_policy: exit_policy::ExitPolicy::default(),
             connection_exit: Arc::new(tokio::sync::Notify::new()),
-            pending_startup_log: Arc::new(Mutex::new(None)),
             client_session: super::client_session::ClientSession::new(feature_profile),
             #[cfg(feature = "workspace")]
             index_coordinator,
@@ -250,12 +246,8 @@ impl LspServer {
 
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
-            initialize_requested: AtomicBool::new(false),
-            initialized: AtomicBool::new(false),
-            position_encoding_session_context: Mutex::new(None),
             exit_policy: exit_policy::ExitPolicy::default(),
             connection_exit: Arc::new(tokio::sync::Notify::new()),
-            pending_startup_log: Arc::new(Mutex::new(None)),
             client_session: super::client_session::ClientSession::new(feature_profile),
             #[cfg(feature = "workspace")]
             index_coordinator,
@@ -381,12 +373,8 @@ impl LspServer {
 
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
-            initialize_requested: AtomicBool::new(false),
-            initialized: AtomicBool::new(false),
-            position_encoding_session_context: Mutex::new(None),
             exit_policy: exit_policy::ExitPolicy::default(),
             connection_exit: Arc::new(tokio::sync::Notify::new()),
-            pending_startup_log: Arc::new(Mutex::new(None)),
             client_session: super::client_session::ClientSession::new(feature_profile),
             #[cfg(feature = "workspace")]
             index_coordinator,
@@ -488,7 +476,7 @@ impl Default for LspServer {
 impl LspServer {
     /// Test helper: drive a real initialize so the session is accepted.
     ///
-    /// Setting [`Self::initialize_requested`] alone must not open serving;
+    /// Setting only `client_session.initialize_requested` must not open serving;
     /// tests that need a live session run the real acceptance path, which
     /// also publishes the active position-encoding context.
     pub(crate) fn test_mark_initialize_session_accepted(&self) {
