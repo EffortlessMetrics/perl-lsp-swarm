@@ -1,1 +1,40 @@
-IyBMb2NhbCBDSSBQcm90b2NvbAoKQ2hvb3NlIHRoZSBzbWFsbGVzdCBwcm9vZiB0aGF0IGNhbiBmYWxzaWZ5IHRoZSBjaGFuZ2UsIGZvbGxvd2luZwpbQUdFTlRTLm1kXSguLi8uLi9BR0VOVFMubWQjY2hvb3NlLWxvY2FsLXByb29mKS4gUnVuIGZvY3VzZWQgcHJvb2YgZmlyc3QsIHRoZW4KYWZmZWN0ZWQgcGFja2FnZSBwcm9vZjsgYnJvYWRlbiBvbmx5IHdoZW4gcmlzayBvciB0aGUgaW50ZWdyYXRpb24gZ2F0ZSBzZWxlY3RzIGl0LgpGb3IgZG9jdW1lbnRhdGlvbi1vbmx5IGNoYW5nZXMsIGNoZWNrIGxpbmtzIGFuZCB0aGUgZXhpc3RpbmcgbmFycm93IGNvbnRyYWN0cyBmb3IKdGhlIGVkaXRlZCBzdXJmYWNlLiBSZWNvcmQgcGFzc2VkLCBmYWlsZWQsIGFuZCB1bmF2YWlsYWJsZSBwcm9vZiBhZ2FpbnN0IHRoZSB0ZXN0ZWQKY29tbWl0IGluIHRoZSBQUiByYXRoZXIgdGhhbiB1cGRhdGluZyBoaXN0b3JpY2FsIFBSICMyMTQgc3VtbWFyaWVzLgoKQmVmb3JlIGNvbXBpbGVkIHByb29mLCBmb2xsb3cgW0NhcmdvIHN0b3JhZ2UgYWRtaXNzaW9uXSguLi9hZ2VudHMvQ0FSR09fU1RPUkFHRS5tZCkuClByZWZsaWdodCBhbmQgZXhlY3V0ZSB0aGUgc2FtZSByZXF1ZXN0IGZyb20gdGhlIHNhbWUgd29ya3RyZWUgYW5kIHRhc2sgc2hlbGwsCnByZXNlcnZpbmcgcGFja2FnZSwgdGFyZ2V0LCBmZWF0dXJlLCBwcm9maWxlLCBhbmQgdGVzdCBmaWx0ZXJzLiBGb3IgZXhhbXBsZSwgcmVwbGFjZQpgUEFDS0FHRWAgd2l0aCB0aGUgb3duaW5nIHBhY2thZ2U6CgpgYGBiYXNoCmJhc2ggc2NyaXB0cy9jYXJnby1hZG1pdHRlZCAtLXByZWZsaWdodCB0ZXN0IC1wIFBBQ0tBR0UgLS1sb2NrZWQgJiYKICBiYXNoIHNjcmlwdHMvY2FyZ28tYWRtaXR0ZWQgdGVzdCAtcCBQQUNLQUdFIC0tbG9ja2VkCmBgYAoKVXNlIHRoZSBzZXBhcmF0ZWx5IGRvY3VtZW50ZWQgc3RhZ2VkIG5hdGl2ZSBDbGlwcHkgcm91dGUgZm9yIGxpbnRpbmcuIFRoZSBgeHRhc2tgCmFsaWFzIGlzIG5vdCBhZG1pdHRlZDsgdXNlIHRoZSBzdG9yYWdlIGNvbnRyYWN0J3MgYHJ1biAtcCB4dGFzayAtLWxvY2tlZCAtLSAuLi5gCnJvdXRlIHdoZW4gY29tcGlsZWQgeHRhc2sgcHJvb2YgaXMgc2VsZWN0ZWQuCgojIyBFeGlzdGluZyBhZ2dyZWdhdGUgcmVjaXBlcwoKVGhlIFtqdXN0ZmlsZV0oLi4vLi4vanVzdGZpbGUpIHJldGFpbnMgdGhlc2UgY29tcGF0aWJpbGl0eSBlbnRyeSBwb2ludHM6CgotIGBqdXN0IGNpLWdhdGVgOiBicm9hZCBsb2NhbCBjaGVja3MsIGluY2x1ZGluZyBsaWJyYXJ5IHRlc3RzLCBhbGwtdGFyZ2V0IGNoZWNrcywKICBDbGlwcHksIGFuZCBwb2xpY3kgY2hlY2tzLgotIGBqdXN0IGNpLWZ1bGxgOiBhIHNlcGFyYXRlIGJyb2FkIHN1aXRlIGluY2x1ZGluZyBjb3JlL0xTUCB0ZXN0cywgVVggdGVzdHMsIGFuZAogIGRvY3VtZW50YXRpb24gYnVpbGRzOyBpdCBpcyBub3Qgc2ltcGx5IGFuIGV4dGVuc2lvbiBvZiBgY2ktZ2F0ZWAuCi0gYGp1c3QgY2ktcG9saWN5YDogcG9saWN5IGNoZWNrcyB0aGF0IGluY2x1ZGUgYGNhcmdvIHh0YXNrYCBpbnZvY2F0aW9ucy4gSXQgaXMKICBub3QgYSBidWlsZC1mcmVlIGRvY3VtZW50YXRpb24gY2hlY2suCgpUaGVzZSByZWNpcGVzIGRvIG5vdCBlc3RhYmxpc2ggQ2FyZ28gYWRtaXNzaW9uLiBEbyBub3QgaW5mZXIgdGhhdCBldmVyeSBlZGl0IG5lZWRzCmFuIGFnZ3JlZ2F0ZSBydW4gZnJvbSB0aGVpciBuYW1lcyBvciBsZWdhY3kgY29tbWVudHMuIExvY2FsIHByb29mIGFsc28gZG9lcyBub3QKcmVwbGFjZSBjdXJyZW50IHJlcXVpcmVkIEdpdEh1YiBjaGVja3Mgb3IgYXV0aG9yaXplIGEgbWVyZ2UuIEZvbGxvdyB0aGUKW2xhdGUtcXVhbGlmaWNhdGlvbiBjb250cmFjdF0oLi4vYWdlbnRzL0RFVkVMT1BNRU5UX01FVEhPRC5tZCNsYXRlLXF1YWxpZmljYXRpb24tYW5kLXB1YmxpY2F0aW9uKQpmb3IgcHVibGljYXRpb24gYW5kIGhvc3RlZCBxdWFsaWZpY2F0aW9uOyB0aGlzIHByb3RvY29sIGNoYW5nZXMgbm8gd29ya2Zsb3cgdHJpZ2dlciwKcmVxdWlyZWQgY29udGV4dCwgb3IgcHJvdGVjdGlvbiBzZXR0aW5nLgo=
+# Local CI Protocol
+
+Choose the smallest proof that can falsify the change, following
+[AGENTS.md](../../AGENTS.md#choose-local-proof). Run focused proof first, then
+affected package proof; broaden only when risk or the integration gate selects it.
+For documentation-only changes, check links and the existing narrow contracts for
+the edited surface. Record passed, failed, and unavailable proof against the tested
+commit in the PR rather than updating historical PR #214 summaries.
+
+Before compiled proof, follow [Cargo storage admission](../agents/CARGO_STORAGE.md).
+Preflight and execute the same request from the same worktree and task shell,
+preserving package, target, feature, profile, and test filters. For example, replace
+`PACKAGE` with the owning package:
+
+```bash
+bash scripts/cargo-admitted --preflight test -p PACKAGE --locked &&
+  bash scripts/cargo-admitted test -p PACKAGE --locked
+```
+
+Use the separately documented staged native Clippy route for linting. The `xtask`
+alias is not admitted; use the storage contract's `run -p xtask --locked -- ...`
+route when compiled xtask proof is selected.
+
+## Existing aggregate recipes
+
+The [justfile](../../justfile) retains these compatibility entry points:
+
+- `just ci-gate`: broad local checks, including library tests, all-target checks,
+  Clippy, and policy checks.
+- `just ci-full`: a separate broad suite including core/LSP tests, UX tests, and
+  documentation builds; it is not simply an extension of `ci-gate`.
+- `just ci-policy`: policy checks that include `cargo xtask` invocations. It is
+  not a build-free documentation check.
+
+These recipes do not establish Cargo admission. Do not infer that every edit needs
+an aggregate run from their names or legacy comments. Local proof also does not
+replace current required GitHub checks or authorize a merge. Follow the
+[late-qualification contract](../agents/DEVELOPMENT_METHOD.md#late-qualification-and-publication)
+for publication and hosted qualification; this protocol changes no workflow trigger,
+required context, or protection setting.
