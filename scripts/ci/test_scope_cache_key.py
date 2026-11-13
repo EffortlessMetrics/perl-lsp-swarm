@@ -13,12 +13,12 @@ These are the falsifiers the scope-aware cache-key claim rests on:
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import io
 import os
 import re
-import shlex
 import unittest
 from pathlib import Path
 
@@ -381,10 +381,15 @@ class PrFastCacheContractTests(unittest.TestCase):
 
     JOBS = ("pr-smoke", "pr-fast-unblocked")
 
-    def workflow(self) -> dict:
-        return yaml.safe_load(
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         )
+
+    def workflow(self) -> dict:
+        # Isolate mutations without reparsing the unchanged fixture each time.
+        return copy.deepcopy(self._workflow)
 
     def cache_step(self, job: dict) -> dict:
         caches = [
@@ -441,15 +446,24 @@ class PrFastCacheContractTests(unittest.TestCase):
                             f"{job_name} must not override the cached target in a run step",
                         )
                     # Cargo's explicit CLI target overrides even a correct env.
-                    # Read the next shell word, accepting the existing helpers'
-                    # inherited-target spelling and equivalent literal paths.
+                    # Preserve shell quoting: '$CARGO_TARGET_DIR' is a literal
+                    # directory, while "$CARGO_TARGET_DIR" expands to target.
+                    # Accept only bounded, complete shell-word spellings; this
+                    # deliberately does not evaluate arbitrary shell syntax.
+                    target_words = [
+                        spelling
+                        for target in ("target", "./target")
+                        for spelling in (target, f"'{target}'", f'"{target}"')
+                    ] + [
+                        spelling
+                        for target in ("$CARGO_TARGET_DIR", "${CARGO_TARGET_DIR}",
+                                       "${CARGO_TARGET_DIR:-target}")
+                        for spelling in (target, f'"{target}"')
+                    ]
                     for flag in re.finditer(r"--target-dir(?:\s+|=)", command):
-                        words = shlex.shlex(command[flag.end():], posix=True, punctuation_chars=True)
-                        words.whitespace_split = True
-                        self.assertIn(
-                            words.get_token(),
-                            ("target", "./target", "$CARGO_TARGET_DIR",
-                             "${CARGO_TARGET_DIR}", "${CARGO_TARGET_DIR:-target}"),
+                        self.assertRegex(
+                            command[flag.end():],
+                            r"^(?:" + "|".join(map(re.escape, target_words)) + r")(?=$|[\s;&|<>])",
                             f"{job_name} CLI must use the stable cached target tree",
                         )
 
@@ -542,11 +556,16 @@ class PrFastCacheContractTests(unittest.TestCase):
     def test_explicit_target_flags_reject_redirection_and_accept_equivalents(self) -> None:
         for name in self.JOBS:
             for separator in (" ", "="):
-                for target in ('"target"', "./target", '"${CARGO_TARGET_DIR:-target}"', "/mnt/not-cached"):
+                for target, accepted in (
+                    ('"target"', True), ("'target'", True), ("./target", True),
+                    ('"${CARGO_TARGET_DIR:-target}"', True), ('"$CARGO_TARGET_DIR"', True),
+                    ("/mnt/not-cached", False), ("'$CARGO_TARGET_DIR'", False),
+                    ("'${CARGO_TARGET_DIR:-target}'", False), ('"target"/other', False),
+                ):
                     with self.subTest(job=name, separator=separator, target=target):
                         workflow = self.workflow()
                         self.warm_step(workflow["jobs"][name])["run"] += f" --target-dir{separator}{target}"
-                        if target == "/mnt/not-cached":
+                        if not accepted:
                             with self.assertRaisesRegex(AssertionError, "CLI must use the stable cached target"):
                                 self.check_document(workflow)
                         else:
