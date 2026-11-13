@@ -21,6 +21,8 @@ import re
 import unittest
 from pathlib import Path
 
+import yaml
+
 SCRIPT = Path(__file__).with_name("scope_cache_key.py")
 SPEC = importlib.util.spec_from_file_location("scope_cache_key", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -369,128 +371,159 @@ class WorkflowContractTests(unittest.TestCase):
 
 
 class PrFastCacheContractTests(unittest.TestCase):
-    """Keep the #15528/#19229 repairs load-bearing in the existing meta suite.
+    """Protect the #15528/#19229 source contracts, not artifact compatibility.
 
-    These check workflow configuration, not Cargo artifact compatibility or
-    measured compilation reuse. The two jobs must not compete for one immutable
-    cache entry: PR Smoke can save after its preflight fails, before compiling.
+    PR Smoke can save a compile-free entry after preflight fails. The two jobs
+    need distinct families and must build in rust-cache's default target tree.
+    The meta shard provisions the pinned PyYAML reader before these tests.
     """
 
+    JOBS = ("pr-smoke", "pr-fast-unblocked")
+
+    def workflow(self) -> dict:
+        return yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        )
+
+    def cache_step(self, job: dict) -> dict:
+        caches = [
+            step for step in job["steps"]
+            if step.get("uses", "").startswith("Swatinem/rust-cache@")
+        ]
+        self.assertEqual(1, len(caches), "missing or duplicate rust-cache step")
+        return caches[0]
+
+    def warm_step(self, job: dict) -> dict:
+        steps = [step for step in job["steps"] if step.get("name") == "Warm xtask"]
+        self.assertEqual(1, len(steps), "missing or duplicate Warm xtask step")
+        self.assertIn("cargo build", steps[0]["run"])
+        return steps[0]
+
     def check_cache_contract(self, text: str) -> None:
-        for job_name in ("pr-smoke", "pr-fast-unblocked"):
-            jobs = re.findall(
-                rf"^  {re.escape(job_name)}:\n(.*?)(?=^  [\w-]+:|\Z)",
-                text,
-                re.M | re.S,
-            )
-            self.assertEqual(1, len(jobs), f"missing or duplicate {job_name} job")
-            job = jobs[0]
-            # Both jobs intentionally use rust-cache's default ./target tree.
-            # A run-unique Cargo path restores bytes that the build never uses.
+        workflow = yaml.safe_load(text)
+        for job_name in self.JOBS:
+            job = workflow["jobs"][job_name]
+            cache = self.cache_step(job)
+            self.warm_step(job)
+            options = cache.get("with", {})
             self.assertEqual(
-                ["target"],
-                re.findall(r"^ +CARGO_TARGET_DIR: ([^\n]+)$", job, re.M),
-                f"{job_name} must build in the stable cached target tree",
-            )
-            # Step env takes precedence over job env; GITHUB_ENV can also
-            # redirect later builds. Permit only the existing diagnostic print,
-            # which has no redirection and cannot alter Cargo's environment.
-            assignments = [
-                line.strip() for line in job.splitlines()
-                if not line.lstrip().startswith("#") and "CARGO_TARGET_DIR=" in line
-            ]
-            self.assertEqual(
-                ['echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}"'],
-                assignments,
-                f"{job_name} must not override the cached target in a run step",
-            )
-            steps = re.findall(
-                r"^      - name: Cache cargo dependencies\n(.*?)(?=^      - |\Z)",
-                job,
-                re.M | re.S,
-            )
-            self.assertEqual(1, len(steps), f"missing or duplicate {job_name} cache")
-            cache = steps[0]
-            self.assertRegex(cache, r"(?m)^        uses: Swatinem/rust-cache@")
-            self.assertEqual(
-                [job_name],
-                re.findall(r"^          shared-key: ([^\n]+)$", cache, re.M),
+                job_name, options.get("shared-key"),
                 f"{job_name} needs its own stable family without a lockfile prefix",
             )
-            self.assertNotRegex(
-                cache,
-                r"(?m)^          (?:workspaces|cache-targets):",
+            self.assertNotIn(
+                "workspaces", options,
                 "review target alignment if rust-cache's default target changes",
             )
+            self.assertIn(options.get("cache-targets", True), (True, "true"))
+            # Actions resolves env from workflow to job to step. In particular,
+            # a cache-step override cannot repair a run step's inherited path.
+            job_env = {**workflow.get("env", {}), **job.get("env", {})}
+            for step in job["steps"]:
+                if "run" not in step and step is not cache:
+                    continue
+                effective_env = {**job_env, **step.get("env", {})}
+                self.assertEqual(
+                    "target", effective_env.get("CARGO_TARGET_DIR"),
+                    f"{job_name}/{step.get('name')} must use the stable cached target tree",
+                )
+                # This bounded guard catches explicit inline/export/GITHUB_ENV
+                # assignments, not arbitrary shell or called-script behavior.
+                # The diagnostic is harmless only as an unredirected command.
+                for line in step.get("run", "").splitlines():
+                    command = line.strip()
+                    if command.startswith("#") or "CARGO_TARGET_DIR=" not in command:
+                        continue
+                    self.assertEqual(
+                        'echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}"',
+                        command,
+                        f"{job_name} must not override the cached target in a run step",
+                    )
+
+    def check_document(self, workflow: dict) -> None:
+        self.check_cache_contract(yaml.safe_dump(workflow, sort_keys=False))
 
     def test_pr_fast_cache_families_remain_separate_and_target_aligned(self) -> None:
         self.check_cache_contract(
             (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         )
 
-    def test_realistic_cache_regressions_are_rejected(self) -> None:
-        text = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.check_cache_contract(text)
-        for old, new, diagnostic in (
-            (
-                "          shared-key: pr-fast-unblocked\n",
-                "          shared-key: pr-smoke\n",
-                "own stable family",
-            ),
-            (
-                "          shared-key: pr-smoke\n",
-                "          shared-key: pr-fast-unblocked\n",
-                "own stable family",
-            ),
-            (
-                "          shared-key: pr-fast-unblocked\n",
-                "          shared-key: pr-fast-unblocked-${{ hashFiles('Cargo.lock') }}\n",
-                "own stable family",
-            ),
-            (
-                "      CARGO_TARGET_DIR: target\n",
-                "      CARGO_TARGET_DIR: /mnt/pr-smoke-${{ github.run_id }}\n",
-                "stable cached target",
-            ),
-        ):
-            with self.subTest(regression=new.strip()):
-                mutant = text.replace(old, new)
-                self.assertNotEqual(text, mutant, "mutation did not reach the workflow")
-                with self.assertRaisesRegex(AssertionError, diagnostic):
-                    self.check_cache_contract(mutant)
+    def test_each_job_rejects_colliding_and_lockfile_prefixed_families(self) -> None:
+        for name, other in (self.JOBS, self.JOBS[::-1]):
+            for key in (other, name + "-${{ hashFiles('Cargo.lock') }}"):
+                with self.subTest(job=name, key=key):
+                    workflow = self.workflow()
+                    self.cache_step(workflow["jobs"][name])["with"]["shared-key"] = key
+                    with self.assertRaisesRegex(AssertionError, "own stable family"):
+                        self.check_document(workflow)
 
-    def test_each_pr_fast_job_rejects_step_and_exported_target_overrides(self) -> None:
+    def test_each_job_rejects_wrong_effective_target_at_every_env_scope(self) -> None:
+        for name in self.JOBS:
+            for scope in ("workflow", "job", "step", "cache-only"):
+                with self.subTest(job=name, scope=scope):
+                    workflow = self.workflow()
+                    job = workflow["jobs"][name]
+                    bad = "/mnt/run-${{ github.run_id }}"
+                    if scope in ("workflow", "cache-only"):
+                        del job["env"]["CARGO_TARGET_DIR"]
+                        workflow["env"]["CARGO_TARGET_DIR"] = bad
+                        if scope == "cache-only":
+                            self.cache_step(job)["env"] = {"CARGO_TARGET_DIR": "target"}
+                    elif scope == "job":
+                        job["env"]["CARGO_TARGET_DIR"] = bad
+                    else:
+                        self.warm_step(job)["env"] = {"CARGO_TARGET_DIR": bad}
+                    with self.assertRaisesRegex(AssertionError, "stable cached target"):
+                        self.check_document(workflow)
+
+    def test_equivalent_env_scopes_and_shadowed_workflow_target_are_accepted(self) -> None:
+        for name in self.JOBS:
+            for variant in ("workflow", "step", "cache", "shadowed"):
+                with self.subTest(job=name, variant=variant):
+                    workflow = self.workflow()
+                    job = workflow["jobs"][name]
+                    if variant == "workflow":
+                        del job["env"]["CARGO_TARGET_DIR"]
+                        workflow["env"]["CARGO_TARGET_DIR"] = "target"
+                    elif variant == "shadowed":
+                        workflow["env"]["CARGO_TARGET_DIR"] = "/mnt/run-${{ github.run_id }}"
+                    else:
+                        step = self.warm_step(job) if variant == "step" else self.cache_step(job)
+                        step["env"] = {"CARGO_TARGET_DIR": "target"}
+                    self.check_document(workflow)
+
+    def test_quoted_values_and_reformatted_yaml_are_accepted(self) -> None:
         text = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.check_cache_contract(text)
-        warm = "      - name: Warm xtask\n        run: cargo build -p xtask --locked\n"
-        for job_name in ("pr-smoke", "pr-fast-unblocked"):
-            job = re.search(
-                rf"^  {re.escape(job_name)}:\n(.*?)(?=^  [\w-]+:|\Z)",
-                text,
-                re.M | re.S,
-            )
-            self.assertIsNotNone(job, f"missing {job_name} job")
-            warm_start = text.index(warm, job.start(1), job.end(1))
-            for replacement, diagnostic in (
-                (
-                    "      - name: Warm xtask\n"
-                    "        env:\n"
-                    "          CARGO_TARGET_DIR: /mnt/run-${{ github.run_id }}\n"
-                    "        run: cargo build -p xtask --locked\n",
-                    "stable cached target",
-                ),
-                (
-                    "      - name: Redirect target\n"
-                    "        run: echo 'CARGO_TARGET_DIR=/mnt/run-${{ github.run_id }}' >> \"$GITHUB_ENV\"\n"
-                    + warm,
-                    "must not override",
-                ),
+        for quote in ("'", '"'):
+            with self.subTest(quote=quote):
+                mutant = text.replace("CARGO_TARGET_DIR: target", f"CARGO_TARGET_DIR: {quote}target{quote} # stable")
+                for name in self.JOBS:
+                    mutant = mutant.replace(f"shared-key: {name}\n", f"shared-key: {quote}{name}{quote}\n")
+                self.assertNotEqual(text, mutant)
+                self.check_cache_contract(mutant)
+        self.check_document(self.workflow())
+
+    def test_each_job_rejects_explicit_shell_target_overrides(self) -> None:
+        for name in self.JOBS:
+            for command in (
+                'echo "CARGO_TARGET_DIR=/mnt/run-${{ github.run_id }}" >> "$GITHUB_ENV"',
+                'CARGO_TARGET_DIR=/mnt/run-${{ github.run_id }} cargo build -p xtask --locked',
+                'export CARGO_TARGET_DIR=/mnt/run-${{ github.run_id }}',
+                'echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}" >> "$GITHUB_ENV"',
             ):
-                with self.subTest(job=job_name, diagnostic=diagnostic):
-                    mutant = text[:warm_start] + replacement + text[warm_start + len(warm):]
-                    self.assertNotEqual(text, mutant)
-                    with self.assertRaisesRegex(AssertionError, diagnostic):
-                        self.check_cache_contract(mutant)
+                with self.subTest(job=name, command=command):
+                    workflow = self.workflow()
+                    self.warm_step(workflow["jobs"][name])["run"] = "cargo build -p xtask --locked\n" + command
+                    with self.assertRaisesRegex(AssertionError, "must not override"):
+                        self.check_document(workflow)
+
+    def test_missing_warm_step_cannot_borrow_the_sibling_job(self) -> None:
+        for name in self.JOBS:
+            with self.subTest(job=name):
+                workflow = self.workflow()
+                job = workflow["jobs"][name]
+                job["steps"].remove(self.warm_step(job))
+                with self.assertRaisesRegex(AssertionError, "Warm xtask"):
+                    self.check_document(workflow)
 
 if __name__ == "__main__":
     unittest.main()
