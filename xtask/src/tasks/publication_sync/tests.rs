@@ -1615,8 +1615,14 @@ fn a_duplicated_invariant_id_is_rejected_by_the_schema() -> Result<()> {
     assert_finding(&receipt, "manifest_schema_violation")
 }
 
+/// Unit-level: `build_receipt` turns unparsable bytes into a `not_proven`
+/// receipt value. Named for what it actually exercises. It calls `build_receipt`
+/// directly, so on its own it says nothing about whether the command writes that
+/// receipt to disk — the guard ahead of `build_receipt` decides that, and
+/// `the_plan_command_writes_a_receipt_for_an_unparsable_manifest` is what pins
+/// it. An earlier name claimed the end-to-end property and was a false green.
 #[test]
-fn an_unparsable_manifest_still_produces_a_receipt() -> Result<()> {
+fn build_receipt_turns_an_unparsable_manifest_into_a_not_proven_receipt() -> Result<()> {
     let receipt = build_receipt(b"{ not json", Path::new("."), fixture_checkout, fixture_tree)
         .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
     assert_verdict(&receipt, Verdict::NotProven)?;
@@ -1624,6 +1630,74 @@ fn an_unparsable_manifest_still_produces_a_receipt() -> Result<()> {
         bail!("an unparsable manifest reported a digest");
     }
     assert_finding(&receipt, "manifest_unparsable")
+}
+
+/// End-to-end through the real entry point, which is the contract a consumer
+/// depends on: a malformed manifest leaves a machine-readable receipt naming why
+/// rather than only a process exit code. The alias guard runs before
+/// `build_receipt` is reached, so this is the only test that can falsify the
+/// claim; it fails against a guard that refuses an unparsable manifest outright.
+#[test]
+fn the_plan_command_writes_a_receipt_for_an_unparsable_manifest() -> Result<()> {
+    let (root, manifest, receipt) = materialize_repo(&clean_value()?)?;
+    fs::write(&manifest, b"{ not json")?;
+    // Assert the premise: a pre-existing destination is refused by design, so a
+    // fixture that created one would make this test pass for the wrong reason.
+    if receipt.exists() {
+        bail!("the fixture pre-created the receipt, so this control cannot discriminate");
+    }
+
+    let outcome = plan_with(
+        PlanConfig { manifest, repo_root: root.path().to_path_buf(), receipt: receipt.clone() },
+        fixture_checkout,
+        fixture_tree,
+    );
+    if outcome.is_ok() {
+        bail!("an unparsable manifest returned success");
+    }
+    let written: Value = serde_json::from_slice(&fs::read(&receipt)?)?;
+    if written.get("verdict").and_then(Value::as_str) != Some("not_proven") {
+        bail!("the unparsable receipt was not written as not_proven: {written}");
+    }
+    let names_cause = written.get("findings").and_then(Value::as_array).is_some_and(|findings| {
+        findings
+            .iter()
+            .filter_map(|finding| finding.get("code").and_then(Value::as_str))
+            .any(|code| code == "manifest_unparsable")
+    });
+    if !names_cause {
+        bail!("the receipt does not name manifest_unparsable: {written}");
+    }
+    Ok(())
+}
+
+/// The other half of the repair: an unparsable manifest must still not destroy
+/// bytes. `source_tests::truncated_source_document_cannot_overwrite_input_or_row_bytes`
+/// covers a declared input path; this covers the ordinary case of a destination
+/// that already holds something, which is what the relaxed guard must keep
+/// refusing rather than overwrite.
+#[test]
+fn an_unparsable_manifest_never_overwrites_an_existing_destination() -> Result<()> {
+    let (root, manifest, receipt) = materialize_repo(&clean_value()?)?;
+    fs::write(&manifest, b"{ not json")?;
+    if let Some(parent) = receipt.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&receipt, b"must survive\n")?;
+
+    let error = plan_with(
+        PlanConfig { manifest, repo_root: root.path().to_path_buf(), receipt: receipt.clone() },
+        fixture_checkout,
+        fixture_tree,
+    )
+    .expect_err("an unparsable manifest must not overwrite existing bytes");
+    if !error.to_string().contains("cannot be parsed for alias protection") {
+        bail!("unexpected refusal: {error}");
+    }
+    if fs::read(&receipt)? != b"must survive\n" {
+        bail!("the existing destination was overwritten");
+    }
+    Ok(())
 }
 
 #[test]

@@ -1203,8 +1203,29 @@ fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Resu
         );
     }
 
-    let document: Value = serde_json::from_slice(raw)
-        .context("publication-sync: refusing receipt write; raw manifest cannot be parsed for alias protection")?;
+    // An unparsable manifest declares nothing that can be enumerated, and
+    // `build_receipt` fails at the same parse, so the only paths this plan can
+    // still read are the two known without parsing: the manifest itself and the
+    // ledger, both already in `consumed`. Refusing outright here would break the
+    // receipt contract on `Receipt`, which requires a malformed manifest to
+    // still produce a machine-readable `manifest_unparsable` receipt rather than
+    // only a process exit code.
+    //
+    // What it must not do is destroy bytes. The declared inputs are unreadable,
+    // so an *existing* destination could be one of them, which is the protection
+    // #17253 added. Creating a new file cannot destroy a declared input, so that
+    // case is admitted and the receipt is written. The narrow consequence is
+    // that re-running over an unparsable manifest refuses once a receipt is
+    // already there, loudly rather than silently.
+    let Some(document) = serde_json::from_slice::<Value>(raw).ok() else {
+        if config.receipt.exists() {
+            bail!(
+                "publication-sync: refusing receipt write; raw manifest cannot be parsed for alias protection and {} already exists",
+                config.receipt.display()
+            );
+        }
+        return reject_destination_alias(&consumed, &destination);
+    };
     if document.get("inputs").is_some()
         || document.get("paths").is_some()
         || document.get("schema_version").and_then(Value::as_str)
@@ -1231,8 +1252,15 @@ fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Resu
         }
     }
 
+    reject_destination_alias(&consumed, &destination)
+}
+
+/// Reject a receipt destination that resolves onto a path this plan reads. Held
+/// apart from the guard so the parsable and unparsable branches cannot disagree
+/// about what aliasing means.
+fn reject_destination_alias(consumed: &[PathBuf], destination: &Path) -> Result<()> {
     for input in consumed {
-        if canonical_target(&input).is_some_and(|resolved| resolved == destination) {
+        if canonical_target(input).is_some_and(|resolved| resolved == *destination) {
             bail!(
                 "publication-sync: refusing to write the receipt over {}, which this plan reads",
                 input.display()
