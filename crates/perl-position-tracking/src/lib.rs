@@ -43,7 +43,7 @@ pub use position::{Position, Range};
 pub use source_lines::{
     LineRecord, LineRecordTable, SOURCE_LINE_POLICY_ID, SeparatorKind, SourceLineError,
 };
-pub use span::{ByteSpan, SourceLocation};
+pub use span::{ByteSpan, SourceLocation, SpanError};
 pub use strict::{
     BytePositionMapping, ByteRangeMapping, PositionEncoding, PositionMapping,
     PositionMappingDisposition, RangeMapping, byte_range_to_wire_range, byte_to_wire_position,
