@@ -1513,7 +1513,7 @@ impl LspServer {
         // with the same method-not-advertised error whenever the parent
         // workspaceSymbolProvider is not advertised (e.g. after
         // `disabledFeatures: ["lsp.workspace_symbol"]`).
-        if !self.advertised_features.lock().workspace_symbol {
+        if !self.client_session.advertised_features.lock().workspace_symbol {
             return Err(crate::protocol::method_not_advertised());
         }
 
