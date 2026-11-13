@@ -356,16 +356,14 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
     }
 }
 
-/// Naive comment-only heuristic for the goto-definition and completion
-/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
-/// same line.
+/// Naive comment-only heuristic (#5066/#5408/#5411): `true` when a `#`
+/// appears earlier on the same line.
 ///
-/// This is deliberately NOT the rename candidate classifier and is
-/// deliberately not string-aware: a `#` inside a string literal still reads
-/// as a comment to this guard, and that trade-off is pinned by the guard
-/// regression tests. Rename's edit policy uses the generation-bound
-/// `SourceRegionIndex` instead (#4964).
-pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+/// This is deliberately NOT string-aware on its own: callers that guard a
+/// user-visible answer use [`is_in_comment_for_guard`], which adjudicates
+/// a hit with the generation-bound `SourceRegionIndex` (#19206). The naive
+/// verdict remains the fallback when no usable snapshot can adjudicate.
+fn is_in_comment_naive(position: usize, source: &str) -> bool {
     let line_start =
         if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
     let line = &source[line_start..];
@@ -375,6 +373,55 @@ pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
         position >= comment_absolute
     } else {
         false
+    }
+}
+
+/// Comment guard for definition/completion (#19206): adjudicate a naive
+/// `#`-earlier-on-line hit with the generation-bound [`SourceRegionIndex`]
+/// from the current snapshot, so a `#` inside a string, quote-like, or
+/// regex region no longer kills the rest of the line.
+///
+/// The naive check runs first, so lines without a `#` pay no snapshot or
+/// index cost. With no snapshot, or a snapshot parsed from different text,
+/// the naive verdict stands (fail-closed, the pre-#19206 behavior).
+/// Blocking kinds mirror rename's `rename_blocked_at` plus
+/// `RecoveryAmbiguous`; proven `Code` always rescues the position. Proven
+/// literal kinds (string, quote-like, regex, heredoc) rescue only when
+/// `rescue_literals` is set: completion passes `true` because its provider
+/// classifies string/regex context itself, while definition passes `false`
+/// so quoted text cannot gain jumps the naive guard used to suppress
+/// (for example a module name inside `"# use Foo::Bar"`). EOF cursors fall
+/// back to the empty-range left-hand kind; invalid UTF-8 boundaries fail
+/// closed.
+pub(crate) fn is_in_comment_for_guard(
+    position: usize,
+    source: &str,
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    rescue_literals: bool,
+) -> bool {
+    if !is_in_comment_naive(position, source) {
+        return false;
+    }
+    let Some(snapshot) = snapshot.filter(|snapshot| snapshot.source() == source) else {
+        return true;
+    };
+    let index = snapshot.source_region_index();
+    let kind = index.classify_offset(position).proven_kind().or_else(|| {
+        match index.classify_range_checked(position, position) {
+            perl_parser_core::SourceRangeClassification::EmptyBoundary { left, .. } => left,
+            _ => None,
+        }
+    });
+    match kind {
+        Some(
+            perl_parser_core::SourceRegionKind::LineComment
+            | perl_parser_core::SourceRegionKind::Pod
+            | perl_parser_core::SourceRegionKind::DataSection
+            | perl_parser_core::SourceRegionKind::RecoveryAmbiguous,
+        ) => true,
+        Some(perl_parser_core::SourceRegionKind::Code) => false,
+        Some(_) => !rescue_literals,
+        None => true,
     }
 }
 
@@ -1965,18 +2012,17 @@ impl LspServer {
                     // AST resolver, goto-label, Mason, etc.) so it covers all
                     // navigation, not just the module-reference path.
                     //
-                    // String-aware guarding is intentionally omitted: text-based
-                    // quote scanners produce false positives on real Perl code
-                    // (regexes, heredocs, qw(), POD).  The original guard used
-                    // `is_in_comment && !is_in_string`, which was logically
-                    // inverted — it only blocked when in a comment that was NOT
-                    // also classified as a string.  This now blocks whenever the
-                    // offset is inside a comment.
+                    // The naive `#`-earlier-on-line hit is adjudicated by
+                    // the generation-bound SourceRegionIndex (#19206): a
+                    // `#` inside a string or regex no longer blocks code
+                    // later on the line, while a real comment still does.
+                    // Without a generation-current snapshot the naive
+                    // verdict stands.
                     let text = &doc.text;
-                    if is_in_comment_naive(offset, text) {
+                    let current_parsed = doc.current_parsed();
+                    if is_in_comment_for_guard(offset, text, current_parsed.as_deref(), false) {
                         return Ok(Some(Value::Null));
                     }
-                    let current_parsed = doc.current_parsed();
                     let cursor_in_single_quoted_literal =
                         in_single_quoted_literal(current_parsed.as_deref(), offset);
                     let quoted_parent_base_argument = cursor_in_single_quoted_literal
