@@ -559,12 +559,14 @@ index 8699131..c8aa1a8 100644
          step.run
      );
      assert!(
-@@ -186,22 +183,33 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
+@@ -186,24 +183,33 @@ fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error
      Ok(())
  }
 
--/// Every required-check workflow must be raised on the generated PR, plus
--/// the lane-history validator, and each must accept workflow_dispatch.
+-/// Every required dispatch registration's workflow must be raised on the
+-/// generated PR, plus the lane-history validator. Merge-group-only producers
+-/// are outside this event's scope and must not acquire a manual trigger merely
+-/// to satisfy this inventory.
 +/// Publication raises only title and payload metadata, never product proof.
  #[test]
 -fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::Error>> {

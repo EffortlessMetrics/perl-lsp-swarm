@@ -687,6 +687,15 @@ class EnforcementSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(model.ContractError, "without disjoint events"):
             model.validate_static(static)
 
+    def test_disjoint_duplicate_rows_validate_bindings_before_skipping(self) -> None:
+        for binding in ("classic_app_id", "ruleset_integration_id"):
+            for bad_index in (0, 1):
+                with self.subTest(binding=binding, bad_index=bad_index):
+                    static = self.event_split_static_receipt()
+                    static["subjects"]["contexts"][bad_index][binding] = 15368.0
+                    with self.assertRaisesRegex(model.ContractError, binding):
+                        model.validate_static(static)
+
     def test_unknown_static_receipt_field_fails_closed(self) -> None:
         static = static_receipt()
         static["surprise"] = True

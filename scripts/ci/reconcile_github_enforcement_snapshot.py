@@ -674,16 +674,6 @@ def validate_static(raw: Any) -> dict[str, Any]:
             for key, value in entry.items()
             if key not in {"name", "workflow", "job", "events"}
         }
-        if name in context_names:
-            if identity != context_identities[name]:
-                raise ContractError(f"conflicting static context identity: {name}")
-            observed = context_events[name]
-            if not observed or not events or observed & events:
-                raise ContractError(
-                    f"duplicate static context without disjoint events: {name}"
-                )
-            observed.update(events)
-            continue
         row = {
             "name": name,
             "producer": text(entry["producer"], f"{field}.producer"),
@@ -699,6 +689,16 @@ def validate_static(raw: Any) -> dict[str, Any]:
                 entry["ruleset_integration_id"],
                 f"{field}.ruleset_integration_id",
             )
+        if name in context_names:
+            if identity != context_identities[name]:
+                raise ContractError(f"conflicting static context identity: {name}")
+            observed = context_events[name]
+            if not observed or not events or observed & events:
+                raise ContractError(
+                    f"duplicate static context without disjoint events: {name}"
+                )
+            observed.update(events)
+            continue
         context_names.add(name)
         context_identities[name] = identity
         context_events[name] = events
