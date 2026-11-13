@@ -13336,6 +13336,7 @@ paths = ["archive/["]
                     "json",
                 ])
                 .current_dir(repo.path())
+                .env("RIPR_CACHE_DIR", repo.path().join("target/ripr-facts"))
                 .output()?;
             assert!(
                 output.status.success(),
