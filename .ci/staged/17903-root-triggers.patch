@@ -200,7 +200,7 @@ index 8b5998e32c..774c72856f 100644
 -                continue
 -              fi
 -            elif gh workflow run "$workflow" --ref "$BRANCH"; then
-+          for workflow in pr-title-check.yml validate-ci-lane-history.yml; do
++          for workflow in pr-title-check.yml validate-ci-lane-history.yml gate-enforcement-contract.yml; do
 +            if gh workflow run "$workflow" --ref "$BRANCH"; then
 @@ -438 +410 @@ jobs:
 -              echo "::error::Generated PR head moved during the dispatch loop; raised checks may name different subjects"
@@ -228,29 +228,31 @@ index 6666ca9a68..2a4b61d191 100644
 @@ -559,2 +551,0 @@ jobs:
 -          BASE_SHA: ${{ github.sha }}
 -          GENERATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
-@@ -562,12 +552,0 @@ jobs:
+@@ -562,14 +552,0 @@ jobs:
 -          # ci.yml's workflow_dispatch declares required inputs (since #13019):
 -          # the dispatched subject's exact base and head SHAs. Dispatching it
 -          # bare fails with HTTP 422 "Required input 'base_sha' not provided",
 -          # so the generated PR's required checks never populate (#13355).
+-          # ripr.yml declares the same optional inputs and must not evaluate an
+-          # empty RIPR_BASE_SHA on the generated head (#13709).
 -          # base_sha is this run's event SHA — the freshness gate above proved
 -          # it equals the live default-branch tip, i.e. the generated PR's
 -          # base. head_sha is the automation branch head the create-pr step
 -          # just wrote, which is the same commit the --ref below dispatches.
--          # The other three workflows declare no dispatch inputs and stay bare.
+-          # Only ci.yml and ripr.yml receive these subject identities.
 -          # Keep attempting every required workflow so one transient dispatch
 -          # failure cannot strand the later required checks. The final status
 -          # remains failing when any dispatch failed.
 @@ -576,8 +555,2 @@ jobs:
 -          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml gate-enforcement-contract.yml; do
--            if [ "$workflow" = ci.yml ]; then
+-            if [ "$workflow" = ci.yml ] || [ "$workflow" = ripr.yml ]; then
 -              if gh workflow run "$workflow" --ref "$BRANCH" \
 -                -f "base_sha=$BASE_SHA" \
 -                -f "head_sha=$GENERATED_HEAD_SHA"; then
 -                continue
 -              fi
 -            elif gh workflow run "$workflow" --ref "$BRANCH"; then
-+          for workflow in pr-title-check.yml; do
++          for workflow in pr-title-check.yml gate-enforcement-contract.yml; do
 +            if gh workflow run "$workflow" --ref "$BRANCH"; then
 diff --git a/xtask/tests/lane_history_ci_dispatch_contract.rs b/xtask/tests/lane_history_ci_dispatch_contract.rs
 index 7bd952a..94a0cd6 100644
@@ -293,12 +295,23 @@ index 7bd952a..94a0cd6 100644
 +        required.remove(product);
 +        assert!(!dispatched.contains(product), "publication cannot dispatch {product}");
 +    }
-@@ -204,0 +205,8 @@ fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::
+@@ -203,5 +203,14 @@ fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::
+-    assert!(
+-        required.is_subset(&dispatched),
+-        "generated-PR dispatch set must cover every required-check workflow; missing: {:?}",
+-        required.difference(&dispatched).collect::<Vec<_>>()
+-    );
++    assert!(
++        required.is_subset(&dispatched),
++        "generated-PR dispatch set must cover every required-check workflow; missing: {:?}",
++        required.difference(&dispatched).collect::<Vec<_>>()
++    );
 +    assert_eq!(
 +        dispatched,
 +        BTreeSet::from([
 +            "pr-title-check.yml".to_string(),
 +            "validate-ci-lane-history.yml".to_string(),
++            "gate-enforcement-contract.yml".to_string(),
 +        ]),
 +        "publication may dispatch only the retained metadata set"
 +    );
@@ -376,7 +389,7 @@ index 7455b44..f20dfe3 100644
 -        base_sha: &str,
 -        head_sha: &str,
 @@ -99,6 +94,0 @@ fn assert_dispatch_loop_behavior(
--        if workflow == "ci.yml" {
+-        if (workflow == "ci.yml" || workflow == "ripr.yml") {
 -            argv.push("-f".into());
 -            argv.push(format!("base_sha={base_sha}"));
 -            argv.push("-f".into());
@@ -384,7 +397,7 @@ index 7455b44..f20dfe3 100644
 -        }
 @@ -115,9 +105 @@ fn assert_dispatch_loop_behavior(
 -        .map(|workflow| {
--            if workflow == "ci.yml" {
+-            if (workflow == "ci.yml" || workflow == "ripr.yml") {
 -                format!(
 -                    "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
 -                )
@@ -420,13 +433,14 @@ index 7455b44..f20dfe3 100644
 @@ -385 +360 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
 -fn test_post_merge_workflow_dispatches_all_required_checks()
 +fn test_post_merge_workflow_dispatches_metadata_only()
-@@ -425 +400,3 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+@@ -425 +400,4 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
 -    let required_workflows = required_workflows(&policy)?;
-+    let required_workflows = {
-+        ["pr-title-check.yml".to_owned()].into_iter().collect::<BTreeSet<_>>()
-+    };
++    let required_workflows = BTreeSet::from([
++        "gate-enforcement-contract.yml".to_owned(),
++        "pr-title-check.yml".to_owned(),
++    ]);
 @@ -461,8 +439 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
--    // The ci.yml dispatch arm reads its subject identity from step env
+-    // The ci.yml and ripr.yml dispatch arms read their subject identity from env
 -    // (#13355); both names must be declared so the simulated invocation is
 -    // the one the workflow really makes.
 -    let step_env = dispatch_step
@@ -440,6 +454,14 @@ index 7455b44..f20dfe3 100644
 -            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
 +            !dispatched_workflows.contains(product),
 +            "publication must not request product qualification: {product}"
-@@ -480,2 +450,0 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+@@ -475,7 +446,0 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+-    assert!(
+-        dispatch_run
+-            .contains("if [ \"$workflow\" = ci.yml ] || [ \"$workflow\" = ripr.yml ]; then")
+-            && dispatch_run.contains("-f \"base_sha=$BASE_SHA\"")
+-            && dispatch_run.contains("-f \"head_sha=$GENERATED_HEAD_SHA\""),
+-        "ripr.yml must receive the generated PR's base and head SHAs instead of running bare"
+-    );
+@@ -488,2 +451,0 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
 -        "0123456789abcdef0123456789abcdef01234567",
 -        "89abcdef0123456789abcdef0123456789abcdef",
