@@ -512,7 +512,8 @@ fn unrelated_failure_does_not_satisfy_a_negative_control() -> TestResult {
     harness.goal = Goal::Counterexample { assertion: "FV_OTHER".to_owned() };
     harness.assertions.push("FV_OTHER".to_owned());
     let mut value = value;
-    let check = json!({"id": 2, "category": "assertion", "description": "FV_OTHER", "status": "Success"});
+    let check =
+        json!({"id": 2, "category": "assertion", "description": "FV_OTHER", "status": "Success"});
     value["verification_results"]["results"][0]["checks"]
         .as_array_mut()
         .context("checks")?
@@ -558,9 +559,11 @@ fn unwind_and_unsupported_failures_are_not_production_counterexamples() -> TestR
         value["verification_results"]["results"][0]["status"] = json!("Failure");
         value["verification_results"]["summary"]["successful"] = json!(0);
         value["verification_results"]["summary"]["failed"] = json!(1);
-        value["error_details"][0] = json!({"harness_id": "h", "has_errors": true,
+        value["error_details"][0] = json!({
+            "harness_id": "h", "has_errors": true,
             "error_type": "verification_failure", "failed_properties_type": "Other",
-            "exit_status": "properties_failed"});
+            "exit_status": "properties_failed"
+        });
         value["property_details"][0]["property_details"]["unreachable"] = json!(0);
         value["property_details"][0]["property_details"]["failed"] = json!(1);
         let report = inspect_value(&value)?;
@@ -573,8 +576,7 @@ fn unwind_and_unsupported_failures_are_not_production_counterexamples() -> TestR
 #[test]
 fn a_new_property_category_requires_explicit_profile_review() -> TestResult {
     let mut value = fixture();
-    value["verification_results"]["results"][0]["checks"][2]["category"] =
-        json!("new_safety_class");
+    value["verification_results"]["results"][0]["checks"][2]["category"] = json!("new_safety_class");
     rejects(inspect_value(&value), "unrecognized property category")
 }
 
@@ -582,7 +584,8 @@ fn a_new_property_category_requires_explicit_profile_review() -> TestResult {
 fn a_negative_control_cannot_hide_an_unsatisfied_required_cover() -> TestResult {
     let (mut expected, mut value) = negative_fixture()?;
     expected.harnesses.get_mut("h").context("h")?.covers.push("FV_COVER".to_owned());
-    let check = json!({"id": 2, "category": "cover", "description": "FV_COVER", "status": "Unsatisfiable"});
+    let check =
+        json!({"id": 2, "category": "cover", "description": "FV_COVER", "status": "Unsatisfiable"});
     value["verification_results"]["results"][0]["checks"]
         .as_array_mut()
         .context("checks")?

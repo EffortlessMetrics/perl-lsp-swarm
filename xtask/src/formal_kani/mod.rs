@@ -299,12 +299,7 @@ fn inspect_properties(
             ensure!(
                 matches!(
                     status,
-                    "Success"
-                        | "Failure"
-                        | "Unreachable"
-                        | "Undetermined"
-                        | "Unknown"
-                        | "Error"
+                    "Success" | "Failure" | "Unreachable" | "Undetermined" | "Unknown" | "Error"
                 ),
                 "invalid status for non-cover property"
             );
@@ -523,10 +518,7 @@ pub fn inspect(bytes: &[u8], expected: &ExpectedRun) -> Result<Inspection> {
         .with_context(|| format!("harness {id}"))?;
         if native_success {
             ensure!(
-                !observation
-                    .findings
-                    .iter()
-                    .any(|f| matches!(f.status.as_str(), "Failure" | "Error")),
+                !observation.findings.iter().any(|f| matches!(f.status.as_str(), "Failure" | "Error")),
                 "native success contradicts properties"
             );
         } else {
