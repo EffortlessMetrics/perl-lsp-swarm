@@ -27,439 +27,56 @@ jobs:
           fetch-depth: 1
 
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
-
-      - name: Apply reviewed fail-closed source repair
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.95.0
 
-          path = Path("xtask/src/tasks/formal_receipt.rs")
-          source = path.read_text()
-
-          def replace_once(old: str, new: str, label: str) -> None:
-              global source
-              count = source.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label} matched {count} times; expected exactly one")
-              source = source.replace(old, new, 1)
-
-          replace_once(
-              '''    fn validate_native(&self, errors: &mut Vec<String>) {
-                  match self.native.result {
-          ''',
-              '''    fn validate_native(&self, errors: &mut Vec<String>) {
-                  let declared_properties = self
-                      .obligations
-                      .positive
-                      .ids
-                      .iter()
-                      .map(String::as_str)
-                      .collect::<BTreeSet<_>>();
-                  let observed_properties = self
-                      .native
-                      .properties
-                      .keys()
-                      .map(String::as_str)
-                      .collect::<BTreeSet<_>>();
-                  let observed_count =
-                      u64::try_from(self.native.properties.len()).unwrap_or(u64::MAX);
-                  let satisfied_count = u64::try_from(
-                      self.native
-                          .properties
-                          .values()
-                          .filter(|outcome| **outcome == PropertyOutcome::Pass)
-                          .count(),
-                  )
-                  .unwrap_or(u64::MAX);
-
-                  if !observed_properties.is_subset(&declared_properties) {
-                      errors.push(
-                          "native property identities must be declared by obligations.positive.ids"
-                              .to_string(),
-                      );
-                  }
-                  if observed_count != u64::from(self.obligations.positive.observed) {
-                      errors.push(
-                          "obligations.positive.observed must equal the native property row count"
-                              .to_string(),
-                      );
-                  }
-                  if satisfied_count != u64::from(self.obligations.positive.satisfied) {
-                      errors.push(
-                          "obligations.positive.satisfied must equal the native pass row count"
-                              .to_string(),
-                      );
-                  }
-
-                  match self.native.result {
-          ''',
-              "native observation accounting",
-          )
-
-          pass_anchor = '''                complete("positive", &self.obligations.positive, errors);
-                  complete("harness controls", &self.obligations.harness_controls, errors);
-                  if !self.artifacts.iter().any(|artifact| artifact.required) {
-                      errors.push("native pass requires a required raw artifact".to_string());
-                  }
-          '''
-          pass_replacement = '''                if observed_properties != declared_properties {
-                      errors.push(
-                          "native pass property identities must exactly match obligations.positive.ids"
-                              .to_string(),
-                      );
-                  }
-                  complete("positive", &self.obligations.positive, errors);
-                  complete("harness controls", &self.obligations.harness_controls, errors);
-                  if !self.artifacts.iter().any(|artifact| {
-                      artifact.required
-                          && matches!(
-                              artifact.kind,
-                              ArtifactKind::Stdout
-                                  | ArtifactKind::Stderr
-                                  | ArtifactKind::StructuredReport
-                          )
-                  }) {
-                      errors.push(
-                          "native pass requires a required stdout, stderr, or structured_report artifact"
-                              .to_string(),
-                      );
-                  }
-                  if self.disposition.status == DispositionStatus::Active
-                      && self.freshness.status != FreshnessStatus::Current
-                  {
-                      errors.push(
-                          "an active native pass requires current freshness".to_string(),
-                      );
-                  }
-                  if self.claim.binding != ImplementationBinding::ModelOnly
-                      && self.correspondence.status != CorrespondenceStatus::Established
-                  {
-                      errors.push(
-                          "a production-bound native pass requires established correspondence"
-                              .to_string(),
-                      );
-                  }
-          '''
-          replace_once(pass_anchor, pass_replacement, "native pass admission")
-
-          unsettled_anchor = '''                if !self.native.process_settled
-                      && self.native.reason != Some(NonPassReason::ProcessUnsettled)
-                  {
-                      errors.push(
-                          "unsettled process requires reason process_unsettled".to_string(),
-                      );
-                  }
-          '''
-          unsettled_replacement = unsettled_anchor + '''                if self.native.process_settled
-                      && self.native.reason == Some(NonPassReason::ProcessUnsettled)
-                  {
-                      errors.push(
-                          "settled process cannot use reason process_unsettled".to_string(),
-                      );
-                  }
-          '''
-          replace_once(unsettled_anchor, unsettled_replacement, "process settlement consistency")
-
-          freshness_anchor = '''                if self.freshness.reason.is_some()
-                      || self.freshness.evaluated_source_commit != self.source.commit
-                      || self.freshness.evaluated_closure_digest != self.closure.digest
-                  {
-                      errors.push(
-                          "current freshness must have no reason and bind source plus closure"
-                              .to_string(),
-                      );
-                  }
-          '''
-          freshness_replacement = '''                if self.freshness.reason.is_some()
-                      || self.freshness.evaluated_source_commit != self.source.commit
-                      || self.freshness.evaluated_closure_digest != self.closure.digest
-                      || self.source.state == SourceState::Unknown
-                  {
-                      errors.push(
-                          "current freshness must have no reason, bind source plus closure, and use a known source state"
-                              .to_string(),
-                      );
-                  }
-          '''
-          replace_once(freshness_anchor, freshness_replacement, "current freshness consistency")
-
-          correspondence_anchor = '''        let ids = self
-                      .artifacts
-                      .iter()
-                      .map(|artifact| artifact.id.as_str())
-                      .collect::<BTreeSet<_>>();
-                  for artifact_id in &self.correspondence.artifact_ids {
-                      if !ids.contains(artifact_id.as_str()) {
-                          errors.push(format!(
-                              "correspondence artifact '{artifact_id}' is not present in artifacts"
-                          ));
-                      }
-                  }
-          '''
-          correspondence_replacement = '''        let artifacts = self
-                      .artifacts
-                      .iter()
-                      .map(|artifact| (artifact.id.as_str(), artifact))
-                      .collect::<BTreeMap<_, _>>();
-                  for artifact_id in &self.correspondence.artifact_ids {
-                      match artifacts.get(artifact_id.as_str()) {
-                          Some(artifact) if artifact.kind == ArtifactKind::Correspondence => {}
-                          Some(_) => errors.push(format!(
-                              "correspondence artifact '{artifact_id}' must reference a correspondence artifact"
-                          )),
-                          None => errors.push(format!(
-                              "correspondence artifact '{artifact_id}' is not present in artifacts"
-                          )),
-                      }
-                  }
-                  if self.correspondence.status == CorrespondenceStatus::Established
-                      && !self.correspondence.artifact_ids.iter().any(|artifact_id| {
-                          artifacts.get(artifact_id.as_str()).is_some_and(|artifact| {
-                              artifact.required && artifact.kind == ArtifactKind::Correspondence
-                          })
-                      })
-                  {
-                      errors.push(
-                          "established correspondence requires a required correspondence artifact"
-                              .to_string(),
-                      );
-                  }
-          '''
-          replace_once(
-              correspondence_anchor,
-              correspondence_replacement,
-              "correspondence artifact binding",
-          )
-
-          active_anchor = '''                if self.disposition.reason.is_some()
-                      || self.disposition.superseded_by.is_some()
-                      || matches!(
-          '''
-          active_replacement = '''                if self.disposition.reason.is_some()
-                      || self.disposition.superseded_by.is_some()
-                      || self.claim.rollout == RolloutState::Retired
-                      || matches!(
-          '''
-          replace_once(active_anchor, active_replacement, "active disposition consistency")
-
-          tests = '''
-              #[test]
-              fn pass_requires_every_declared_positive_property() {
-                  let mut value = valid_receipt();
-                  value["native"]["properties"] = json!({
-                      "roundtrip": "pass"
-                  });
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("exactly match obligations.positive.ids"))
-                  );
-              }
-
-              #[test]
-              fn pass_rejects_replaced_positive_property_identity() {
-                  let mut value = valid_receipt();
-                  value["native"]["properties"] = json!({
-                      "roundtrip": "pass",
-                      "unrelated": "pass"
-                  });
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("exactly match obligations.positive.ids"))
-                  );
-              }
-
-              #[test]
-              fn pass_rejects_extra_positive_property_identity() {
-                  let mut value = valid_receipt();
-                  value["native"]["properties"]["auxiliary"] = json!("pass");
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("exactly match obligations.positive.ids"))
-                  );
-              }
-
-              #[test]
-              fn native_rows_must_match_positive_observation_counts() {
-                  let mut value = valid_receipt();
-                  value["obligations"]["positive"]["observed"] = json!(1);
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("native property row count"))
-                  );
-              }
-
-              #[test]
-              fn non_pass_rows_must_still_use_declared_property_ids() {
-                  let mut value = valid_receipt();
-                  value["native"] = json!({
-                      "result": "not_proven",
-                      "reason": "timeout",
-                      "process_settled": true,
-                      "properties": { "unrelated": "not_proven" }
-                  });
-                  value["obligations"]["positive"]["observed"] = json!(1);
-                  value["obligations"]["positive"]["satisfied"] = json!(0);
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("must be declared"))
-                  );
-              }
-
-              #[test]
-              fn pass_requires_native_raw_evidence_not_metadata_only() {
-                  let mut value = valid_receipt();
-                  value["artifacts"] = json!([
-                      {
-                          "id": "correspondence",
-                          "kind": "correspondence",
-                          "digest": ALT,
-                          "path": "target/formal/correspondence.json",
-                          "required": true
-                      }
-                  ]);
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors.iter().any(|error| {
-                          error.contains("required stdout, stderr, or structured_report")
-                      })
-                  );
-              }
-
-              #[test]
-              fn active_disposition_rejects_retired_rollout() {
-                  let mut value = valid_receipt();
-                  value["claim"]["rollout"] = json!("retired");
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("active disposition cannot be retired"))
-                  );
-              }
-
-              #[test]
-              fn settled_process_rejects_process_unsettled_reason() {
-                  let mut value = valid_receipt();
-                  value["native"] = json!({
-                      "result": "not_proven",
-                      "reason": "process_unsettled",
-                      "process_settled": true,
-                      "properties": {}
-                  });
-                  value["obligations"]["positive"]["observed"] = json!(0);
-                  value["obligations"]["positive"]["satisfied"] = json!(0);
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("settled process cannot"))
-                  );
-              }
-
-              #[test]
-              fn current_freshness_rejects_unknown_source_state() {
-                  let mut value = valid_receipt();
-                  value["source"]["state"] = json!("unknown");
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("known source state"))
-                  );
-              }
-
-              #[test]
-              fn active_production_bound_pass_requires_established_correspondence() {
-                  let mut value = valid_receipt();
-                  value["correspondence"]["status"] = json!("not_proven");
-                  value["correspondence"]["controls"]["observed"] = json!(0);
-                  value["correspondence"]["controls"]["satisfied"] = json!(0);
-                  value["correspondence"]["artifact_ids"] = json!([]);
-                  value["correspondence"]["reason"] = json!("wrapper changed");
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("requires established correspondence"))
-                  );
-              }
-
-              #[test]
-              fn correspondence_ids_must_bind_correspondence_artifacts() {
-                  let mut value = valid_receipt();
-                  value["artifacts"][1]["kind"] = json!("structured_report");
-
-                  let errors = validate_value(&value);
-                  assert!(
-                      errors
-                          .iter()
-                          .any(|error| error.contains("must reference a correspondence artifact"))
-                  );
-              }
-          '''
-          marker = '''
-              #[test]
-              fn counterexample_requires_bound_trace() {
-          '''
-          if source.count(marker) != 1:
-              raise SystemExit("test insertion anchor must occur exactly once")
-          source = source.replace(marker, tests + marker, 1)
-          path.write_text(source)
-          PY
-
-      - name: Format with repository toolchain
-        run: cargo +1.95.0 fmt --all
-
-      - name: Capture exact repair patch
+      - name: Apply and format reviewed source repair
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p target/formal-receipt-repair
+          python3 .github/scripts/tmp_formal_receipt_repair.py
+          cargo fmt --all
+          git diff --check
+
+      - name: Capture exact repair evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-receipt-repair/xtask/src/tasks
+          cp xtask/src/tasks/formal_receipt.rs target/formal-receipt-repair/xtask/src/tasks/formal_receipt.rs
+          cp xtask/src/tasks/gate_receipts.rs target/formal-receipt-repair/xtask/src/tasks/gate_receipts.rs
+          cp xtask/src/tasks/mod.rs target/formal-receipt-repair/xtask/src/tasks/mod.rs
           git diff --binary -- xtask/src/tasks/formal_receipt.rs xtask/src/tasks/gate_receipts.rs xtask/src/tasks/mod.rs > target/formal-receipt-repair.patch
-          cp xtask/src/tasks/formal_receipt.rs target/formal-receipt-repair/
-          cp xtask/src/tasks/gate_receipts.rs target/formal-receipt-repair/
-          cp xtask/src/tasks/mod.rs target/formal-receipt-repair/
+          test -s target/formal-receipt-repair.patch
 
       - name: Run focused formal receipt tests
-        run: cargo +1.95.0 test -p xtask --all-targets --locked formal_receipt
+        run: cargo test -p xtask --all-targets --locked formal_receipt
 
-      - name: Run focused strict Clippy
-        run: cargo +1.95.0 clippy -p xtask --all-targets --locked -- -D warnings
+      - name: Run strict xtask Clippy
+        run: cargo clippy -p xtask --all-targets --locked -- -D warnings
 
       - name: Run documentation and workflow policy checks
+        shell: bash
         run: |
-          cargo +1.95.0 xtask docs-check
-          cargo +1.95.0 xtask workflow-policy
+          set -euo pipefail
+          cargo xtask docs-check
+          cargo xtask workflow-policy
 
-      - name: Verify clean patch shape
-        run: git diff --check
+      - name: Verify only intended source paths changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          printf '%s\n' "$changed"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(xtask/src/tasks/formal_receipt\.rs|xtask/src/tasks/gate_receipts\.rs|xtask/src/tasks/mod\.rs)$' || true)"
+          test -z "$unexpected"
 
       - name: Upload read-only repair evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: formal-receipt-repair-${{ github.event.pull_request.head.sha }}
           path: |
