@@ -5980,3 +5980,30 @@ reason = "Disposable real Git negative-control fixture proves fetch maintenance 
 covered_by = ["python scripts/tests/test_cleanup_fetch_maintenance.py"]
 created = "2026-10-01"
 review_after = "2027-01-01"
+
+[[allow]]
+id = "non-rust-workspace-target-protocol-tla"
+path = "crates/perl-workspace/tests/formal/target-protocol/WorkspaceProtocol.tla"
+kind = "test_fixture"
+language = "tla"
+surface = "fixtures"
+classification = "test"
+owner = "workspace/formal-19298"
+reason = "Finite target-protocol specification with independent safety/liveness properties; model-only, not production refinement."
+covered_by = ["TLC 1.7.4: both positive*.cfg profiles and every wrong-*.cfg in target-protocol (see adjacent README.md)"]
+created = "2026-11-13"
+review_after = "2027-02-13"
+
+[[allow]]
+id = "non-rust-workspace-target-protocol-configs"
+glob = "crates/perl-workspace/tests/formal/target-protocol/*.cfg"
+kind = "test_fixture"
+language = "tla-config"
+surface = "fixtures"
+classification = "test"
+owner = "workspace/formal-19298"
+reason = "Exact finite bounds and one-defect counterexample controls for the #19298 target-protocol model."
+covered_by = ["TLC 1.7.4: both positive*.cfg profiles and every wrong-*.cfg in target-protocol (see adjacent README.md)"]
+broad_glob_reason = "One model directory only; each configuration is a declared positive or wrong-model proof subject."
+created = "2026-11-13"
+review_after = "2027-02-13"
