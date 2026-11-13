@@ -45,6 +45,22 @@ NUL, and longer-input regressions. The ordinary tests enumerate short coordinate
 and selected machine-word extremes. They do not establish every machine-word
 coordinate or a native Kani result.
 
+### Profile and invocation drift controls
+
+Five additional tests in `tests/formal/profile_contract.rs` run as children of the
+same library-test module, for eleven ordinary tests in this slice. They bind the
+reviewed source layout to the exact positive/negative harness split, per-harness
+cover names, unwind bound, target and text-domain assumption, production-source
+import, and the two documented native invocations. Mutation controls remove,
+duplicate and rename each cover, change scope/entrypoints, merge the negative
+control into the positive file, and alter invocation flags or output identities.
+
+These are conservative text/layout checks, not a Rust parser, semantic equivalence
+proof, tool execution, or a native result. A legitimate source rewrite can require
+an explicit update. Comments or inactive code are not authenticated execution;
+#19317 must still reconcile the actually executed harness/assertion/cover sets.
+No native result or tool installation is needed for these five maintenance tests.
+
 ### Exact native claim
 
 The generator maps case IDs 0 through 584 bijectively onto texts with zero through
@@ -90,13 +106,26 @@ common custody runner, not an alternative admission wrapper or a CI activation:
 
 ```bash
 kani crates/perl-line-index/tests/formal/line_index_kani.rs \
-  -Z export-json --export-json target/formal/position-positive.json \
+  -Z unstable-options -Z concrete-playback \
+  --export-json target/formal/position-positive.json \
   --concrete-playback=print
 
 kani crates/perl-line-index/tests/formal/false_scalar_boundary.rs \
-  -Z export-json --export-json target/formal/position-false-theorem.json \
+  -Z unstable-options -Z concrete-playback \
+  --export-json target/formal/position-false-theorem.json \
   --concrete-playback=print
 ```
+
+The flags are version-specific. In the pinned Kani commit
+`0d2328a93f0e0ff66132d6bfa1a7d884877cf862`,
+`kani-driver/src/args/mod.rs` (blob
+`fe43c977016efca3b15de081bf26c920ac4a701f`) requires `-Z unstable-options` for
+JSON export and `-Z concrete-playback` for replay output.
+`kani_metadata/src/unstable.rs` (blob
+`9a639d3bc58cdd4a1999fc11758797bd67b57066`) does not define an `export-json`
+unstable feature. Do not substitute a command from the moving upstream book for
+this pinned CLI contract. Both feature flags above are required; this source audit
+does not qualify a native run or its resource budget.
 
 Do not pass `--tests`, disable checks, or use `--concrete-playback=inplace`. The
 ordinary `src/lib.rs` unit tests are not part of the native harness denominator.

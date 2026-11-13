@@ -7,6 +7,9 @@ use std::collections::BTreeSet;
 #[path = "contract.rs"]
 mod contract;
 
+#[path = "profile_contract.rs"]
+mod profile_contract;
+
 use contract::{CASE_COUNT, MAX_BYTES, MAX_SCALARS, case_text};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
