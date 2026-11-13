@@ -40,7 +40,7 @@ REQUIRED_PRECONDITIONS = (
 #: while leaving the marker behind fails. Kept deliberately small: one or two
 #: load-bearing phrases per bullet, not the whole sentence.
 PRECONDITION_TEXT = {
-    "superseded-producer": ("commit-to-PR association", "#19261"),
+    "superseded-producer": ("commit-to-PR association", "#18255", "#19326"),
     "ruleset-contexts": ("required_status_checks", "App-owned aggregate"),
     "exact-h-receipt": ("exact-H admission receipt",),
     "shared-producer": ("required-merge-surface commands", "NOT_PROVEN"),
@@ -208,6 +208,14 @@ class MergeQueueActivationChecklistTests(unittest.TestCase):
         lowered = self.text.lower()
         self.assertNotIn("agree on the required contexts", lowered)
         self.assertNotIn("revert #19257 first", lowered)
+
+    def test_closed_carrier_is_not_an_activation_dependency(self) -> None:
+        """Retained source is historical input, not a PR that must land."""
+        self.assertIn("closed unmerged", self.text)
+        self.assertIn("not the activation carrier", self.text)
+        self.assertIn("#19326", self.text)
+        self.assertNotIn("#19261 must", self.text)
+        self.assertNotIn("before #19261 lands", self.text)
 
     def test_receipt_and_singleton_canary_are_required(self) -> None:
         """A real exact-H receipt and a singleton G canary are preconditions."""
