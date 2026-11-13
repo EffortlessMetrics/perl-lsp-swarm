@@ -1,0 +1,169 @@
+name: Rust 1.100 migration audit
+
+on:
+  push:
+    branches: [chore/rust-1.100]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-1-100-migration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit Rust 1.100 migration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Inventory live Rust 1.95 contracts and 1.100 risk surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import re
+          import subprocess
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          tracked = subprocess.check_output(
+              ["git", "ls-files", "-z"], text=False
+          ).split(b"\0")
+          paths = [Path(raw.decode("utf-8")) for raw in tracked if raw]
+
+          version_re = re.compile(r"(?<![0-9])1\.95(?:\.0)?(?![0-9])")
+          historical_prefixes = (
+              ".spec/",
+              "benchmarks/results/",
+              "docs/forensics/",
+              "docs/learnings/",
+              "docs/performance/",
+          )
+          historical_name = re.compile(r"(?:^|/)(?:19|20)\d{2}[-_]\d{2}[-_]\d{2}")
+
+          active: list[tuple[str, int, str]] = []
+          historical: list[tuple[str, int, str]] = []
+          unreadable: list[str] = []
+
+          for path in paths:
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  unreadable.append(path.as_posix())
+                  continue
+              for lineno, line in enumerate(text.splitlines(), 1):
+                  if not version_re.search(line):
+                      continue
+                  record = (path.as_posix(), lineno, line.strip())
+                  path_s = path.as_posix()
+                  if path_s.startswith(historical_prefixes) or historical_name.search(path_s):
+                      historical.append(record)
+                  else:
+                      active.append(record)
+
+          print("=== ACTIVE 1.95 REFERENCES ===")
+          for path, lineno, line in active:
+              print(f"{path}:{lineno}:{line}")
+          print()
+          print("=== ACTIVE PATH COUNTS ===")
+          for path, count in sorted(Counter(item[0] for item in active).items()):
+              print(f"{count:4d} {path}")
+          print()
+          print("=== HISTORICAL / EVIDENCE REFERENCES (PRESERVE) ===")
+          for path, count in sorted(Counter(item[0] for item in historical).items()):
+              print(f"{count:4d} {path}")
+          print()
+          print(
+              f"SUMMARY active_matches={len(active)} active_paths={len(set(x[0] for x in active))} "
+              f"historical_matches={len(historical)} historical_paths={len(set(x[0] for x in historical))} "
+              f"unreadable_tracked_files={len(unreadable)}"
+          )
+
+          scans = {
+              "never_or_infallible": re.compile(r"(?:\bInfallible\b|->\s*!\b|Result\s*<[^>]*,\s*!\s*>)"),
+              "box_patterns": re.compile(r"(?:#!?\[feature\(box_patterns\)\]|\bbox\s+[A-Za-z_(])"),
+              "cargo_target_layout": re.compile(r"(?:target[/\\](?:debug|release)|[/\\]deps[/\\]|CARGO_TARGET_DIR|target[_-]dir)"),
+              "cargo_install_locked": re.compile(r"cargo\s+install[^\n]*--locked"),
+              "cargo_warning_policy": re.compile(r"(?:CARGO_BUILD_WARNINGS|build\.warnings|\[lints\.cargo\]|unused_dependencies)"),
+              "symbol_mangling_or_backtrace": re.compile(r"(?:symbol-mangling-version|rustfilt|\bbacktrace\b|mangled symbol)", re.I),
+              "ffi_symbol_contracts": re.compile(r"(?:no_mangle|unsafe\s*\([^)]*(?:export_name|link_name|link_section)|\bexport_name\b|\blink_name\b|\blink_section\b|\bc_void\b)"),
+              "cfg_select": re.compile(r"cfg_select!"),
+              "workspace_default_features": re.compile(r"default-features\s*=\s*false"),
+          }
+          scan_hits: dict[str, list[tuple[str, int, str]]] = defaultdict(list)
+          for path in paths:
+              if path.suffix not in {".rs", ".toml", ".yml", ".yaml", ".py", ".sh", ".ps1", ".md", ".json"} and path.name not in {"justfile", "Makefile"}:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for lineno, line in enumerate(text.splitlines(), 1):
+                  for name, pattern in scans.items():
+                      if pattern.search(line):
+                          scan_hits[name].append((path.as_posix(), lineno, line.strip()))
+
+          print("\n=== RUST 1.100 COMPATIBILITY / BENEFIT SCANS ===")
+          for name in scans:
+              hits = scan_hits[name]
+              print(f"--- {name}: {len(hits)} matches in {len(set(x[0] for x in hits))} paths")
+              for path, lineno, line in hits[:80]:
+                  print(f"{path}:{lineno}:{line}")
+              if len(hits) > 80:
+                  print(f"... {len(hits) - 80} more matches omitted")
+          PY
+
+      - name: Install Rust 1.100.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: 1.100.0
+          components: rustfmt,clippy
+
+      - name: Record compiler and workspace metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -Vv
+          cargo -Vv
+          rustfmt -V
+          clippy-driver -V
+          cargo metadata --locked --no-deps --format-version 1 > /tmp/metadata.json
+          python3 - <<'PY'
+          import json
+          from collections import Counter
+          data = json.load(open('/tmp/metadata.json', encoding='utf-8'))
+          versions = Counter(pkg.get('rust_version') or '<unset>' for pkg in data['packages'])
+          print('Workspace package rust-version declarations:')
+          for version, count in sorted(versions.items()):
+              print(f'  {version}: {count}')
+          print(f"Packages: {len(data['packages'])}")
+          PY
+
+      - name: Check rustfmt 1.100 compatibility
+        continue-on-error: true
+        shell: bash
+        run: cargo fmt --all -- --check
+
+      - name: Check primary Rust surfaces on 1.100
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          CARGO_BUILD_JOBS: "2"
+          CARGO_INCREMENTAL: "0"
+        shell: bash
+        run: >-
+          cargo check --locked --all-targets -j 2
+          -p perl-parser-core
+          -p perl-lsp-rs-core
+          -p perl-lsp-rs
+          -p xtask
