@@ -192,8 +192,6 @@ pub struct LspServer {
     /// Server-owned coordinate authority, published only after initialize succeeds.
     pub(crate) position_encoding_session_context:
         Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
-    /// Whether shutdown was received (for LSP-compliant exit handling)
-    shutdown_received: AtomicBool,
     /// What an `exit` notification ends: the process (stdio default) or only
     /// this connection (socket mode, #17331). Set once at construction.
     exit_policy: exit_policy::ExitPolicy,
@@ -368,6 +366,10 @@ pub struct LspServer {
     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
     pub(crate) workspace_indexing_start_gate:
         Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
+    /// Pause and observe the real workspace progress-token installer in tests.
+    #[cfg(all(test, feature = "workspace"))]
+    pub(crate) workspace_progress_install_observation:
+        workspace::WorkspaceProgressInstallTestObservation,
     /// Cache of extracted POD documentation keyed by resolved file path.
     pod_cache: Arc<Mutex<HashMap<PathBuf, PodCacheEntry>>>,
     /// Last provider-local decision receipt by provider name.
@@ -742,7 +744,7 @@ impl LspServer {
         );
         // Decide + send + rollback under one family-lock hold (#9769), the
         // same guarded emission the AI auth failure path uses.
-        let decision = self.session_warning_dedup.emit_once_with(
+        let decision = self.client_session.session_warning_dedup.emit_once_with(
             session_warning_dedup::SessionWarningFamily::CriticEngineAvailability,
             identity,
             || {

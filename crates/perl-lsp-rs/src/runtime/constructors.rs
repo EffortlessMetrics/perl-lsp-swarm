@@ -4,12 +4,9 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AtomicBool, AtomicI32, AtomicU64, BufReader, ClientCapabilities, FeatureProfile, HashMap,
-    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
-    WorkspaceConfig, Write, exit_policy, io, notebook, outbound, refresh,
     Arc, AtomicBool, AtomicU64, BufReader, FeatureProfile, HashMap, IndexCoordinator, LspServer,
-    Mutex, Read, SymbolIndex, UseLibHirCache, WorkspaceConfig, Write, io, notebook, outbound,
-    refresh,
+    Mutex, Read, SymbolIndex, UseLibHirCache, WorkspaceConfig, Write, exit_policy, io, notebook,
+    outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 
@@ -52,7 +49,6 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
-            shutdown_received: AtomicBool::new(false),
             exit_policy: exit_policy::ExitPolicy::default(),
             connection_exit: Arc::new(tokio::sync::Notify::new()),
             pending_startup_log: Arc::new(Mutex::new(None)),
@@ -95,6 +91,8 @@ impl LspServer {
             )),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            workspace_progress_install_observation: Default::default(),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
@@ -255,7 +253,6 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
-            shutdown_received: AtomicBool::new(false),
             exit_policy: exit_policy::ExitPolicy::default(),
             connection_exit: Arc::new(tokio::sync::Notify::new()),
             pending_startup_log: Arc::new(Mutex::new(None)),
@@ -298,6 +295,8 @@ impl LspServer {
             )),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            workspace_progress_install_observation: Default::default(),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
@@ -385,7 +384,6 @@ impl LspServer {
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
-            shutdown_received: AtomicBool::new(false),
             exit_policy: exit_policy::ExitPolicy::default(),
             connection_exit: Arc::new(tokio::sync::Notify::new()),
             pending_startup_log: Arc::new(Mutex::new(None)),
@@ -428,6 +426,8 @@ impl LspServer {
             )),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            workspace_progress_install_observation: Default::default(),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),

@@ -187,7 +187,7 @@ impl LspServer {
             // lifecycle message is dequeued.
             if Self::should_inline_after_shutdown(
                 &method,
-                self.shutdown_received.load(Ordering::Acquire),
+                self.client_session.shutdown_received.load(Ordering::Acquire),
             ) {
                 if self.admit_handler_response(request).is_err() {
                     response_delivery_failed = true;
@@ -649,6 +649,69 @@ mod tests {
                 "a post-shutdown notification must not invent a response, got: {wire}"
             )
             .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shutdown_then_request_then_socket_exit_uses_one_terminal_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let captured = SharedBuffer::default();
+        let writer = captured.clone();
+        let runtime =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+        let exit_code = runtime.block_on(async {
+            let output = Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>));
+            let mut server = LspServer::with_output(output);
+            server
+                .handle_initialize(None)
+                .map_err(|error| format!("initialize failed: {error:?}"))?;
+            server.exit_policy = crate::runtime::exit_policy::ExitPolicy::EndConnection;
+            let server = Arc::new(server);
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let serving = {
+                let server = Arc::clone(&server);
+                tokio::spawn(async move {
+                    Arc::clone(&server).serve_async(rx).await;
+                })
+            };
+
+            tx.send(request(2, "shutdown")).await?;
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !server
+                    .client_session
+                    .shutdown_received
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "the asynchronous lifecycle worker did not admit shutdown")?;
+            tx.send(request(3, "textDocument/hover")).await?;
+            tx.send(request(4, "exit")).await?;
+            drop(tx);
+            tokio::time::timeout(std::time::Duration::from_secs(5), serving)
+                .await
+                .map_err(|_| "shutdown -> request -> exit did not settle")??;
+            server
+                .outbound
+                .close_and_wait(std::time::Duration::from_secs(1))
+                .ok_or("outbound writer did not settle after socket exit")?;
+            Ok::<_, Box<dyn std::error::Error>>(server.connection_protocol_exit_code())
+        })?;
+
+        let wire = String::from_utf8(captured.bytes())?;
+        if !wire.contains("\"id\":3") && !wire.contains("\"id\": 3") {
+            return Err(
+                format!("post-shutdown InvalidRequest must precede socket exit: {wire}").into()
+            );
+        }
+        if !wire.contains("-32600") {
+            return Err(format!("post-shutdown request must be -32600: {wire}").into());
+        }
+        if exit_code != 0 {
+            return Err(format!("accepted shutdown yielded socket exit code {exit_code}").into());
         }
         Ok(())
     }

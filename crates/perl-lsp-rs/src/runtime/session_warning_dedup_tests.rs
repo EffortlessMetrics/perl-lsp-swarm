@@ -208,17 +208,19 @@ fn critic_configuration_clear_preserves_the_engine_availability_identity() {
     note_critic(&server, profile_identity("/cfg/before-move"));
     assert_eq!(
         server
+            .client_session
             .session_warning_dedup
             .note(SessionWarningFamily::CriticEngineAvailability, availability),
         SessionWarningDecision::EmitFirst
     );
 
     // Critic configuration movement clears only the critic family.
-    server.session_warning_dedup.clear_family(SessionWarningFamily::Critic);
+    server.client_session.session_warning_dedup.clear_family(SessionWarningFamily::Critic);
 
     assert_eq!(server.session_warning_dedup_snapshot().critic.entries, 0);
     assert_eq!(
         server
+            .client_session
             .session_warning_dedup
             .note(SessionWarningFamily::CriticEngineAvailability, availability),
         SessionWarningDecision::Suppress,

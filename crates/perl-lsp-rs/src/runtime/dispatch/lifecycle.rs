@@ -150,6 +150,11 @@ impl LspServer {
         Ok(Some(json!(null)))
     }
 
+    /// Protocol status for this connection's terminal LSP `exit` boundary.
+    pub(crate) fn connection_protocol_exit_code(&self) -> i32 {
+        protocol_exit_code(self.client_session.shutdown_received.load(Ordering::Acquire))
+    }
+
     /// Handle exit request
     // The abnormal-exit branch below writes its reason to stderr directly:
     // under the default `warn` tracing filter an info record is dropped, and
@@ -169,7 +174,7 @@ impl LspServer {
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
-        let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
+        let exit_code = self.connection_protocol_exit_code();
         if self.exit_policy == exit_policy::ExitPolicy::EndConnection {
             // Socket transport (#17331): this connection's `exit` ends only
             // this connection. Release this session's serve loop and let the
@@ -184,8 +189,6 @@ impl LspServer {
             self.notify_connection_exit();
             return Ok(None);
         }
-        let exit_code =
-            protocol_exit_code(self.client_session.shutdown_received.load(Ordering::Acquire));
         if exit_code == 0 {
             tracing::info!(exit_code, "LSP server exiting");
         } else {

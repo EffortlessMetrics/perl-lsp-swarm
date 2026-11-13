@@ -351,6 +351,14 @@ unsafe impl Send for OpenDocumentsHandle {}
 // -- because this type never reaches the pointers at all.
 unsafe impl Sync for OpenDocumentsHandle {}
 
+#[cfg(all(test, feature = "workspace"))]
+#[derive(Clone, Default)]
+pub(crate) struct WorkspaceProgressInstallTestObservation {
+    pub(crate) gate: Arc<std::sync::Mutex<Option<super::readiness::WorkspaceIndexingStartGate>>>,
+    pub(crate) outcome:
+        Arc<Mutex<Option<std::sync::mpsc::Sender<super::client_session::ProgressTokenInstall>>>>,
+}
+
 #[cfg(feature = "workspace")]
 #[derive(Clone)]
 struct IndexingResources {
@@ -377,6 +385,8 @@ struct IndexingResources {
     progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     next_request_id: Arc<AtomicI32>,
     shutdown_received: Arc<AtomicBool>,
+    #[cfg(all(test, feature = "workspace"))]
+    progress_install_observation: WorkspaceProgressInstallTestObservation,
     permission_denied_shown: Arc<AtomicBool>,
     readiness_receipt: Arc<Mutex<crate::runtime::readiness::WorkspaceReadinessReceipt>>,
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2158,7 +2168,7 @@ impl LspServer {
     /// restore, or edit. Ask it to re-pull instead, mirroring the
     /// include-path seam.
     pub(crate) fn refresh_diagnostics_after_watched_change(&self) {
-        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+        if self.client_session.client_supports_pull_diags.load(Ordering::Relaxed) {
             if let Err(error) = self.request_diagnostic_refresh() {
                 tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
             }
@@ -2955,6 +2965,12 @@ impl LspServer {
             return;
         };
 
+        // Drop the capability guard before entering the producer function. An
+        // installer gate may otherwise hold it while shutdown drains the same
+        // negotiation state, creating a producer/shutdown deadlock.
+        let work_done_progress =
+            self.client_session.client_capabilities.lock().work_done_progress_support;
+
         Self::start_workspace_indexing_with_resources(IndexingResources {
             coordinator,
             workspace_folders: Arc::clone(&self.workspace_folders),
@@ -2968,15 +2984,13 @@ impl LspServer {
             indexing_scan_observation: Arc::clone(&self.indexing_scan_observation),
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
-            work_done_progress: self
-                .client_session
-                .client_capabilities
-                .lock()
-                .work_done_progress_support,
+            work_done_progress,
             progress_tokens: Arc::clone(&self.client_session.progress_tokens),
             progress_token_to_request: Arc::clone(&self.client_session.progress_token_to_request),
             next_request_id: Arc::clone(&self.client_session.next_request_id),
             shutdown_received: Arc::clone(&self.client_session.shutdown_received),
+            #[cfg(all(test, feature = "workspace"))]
+            progress_install_observation: self.workspace_progress_install_observation.clone(),
             permission_denied_shown: Arc::clone(&self.permission_denied_shown),
             readiness_receipt: Arc::clone(&self.workspace_readiness_receipt),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -3067,6 +3081,8 @@ impl LspServer {
         let progress_tokens = resources.progress_tokens;
         let progress_token_to_request = resources.progress_token_to_request;
         let shutdown_received = resources.shutdown_received;
+        #[cfg(test)]
+        let progress_install_observation = resources.progress_install_observation;
         let cancellation_registered = if work_done_progress {
             let cancellation_token = PerlLspCancellationToken::new(
                 progress_request_id.clone(),
@@ -3076,13 +3092,25 @@ impl LspServer {
                 tracing::warn!(%error, "Failed to register workspace indexing cancellation token");
                 false
             } else {
-                match crate::runtime::client_session::install_progress_token_with(
+                // Capability and handles are deliberately captured before this
+                // pause: a later shutdown must not turn this probe into a
+                // work_done_progress=false test that skips installation.
+                #[cfg(test)]
+                super::readiness::notify_workspace_indexing_started(
+                    &progress_install_observation.gate,
+                );
+                let install_outcome = crate::runtime::client_session::install_progress_token_with(
                     &shutdown_received,
                     &progress_tokens,
                     &progress_token_to_request,
                     WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
                     Some(progress_request_id.clone()),
-                ) {
+                );
+                #[cfg(test)]
+                if let Some(observer) = progress_install_observation.outcome.lock().take() {
+                    let _ = observer.send(install_outcome);
+                }
+                match install_outcome {
                     crate::runtime::client_session::ProgressTokenInstall::Installed => true,
                     crate::runtime::client_session::ProgressTokenInstall::Shutdown
                     | crate::runtime::client_session::ProgressTokenInstall::AlreadyExists => {
@@ -4973,6 +5001,7 @@ mod tests {
         for _ in 0..2 {
             server.request_workspace_configuration_for_folders();
             let request_id = server
+                .client_session
                 .pending_workspace_configuration_requests
                 .lock()
                 .keys()
@@ -5062,6 +5091,7 @@ mod tests {
         let pull = |payload: serde_json::Value| -> Result<(), Box<dyn std::error::Error>> {
             server.request_workspace_configuration_for_folders();
             let request_id = server
+                .client_session
                 .pending_workspace_configuration_requests
                 .lock()
                 .keys()
@@ -6206,12 +6236,14 @@ mod tests {
         other_server.start_workspace_indexing();
         other_started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         let cancelled_request = cancelled_server
+            .client_session
             .progress_token_to_request
             .lock()
             .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
             .cloned()
             .ok_or("cancelled session did not register progress")?;
         let other_request = other_server
+            .client_session
             .progress_token_to_request
             .lock()
             .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
@@ -6362,14 +6394,15 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "workspace")]
-    #[test]
-    fn indexing_after_shutdown_does_not_emit_progress_frames()
-    -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(all(test, feature = "workspace"))]
+    fn assert_progress_install_refusal_emits_no_frames(
+        shutdown: bool,
+        expected: crate::runtime::client_session::ProgressTokenInstall,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(
-            dir.path().join("after-shutdown.pm"),
-            "package AfterShutdown;\nsub marker { 1 }\n1;\n",
+            dir.path().join("installer-refusal.pm"),
+            "package InstallerRefusal;\nsub marker { 1 }\n1;\n",
         )?;
         let folder_uri = url::Url::from_directory_path(dir.path())
             .map_err(|_| "invalid workspace folder path")?
@@ -6394,23 +6427,81 @@ mod tests {
             .readiness_receipt_observer_id
             .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
 
-        if server.client_session.begin_shutdown()
-            != crate::runtime::client_session::ShutdownAdmission::First
-        {
-            return Err("expected first-caller shutdown admission".into());
+        if !shutdown {
+            let planted = server.client_session.install_progress_token(
+                WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
+                Some(JsonRpcId::Integer(77)),
+            );
+            if planted != crate::runtime::client_session::ProgressTokenInstall::Installed {
+                return Err("expected the independent AlreadyExists precondition".into());
+            }
         }
 
-        server.start_workspace_indexing();
-        let _receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        let (before_install_tx, before_install_rx) = std::sync::mpsc::channel();
+        let (release_install_tx, release_install_rx) = std::sync::mpsc::channel();
+        crate::runtime::readiness::set_workspace_indexing_start_gate(
+            &server.workspace_progress_install_observation.gate,
+            before_install_tx,
+            release_install_rx,
+        );
+        let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
+        *server.workspace_progress_install_observation.outcome.lock() = Some(outcome_tx);
 
-        if server.client_session.progress_tokens.lock().contains(WORKSPACE_INDEX_PROGRESS_TOKEN)
-            || server
+        // Capture the enabled producer on its real path, then pause before the
+        // installer so shutdown can happen without resetting that capture.
+        let server = std::sync::Arc::new(server);
+        let producer = {
+            let server = std::sync::Arc::clone(&server);
+            std::thread::spawn(move || server.start_workspace_indexing())
+        };
+        before_install_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("before progress install: {error:?}"))?;
+
+        if shutdown {
+            let admission = server.client_session.begin_shutdown();
+            if admission != crate::runtime::client_session::ShutdownAdmission::First {
+                return Err("expected first-caller shutdown admission".into());
+            }
+        }
+        release_install_tx
+            .send(())
+            .map_err(|error| format!("release progress install gate: {error:?}"))?;
+        producer.join().map_err(|_| "workspace indexing producer thread panicked")?;
+        if outcome_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("observe progress install outcome: {error:?}"))?
+            != expected
+        {
+            return Err(format!("wrong progress installer outcome; expected {expected:?}").into());
+        }
+        let _receipt = receipt_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("installer-refusal readiness receipt: {error:?}"))?;
+
+        if shutdown
+            && (server
+                .client_session
+                .progress_tokens
+                .lock()
+                .contains(WORKSPACE_INDEX_PROGRESS_TOKEN)
+                || server
+                    .client_session
+                    .progress_token_to_request
+                    .lock()
+                    .contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN))
+        {
+            return Err("shutdown refusal retained workspace-index progress identity".into());
+        }
+        if !shutdown
+            && server
                 .client_session
                 .progress_token_to_request
                 .lock()
-                .contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN)
+                .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
+                != Some(&JsonRpcId::Integer(77))
         {
-            return Err("indexing after shutdown retained workspace-index progress identity".into());
+            return Err("AlreadyExists did not preserve the independent token identity".into());
         }
 
         drop(server);
@@ -6418,15 +6509,35 @@ mod tests {
         if messages.iter().any(|message| {
             message.get("method").and_then(Value::as_str) == Some("window/workDoneProgress/create")
         }) {
-            return Err("indexing after shutdown emitted window/workDoneProgress/create".into());
+            return Err(format!("{expected:?} emitted window/workDoneProgress/create").into());
         }
         if messages
             .iter()
             .any(|message| message.get("method").and_then(Value::as_str) == Some("$/progress"))
         {
-            return Err("indexing after shutdown emitted $/progress".into());
+            return Err(format!("{expected:?} emitted $/progress").into());
         }
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_after_shutdown_does_not_emit_progress_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_progress_install_refusal_emits_no_frames(
+            true,
+            crate::runtime::client_session::ProgressTokenInstall::Shutdown,
+        )
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_with_existing_progress_token_does_not_emit_progress_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_progress_install_refusal_emits_no_frames(
+            false,
+            crate::runtime::client_session::ProgressTokenInstall::AlreadyExists,
+        )
     }
 
     #[cfg(feature = "workspace")]

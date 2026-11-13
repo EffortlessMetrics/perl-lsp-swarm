@@ -780,8 +780,11 @@ fn file_operation_create_and_rename_refresh_pull_clients() -> Result<(), Box<dyn
         // of machine speed; successful invalidations must bypass this timer.
         server.refresh_controller =
             super::refresh::RefreshController::with_debounce(Duration::from_secs(60));
-        server.client_capabilities.lock().diagnostic_refresh_support = true;
-        server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
+        server.client_session.client_capabilities.lock().diagnostic_refresh_support = true;
+        server
+            .client_session
+            .client_supports_pull_diags
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
         // The client may finish the first pull before the second event arrives.
         // A leading-edge debounce must not swallow that second invalidation.
@@ -829,8 +832,11 @@ fn dependency_save_refreshes_pull_clients_after_reconciliation()
     let (server, output, consumer_uri, role_uri, _dir) = open_save_role_fixture()?;
     let keys = [consumer_uri.clone(), server.normalize_uri_key(&consumer_uri)];
     let key = server.normalize_uri_key(&role_uri);
-    server.client_capabilities.lock().diagnostic_refresh_support = true;
-    server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.client_capabilities.lock().diagnostic_refresh_support = true;
+    server
+        .client_session
+        .client_supports_pull_diags
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
     let before = save_output_boundary(&server, &output, "pull-save-before")?;
     server.handle_did_save(Some(json!({
