@@ -1,9 +1,5 @@
 //! Inspect a pinned Kani structured export without claiming authenticated proof.
-#![expect(
-    clippy::print_stderr,
-    clippy::print_stdout,
-    reason = "Inspection JSON and diagnostics are CLI output"
-)]
+#![expect(clippy::print_stderr, clippy::print_stdout, reason = "Inspection JSON and diagnostics are CLI output")]
 
 #[path = "../formal_kani/mod.rs"]
 mod formal_kani;

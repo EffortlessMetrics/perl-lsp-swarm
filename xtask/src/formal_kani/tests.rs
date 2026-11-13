@@ -10,11 +10,8 @@ fn expected() -> ExpectedRun {
     ExpectedRun {
         target: "x86_64-unknown-linux-gnu".to_owned(),
         tools: [
-            ("kani", "0.68.0"),
-            ("rustc", "fixture rustc"),
-            ("cbmc", "fixture cbmc"),
-            ("goto_cc", "fixture goto-cc"),
-            ("goto_instrument", "fixture goto-instrument"),
+            ("kani", "0.68.0"), ("rustc", "fixture rustc"), ("cbmc", "fixture cbmc"),
+            ("goto_cc", "fixture goto-cc"), ("goto_instrument", "fixture goto-instrument"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))

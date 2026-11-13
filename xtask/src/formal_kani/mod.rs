@@ -17,15 +17,8 @@ const MAX_HARNESSES: usize = 256;
 const MAX_CHECKS: usize = 100_000;
 const TOOLS: [&str; 5] = ["kani", "rustc", "cbmc", "goto_cc", "goto_instrument"];
 const COUNTS: [&str; 9] = [
-    "passed",
-    "failed",
-    "unreachable",
-    "undetermined",
-    "solver_error",
-    "satisfied",
-    "unsatisfiable",
-    "covered",
-    "uncovered",
+    "passed", "failed", "unreachable", "undetermined", "solver_error",
+    "satisfied", "unsatisfiable", "covered", "uncovered",
 ];
 
 /// The run owner's expected identities, not identities learned from the report.
@@ -144,10 +137,8 @@ fn unique_messages(values: &[String], what: &str) -> Result<BTreeSet<String>> {
 }
 
 fn validate_expected(expected: &ExpectedRun) -> Result<()> {
-    ensure!(
-        !expected.harnesses.is_empty() && expected.harnesses.len() <= MAX_HARNESSES,
-        "invalid expected harness denominator"
-    );
+    ensure!(!expected.harnesses.is_empty() && expected.harnesses.len() <= MAX_HARNESSES,
+        "invalid expected harness denominator");
     let keys: BTreeSet<_> = expected.tools.keys().map(String::as_str).collect();
     ensure!(keys == TOOLS.into_iter().collect(), "expected tool identity set differs");
     ensure!(
