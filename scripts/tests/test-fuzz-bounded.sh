@@ -731,6 +731,58 @@ assert_not_contains "missing fuzz job does not report EQUAL" \
   "EQUAL" "${TMPDIR_BASE}/parity-no-fuzz.out"
 
 echo ""
+# Exercise the upload's actual selectors against offline target fixtures.
+# No runner logs, receipts, or environment data are packaged by this test.
+if "$REAL_PYTHON3" - "$REPO_ROOT" "$TMPDIR_BASE" <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+
+repo, scratch = map(Path, sys.argv[1:])
+workflow = (repo / ".github/workflows/ci-nightly.yml").read_text()
+step = workflow.split("    - name: Upload crash artifacts\n", 1)[1]
+assert "failure() || cancelled()" in step
+assert "retention-days: 30" in step
+paths_block = re.search(r"^        path: \|\n((?:          .+\n)+)", step, re.M)
+assert paths_block, "missing upload paths"
+selectors = [line.strip() for line in paths_block[1].splitlines()]
+root = scratch / "upload-fixture"
+expected = {
+    "fuzz/artifacts/alpha/crash-one": b"crash input\x00",
+    "fuzz/artifacts/alpha/nested/timeout-two": b"timeout input",
+    "fuzz/corpus/alpha/seed": b"seed input",
+    "fuzz/corpus/alpha/new-input": b"generated input",
+}
+foreign = {
+    "fuzz/artifacts/beta/crash-other": b"unrelated crash",
+    "fuzz/corpus/beta/seed": b"unrelated seed",
+}
+corpus_only = {"fuzz/corpus/early/seed": b"early failure input"}
+for name, data in (expected | foreign | corpus_only).items():
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+def selected(target):
+    files = {}
+    for selector in selectors:
+        directory = root / selector.replace("${{ matrix.target }}", target)
+        for path in directory.rglob("*"):
+            if path.is_file():
+                files[path.relative_to(root).as_posix()] = path.read_bytes()
+    return files
+
+assert selected("alpha") == expected, "retain all selected-target bytes only"
+assert selected("beta") == foreign, "selection must follow matrix target"
+assert selected("early") == corpus_only, "retain corpus when no crash exists"
+assert selected("absent") == {}, "missing output must not select sibling data"
+PYTHON
+then
+  pass "fuzz diagnostic upload retains selected-target evidence only"
+else
+  fail "fuzz diagnostic upload retains selected-target evidence only"
+fi
+
 echo "=== ${PASS} passed, ${FAIL} failed ==="
 if ((FAIL > 0)); then
   exit 1
