@@ -1,10 +1,12 @@
-# Repository defaults for aider.chat sessions
-# Keep context deterministic and lightweight for this monorepo.
+# Repository defaults for aider.chat sessions.
+# Keep persistent context small; load task-specific files only when the claim needs them.
 read:
   - AGENTS.md
   - AIDER.md
-  - README.md
-  - CONTRIBUTING.md
-  - docs/project/ROADMAP.md
-  - docs/project/CURRENT_STATUS.md
-  - features.toml
+
+# Repository work owns staging, commits, lint, and proof explicitly. Aider must not
+# commit pre-existing dirty work or invoke an unadmitted command after an edit.
+auto-commits: false
+dirty-commits: false
+auto-lint: false
+auto-test: false

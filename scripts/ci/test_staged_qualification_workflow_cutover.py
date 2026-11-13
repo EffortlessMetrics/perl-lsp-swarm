@@ -29,6 +29,8 @@ DISPATCH_PATHS = ('.github/workflows/aggregate-ci-lane-history.yml',
                   'xtask/tests/lane_history_ci_dispatch_contract.rs',
                   'xtask/tests/merge_group_title_producer.rs',
                   'xtask/tests/post_merge_status_regen_tests.rs')
+REHEARSAL_PATHS = ('scripts/ci/test_staged_qualification_workflow_cutover.py',
+                   'scripts/ci/test_generated_pr_metadata_dispatch.py')
 ORDINARY = {'pull_request', 'pull_request_target', 'merge_group', 'push'}
 
 
@@ -49,7 +51,8 @@ def staged_tree():
         root = Path(directory)
         for name in (*[path.relative_to(ROOT).as_posix() for path in
                        sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY,
-                     *[path for path in DISPATCH_PATHS if path.startswith(('xtask/', 'scripts/ci/'))]):
+                     *[path for path in (*DISPATCH_PATHS, *REHEARSAL_PATHS)
+                       if path.startswith(('xtask/', 'scripts/ci/'))]):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)

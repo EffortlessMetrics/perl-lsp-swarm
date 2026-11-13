@@ -56,6 +56,7 @@ CHECK_ENTRY_FIELDS = frozenset(
         "classic_app_id",
         "ruleset_integration_id",
         "reason",
+        "reporter_binding",
     }
 )
 EVENT_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -534,6 +535,50 @@ def _binding_findings(
     return []
 
 
+def _reporter_binding_findings(entry: dict[str, Any], subject: str) -> list[Finding]:
+    """Validate a declaration, never authenticate a reporter or a selection.
+
+    Omission preserves the existing static inventory contract. Consumers must
+    treat absent bindings as NOT_PROVEN. Complete coverage is a declaration to
+    compare to the actual selector's denominator, not proof of that comparison.
+    """
+    if "reporter_binding" not in entry:
+        return []
+    binding = entry["reporter_binding"]
+    def refused(message: str) -> list[Finding]:
+        return [Finding("invalid_reporter_binding", subject, message)]
+    if not isinstance(binding, dict):
+        return refused("reporter_binding must be a table")
+    kind = binding.get("kind")
+    identity = {"check-run": "app_id", "legacy-status": "creator_id"}.get(kind) if isinstance(kind, str) else None
+    if identity is None:
+        return refused("kind must be check-run or legacy-status")
+    fields = {"kind", identity, "obligation_ids", "coverage_complete"}
+    if set(binding) != fields:
+        return refused("reporter binding requires exactly " + ", ".join(sorted(fields)))
+    value = binding[identity]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return refused(identity + " must be a positive integer")
+    obligations = binding["obligation_ids"]
+    if (not isinstance(obligations, list) or not obligations
+            or any(not isinstance(x, str) or not x or x != x.strip() for x in obligations)):
+        return refused("obligation_ids must be nonempty exact identifiers")
+    if len(set(obligations)) != len(obligations):
+        return refused("obligation_ids must be unique")
+    if binding["coverage_complete"] is not True:
+        return refused("partial or unknown aggregate coverage is NOT_PROVEN")
+    if kind == "legacy-status":
+        if entry.get("producer") != "external":
+            return refused("repository jobs emit check runs, not legacy statuses")
+        if any(field in entry for field in ("classic_app_id", "ruleset_integration_id")):
+            return refused("legacy creator identity cannot satisfy an App binding")
+    else:
+        for field in ("classic_app_id", "ruleset_integration_id"):
+            if field in entry and entry[field] != value:
+                return refused("producer app_id conflicts with " + field)
+    return []
+
+
 def validate_context(
     entry: dict[str, Any],
     workflows: dict[str, Workflow],
@@ -586,6 +631,8 @@ def validate_context(
             subject=name,
         )
     )
+
+    findings.extend(_reporter_binding_findings(entry, name))
 
     workflow = entry.get("workflow")
     job_id = entry.get("job")
@@ -691,8 +738,15 @@ def _canonical_context(entry: dict[str, Any]) -> dict[str, Any]:
         "classic_app_id",
         "ruleset_integration_id",
         "events",
+        "reporter_binding",
     )
-    return {field: entry[field] for field in fields if field in entry}
+    result = {field: entry[field] for field in fields if field in entry}
+    binding = result.get("reporter_binding")
+    if isinstance(binding, dict) and isinstance(binding.get("obligation_ids"), list):
+        ids = binding["obligation_ids"]
+        if all(isinstance(value, str) for value in ids):
+            result["reporter_binding"] = dict(binding, obligation_ids=sorted(ids))
+    return result
 
 
 def qualification_source_findings(

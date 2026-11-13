@@ -6,10 +6,99 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 from git_environment import isolated_git_env
+
+
+class GitEnvironmentSchemaTests(unittest.TestCase):
+    """Only Git's selector names may be reused, never a caller environment."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.executable = Path(temp.name) / 'git-fixture'
+        self.executable.write_bytes(b'fixture executable identity')
+
+    def test_reuses_schema_but_reads_a_fresh_environment_each_time(self):
+        names = 'GIT_DIR\nGIT_WORK_TREE\nGIT_CONFIG_COUNT\n'
+        with patch('shutil.which', return_value=str(self.executable)), \
+             patch('git_environment.subprocess.check_output', return_value=names) as probe, \
+             patch.dict(os.environ, {'GIT_DIR': 'first', 'KEEP': 'first'}, clear=True):
+            first = isolated_git_env()
+            first['KEEP'] = 'mutated result'
+            os.environ.update(GIT_DIR='second', GIT_WORK_TREE='foreign', KEEP='second',
+                              GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_42='core.bare',
+                              GIT_CONFIG_VALUE_42='true')
+            before = dict(os.environ)
+            second = isolated_git_env()
+            self.assertEqual(second, {'KEEP': 'second'})
+            self.assertEqual(dict(os.environ), before)
+            self.assertEqual(probe.call_count, 1)
+            self.assertEqual(probe.call_args.kwargs['executable'],
+                             os.path.realpath(self.executable))
+
+    def test_changing_selected_git_refreshes_the_name_set(self):
+        other = self.executable.with_name('other-git')
+        other.write_bytes(b'other executable')
+        with patch('shutil.which', side_effect=[str(self.executable), str(other), str(self.executable)]), \
+             patch('git_environment.subprocess.check_output',
+                   side_effect=['GIT_DIR\n', 'GIT_DIR\nGIT_NEW_SELECTOR\n', 'GIT_DIR\n']) as probe, \
+             patch.dict(os.environ, {'GIT_DIR': 'foreign', 'GIT_NEW_SELECTOR': 'new'}, clear=True):
+            self.assertEqual(isolated_git_env(), {'GIT_NEW_SELECTOR': 'new'})
+            self.assertEqual(isolated_git_env(), {})
+            self.assertEqual(isolated_git_env(), {'GIT_NEW_SELECTOR': 'new'})
+            self.assertEqual(probe.call_count, 2)
+
+    def test_replacing_selected_executable_refreshes_the_name_set(self):
+        with patch('shutil.which', return_value=str(self.executable)), \
+             patch('git_environment.subprocess.check_output',
+                   side_effect=['GIT_DIR\n', 'GIT_DIR\nGIT_NEW_SELECTOR\n']) as probe, \
+             patch.dict(os.environ, {'GIT_DIR': 'foreign', 'GIT_NEW_SELECTOR': 'new'}, clear=True):
+            self.assertEqual(isolated_git_env(), {'GIT_NEW_SELECTOR': 'new'})
+            self.executable.write_bytes(b'replaced executable with a different size')
+            self.assertEqual(isolated_git_env(), {})
+            self.assertEqual(probe.call_count, 2)
+
+    def test_discovery_failure_is_not_cached_and_retry_stays_fail_closed(self):
+        failure = subprocess.CalledProcessError(128, ['git', 'rev-parse', '--local-env-vars'])
+        with patch('shutil.which', return_value=str(self.executable)), \
+             patch('git_environment.subprocess.check_output',
+                   side_effect=[failure, 'GIT_DIR\n']) as probe, \
+             patch.dict(os.environ, {'GIT_DIR': 'foreign', 'KEEP': 'value'}, clear=True):
+            with self.assertRaises(subprocess.CalledProcessError):
+                isolated_git_env()
+            self.assertEqual(isolated_git_env(), {'KEEP': 'value'})
+            self.assertEqual(probe.call_count, 2)
+
+    def test_missing_git_does_not_reuse_a_previous_schema(self):
+        with patch('shutil.which', side_effect=[str(self.executable), None]), \
+             patch('git_environment.subprocess.check_output', return_value='GIT_DIR\n'), \
+             patch.dict(os.environ, {'GIT_DIR': 'foreign'}, clear=True):
+            self.assertEqual(isolated_git_env(), {})
+            with self.assertRaises(FileNotFoundError):
+                isolated_git_env()
+
+    def test_empty_discovery_is_not_treated_as_an_environment_without_selectors(self):
+        with patch('shutil.which', return_value=str(self.executable)), \
+             patch('git_environment.subprocess.check_output',
+                   side_effect=['\n', 'GIT_DIR\n']) as probe, \
+             patch.dict(os.environ, {'GIT_DIR': 'foreign'}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, 'empty local environment-variable schema'):
+                isolated_git_env()
+            self.assertEqual(isolated_git_env(), {})
+            self.assertEqual(probe.call_count, 2)
+
+    def test_disappearing_executable_does_not_reuse_a_previous_schema(self):
+        with patch('shutil.which', return_value=str(self.executable)), \
+             patch('git_environment.subprocess.check_output', return_value='GIT_DIR\n'), \
+             patch.dict(os.environ, {'GIT_DIR': 'foreign'}, clear=True):
+            self.assertEqual(isolated_git_env(), {})
+            self.executable.unlink()
+            with self.assertRaises(FileNotFoundError):
+                isolated_git_env()
 
 CHILD = r'''
 import pathlib, sys

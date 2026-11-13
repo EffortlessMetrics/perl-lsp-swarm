@@ -27,6 +27,10 @@ SPEC.loader.exec_module(aggregate_lane_history)
 REPOSITORY = "EffortlessMetrics/perl-lsp-swarm"
 DEFAULT_BRANCH = "main"
 HEAD_SHA = "a" * 40
+TRUSTED_MARKER_SCHEMA_VERSION = aggregate_lane_history.TRUSTED_MARKER_SCHEMA_VERSION
+WORKFLOW_PATH = (
+    Path(__file__).resolve().parents[2] / ".github/workflows/aggregate-ci-lane-history.yml"
+)
 
 
 def current_timestamp() -> str:
@@ -60,6 +64,7 @@ def write_run(
         (run_dir / aggregate_lane_history.TRUSTED_MARKER).write_text(
             json.dumps(
                 {
+                    "schema_version": TRUSTED_MARKER_SCHEMA_VERSION,
                     "run_id": marker_run_id if marker_run_id is not None else run_id,
                     "repository": repository,
                     "event": event,
@@ -143,6 +148,55 @@ class AggregateLaneHistoryTests(unittest.TestCase):
                 with self.subTest(path=path.name):
                     with self.assertRaises(ValueError):
                         aggregate_lane_history.static_floors(path)
+
+    def test_trusted_marker_schema_version_envelope(self) -> None:
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            f'"schema_version": "{TRUSTED_MARKER_SCHEMA_VERSION}"',
+            workflow,
+            "aggregate-ci-lane-history.yml must emit the trusted-run sidecar envelope (#15335)",
+        )
+
+    def test_validate_trusted_marker_rejects_missing_or_wrong_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            marker_path = Path(tmp) / aggregate_lane_history.TRUSTED_MARKER
+            base = {
+                "run_id": 123,
+                "repository": REPOSITORY,
+                "event": "push",
+                "head_branch": DEFAULT_BRANCH,
+                "head_sha": HEAD_SHA,
+                "conclusion": "success",
+                "created_at": current_timestamp(),
+            }
+            for label, payload in (
+                ("missing", base),
+                ("wrong", {**base, "schema_version": "trusted_run_marker.v0"}),
+            ):
+                with self.subTest(label=label):
+                    marker_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+                    trusted, reason = aggregate_lane_history.validate_trusted_marker(
+                        marker_path,
+                        expected_run_id=123,
+                        repository=REPOSITORY,
+                        default_branch=DEFAULT_BRANCH,
+                    )
+                    self.assertIsNone(trusted)
+                    self.assertEqual("unsupported_marker_schema", reason)
+
+            marker_path.write_text(
+                json.dumps({**base, "schema_version": TRUSTED_MARKER_SCHEMA_VERSION})
+                + "\n",
+                encoding="utf-8",
+            )
+            trusted, reason = aggregate_lane_history.validate_trusted_marker(
+                marker_path,
+                expected_run_id=123,
+                repository=REPOSITORY,
+                default_branch=DEFAULT_BRANCH,
+            )
+            self.assertEqual("accepted", reason)
+            self.assertIsNotNone(trusted)
 
     def test_trusted_default_branch_push_and_merge_group_are_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
