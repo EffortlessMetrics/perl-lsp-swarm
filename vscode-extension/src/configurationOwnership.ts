@@ -310,13 +310,6 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     transport: 'local-only',
   },
   {
-    key: 'perl-lsp.mcp.servers',
-    manifestScope: 'machine',
-    semanticScope: 'machine',
-    owner: 'extension',
-    transport: 'local-only',
-  },
-  {
     key: 'perl-lsp.perlcritic.enabled',
     manifestScope: 'resource',
     semanticScope: 'client-session',

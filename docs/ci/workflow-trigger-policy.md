@@ -89,7 +89,11 @@ For each `[[check]]` row with `required = true`, the workflow must:
 
 Not every required context is produced by a workflow the clauses above suit.
 `validate-title` is a metadata-only check that must run on
-`pull_request_target` and never checks out candidate contents; `ripr` keeps
+`pull_request_target` and never checks out candidate contents. Since #18255 it
+also produces the context on `merge_group`: the queue path resolves the
+group's constituent PRs through the commit graph (compare to commits, then
+commits to their associated PRs), validates every member's current title, and
+fails closed on absent, truncated, or contradictory membership. `ripr` keeps
 `cancel-in-progress: false` on purpose, because a cancelled run becomes a
 false red on a required context (#16087).
 

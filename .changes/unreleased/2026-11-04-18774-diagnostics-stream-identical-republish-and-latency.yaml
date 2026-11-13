@@ -1,0 +1,27 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: >-
+  The push diagnostics stream no longer republishes byte-identical diagnostics
+  once per settled keystroke, and no longer stalls behind background work it
+  does not need. The publication sink now records a content hash of the
+  committed diagnostics array and suppresses an outbound frame when a
+  replacement carries the same document instance, the same early/full phase,
+  and the same payload as the last committed publication (#18774) -- clears and
+  phase changes still always send, and receipts plus active-document readiness
+  still observe every accepted generation. The debounced publish path also
+  stopped waiting for workspace-index readiness: an edit landing while the
+  post-open index scan is still Building publishes from the current snapshot
+  instead of blocking the diagnostics worker for up to two seconds, while
+  pull diagnostics and workspace diagnostics keep their explicit
+  wait-for-readiness behaviour. The Normal-mode diagnostic debounce default
+  drops from 250ms to 50ms so a settled keystroke no longer carries a visible
+  quarter-second tick, and the debouncer gained a maximum-deferral bound (four
+  intervals from the first schedule) so continuous fast typing cannot postpone
+  publication indefinitely. `PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS` /
+  `--diagnostic-debounce-ms` restore any other window.
+time: 2026-11-04T00:00:00Z
+custom:
+  PR: "18774"
+  Slug: diagnostics-stream-identical-republish-and-latency
+  Breaking: "no"

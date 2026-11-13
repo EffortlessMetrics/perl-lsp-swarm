@@ -23,7 +23,7 @@ fn pl412(source: &str) -> Vec<Diagnostic> {
 
 #[test]
 fn stray_cut_after_code_emits_pl412() {
-    let source = "use strict;\nsub before { 1 }\n=cut\nsub after { 2 }\n";
+    let source = "use strict;\nsub before { 1 };\n=cut\nsub after { 2 }\n";
     let diags = pl412(source);
     assert_eq!(diags.len(), 1, "a lone =cut must emit PL412: {diags:?}");
     let needle = "=cut";
@@ -38,6 +38,34 @@ fn stray_cut_after_code_emits_pl412() {
         diags[0].message.to_ascii_lowercase().contains("pod"),
         "PL412 must explain that the rest of the file becomes POD: {}",
         diags[0].message
+    );
+}
+
+/// The diagnostic tracks the lexer's own amputation record, so a `=cut` inside
+/// a heredoc body — which the lexer consumes as payload — must never warn.
+/// (The previous byte-scan implementation warned here.)
+#[test]
+fn cut_inside_heredoc_body_is_silent() {
+    let source = "my $text = <<'END';\n=cut\nEND\nprint $text;\n";
+    assert!(
+        pl412(source).is_empty(),
+        "=cut inside a heredoc body must not warn: {:?}",
+        pl412(source)
+    );
+}
+
+/// A `=cut` directly after a bare closing brace is not in the lexer's
+/// statement-start context (`;` / `{` / blank line), so the lexer keeps it as
+/// code and the parser reports the assignment error — there is no amputation
+/// for PL412 to claim. `perl -c` disagrees with the lexer there; that
+/// statement-context question is lexer-oracle work, not this diagnostic's.
+#[test]
+fn cut_after_bare_block_brace_does_not_claim_amputation() {
+    let source = "sub before { 1 }\n=cut\nsub after { 2 }\n";
+    assert!(
+        pl412(source).is_empty(),
+        "the parser did not treat the rest as POD, so PL412 must stay silent: {:?}",
+        pl412(source)
     );
 }
 
@@ -96,7 +124,7 @@ fn stray_cut_at_start_of_file_emits_pl412() {
 
 #[test]
 fn warning_not_error() {
-    let source = "sub before { 1 }\n=cut\nsub after { 2 }\n";
+    let source = "use strict;\nsub before { 1 };\n=cut\nsub after { 2 }\n";
     let diag = must_some(pl412(source).into_iter().next());
     assert_eq!(
         diag.severity,

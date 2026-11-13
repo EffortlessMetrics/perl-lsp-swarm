@@ -3,6 +3,7 @@ mod config;
 mod debt;
 mod disposition;
 mod lock_partition;
+mod path_overwrite;
 mod summary;
 
 use super::model::{
@@ -175,6 +176,46 @@ fn synchronized_decimal_bitwise_operands_rollback_fails_closed_through_validate_
     };
     assert!(error.to_string().contains("clippy::decimal_bitwise_operands"));
     assert!(error.to_string().contains("must remain at level deny"));
+    Ok(())
+}
+
+#[test]
+fn synchronized_path_overwrite_rollbacks_fail_closed_through_validate_all() -> Result<()> {
+    // Both promotions have zero production findings. Reverting both Cargo.toml
+    // rows and both ledger rows together to `tracked` leaves the authorities in
+    // agreement; only the active-disposition pins can reject the rollback.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| eyre!("xtask manifest should have the workspace root as its parent"))?;
+    let mut cargo = super::read::read_toml(root.join(super::ROOT_MANIFEST))?;
+    let mut lint_ledger = super::read::load_lint_ledger(root)?;
+    let debt_ledger: DebtLedger = super::read::read_toml_as(root.join(super::DEBT_LEDGER))?;
+
+    for (cargo_key, identity) in [
+        ("path_buf_push_overwrite", "clippy::path_buf_push_overwrite"),
+        ("join_absolute_paths", "clippy::join_absolute_paths"),
+    ] {
+        cargo
+            .get_mut("workspace")
+            .and_then(|workspace| workspace.get_mut("lints"))
+            .and_then(|lints| lints.get_mut("clippy"))
+            .and_then(Value::as_table_mut)
+            .ok_or_else(|| eyre!("workspace.lints.clippy should be a table"))?
+            .remove(cargo_key)
+            .ok_or_else(|| eyre!("workspace clippy lints should carry {cargo_key}"))?;
+        lint_ledger
+            .lint
+            .iter_mut()
+            .find(|lint| lint.name == identity)
+            .ok_or_else(|| eyre!("lint ledger should carry {identity}"))?
+            .status = "tracked".to_owned();
+    }
+
+    let Err(error) = super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger) else {
+        bail!("synchronized path-overwrite rollback to tracked must fail closed");
+    };
+    assert!(error.to_string().contains("clippy::path_buf_push_overwrite"));
+    assert!(error.to_string().contains("must remain an active ledger entry"));
     Ok(())
 }
 

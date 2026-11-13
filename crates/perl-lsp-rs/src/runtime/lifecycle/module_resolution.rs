@@ -19,6 +19,133 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const MODULE_AMBIGUITY_IDENTITY_CAP: usize = 128;
+const MODULE_RESOLUTION_NEGATIVE_CACHE_CAP: usize = 4096;
+
+#[cfg(test)]
+thread_local! {
+    static RESOLVE_URI_PROOF_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RESOLVE_URI_PROOF_RESULTS: std::cell::RefCell<std::collections::VecDeque<ModuleUriResolution>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_resolve_uri_proof_calls() {
+    RESOLVE_URI_PROOF_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_uri_proof_calls() -> usize {
+    RESOLVE_URI_PROOF_CALLS.with(std::cell::Cell::get)
+}
+
+/// Session-local negative cache for unresolvable module names (#18776).
+///
+/// Records `(module, effective-@INC fingerprint)` pairs after a completed
+/// `NotFound` miss so repeated consumers (diagnostics, hover, navigation) do
+/// not re-pay filesystem traversal for the same absent import. Budget-exhausted
+/// `TimedOut` results are not cached so a later attempt can succeed.
+#[derive(Default)]
+pub(crate) struct ModuleResolutionNegativeCache {
+    entries: parking_lot::Mutex<HashSet<ModuleResolutionNegativeCacheKey>>,
+    timeout_logged: parking_lot::Mutex<HashSet<String>>,
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct ModuleResolutionNegativeCacheKey {
+    module: String,
+    inc_fingerprint: u64,
+}
+
+impl ModuleResolutionNegativeCache {
+    pub(crate) fn is_absent(&self, module_name: &str, inc_fingerprint: u64) -> bool {
+        let key = ModuleResolutionNegativeCacheKey {
+            module: canonical_module_cache_name(module_name),
+            inc_fingerprint,
+        };
+        self.entries.lock().contains(&key)
+    }
+
+    pub(crate) fn record_absent(&self, module_name: &str, inc_fingerprint: u64) {
+        let key = ModuleResolutionNegativeCacheKey {
+            module: canonical_module_cache_name(module_name),
+            inc_fingerprint,
+        };
+        let mut entries = self.entries.lock();
+        if entries.len() >= MODULE_RESOLUTION_NEGATIVE_CACHE_CAP && !entries.contains(&key) {
+            entries.clear();
+        }
+        entries.insert(key);
+    }
+
+    pub(crate) fn should_log_timeout(&self, module_name: &str) -> bool {
+        let canonical = canonical_module_cache_name(module_name);
+        let mut logged = self.timeout_logged.lock();
+        if logged.contains(&canonical) {
+            false
+        } else {
+            logged.insert(canonical);
+            true
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        self.entries.lock().clear();
+    }
+}
+
+pub(crate) fn uri_may_affect_module_resolution(uri: &str) -> bool {
+    uri.rsplit_once('.').is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("pm"))
+}
+
+fn open_document_uri_matches_module_relative_path(uri: &str, relative_path: &str) -> bool {
+    if relative_path.is_empty() {
+        return false;
+    }
+
+    let normalized_uri = uri.replace('\\', "/");
+    let normalized_relative_path = relative_path.replace('\\', "/");
+    normalized_uri
+        .strip_suffix(&normalized_relative_path)
+        .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('/'))
+}
+
+fn open_documents_can_satisfy_module(module_name: &str, open_document_uris: &[String]) -> bool {
+    let relative_path = perl_module::module_name_to_path(module_name);
+    open_document_uris
+        .iter()
+        .any(|uri| open_document_uri_matches_module_relative_path(uri, &relative_path))
+}
+
+fn canonical_module_cache_name(module_name: &str) -> String {
+    let relative_path = perl_module::module_name_to_path(module_name);
+    perl_module::module_path_to_name(&relative_path)
+}
+
+fn resolve_module_uri_with_negative_cache_proof(
+    module_name: &str,
+    open_document_uris: &[String],
+    workspace_folder_uris: &[String],
+    effective_roots: &[perl_module::IncRoot],
+    timeout: Duration,
+) -> ModuleUriResolution {
+    #[cfg(test)]
+    {
+        RESOLVE_URI_PROOF_CALLS.with(|calls| calls.set(calls.get() + 1));
+        if let Some(result) =
+            RESOLVE_URI_PROOF_RESULTS.with(|results| results.borrow_mut().pop_front())
+        {
+            return result;
+        }
+    }
+    resolve_module_uri_with_effective_inc(
+        module_name,
+        open_document_uris,
+        workspace_folder_uris,
+        effective_roots,
+        timeout,
+    )
+}
+
 const MODULE_AMBIGUITY_NAME_MAX_BYTES: usize = 256;
 const MODULE_AMBIGUITY_WORKER_CAP: usize = 4;
 const MODULE_AMBIGUITY_PROCESS_WORKER_CAP: usize = 16;
@@ -832,6 +959,7 @@ impl LspServer {
             }
         };
         let timeout = Duration::from_millis(context.resolution_timeout_ms);
+        let inc_fingerprint = context.negative_cache_fingerprint();
 
         let open_document_uris: Vec<String> = {
             let documents = self.documents.lock();
@@ -842,10 +970,16 @@ impl LspServer {
                 .collect()
         };
 
+        if !open_documents_can_satisfy_module(module_name, &open_document_uris)
+            && self.module_resolution_negative_cache.is_absent(module_name, inc_fingerprint)
+        {
+            return None;
+        }
+
         if for_definition {
             // The request keeps the original first-hit path. Later roots may
             // block inside filesystem metadata beyond the configured timeout.
-            let selected = match resolve_module_uri_with_effective_inc(
+            let selected = match resolve_module_uri_with_negative_cache_proof(
                 module_name,
                 &open_document_uris,
                 &workspace_folder_uris,
@@ -854,10 +988,16 @@ impl LspServer {
             ) {
                 ModuleUriResolution::Resolved(uri) => uri,
                 ModuleUriResolution::TimedOut => {
-                    tracing::warn!("Module resolution timeout for: {}", module_name);
+                    if self.module_resolution_negative_cache.should_log_timeout(module_name) {
+                        tracing::warn!("Module resolution timeout for: {}", module_name);
+                    }
                     return None;
                 }
-                ModuleUriResolution::NotFound => return None,
+                ModuleUriResolution::NotFound => {
+                    self.module_resolution_negative_cache
+                        .record_absent(module_name, inc_fingerprint);
+                    return None;
+                }
             };
 
             let canonical_name =
@@ -885,7 +1025,7 @@ impl LspServer {
             return Some(selected);
         }
 
-        match resolve_module_uri_with_effective_inc(
+        match resolve_module_uri_with_negative_cache_proof(
             module_name,
             &open_document_uris,
             &workspace_folder_uris,
@@ -894,10 +1034,25 @@ impl LspServer {
         ) {
             ModuleUriResolution::Resolved(uri) => Some(uri),
             ModuleUriResolution::TimedOut => {
-                tracing::warn!("Module resolution timeout for: {}", module_name);
+                if self.module_resolution_negative_cache.should_log_timeout(module_name) {
+                    tracing::warn!("Module resolution timeout for: {}", module_name);
+                }
                 None
             }
-            ModuleUriResolution::NotFound => None,
+            ModuleUriResolution::NotFound => {
+                self.module_resolution_negative_cache.record_absent(module_name, inc_fingerprint);
+                None
+            }
+        }
+    }
+
+    pub(crate) fn clear_module_resolution_negative_cache(&self) {
+        self.module_resolution_negative_cache.clear();
+    }
+
+    pub(crate) fn invalidate_module_resolution_negative_cache_for_uri(&self, uri: &str) {
+        if uri_may_affect_module_resolution(uri) {
+            self.clear_module_resolution_negative_cache();
         }
     }
 }
@@ -1229,6 +1384,24 @@ mod tests {
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Keep cache-policy tests independent of the filesystem resolver's wall-clock budget.
+    struct InjectedResolutionResults;
+
+    impl InjectedResolutionResults {
+        fn new(results: impl IntoIterator<Item = ModuleUriResolution>) -> Self {
+            RESOLVE_URI_PROOF_RESULTS.with(|injected| {
+                injected.borrow_mut().extend(results);
+            });
+            Self
+        }
+    }
+
+    impl Drop for InjectedResolutionResults {
+        fn drop(&mut self) {
+            RESOLVE_URI_PROOF_RESULTS.with(|results| results.borrow_mut().clear());
+        }
+    }
 
     #[test]
     fn resolve_module_path_blocks_traversal_include_paths() -> TestResult {
@@ -2695,6 +2868,295 @@ use Overlay::OpenDoc;
                     && entry.path == external.to_string_lossy()),
             "the probed external PERL5LIB root must appear in the searched-roots report, got: {display:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_uri_proof_counter_increments_on_direct_call() -> TestResult {
+        reset_resolve_uri_proof_calls();
+        let _ = resolve_module_uri_with_negative_cache_proof(
+            "Example::Module",
+            &[],
+            &[],
+            &[],
+            Duration::from_millis(1),
+        );
+        assert_eq!(resolve_uri_proof_calls(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn negative_cache_skips_repeat_resolution_for_absent_module() -> TestResult {
+        reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([
+            ModuleUriResolution::NotFound,
+            ModuleUriResolution::NotFound,
+        ]);
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri = url::Url::from_directory_path(&workspace)
+            .map_err(|_| "failed to create workspace uri")?
+            .to_string();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() =
+            vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = (0..80).map(|index| format!("inc-{index}")).collect();
+            config.resolution_timeout_ms = 50;
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
+
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1, "first miss must resolve once");
+
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(
+            resolve_uri_proof_calls(),
+            1,
+            "cached absent module must not re-enter URI resolution"
+        );
+
+        server.clear_module_resolution_negative_cache();
+        let _ = server.resolve_module_to_path("Moo");
+        assert_eq!(
+            resolve_uri_proof_calls(),
+            2,
+            "cleared cache must allow another resolution attempt"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn negative_cache_invalidates_for_pm_uri_changes() -> TestResult {
+        reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([
+            ModuleUriResolution::NotFound,
+            ModuleUriResolution::NotFound,
+        ]);
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri = url::Url::from_directory_path(&workspace)
+            .map_err(|_| "failed to create workspace uri")?
+            .to_string();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() =
+            vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
+        {
+            let mut config = server.workspace_config.lock();
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
+
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1);
+
+        server.invalidate_module_resolution_negative_cache_for_uri("file:///tmp/readme.txt");
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(
+            resolve_uri_proof_calls(),
+            1,
+            "non-module watcher subjects must not clear the negative cache"
+        );
+
+        server.invalidate_module_resolution_negative_cache_for_uri("file:///lib/Moo.pm");
+        let _ = server.resolve_module_to_path("Moo");
+        assert_eq!(
+            resolve_uri_proof_calls(),
+            2,
+            "a .pm watcher subject must clear cached absent results"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn negative_cache_open_document_bypasses_cached_miss() -> TestResult {
+        reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([ModuleUriResolution::NotFound]);
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("lib"))?;
+        let workspace_uri = url::Url::from_directory_path(&workspace)
+            .map_err(|_| "failed to create workspace uri")?
+            .to_string();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() =
+            vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
+        {
+            let mut config = server.workspace_config.lock();
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
+
+        assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1);
+
+        let module_uri = url::Url::from_file_path(workspace.join("lib").join("Foo").join("Bar.pm"))
+            .map_err(|_| "failed to create module uri")?
+            .to_string();
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": module_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Foo::Bar; 1;\n"
+            }
+        })))?;
+
+        let resolved = server.resolve_module_to_path("Foo::Bar");
+        assert!(
+            resolved.as_deref() == Some(perl_uri::uri_key(&module_uri).as_str()),
+            "open buffer must satisfy module resolution despite a cached miss, got: {resolved:?}"
+        );
+        assert_eq!(
+            resolve_uri_proof_calls(),
+            2,
+            "bypassing the cache must re-enter URI resolution once"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn negative_cache_clears_when_workspace_folder_is_added() -> TestResult {
+        reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([ModuleUriResolution::NotFound]);
+        let temp = tempfile::tempdir()?;
+        let folder_a = temp.path().join("folder-a");
+        let folder_b = temp.path().join("folder-b");
+        fs::create_dir_all(folder_a.join("lib"))?;
+        fs::create_dir_all(folder_b.join("lib").join("Foo"))?;
+        fs::write(folder_b.join("lib").join("Foo").join("Bar.pm"), "package Foo::Bar; 1;\n")?;
+
+        let folder_a_uri = url::Url::from_directory_path(&folder_a)
+            .map_err(|_| "failed to create folder-a uri")?
+            .to_string();
+        let folder_b_uri = url::Url::from_directory_path(&folder_b)
+            .map_err(|_| "failed to create folder-b uri")?
+            .to_string();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() =
+            vec![WorkspaceFolderState::new(folder_a_uri).with_path(folder_a.clone())];
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec!["lib".to_string()];
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
+
+        assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1);
+        assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1, "cached miss must skip resolution");
+
+        server.handle_did_change_workspace_folders(Some(serde_json::json!({
+            "event": {
+                "added": [{ "uri": folder_b_uri, "name": "folder-b" }],
+                "removed": []
+            }
+        })))?;
+
+        let resolved = server.resolve_module_to_path("Foo::Bar");
+        assert!(
+            resolved.is_some(),
+            "added workspace folder must invalidate cached misses, got: {resolved:?}"
+        );
+        assert_eq!(
+            resolve_uri_proof_calls(),
+            2,
+            "folder membership change must allow another resolution attempt"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn negative_cache_clears_on_did_create_files() -> TestResult {
+        reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([ModuleUriResolution::NotFound]);
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("lib").join("Foo"))?;
+        let module_path = workspace.join("lib").join("Foo").join("Bar.pm");
+        let workspace_uri = url::Url::from_directory_path(&workspace)
+            .map_err(|_| "failed to create workspace uri")?
+            .to_string();
+        let module_uri = url::Url::from_file_path(&module_path)
+            .map_err(|_| "failed to create module uri")?
+            .to_string();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() =
+            vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec!["lib".to_string()];
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
+
+        assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1);
+        assert_eq!(server.resolve_module_to_path("Foo::Bar"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1, "cached miss must skip resolution");
+
+        fs::write(&module_path, "package Foo::Bar; 1;\n")?;
+        server.handle_did_create_files(Some(serde_json::json!({
+            "files": [{ "uri": module_uri }]
+        })))?;
+
+        let resolved = server.resolve_module_to_path("Foo::Bar");
+        assert!(
+            resolved.as_deref() == Some(module_uri.as_str()),
+            "didCreateFiles must clear cached misses for new .pm files, got: {resolved:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn negative_cache_does_not_suppress_retry_after_timeout() -> TestResult {
+        reset_resolve_uri_proof_calls();
+        let _results = InjectedResolutionResults::new([
+            ModuleUriResolution::TimedOut,
+            ModuleUriResolution::NotFound,
+        ]);
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri = url::Url::from_directory_path(&workspace)
+            .map_err(|_| "failed to create workspace uri")?
+            .to_string();
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() =
+            vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec!["lib".to_string()];
+            config.use_system_inc = false;
+            config.use_perl5lib = false;
+        }
+
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(resolve_uri_proof_calls(), 1);
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(resolve_uri_proof_calls(), 2, "TimedOut must not be cached as an absent module");
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(resolve_uri_proof_calls(), 2, "completed NotFound must be cached");
+        RESOLVE_URI_PROOF_RESULTS.with(|results| {
+            assert!(results.borrow().is_empty(), "both injected outcomes must be consumed");
+        });
+
         Ok(())
     }
 }

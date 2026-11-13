@@ -32,6 +32,14 @@ CONTROL_SOURCE_PATHS = (
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 EXTERNAL_ACTION_RE = re.compile(r"^(?!\./)(?!docker://)([^/@\s]+/[^@\s]+)@([^\s#]+)$")
 SECRET_RE = re.compile(r"\$\{\{\s*secrets\.")
+GH_AW_PUSH_TOKEN = "${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}"
+GH_AW_CONFIGURE_GIT_COMMAND = r'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"'
+# Normalized-LF digest of the complete reviewed strict compiler output.
+# The persisted-credential exception applies only while the entire lock file
+# remains byte-for-byte equivalent after splitlines() normalization.
+GH_AW_LOCK_FILE_DIGESTS = {
+    ".github/workflows/minimax-coding-agent.lock.yml": "ad8f556b7ba2ee2967c59e777256475d5fe53bb2f6b2de06731ffe4669122c45",
+}
 CARGO_INSTALL_RE = re.compile(r"(?:^|[;&|]\s*|\s)cargo\s+install\s+([^\n]+)")
 PERMISSION_KEYS = {
     "actions",
@@ -290,48 +298,127 @@ def _security_sensitive_indirection(line: str) -> bool:
     return value.startswith(("*", "&", "{"))
 
 
-GH_AW_METADATA_PREFIX = "# gh-aw-metadata:"
+def _gh_aw_headers(
+    lines: Sequence[str],
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    metadata: dict[str, object] | None = None
+    manifest: dict[str, object] | None = None
+    for line in lines[:16]:
+        try:
+            if line.startswith("# gh-aw-metadata:"):
+                candidate = json.loads(line.split(":", 1)[1].strip())
+                if isinstance(candidate, dict):
+                    metadata = candidate
+            elif line.startswith("# gh-aw-manifest:"):
+                candidate = json.loads(line.split(":", 1)[1].strip())
+                if isinstance(candidate, dict):
+                    manifest = candidate
+        except json.JSONDecodeError:
+            return None
+    if metadata is None or manifest is None:
+        return None
+    return metadata, manifest
 
 
-def _is_gh_aw_lock_file(relative: str, lines: Sequence[str]) -> bool:
-    # gh-aw lock files are compiler output verified by the compile-check
-    # workflow, which diffs the committed lock against regenerated output.
-    # Identity requires both the generator-owned `.lock.yml` suffix and the
-    # machine-readable metadata header; a candidate-controlled comment in an
-    # ordinary workflow is not sufficient.
-    return (
-        relative.startswith(".github/workflows/")
-        and relative.endswith(".lock.yml")
-        and any(line.startswith(GH_AW_METADATA_PREFIX) for line in lines[:5])
-    )
-
-
-def _gh_aw_safe_outputs_checkout(
-    lines: Sequence[str], use_index: int, use_indent: int
-) -> bool:
-    """Recognize the generator-controlled safe_outputs push checkout.
-
-    gh-aw emits exactly one checkout with persisted credentials, in the
-    create_pull_request step, always carrying the GH_AW_GITHUB_TOKEN-based
-    token expression. Any other checkout in a lock file (including one with
-    persisted credentials but a different token shape) stays flagged.
-    """
-    cursor = use_index + 1
-    while cursor < len(lines):
-        candidate = lines[cursor]
-        parsed = _parse_key_line(candidate)
-        if parsed and parsed.indent <= use_indent and (
-            parsed.list_item or parsed.indent < use_indent
-        ):
+def _containing_job(
+    lines: Sequence[str], index: int
+) -> tuple[str, int, int] | None:
+    jobs_start: int | None = None
+    for cursor in range(index, -1, -1):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and parsed.indent == 0:
+            if parsed.key == "jobs":
+                jobs_start = cursor
             break
-        if (
-            parsed
-            and parsed.key == "token"
-            and "GH_AW_GITHUB_TOKEN" in parsed.value
+    if jobs_start is None:
+        return None
+
+    job_name: str | None = None
+    job_start: int | None = None
+    for cursor in range(jobs_start + 1, index + 1):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and parsed.indent == 0:
+            return None
+        if parsed and parsed.indent == 2 and not parsed.list_item:
+            job_name = parsed.key
+            job_start = cursor
+    if job_name is None or job_start is None:
+        return None
+
+    job_end = len(lines)
+    for cursor in range(job_start + 1, len(lines)):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and (
+            parsed.indent == 0
+            or (parsed.indent == 2 and not parsed.list_item)
         ):
-            return True
-        cursor += 1
-    return False
+            job_end = cursor
+            break
+    if not (job_start <= index < job_end):
+        return None
+    return job_name, job_start, job_end
+
+
+def _normalized_lines_digest(lines: Sequence[str]) -> str:
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def _manifest_action_sha(
+    manifest: dict[str, object], repository: str
+) -> str | None:
+    actions = manifest.get("actions")
+    if not isinstance(actions, list):
+        return None
+    matches = [
+        item.get("sha")
+        for item in actions
+        if isinstance(item, dict) and item.get("repo") == repository
+    ]
+    if len(matches) != 1 or not isinstance(matches[0], str):
+        return None
+    return matches[0]
+
+
+def _is_gh_aw_safe_outputs_checkout(
+    lines: Sequence[str], relative: str, use_index: int, action: str
+) -> bool:
+    expected_digest = GH_AW_LOCK_FILE_DIGESTS.get(relative)
+    if expected_digest is None:
+        return False
+    if _normalized_lines_digest(lines) != expected_digest:
+        return False
+
+    headers = _gh_aw_headers(lines)
+    if headers is None:
+        return False
+    metadata, manifest = headers
+    if metadata != {
+        "schema_version": "v4",
+        "frontmatter_hash": "0fd452f4b9304ecd7564f7b3ba7e6101dc7061681363aa01dcb2da69e24adf37",
+        "body_hash": "cdc940a963151e984eebadb6fbb0b21430c045598de29328b00111d9d29bb577",
+        "compiler_version": "v0.88.7",
+        "strict": True,
+        "agent_id": "claude",
+        "agent_model": "MiniMax-M3",
+        "engine_versions": {"claude": "2.1.247"},
+    }:
+        return False
+    if manifest.get("version") != 1:
+        return False
+
+    external = EXTERNAL_ACTION_RE.fullmatch(action)
+    if external is None or external.group(1) != "actions/checkout":
+        return False
+    checkout_sha = _manifest_action_sha(manifest, "actions/checkout")
+    setup_sha = _manifest_action_sha(manifest, "github/gh-aw-actions/setup")
+    if checkout_sha != external.group(2):
+        return False
+    if setup_sha is None or FULL_SHA_RE.fullmatch(setup_sha) is None:
+        return False
+
+    bounds = _containing_job(lines, use_index)
+    return bounds is not None and bounds[0] == "safe_outputs"
+
 
 
 def scan(
@@ -463,7 +550,6 @@ def scan(
                 for parsed in parsed_lines
             )
         )
-        gh_aw_lock = is_workflow and _is_gh_aw_lock_file(relative, lines)
 
         for index, line in enumerate(lines):
             line_number = index + 1
@@ -486,10 +572,7 @@ def scan(
                     and external
                     and external.group(1) == "actions/checkout"
                     and _checkout_persists(lines, index, parsed.indent)
-                    and not (
-                        gh_aw_lock
-                        and _gh_aw_safe_outputs_checkout(lines, index, parsed.indent)
-                    )
+                    and not _is_gh_aw_safe_outputs_checkout(lines, relative, index, action)
                 ):
                     raw.append(
                         RawFinding(

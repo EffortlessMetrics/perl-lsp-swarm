@@ -1316,6 +1316,12 @@ pub fn collect_semantic_tokens_controlled(
 
             TokenType::Number(_) => "number",
 
+            // v-strings (`use v5.36;`, `v65.66.67`) are numeric literals with a
+            // `v` prefix. Without this arm the variant falls through to the
+            // `_ => continue` below and the literal is invisible to semantic
+            // tokens, unlike its TextMate counterpart (#16590).
+            TokenType::Version(_) => "number",
+
             TokenType::RegexMatch
             | TokenType::Substitution
             | TokenType::Transliteration
@@ -1449,6 +1455,19 @@ pub fn collect_semantic_tokens_controlled(
                         1 | 2, /*declaration|definition*/
                         &mut ast_tokens,
                     );
+                    return Ok(true);
+                }
+                NodeKind::Class { name_span: Some(span), .. } => {
+                    push_line_contained_segments(
+                        text,
+                        span.start,
+                        span.end,
+                        to_pos16,
+                        kind_idx(&leg, "class"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
                     return Ok(true);
                 }
                 NodeKind::Class { .. } => {
@@ -2915,6 +2934,122 @@ mod tests {
         Ok(())
     }
 
+    /// #16590: the lexer classifies `use v5.36;` and bare v-strings as
+    /// `TokenType::Version`. Without a collector arm the variant fell through
+    /// to `_ => continue` and the literal produced no token at all, so the
+    /// `use v5.36;` header of nearly every modern file was invisible to
+    /// semantic tokens. The whole literal is one token, matching the
+    /// TextMate `constant.numeric.version.perl` rule added alongside it.
+    #[test]
+    fn collect_semantic_tokens_emits_one_number_token_for_a_whole_vstring()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "use v5.36;\nmy $v = v65.66.67;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let number_idx =
+            *legend().map.get("number").ok_or("number token type missing from legend")?;
+
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut numbers = Vec::new();
+        for [delta_line, delta_start, length, token_type, _modifiers] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == number_idx {
+                numbers.push((line, col, length));
+            }
+        }
+
+        // `use v5.36;` -- the version literal is one token spanning the whole
+        // `v5.36` run, not `v5` unstyled with `36` split off as a separate
+        // integer. The list is exact: an extra or duplicate number token from
+        // a mapping regression must fail this test, not hide behind `contains`.
+        assert_eq!(
+            numbers,
+            vec![(0, 4, 5), (1, 8, 9)],
+            "expected exactly the use-version and standalone v-string number tokens, got {numbers:?}"
+        );
+        Ok(())
+    }
+
+    /// #16590 negative control: `package Foo 1.23;` is a decimal version with
+    /// no `v` prefix. It must stay a plain number, and must not be widened into
+    /// a v-string-shaped token. Guards the new arm against claim creep.
+    #[test]
+    fn a_package_decimal_version_is_not_widened_into_a_vstring()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Foo 1.23;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let number_idx =
+            *legend().map.get("number").ok_or("number token type missing from legend")?;
+
+        let mut col = 0u32;
+        let mut numbers = Vec::new();
+        for [delta_line, delta_start, length, token_type, _modifiers] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                col = delta_start;
+            }
+            if token_type == number_idx {
+                numbers.push((col, length));
+            }
+        }
+
+        // Exact list: `1.23` is the only number token, still plain 4-wide, and
+        // no token may absorb the `v` prefix shape.
+        assert_eq!(
+            numbers,
+            vec![(12, 4)],
+            "package decimal version 1.23 must be the only, plain 4-wide number, got {numbers:?}"
+        );
+        Ok(())
+    }
+
+    /// #16590 follow-up: a bareword in an autoquote position (`v5 => 1`,
+    /// `$h{v5}`, `Foo::v5`, `$obj->v5`) is a string key or name, not a
+    /// v-string, and must not be painted as a number. A real v-string in
+    /// expression position (`my $x = v5;`, `v5.36_1`) still is one token.
+    #[test]
+    fn autoquoted_barewords_are_not_painted_as_vstring_numbers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my %h = (v5 => 1);\nmy $a = $h{v5};\nmy $b = Foo::v5;\nmy $c = $obj->v5;\nmy $x = v5;\nmy $y = v5.36_1;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let number_idx =
+            *legend().map.get("number").ok_or("number token type missing from legend")?;
+
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut numbers = Vec::new();
+        for [delta_line, delta_start, length, token_type, _modifiers] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == number_idx {
+                numbers.push((line, col, length));
+            }
+        }
+
+        assert_eq!(
+            numbers,
+            vec![(0, 15, 1), (4, 8, 2), (5, 8, 7)],
+            "only the fat-comma value and the two real v-strings are numbers, got {numbers:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn statement_label_offsets_rejects_embedded_or_non_label_matches()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3896,10 +4031,10 @@ print "ok" foreach @ys;
     fn a_multiline_construct_anchor_does_not_paint_its_body()
     -> Result<(), Box<dyn std::error::Error>> {
         // Regression guard for the geometry repair itself. The class arm
-        // anchors on the whole construct because no narrower name span is
-        // available. Segmenting that anchor would paint every body line as a
-        // "class" token, and the longer-wins rule in remove_overlapping_tokens
-        // would then discard the tokens inside the body.
+        // paints only its name span (the whole-construct anchor remains only
+        // for a missing name span). Painting the body as "class" would let
+        // the longer-wins rule in remove_overlapping_tokens discard the
+        // tokens inside the body.
         let source = "class Foo {\n    field $x;\n    method go { return 1; }\n}\n";
         let anchor_kind = *legend().map.get("class").ok_or("class missing from legend")?;
         let painted = {
@@ -3930,6 +4065,45 @@ print "ok" foreach @ys;
             painted.iter().any(|(line, _, _, _)| *line == 1),
             format_args!("tokens inside the body must survive: {painted:?}"),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn single_line_class_paints_name_only_and_preserves_body_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "class Foo { method go { return 1; } }";
+        let tokens = absolute_tokens(source)?;
+        let class_type = *legend().map.get("class").ok_or("class missing from legend")?;
+        let method_type = *legend().map.get("method").ok_or("method missing from legend")?;
+        let number_type = *legend().map.get("number").ok_or("number missing from legend")?;
+
+        let class_tokens: Vec<(u32, u32, u32, u32, u32)> =
+            tokens.iter().copied().filter(|token| token.3 == class_type).collect();
+        assert_eq!(class_tokens, vec![(0, 6, 3, class_type, 1)], "tokens: {tokens:?}");
+        assert_eq!(painted_tokens(source, "class")?, vec!["Foo"]);
+        require_geometry(
+            tokens.iter().all(|token| token.2 < 10),
+            format_args!("no token may span the class construct: {tokens:?}"),
+        )?;
+        require_geometry(
+            tokens.iter().any(|token| *token == (0, 19, 2, method_type, 3)),
+            format_args!("method name `go` must survive as a method token: {tokens:?}"),
+        )?;
+        require_geometry(
+            tokens.iter().any(|token| *token == (0, 31, 1, number_type, 0)),
+            format_args!("`1` must survive as a number token: {tokens:?}"),
+        )?;
+        require_geometry(
+            painted_tokens(source, "keyword")?.iter().any(|token| token == "return"),
+            format_args!("`return` must survive as a keyword token: {tokens:?}"),
+        )?;
+        for pair in tokens.windows(2) {
+            let (prev, next) = (pair[0], pair[1]);
+            require_geometry(
+                (prev.0, prev.1) < (next.0, next.1) && prev.1.saturating_add(prev.2) <= next.1,
+                format_args!("tokens must be sorted and non-overlapping: {tokens:?}"),
+            )?;
+        }
         Ok(())
     }
 

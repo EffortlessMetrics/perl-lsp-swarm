@@ -68,8 +68,8 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                 # No product command, result job, formatter, conflict marker or
                 # artifact obligation disappears under a trigger cleanup.
                 self.assertEqual(before.jobs, after.jobs, path)
-                self.assertEqual((ROOT / path).read_text().split('jobs:\n', 1)[1],
-                                 (root / path).read_text().split('jobs:\n', 1)[1])
+                self.assertEqual((ROOT / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1],
+                                 (root / path).read_text(encoding='utf-8').split('jobs:\n', 1)[1])
             self.assertEqual(catalog.read_workflow(root, ROOTS[0]).events,
                              frozenset({'workflow_dispatch'}))
             self.assertEqual(catalog.read_workflow(root, ROOTS[2]).events,
@@ -87,8 +87,9 @@ class StagedTriggerCutoverTests(unittest.TestCase):
         for path in ROOTS[1:]:
             with self.subTest(path=path), staged_tree() as root:
                 target = root / path
-                target.write_text(target.read_text().replace('on:\n',
-                    'on:\n  pull_request:\n    types: [ready_for_review, synchronize]\n', 1))
+                target.write_text(target.read_text(encoding='utf-8').replace('on:\n',
+                    'on:\n  pull_request:\n    types: [ready_for_review, synchronize]\n', 1),
+                    encoding='utf-8')
                 with self.assertRaises(AssertionError):
                     self.assert_closed(root)
 
@@ -105,9 +106,9 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             self.assertIn('qualification_automatic_entry', {finding.code for finding in findings})
 
     def test_policy_changes_only_event_projection_keeps_mandatory_producers(self):
-        before = tomllib.loads((ROOT / POLICY).read_text())
+        before = tomllib.loads((ROOT / POLICY).read_text(encoding='utf-8'))
         with staged_tree() as root:
-            after = tomllib.loads((root / POLICY).read_text())
+            after = tomllib.loads((root / POLICY).read_text(encoding='utf-8'))
         self.assertEqual(before.keys(), after.keys())
         for key in before:
             if key != 'checks':

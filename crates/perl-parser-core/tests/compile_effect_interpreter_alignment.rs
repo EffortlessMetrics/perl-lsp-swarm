@@ -7,6 +7,7 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{CompileEnvironment, HirKind, lower_ast};
 use perl_pragma::CompileTimePragmaEnvironment;
+use perl_tdd_support::must_some_with;
 
 fn lower(source: &str) -> (perl_parser_core::hir::HirFile, CompileTimePragmaEnvironment) {
     let mut parser = Parser::new(source);
@@ -47,13 +48,10 @@ fn assert_interpreter_entries_projected_to_hir(
     assert_eq!(facts.len(), entries.len(), "HIR must record one fact per interpreter transition");
 
     for entry in entries {
-        let fact =
-            facts.iter().find(|fact| fact.range.start == entry.range.start).unwrap_or_else(|| {
-                panic!(
-                    "missing HIR fact for interpreter transition at offset {}",
-                    entry.range.start
-                )
-            });
+        let fact = must_some_with(
+            facts.iter().find(|fact| fact.range.start == entry.range.start),
+            format!("missing HIR fact for interpreter transition at offset {}", entry.range.start),
+        );
         assert_snapshot_matches_fact(fact, &entry.snapshot);
     }
 }
@@ -63,9 +61,10 @@ fn assert_fact_matches_interpreter(
     interpreter: &CompileTimePragmaEnvironment,
     offset: usize,
 ) {
-    let fact = environment
-        .pragma_state_at(offset)
-        .unwrap_or_else(|| panic!("expected HIR pragma state at offset {offset}"));
+    let fact = must_some_with(
+        environment.pragma_state_at(offset),
+        format!("expected HIR pragma state at offset {offset}"),
+    );
     let snapshot = interpreter.snapshot_at(fact.range.start);
     assert_snapshot_matches_fact(fact, &snapshot);
 }

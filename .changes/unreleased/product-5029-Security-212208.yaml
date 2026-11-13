@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Security
-body: "The 'explain missing module' feature no longer reveals filesystem path-existence information for names outside the workspace, closing a path-existence oracle in module-lookup diagnostics."
-time: 2026-07-28T21:22:08Z
-custom:
-  PR: "5029"
-  Slug: module-lookup-path-oracle
-  Breaking: "no"

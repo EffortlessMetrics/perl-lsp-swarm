@@ -112,9 +112,48 @@ function fakeVscode(
     uri: { fsPath?: string; toString?: () => string } | undefined,
   ): boolean =>
     uri?.fsPath === document.uri.fsPath && uri?.toString?.() === document.uri.toString();
+  const settings: Record<string, unknown> = {};
   const configuration = {
-    inspect: () => ({ globalValue: undefined }),
-    update: async () => undefined,
+    inspect: (key: string) => ({
+      globalValue: settings[key],
+      workspaceValue: settings[`ws:${key}`],
+    }),
+    get: (key: string, defaultValue?: unknown) =>
+      settings[`ws:${key}`] ?? settings[key] ?? defaultValue,
+    update: async (key: string, value: unknown, target?: number) => {
+      if (target === 1) {
+        if (value === undefined) {
+          delete settings[key];
+        } else {
+          settings[key] = value;
+        }
+        return;
+      }
+      const workspaceKey = `ws:${key}`;
+      if (value === undefined) {
+        delete settings[workspaceKey];
+      } else {
+        settings[workspaceKey] = value;
+      }
+    },
+  };
+  let activeEditor: { document: { getText: () => string } } | undefined;
+  const renderCoexistenceReport = (): string => {
+    const engine = configuration.get('critic.engine');
+    if (engine === 'legacy') {
+      return [
+        '# Perl LSP coexistence status',
+        '',
+        '## legacy_first_party_critic_setting_active',
+        '',
+        '- Scope: user',
+      ].join('\n');
+    }
+    return [
+      '# Perl LSP coexistence status',
+      '',
+      'No conflicts detected among the facts this product can observe.',
+    ].join('\n');
   };
   const extensionApi = {
     getLanguageClientStartupMetrics: () => ({
@@ -228,7 +267,14 @@ function fakeVscode(
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
       getConfiguration: () => configuration,
-      openTextDocument: async (filePath: string) => {
+      openTextDocument: async (filePath: string | { content?: string; language?: string }) => {
+        if (typeof filePath !== 'string') {
+          const content = filePath.content ?? '';
+          return {
+            getText: () => content,
+            uri: { fsPath: 'coexistence-report.md', toString: () => 'untitled:coexistence-report' },
+          };
+        }
         if (path.basename(filePath).startsWith('packaged_diagnostic_')) {
           diagnosticPath = filePath;
           diagnosticDocument.uri.fsPath = filePath;
@@ -305,18 +351,50 @@ function fakeVscode(
       },
       isTrusted: true,
     },
-    window: { showTextDocument: async () => document },
+    window: {
+      get activeTextEditor() {
+        return activeEditor;
+      },
+      showTextDocument: async (opened: { getText: () => string }) => {
+        activeEditor = { document: opened };
+        return opened;
+      },
+    },
     extensions: {
       getExtension: () => ({
         id: 'EffortlessMetrics.perl-lsp-rs',
         extensionPath,
-        packageJSON: { version: '0.17.0' },
+        packageJSON: {
+          version: '0.17.0',
+          contributes: {
+            configuration: [
+              {
+                properties: {
+                  'perl-lsp.autoDownload': {},
+                  'perl-lsp.serverPath': {},
+                  'perl-lsp.critic.enabled': {},
+                  'perl-lsp.critic.engine': {},
+                },
+              },
+            ],
+          },
+        },
         activate: async () => extensionApi,
       }),
     },
     commands: {
       executeCommand: async (command: string, ...args: unknown[]) => {
         if (command === 'workbench.action.revertAndCloseActiveEditor') return undefined;
+        if (command === 'perl-lsp.showCoexistenceStatus') {
+          calls.push(command);
+          const report = renderCoexistenceReport();
+          activeEditor = {
+            document: {
+              getText: () => report,
+            },
+          };
+          return undefined;
+        }
         calls.push(command);
         firstProviderCall();
         if (command === 'vscode.executeDocumentRenameProvider') {

@@ -142,7 +142,7 @@
 @@ -339,7 +339,7 @@
  workflow = ".github/workflows/ci.yml"
  job = "semver-pr"
- workflow_result = "continue"
+ workflow_result = "propagate"
 -events = ["pull_request"]
 +events = ["workflow_dispatch"]
  required = false
@@ -189,7 +189,7 @@ index 8b5998e32c..774c72856f 100644
 -            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing to prove a different subject"
 +            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing metadata freshness for a different subject"
 @@ -420,11 +401,2 @@ jobs:
--          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
+-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml gate-enforcement-contract.yml; do
 -            if [ "$workflow" = ci.yml ]; then
 -              if [ "$identity_ok" = 1 ] \
 -                && resolve_identity \
@@ -242,7 +242,7 @@ index 6666ca9a68..2a4b61d191 100644
 -          # failure cannot strand the later required checks. The final status
 -          # remains failing when any dispatch failed.
 @@ -576,8 +555,2 @@ jobs:
--          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
+-          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml gate-enforcement-contract.yml; do
 -            if [ "$workflow" = ci.yml ]; then
 -              if gh workflow run "$workflow" --ref "$BRANCH" \
 -                -f "base_sha=$BASE_SHA" \

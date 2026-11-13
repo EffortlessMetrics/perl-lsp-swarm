@@ -17,7 +17,7 @@
 #
 # This wrapper dispatches the same command without the preamble noise:
 #
-#   1. run `scripts/cargo-admitted build -p xtask --locked` with stderr
+#   1. run `scripts/cargo-admitted build -p xtask --bin xtask --locked` with stderr
 #      captured (the same admitted producer `cargo xtask` uses via
 #      `scripts/cargo-admitted run -p xtask --locked -- …`; docs/agents/CARGO_STORAGE.md);
 #   2. on build or admission failure, print the captured output verbatim and
@@ -34,17 +34,20 @@
 # compiler warnings, and cargo-admitted descriptor/settlement lines) is
 # dropped. The workspace lint enforcement contract is
 # `cargo clippy -D warnings`, not plain-build warnings; run
-# `scripts/cargo-admitted build -p xtask --locked` directly when you need to
+# `scripts/cargo-admitted build -p xtask --bin xtask --locked` directly when you need to
 # see them.
 #
-# Arguments are forwarded verbatim. `XTASK_QUIET_BUILD_FLAGS` (word-split) is
-# inserted into the admitted build invocation, e.g.
-# `XTASK_QUIET_BUILD_FLAGS="--features parser-tasks"`. Unsupported flags are
-# refused by cargo-admitted; this wrapper does not retry them as raw Cargo.
-# Requires the default dev profile (`<admitted-target>/debug`), which is what
-# this invocation builds; an explicit cross-compilation target
-# (`CARGO_BUILD_TARGET` or `--target`) is refused before building, because the
-# dispatch would only ever find the default-profile binary.
+# Arguments are forwarded verbatim. `XTASK_QUIET_BUILD_FLAGS` accepts only
+# whitespace-separated feature options: `--features VALUE`, `--features=VALUE`,
+# `-F VALUE`, `--all-features`, and `--no-default-features`. Use commas for a
+# feature list, e.g. `XTASK_QUIET_BUILD_FLAGS="--features parser-tasks,other"`.
+# Shell quoting, command evaluation, and pathname expansion are not performed.
+# Other build flags and missing feature values are refused before building:
+# a profile/artifact selector or no-work option could leave an old debug
+# binary to dispatch, and output-format options could pollute command stdout.
+# Requires the default dev profile (`<admitted-target>/debug`); an explicit
+# `CARGO_BUILD_TARGET` is also refused. Use cargo-admitted directly for other
+# build shapes; this wrapper never retries a refusal as raw Cargo.
 #
 # Remaining #17292 follow-up (not this wrapper): compiler-artifact JSON
 # identity, immutable capture/custody, nested-operation reuse, and exact-pin
@@ -70,17 +73,41 @@ repo_root="$(cd -- "${script_dir}/.." && pwd)"
 caller_pwd="$PWD"
 cd -- "$repo_root"
 
-# Optional extra cargo build flags (e.g. --features parser-tasks), word-split.
-# shellcheck disable=SC2086
-build_flags="${XTASK_QUIET_BUILD_FLAGS:-}"
-
 # An explicit build target would desynchronize the dispatch: a triple places
 # the binary under `target/<triple>/debug`, so a stale default-profile binary
 # could be executed. Refuse instead.
-if [ -n "${CARGO_BUILD_TARGET:-}" ] || [[ "$build_flags" == *"--target"* ]]; then
-  printf 'xtask-quiet: CARGO_BUILD_TARGET, --target or --target-dir is unsupported; the dispatch expects the default dev-profile binary; run `cargo xtask` instead\n' >&2
+if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
+  printf 'xtask-quiet: CARGO_BUILD_TARGET is unsupported; the dispatch expects the default dev-profile binary; run `cargo xtask` instead\n' >&2
   exit 70
 fi
+
+# Read every line, splitting only on shell whitespace without pathname
+# expansion or eval. read returns nonzero at EOF because there is no NUL.
+build_flags=()
+IFS=$' \t\n' read -r -d '' -a build_flags <<< "${XTASK_QUIET_BUILD_FLAGS:-}" || true
+for ((flag_index = 0; flag_index < ${#build_flags[@]}; flag_index++)); do
+  build_flag="${build_flags[flag_index]}"
+  case "$build_flag" in
+    --all-features|--no-default-features)
+      continue
+      ;;
+    --features|-F)
+      flag_index=$((flag_index + 1))
+      feature_value="${build_flags[flag_index]:-}"
+      ;;
+    --features=*)
+      feature_value="${build_flag#--features=}"
+      ;;
+    *)
+      printf 'xtask-quiet: unsupported XTASK_QUIET_BUILD_FLAGS option %s; only --features VALUE, --features=VALUE, -F VALUE, --all-features and --no-default-features are supported\n' "$build_flag" >&2
+      exit 70
+      ;;
+  esac
+  if [[ -z "$feature_value" || "$feature_value" == -* ]]; then
+    printf 'xtask-quiet: %s in XTASK_QUIET_BUILD_FLAGS requires a nonempty feature list, not an option\n' "$build_flag" >&2
+    exit 70
+  fi
+done
 
 # Production always uses this repository's admitted producer. Tests may bind
 # XTASK_QUIET_CARGO_ADMITTED to a fake that preserves the same argv/descriptor
@@ -91,8 +118,9 @@ build_log="$(mktemp)"
 trap 'rm -f "$build_log"' EXIT
 
 set +e
-# shellcheck disable=SC2086
-"$admitted" build -p xtask --locked $build_flags 2>"$build_log"
+# default-run selects `cargo run`, not `cargo build`: without --bin, this
+# package's auxiliary binaries would also be built for every quiet command.
+"$admitted" build -p xtask --bin xtask --locked "${build_flags[@]}" 2>"$build_log"
 build_status=$?
 set -e
 

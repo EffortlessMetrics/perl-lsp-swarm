@@ -910,7 +910,31 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        # #18428: this pass is the one lane workload with no memory envelope
+        # (the analysis container above is capped at 14g). Both examined kills
+        # (jobs 124028039451 and 124544802140) show the guidance child at
+        # ~15 GiB RSS with the 16 GB host down to 44-100 MiB free before the
+        # runner died at exit 143 — host-memory exhaustion read as runner
+        # eviction, which armed the infra retry and fed a same-head rerun
+        # loop. Run the pass inside a transient cgroup scope with the same
+        # 14g / no-swap budget as the container (systemd is PID 1 on
+        # ubuntu-24.04), so an oversized pass is OOM-killed inside the lane:
+        # SIGKILL (exit 137) carries no runner-teardown marker, so the
+        # classifier fails closed to ripr-failure and never arms the retry.
+        # The envelope itself fails closed — if sudo -n or systemd-run cannot
+        # create the scope the step reds rather than running unbounded.
+        # --setenv forwards the step environment sudo strips (names filtered
+        # to what systemd accepts); --uid/--gid keep target/ runner-owned for
+        # the host steps that follow. Same command and 3600s bound as before.
+        shell: bash
+        run: |
+          scope_env=()
+          while IFS= read -r -d '' pair; do
+            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
+          done < <(env -0)
+          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
+            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
+            bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -1249,7 +1273,18 @@ jobs:
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
         # and an incomplete receipt keeps failing closed, just later.
-        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        # #18428: same 14g / no-swap cgroup envelope as the primary hosted
+        # lane's guidance step above — this lane runs on the same 16 GB
+        # ubuntu-24.04 host with the same unbounded guidance child.
+        shell: bash
+        run: |
+          scope_env=()
+          while IFS= read -r -d '' pair; do
+            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
+          done < <(env -0)
+          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
+            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
+            cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()

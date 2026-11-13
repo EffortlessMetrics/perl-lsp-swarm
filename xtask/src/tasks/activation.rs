@@ -32,11 +32,13 @@ pub enum ActivationSubcommand {
         #[arg(long)]
         json: bool,
     },
-    /// Print the class-contract evaluation for one surface id.
+    /// Explain one surface id from the inventory.
     Explain {
         /// Surface id from the inventory (for example `feature:lsp.hover`).
         id: String,
     },
+    /// Prove test-only protocol routes stay absent from ordinary product surfaces (#9207).
+    CheckTestApiProduct,
 }
 
 pub fn run(command: ActivationSubcommand) -> Result<()> {
@@ -97,6 +99,26 @@ pub fn run(command: ActivationSubcommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&finding)?);
             if finding.is_fail() {
                 bail!("activation surface `{id}` failed its class contract");
+            }
+        }
+        ActivationSubcommand::CheckTestApiProduct => {
+            let report =
+                activation::check_test_api_product(&root).map_err(|error| eyre!("{error}"))?;
+            if report.is_clean() {
+                println!(
+                    "test-api product exclusion check passed: {} inventoried route(s), \
+                     product capability snapshots clean",
+                    report.passed.saturating_sub(2)
+                );
+            } else {
+                eprintln!("TEST-API PRODUCT EXCLUSION VIOLATIONS:");
+                for violation in &report.violations {
+                    eprintln!("  {violation}");
+                }
+                bail!(
+                    "test-api product exclusion check failed with {} violation(s)",
+                    report.failed
+                );
             }
         }
     }

@@ -1626,18 +1626,12 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                if super::navigation::is_in_comment_naive(offset, &doc.text) {
-                    break 'completion_response None;
-                }
-
+                // Mirrors the goto-definition comment guard (#5066/#5408):
+                // the naive `#`-earlier-on-line hit is adjudicated by the
+                // snapshot SourceRegionIndex (#19206), so a `#` inside a
+                // string or regex no longer suppresses completions for code
+                // later on the line.
+                //
                 // Use the generation-current snapshot, or a stale one whose
                 // parsed source still equals the current text. While the
                 // current generation's parse is pending, never pair the stale
@@ -1647,6 +1641,21 @@ impl LspServer {
                 // snapshot, which stays usable. Full-sync desynchronization
                 // is not pending parse (#8129).
                 let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
+                if super::navigation::is_in_comment_for_guard(
+                    offset,
+                    &doc.text,
+                    parsed.as_deref(),
+                    true,
+                ) {
+                    // While the parse is pending the guard verdict rests on
+                    // the naive fallback alone, so answer incomplete instead
+                    // of a confident empty list (#19206 review).
+                    break 'completion_response if pending_parse_gap {
+                        Some(json!({"isIncomplete": true, "items": []}))
+                    } else {
+                        None
+                    };
+                }
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1994,15 +2003,24 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
+                // Mirrors the goto-definition comment guard (#5066/#5408):
+                // the naive `#`-earlier-on-line hit is adjudicated by the
+                // snapshot SourceRegionIndex (#19206). The snapshot is
+                // resolved here, before the cancellation check below, exactly
+                // as the freshness contract further down prescribes; the
+                // adjudication itself is pure and does not touch the token.
+                //
+                // Same freshness contract as `handle_completion`: never pair
+                // a stale AST with newer text while the parse is pending
+                // (#17775); same-text stale snapshots stay usable (#11858),
+                // and full-sync desynchronization is not pending parse (#8129).
+                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
+                let in_comment = super::navigation::is_in_comment_for_guard(
+                    offset,
+                    &doc.text,
+                    parsed.as_deref(),
+                    true,
+                );
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead
@@ -2025,14 +2043,16 @@ impl LspServer {
                 }
 
                 if in_comment {
-                    break 'completion_response None;
+                    // While the parse is pending the guard verdict rests on
+                    // the naive fallback alone, so answer incomplete instead
+                    // of a confident empty list (#19206 review).
+                    break 'completion_response if pending_parse_gap {
+                        Some(json!({"isIncomplete": true, "items": []}))
+                    } else {
+                        None
+                    };
                 }
 
-                // Same freshness contract as `handle_completion`: never pair
-                // a stale AST with newer text while the parse is pending
-                // (#17775); same-text stale snapshots stay usable (#11858),
-                // and full-sync desynchronization is not pending parse (#8129).
-                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -3269,6 +3289,53 @@ mod tests {
              cancelled mid-analysis (#3619 regression), got spans: {spans:?}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn hash_in_string_completion_reaches_both_runtime_request_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #19206: the wire route exercises only the cancellable handler, so
+        // pin the shared comment-guard adjudication on both request routes.
+        for (source, needle, expect_target) in [
+            ("sub target_sub { return 1; }\nmy $sep = \"#\"; targ", "; targ", true),
+            ("sub target_sub { return 1; }\nmy $x = 1; # targ", "# targ", false),
+        ] {
+            let (line, character) = source
+                .lines()
+                .enumerate()
+                .find_map(|(idx, text)| {
+                    text.find(needle).map(|col| (idx as u32, (col + needle.len()) as u32))
+                })
+                .ok_or("missing completion needle")?;
+            for cancellable in [false, true] {
+                let server = LspServer::default();
+                let uri = "file:///workspace/hash_guard_completion.pl";
+                server.test_apply_did_open(uri, source, 1)?;
+                let params = Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                }));
+                let response = if cancellable {
+                    server.handle_completion_cancellable(params, None)?
+                } else {
+                    server.handle_completion(params)?
+                };
+                let items: Vec<&Value> = response
+                    .as_ref()
+                    .and_then(|value| value.get("items"))
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().collect())
+                    .unwrap_or_default();
+                let offered = items
+                    .iter()
+                    .any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub"));
+                assert_eq!(
+                    offered, expect_target,
+                    "hash guard route mismatch: source={source:?}, cancellable={cancellable}, response={response:?}"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -6111,7 +6178,7 @@ our $single_root_var;
         for name in ["Thing01", "Thing09", "Thing10", "Thing20"] {
             let uri = format!("file:///project/lib/BigApp/Gen/{name}.pm");
             let source = format!("package BigApp::Gen::{name};\n1;\n");
-            let _ = coordinator.index().index_file_str(&uri, &source);
+            let _ = coordinator.index().index_initial_file_str(&uri, &source);
         }
         coordinator.transition_to_ready(4, 4);
 

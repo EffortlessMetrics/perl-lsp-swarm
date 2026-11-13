@@ -52,14 +52,11 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 /// prior results. Each pin is owned here until its future authority lands
 /// (#9942 evaluation/result contract, #9945 wire projector) and is bumped by
 /// the change that alters the corresponding behavior.
-// Bumped to 2 by #7024: canonical regex diagnostics changed what the built-in
-// catalog emits. `PL1000`-`PL1007` are new identities, a backtracking risk moved
-// off `PL001` onto `PL1000`, and `PL609` narrowed from the whole pattern node to
-// the `(?{ ... })` block. Result IDs are deterministic across processes for equal
-// subjects, so without this bump a client holding a pre-change ID could be told
-// `unchanged` and keep diagnostics that predate every one of those. The cost is one
-// `full` report per document after upgrade, which is what the pin is for.
-const RULE_CATALOG_SCHEMA_VERSION: u32 = 2;
+// Bumped to 3 by #18004: native strict/warnings import detection now uses
+// parsed syntax instead of raw lines. Payload-only imports no longer hide
+// findings, and real same-line imports no longer create a false finding.
+// Equal source/policy subjects must replace pre-repair client-held results.
+const RULE_CATALOG_SCHEMA_VERSION: u32 = 3;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 // Bumped to 2 by #17241: the pull projection now collapses native/built-in
 // overlap pairs and attaches critic codeDescription links, so a client holding
