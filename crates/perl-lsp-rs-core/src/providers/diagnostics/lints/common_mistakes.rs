@@ -107,6 +107,7 @@ pub fn check_common_mistakes(
                     tags: Vec::new(),
                     fixable: false,
                     critic_observation: Some(observation),
+                    parse_error_fix_kind: None,
                     suggestion: Some(UNDEF_GUARD_SUGGESTION.to_string()),
                 });
             }
@@ -161,6 +162,7 @@ fn check_bareword_filehandle(
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some("Use lexical filehandle: open(my $fh, ... )".to_string()),
     });
 }
@@ -194,6 +196,7 @@ fn check_assignment_in_condition(condition: &Node, diagnostics: &mut Vec<Diagnos
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some("Replace '=' with '==' for numeric comparison or 'eq' for string comparison".to_string()),
     });
 }

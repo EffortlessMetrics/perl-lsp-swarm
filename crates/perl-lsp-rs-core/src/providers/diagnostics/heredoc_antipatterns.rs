@@ -44,6 +44,7 @@ fn diagnostics_from_report(source: &str, report: &DetectionReport) -> Vec<Diagno
                 tags: Vec::new(),
                 fixable: false,
                 critic_observation: None,
+                parse_error_fix_kind: None,
                 suggestion: d.suggested_fix,
             }
         })
@@ -77,6 +78,7 @@ fn incomplete_scan_diagnostic(source: &str, report: &DetectionReport) -> Diagnos
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: None,
     }
 }

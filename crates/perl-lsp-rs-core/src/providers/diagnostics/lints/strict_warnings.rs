@@ -235,6 +235,7 @@ pub(crate) fn check_strict_warnings_with_pragma_map(
             tags: Vec::new(),
             fixable: true,
             critic_observation: None,
+            parse_error_fix_kind: None,
             suggestion: Some("Add 'use strict;' at the top of the file".to_string()),
         });
     }
@@ -258,6 +259,7 @@ pub(crate) fn check_strict_warnings_with_pragma_map(
             tags: Vec::new(),
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
             suggestion: Some("Add 'use warnings;' at the top of the file".to_string()),
         });
     }
@@ -365,6 +367,7 @@ fn phase_scoped_pragma_diagnostic(
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(format!("Move `use {pragma_name};` to the top of the file")),
     }
 }
@@ -406,6 +409,7 @@ fn check_misspelled_pragma(module: &str, node: &Node, diagnostics: &mut Vec<Diag
                 tags: Vec::new(),
                 fixable: false,
                 critic_observation: None,
+                parse_error_fix_kind: None,
                 suggestion: Some(format!("Replace 'use {};' with 'use {};'", module, correct)),
             });
             return;

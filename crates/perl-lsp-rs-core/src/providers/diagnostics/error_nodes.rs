@@ -63,6 +63,7 @@ pub fn check_error_nodes(
                 suggestion,
                 fixable: true,
                 critic_observation: None,
+                parse_error_fix_kind: None,
             });
         }
     });

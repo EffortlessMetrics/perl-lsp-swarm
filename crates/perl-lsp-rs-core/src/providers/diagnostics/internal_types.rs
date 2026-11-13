@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use crate::providers::diagnostics::quick_fix_context::ParseErrorFixKind;
 use crate::tooling::perl_critic::BuiltInCriticObservation;
 use perl_diagnostics::codes::DiagnosticSeverity;
 use perl_diagnostics::{ByteSpan, InvalidByteSpan};
@@ -43,6 +44,8 @@ pub struct Diagnostic {
     /// consumed by the normalized critic seam when the native engine
     /// composes the logical row.
     pub critic_observation: Option<BuiltInCriticObservation>,
+    /// Structured parse-error fix identity for code actions (#8396).
+    pub parse_error_fix_kind: Option<ParseErrorFixKind>,
 }
 
 /// Failure converting the migration-only provider diagnostic into the canonical type.
@@ -99,6 +102,7 @@ impl TryFrom<Diagnostic> for perl_diagnostics::Diagnostic {
             suggestion: _,
             fixable: _,
             critic_observation: _,
+            parse_error_fix_kind: _,
         } = inner;
 
         let code_text = code.ok_or(DiagnosticConversionError::MissingCode)?;
@@ -162,6 +166,7 @@ impl Diagnostic {
             suggestion: None,
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
         }
     }
 

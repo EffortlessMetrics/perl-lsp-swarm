@@ -78,6 +78,7 @@ fn emit_stray_cut(
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Delete the stray `=cut`, or wrap the documentation in `=pod` ... `=cut`.".to_string(),
         ),

@@ -684,6 +684,7 @@ fn make_undeclared_signatures_diagnostic(node: &Node) -> Diagnostic {
         ),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
     }
 }
 
@@ -743,6 +744,7 @@ fn invalid_project_version_diagnostic(value: &str) -> Diagnostic {
         ),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
     }
 }
 
@@ -986,6 +988,7 @@ fn make_diagnostic(
         tags: vec![],
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(suggestion),
     }
 }
@@ -1093,6 +1096,7 @@ fn make_experimental_feature_diagnostic(
         tags: vec![],
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(suggestion),
     }
 }
@@ -1116,6 +1120,7 @@ fn make_given_when_default_diagnostic(node: &Node, declared_version: PerlVersion
         tags: vec![],
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Refactor `given` / `when` / `default` to `if` / `elsif` or another supported control-flow form; this feature is deprecated in v5.38."
                 .to_string(),
@@ -1146,6 +1151,7 @@ fn make_given_when_feature_diagnostic(node: &Node, declared_version: PerlVersion
         tags: vec![],
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some("Add `use feature 'switch';` to enable given/when/default.".to_string()),
     }
 }
@@ -1169,6 +1175,7 @@ fn make_smartmatch_diagnostic(node: &Node, declared_version: PerlVersion) -> Dia
         tags: vec![],
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Replace smartmatch `~~` with `if` / `elsif`, `grep`, or `any` from List::Util; this operator is deprecated in v5.38."
                 .to_string(),
@@ -1202,6 +1209,7 @@ fn make_smartmatch_feature_gate_diagnostic(
         tags: vec![],
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Add `use feature 'smartmatch';` to enable the smartmatch operator.".to_string(),
         ),
@@ -1238,6 +1246,7 @@ fn make_diagnostic_with_details(
         suggestion,
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
     }
 }
 

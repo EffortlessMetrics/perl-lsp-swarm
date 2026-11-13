@@ -760,6 +760,7 @@ impl LspServer {
                         suggestion: None,
                         fixable: false,
                         critic_observation: None,
+                        parse_error_fix_kind: None,
                     });
                 }
             }
@@ -2744,6 +2745,7 @@ fn normalized_critic_finding_to_diagnostic(
         suggestion: finding.remediation_suggestion().map(str::to_string),
         fixable: finding.has_available_fix(),
         critic_observation: None,
+        parse_error_fix_kind: None,
     }
 }
 

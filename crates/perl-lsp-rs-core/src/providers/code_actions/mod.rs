@@ -24,6 +24,7 @@
 
 #[allow(clippy::module_inception)]
 mod code_actions;
+mod diagnostic_context;
 mod diagnostic_routes;
 mod enhanced;
 mod modernize;

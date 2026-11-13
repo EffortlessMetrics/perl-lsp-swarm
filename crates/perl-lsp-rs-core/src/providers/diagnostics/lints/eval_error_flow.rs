@@ -238,6 +238,7 @@ fn make_diagnostic(node: &Node, has_prior_source: bool) -> Diagnostic {
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Move the exception check immediately after the `eval` or `try` block."
                 .to_string(),
