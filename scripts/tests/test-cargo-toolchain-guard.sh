@@ -80,17 +80,17 @@ fi
 
 expect_eq "parse stable release" "1.75.0" \
   "$(cargo_guard_parse_version 'cargo 1.75.0 (d6df253b1 2023-11-01)')"
-expect_eq "parse pinned release" "1.95.0" \
-  "$(cargo_guard_parse_version 'cargo 1.95.0 (f2d3ce0bd 2026-03-21)')"
-expect_eq "parse nightly strips prerelease" "1.96.0" \
-  "$(cargo_guard_parse_version 'cargo 1.96.0-nightly (0abc123 2026-04-01)')"
+expect_eq "parse pinned release" "1.100.0" \
+  "$(cargo_guard_parse_version 'cargo 1.100.0 (f2d3ce0bd 2026-03-21)')"
+expect_eq "parse nightly strips prerelease" "1.101.0" \
+  "$(cargo_guard_parse_version 'cargo 1.101.0-nightly (0abc123 2026-04-01)')"
 expect_eq "parse beta strips prerelease" "1.85.0" \
   "$(cargo_guard_parse_version 'cargo 1.85.0-beta.1 (hash 2024-12-01)')"
-expect_eq "parse two-component version" "1.95" \
-  "$(cargo_guard_parse_version 'cargo 1.95')"
-expect_eq "parse skips rustup sync progress lines" "1.95.0" \
-  "$(cargo_guard_parse_version 'info: syncing channel updates for 1.95.0-x86_64-unknown-linux-gnu
-cargo 1.95.0 (f2d3ce0bd 2026-03-21)')"
+expect_eq "parse two-component version" "1.100" \
+  "$(cargo_guard_parse_version 'cargo 1.100')"
+expect_eq "parse skips rustup sync progress lines" "1.100.0" \
+  "$(cargo_guard_parse_version 'info: syncing channel updates for 1.100.0-x86_64-unknown-linux-gnu
+cargo 1.100.0 (f2d3ce0bd 2026-03-21)')"
 expect_eq "parse garbage yields empty" "" \
   "$(cargo_guard_parse_version 'this is not cargo output')"
 expect_eq "parse empty yields empty" "" \
@@ -98,18 +98,22 @@ expect_eq "parse empty yields empty" "" \
 
 # ── version comparison ────────────────────────────────────────────────────────
 
-expect_true  "1.95.0 >= 1.95"      cargo_guard_version_ge 1.95.0 1.95
-expect_true  "1.96.1 >= 1.95"      cargo_guard_version_ge 1.96.1 1.95
-expect_true  "2.0.0 >= 1.95"       cargo_guard_version_ge 2.0.0 1.95
-expect_true  "1.95.1 >= 1.95.0"    cargo_guard_version_ge 1.95.1 1.95.0
-expect_true  "1.95 >= 1.95.0"      cargo_guard_version_ge 1.95 1.95.0
-expect_false "1.94.9 < 1.95"       cargo_guard_version_ge 1.94.9 1.95
-expect_false "1.75.0 < 1.95"       cargo_guard_version_ge 1.75.0 1.95
-expect_false "1.95.0 < 1.95.1"     cargo_guard_version_ge 1.95.0 1.95.1
-expect_false "1.9.0 < 1.95 (minor is numeric, not decimal)" \
-  cargo_guard_version_ge 1.9.0 1.95
+expect_true  "1.100.0 >= 1.100"      cargo_guard_version_ge 1.100.0 1.100
+expect_true  "1.101.1 >= 1.100"      cargo_guard_version_ge 1.101.1 1.100
+expect_true  "2.0.0 >= 1.100"       cargo_guard_version_ge 2.0.0 1.100
+expect_true  "1.100.1 >= 1.100.0"    cargo_guard_version_ge 1.100.1 1.100.0
+expect_true  "1.100 >= 1.100.0"      cargo_guard_version_ge 1.100 1.100.0
+expect_false "1.99.9 < 1.100"       cargo_guard_version_ge 1.99.9 1.100
+expect_false "1.75.0 < 1.100"       cargo_guard_version_ge 1.75.0 1.100
+expect_false "1.100.0 < 1.100.1"     cargo_guard_version_ge 1.100.0 1.100.1
+expect_false "1.9.0 < 1.100 (minor is numeric, not decimal)" \
+  cargo_guard_version_ge 1.9.0 1.100
 expect_false "named channel is not a numeric version" \
-  cargo_guard_version_ge stable 1.95
+  cargo_guard_version_ge stable 1.100
+
+expect_false "old product floor 1.95.0 < 1.100" cargo_guard_version_ge 1.95.0 1.100
+expect_false "1.99.9 < 1.100.0 (three-digit minor)" cargo_guard_version_ge 1.99.9 1.100.0
+expect_true "1.100.0 > 1.99.9 (numeric, not lexical)" cargo_guard_version_ge 1.100.0 1.99.9
 
 # ── rustup shim-path detection ────────────────────────────────────────────────
 
@@ -120,7 +124,7 @@ expect_true  "shim: windows-mounted home" \
 expect_true  "shim: windows separators normalize" \
   cargo_guard_is_rustup_shim 'C:\fixture\profile\.cargo\bin\cargo.exe'
 expect_true  "shim: rustup toolchain binary" \
-  cargo_guard_is_rustup_shim "/fixture/profile/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
+  cargo_guard_is_rustup_shim "/fixture/profile/.rustup/toolchains/1.100.0-x86_64-unknown-linux-gnu/bin/cargo"
 expect_false "not shim: /usr/bin/cargo (WSL apt cargo)" \
   cargo_guard_is_rustup_shim "/usr/bin/cargo"
 expect_false "not shim: /usr/local/bin/cargo" \
@@ -134,9 +138,9 @@ TMPDIR_BASE="$(mktemp -d)"
 FAKE_REPO="${TMPDIR_BASE}/fake-repo"
 mkdir -p "$FAKE_REPO"
 
-expect_eq "required: workspace Cargo.toml rust-version wins" "1.95" \
+expect_eq "required: workspace Cargo.toml rust-version wins" "1.100" \
   "$(cargo_guard_required_version "$REPO_ROOT")"
-expect_eq "pin: rust-toolchain.toml channel" "1.95.0" \
+expect_eq "pin: rust-toolchain.toml channel" "1.100.0" \
   "$(cargo_guard_pin_version "$REPO_ROOT")"
 
 printf '%s\n' 'rust-version = "1.42"' > "${FAKE_REPO}/Cargo.toml"
@@ -160,16 +164,16 @@ fi
 # ── refusal message contents (pure builder) ───────────────────────────────────
 
 REFUSAL="${TMPDIR_BASE}/refusal.msg"
-cargo_guard_print_refusal "/usr/bin/cargo" "1.75.0" "1.95" "1.95.0" 1 "WSL_DISTRO_NAME=Ubuntu" 2> "$REFUSAL"
+cargo_guard_print_refusal "/usr/bin/cargo" "1.75.0" "1.100" "1.100.0" 1 "WSL_DISTRO_NAME=Ubuntu" 2> "$REFUSAL"
 
 assert_contains "refusal: typed REFUSED banner" \
   "cargo-toolchain-guard: REFUSED" "$REFUSAL"
 assert_contains "refusal: names resolved cargo path" \
   "resolved cargo : /usr/bin/cargo (cargo 1.75.0)" "$REFUSAL"
 assert_contains "refusal: names workspace rust-version" \
-  "workspace needs: rust-version 1.95 (Cargo.toml)" "$REFUSAL"
+  "workspace needs: rust-version 1.100 (Cargo.toml)" "$REFUSAL"
 assert_contains "refusal: names rust-toolchain.toml pin" \
-  "rust-toolchain.toml pins 1.95.0, which only rustup shims honor" "$REFUSAL"
+  "rust-toolchain.toml pins 1.100.0, which only rustup shims honor" "$REFUSAL"
 assert_contains "refusal: explains edition-2024 confusion" \
   "feature 'edition2024' is required" "$REFUSAL"
 assert_contains "refusal: forbids the manifest downgrade" \
@@ -184,11 +188,11 @@ assert_contains "refusal: remediation names PATH ordering" \
   "~/.cargo/bin precedes /usr/bin in PATH" "$REFUSAL"
 
 REFUSAL_NOWSL="${TMPDIR_BASE}/refusal-nowsl.msg"
-cargo_guard_print_refusal "/opt/cargo/bin/cargo" "1.84.0" "1.95" "1.95.0" 0 "" 2> "$REFUSAL_NOWSL"
+cargo_guard_print_refusal "/opt/cargo/bin/cargo" "1.84.0" "1.100" "1.100.0" 0 "" 2> "$REFUSAL_NOWSL"
 assert_contains "refusal (non-WSL): typed REFUSED banner" \
   "cargo-toolchain-guard: REFUSED" "$REFUSAL_NOWSL"
 assert_contains "refusal (non-WSL): generic rustup remediation" \
-  "rustup install 1.95.0" "$REFUSAL_NOWSL"
+  "rustup install 1.100.0" "$REFUSAL_NOWSL"
 if grep -Fq "WSL detected" "$REFUSAL_NOWSL"; then
   fail "refusal (non-WSL): must not claim WSL context"
 else
@@ -198,7 +202,7 @@ fi
 # A cargo between 1.85 and the workspace pin can parse edition-2024; the
 # refusal must name the workspace policy, not a nonexistent parse limitation.
 REFUSAL_MID="${TMPDIR_BASE}/refusal-mid.msg"
-cargo_guard_print_refusal "/usr/bin/cargo" "1.90.0" "1.95" "1.95.0" 0 "" 2> "$REFUSAL_MID"
+cargo_guard_print_refusal "/usr/bin/cargo" "1.90.0" "1.100" "1.100.0" 0 "" 2> "$REFUSAL_MID"
 assert_contains "refusal (1.90): names workspace toolchain policy" \
   "the refusal is workspace toolchain policy, not a manifest defect" "$REFUSAL_MID"
 if grep -Fq "cannot parse edition-2024" "$REFUSAL_MID"; then
@@ -322,7 +326,7 @@ fi
 # ── full guard with a satisfying non-shim cargo: note, not refusal ────────────
 
 NEW_BIN="${TMPDIR_BASE}/new-bin"
-write_stale_cargo "$NEW_BIN" "1.96.1"
+write_stale_cargo "$NEW_BIN" "1.101.1"
 
 code=0
 PATH="${NEW_BIN}:$PATH" \
@@ -333,7 +337,7 @@ else
   fail "guard: satisfying non-shim cargo must pass, got exit ${code}"
 fi
 assert_contains "guard: non-shim note reports the ignored pin" \
-  "is not a rustup shim, so the rust-toolchain.toml pin (1.95.0) is not in effect" \
+  "is not a rustup shim, so the rust-toolchain.toml pin (1.100.0) is not in effect" \
   "${TMPDIR_BASE}/new.err"
 
 # ── old rustup proxies must refuse before any install-capable probe ────────
@@ -348,7 +352,7 @@ if [[ "${0##*/}" == rustup && "$*" == --help ]]; then
 fi
 # Both cargo --version and rustup --version are unsafe on old rustup.
 printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" >> "$PROXY_CARGO_ENV"
-printf 'cargo 1.95.0 (proxy fixture)\n'
+printf 'cargo 1.100.0 (proxy fixture)\n'
 STUB
 chmod +x "${PROXY_BIN}/rustup"
 ln "${PROXY_BIN}/rustup" "${PROXY_BIN}/cargo"
@@ -410,7 +414,7 @@ expect_false 'proxy: unrelated manager was never executed' \
 code=0
 PATH="${PROXY_BIN}:$PATH" bash -c '
   cd "$2"
-  cargo() { printf "cargo 1.95.0 (function fixture)\n"; }
+  cargo() { printf "cargo 1.100.0 (function fixture)\n"; }
   . "$1"
   cargo_toolchain_guard
 ' guard-test "$LIB" "$PROXY_BIN" 2> "${TMPDIR_BASE}/function.err" || code=$?
@@ -426,7 +430,7 @@ cat > "${PROBE_BIN}/cargo" <<'STUB'
 #!/usr/bin/env bash
 [[ "$*" == "--version" ]] || exit 91
 printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" > "$PROBE_ENV_LOG"
-printf 'cargo 1.95.0 (installed fixture)\n'
+printf 'cargo 1.100.0 (installed fixture)\n'
 STUB
 chmod +x "${PROBE_BIN}/cargo"
 
@@ -462,7 +466,7 @@ if [ "\${1:-}" = "--version" ]; then
   if [ -f "./caller-project-marker" ]; then
     printf 'cargo 1.70.0 (caller-pinned stub)\n'
   else
-    printf 'cargo 1.96.1 (repo-pinned stub)\n'
+    printf 'cargo 1.101.1 (repo-pinned stub)\n'
   fi
   exit 0
 fi
@@ -543,7 +547,7 @@ STUB
   fi
 
   code=0
-  run_installer_fixture ./install.sh 1.96.1 "${TMPDIR_BASE}/new-sentinel.log" \
+  run_installer_fixture ./install.sh 1.101.1 "${TMPDIR_BASE}/new-sentinel.log" \
     "${TMPDIR_BASE}/standalone-new" || code=$?
   if [[ "$code" -ne 0 ]] && ! grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone-new.err" &&
     [[ "$(cat "${TMPDIR_BASE}/new-sentinel.log")" == 'cargo install' ]] &&

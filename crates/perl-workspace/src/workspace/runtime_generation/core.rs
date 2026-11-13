@@ -984,7 +984,7 @@ impl WorkspaceRuntimeController {
         kind: WorkspaceRuntimeObservationKind,
         detail: WorkspaceRuntimeObservationDetail,
     ) {
-        let Ok(sequence) = self.inner.next_observation.fetch_update(
+        let Ok(sequence) = self.inner.next_observation.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| current.checked_add(1),
@@ -1083,7 +1083,7 @@ fn allocate_sequence(
     exhausted: WorkspaceRuntimeError,
 ) -> Result<u64, WorkspaceRuntimeError> {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
         .map_err(|_| exhausted)
 }
 

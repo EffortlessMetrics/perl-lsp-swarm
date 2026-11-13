@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field"><img src="https://img.shields.io/badge/MSRV-1.95-blue.svg" alt="MSRV" /></a>
+  <a href="https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field"><img src="https://img.shields.io/badge/MSRV-1.100-blue.svg" alt="MSRV" /></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
 </p>
 
@@ -73,7 +73,7 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-**Cargo** (supported Linux, macOS, and Windows platforms; Rust 1.95 or newer) —
+**Cargo** (supported Linux, macOS, and Windows platforms; Rust 1.100 or newer) —
 installs the `perllsp` language-server binary from crates.io. This installs
 `perllsp` only, not the `perl-dap` debug adapter; use a release archive if you
 need the debugger. Support on other Rust targets is not established here.

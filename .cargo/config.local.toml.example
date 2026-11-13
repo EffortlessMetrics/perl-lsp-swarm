@@ -1,6 +1,6 @@
 # Optional machine-local Cargo settings; do not commit config.local.toml.
 #
-# Activation (pinned Cargo 1.95):
+# Activation (pinned Cargo 1.100):
 # - `scripts/cargo-safe` and `scripts/cargo-admitted` pass
 #   `--config .cargo/config.local.toml` when this file exists.
 # - For direct `cargo`, pass the same flag explicitly, e.g.

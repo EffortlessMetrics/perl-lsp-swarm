@@ -291,7 +291,7 @@ jobs:
   # lane. GitHub schedules within the capability pool: this job names a
   # capability, never a physical host, and queues behind busy pool members.
   #
-  # All cargo/ripr commands run inside the em-ci-rust:1.95 Docker image,
+  # All cargo/ripr commands run inside the em-ci-rust:1.100 Docker image,
   # matching em-ci-routed-rust.yml exactly. The host runner does not have
   # the Rust toolchain on PATH -- it is only available inside the container.
   # ripr is installed into /cargo-home/bin (= /mnt/ci-cache/cargo-home/bin
@@ -371,7 +371,7 @@ jobs:
           set +e
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
@@ -421,8 +421,8 @@ jobs:
           # If the self-hosted runner lost the preloaded Rust image, this lane
           # cannot run ripr. Mark preflight failed so the GitHub-hosted fallback
           # runs instead of surfacing as a false new-gap failure.
-          if ! docker image inspect em-ci-rust:1.95 >/dev/null 2>&1; then
-            echo "::error::Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner. Failover job will run on GitHub-hosted."
+          if ! docker image inspect em-ci-rust:1.100 >/dev/null 2>&1; then
+            echo "::error::Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner. Failover job will run on GitHub-hosted."
             disk_ok=false
           fi
           # ── Disk guard ────────────────────────────────────────────────────────
@@ -474,7 +474,7 @@ jobs:
             -v "$CARGO_TARGET_DIR:/target" \
             -v "$TMPDIR:/tmp/jobtmp" \
             -w /workspace \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -eu -o pipefail -c '
               # The workspace is checked out by the host runner user; the container
               # runs as a different UID. Mark it safe so git commands work.
@@ -608,13 +608,13 @@ jobs:
           # Without this the next run's checkout action cannot clean them (EACCES).
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c "chown -R $(id -u):$(id -g) /workspace/target/ripr /workspace/target/xtask /workspace/target/receipts 2>/dev/null || true" || true
           # Clean the scratch dirs (Docker-owned files removed by Docker).
           docker run --rm \
             -v "$TMPDIR:/tmpdir" \
             -v "$CARGO_TARGET_DIR:/target" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
           rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/ci-cache || true
@@ -661,7 +661,7 @@ jobs:
           token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
           printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+      - name: Toolchain (rust-toolchain.toml pins 1.100.0)
         run: rustc --version
 
       - name: Cache cargo dependencies
@@ -755,7 +755,7 @@ jobs:
           }
           trap cleanup_host_state EXIT
           printf "runner=github-hosted\njob_phase=host-start\n" > target/ripr/pr/ripr-measurement-config.txt
-          image='rust:1.95-slim-bookworm'
+          image='rust:1.100-slim-bookworm'
           set +e
           timeout --signal=TERM --kill-after=10s 3m docker pull "$image"
           pull_status=$?
@@ -1153,7 +1153,7 @@ jobs:
           token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
           printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+      - name: Toolchain (rust-toolchain.toml pins 1.100.0)
         run: rustc --version
 
       - name: Cache cargo dependencies
@@ -1449,7 +1449,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+      - name: Toolchain (rust-toolchain.toml pins 1.100.0)
         run: rustc --version
 
       - name: Cache cargo dependencies

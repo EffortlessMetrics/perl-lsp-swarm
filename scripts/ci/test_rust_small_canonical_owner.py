@@ -61,7 +61,7 @@ class CanonicalOwnerTests(unittest.TestCase):
         self.assertEqual(observed['argv'], ['--worktree-root', str(self.runtime.bridge.fixture.workspace), 'rust-small-proof', '--verify-receipt', str(self.receipt)])
         self.assertEqual(Path(observed['cwd']), self.runtime.bridge.fixture.workspace)
         self.assertFalse(observed['sensitive'])
-        self.assertEqual((observed['toolchain'], observed['auto_install']), ('1.95.0', '0'))
+        self.assertEqual((observed['toolchain'], observed['auto_install']), ('1.100.0', '0'))
         self.assertEqual(proof.disposition, 'verified')
         self.assertEqual(proof.executed, self.selected.selected)
         self.assertEqual(proof.canonical_receipt_sha256, hashlib.sha256(self.receipt.read_bytes()).hexdigest())

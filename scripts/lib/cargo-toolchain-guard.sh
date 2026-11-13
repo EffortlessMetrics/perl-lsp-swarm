@@ -185,7 +185,7 @@ cargo_guard_print_refusal() {
 cargo_toolchain_guard() {
   local required pin resolved probe actual manager manager_help manager_version
   required="$(cargo_guard_required_version)"
-  required="${required:-1.95}"
+  required="${required:-1.100}"
   pin="$(cargo_guard_pin_version)"
 
   resolved="$(command -v cargo 2>/dev/null || true)"

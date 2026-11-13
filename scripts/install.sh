@@ -1239,7 +1239,7 @@ run_cargo_toolchain_guard() {
         _guard_minor="${_guard_version#*.}"
         _guard_minor="${_guard_minor%%.*}"
         if [ -z "$_guard_major" ] || [ "$_guard_major" -lt 1 ] || { [ "$_guard_major" -eq 1 ] && [ "$_guard_minor" -lt 85 ]; }; then
-            err "cargo-toolchain-guard: REFUSED: cargo ${_guard_version:-unknown} predates edition-2024 support (needs >= 1.85; this workspace pins rustc 1.95). A stale cargo reports this as 'feature edition2024 is required' -- a toolchain problem, not a manifest problem. Install a current toolchain (https://rustup.rs)."
+            err "cargo-toolchain-guard: REFUSED: cargo ${_guard_version:-unknown} predates edition-2024 support (needs >= 1.85; this workspace pins rustc 1.100). A stale cargo reports this as 'feature edition2024 is required' -- a toolchain problem, not a manifest problem. Install a current toolchain (https://rustup.rs)."
         fi
     fi
     unset _guard_lib _guard_version _guard_major _guard_minor

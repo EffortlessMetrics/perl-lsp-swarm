@@ -54,7 +54,7 @@ def run_with_tools(script, tools, extra_env=None):
         fake_cargo.write_text(
             '#!/usr/bin/env bash\n'
             'if [[ "$*" == "--version" ]]; then\n'
-            '    printf "cargo 1.95.0\\n"\n'
+            '    printf "cargo 1.100.0\\n"\n'
             '    exit 0\n'
             'fi\n'
             'exit 97\n', encoding='utf-8')
@@ -176,7 +176,7 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         fake_cargo.write_text(
             '#!/usr/bin/env bash\n'
             'if [[ "$*" == "--version" ]]; then\n'
-            '    printf "cargo 1.95.0\\n"\n'
+            '    printf "cargo 1.100.0\\n"\n'
             '    exit 0\n'
             'fi\n'
             'printf "cargo %s\\n" "$*" >> "$MERGE_SURFACE_SPY"\n'

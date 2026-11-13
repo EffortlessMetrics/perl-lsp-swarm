@@ -969,7 +969,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
         .replace("${{ needs.route-ripr.outputs.target }}", "selfhosted");
     let executable_steps = [
         "Require immutable RIPR subject",
-        "Toolchain (rust-toolchain.toml pins 1.95.0)",
+        "Toolchain (rust-toolchain.toml pins 1.100.0)",
         "Install ripr",
         "Run ripr doctor",
         "Generate PR evidence",
@@ -1815,15 +1815,16 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
             .lines()
             .filter(|line| !line.trim_start().starts_with('#'))
             .filter(|line| {
-                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.95")
+                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.100")
             })
             .count(),
         1,
         "the self-hosted rust-standard lane must check the required Docker image before running ripr"
     );
     assert!(
-        workflow
-            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner"),
+        workflow.contains(
+            "Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner"
+        ),
         "missing self-hosted Rust image must be reported as preflight failure"
     );
     assert!(
@@ -1885,7 +1886,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     let (missing_image, missing_image_output) = run_preflight_case(false, false)?;
     if missing_image.status.success()
         || !missing_image_output
-            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner")
+            .contains("Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner")
         || !missing_image_output.contains("preflight_ok=false")
     {
         bail!(

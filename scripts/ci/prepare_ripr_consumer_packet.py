@@ -184,7 +184,7 @@ def proof_sequence():
         {"phase": "pr_evidence", "command": "cargo xtask ripr-pr --base B --head E --pr-head H",
          "profile": "existing Docker: 4 CPUs, 14g memory/swap, RIPR_MAX_DIFF_INDEX_FILES=2560",
          "cache_boundary": "host RIPR_CACHE_DIR is not passed or mounted into this container; actual reuse NOT_PROVEN",
-         "image": "rust:1.95-slim-bookworm; runtime image ID/digest recorded",
+         "image": "rust:1.100-slim-bookworm; runtime image ID/digest recorded",
          "host_setup": ["docker pull: TERM at 3m, kill after 10s",
                         "image ID and digest inspections: each TERM at 15s, kill after 5s"],
          "container_setup": ["apt update and build-essential/pkg-config/libssl-dev/git/curl/jq/time install",
