@@ -1,0 +1,85 @@
+name: Apply Rust 1.100 migration
+
+on:
+  push:
+    branches: [chore/rust-1.100]
+    paths: [.github/workflows/rust-1-100-apply.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: chore/rust-1.100
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply exact migration
+        run: python3 scripts/ci/apply_rust_1_100_migration.py
+
+      - name: Install Rust 1.100.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        with:
+          toolchain: 1.100.0
+          components: rustfmt,clippy
+
+      - name: Format and validate patch shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git add -A
+          git diff --cached --check
+          test "$(git diff --cached --name-only | wc -l)" -gt 10
+          git diff --cached --stat
+
+      - name: Commit production migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "build: upgrade Rust and MSRV to 1.100"
+          git push origin HEAD:chore/rust-1.100
+
+      - name: Toolchain and formatter proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -Vv
+          cargo -Vv
+          rustfmt -V
+          clippy-driver -V
+          cargo fmt --all -- --check
+
+      - name: Focused migration tests
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: "2"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xtask check_toolchain -j 2
+          cargo test --locked -p xtask clippy_cost_measure -j 2
+          cargo test --locked -p xtask check_lint_policy -j 2
+          cargo xtask check-lint-policy
+          python3 -m unittest scripts/tests/test_storage_doctor.py
+
+      - name: Primary all-target compatibility proof
+        shell: bash
+        timeout-minutes: 30
+        env:
+          CARGO_BUILD_JOBS: "2"
+          CARGO_INCREMENTAL: "0"
+        run: >-
+          cargo check --locked --all-targets -j 2
+          -p perl-parser-core
+          -p perl-lsp-rs-core
+          -p perl-lsp-rs
+          -p xtask
