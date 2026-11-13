@@ -28,6 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Generate all projections, but commit only the five canonical files touched by this migration.
           bash scripts/populate-book.sh >/tmp/populate-book.log
           git add -- \
             book/src/ci/overview.md \
