@@ -1151,6 +1151,32 @@ class GateShardTests(unittest.TestCase):
             )
             self.assertEqual(root, shard._canonical_execution_root(preliminary))
 
+    def test_main_preflights_nested_absolute_policy_against_git_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            nested = root / "custom policies"
+            nested.mkdir()
+            policy = write_gate_policy(nested,
+                "  - name: alpha\n    command: python3 root_only_probe.py\n")
+            (root / "root_only_probe.py").write_text("pass\n", encoding="utf-8")
+            execution = write_policy(root, {"alpha": []})
+            schema = write_receipt_schema(root)
+            runner_type = mock.Mock()
+            runner_type.return_value.run.return_value = 0
+            with (mock.patch.object(shard, "ShardRunner", runner_type),
+                  mock.patch.object(shard.signal, "signal")):
+                status = shard.main([
+                    "--xtask", "/artifact/xtask", "--gate-policy", str(policy),
+                    "--execution-policy", str(execution),
+                    "--receipt-schema", str(schema),
+                    "--receipt-dir", "receipts", "--summary", "summary.json", "alpha",
+                ])
+            self.assertEqual(0, status)
+            self.assertEqual(root, runner_type.call_args.kwargs["worktree_root"])
+            self.assertEqual(root / "receipts", runner_type.call_args.kwargs["receipt_dir"])
+            self.assertEqual(policy, runner_type.call_args.kwargs["gate_policy"])
+
     def test_execution_root_refuses_non_repository(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(ValueError, "Git worktree root"):
