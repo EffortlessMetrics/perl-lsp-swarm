@@ -1855,6 +1855,66 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         "only a failed self-hosted preflight with preflight_ok=false must route the run to the GitHub-hosted fallback"
     );
 
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let job_output = yaml
+        .get("jobs")
+        .and_then(|jobs| jobs.get("ripr-selfhosted"))
+        .and_then(|job| job.get("outputs"))
+        .and_then(|outputs| outputs.get("preflight_ok"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        job_output,
+        Some("${{ steps.preflight.outputs.preflight_ok || steps.admission.outputs.preflight_ok }}"),
+        "job output must preserve either preflight refusal"
+    );
+    let checkout = workflow_step_value("ripr-selfhosted", "Checkout")?;
+    assert_eq!(
+        checkout.get("if").and_then(Value::as_str),
+        Some("steps.admission.outputs.preflight_ok != 'false'"),
+        "an early missing-image refusal must skip checkout"
+    );
+
+    let sandbox = tempfile::tempdir()?;
+    let output_file = sandbox.path().join("admission-output");
+    let docker_calls = sandbox.path().join("docker-calls");
+    let admission =
+        workflow_run_block("ripr-selfhosted", "Fix workspace ownership (pre-checkout)")?;
+    let fake_docker = r#"
+docker() {
+  printf '%s\n' "$*" >> "$DOCKER_CALLS"
+  return 1
+}
+"#;
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_WORKSPACE", sandbox.path())
+        .env("GITHUB_OUTPUT", &output_file)
+        .env("DOCKER_CALLS", &docker_calls)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("pre-checkout bash stdin unavailable"))?
+        .write_all(format!("{fake_docker}\n{admission}").as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.success(),
+        "missing-image admission must leave a typed refusal for the fallback: {output:?}"
+    );
+    ensure!(
+        fs::read_to_string(&output_file)?.contains("preflight_ok=false"),
+        "the real early step must record preflight_ok=false"
+    );
+    let calls = fs::read_to_string(&docker_calls)?;
+    ensure!(
+        calls.contains("image inspect em-ci-rust:1.100") && !calls.contains("run --rm"),
+        "missing-image admission must stop before image-dependent cleanup"
+    );
+
     let (self_hosted_route, self_hosted_output) =
         run_router_case("false", "runner-token", "ready", "200")?;
     if !self_hosted_route.status.success()

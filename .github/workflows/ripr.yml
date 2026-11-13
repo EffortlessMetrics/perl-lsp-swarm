@@ -312,7 +312,7 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
     timeout-minutes: 60
     outputs:
-      preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
+      preflight_ok: ${{ steps.preflight.outputs.preflight_ok || steps.admission.outputs.preflight_ok }}
     env:
       RIPR_VERSION: "0.10.0"
       # #15498: pin the admission boundary explicitly on every producer lane.
@@ -357,6 +357,7 @@ jobs:
       TMPDIR: /mnt/ci-scratch/tmp/ripr-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Fix workspace ownership (pre-checkout)
+        id: admission
         shell: bash
         run: |
           # Docker writes workspace files as root. If a previous run left root-owned
@@ -385,6 +386,7 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/target" || true
 
       - name: Checkout
+        if: steps.admission.outputs.preflight_ok != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
