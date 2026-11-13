@@ -336,6 +336,8 @@ class DapProcess:
         except OSError as exc:
             raise ScorecardError(
                 f"cannot write DAP request {command!r}: {exc}; "
+                f"adapter_returncode={self.process.poll()}; "
+                f"reader_error={self._reader_error!r}; "
                 f"stderr={self.stderr_tail() or '<empty>'}"
             ) from exc
         return seq
