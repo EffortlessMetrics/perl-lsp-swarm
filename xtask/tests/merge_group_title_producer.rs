@@ -209,8 +209,19 @@ fn policy_records_merge_group_as_a_real_producer() {
     let check_rows = policy.get("check").and_then(toml::Value::as_array).expect("check");
     let check_row = check_rows
         .iter()
-        .find(|row| row.get("name").and_then(toml::Value::as_str) == Some("validate-title"))
-        .expect("validate-title check row");
+        .find(|row| {
+            row.get("workflow").and_then(toml::Value::as_str)
+                == Some(".github/workflows/merge-group-title-check.yml")
+        })
+        .expect("merge-group validate-title governance row");
+    let events: Vec<&str> = check_row
+        .get("events")
+        .and_then(toml::Value::as_array)
+        .expect("governance events")
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(events, vec!["merge_group"], "this governance row must be merge-group-only");
     if let Some(exemptions) = check_row.get("exemption").and_then(toml::Value::as_array) {
         assert!(
             !exemptions.iter().any(|e| {

@@ -73,9 +73,10 @@ one and an unstated producer fails closed.
 
 For each `[[check]]` row with `required = true`, the workflow must:
 
-- define `pull_request`
-- define `merge_group`
-- define `push` with `branches: [master]`
+- define every ordinary lifecycle trigger named by its `events` list
+  (`pull_request` / `pull_request_target`, `merge_group`, and `push`); omitting
+  `events` retains the full three-event product contract, and a required `push`
+  must have `branches: [master]`
 - avoid top-level or event-level `paths` / `paths-ignore`
 - define event-aware concurrency:
   - `cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}`

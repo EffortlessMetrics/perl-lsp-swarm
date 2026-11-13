@@ -17,6 +17,7 @@ from scripts.ci import test_request_qualification as adapter_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / '.ci/staged/17903-root-triggers.patch'
+COMBINED_COMPAT_PATCH = ROOT / '.ci/staged/17903-root-triggers-combined.patch'
 ROOTS = ('.github/workflows/ci.yml', '.github/workflows/ripr.yml',
          '.github/workflows/em-ci-routed-rust.yml')
 POLICY = '.ci/policies/required-checks.toml'
@@ -33,6 +34,11 @@ def git(root, *args):
                           capture_output=True, text=True).stdout
 
 
+def selected_patch(root):
+    """Return the exact fixture patch admitted by this temporary tree."""
+    return Path(root.joinpath('.staged-rehearsal-patch').read_text(encoding='utf-8'))
+
+
 @contextmanager
 def staged_tree():
     with tempfile.TemporaryDirectory() as directory:
@@ -47,9 +53,23 @@ def staged_tree():
         git(root, 'add', '.')
         git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
             'commit', '-qm', 'source rehearsal')
-        git(root, 'apply', '--unidiff-zero', '--check', str(PATCH))
-        git(root, 'apply', '--unidiff-zero', str(PATCH))
-        yield root
+        for patch in (PATCH, COMBINED_COMPAT_PATCH):
+            try:
+                git(root, 'apply', '--unidiff-zero', '--check', str(patch))
+            except subprocess.CalledProcessError:
+                continue
+            print(f'source rehearsal patch: {patch.name}')
+            root.joinpath('.staged-rehearsal-patch').write_text(str(patch), encoding='utf-8')
+            git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'add', '.staged-rehearsal-patch')
+            git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'commit', '-qm', 'record exact staged fixture')
+            git(root, 'apply', '--unidiff-zero', str(patch))
+            yield root
+            return
+        raise RuntimeError(
+            'neither staged patch matches the exact source; refusing fuzzy combined-tree proof'
+        )
 
 
 class StagedTriggerCutoverTests(unittest.TestCase):
@@ -77,8 +97,8 @@ class StagedTriggerCutoverTests(unittest.TestCase):
 
     def test_root_policy_rollback_restores_exact_original_bytes(self):
         with staged_tree() as root:
-            git(root, 'apply', '--unidiff-zero', '--reverse', '--check', str(PATCH))
-            git(root, 'apply', '--unidiff-zero', '--reverse', str(PATCH))
+            git(root, 'apply', '--unidiff-zero', '--reverse', '--check', str(selected_patch(root)))
+            git(root, 'apply', '--unidiff-zero', '--reverse', str(selected_patch(root)))
             for path in (*ROOTS, POLICY, *DISPATCH_PATHS):
                 self.assertEqual((root / path).read_bytes(), (ROOT / path).read_bytes(), path)
             self.assertEqual(git(root, 'diff', '--exit-code'), '')
@@ -111,16 +131,24 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             after = tomllib.loads((root / POLICY).read_text(encoding='utf-8'))
         self.assertEqual(before.keys(), after.keys())
         for key in before:
-            if key != 'checks':
+            if key not in {'check', 'checks'}:
                 self.assertEqual(before[key], after[key])
-        self.assertEqual(len(before['checks']), len(after['checks']))
-        for left, right in zip(before['checks'], after['checks']):
-            if left.get('workflow') in ROOTS:
-                events = [event for event in left['events'] if event not in ORDINARY]
-                expected = {**left, 'events': events or ['workflow_dispatch']}
-                self.assertEqual(expected, right)
-            else:
-                self.assertEqual(left, right)
+        for key in ('check', 'checks'):
+            before_by_workflow = {row['workflow']: row for row in before[key]}
+            after_by_workflow = {row['workflow']: row for row in after[key]}
+            retired = '.github/workflows/merge-group-title-check.yml'
+            self.assertEqual({retired}, before_by_workflow.keys() - after_by_workflow.keys())
+            self.assertFalse(after_by_workflow.keys() - before_by_workflow.keys())
+            for workflow, left in before_by_workflow.items():
+                if workflow == retired:
+                    continue
+                right = after_by_workflow[workflow]
+                if key == 'checks' and workflow in ROOTS:
+                    events = [event for event in left['events'] if event not in ORDINARY]
+                    expected = {**left, 'events': events or ['workflow_dispatch']}
+                    self.assertEqual(expected, right)
+                else:
+                    self.assertEqual(left, right)
 
     def test_projected_native_contract_remains_structurally_valid(self):
         with staged_tree() as root:

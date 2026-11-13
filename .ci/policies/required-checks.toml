@@ -47,30 +47,11 @@ name = "validate-title"
 workflow = ".github/workflows/pr-title-check.yml"
 required = true
 contract_role = "required-workflow-shape"
+events = ["pull_request_target", "workflow_dispatch"]
 
-  # A metadata-only check. It reads the PR title through the API and never
-  # checks out or executes candidate contents, which is what lets it run on
-  # `pull_request_target` with write permission without crossing the trust
-  # boundary. The contract's remaining clauses assume a workflow that builds
-  # the candidate; they are the wrong requirements here rather than unmet ones.
-  [[check.exemption]]
-  clause = "pull-request-trigger"
-  status = "accepted"
-  reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
-  tracking = "16164"
-
-  # #18255: one producer per event. The pull_request_target/workflow_dispatch
-  # workflow retains advisory comment and label writes. Its dedicated
-  # merge-group workflow is read-only and resolves only the PR named by the
-  # queue ref, re-reading that PR's current metadata and title. Same-event
-  # duplicates remain forbidden; cross-event registrations must be explicit.
-
-  [[check.exemption]]
-  clause = "push-targets-master"
-  status = "accepted"
-  reason = "A push to main has no PR title; the check is meaningless outside a pull request."
-  tracking = "16164"
-
+  # #18255: one producer per event. This workflow owns only the advisory PR
+  # title write path; its pull_request_target trigger is required, but merge
+  # group and push belong to other event registrations, not stale exemptions.
   [[check.exemption]]
   clause = "event-aware-concurrency"
   status = "accepted"
@@ -82,6 +63,14 @@ name = "validate-title"
 workflow = ".github/workflows/merge-group-title-check.yml"
 required = true
 contract_role = "required-workflow-shape"
+events = ["merge_group"]
+
+  # Queue title validation is read-only and emitted by exactly one job.
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "A five-minute read-only queue metadata job must not be cancelled into a false red required context; no long candidate build runs here."
+  tracking = "18255"
 
 [[check]]
 name = "Methodology Gate"
