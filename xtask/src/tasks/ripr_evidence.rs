@@ -6180,8 +6180,8 @@ fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) 
 
 fn write_pr_diff(repo: &Path, receipt: &CommittedDiffReceipt) -> Result<()> {
     let range = format!("{}...{}", receipt.base, receipt.head);
-    let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
-    write_text(&repo.join(PR_DIFF), &diff)?;
+    let diff = run_git_bytes(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
+    write_text(&repo.join(PR_DIFF), &String::from_utf8_lossy(&diff))?;
     let receipt_json = format_json(&serde_json::to_value(receipt)?)?;
     write_text(&repo.join(PR_DIFF_RECEIPT), &receipt_json)
 }
@@ -11382,6 +11382,35 @@ paths = ["archive/["]
             "classification": "no_static_path",
             "probe": { "path": "deleted.rs", "line": 1 }
         })));
+        Ok(())
+    }
+
+    /// A committed diff can carry bytes that are not valid UTF-8 (fuzz corpus seeds).
+    /// `write_pr_diff` must still write the diff, replacing the invalid bytes lossily,
+    /// instead of failing the whole evidence run with "git stdout was not UTF-8".
+    #[test]
+    fn write_pr_diff_tolerates_non_utf8_diff_bytes() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let base = run_git(repo, &["rev-parse", "HEAD"])?;
+        fs::write(repo.join("seed.bin"), [0xFFu8])?;
+        run_git(repo, &["add", "seed.bin"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "head"],
+        )?;
+
+        let receipt = resolve_committed_diff(repo, &base, "HEAD")?;
+        write_pr_diff(repo, &receipt)?;
+
+        let diff_path = repo.join(PR_DIFF);
+        assert!(diff_path.exists(), "{PR_DIFF} was not written");
+        let diff = fs::read_to_string(&diff_path)?;
+        assert!(
+            diff.contains('\u{FFFD}'),
+            "{PR_DIFF} should carry the lossy replacement character for the invalid byte"
+        );
         Ok(())
     }
 
