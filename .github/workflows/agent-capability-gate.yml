@@ -46,11 +46,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Merge groups use workflow-trigger-lint.yml / queue-metadata directly.
   route-agent-capability-gate:
     name: Route agent capability gate
     if: >-
       github.event_name == 'pull_request' ||
-      github.event_name == 'merge_group' ||
       github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 5

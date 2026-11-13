@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   methodology-gate:
+    # Merge-group execution shares the queue-metadata build.
+    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
