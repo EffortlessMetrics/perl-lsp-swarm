@@ -445,6 +445,16 @@ fn evaluate_scoped_entry(
             if merge_group_required && !has_trigger(yaml, "merge_group") {
                 findings.push(("merge-group-trigger", "missing merge_group trigger".to_string()));
             }
+            if ordinary_pull_request
+                && merge_group_required
+                && !has_trigger(yaml, "pull_request")
+                && has_trigger(yaml, "merge_group")
+            {
+                findings.push((
+                    "event-registration-scope",
+                    "unscoped merge_group-only producer must declare its event scope".to_string(),
+                ));
+            }
             let push_required = events.is_none_or(|events| event_is_required(events, "push"));
             if push_required && !push_targets_master(yaml) {
                 findings.push((
@@ -1197,6 +1207,11 @@ mod tests {
         assert!(
             unscoped.violations.iter().any(|item| item == "missing pull_request trigger"),
             "unscoped evaluation must retain the ordinary PR requirement: {:?}",
+            unscoped.violations
+        );
+        assert!(
+            unscoped.violations.iter().any(|item| item.contains("merge_group")),
+            "unscoped evaluation must name the merge_group registration defect: {:?}",
             unscoped.violations
         );
         Ok(())
