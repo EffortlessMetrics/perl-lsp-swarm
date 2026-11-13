@@ -966,6 +966,23 @@ fn workspace_location_is_callable(
 /// the requested Sub kind, so revalidate each location against typed metadata.
 /// Return None to fall through to same-file resolution for an unproved target.
 #[cfg(feature = "workspace")]
+fn semantic_method_definition_lsp_location(
+    workspace_index: &crate::workspace_index::WorkspaceIndex,
+    doc_uri: &str,
+    pkg: &str,
+    method_name: &str,
+) -> Option<lsp_types::Location> {
+    let anchor_id = workspace_index.with_semantic_queries_for_uri(doc_uri, |_, queries| {
+        queries.method_candidates(pkg, method_name).into_iter().find_map(|candidate| {
+            queries.anchor_source_span(candidate.anchor_id).map(|_| candidate.anchor_id)
+        })
+    })??;
+
+    let wire = workspace_index.semantic_anchor_wire_location(anchor_id)?;
+    lsp_types::Location::try_from(wire).ok()
+}
+
+#[cfg(feature = "workspace")]
 fn find_workspace_definition_location(
     workspace_index: &crate::workspace_index::WorkspaceIndex,
     pkg: &str,
@@ -1219,6 +1236,7 @@ fn lookup_workspace_definition(
     name: &str,
     doc_uri: Option<&str>,
     require_callable: bool,
+    allow_semantic_generated_method_fallback: bool,
 ) -> Option<Value> {
     let coord = coordinator?;
 
@@ -1290,6 +1308,14 @@ fn lookup_workspace_definition(
         })
         && let Some(lsp_location) =
             crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
+    {
+        return Some(json!([lsp_location]));
+    }
+
+    if allow_semantic_generated_method_fallback
+        && let Some(uri) = doc_uri
+        && let Some(lsp_location) =
+            semantic_method_definition_lsp_location(workspace_index, uri, pkg, name)
     {
         return Some(json!([lsp_location]));
     }
@@ -1987,6 +2013,17 @@ impl LspServer {
                             doc.text_arc.to_string(),
                             offset,
                         ))
+                    } else if let Some(module_name) =
+                        perl_lsp_rs_core::providers::document_links::module_runtime_module_at_byte_offset(
+                            text,
+                            offset,
+                        )
+                    {
+                        Some((
+                            EarlyDefinitionTarget::UseModule(module_name),
+                            doc.text_arc.to_string(),
+                            offset,
+                        ))
                     } else if (!cursor_in_single_quoted_literal || quoted_parent_base_argument)
                         && let Some(module_name) =
                             self.extract_module_reference_extended(&text_around, cursor_in_text)
@@ -2447,22 +2484,21 @@ impl LspServer {
                                 {
                                     return Ok(Some(Value::Null));
                                 }
+                                let qualified_role = qualified_occurrence_role(
+                                    &doc.text,
+                                    self.pos16_to_offset(doc, line, character),
+                                    parsed.as_ref().and_then(|p| p.ast()).map(|ast| ast.as_ref()),
+                                    &package,
+                                    &name,
+                                );
                                 if workspace_index_is_fresh()
                                     && let Some(result) = lookup_workspace_definition(
                                         self.coordinator(),
                                         &package,
                                         &name,
                                         Some(uri),
-                                        qualified_occurrence_role(
-                                            &doc.text,
-                                            self.pos16_to_offset(doc, line, character),
-                                            parsed
-                                                .as_ref()
-                                                .and_then(|p| p.ast())
-                                                .map(|ast| ast.as_ref()),
-                                            &package,
-                                            &name,
-                                        ) == QualifiedOccurrenceRole::Call,
+                                        qualified_role == QualifiedOccurrenceRole::Call,
+                                        qualified_role == QualifiedOccurrenceRole::Call,
                                     )
                                     && workspace_index_is_fresh()
                                 {
@@ -2526,6 +2562,7 @@ impl LspServer {
                                 method_name,
                                 Some(uri),
                                 true,
+                                true,
                             ) && workspace_index_is_fresh()
                             {
                                 return Ok(Some(result));
@@ -2536,6 +2573,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                     true,
                                 )
                                 && workspace_index_is_fresh()
@@ -2589,6 +2627,7 @@ impl LspServer {
                                         method_name,
                                         Some(uri),
                                         true,
+                                        true,
                                     ) && workspace_index_is_fresh()
                                     {
                                         return Ok(Some(result));
@@ -2599,6 +2638,7 @@ impl LspServer {
                                             "UNIVERSAL",
                                             method_name,
                                             Some(uri),
+                                            true,
                                             true,
                                         )
                                         && workspace_index_is_fresh()
@@ -2630,6 +2670,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                     true,
                                 )
                                 && workspace_index_is_fresh()
@@ -2763,6 +2804,7 @@ impl LspServer {
                                     argument_key.name.as_ref(),
                                     Some(uri),
                                     true,
+                                    false,
                                 ) && workspace_index_is_fresh()
                                 {
                                     return Ok(Some(result));
@@ -4606,7 +4648,8 @@ mod tests {
                         "Other",
                         "compute_0",
                         Some(&caller_uri),
-                        true
+                        true,
+                        true,
                     )
                     .is_none()
                 );

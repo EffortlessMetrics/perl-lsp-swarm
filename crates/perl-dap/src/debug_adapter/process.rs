@@ -854,6 +854,66 @@ impl DebugAdapter {
         }
     }
 
+    /// Name the JSON kind of a malformed attach option so a typed refusal can
+    /// report what the client actually supplied, without echoing the value
+    /// (#17951).
+    fn json_type_name(value: &Value) -> &'static str {
+        match value {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        }
+    }
+
+    /// Read the native attach timeout aliases without coercion (#17951).
+    ///
+    /// Both supplied aliases are type-checked, so a malformed alias that
+    /// another alias shadows is still refused instead of being silently
+    /// discarded; `null` keeps its default semantics. Selection then stays
+    /// presence-based: a present `timeout`, including null, wins over
+    /// `timeoutMs`, and a shadowed alias is never range-checked.
+    fn typed_attach_timeout(args: &Value) -> Result<Option<u32>, String> {
+        for field in ["timeout", "timeoutMs"] {
+            if let Some(value) = args.get(field)
+                && !value.is_null()
+                && value.as_u64().is_none()
+            {
+                return Err(format!(
+                    "Invalid {field}: expected a non-negative integer in milliseconds, got JSON {}",
+                    Self::json_type_name(value)
+                ));
+            }
+        }
+        Ok(args
+            .get("timeout")
+            .or_else(|| args.get("timeoutMs"))
+            .and_then(|t| t.as_u64())
+            .map(Self::u64_to_u32_saturating))
+    }
+
+    /// Read `stopOnEntry` for the native attach path without coercion
+    /// (#17951): absent or null means false; any other non-boolean is a
+    /// typed refusal that names the JSON kind actually supplied.
+    ///
+    /// The attach path keeps its own reader instead of sharing
+    /// `typed_stop_on_entry`: the launch path's shorter message is the
+    /// launch contract (#18027), while the attach refusal has to name the
+    /// supplied JSON kind to stay diagnosable.
+    fn typed_attach_stop_on_entry(args: &Value) -> Result<bool, String> {
+        match args.get("stopOnEntry") {
+            None | Some(Value::Null) => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(|| {
+                format!(
+                    "Invalid stopOnEntry: expected a boolean, got JSON {}",
+                    Self::json_type_name(value)
+                )
+            }),
+        }
+    }
+
     /// Admit the typed launch options without coercion (#18027), following
     /// the `parse_launch_script_args` precedent: a present-but-wrong-typed
     /// value fails the request instead of silently changing behavior.
@@ -2781,6 +2841,15 @@ impl DebugAdapter {
     /// - `host`: Hostname or IP address (default: "localhost")
     /// - `port`: Port number (default: 13603)
     /// - `timeout`: Connection timeout in milliseconds (optional)
+    /// - `timeoutMs`: Accepted alias for `timeout` (optional)
+    ///
+    /// Supplied options are type-checked before any socket contact or session
+    /// replacement (#17951): a malformed non-null `stopOnEntry`, `timeout`, or
+    /// `timeoutMs` is refused with a diagnostic naming the field and the JSON
+    /// type, never echoing the supplied value. Both timeout aliases are
+    /// type-checked, so a malformed alias that another alias shadows is still
+    /// refused; selection stays presence-based, so a present `timeout`,
+    /// including null, wins over `timeoutMs`.
     ///
     /// # Current Implementation
     ///
@@ -2870,14 +2939,25 @@ impl DebugAdapter {
                     }
                 },
             };
-            let timeout = args
-                .get("timeout")
-                .or_else(|| args.get("timeoutMs"))
-                .and_then(|t| t.as_u64())
-                .map(Self::u64_to_u32_saturating);
-            // #18027: a present-but-non-boolean stopOnEntry is a typed
+            // #17951: a supplied malformed timeout alias is refused before any
+            // socket contact or session replacement, and the refusal names the
+            // field and JSON type instead of echoing the value.
+            let timeout = match Self::typed_attach_timeout(&args) {
+                Ok(timeout) => timeout,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+            // #17951/#18027: a present-but-non-boolean stopOnEntry is a typed
             // refusal here too, never a silent false.
-            let stop_on_entry = match Self::typed_stop_on_entry(&args) {
+            let stop_on_entry = match Self::typed_attach_stop_on_entry(&args) {
                 Ok(value) => value,
                 Err(message) => {
                     return DapMessage::Response {
@@ -4024,8 +4104,9 @@ mod tests {
         assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
     }
 
-    /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
-    /// any session is created or connected.
+    /// #18027/#17951: the TCP attach handler refuses a string `stopOnEntry`
+    /// before any session is created or connected, and the refusal names the
+    /// supplied JSON kind.
     #[test]
     fn attach_refuses_string_stop_on_entry_before_connecting() {
         let adapter = DebugAdapter::new();
@@ -4037,7 +4118,10 @@ mod tests {
         match message {
             DapMessage::Response { success, message, .. } => {
                 assert!(!success, "malformed attach stopOnEntry must fail");
-                assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
+                assert_eq!(
+                    message.as_deref(),
+                    Some("Invalid stopOnEntry: expected a boolean, got JSON string")
+                );
             }
             other => panic!("expected failed attach response, got {other:?}"),
         }
@@ -4045,6 +4129,60 @@ mod tests {
             lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
             "no TCP session may be created for a refused attach"
         );
+    }
+
+    /// #17951: a supplied malformed attach timeout alias is refused before
+    /// any socket contact, naming the field and JSON type. Both aliases are
+    /// type-checked, so a malformed alias shadowed by another alias is still
+    /// refused, and the launch path keeps its own shorter message (#18027).
+    #[test]
+    fn attach_refuses_malformed_timeout_aliases_before_connecting() {
+        for (options, expected) in [
+            (
+                json!({ "timeout": "bad" }),
+                "Invalid timeout: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+            (
+                json!({ "timeoutMs": [] }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON array",
+            ),
+            (
+                json!({ "timeout": null, "timeoutMs": [] }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON array",
+            ),
+            (
+                json!({ "timeout": 5000, "timeoutMs": "bad" }),
+                "Invalid timeoutMs: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+            (
+                json!({ "timeout": "bad", "timeoutMs": 5000 }),
+                "Invalid timeout: expected a non-negative integer in milliseconds, got JSON string",
+            ),
+        ] {
+            let adapter = DebugAdapter::new();
+            let mut arguments = options.clone();
+            arguments["host"] = json!("127.0.0.1");
+            arguments["port"] = json!(13603);
+            let response = adapter.handle_attach(1, 7, Some(arguments));
+            assert!(
+                matches!(&response, DapMessage::Response { .. }),
+                "expected a failed attach response, got {response:?}"
+            );
+            if let DapMessage::Response { success, message, .. } = &response {
+                assert!(!*success, "malformed attach timeout must fail: {options:?}");
+                assert_eq!(message.as_deref(), Some(expected), "options: {options:?}");
+            }
+            assert!(
+                lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
+                "no TCP session may be created for a refused attach: {options:?}"
+            );
+        }
+
+        // The launch path keeps the shorter refusal: the attach path owns the
+        // JSON-kind diagnostic, the launch path does not (#18027).
+        let launch_refusal =
+            DebugAdapter::parse_launch_typed_options(&json!({ "stopOnEntry": "true" })).err();
+        assert_eq!(launch_refusal.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
     }
 
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {

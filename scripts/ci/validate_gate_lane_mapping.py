@@ -92,6 +92,12 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "clippy_core": {"lanes": ["merge_gate_shards"]},
     "unit_core": {"lanes": ["merge_gate_shards"]},
     "perl_token_leaf_contract": {"lanes": ["merge_gate_shards"]},
+    # The baseline-canonicality gate (#18736) runs only in the required
+    # merge-gate meta shard. It is tier pr_fast like perl_token_leaf_contract
+    # but carries no pr-fast lane economics of its own: pr-fast is advisory,
+    # and the meta shard is the blocking placement.
+    "public_api_baseline_canonical": {"lanes": ["merge_gate_shards"]},
+    "release_history_domain6_rerender": {"lanes": ["merge_gate_shards"]},
     "clippy_full": {"lanes": ["merge_gate_shards"]},
     "unit_foundation_full": {"lanes": ["merge_gate_shards"]},
     "unit_parser_stack_full": {"lanes": ["merge_gate_shards"]},

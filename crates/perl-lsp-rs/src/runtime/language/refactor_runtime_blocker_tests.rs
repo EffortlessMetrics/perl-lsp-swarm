@@ -1779,18 +1779,28 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_blocks_real_workspace_im
     let util = files.get("lib/RealBaseline/Util.pm").ok_or("missing RealBaseline Util fixture")?;
 
     let (helper_line, helper_character) = position_of(util, "helper {")?;
-    let rename_result = server
-        .handle_rename_workspace(Some(json!({
-            "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
-            "position": {"line": helper_line, "character": helper_character},
-            "newName": "renamed_helper"
-        })))?
-        .ok_or("missing package-local live rename blocker result")?;
+    let rename_result = server.handle_rename_workspace(Some(json!({
+        "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
+        "position": {"line": helper_line, "character": helper_character},
+        "newName": "renamed_helper"
+    })));
 
-    let edit_count = workspace_edit_change_count(&rename_result)?;
-    assert_eq!(
-        edit_count, 0,
-        "imported/exported real-workspace package symbol must not be falsely allowed as a package-local edit: {rename_result}"
+    // #18762: an imported/exported real-workspace package symbol must not be
+    // falsely allowed as a package-local edit, and the block must be visible:
+    // the handler records the `package_local_live_pilot_blocked` receipt and
+    // then surfaces a structured -32602 error naming the blocker instead of a
+    // bare `null` result that reads as a silent no-op after `prepareRename`
+    // already offered the gesture.
+    let Err(refusal) = rename_result else {
+        return Err(format!(
+            "blocked pilot rename must produce a structured error, got: {rename_result:?}"
+        )
+        .into());
+    };
+    assert_eq!(refusal.code, -32602, "blocker refusal code: {refusal:?}");
+    assert!(
+        refusal.message.contains("helper"),
+        "refusal message must name the blocked symbol: {refusal:?}"
     );
 
     let explanation = explain_provider_decision(&server, "rename")?;
@@ -1826,18 +1836,26 @@ fn refactor_runtime_blocker_ux_package_rename_live_pilot_workspace_edit_exact_er
     let util = files.get("lib/RealBaseline/Util.pm").ok_or("missing RealBaseline Util fixture")?;
 
     let (helper_line, helper_character) = position_of(util, "helper {")?;
-    let rename_result = server
-        .handle_rename_workspace(Some(json!({
-            "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
-            "position": {"line": helper_line, "character": helper_character},
-            "newName": "renamed_helper_exact_error"
-        })))?
-        .ok_or("missing package live-pilot exact error-variant result")?;
+    let rename_result = server.handle_rename_workspace(Some(json!({
+        "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
+        "position": {"line": helper_line, "character": helper_character},
+        "newName": "renamed_helper_exact_error"
+    })));
 
-    assert_eq!(
-        workspace_edit_change_count(&rename_result)?,
-        0,
-        "package_rename_live_pilot_workspace_edit Err(Blocked) must surface as a no-edit result: {rename_result}"
+    // #18762: the pilot's `Err(Blocked)` variant surfaces as a structured
+    // -32602 error carrying the blocker descriptions — never as a silent
+    // no-edit success.
+    let Err(refusal) = rename_result else {
+        return Err(format!(
+            "package_rename_live_pilot_workspace_edit Err(Blocked) must surface as a \
+             structured error, got: {rename_result:?}"
+        )
+        .into());
+    };
+    assert_eq!(refusal.code, -32602, "exact error-variant refusal code: {refusal:?}");
+    assert!(
+        refusal.message.contains("helper"),
+        "exact error-variant refusal must name the blocked symbol: {refusal:?}"
     );
 
     let explanation = explain_provider_decision(&server, "rename")?;

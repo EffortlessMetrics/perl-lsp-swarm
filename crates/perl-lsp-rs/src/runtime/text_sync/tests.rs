@@ -344,6 +344,46 @@ fn test_did_change_ranged_edit_ignored_for_unopened_document()
 }
 
 #[test]
+fn test_full_did_change_without_version_does_not_open_unopened_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #10254: a full didChange must not implicitly open a document. The
+    // version field is deliberately omitted: with an explicit version the
+    // fabricated empty state has the same version and the stale gate masks
+    // the phantom; without one the handler synthesizes a version and
+    // commits the change as if the document had been opened.
+    let server = LspServer::new();
+    let uri = "file:///never-opened-full.pl";
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri },
+        "contentChanges": [{ "text": "sub phantom_symbol { 1 }\n" }]
+    })))?;
+
+    {
+        let docs = server.documents.lock();
+        assert!(docs.get(uri).is_none(), "full didChange must not create a document");
+    }
+    assert!(
+        server.symbol_index.lock().search_prefix("phantom_").is_empty(),
+        "phantom didChange must not publish symbols"
+    );
+
+    // Control: a legitimate didOpen of the same URI still works.
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub real_symbol { 1 }\n"
+        }
+    }))?;
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("didOpen must store the document")?;
+    assert_eq!(doc.text, "sub real_symbol { 1 }\n");
+    Ok(())
+}
+
+#[test]
 fn test_did_change_ranged_edit_does_not_mutate_open_document()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
@@ -3121,8 +3161,8 @@ fn handle_did_change_without_version_uses_next_version() -> Result<(), Box<dyn s
 #[test]
 fn did_open_normalizes_legacy_windows_file_uri_form() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    let legacy_uri = r"file://C:\Users\dev\example.pl";
-    let canonical_uri = "file:///c:/Users/dev/example.pl";
+    let legacy_uri = r"file://C:\dev-home\example.pl";
+    let canonical_uri = "file:///c:/dev-home/example.pl";
 
     server.did_open(json!({
         "textDocument": {
@@ -3147,8 +3187,8 @@ fn did_open_normalizes_legacy_windows_file_uri_form() -> Result<(), Box<dyn std:
 #[test]
 fn did_open_normalizes_plain_windows_path_uri() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    let plain_path = r"C:\Users\dev\plain_path.pl";
-    let canonical_uri = "file:///c:/Users/dev/plain_path.pl";
+    let plain_path = r"C:\dev-home\plain_path.pl";
+    let canonical_uri = "file:///c:/dev-home/plain_path.pl";
 
     server.did_open(json!({
         "textDocument": {

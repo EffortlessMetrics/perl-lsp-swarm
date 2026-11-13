@@ -539,7 +539,10 @@ caused failures. **Proposed resolution:** wrap queue snapshots in the common env
 | Queue snapshot | `target/receipts/queue-snapshot-<id>.json` | — |
 
 Receipts in `target/receipts/` are committed to CI artifacts and retained for the
-configured retention period (see `.ci/gate-policy.yaml` `global.artifact_retention_days`).
+configured retention period (see `.ci/gate-policy.yaml` `global.artifact_retention_days`),
+unless the workflow upload declares an override. In `.github/workflows/ci.yml`,
+PR Smoke receipts and missing-receipt diagnostics are retained for 30 days;
+their retention must be at least that of both gate receipts and CI actuals telemetry.
 
 Comment receipts persist indefinitely on the PR. Agents read prior receipts as context
 before taking action — the most recent receipt per stage per SHA is authoritative for

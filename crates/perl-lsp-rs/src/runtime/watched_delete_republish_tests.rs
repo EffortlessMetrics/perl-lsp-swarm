@@ -655,6 +655,14 @@ fn dependency_no_text_save_republishes_only_when_index_stale()
     if index.indexed_generation(&key) != Some(2) {
         return Err("same-content edit must leave a held generation gap".into());
     }
+    // #18774's identical-content law suppresses an outbound frame whose
+    // diagnostics array is byte-identical to the last committed one, and this
+    // save's bytes *are* identical: the consumer's squiggles do not change,
+    // so no frame would reach the wire. This test's claim is about the wire
+    // -- "must advance freshness and refresh consumers" -- so detach the
+    // committed ledger and let the refresh reach the client. That is the
+    // falsifier the sink ships for exactly this purpose.
+    server.test_clear_committed_push_diagnostics();
     let before = save_output_boundary(&server, &output, "same-content-held")?;
     server.handle_did_save(Some(json!({ "textDocument": { "uri": role_uri } })))?;
     let end = save_output_boundary(&server, &output, "same-content-reconciled")?;
