@@ -87,9 +87,6 @@ pub(crate) fn canonical_feature_query(feature: &str) -> &str {
 }
 
 fn enable_feature_name(state: &mut PragmaState, name: &str) -> bool {
-    if name == "signatures" {
-        state.signatures_strict = true;
-    }
     if name == "unicode_strings" {
         state.unicode_strings = true;
     }
@@ -105,9 +102,6 @@ fn enable_feature_name(state: &mut PragmaState, name: &str) -> bool {
 }
 
 fn disable_feature_name(state: &mut PragmaState, name: &str) -> bool {
-    if name == "signatures" {
-        state.signatures_strict = false;
-    }
     if name == "unicode_strings" {
         state.unicode_strings = false;
     }
@@ -124,11 +118,9 @@ fn disable_feature_name(state: &mut PragmaState, name: &str) -> bool {
 pub(crate) fn apply_feature_state(state: &mut PragmaState, args: &[String], enabled: bool) -> bool {
     if !enabled && args.is_empty() {
         let default_features = DEFAULT_FEATURES.to_vec();
-        let changed =
-            state.features != default_features || state.unicode_strings || state.signatures_strict;
+        let changed = state.features != default_features || state.unicode_strings;
         state.features = default_features;
         state.unicode_strings = state.has_feature("unicode_strings");
-        state.signatures_strict = false;
         return changed;
     }
 
@@ -151,11 +143,9 @@ pub(crate) fn apply_feature_state(state: &mut PragmaState, args: &[String], enab
             }
 
             if !enabled && item == ":all" {
-                let had_features =
-                    !state.features.is_empty() || state.unicode_strings || state.signatures_strict;
+                let had_features = !state.features.is_empty() || state.unicode_strings;
                 state.features.clear();
                 state.unicode_strings = false;
-                state.signatures_strict = false;
                 changed |= had_features;
                 continue;
             }

@@ -166,9 +166,8 @@ fn given_use_feature_qw_when_querying_state_then_requested_features_and_unicode_
     let map = PragmaTracker::build(&ast);
 
     let state = PragmaTracker::state_for_offset(&map, 20);
-    assert!(state.strict_vars);
-    assert!(state.strict_subs);
-    assert!(state.strict_refs);
+    assert!(state.has_feature("signatures"));
+    assert!(!state.strict_enabled(), "qw(signatures ...) must not enable full strict (#8422)");
     assert!(state.unicode_strings);
 }
 
@@ -198,14 +197,13 @@ fn given_no_feature_all_then_use_feature_bundle_when_querying_state_then_bundle_
 }
 
 #[test]
-fn given_use_feature_signatures_when_querying_state_then_effective_strict_modes_are_enabled() {
+fn given_use_feature_signatures_when_querying_state_then_strict_categories_stay_off() {
     let ast = program(vec![use_node("feature", &["'signatures'"], 0, 24)]);
     let map = PragmaTracker::build(&ast);
 
     let state = PragmaTracker::state_for_offset(&map, 12);
-    assert!(state.strict_vars);
-    assert!(state.strict_subs);
-    assert!(state.strict_refs);
+    assert!(state.has_feature("signatures"));
+    assert!(!state.strict_enabled(), "signatures must not enable full strict (#8422)");
 }
 
 #[test]

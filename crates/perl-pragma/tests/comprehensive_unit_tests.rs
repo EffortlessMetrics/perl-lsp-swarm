@@ -449,24 +449,26 @@ fn no_strict_qw_args_disable_requested_categories() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn use_feature_signatures_enables_all_strict_categories() -> Result<(), Box<dyn std::error::Error>>
-{
+fn use_feature_signatures_does_not_enable_strict_categories()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("feature", &["'signatures'"], 0, 28)]);
     let map = PragmaTracker::build(&ast);
     assert_eq!(map.len(), 1);
     let state = &map[0].1;
-    assert!(state.signatures_strict);
+    assert!(state.has_feature("signatures"));
+    assert!(!state.strict_enabled(), "signatures feature must not imply full strict (#8422)");
     Ok(())
 }
 
 #[test]
-fn use_feature_qw_signatures_enables_all_strict_categories()
+fn use_feature_qw_signatures_does_not_enable_strict_categories()
 -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![use_node("feature", &["qw(signatures say)"], 0, 34)]);
     let map = PragmaTracker::build(&ast);
     assert_eq!(map.len(), 1);
     let state = &map[0].1;
-    assert!(state.signatures_strict);
+    assert!(state.has_feature("signatures"));
+    assert!(!state.strict_enabled());
     Ok(())
 }
 
@@ -624,8 +626,9 @@ fn use_feature_quoted_qw_items_are_parsed() -> Result<(), Box<dyn std::error::Er
     let ast = program(vec![use_node("feature", &["'qw(signatures unicode_strings)'"], 0, 46)]);
     let map = PragmaTracker::build(&ast);
     assert_eq!(map.len(), 1);
-    assert!(map[0].1.signatures_strict, "signatures should imply strictness");
+    assert!(map[0].1.has_feature("signatures"));
     assert!(map[0].1.unicode_strings, "unicode_strings should be enabled");
+    assert!(!map[0].1.strict_enabled(), "signatures feature must not imply full strict (#8422)");
     Ok(())
 }
 
@@ -673,7 +676,6 @@ fn use_feature_all_enables_known_features() -> Result<(), Box<dyn std::error::Er
     assert!(state.has_feature("say"));
     assert!(state.has_feature("class"));
     assert!(state.has_feature("builtin"));
-    assert!(state.signatures_strict);
     // ':all' includes ALL known features, including experimental/deprecated ones
     // like 'switch' — unlike version bundles which omit switch at v5.38+.
     assert!(
@@ -691,7 +693,6 @@ fn use_feature_all_sets_unicode_strings_bool_field() -> Result<(), Box<dyn std::
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
     assert!(state.unicode_strings, "':all' must set unicode_strings bool");
-    assert!(state.signatures_strict, "':all' must set signatures_strict bool");
     Ok(())
 }
 
@@ -704,7 +705,6 @@ fn no_feature_all_clears_unicode_strings_bool_field() -> Result<(), Box<dyn std:
     let map = PragmaTracker::build(&ast);
     let state = &map[1].1;
     assert!(!state.unicode_strings, "no feature ':all' must clear unicode_strings");
-    assert!(!state.signatures_strict, "no feature ':all' must clear signatures_strict");
     Ok(())
 }
 

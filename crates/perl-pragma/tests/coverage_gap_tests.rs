@@ -529,30 +529,23 @@ fn parse_perl_version_numeric_5_036() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 // ===========================================================================
-// `normalize_snapshot` — `signatures_strict` propagates strict flags
+// Issue #8422 — signatures feature must not imply full strict
 // ===========================================================================
 
 #[test]
-fn snapshot_at_with_signatures_strict_propagates_all_strict_flags()
+fn snapshot_at_with_signatures_feature_does_not_imply_full_strict()
 -> Result<(), Box<dyn std::error::Error>> {
-    // `use feature 'signatures'` sets signatures_strict=true.
-    // snapshot_at calls normalize_snapshot which then forces strict_vars/subs/refs.
     let ast = program(vec![use_node("feature", &["'signatures'"], 0, 28)]);
     let environment = CompileTimePragmaEnvironment::build(&ast);
     let snapshot = environment.snapshot_at(15);
-    assert!(
-        snapshot.strict_enabled(),
-        "snapshot_at with signatures_strict must show all strict flags via normalize"
-    );
+    assert!(snapshot.has_feature("signatures"), "signatures feature must be enabled");
+    assert!(!snapshot.strict_enabled(), "signatures must not normalize into full strict (#8422)");
     Ok(())
 }
 
 #[test]
-fn no_feature_signatures_unsets_signatures_strict_but_preserves_explicit_strict()
+fn no_feature_signatures_after_explicit_strict_preserves_full_strict()
 -> Result<(), Box<dyn std::error::Error>> {
-    // `use strict; use feature 'signatures'; no feature 'signatures'`
-    // After `no feature 'signatures'`, signatures_strict=false.
-    // But explicit strict was set independently — it should remain.
     let ast = program(vec![
         use_node("strict", &[], 0, 12),
         use_node("feature", &["'signatures'"], 13, 41),
@@ -560,11 +553,7 @@ fn no_feature_signatures_unsets_signatures_strict_but_preserves_explicit_strict(
     ]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 60);
-    // signatures_strict is now false, but explicit strict is still on
-    assert!(!state.signatures_strict, "signatures_strict must be cleared by no feature signatures");
-    assert!(state.strict_vars, "explicit strict_vars must survive no feature signatures");
-    assert!(state.strict_subs, "explicit strict_subs must survive no feature signatures");
-    assert!(state.strict_refs, "explicit strict_refs must survive no feature signatures");
+    assert!(state.strict_enabled(), "explicit strict must survive no feature signatures");
     Ok(())
 }
 

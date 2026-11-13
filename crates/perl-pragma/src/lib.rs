@@ -78,11 +78,10 @@ pub struct PragmaState {
     /// and the disabled categories are recorded here. Only bare `no warnings`
     /// (no arguments) clears the global `warnings` flag.
     pub disabled_warning_categories: Vec<String>,
-    /// Whether explicit `use feature 'signatures'` currently implies strictness.
-    ///
-    /// This is tracked separately from the raw strict flags so `no feature
-    /// 'signatures'` can unwind the feature-driven implication without
-    /// clobbering explicit `use strict` or version-implied strict state.
+    /// Legacy compatibility projection retained for callers that still read the
+    /// field. It is **not** authoritative for strictness queries; use
+    /// [`PragmaState::strict_enabled`] (or [`PragmaSnapshot::strict_enabled`])
+    /// for full strict and the `strict_*` fields for selective strict.
     pub signatures_strict: bool,
     /// Effective language features enabled in the current lexical scope.
     ///
@@ -221,6 +220,12 @@ impl PragmaState {
     #[must_use]
     pub fn is_warning_active(&self, category: &str) -> bool {
         self.warnings && !self.disabled_warning_categories.iter().any(|c| c == category)
+    }
+
+    /// Returns `true` when all three strict categories are active.
+    #[must_use]
+    pub fn strict_enabled(&self) -> bool {
+        self.strict_vars && self.strict_subs && self.strict_refs
     }
 
     /// Returns `true` if the given feature name is currently enabled.
