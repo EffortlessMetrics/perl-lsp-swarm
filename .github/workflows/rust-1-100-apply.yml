@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: rust-1-100-apply
+  cancel-in-progress: true
+
 jobs:
   apply:
     runs-on: ubuntu-24.04
@@ -17,7 +21,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: chore/rust-1.100
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: true
 
       - name: Apply exact migration
