@@ -1,15 +1,16 @@
 name: Temporary formal receipt repair
 
 on:
-  push:
-    branches:
-      - feat/formal-proof-receipt-19313
+  pull_request:
+    types: [synchronize]
+    branches: [main]
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
-  group: temporary-formal-receipt-repair
+  group: temporary-formal-receipt-repair-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -17,10 +18,13 @@ jobs:
     name: Repair, format, and test formal receipts
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      HEAD_BRANCH: ${{ github.head_ref }}
     steps:
       - name: Checkout exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: true
           fetch-depth: 1
 
@@ -224,6 +228,17 @@ jobs:
       - name: Verify clean patch shape
         run: git diff --check
 
+      - name: Upload exact repaired sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: formal-receipt-repair-${{ github.event.pull_request.head.sha }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            xtask/src/tasks/formal_receipt.rs
+            xtask/src/tasks/gate_receipts.rs
+            xtask/src/tasks/mod.rs
+
       - name: Commit exact repair to the carrier branch
         shell: bash
         run: |
@@ -236,4 +251,4 @@ jobs:
             exit 1
           fi
           git commit -m "fix(formal): bind receipts to exact native evidence (#19313)"
-          git push origin HEAD:feat/formal-proof-receipt-19313
+          git push origin "HEAD:${HEAD_BRANCH}"
