@@ -1,4 +1,4 @@
-name: Temporary formal receipt formatter
+name: Temporary formal receipt repair
 
 on:
   push:
@@ -6,32 +6,234 @@ on:
       - feat/formal-proof-receipt-19313
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: temporary-formal-receipt-repair
+  cancel-in-progress: true
 
 jobs:
-  format:
-    name: Format formal receipt sources
+  repair:
+    name: Repair, format, and test formal receipts
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
       - name: Checkout exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          persist-credentials: false
+          persist-credentials: true
+          fetch-depth: 1
 
-      - name: Install pinned formatter
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
 
-      - name: Format xtask sources
-        run: cargo +1.95.0 fmt --manifest-path xtask/Cargo.toml
+      - name: Apply reviewed fail-closed repairs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
 
-      - name: Upload exact formatted sources
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: formal-receipt-rustfmt-${{ github.sha }}
-          retention-days: 1
-          if-no-files-found: error
-          path: |
-            xtask/src/tasks/formal_receipt.rs
-            xtask/src/tasks/gate_receipts.rs
-            xtask/src/tasks/mod.rs
+          path = Path("xtask/src/tasks/formal_receipt.rs")
+          source = path.read_text()
+
+          old_native = '''                if self.native.properties.is_empty()
+                      || self
+                          .native
+                          .properties
+                          .values()
+                          .any(|outcome| *outcome != PropertyOutcome::Pass)
+                  {
+                      errors.push(
+                          "native pass requires a nonempty all-pass property denominator".to_string(),
+                      );
+                  }
+                  complete("positive", &self.obligations.positive, errors);
+                  complete("harness controls", &self.obligations.harness_controls, errors);
+                  if !self.artifacts.iter().any(|artifact| artifact.required) {
+                      errors.push("native pass requires a required raw artifact".to_string());
+                  }
+          '''
+          new_native = '''                if self.native.properties.is_empty()
+                      || self
+                          .native
+                          .properties
+                          .values()
+                          .any(|outcome| *outcome != PropertyOutcome::Pass)
+                  {
+                      errors.push(
+                          "native pass requires a nonempty all-pass property denominator".to_string(),
+                      );
+                  }
+                  let expected_properties = self
+                      .obligations
+                      .positive
+                      .ids
+                      .iter()
+                      .map(String::as_str)
+                      .collect::<BTreeSet<_>>();
+                  let observed_properties = self
+                      .native
+                      .properties
+                      .keys()
+                      .map(String::as_str)
+                      .collect::<BTreeSet<_>>();
+                  if observed_properties != expected_properties {
+                      errors.push(
+                          "native pass property identities must exactly match obligations.positive.ids"
+                              .to_string(),
+                      );
+                  }
+                  complete("positive", &self.obligations.positive, errors);
+                  complete("harness controls", &self.obligations.harness_controls, errors);
+                  if !self.artifacts.iter().any(|artifact| {
+                      artifact.required
+                          && matches!(
+                              artifact.kind,
+                              ArtifactKind::Stdout
+                                  | ArtifactKind::Stderr
+                                  | ArtifactKind::StructuredReport
+                          )
+                  }) {
+                      errors.push(
+                          "native pass requires a required stdout, stderr, or structured_report artifact"
+                              .to_string(),
+                      );
+                  }
+          '''
+          if old_native not in source:
+              raise SystemExit("native PASS admission block no longer matches reviewed head")
+          source = source.replace(old_native, new_native, 1)
+
+          old_active = '''                if self.disposition.reason.is_some()
+                      || self.disposition.superseded_by.is_some()
+                      || matches!(
+                          self.freshness.status,
+                          FreshnessStatus::Retired | FreshnessStatus::Superseded
+                      )
+          '''
+          new_active = '''                if self.disposition.reason.is_some()
+                      || self.disposition.superseded_by.is_some()
+                      || self.claim.rollout == RolloutState::Retired
+                      || matches!(
+                          self.freshness.status,
+                          FreshnessStatus::Retired | FreshnessStatus::Superseded
+                      )
+          '''
+          if old_active not in source:
+              raise SystemExit("active-disposition block no longer matches reviewed head")
+          source = source.replace(old_active, new_active, 1)
+
+          tests = '''
+              #[test]
+              fn pass_requires_every_declared_positive_property() {
+                  let mut value = valid_receipt();
+                  value["native"]["properties"] = json!({
+                      "roundtrip": "pass"
+                  });
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("exactly match obligations.positive.ids"))
+                  );
+              }
+
+              #[test]
+              fn pass_rejects_replaced_positive_property_identity() {
+                  let mut value = valid_receipt();
+                  value["native"]["properties"] = json!({
+                      "roundtrip": "pass",
+                      "unrelated": "pass"
+                  });
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("exactly match obligations.positive.ids"))
+                  );
+              }
+
+              #[test]
+              fn pass_rejects_extra_positive_property_identity() {
+                  let mut value = valid_receipt();
+                  value["native"]["properties"]["auxiliary"] = json!("pass");
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("exactly match obligations.positive.ids"))
+                  );
+              }
+
+              #[test]
+              fn pass_requires_native_raw_evidence_not_metadata_only() {
+                  let mut value = valid_receipt();
+                  value["artifacts"] = json!([
+                      {
+                          "id": "correspondence",
+                          "kind": "correspondence",
+                          "digest": ALT,
+                          "path": "target/formal/correspondence.json",
+                          "required": true
+                      }
+                  ]);
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors.iter().any(|error| {
+                          error.contains("required stdout, stderr, or structured_report")
+                      })
+                  );
+              }
+
+              #[test]
+              fn active_disposition_rejects_retired_rollout() {
+                  let mut value = valid_receipt();
+                  value["claim"]["rollout"] = json!("retired");
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("active disposition cannot be retired"))
+                  );
+              }
+          '''
+          marker = '''
+              #[test]
+              fn counterexample_requires_bound_trace() {
+          '''
+          if marker not in source:
+              raise SystemExit("test insertion marker no longer matches reviewed head")
+          source = source.replace(marker, tests + marker, 1)
+          path.write_text(source)
+          PY
+
+      - name: Format with repository toolchain
+        run: cargo +1.95.0 fmt --all
+
+      - name: Run focused formal receipt tests
+        run: cargo +1.95.0 test -p xtask --all-targets --locked formal_receipt
+
+      - name: Run focused strict Clippy
+        run: cargo +1.95.0 clippy -p xtask --all-targets --locked -- -D warnings
+
+      - name: Verify clean patch shape
+        run: git diff --check
+
+      - name: Commit exact repair to the carrier branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Steven Zimmerman, CPA"
+          git config user.email "15812269+EffortlessSteven@users.noreply.github.com"
+          git add xtask/src/tasks/formal_receipt.rs xtask/src/tasks/gate_receipts.rs xtask/src/tasks/mod.rs
+          if git diff --cached --quiet; then
+            echo "No repair delta was produced" >&2
+            exit 1
+          fi
+          git commit -m "fix(formal): bind receipts to exact native evidence (#19313)"
+          git push origin HEAD:feat/formal-proof-receipt-19313
