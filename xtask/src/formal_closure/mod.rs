@@ -12,9 +12,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::formal_receipt::{self, ClaimIdentity, ClosureIdentity, DispositionStatus,
-    FormalProofReceipt, ImplementationBinding, ProofBounds, SourceIdentity, SourceState,
-    ToolchainIdentity};
+use super::formal_receipt::{
+    self, ClaimIdentity, ClosureIdentity, DispositionStatus, FormalProofReceipt,
+    ImplementationBinding, ProofBounds, SourceIdentity, SourceState, ToolchainIdentity,
+};
 use snapshot::Snapshot;
 
 pub const ALGORITHM: &str = "formal_declared_closure.v1";
@@ -27,16 +28,41 @@ const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    Kernel, Wrapper, Consumer, EnforcementBoundary, Manifest, Lockfile,
-    BuildInput, GeneratedSource, GeneratorInput, Model, Harness, Property,
-    Assumption, Control, SymbolicDomain, Correspondence,
+    Kernel,
+    Wrapper,
+    Consumer,
+    EnforcementBoundary,
+    Manifest,
+    Lockfile,
+    BuildInput,
+    GeneratedSource,
+    GeneratorInput,
+    Model,
+    Harness,
+    Property,
+    Assumption,
+    Control,
+    SymbolicDomain,
+    Correspondence,
 }
 
 const ROLES: &[Role] = &[
-    Role::Kernel, Role::Wrapper, Role::Consumer, Role::EnforcementBoundary,
-    Role::Manifest, Role::Lockfile, Role::BuildInput, Role::GeneratedSource,
-    Role::GeneratorInput, Role::Model, Role::Harness, Role::Property,
-    Role::Assumption, Role::Control, Role::SymbolicDomain, Role::Correspondence,
+    Role::Kernel,
+    Role::Wrapper,
+    Role::Consumer,
+    Role::EnforcementBoundary,
+    Role::Manifest,
+    Role::Lockfile,
+    Role::BuildInput,
+    Role::GeneratedSource,
+    Role::GeneratorInput,
+    Role::Model,
+    Role::Harness,
+    Role::Property,
+    Role::Assumption,
+    Role::Control,
+    Role::SymbolicDomain,
+    Role::Correspondence,
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,7 +74,9 @@ pub struct Member {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SourcePolicy { CleanOnly }
+pub enum SourcePolicy {
+    CleanOnly,
+}
 
 /// Caller selection is independent of the historical receipt being compared.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,7 +113,13 @@ pub struct Computed {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Freshness { Current, Stale, Unknown, Retired, Superseded }
+pub enum Freshness {
+    Current,
+    Stale,
+    Unknown,
+    Retired,
+    Superseded,
+}
 
 #[derive(Debug, Serialize)]
 pub struct Comparison {
@@ -133,18 +167,27 @@ fn claim_id_valid(value: &str) -> bool {
     let Some((prefix, suffix)) = value.strip_prefix("FV-").and_then(|s| s.rsplit_once('-')) else {
         return false;
     };
-    suffix.len() == 3 && suffix.bytes().all(|b| b.is_ascii_digit())
-        && prefix.split('-').all(|part| !part.is_empty()
-            && part.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+    suffix.len() == 3
+        && suffix.bytes().all(|b| b.is_ascii_digit())
+        && prefix.split('-').all(|part| {
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        })
 }
 
 fn normalize(spec: &Spec) -> Result<Spec> {
     let mut spec = spec.clone();
     ensure!(spec.schema_version == SPEC_VERSION, "unsupported specification version");
-    ensure!(spec.claim.rollout != formal_receipt::RolloutState::Retired,
-        "retired claim requires its historical receipt, not an active input selection");
-    ensure!(claim_id_valid(&spec.claim.id) && spec.claim.generation > 0
-        && spec.claim.owner_issue > 0 && !spec.claim.profile.trim().is_empty(), "invalid claim identity");
+    ensure!(
+        spec.claim.rollout != formal_receipt::RolloutState::Retired,
+        "retired claim requires its historical receipt, not an active input selection"
+    );
+    ensure!(
+        claim_id_valid(&spec.claim.id)
+            && spec.claim.generation > 0
+            && spec.claim.owner_issue > 0
+            && !spec.claim.profile.trim().is_empty(),
+        "invalid claim identity"
+    );
     ensure!(!spec.members.is_empty() && spec.members.len() <= MAX_MEMBERS, "invalid member count");
     spec.members.sort_by(|a, b| a.path.cmp(&b.path));
     let mut paths = BTreeSet::new();
@@ -169,32 +212,57 @@ fn normalize(spec: &Spec) -> Result<Spec> {
         ensure!(represented.contains(&Role::Kernel), "production binding has no kernel");
     }
     if spec.claim.binding == ImplementationBinding::LiveConsumerBound {
-        for role in [Role::Wrapper, Role::Consumer, Role::EnforcementBoundary, Role::Correspondence] {
+        for role in [Role::Wrapper, Role::Consumer, Role::EnforcementBoundary, Role::Correspondence]
+        {
             ensure!(represented.contains(&role), "live binding has no {role:?}");
         }
     }
     if represented.contains(&Role::GeneratedSource) {
-        ensure!(represented.contains(&Role::GeneratorInput), "generated source lacks generator input");
+        ensure!(
+            represented.contains(&Role::GeneratorInput),
+            "generated source lacks generator input"
+        );
     }
-    ensure!(!spec.toolchain.provider.trim().is_empty() && !spec.toolchain.target.trim().is_empty()
-        && !spec.toolchain.components.is_empty(), "missing toolchain boundary");
+    ensure!(
+        !spec.toolchain.provider.trim().is_empty()
+            && !spec.toolchain.target.trim().is_empty()
+            && !spec.toolchain.components.is_empty(),
+        "missing toolchain boundary"
+    );
     for (name, tool) in &spec.toolchain.components {
-        ensure!(!name.trim().is_empty() && !tool.version.trim().is_empty()
-            && digest_valid(&tool.digest), "invalid tool identity");
+        ensure!(
+            !name.trim().is_empty()
+                && !tool.version.trim().is_empty()
+                && digest_valid(&tool.digest),
+            "invalid tool identity"
+        );
     }
     unique_sorted(&mut spec.toolchain.features, "feature")?;
     unique_sorted(&mut spec.toolchain.cfg, "cfg")?;
     unique_sorted(&mut spec.bounds.assumptions, "assumption")?;
     unique_sorted(&mut spec.bounds.fairness, "fairness assumption")?;
     unique_sorted(&mut spec.unknown_inputs, "unknown input")?;
-    ensure!(spec.bounds.wall_seconds > 0 && spec.bounds.output_bytes > 0
-        && !spec.bounds.values.is_empty(), "missing resource or semantic bounds");
+    ensure!(
+        spec.bounds.wall_seconds > 0
+            && spec.bounds.output_bytes > 0
+            && !spec.bounds.values.is_empty(),
+        "missing resource or semantic bounds"
+    );
     for (name, value) in &spec.bounds.values {
-        ensure!(!name.trim().is_empty() && (value.is_boolean() || value.is_string()
-            || value.as_u64().is_some() || value.as_i64().is_some()), "invalid bound value");
+        ensure!(
+            !name.trim().is_empty()
+                && (value.is_boolean()
+                    || value.is_string()
+                    || value.as_u64().is_some()
+                    || value.as_i64().is_some()),
+            "invalid bound value"
+        );
     }
-    ensure!(!spec.command.is_empty() && spec.command.iter().all(|arg| !arg.is_empty()
-        && !arg.contains('\0')), "missing or invalid invocation");
+    ensure!(
+        !spec.command.is_empty()
+            && spec.command.iter().all(|arg| !arg.is_empty() && !arg.contains('\0')),
+        "missing or invalid invocation"
+    );
     ensure!(!spec.dependency_model.is_empty(), "dependency model must be explicit");
     for (name, digest) in &spec.dependency_model {
         ensure!(!name.trim().is_empty() && digest_valid(digest), "invalid dependency identity");
@@ -210,7 +278,9 @@ fn canonical(value: &Value) -> Result<Vec<u8>> {
             let mut bytes = vec![b'{'];
             let sorted: BTreeMap<_, _> = map.iter().collect();
             for (index, (key, value)) in sorted.into_iter().enumerate() {
-                if index != 0 { bytes.push(b','); }
+                if index != 0 {
+                    bytes.push(b',');
+                }
                 bytes.extend(serde_json::to_vec(key)?);
                 bytes.push(b':');
                 bytes.extend(canonical(value)?);
@@ -221,7 +291,9 @@ fn canonical(value: &Value) -> Result<Vec<u8>> {
         Value::Array(values) => {
             let mut bytes = vec![b'['];
             for (index, value) in values.iter().enumerate() {
-                if index != 0 { bytes.push(b','); }
+                if index != 0 {
+                    bytes.push(b',');
+                }
                 bytes.extend(canonical(value)?);
             }
             bytes.push(b']');
@@ -245,7 +317,10 @@ fn hash(domain: &[u8], parts: &[&[u8]]) -> String {
 }
 
 pub fn closure_digest(members: &BTreeMap<String, String>) -> Result<String> {
-    ensure!(!members.is_empty() && members.values().all(|v| digest_valid(v)), "invalid closure map");
+    ensure!(
+        !members.is_empty() && members.values().all(|v| digest_valid(v)),
+        "invalid closure map"
+    );
     let data = canonical(&serde_json::to_value(members)?)?;
     Ok(hash(b"perl-lsp/formal-declared-closure/v1\0", &[&data]))
 }
@@ -273,55 +348,76 @@ pub fn compute(snapshot: &Snapshot, spec: &Spec) -> Result<Computed> {
         total = total.checked_add(blob.bytes.len()).context("closure size overflow")?;
         ensure!(total <= MAX_TOTAL_BYTES, "closure exceeds byte ceiling");
         let roles = canonical(&serde_json::to_value(&member.roles)?)?;
-        entries.insert(format!("source/{}", member.path),
-            hash(b"perl-lsp/formal-member/v1\0", &[blob.mode.as_bytes(), &roles, &blob.bytes]));
+        entries.insert(
+            format!("source/{}", member.path),
+            hash(b"perl-lsp/formal-member/v1\0", &[blob.mode.as_bytes(), &roles, &blob.bytes]),
+        );
         blobs.insert(member.path.clone(), blob.id);
     }
     for (path, compiled) in ENGINE {
         let blob = snapshot.read(path)?;
-        ensure!(blob.bytes == compiled.as_bytes(), "closure binary differs from evaluated engine: {path}");
+        ensure!(
+            blob.bytes == compiled.as_bytes(),
+            "closure binary differs from evaluated engine: {path}"
+        );
         total = total.checked_add(blob.bytes.len()).context("closure size overflow")?;
         ensure!(total <= MAX_TOTAL_BYTES, "closure exceeds byte ceiling");
-        entries.insert(format!("engine/{path}"),
-            hash(b"perl-lsp/formal-engine/v1\0", &[blob.mode.as_bytes(), &blob.bytes]));
+        entries.insert(
+            format!("engine/{path}"),
+            hash(b"perl-lsp/formal-engine/v1\0", &[blob.mode.as_bytes(), &blob.bytes]),
+        );
         blobs.insert((*path).to_owned(), blob.id);
     }
     let mut profile = serde_json::to_value(&spec)?;
     // Deployment policy is orthogonal to semantics; evidence never gains native
     // authority merely because rollout moves from advisory to required.
     let _ = profile["claim"].as_object_mut().context("claim is not an object")?.remove("rollout");
-    entries.insert("profile/semantic-inputs".to_owned(),
-        hash(b"perl-lsp/formal-profile/v1\0", &[&canonical(&profile)?]));
+    entries.insert(
+        "profile/semantic-inputs".to_owned(),
+        hash(b"perl-lsp/formal-profile/v1\0", &[&canonical(&profile)?]),
+    );
     let digest = closure_digest(&entries)?;
     snapshot.finish()?;
     Ok(Computed {
-        evidence_class: "declared_input_identity", proof_accepted: false,
+        evidence_class: "declared_input_identity",
+        proof_accepted: false,
         closure_completeness: "not_established",
-        declared_roles: spec.members.iter().map(|member|
-            (member.path.clone(), member.roles.clone())).collect(),
-        source: snapshot.identity(), claim: spec.claim,
+        declared_roles: spec
+            .members
+            .iter()
+            .map(|member| (member.path.clone(), member.roles.clone()))
+            .collect(),
+        source: snapshot.identity(),
+        claim: spec.claim,
         closure: ClosureIdentity { algorithm: ALGORITHM.to_owned(), digest, members: entries },
-        input_blobs: blobs, unknown_inputs: spec.unknown_inputs,
-        toolchain: spec.toolchain, bounds: spec.bounds,
+        input_blobs: blobs,
+        unknown_inputs: spec.unknown_inputs,
+        toolchain: spec.toolchain,
+        bounds: spec.bounds,
     })
 }
 
 fn result(state: Freshness, reason: &'static str, current: Option<&Computed>) -> Comparison {
     Comparison {
-        evidence_class: "declared_input_comparison", proof_accepted: false,
+        evidence_class: "declared_input_comparison",
+        proof_accepted: false,
         closure_completeness: "not_established",
-        freshness: state, reason, first_difference: None,
+        freshness: state,
+        reason,
+        first_difference: None,
         evaluated_commit: current.map(|value| value.source.commit.clone()),
         evaluated_closure: current.map(|value| value.closure.digest.clone()),
         compared_receipt_identity: None,
-        correspondence_established: false, correspondence_inputs_unchanged: false,
+        correspondence_established: false,
+        correspondence_inputs_unchanged: false,
     }
 }
 
 /// Does not mutate or reissue the receipt. Native evidence is never upgraded.
 pub fn compare(receipt: &FormalProofReceipt, current: Option<&Computed>) -> Comparison {
     let mut comparison = compare_inputs(receipt, current);
-    comparison.compared_receipt_identity = serde_json::to_value(receipt).ok()
+    comparison.compared_receipt_identity = serde_json::to_value(receipt)
+        .ok()
         .and_then(|value| canonical(&value).ok())
         .map(|bytes| hash(b"perl-lsp/formal-receipt-input/v1\0", &[&bytes]));
     comparison
@@ -335,8 +431,12 @@ fn compare_inputs(receipt: &FormalProofReceipt, current: Option<&Computed>) -> C
         return result(Freshness::Unknown, "inconsistent_receipt", current);
     }
     match receipt.disposition.status {
-        DispositionStatus::Retired => return result(Freshness::Retired, "explicit_retirement", current),
-        DispositionStatus::Superseded => return result(Freshness::Superseded, "explicit_successor", current),
+        DispositionStatus::Retired => {
+            return result(Freshness::Retired, "explicit_retirement", current);
+        }
+        DispositionStatus::Superseded => {
+            return result(Freshness::Superseded, "explicit_successor", current);
+        }
         DispositionStatus::Active => {}
     }
     if receipt.claim.rollout == formal_receipt::RolloutState::Retired {
@@ -351,7 +451,8 @@ fn compare_inputs(receipt: &FormalProofReceipt, current: Option<&Computed>) -> C
     let Some(current) = current else {
         return result(Freshness::Unknown, "current_inputs_unavailable", None);
     };
-    if current.closure.algorithm != ALGORITHM || current.source.state != SourceState::Clean
+    if current.closure.algorithm != ALGORITHM
+        || current.source.state != SourceState::Clean
         || current.claim.rollout == formal_receipt::RolloutState::Retired
         || closure_digest(&current.closure.members).ok().as_ref() != Some(&current.closure.digest)
     {
@@ -362,22 +463,37 @@ fn compare_inputs(receipt: &FormalProofReceipt, current: Option<&Computed>) -> C
     }
     let a = &receipt.claim;
     let b = &current.claim;
-    if a.id != b.id || a.generation != b.generation || a.owner_issue != b.owner_issue
-        || a.profile != b.profile || a.method != b.method || a.binding != b.binding
+    if a.id != b.id
+        || a.generation != b.generation
+        || a.owner_issue != b.owner_issue
+        || a.profile != b.profile
+        || a.method != b.method
+        || a.binding != b.binding
     {
         return result(Freshness::Stale, "claim_or_binding_changed", Some(current));
     }
     let mut old_tools = receipt.toolchain.clone();
     let mut old_bounds = receipt.bounds.clone();
-    for values in [&mut old_tools.features, &mut old_tools.cfg,
-        &mut old_bounds.assumptions, &mut old_bounds.fairness] { values.sort(); }
+    for values in [
+        &mut old_tools.features,
+        &mut old_tools.cfg,
+        &mut old_bounds.assumptions,
+        &mut old_bounds.fairness,
+    ] {
+        values.sort();
+    }
     if old_tools != current.toolchain || old_bounds != current.bounds {
         return result(Freshness::Stale, "receipt_configuration_changed", Some(current));
     }
     if receipt.closure.members != current.closure.members {
         let mut output = result(Freshness::Stale, "semantic_input_changed", Some(current));
-        output.first_difference = receipt.closure.members.keys().chain(current.closure.members.keys())
-            .collect::<BTreeSet<_>>().into_iter()
+        output.first_difference = receipt
+            .closure
+            .members
+            .keys()
+            .chain(current.closure.members.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .find(|key| receipt.closure.members.get(*key) != current.closure.members.get(*key))
             .cloned();
         return output;

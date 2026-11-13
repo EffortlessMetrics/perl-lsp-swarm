@@ -1,38 +1,78 @@
 //! Real Git fixtures plus independent canonical-identity and refusal controls.
 
+use super::formal_receipt::{
+    ArtifactIdentity, ArtifactKind, ClaimDisposition, CorrespondenceEvidence, CorrespondenceStatus,
+    ExpectedSet, FormalMethod, FreshnessEvidence, FreshnessStatus, NativeEvidence, NativeResult,
+    NonPassReason, Obligations, PropertyOutcome, RolloutState, ToolComponent,
+};
 use super::*;
-use super::formal_receipt::{ArtifactIdentity, ArtifactKind, ClaimDisposition,
-    CorrespondenceEvidence, CorrespondenceStatus, ExpectedSet, FormalMethod,
-    FreshnessEvidence, FreshnessStatus, NativeEvidence, NativeResult, NonPassReason,
-    Obligations, PropertyOutcome, RolloutState, ToolComponent};
 use std::{fs, path::Path};
 use tempfile::TempDir;
 
 fn commit(root: &Path) -> Result<()> {
     snapshot::git(root, &["add", "--all"])?;
-    snapshot::git(root, &["-c", "user.name=Formal Fixture", "-c", "user.email=formal@example.invalid",
-        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=", "commit", "--quiet", "-m", "fixture"])?;
+    snapshot::git(
+        root,
+        &[
+            "-c",
+            "user.name=Formal Fixture",
+            "-c",
+            "user.email=formal@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    )?;
     Ok(())
 }
 
 fn spec() -> Spec {
     let roles = [Role::Kernel, Role::Harness, Role::Property, Role::Control, Role::SymbolicDomain]
-        .into_iter().collect::<BTreeSet<_>>();
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     Spec {
-        schema_version: SPEC_VERSION.to_owned(), source_policy: SourcePolicy::CleanOnly,
-        claim: ClaimIdentity { id: "FV-POSITION-LAWS-001".to_owned(), generation: 1,
-            owner_issue: 19300, profile: "fixture".to_owned(), method: FormalMethod::BoundedProved,
-            binding: ImplementationBinding::SubstrateOnly, rollout: RolloutState::RunnerAvailable },
+        schema_version: SPEC_VERSION.to_owned(),
+        source_policy: SourcePolicy::CleanOnly,
+        claim: ClaimIdentity {
+            id: "FV-POSITION-LAWS-001".to_owned(),
+            generation: 1,
+            owner_issue: 19300,
+            profile: "fixture".to_owned(),
+            method: FormalMethod::BoundedProved,
+            binding: ImplementationBinding::SubstrateOnly,
+            rollout: RolloutState::RunnerAvailable,
+        },
         members: vec![Member { path: "src/kernel.rs".to_owned(), roles: roles.clone() }],
-        exclusions: ROLES.iter().filter(|role| !roles.contains(role))
-            .map(|role| (*role, "not applicable to this synthetic test boundary".to_owned())).collect(),
-        toolchain: ToolchainIdentity { provider: "kani".to_owned(),
-            target: "x86_64-unknown-linux-gnu".to_owned(), components: BTreeMap::from([
-                ("kani".to_owned(), ToolComponent { version: "fixture-version".to_owned(),
-                    digest: hash(b"fixture", &[b"tool"]) })]), features: vec![], cfg: vec!["kani".to_owned()] },
-        bounds: ProofBounds { values: BTreeMap::from([("unwind".to_owned(), Value::from(32))]),
-            assumptions: vec!["same immutable source".to_owned()], fairness: vec![],
-            wall_seconds: 120, output_bytes: 1048576 },
+        exclusions: ROLES
+            .iter()
+            .filter(|role| !roles.contains(role))
+            .map(|role| (*role, "not applicable to this synthetic test boundary".to_owned()))
+            .collect(),
+        toolchain: ToolchainIdentity {
+            provider: "kani".to_owned(),
+            target: "x86_64-unknown-linux-gnu".to_owned(),
+            components: BTreeMap::from([(
+                "kani".to_owned(),
+                ToolComponent {
+                    version: "fixture-version".to_owned(),
+                    digest: hash(b"fixture", &[b"tool"]),
+                },
+            )]),
+            features: vec![],
+            cfg: vec!["kani".to_owned()],
+        },
+        bounds: ProofBounds {
+            values: BTreeMap::from([("unwind".to_owned(), Value::from(32))]),
+            assumptions: vec!["same immutable source".to_owned()],
+            fairness: vec![],
+            wall_seconds: 120,
+            output_bytes: 1048576,
+        },
         command: vec!["kani".to_owned(), "proof.rs".to_owned()],
         dependency_model: BTreeMap::from([("stdlib".to_owned(), hash(b"fixture", &[b"stdlib"]))]),
         environment: BTreeMap::from([("LANG".to_owned(), "C.UTF-8".to_owned())]),
@@ -43,8 +83,10 @@ fn spec() -> Spec {
 fn fixture() -> Result<TempDir> {
     let directory = tempfile::tempdir()?;
     snapshot::git(directory.path(), &["init", "--quiet"])?;
-    for (path, content) in ENGINE.iter().copied().chain([
-        ("src/kernel.rs", "fn subject() {}\n"), (".gitignore", "target/\n")])
+    for (path, content) in ENGINE
+        .iter()
+        .copied()
+        .chain([("src/kernel.rs", "fn subject() {}\n"), (".gitignore", "target/\n")])
     {
         let path = directory.path().join(path);
         fs::create_dir_all(path.parent().context("fixture parent")?)?;
@@ -59,30 +101,66 @@ fn evaluate(root: &Path, spec: &Spec) -> Result<Computed> {
 }
 
 fn complete(ids: &[&str]) -> ExpectedSet {
-    ExpectedSet { expected: ids.len() as u32, observed: ids.len() as u32,
-        satisfied: ids.len() as u32, ids: ids.iter().map(|s| (*s).to_owned()).collect() }
+    ExpectedSet {
+        expected: ids.len() as u32,
+        observed: ids.len() as u32,
+        satisfied: ids.len() as u32,
+        ids: ids.iter().map(|s| (*s).to_owned()).collect(),
+    }
 }
 
 fn receipt(current: &Computed) -> FormalProofReceipt {
     FormalProofReceipt {
         check: formal_receipt::FORMAL_PROOF_CHECK.to_owned(),
         schema_version: formal_receipt::FORMAL_PROOF_SCHEMA_VERSION.to_owned(),
-        claim: current.claim.clone(), source: current.source.clone(), closure: current.closure.clone(),
-        toolchain: current.toolchain.clone(), bounds: current.bounds.clone(),
-        obligations: Obligations { positive: complete(&["law"]), harness_controls: complete(&["wrong-law"]) },
-        native: NativeEvidence { result: NativeResult::Pass, reason: None, process_settled: true,
-            properties: BTreeMap::from([("law".to_owned(), PropertyOutcome::Pass)]) },
-        freshness: FreshnessEvidence { status: FreshnessStatus::Current,
+        claim: current.claim.clone(),
+        source: current.source.clone(),
+        closure: current.closure.clone(),
+        toolchain: current.toolchain.clone(),
+        bounds: current.bounds.clone(),
+        obligations: Obligations {
+            positive: complete(&["law"]),
+            harness_controls: complete(&["wrong-law"]),
+        },
+        native: NativeEvidence {
+            result: NativeResult::Pass,
+            reason: None,
+            process_settled: true,
+            properties: BTreeMap::from([("law".to_owned(), PropertyOutcome::Pass)]),
+        },
+        freshness: FreshnessEvidence {
+            status: FreshnessStatus::Current,
             evaluated_source_commit: current.source.commit.clone(),
-            evaluated_closure_digest: current.closure.digest.clone(), reason: None },
-        correspondence: CorrespondenceEvidence { status: CorrespondenceStatus::Established,
-            controls: complete(&["wrong-production"]), artifact_ids: vec!["binding".to_owned()], reason: None },
+            evaluated_closure_digest: current.closure.digest.clone(),
+            reason: None,
+        },
+        correspondence: CorrespondenceEvidence {
+            status: CorrespondenceStatus::Established,
+            controls: complete(&["wrong-production"]),
+            artifact_ids: vec!["binding".to_owned()],
+            reason: None,
+        },
         artifacts: vec![
-            ArtifactIdentity { id: "native".to_owned(), kind: ArtifactKind::StructuredReport,
-                digest: hash(b"fixture", &[b"native"]), path: "target/native.json".to_owned(), required: true },
-            ArtifactIdentity { id: "binding".to_owned(), kind: ArtifactKind::Correspondence,
-                digest: hash(b"fixture", &[b"binding"]), path: "target/binding.json".to_owned(), required: true }],
-        disposition: ClaimDisposition { status: DispositionStatus::Active, reason: None, superseded_by: None },
+            ArtifactIdentity {
+                id: "native".to_owned(),
+                kind: ArtifactKind::StructuredReport,
+                digest: hash(b"fixture", &[b"native"]),
+                path: "target/native.json".to_owned(),
+                required: true,
+            },
+            ArtifactIdentity {
+                id: "binding".to_owned(),
+                kind: ArtifactKind::Correspondence,
+                digest: hash(b"fixture", &[b"binding"]),
+                path: "target/binding.json".to_owned(),
+                required: true,
+            },
+        ],
+        disposition: ClaimDisposition {
+            status: DispositionStatus::Active,
+            reason: None,
+            superseded_by: None,
+        },
     }
 }
 
@@ -135,25 +213,61 @@ fn all_configuration_dimensions_invalidate_reuse() -> Result<()> {
     for dimension in 0..15 {
         let mut changed = base.clone();
         match dimension {
-            0 => { changed.bounds.values.insert("unwind".to_owned(), 31.into()); }
-            1 => { changed.bounds.assumptions.push("new assumption".to_owned()); }
-            2 => { changed.bounds.fairness.push("fair completion".to_owned()); }
-            3 => { changed.bounds.wall_seconds += 1; }
-            4 => { changed.bounds.output_bytes += 1; }
-            5 => { changed.toolchain.target = "aarch64-unknown-linux-gnu".to_owned(); }
-            6 => { changed.toolchain.features.push("feature".to_owned()); }
-            7 => { changed.toolchain.cfg.push("other".to_owned()); }
-            8 => { changed.toolchain.components.get_mut("kani").context("tool")?.version.push('x'); }
-            9 => { changed.toolchain.components.get_mut("kani").context("tool")?.digest = hash(b"fixture", &[b"new-tool"]); }
-            10 => { changed.environment.insert("LANG".to_owned(), "C".to_owned()); }
-            11 => { changed.dependency_model.insert("stdlib".to_owned(), hash(b"fixture", &[b"new-stdlib"])); }
-            12 => { changed.command.push("--exact".to_owned()); }
-            13 => { changed.claim.profile.push('x'); }
-            _ => { changed.claim.generation += 1; }
+            0 => {
+                changed.bounds.values.insert("unwind".to_owned(), 31.into());
+            }
+            1 => {
+                changed.bounds.assumptions.push("new assumption".to_owned());
+            }
+            2 => {
+                changed.bounds.fairness.push("fair completion".to_owned());
+            }
+            3 => {
+                changed.bounds.wall_seconds += 1;
+            }
+            4 => {
+                changed.bounds.output_bytes += 1;
+            }
+            5 => {
+                changed.toolchain.target = "aarch64-unknown-linux-gnu".to_owned();
+            }
+            6 => {
+                changed.toolchain.features.push("feature".to_owned());
+            }
+            7 => {
+                changed.toolchain.cfg.push("other".to_owned());
+            }
+            8 => {
+                changed.toolchain.components.get_mut("kani").context("tool")?.version.push('x');
+            }
+            9 => {
+                changed.toolchain.components.get_mut("kani").context("tool")?.digest =
+                    hash(b"fixture", &[b"new-tool"]);
+            }
+            10 => {
+                changed.environment.insert("LANG".to_owned(), "C".to_owned());
+            }
+            11 => {
+                changed
+                    .dependency_model
+                    .insert("stdlib".to_owned(), hash(b"fixture", &[b"new-stdlib"]));
+            }
+            12 => {
+                changed.command.push("--exact".to_owned());
+            }
+            13 => {
+                changed.claim.profile.push('x');
+            }
+            _ => {
+                changed.claim.generation += 1;
+            }
         };
         let after = evaluate(root.path(), &changed)?;
-        assert_eq!(compare(&receipt(&before), Some(&after)).freshness, Freshness::Stale,
-            "dimension {dimension} did not invalidate evidence");
+        assert_eq!(
+            compare(&receipt(&before), Some(&after)).freshness,
+            Freshness::Stale,
+            "dimension {dimension} did not invalidate evidence"
+        );
     }
     Ok(())
 }
@@ -164,7 +278,9 @@ fn member_and_set_order_do_not_change_identity() -> Result<()> {
     fs::write(root.path().join("src/other.rs"), "other\n")?;
     commit(root.path())?;
     let mut original = spec();
-    original.members.push(Member { path: "src/other.rs".to_owned(), roles: BTreeSet::from([Role::Kernel]) });
+    original
+        .members
+        .push(Member { path: "src/other.rs".to_owned(), roles: BTreeSet::from([Role::Kernel]) });
     original.toolchain.features = vec!["a".to_owned(), "b".to_owned()];
     original.bounds.assumptions.push("second assumption".to_owned());
     let before = evaluate(root.path(), &original)?;
@@ -257,7 +373,10 @@ fn explicit_terminal_history_does_not_need_current_source() -> Result<()> {
             old.freshness.status = FreshnessStatus::Superseded;
         }
         let output = compare(&old, None);
-        assert_eq!(output.freshness, if retired { Freshness::Retired } else { Freshness::Superseded });
+        assert_eq!(
+            output.freshness,
+            if retired { Freshness::Retired } else { Freshness::Superseded }
+        );
         assert!(!output.proof_accepted);
         assert_eq!(old.native.result, NativeResult::Pass);
     }
@@ -365,8 +484,22 @@ fn generated_and_live_routes_require_their_extra_inputs() {
 
 #[test]
 fn path_aliases_and_git_metadata_are_not_semantic_sources() {
-    for path in ["", "../outside", "a/../b", "/tmp/a", "C:/a", "a\\b", "a//b",
-        "a/./b", "a/", ":(glob)*", "a*", ".git/config", "a/.GIT/file", "archive/old"] {
+    for path in [
+        "",
+        "../outside",
+        "a/../b",
+        "/tmp/a",
+        "C:/a",
+        "a\\b",
+        "a//b",
+        "a/./b",
+        "a/",
+        ":(glob)*",
+        "a*",
+        ".git/config",
+        "a/.GIT/file",
+        "archive/old",
+    ] {
         assert!(!snapshot::valid_path(path), "accepted {path}");
     }
     assert!(snapshot::valid_path(".ci/config.toml"));
@@ -400,7 +533,10 @@ fn canonical_bytes_match_independent_literal_and_hash_vector() -> Result<()> {
     assert_ne!(hash(b"a", &[b"bc", b"d"]), hash(b"a", &[b"b", b"cd"]));
     assert_ne!(hash(b"a", &[b"b"]), hash(b"b", &[b"b"]));
     let members = BTreeMap::from([("input".to_owned(), format!("sha256:{}", "0".repeat(64)))]);
-    assert_eq!(closure_digest(&members)?, "sha256:b24372de9c6be4736e37abd0a9d6c8dd04946a15acd7827913939705573bf739");
+    assert_eq!(
+        closure_digest(&members)?,
+        "sha256:b24372de9c6be4736e37abd0a9d6c8dd04946a15acd7827913939705573bf739"
+    );
     Ok(())
 }
 
@@ -466,8 +602,10 @@ fn serialized_spec_roundtrip_preserves_identity_without_timestamp_fields() -> Re
     let root = fixture()?;
     let original = spec();
     let decoded = parse_spec(&serde_json::to_vec_pretty(&original)?)?;
-    assert_eq!(evaluate(root.path(), &original)?.closure.digest,
-        evaluate(root.path(), &decoded)?.closure.digest);
+    assert_eq!(
+        evaluate(root.path(), &original)?.closure.digest,
+        evaluate(root.path(), &decoded)?.closure.digest
+    );
     let mut with_timestamp = serde_json::to_value(original)?;
     with_timestamp["recorded_at"] = "today".into();
     assert!(parse_spec(&serde_json::to_vec(&with_timestamp)?).is_err());

@@ -2,15 +2,19 @@
 //! Runbook: docs/how-to/FORMAL_CLOSURE.md.
 #![expect(clippy::print_stdout, clippy::print_stderr, reason = "CLI JSON and diagnostics")]
 
-#[path = "../tasks/formal_receipt.rs"]
-mod formal_receipt;
 #[path = "../formal_closure/mod.rs"]
 mod formal_closure;
+#[path = "../tasks/formal_receipt.rs"]
+mod formal_receipt;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use formal_closure::{Freshness, snapshot::Snapshot};
-use std::{fs, io::Read, path::{Path, PathBuf}};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 #[derive(Parser)]
 #[command(about = "Declared input freshness only; never authenticates a native proof")]
@@ -23,8 +27,16 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Action {
-    Compute { #[arg(long)] spec: String },
-    Compare { #[arg(long)] spec: String, #[arg(long)] receipt: PathBuf },
+    Compute {
+        #[arg(long)]
+        spec: String,
+    },
+    Compare {
+        #[arg(long)]
+        spec: String,
+        #[arg(long)]
+        receipt: PathBuf,
+    },
 }
 
 fn document(path: &Path) -> Result<Vec<u8>> {
