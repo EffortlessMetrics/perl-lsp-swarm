@@ -53,6 +53,8 @@ class IdentityRoundTripTests(unittest.TestCase):
         listing = textwrap.dedent(match.group().rsplit('\n', 1)[0])
         loop = re.search(r"^          while IFS=.*read -r pkg test_name; do$", WORKFLOW, re.M)
         self.assertIsNotNone(loop, 'actual workflow listing reader missing')
+        call = re.search(r'^              run_exact_replay .* retry-obs\.jsonl$', WORKFLOW, re.M)
+        self.assertIsNotNone(call, 'actual workflow replay invocation missing')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'flake-receipt.json').write_text(json.dumps(receipt))
@@ -61,7 +63,7 @@ class IdentityRoundTripTests(unittest.TestCase):
             cargo = root / 'cargo'
             cargo.write_text('#!' + sys.executable + '\nimport json, sys\nwith open("argv.jsonl", "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\n')
             cargo.chmod(0o755)
-            script = 'set -eu\nFILTER=(--no-default-features --features "alpha,beta")\n' + replay_function(WORKFLOW) + '\n' + loop.group().strip() + '\n run_exact_replay "$pkg" "$test_name" replay.jsonl\ndone < failed-tests.tsv\n'
+            script = 'set -eu\nFILTER=(--no-default-features --features "alpha,beta")\n' + replay_function(WORKFLOW) + '\n' + loop.group().strip() + '\n' + call.group().strip() + '\ndone < failed-tests.tsv\n'
             result = subprocess.run(['bash', '-c', script], cwd=root,
                                     env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH']),
                                     capture_output=True, text=True, timeout=5)
@@ -71,7 +73,7 @@ class IdentityRoundTripTests(unittest.TestCase):
                          'alpha,beta', '--', '-Z', 'unstable-options', '--format', 'json', '--exact', name,
                          '--test-threads=1'] for pkg, name in selected]
             self.assertEqual(commands, expected)
-            envelope = json.loads((root / 'replay.jsonl').read_text().splitlines()[0])
+            envelope = json.loads((root / 'retry-obs.jsonl').read_text().splitlines()[0])
             self.assertEqual(envelope['command'], ['cargo'] + expected[-1])
             self.assertEqual(envelope['package'], selected[-1][0])
 
