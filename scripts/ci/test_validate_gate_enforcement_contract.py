@@ -725,6 +725,44 @@ class ContractTests(unittest.TestCase):
             result = contract.validate(root, policy)
         self.assertEqual("SUCCESS", result["status"], result["findings"])
 
+    def test_two_registered_producers_cannot_share_an_unregistered_event(self) -> None:
+        base_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  pull_request:\n  push: {}",
+        )
+        second_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  merge_group:\n  push: {}",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(
+                root,
+                REQUIRED.replace(
+                    '["pull_request", "merge_group"]',
+                    '["pull_request"]',
+                )
+                + REQUIRED.replace(
+                    'workflow = ".github/workflows/ci.yml"',
+                    'workflow = ".github/workflows/queue.yml"',
+                ).replace(
+                    '["pull_request", "merge_group"]',
+                    '["merge_group"]',
+                ),
+                workflow=base_workflow,
+            )
+            (root / ".github/workflows/queue.yml").write_text(
+                second_workflow,
+                encoding="utf-8",
+            )
+            commit_all(root, "registered producers share an unregistered event")
+            result = contract.validate(root, policy)
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertIn(
+            "duplicate_emitted_context",
+            {finding["code"] for finding in result["findings"]},
+        )
+
     def test_cross_event_producer_must_be_registered(self) -> None:
         base_workflow = WORKFLOW.replace(
             "on:\n  pull_request:\n  merge_group: {}",
@@ -1004,6 +1042,41 @@ class ContractTests(unittest.TestCase):
             left["exact_source_sha256"],
             right["exact_source_sha256"],
         )
+
+    def test_same_name_event_registrations_have_order_independent_subjects(self) -> None:
+        base_policy = REQUIRED.replace('["pull_request", "merge_group"]', '["pull_request"]')
+        queue_policy = REQUIRED.replace(
+            'workflow = ".github/workflows/ci.yml"',
+            'workflow = ".github/workflows/queue.yml"',
+        ).replace('["pull_request", "merge_group"]', '["merge_group"]')
+        base_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  pull_request:",
+        )
+        queue_workflow = WORKFLOW.replace(
+            "on:\n  pull_request:\n  merge_group: {}",
+            "on:\n  merge_group: {}",
+        )
+        with (
+            tempfile.TemporaryDirectory() as left_tmp,
+            tempfile.TemporaryDirectory() as right_tmp,
+        ):
+            roots = [Path(left_tmp), Path(right_tmp)]
+            policies = [base_policy + queue_policy, queue_policy + base_policy]
+            results = []
+            for root, policy_text in zip(roots, policies, strict=True):
+                policy = fixture(root, policy_text, workflow=base_workflow)
+                (root / ".github/workflows/queue.yml").write_text(
+                    queue_workflow,
+                    encoding="utf-8",
+                )
+                commit_all(root, "same-name event registrations")
+                results.append(contract.validate(root, policy))
+        left, right = results
+        self.assertEqual("SUCCESS", left["status"], left["findings"])
+        self.assertEqual("SUCCESS", right["status"], right["findings"])
+        self.assertEqual(left["semantic_subject"], right["semantic_subject"])
+        self.assertEqual(left["subject_sha256"], right["subject_sha256"])
 
     def test_binding_movement_changes_semantic_subject(self) -> None:
         bound = REQUIRED.replace(

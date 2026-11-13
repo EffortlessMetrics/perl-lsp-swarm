@@ -653,6 +653,40 @@ class EnforcementSnapshotTests(unittest.TestCase):
         self.assertEqual("MATCH", receipt["status"])
         self.assertEqual([], receipt["differences"])
 
+    def event_split_static_receipt(self) -> dict:
+        static = static_receipt()
+        first = copy.deepcopy(static["subjects"]["contexts"][0])
+        second = copy.deepcopy(first)
+        first.update(
+            workflow=".github/workflows/a.yml",
+            job="validate",
+            events=["pull_request"],
+        )
+        second.update(
+            workflow=".github/workflows/b.yml",
+            job="validate",
+            events=["merge_group"],
+        )
+        static["subjects"]["contexts"] = [first, second]
+        return static
+
+    def test_compatible_disjoint_event_registrations_canonicalize(self) -> None:
+        validated = model.validate_static(self.event_split_static_receipt())
+        self.assertEqual(1, len(validated["contexts"]))
+        self.assertEqual("Classic Required", validated["contexts"][0]["name"])
+
+    def test_same_name_rows_with_conflicting_identities_fail_closed(self) -> None:
+        static = self.event_split_static_receipt()
+        static["subjects"]["contexts"][1]["policy_role"] = "advisory"
+        with self.assertRaisesRegex(model.ContractError, "conflicting static context identity"):
+            model.validate_static(static)
+
+    def test_same_name_rows_with_overlapping_events_fail_closed(self) -> None:
+        static = self.event_split_static_receipt()
+        static["subjects"]["contexts"][1]["events"] = ["pull_request"]
+        with self.assertRaisesRegex(model.ContractError, "without disjoint events"):
+            model.validate_static(static)
+
     def test_unknown_static_receipt_field_fails_closed(self) -> None:
         static = static_receipt()
         static["surprise"] = True

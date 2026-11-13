@@ -1194,7 +1194,11 @@ mod tests {
             Some(&metadata),
             &[],
         );
-        assert!(unscoped.violations.iter().any(|item| item.contains("merge_group")));
+        assert!(
+            unscoped.violations.iter().any(|item| item == "missing pull_request trigger"),
+            "unscoped evaluation must retain the ordinary PR requirement: {:?}",
+            unscoped.violations
+        );
         Ok(())
     }
 

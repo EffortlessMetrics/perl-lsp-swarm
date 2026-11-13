@@ -823,7 +823,18 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
 
     for name in sorted(registered_names):
         for event, event_producers in sorted(producer_index.get(name, {}).items()):
-            if (name, event) not in registered_events and any(
+            if (name, event) in registered_events:
+                continue
+            if len(event_producers) > 1:
+                findings.append(
+                    Finding(
+                        "duplicate_emitted_context",
+                        name,
+                        f"expected at most one static producer for unregistered event {event}, found "
+                        + ", ".join(f"{path}:{job}" for path, job in event_producers),
+                    )
+                )
+            if any(
                 producer not in registered_producers.get(name, set())
                 for producer in event_producers
             ):
@@ -840,7 +851,12 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
         {"path": workflow.path, "sha256": workflow.sha256}
         for workflow in sorted(workflows.values(), key=lambda item: item.path)
     ]
-    canonical_contexts.sort(key=lambda item: str(item.get("name", "")))
+    canonical_contexts.sort(
+        key=lambda item: (
+            str(item.get("name", "")),
+            json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+        )
+    )
     policy_subject = {
         "path": policy_relative,
         "sha256": _sha256(policy_file),

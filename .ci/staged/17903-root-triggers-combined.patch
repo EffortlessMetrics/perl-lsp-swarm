@@ -687,44 +687,35 @@ index 7bd952a..878f09c 100644
 -    }
  }
 diff --git a/xtask/tests/post_merge_status_regen_tests.rs b/xtask/tests/post_merge_status_regen_tests.rs
-index 7455b44..0d8a92a 100644
 --- a/xtask/tests/post_merge_status_regen_tests.rs
 +++ b/xtask/tests/post_merge_status_regen_tests.rs
-@@ -74,8 +74,6 @@ fn assert_dispatch_loop_behavior(
-     dispatch_run: &str,
-     dispatch_order: &[String],
-     branch: &str,
+@@ -32,0 +33,6 @@
++        let Some(events) = check.get("events").and_then(TomlValue::as_array) else {
++            continue;
++        };
++        if !events.iter().any(|event| event.as_str() == Some("workflow_dispatch")) {
++            continue;
++        }
+@@ -77,2 +82,0 @@
 -    base_sha: &str,
 -    head_sha: &str,
- ) -> Result<(), Box<dyn std::error::Error>> {
-     use external_command::{
-         ExpectedExternalCommand, ExternalCommandFixture, HermeticCommandEnv,
-@@ -85,8 +83,6 @@ fn assert_dispatch_loop_behavior(
-     fn workflow_spec(
-         workflow: &str,
-         branch: &str,
+@@ -85,7 +89 @@
+-    fn workflow_spec(
+-        workflow: &str,
+-        branch: &str,
 -        base_sha: &str,
 -        head_sha: &str,
-         fail: bool,
-     ) -> ExpectedExternalCommand {
-         let mut argv = vec![
-@@ -96,12 +92,6 @@ fn assert_dispatch_loop_behavior(
-             "--ref".to_string(),
-             branch.to_string(),
-         ];
+-        fail: bool,
+-    ) -> ExpectedExternalCommand {
++    fn workflow_spec(workflow: &str, branch: &str, fail: bool) -> ExpectedExternalCommand {
+@@ -99,6 +96,0 @@
 -        if workflow == "ci.yml" {
 -            argv.push("-f".into());
 -            argv.push(format!("base_sha={base_sha}"));
 -            argv.push("-f".into());
 -            argv.push(format!("head_sha={head_sha}"));
 -        }
-         let spec = ExpectedExternalCommand::exact("gh", argv);
-         if fail { spec.error("dispatch failed") } else { spec.stdout("") }
-     }
-@@ -112,25 +102,17 @@ fn assert_dispatch_loop_behavior(
-
-     let expected_calls = dispatch_order
-         .iter()
+@@ -115,9 +107 @@
 -        .map(|workflow| {
 -            if workflow == "ci.yml" {
 -                format!(
@@ -735,69 +726,78 @@ index 7455b44..0d8a92a 100644
 -            }
 -        })
 +        .map(|workflow| format!("workflow run {workflow} --ref {branch}"))
-         .collect::<Vec<_>>();
-
-     let mut success = ExternalCommandFixture::new();
-     for workflow in dispatch_order {
+@@ -128 +112 @@
 -        success = success.expect(workflow_spec(workflow, branch, base_sha, head_sha, false));
 +        success = success.expect(workflow_spec(workflow, branch, false));
-     }
-     let success_env = HermeticCommandEnv::install("gh", &success)?;
-     let success_output = success_env.run_bash(
-         dispatch_run,
+@@ -131,4 +115 @@
+-    let success_output = success_env.run_bash(
+-        dispatch_run,
 -        &[("BRANCH", branch), ("BASE_SHA", base_sha), ("GENERATED_HEAD_SHA", head_sha)],
-+        &[("BRANCH", branch)],
-     )?;
-     assert!(
-         success_output.status.success(),
-@@ -152,15 +134,13 @@ fn assert_dispatch_loop_behavior(
-         failure = failure.expect(workflow_spec(
-             workflow,
-             branch,
+-    )?;
++    let success_output = success_env.run_bash(dispatch_run, &[("BRANCH", branch)])?;
+@@ -152,7 +133 @@
+-        failure = failure.expect(workflow_spec(
+-            workflow,
+-            branch,
 -            base_sha,
 -            head_sha,
-             workflow == first_workflow,
-         ));
-     }
-     let failure_env = HermeticCommandEnv::install("gh", &failure)?;
-     let failure_output = failure_env.run_bash(
-         dispatch_run,
+-            workflow == first_workflow,
+-        ));
++        failure = failure.expect(workflow_spec(workflow, branch, workflow == first_workflow));
+@@ -161,4 +136 @@
+-    let failure_output = failure_env.run_bash(
+-        dispatch_run,
 -        &[("BRANCH", branch), ("BASE_SHA", base_sha), ("GENERATED_HEAD_SHA", head_sha)],
-+        &[("BRANCH", branch)],
-     )?;
-     assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
-     if failure_env.sentinel_hit() {
-@@ -378,11 +358,10 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
-     Ok(())
- }
-
+-    )?;
++    let failure_output = failure_env.run_bash(dispatch_run, &[("BRANCH", branch)])?;
+@@ -362 +334 @@
+-    for check in checks
++    let required_names: BTreeSet<&str> = checks
+@@ -365,7 +337,14 @@
+-    {
+-        let required_name =
+-            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+-        let events = check
+-            .get("events")
+-            .and_then(TomlValue::as_array)
+-            .ok_or_else(|| format!("`{required_name}` must declare events"))?;
++        .map(|check| {
++            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>")
++        })
++        .collect();
++    for required_name in required_names {
++        let has_dispatch_route = checks
++            .iter()
++            .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
++            .filter(|check| check.get("name").and_then(TomlValue::as_str) == Some(required_name))
++            .any(|check| {
++                check.get("events").and_then(TomlValue::as_array).is_some_and(|events| {
++                    events.iter().any(|event| event.as_str() == Some("workflow_dispatch"))
++                })
++            });
+@@ -373,2 +352,2 @@
+-            events.iter().any(|event| event.as_str() == Some("workflow_dispatch")),
+-            "`{required_name}` must record workflow_dispatch as a supported route"
++            has_dispatch_route,
++            "`{required_name}` must record workflow_dispatch on at least one event registration"
+@@ -381,6 +360,4 @@
 -/// The generated-PR workflow must dispatch every workflow that owns a required
 -/// check and retain a failing step result when any individual dispatch fails
 -/// (#11731).
+-#[test]
+-fn test_post_merge_workflow_dispatches_all_required_checks()
+--> Result<(), Box<dyn std::error::Error>> {
 +/// Publication wakes title metadata only, preserving failure propagation.
 +/// Product proof is a separate explicit request in the staged #17903 generation.
- #[test]
--fn test_post_merge_workflow_dispatches_all_required_checks()
-+fn test_post_merge_workflow_dispatches_metadata_only()
- -> Result<(), Box<dyn std::error::Error>> {
-     let root = project_root();
-     let workflow_path = root.join(".github/workflows/post-merge-status.yml");
-@@ -422,7 +401,10 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
-     let policy_path = root.join(".ci/policies/required-checks.toml");
-     let policy_text = fs::read_to_string(policy_path)?;
-     let policy: TomlValue = toml::from_str(&policy_text)?;
++#[test]
++fn test_post_merge_workflow_dispatches_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+@@ -425 +402,4 @@
 -    let required_workflows = required_workflows(&policy)?;
 +    let mut required_workflows = required_workflows(&policy)?;
 +    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
 +        required_workflows.remove(product);
 +    }
-     assert!(
-         !required_workflows.is_empty(),
-         "required-checks.toml must declare at least one required workflow"
-@@ -458,17 +440,10 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
-         "generated-PR dispatch step must continue after an individual failure and fail overall"
-     );
-
+@@ -461,8 +441 @@
 -    // The ci.yml dispatch arm reads its subject identity from step env
 -    // (#13355); both names must be declared so the simulated invocation is
 -    // the one the workflow really makes.
@@ -807,20 +807,128 @@ index 7455b44..0d8a92a 100644
 -        .ok_or("generated-PR dispatch step must declare env")?;
 -    for required_env in ["BASE_SHA", "GENERATED_HEAD_SHA"] {
 +    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-         assert!(
+@@ -470,2 +443,2 @@
 -            step_env.keys().any(|key| key.as_str() == Some(required_env)),
 -            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
 +            !dispatched_workflows.contains(product),
 +            "publication must not request product qualification: {product}"
-         );
-     }
-
-@@ -477,8 +452,6 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
-         dispatch_run,
-         &dispatch_order,
-         dispatch_branch,
+@@ -476,7 +449 @@
+-    assert_dispatch_loop_behavior(
+-        dispatch_run,
+-        &dispatch_order,
+-        dispatch_branch,
 -        "0123456789abcdef0123456789abcdef01234567",
 -        "89abcdef0123456789abcdef0123456789abcdef",
-     )?;
-
-     Ok(())
+-    )?;
++    assert_dispatch_loop_behavior(dispatch_run, &dispatch_order, dispatch_branch)?;
+diff --git a/scripts/ci/test_merge_group_title_workflow.js b/scripts/ci/test_merge_group_title_workflow.js
+--- a/scripts/ci/test_merge_group_title_workflow.js
++++ b/scripts/ci/test_merge_group_title_workflow.js
+@@ -33,0 +34,11 @@
++const mergeGroupWorkflowPath = path.join(
++  __dirname, '..', '..', '.github', 'workflows', 'merge-group-title-check.yml',
++);
++const queueTest = (name, body) => test(name, {
++  skip: fs.existsSync(mergeGroupWorkflowPath) ? false : 'merge-group producer retired by staged cutover',
++}, body);
++
++test('the staged cutover retires the merge-group workflow and its dedicated queue scenarios', () => {
++  assert.equal(fs.existsSync(mergeGroupWorkflowPath), false);
++});
++
+@@ -165 +176 @@
+-test('the captured native squash group passes even when its synthetic commit has no associated PR', async () => {
++queueTest('the captured native squash group passes even when its synthetic commit has no associated PR', async () => {
+@@ -178 +189 @@
+-test('the canonical full queue ref form is accepted', async () => {
++queueTest('the canonical full queue ref form is accepted', async () => {
+@@ -185 +196 @@
+-test('a queued PR keeps its recorded base SHA when the group builds on an earlier synthetic commit', async () => {
++queueTest('a queued PR keeps its recorded base SHA when the group builds on an earlier synthetic commit', async () => {
+@@ -198 +209 @@
+-test('a base branch with regex metacharacters is matched literally', async () => {
++queueTest('a base branch with regex metacharacters is matched literally', async () => {
+@@ -211 +222 @@
+-test('missing, malformed, ambiguous, and contradictory queue identities fail before a PR read', async (t) => {
++queueTest('missing, malformed, ambiguous, and contradictory queue identities fail before a PR read', async (t) => {
+@@ -244 +255 @@
+-test('an absent PR fails closed instead of producing a zero-member success', async () => {
++queueTest('an absent PR fails closed instead of producing a zero-member success', async () => {
+@@ -252 +263 @@
+-test('contradictory current PR identity fails closed', async (t) => {
++queueTest('contradictory current PR identity fails closed', async (t) => {
+@@ -271 +282 @@
+-test('a title edited after an earlier green validation fails the next run', async () => {
++queueTest('a title edited after an earlier green validation fails the next run', async () => {
+@@ -283 +294 @@
+-test('a dependabot lookalike author gets no exemption', async () => {
++queueTest('a dependabot lookalike author gets no exemption', async () => {
+@@ -292 +303 @@
+-test('the exact dependabot identity remains exempt', async () => {
++queueTest('the exact dependabot identity remains exempt', async () => {
+diff --git a/xtask/tests/merge_group_title_producer.rs b/xtask/tests/merge_group_title_producer.rs
+--- a/xtask/tests/merge_group_title_producer.rs
++++ b/xtask/tests/merge_group_title_producer.rs
+@@ -33,0 +34,22 @@
++fn merge_group_producer_retired() -> ValueResult<bool> {
++    if workflow_path()?.exists() {
++        return Ok(false);
++    }
++    let path = project_root()?.join(".ci/policies/required-checks.toml");
++    let raw =
++        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
++    let policy: toml::Value =
++        toml::from_str(&raw).map_err(|error| format!("parse required-checks.toml: {error}"))?;
++    for table in ["check", "checks"] {
++        let rows = policy.get(table).and_then(toml::Value::as_array).ok_or(table)?;
++        assert!(
++            rows.iter().all(|row| {
++                row.get("workflow").and_then(toml::Value::as_str)
++                    != Some(".github/workflows/merge-group-title-check.yml")
++            }),
++            "the retired merge-group producer must be absent from {table}"
++        );
++    }
++    Ok(true)
++}
++
+@@ -67,0 +90,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -78,0 +104,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -95,0 +124,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -106,0 +138,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -116,0 +151,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -136,0 +174,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -159,0 +200,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -184,0 +228,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -210,0 +257,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }
+@@ -262,0 +312,3 @@
++    if merge_group_producer_retired()? {
++        return Ok(());
++    }

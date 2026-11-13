@@ -4,6 +4,8 @@ This is source rehearsal. Neither patch application nor adapter metadata admits
 product execution or satisfies a native required context.
 """
 from contextlib import contextmanager
+import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -23,7 +25,9 @@ ROOTS = ('.github/workflows/ci.yml', '.github/workflows/ripr.yml',
 POLICY = '.ci/policies/required-checks.toml'
 DISPATCH_PATHS = ('.github/workflows/aggregate-ci-lane-history.yml',
                   '.github/workflows/post-merge-status.yml',
+                  'scripts/ci/test_merge_group_title_workflow.js',
                   'xtask/tests/lane_history_ci_dispatch_contract.rs',
+                  'xtask/tests/merge_group_title_producer.rs',
                   'xtask/tests/post_merge_status_regen_tests.rs')
 ORDINARY = {'pull_request', 'pull_request_target', 'merge_group', 'push'}
 
@@ -45,7 +49,7 @@ def staged_tree():
         root = Path(directory)
         for name in (*[path.relative_to(ROOT).as_posix() for path in
                        sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY,
-                     *[path for path in DISPATCH_PATHS if path.startswith('xtask/')]):
+                     *[path for path in DISPATCH_PATHS if path.startswith(('xtask/', 'scripts/ci/'))]):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -133,22 +137,33 @@ class StagedTriggerCutoverTests(unittest.TestCase):
         for key in before:
             if key not in {'check', 'checks'}:
                 self.assertEqual(before[key], after[key])
+
+        def canonical(rows):
+            return sorted(json.dumps(row, sort_keys=True) for row in rows)
+
+        retired = '.github/workflows/merge-group-title-check.yml'
+        expected_by_key = {}
         for key in ('check', 'checks'):
-            before_by_workflow = {row['workflow']: row for row in before[key]}
-            after_by_workflow = {row['workflow']: row for row in after[key]}
-            retired = '.github/workflows/merge-group-title-check.yml'
-            self.assertEqual({retired}, before_by_workflow.keys() - after_by_workflow.keys())
-            self.assertFalse(after_by_workflow.keys() - before_by_workflow.keys())
-            for workflow, left in before_by_workflow.items():
-                if workflow == retired:
+            expected = []
+            retired_rows = []
+            for row in before[key]:
+                if row['workflow'] == retired:
+                    retired_rows.append(row)
                     continue
-                right = after_by_workflow[workflow]
-                if key == 'checks' and workflow in ROOTS:
-                    events = [event for event in left['events'] if event not in ORDINARY]
-                    expected = {**left, 'events': events or ['workflow_dispatch']}
-                    self.assertEqual(expected, right)
-                else:
-                    self.assertEqual(left, right)
+                if key == 'checks' and row['workflow'] in ROOTS:
+                    events = [event for event in row['events'] if event not in ORDINARY]
+                    row = {**row, 'events': events or ['workflow_dispatch']}
+                expected.append(row)
+            self.assertEqual(1, len(retired_rows), retired_rows)
+            expected_by_key[key] = canonical(expected)
+            self.assertEqual(expected_by_key[key], canonical(after[key]))
+
+        corrupted = copy.deepcopy(after)
+        victim = next(row for row in corrupted['checks'] if row.get('job') == 'check-all-targets')
+        victim['job'] = 'wrong-job'
+        victim['required'] = False
+        with self.assertRaises(AssertionError):
+            self.assertEqual(expected_by_key['checks'], canonical(corrupted['checks']))
 
     def test_projected_native_contract_remains_structurally_valid(self):
         with staged_tree() as root:

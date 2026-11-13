@@ -649,7 +649,9 @@ def validate_static(raw: Any) -> dict[str, Any]:
     )
 
     contexts: list[dict[str, Any]] = []
-    names: set[str] = set()
+    context_names: set[str] = set()
+    context_identities: dict[str, dict[str, Any]] = {}
+    context_events: dict[str, set[str]] = {}
     for index, entry in enumerate(
         seq(subjects["contexts"], "static_receipt.subjects.contexts")
     ):
@@ -663,9 +665,25 @@ def validate_static(raw: Any) -> dict[str, Any]:
             - {"name", "producer", "policy_role", "enforcement"},
         )
         name = text(entry["name"], f"{field}.name")
-        if name in names:
-            raise ContractError(f"duplicate static context: {name}")
-        names.add(name)
+        events = {
+            text(event, f"{field}.events[]")
+            for event in seq(entry.get("events", []), f"{field}.events")
+        }
+        identity = {
+            key: value
+            for key, value in entry.items()
+            if key not in {"name", "workflow", "job", "events"}
+        }
+        if name in context_names:
+            if identity != context_identities[name]:
+                raise ContractError(f"conflicting static context identity: {name}")
+            observed = context_events[name]
+            if not observed or not events or observed & events:
+                raise ContractError(
+                    f"duplicate static context without disjoint events: {name}"
+                )
+            observed.update(events)
+            continue
         row = {
             "name": name,
             "producer": text(entry["producer"], f"{field}.producer"),
@@ -681,6 +699,9 @@ def validate_static(raw: Any) -> dict[str, Any]:
                 entry["ruleset_integration_id"],
                 f"{field}.ruleset_integration_id",
             )
+        context_names.add(name)
+        context_identities[name] = identity
+        context_events[name] = events
         contexts.append(row)
     contexts.sort(key=lambda row: row["name"])
     return {
