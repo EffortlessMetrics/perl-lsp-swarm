@@ -31,10 +31,20 @@ import { activate, deactivate } from '../extension';
 // `onLanguage:perl` activation carries.
 import { openPerlDocument } from './serverDemandDocuments';
 
-function delay(ms: number): Promise<'timeout'> {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve('timeout'), ms);
+function delay(ms: number): { promise: Promise<'timeout'>; cancel: () => void } {
+  let handle: NodeJS.Timeout | undefined;
+  const promise = new Promise<'timeout'>((resolve) => {
+    handle = setTimeout(() => resolve('timeout'), ms);
   });
+  return {
+    promise,
+    cancel: () => {
+      if (handle !== undefined) {
+        clearTimeout(handle);
+        handle = undefined;
+      }
+    },
+  };
 }
 
 async function waitUntil(condition: () => boolean, timeoutMs: number): Promise<void> {
@@ -118,9 +128,14 @@ describe('extension activation startup scheduling (#3159)', () => {
 
     const activation = activate(makeContext(extensionRoot));
 
-    await expect(
-      Promise.race([activation.then(() => 'activated' as const), delay(5_000)]),
-    ).resolves.toBe('activated');
+    const activationTimeout = delay(5_000);
+    try {
+      await expect(
+        Promise.race([activation.then(() => 'activated' as const), activationTimeout.promise]),
+      ).resolves.toBe('activated');
+    } finally {
+      activationTimeout.cancel();
+    }
     await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 5_000);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);

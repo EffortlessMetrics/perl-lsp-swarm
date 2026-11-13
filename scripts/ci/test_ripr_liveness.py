@@ -19,9 +19,13 @@ motivated the script: run 35487554523 on PR #16083, pending with zero jobs for
 from __future__ import annotations
 
 import contextlib
+import datetime
 import importlib.util
 import io
 import json
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -2045,6 +2049,325 @@ class ReconciliationStateTests(unittest.TestCase):
             entry.update(conclusion=conclusion, check_name=name)
             with self.subTest(conclusion=conclusion, name=name), self.assertRaises(SystemExit):
                 self._execute_post_step(report, forbid_network=True)
+
+
+class CancelledBeforeSchedulingTests(unittest.TestCase):
+    """A terminal run must replace the reporter's earlier promise (#19129)."""
+
+    RUN_ID = 42106122702
+    AS_OF = "2026-09-20T05:05:00Z"
+    TERMINAL = "cancelled_before_scheduling"
+
+    def candidate(self, **overrides):
+        candidate = run(self.RUN_ID, status="completed", event="push",
+                        head_branch="main", head_sha=HEAD)
+        candidate.update(conclusion="cancelled", run_attempt=1,
+                         updated_at="2026-09-20T05:00:00Z")
+        candidate.update(overrides)
+        return candidate
+
+    def report(self, *runs, history=None):
+        return liveness.classify_snapshot(snapshot(*runs, as_of=self.AS_OF), history)
+
+    def history(self, classification=liveness.SERIALISED, *, check_id=71, head=HEAD,
+                run_id=None, title="ripr queued behind an earlier run for 60 min",
+                conclusion="neutral"):
+        external_id = liveness.external_id_for(run_id or self.RUN_ID, classification)
+        return {head: {external_id: [{"id": check_id, "conclusion": conclusion,
+                                     "title": title}]}}
+
+    def test_terminal_attempt_is_reported_even_before_the_wait_floor(self):
+        candidate = self.candidate(created_at="2026-09-20T05:04:00Z",
+                                   updated_at="2026-09-20T05:04:30Z")
+        findings = self.report(candidate)["findings"]
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding["classification"], self.TERMINAL)
+        self.assertEqual(finding["conclusion"], "neutral")
+        self.assertEqual(finding["check_name"], liveness.ADVISORY_CHECK_NAME)
+        self.assertIn("cancelled before scheduling", finding["check_title"])
+        summary = finding["check_summary"]
+        self.assertIn("This attempt will not produce", summary)
+        self.assertIn(liveness.REQUIRED_CONTEXT_NAME, summary)
+        self.assertIn("#19128", summary)
+        self.assertNotIn("the gate will report once", summary)
+
+    def test_cancellation_is_not_a_permanent_claim_about_the_whole_sha(self):
+        other = self.candidate(id=self.RUN_ID + 1, conclusion="success", job_count=4)
+        findings = self.report(self.candidate(), other)["findings"]
+        self.assertEqual([entry["run_id"] for entry in findings], [self.RUN_ID])
+        summary = findings[0]["check_summary"]
+        self.assertIn("another run", summary)
+        self.assertNotIn("permanently absent", summary)
+
+    def test_existing_wait_is_patched_at_its_exact_id_then_stops(self):
+        history = self.history()
+        first = self.report(self.candidate(), history=history)
+        self.assertEqual([entry["check_run_id"] for entry in first["resolutions"]], [71])
+        correction = first["resolutions"][0]
+        self.assertEqual(correction["external_id"],
+                         liveness.external_id_for(self.RUN_ID, liveness.SERIALISED))
+        self.assertIn("cancelled", correction["check_summary"])
+        self.assertIn("This attempt will not produce", correction["check_summary"])
+        calls = ReconciliationStateTests._execute_post_step(self, first)
+        patches = [(args, body) for args, body in calls if args[3] == "PATCH"]
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0][0][4], "repos/fixture/repository/check-runs/71")
+        self.assertNotIn("external_id", patches[0][1])
+        self.assertNotIn("head_sha", patches[0][1])
+        for _, body in calls:
+            self.assertNotEqual(body["conclusion"], "success")
+            self.assertNotEqual(body.get("name"), liveness.REQUIRED_CONTEXT_NAME)
+
+        prior = next(iter(history[HEAD].values()))[0]
+        prior.update(title=correction["check_title"], conclusion=correction["conclusion"])
+        terminal = first["findings"][0]
+        history[HEAD][terminal["external_id"]] = [
+            {"id": 72, "conclusion": terminal["conclusion"], "title": terminal["check_title"]}
+        ]
+        second = self.report(self.candidate(), history=history)
+        self.assertEqual(ReconciliationStateTests._execute_post_step(self, second), [])
+
+    def test_approval_and_stall_records_are_corrected_without_guessing_zero_jobs(self):
+        for prior_class, prior_conclusion in ((liveness.SERIALISED, "neutral"),
+                                             (liveness.AWAITING_APPROVAL, "neutral"),
+                                             (liveness.INFRA_NO_PROOF, "failure")):
+            for count in (None, "0", False, -1, 3):
+                with self.subTest(prior_class=prior_class, count=count):
+                    report = self.report(self.candidate(job_count=count), history=self.history(
+                        prior_class, conclusion=prior_conclusion))
+                    self.assertEqual(report["findings"], [])
+                    self.assertEqual(len(report["resolutions"]), 1)
+                    summary = report["resolutions"][0]["check_summary"]
+                    self.assertIn("cancelled", summary)
+                    self.assertNotIn("before any job was scheduled", summary)
+                    self.assertNotIn("the gate will report once", summary)
+
+    def test_missing_or_invalid_attempt_identity_does_not_claim_zero_job_cancellation(self):
+        for attempt in (None, 0, True, "1"):
+            with self.subTest(attempt=attempt):
+                self.assertEqual(self.report(self.candidate(run_attempt=attempt))["findings"], [])
+
+    def test_other_terminal_or_scheduled_states_do_not_become_cancellation_findings(self):
+        for overrides in ({"conclusion": "success"}, {"conclusion": "failure"},
+                          {"conclusion": None}, {"job_count": 1}):
+            with self.subTest(overrides=overrides):
+                self.assertEqual(self.report(self.candidate(**overrides))["findings"], [])
+        running = self.candidate(status="in_progress", conclusion=None, job_count=3)
+        report = self.report(running)
+        self.assertEqual(report["findings"], [])
+        self.assertEqual([entry["classification"] for entry in report["alive"]], [liveness.ALIVE])
+
+    def test_rerun_retires_terminal_record_but_other_run_or_head_cannot(self):
+        terminal_title = self.report(self.candidate())["findings"][0]["check_title"]
+        for status, conclusion, count in (("queued", None, 0),
+                                           ("in_progress", None, 3),
+                                           ("completed", "success", 3)):
+            with self.subTest(status=status):
+                history = self.history(self.TERMINAL, title=terminal_title)
+                rerun = self.candidate(status=status, conclusion=conclusion,
+                                       job_count=count, run_attempt=2)
+                report = self.report(rerun, history=history)
+                self.assertEqual([entry["check_run_id"] for entry in report["resolutions"]], [71])
+                self.assertIn("no longer current", report["resolutions"][0]["check_summary"])
+                self.assertEqual(report["resolutions"][0]["conclusion"], "neutral")
+        history = self.history(self.TERMINAL, title=terminal_title)
+        for changed in ({"id": self.RUN_ID + 1}, {"head_sha": "b" * 40}):
+            candidate = self.candidate(status="completed", conclusion="success", job_count=3,
+                                       run_attempt=2, **changed)
+            self.assertEqual(self.report(candidate, history=history)["resolutions"], [])
+        self.assertEqual(self.report(history=history)["resolutions"], [])
+
+    def test_old_cancelled_attempt_stays_outside_the_existing_retention_window(self):
+        old = self.candidate(created_at="2026-09-19T00:00:00Z",
+                             updated_at="2026-09-19T00:05:00Z")
+        report = self.report(old, history=self.history())
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["resolutions"], [])
+
+    def test_rerun_retires_every_cancellation_copy_including_corrected_waits(self):
+        history = self.history()
+        first = self.report(self.candidate(), history=history)
+        closed_wait = first["resolutions"][0]
+        terminal = first["findings"][0]
+        for entry, check_id in ((closed_wait, 71), (terminal, 72), (terminal, 73)):
+            history[HEAD].setdefault(entry["external_id"], [])
+            history[HEAD][entry["external_id"]] = [
+                row for row in history[HEAD][entry["external_id"]] if row["id"] != check_id
+            ] + [{"id": check_id, "conclusion": entry["conclusion"], "title": entry["check_title"]}]
+        rerun = self.candidate(status="completed", conclusion="success", job_count=4, run_attempt=2)
+        report = self.report(rerun, history=history)
+        self.assertEqual(sorted(entry["check_run_id"] for entry in report["resolutions"]), [71, 72, 73])
+        for entry in report["resolutions"]:
+            for row in history[HEAD][entry["external_id"]]:
+                if row["id"] == entry["check_run_id"]:
+                    row["title"] = entry["check_title"]
+        self.assertEqual(self.report(rerun, history=history)["resolutions"], [])
+
+    def test_another_cancelled_attempt_refreshes_all_duplicates_once(self):
+        terminal = self.report(self.candidate())["findings"][0]
+        history = self.history(self.TERMINAL, title=terminal["check_title"])
+        history[HEAD][terminal["external_id"]].append(
+            {"id": 72, "conclusion": "neutral", "title": terminal["check_title"]})
+        again = self.candidate(run_attempt=2)
+        findings = self.report(again, history=history)["findings"]
+        self.assertEqual([entry["check_run_id"] for entry in findings], [71, 72])
+        for entry, row in zip(findings, history[HEAD][terminal["external_id"]]):
+            self.assertIn("attempt 2", entry["check_title"])
+            row["title"] = entry["check_title"]
+        self.assertEqual(self.report(again, history=history)["findings"], [])
+
+    def cancelled_history(self):
+        first = self.report(self.candidate(), history=self.history())
+        history = {HEAD: {}}
+        for entry, check_id in ((first["resolutions"][0], 71), (first["findings"][0], 72)):
+            history[HEAD][entry["external_id"]] = [
+                {"id": check_id, "conclusion": entry["conclusion"], "title": entry["check_title"]}
+            ]
+        return history
+
+    def test_positive_count_or_a_new_cancelled_attempt_corrects_all_previous_zero_job_claims(self):
+        for attempt, count in ((1, 3), (2, 3), (2, None)):
+            with self.subTest(attempt=attempt, count=count):
+                history = self.cancelled_history()
+                candidate = self.candidate(run_attempt=attempt, job_count=count)
+                report = self.report(candidate, history=history)
+                self.assertEqual(report["findings"], [])
+                self.assertEqual(sorted(entry["check_run_id"] for entry in report["resolutions"]), [71, 72])
+                calls = ReconciliationStateTests._execute_post_step(self, report)
+                self.assertEqual(len(calls), 2)
+                for entry in report["resolutions"]:
+                    self.assertNotIn("before scheduling", entry["check_title"])
+                    self.assertNotIn("This attempt will not produce", entry["check_summary"])
+                    self.assertIn(f"attempt {attempt}", entry["check_title"])
+                    history[HEAD][entry["external_id"]][0]["title"] = entry["check_title"]
+                self.assertEqual(self.report(candidate, history=history)["resolutions"], [])
+
+    def test_unreadable_count_does_not_erase_same_attempt_terminal_evidence(self):
+        for count in (None, "0", False, -1):
+            with self.subTest(count=count):
+                report = self.report(self.candidate(job_count=count), history=self.cancelled_history())
+                self.assertEqual(report["findings"], [])
+                self.assertEqual(report["resolutions"], [])
+
+    def test_rerun_live_class_refresh_is_not_overwritten_by_retirement(self):
+        for prior_class, conclusion in ((liveness.INFRA_NO_PROOF, "failure"),
+                                         (liveness.SERIALISED, "neutral")):
+            with self.subTest(prior_class=prior_class):
+                history = self.history(prior_class, conclusion=conclusion)
+                correction = self.report(self.candidate(), history=history)["resolutions"][0]
+                history[HEAD][correction["external_id"]][0].update(
+                    title=correction["check_title"], conclusion="neutral")
+                rerun = self.candidate(status="queued", conclusion=None, run_attempt=2)
+                runs = [rerun]
+                if prior_class == liveness.SERIALISED:
+                    runs.append(self.candidate(id=self.RUN_ID - 1, status="in_progress",
+                                               conclusion=None, job_count=3))
+                report = self.report(*runs, history=history)
+                calls = ReconciliationStateTests._execute_post_step(self, report)
+                writes = [body for args, body in calls
+                          if args[4] == "repos/fixture/repository/check-runs/71"]
+                self.assertEqual(len(writes), 1)
+                self.assertEqual(writes[0]["conclusion"], conclusion)
+                self.assertNotIn("cancellation observation ended", writes[0]["output"]["title"])
+
+    def test_serialised_summary_reports_a_snapshot_without_promising_a_future_gate(self):
+        candidate = self.candidate(status="pending", conclusion=None)
+        predecessor = self.candidate(id=self.RUN_ID - 1, status="in_progress",
+                                     conclusion=None, job_count=3)
+        finding = self.report(candidate, predecessor)["findings"][0]
+        self.assertEqual(finding["classification"], liveness.SERIALISED)
+        self.assertNotIn("the gate will report once", finding["check_summary"])
+        predecessor["status"] = "completed"
+        self.assertEqual(self.report(candidate, predecessor)["findings"][0]["classification"],
+                         liveness.INFRA_NO_PROOF)
+
+    def test_a_wait_does_not_erase_another_run_result_on_the_same_sha(self):
+        for predecessor_status, expected in (("in_progress", liveness.SERIALISED),
+                                              ("completed", liveness.INFRA_NO_PROOF)):
+            with self.subTest(predecessor_status=predecessor_status):
+                candidate = self.candidate(status="pending", conclusion=None)
+                predecessor = self.candidate(id=self.RUN_ID - 1, status=predecessor_status,
+                                             conclusion=None, job_count=3, head_sha="b" * 40)
+                finished = self.candidate(id=self.RUN_ID - 2, conclusion="success", job_count=4)
+                finding = self.report(candidate, predecessor, finished)["findings"][0]
+                self.assertEqual(finding["classification"], expected)
+                summary = finding["check_summary"]
+                self.assertIn("another run", summary)
+                self.assertNotIn("absent** from this head", summary)
+                self.assertNotIn("proof for this head", summary)
+
+    def test_all_workflow_page_projections_keep_conclusion_and_attempt(self):
+        if not shutil.which("jq"):
+            self.skipTest("jq is required to execute the workflow's jq projections")
+        text = WorkflowTransitionTests.WORKFLOW.read_text(encoding="utf-8")
+        projections = re.findall(r"--jq '(\[\.workflow_runs\[\].*?)'", text, re.DOTALL)
+        self.assertEqual(len(projections), 3)
+        candidate = self.candidate()
+        candidate["head_repository"] = {"full_name": "fixture/repository"}
+        for index, projection in enumerate(projections):
+            with self.subTest(page=index + 1):
+                result = subprocess.run(["jq", projection], input=json.dumps({"workflow_runs": [candidate]}),
+                                        capture_output=True, text=True, check=True)
+                projected = json.loads(result.stdout)
+                self.assertEqual(len(projected), 1)
+                self.assertEqual(projected[0].get("conclusion"), "cancelled")
+                self.assertEqual(projected[0].get("run_attempt"), 1)
+
+    def execute_snapshot(self, candidates, *, count_returncode=0, count_stdout="0"):
+        text = WorkflowTransitionTests.WORKFLOW.read_text(encoding="utf-8")
+        programs = [textwrap.dedent(part.split("\n          PY", 1)[0])
+                    for part in text.split("python3 - <<'PY'\n")[1:]
+                    if "for run in runs:" in part]
+        self.assertEqual(len(programs), 1)
+        written, requests = {}, []
+
+        def open_snapshot(name, mode="r", **kwargs):
+            if "w" in mode:
+                stream = io.StringIO()
+                written[str(name)] = stream
+                return stream
+            self.assertEqual(str(name), "target/ripr/liveness/runs.json")
+            return io.StringIO(json.dumps(candidates))
+
+        def request(args, **kwargs):
+            requests.append(args)
+            if args[-2:] == ["--jq", ".total_count"]:
+                return SimpleNamespace(returncode=count_returncode, stdout=count_stdout, stderr="")
+            self.assertIn("/check-runs?", args[3])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        class SnapshotClock(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 20, 5, 5, tzinfo=datetime.timezone.utc)
+
+        with (mock.patch.dict("os.environ", {"GITHUB_REPOSITORY": "fixture/repository",
+                                            "FLOOR_MINUTES": "10"}),
+              mock.patch("builtins.open", side_effect=open_snapshot),
+              mock.patch("importlib.util.spec_from_file_location", return_value=SPEC),
+              mock.patch("subprocess.run", side_effect=request),
+              mock.patch("datetime.datetime", SnapshotClock)):
+            exec(compile(programs[0], str(WorkflowTransitionTests.WORKFLOW), "exec"), {})
+        return json.loads(written["target/ripr/liveness/snapshot.json"].getvalue()), requests
+
+    def test_snapshot_reads_exact_cancelled_attempt_without_spending_on_old_or_successful_runs(self):
+        candidates = [self.candidate(), self.candidate(id=self.RUN_ID + 1, conclusion="success"),
+                      self.candidate(id=self.RUN_ID + 2, updated_at="2026-09-19T00:00:00Z"),
+                      self.candidate(id=self.RUN_ID + 3, run_attempt=None)]
+        observed, requests = self.execute_snapshot(candidates)
+        job_reads = [args[2] for args in requests if args[-2:] == ["--jq", ".total_count"]]
+        self.assertEqual(job_reads, [f"repos/fixture/repository/actions/runs/{self.RUN_ID}/attempts/1/jobs"])
+        self.assertEqual(observed["runs"][0]["job_count"], 0)
+        report = liveness.classify_snapshot(observed)
+        self.assertEqual([entry["classification"] for entry in report["findings"]], [self.TERMINAL])
+
+    def test_snapshot_failed_job_read_does_not_invent_an_empty_attempt(self):
+        observed, requests = self.execute_snapshot([self.candidate()],
+                                                  count_returncode=1, count_stdout="")
+        self.assertTrue(any("/attempts/1/jobs" in " ".join(args) for args in requests))
+        self.assertIsNone(observed["runs"][0]["job_count"])
+        self.assertEqual(liveness.classify_snapshot(observed)["findings"], [])
 
 
 if __name__ == "__main__":
