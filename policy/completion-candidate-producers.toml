@@ -209,7 +209,14 @@ outcome_owner = "#10230"
 # 41 scanned files, 60 producer rows over 18 candidate classes, the entry routes
 # and the finalizer seam are unchanged. This is a source re-audit of changed
 # insertion geometry, not a claim that completion behavior is unchanged.
-source_digest = "sha256:4fbedefcbd5065a61034413ffef944ccee6e51cc2b8ecb284dafbe4491fac258"
+# Re-audit 2026-11-13 (#19206): region-aware comment and regex-flag gating
+# changed completion/lexical_context.rs and runtime/language/completion.rs;
+# the other 39 scan files are unchanged between 77a11cc and this tree. The new
+# private context/predicate helpers do not take or return candidates. Both entry
+# points retain their existing channels and finalizer, with no producer addition,
+# removal, or re-channeling. Pending parse gaps now answer incomplete instead of
+# fabricating a confident empty page; producer completeness dispositions remain.
+source_digest = "sha256:71b977c28a0f5d47afb840ed96f84df33c6a29cc2bf0b46427a4eeb21276e749"
 
 [[delegations]]
 module = "dancer2"
