@@ -96,7 +96,7 @@ fn assert_dispatch_loop_behavior(
             "--ref".to_string(),
             branch.to_string(),
         ];
-        if matches!(workflow.as_str(), "ci.yml" | "ripr.yml") {
+        if (workflow == "ci.yml" || workflow == "ripr.yml") {
             argv.push("-f".into());
             argv.push(format!("base_sha={base_sha}"));
             argv.push("-f".into());
@@ -113,7 +113,7 @@ fn assert_dispatch_loop_behavior(
     let expected_calls = dispatch_order
         .iter()
         .map(|workflow| {
-            if matches!(workflow.as_str(), "ci.yml" | "ripr.yml") {
+            if (workflow == "ci.yml" || workflow == "ripr.yml") {
                 format!(
                     "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
                 )
