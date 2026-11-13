@@ -5,6 +5,7 @@ use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome, Workspa
 use std::fs;
 use std::hint::black_box;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
@@ -660,33 +661,85 @@ fn bench_early_exit_optimization(c: &mut Criterion) {
     });
 }
 
-/// Benchmark coordinator with resource limits enforcement
+/// Benchmark coordinator with resource limits enforcement on a genuinely
+/// populated index (#19179).
 ///
-/// Validates that limit checking overhead is acceptable (<10μs per check)
+/// The previous premise called `transition_to_ready(500, 25000)`, which only
+/// writes lifecycle counters and leaves the committed files map empty, so it
+/// measured empty-index overhead. Each size below populates the real map and
+/// asserts the accepted file/symbol denominators and a query sentinel before
+/// any timing runs.
 fn bench_resource_limit_enforcement(c: &mut Criterion) {
     use perl_workspace::workspace_index::{IndexCoordinator, IndexResourceLimits};
 
-    c.bench_function("resource limit enforcement", |b| {
-        b.iter_batched(
-            || {
-                let limits = IndexResourceLimits {
-                    max_files: 1000,
-                    max_total_symbols: 50000,
-                    ..Default::default()
-                };
-                let coordinator = IndexCoordinator::with_limits(limits);
-                coordinator.transition_to_ready(500, 25000);
-                coordinator
-            },
-            |coordinator| {
+    for size in [100usize, 1_000, 10_000] {
+        // Populate once, outside the timed loop, so per-iteration setup and
+        // teardown of a 10k-file index cannot masquerade as check cost.
+        let limits = IndexResourceLimits {
+            max_files: 20_000,
+            max_total_symbols: 50_000,
+            ..Default::default()
+        };
+        let coordinator = IndexCoordinator::with_limits(limits);
+        let files: Vec<(Url, String)> = (0..size)
+            .map(|i| {
+                (
+                    must(Url::parse(&format!("file:///lib/Bench/Mod{i}.pm"))),
+                    format!("sub bench_symbol_{i} {{ }}"),
+                )
+            })
+            .collect();
+        let errors = coordinator.index().index_initial_files_batch(files);
+        assert!(errors.is_empty(), "populated bench setup refused work: {errors:?}");
+        assert_eq!(coordinator.index().file_count(), size);
+        assert_eq!(coordinator.index().symbol_count(), size);
+        let sentinel = must(Url::parse("file:///lib/Bench/Mod0.pm"));
+        assert!(
+            coordinator
+                .index()
+                .file_symbols(sentinel.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "bench_symbol_0"),
+            "query sentinel missing before timing"
+        );
+        let generation = AtomicU32::new(0);
+        c.bench_function(&format!("resource limit admission {size} files"), |b| {
+            // Replace one existing file with distinct content and generation
+            // on every iteration. The typed outcome assertion rejects NoOp:
+            // only Accepted traverses admission_limit_for and commits under
+            // the existing write lock (#19179). The counter deliberately lives
+            // outside this callback, which Criterion invokes repeatedly.
+            let uri = must(Url::parse("file:///lib/Bench/Mod0.pm"));
+            b.iter_custom(|iterations| {
+                let start = Instant::now();
+                let mut accepted = 0u64;
+                for _ in 0..iterations {
+                    let next = generation.fetch_add(1, Ordering::Relaxed) + 1;
+                    let outcome = black_box(coordinator.index().index_live_file(
+                        uri.clone(),
+                        format!("sub replacement_symbol_{next} {{ }}"),
+                        SourceCommit::new(must_some(NonZeroU32::new(next))),
+                    ));
+                    assert_eq!(outcome, SourceCommitOutcome::Accepted);
+                    accepted += 1;
+                }
+                assert_eq!(accepted, iterations, "every timed replacement reached admission");
+                start.elapsed()
+            });
+        });
+        c.bench_function(&format!("resource limit enforcement {size} files"), |b| {
+            b.iter(|| {
                 // Check limits (this happens after every index operation)
                 coordinator.enforce_limits();
-                black_box(coordinator.state());
-                black_box(coordinator);
-            },
-            BatchSize::SmallInput,
-        );
-    });
+                black_box(&coordinator);
+            });
+        });
+        c.bench_function(&format!("symbol count {size} files"), |b| {
+            b.iter(|| {
+                black_box(coordinator.index().symbol_count());
+            });
+        });
+    }
 }
 
 /// Benchmark batch indexing 1000 files (CPAN-scale workload).
