@@ -464,8 +464,13 @@ class PrFastCacheContractTests(unittest.TestCase):
         self.check_cache_contract(text)
         warm = "      - name: Warm xtask\n        run: cargo build -p xtask --locked\n"
         for job_name in ("pr-smoke", "pr-fast-unblocked"):
-            job_start = text.index(f"\n  {job_name}:\n")
-            warm_start = text.index(warm, job_start)
+            job = re.search(
+                rf"^  {re.escape(job_name)}:\n(.*?)(?=^  [\w-]+:|\Z)",
+                text,
+                re.M | re.S,
+            )
+            self.assertIsNotNone(job, f"missing {job_name} job")
+            warm_start = text.index(warm, job.start(1), job.end(1))
             for replacement, diagnostic in (
                 (
                     "      - name: Warm xtask\n"
