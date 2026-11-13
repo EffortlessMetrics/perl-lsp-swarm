@@ -1,4 +1,4 @@
-name: Temporary formal receipt repair
+name: Temporary formal receipt repair rehearsal
 
 on:
   pull_request:
@@ -6,52 +6,52 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  pull-requests: read
+  contents: read
 
 concurrency:
-  group: temporary-formal-receipt-repair-${{ github.event.pull_request.number }}
+  group: temporary-formal-receipt-rehearsal-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  repair:
-    name: Repair, format, and test formal receipts
+  rehearse:
+    if: github.event.pull_request.number == 19323
+    name: Rehearse and qualify formal receipt repair
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      HEAD_BRANCH: ${{ github.head_ref }}
+    timeout-minutes: 90
     steps:
-      - name: Checkout exact branch head
+      - name: Checkout exact branch head without credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 1
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
 
-      - name: Apply reviewed fail-closed repairs
+      - name: Apply reviewed fail-closed source repair
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
-          import textwrap
 
           path = Path("xtask/src/tasks/formal_receipt.rs")
           source = path.read_text()
 
-          def replace_once(pattern: str, replacement, label: str) -> None:
+          def replace_once(old: str, new: str, label: str) -> None:
               global source
-              source, count = re.subn(pattern, replacement, source, count=1, flags=re.MULTILINE)
+              count = source.count(old)
               if count != 1:
                   raise SystemExit(f"{label} matched {count} times; expected exactly one")
+              source = source.replace(old, new, 1)
 
-          positive_anchor = '                complete("positive", &self.obligations.positive, errors);'
-          if source.count(positive_anchor) != 1:
-              raise SystemExit("positive-completion anchor must occur exactly once")
-          identity_law = '''                let expected_properties = self
+          replace_once(
+              '''    fn validate_native(&self, errors: &mut Vec<String>) {
+                  match self.native.result {
+          ''',
+              '''    fn validate_native(&self, errors: &mut Vec<String>) {
+                  let declared_properties = self
                       .obligations
                       .positive
                       .ids
@@ -64,23 +64,55 @@ jobs:
                       .keys()
                       .map(String::as_str)
                       .collect::<BTreeSet<_>>();
-                  if observed_properties != expected_properties {
+                  let observed_count =
+                      u64::try_from(self.native.properties.len()).unwrap_or(u64::MAX);
+                  let satisfied_count = u64::try_from(
+                      self.native
+                          .properties
+                          .values()
+                          .filter(|outcome| **outcome == PropertyOutcome::Pass)
+                          .count(),
+                  )
+                  .unwrap_or(u64::MAX);
+
+                  if !observed_properties.is_subset(&declared_properties) {
+                      errors.push(
+                          "native property identities must be declared by obligations.positive.ids"
+                              .to_string(),
+                      );
+                  }
+                  if observed_count != u64::from(self.obligations.positive.observed) {
+                      errors.push(
+                          "obligations.positive.observed must equal the native property row count"
+                              .to_string(),
+                      );
+                  }
+                  if satisfied_count != u64::from(self.obligations.positive.satisfied) {
+                      errors.push(
+                          "obligations.positive.satisfied must equal the native pass row count"
+                              .to_string(),
+                      );
+                  }
+
+                  match self.native.result {
+          ''',
+              "native observation accounting",
+          )
+
+          pass_anchor = '''                complete("positive", &self.obligations.positive, errors);
+                  complete("harness controls", &self.obligations.harness_controls, errors);
+                  if !self.artifacts.iter().any(|artifact| artifact.required) {
+                      errors.push("native pass requires a required raw artifact".to_string());
+                  }
+          '''
+          pass_replacement = '''                if observed_properties != declared_properties {
                       errors.push(
                           "native pass property identities must exactly match obligations.positive.ids"
                               .to_string(),
                       );
                   }
-          '''
-          source = source.replace(positive_anchor, identity_law + positive_anchor, 1)
-
-          artifact_pattern = (
-              r'^(?P<indent>[ \t]*)if !self\.artifacts\.iter\(\)\.any\(\|artifact\| artifact\.required\) \{\n'
-              r'(?P=indent)    errors\.push\("native pass requires a required raw artifact"\.to_string\(\)\);\n'
-              r'(?P=indent)\}$'
-          )
-
-          def artifact_replacement(match: re.Match[str]) -> str:
-              block = textwrap.dedent('''
+                  complete("positive", &self.obligations.positive, errors);
+                  complete("harness controls", &self.obligations.harness_controls, errors);
                   if !self.artifacts.iter().any(|artifact| {
                       artifact.required
                           && matches!(
@@ -95,25 +127,123 @@ jobs:
                               .to_string(),
                       );
                   }
-              ''').strip('\n')
-              return textwrap.indent(block, match.group('indent'))
+                  if self.disposition.status == DispositionStatus::Active
+                      && self.freshness.status != FreshnessStatus::Current
+                  {
+                      errors.push(
+                          "an active native pass requires current freshness".to_string(),
+                      );
+                  }
+                  if self.claim.binding != ImplementationBinding::ModelOnly
+                      && self.correspondence.status != CorrespondenceStatus::Established
+                  {
+                      errors.push(
+                          "a production-bound native pass requires established correspondence"
+                              .to_string(),
+                      );
+                  }
+          '''
+          replace_once(pass_anchor, pass_replacement, "native pass admission")
 
-          replace_once(artifact_pattern, artifact_replacement, "native-artifact admission")
+          unsettled_anchor = '''                if !self.native.process_settled
+                      && self.native.reason != Some(NonPassReason::ProcessUnsettled)
+                  {
+                      errors.push(
+                          "unsettled process requires reason process_unsettled".to_string(),
+                      );
+                  }
+          '''
+          unsettled_replacement = unsettled_anchor + '''                if self.native.process_settled
+                      && self.native.reason == Some(NonPassReason::ProcessUnsettled)
+                  {
+                      errors.push(
+                          "settled process cannot use reason process_unsettled".to_string(),
+                      );
+                  }
+          '''
+          replace_once(unsettled_anchor, unsettled_replacement, "process settlement consistency")
 
-          active_pattern = (
-              r'^(?P<indent>[ \t]*)\|\| self\.disposition\.superseded_by\.is_some\(\)\n'
-              r'(?P=indent)\|\| matches!\('
+          freshness_anchor = '''                if self.freshness.reason.is_some()
+                      || self.freshness.evaluated_source_commit != self.source.commit
+                      || self.freshness.evaluated_closure_digest != self.closure.digest
+                  {
+                      errors.push(
+                          "current freshness must have no reason and bind source plus closure"
+                              .to_string(),
+                      );
+                  }
+          '''
+          freshness_replacement = '''                if self.freshness.reason.is_some()
+                      || self.freshness.evaluated_source_commit != self.source.commit
+                      || self.freshness.evaluated_closure_digest != self.closure.digest
+                      || self.source.state == SourceState::Unknown
+                  {
+                      errors.push(
+                          "current freshness must have no reason, bind source plus closure, and use a known source state"
+                              .to_string(),
+                      );
+                  }
+          '''
+          replace_once(freshness_anchor, freshness_replacement, "current freshness consistency")
+
+          correspondence_anchor = '''        let ids = self
+                      .artifacts
+                      .iter()
+                      .map(|artifact| artifact.id.as_str())
+                      .collect::<BTreeSet<_>>();
+                  for artifact_id in &self.correspondence.artifact_ids {
+                      if !ids.contains(artifact_id.as_str()) {
+                          errors.push(format!(
+                              "correspondence artifact '{artifact_id}' is not present in artifacts"
+                          ));
+                      }
+                  }
+          '''
+          correspondence_replacement = '''        let artifacts = self
+                      .artifacts
+                      .iter()
+                      .map(|artifact| (artifact.id.as_str(), artifact))
+                      .collect::<BTreeMap<_, _>>();
+                  for artifact_id in &self.correspondence.artifact_ids {
+                      match artifacts.get(artifact_id.as_str()) {
+                          Some(artifact) if artifact.kind == ArtifactKind::Correspondence => {}
+                          Some(_) => errors.push(format!(
+                              "correspondence artifact '{artifact_id}' must reference a correspondence artifact"
+                          )),
+                          None => errors.push(format!(
+                              "correspondence artifact '{artifact_id}' is not present in artifacts"
+                          )),
+                      }
+                  }
+                  if self.correspondence.status == CorrespondenceStatus::Established
+                      && !self.correspondence.artifact_ids.iter().any(|artifact_id| {
+                          artifacts.get(artifact_id.as_str()).is_some_and(|artifact| {
+                              artifact.required && artifact.kind == ArtifactKind::Correspondence
+                          })
+                      })
+                  {
+                      errors.push(
+                          "established correspondence requires a required correspondence artifact"
+                              .to_string(),
+                      );
+                  }
+          '''
+          replace_once(
+              correspondence_anchor,
+              correspondence_replacement,
+              "correspondence artifact binding",
           )
 
-          def active_replacement(match: re.Match[str]) -> str:
-              indent = match.group('indent')
-              return (
-                  f"{indent}|| self.disposition.superseded_by.is_some()\n"
-                  f"{indent}|| self.claim.rollout == RolloutState::Retired\n"
-                  f"{indent}|| matches!("
-              )
-
-          replace_once(active_pattern, active_replacement, "active-disposition admission")
+          active_anchor = '''                if self.disposition.reason.is_some()
+                      || self.disposition.superseded_by.is_some()
+                      || matches!(
+          '''
+          active_replacement = '''                if self.disposition.reason.is_some()
+                      || self.disposition.superseded_by.is_some()
+                      || self.claim.rollout == RolloutState::Retired
+                      || matches!(
+          '''
+          replace_once(active_anchor, active_replacement, "active disposition consistency")
 
           tests = '''
               #[test]
@@ -161,6 +291,39 @@ jobs:
               }
 
               #[test]
+              fn native_rows_must_match_positive_observation_counts() {
+                  let mut value = valid_receipt();
+                  value["obligations"]["positive"]["observed"] = json!(1);
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("native property row count"))
+                  );
+              }
+
+              #[test]
+              fn non_pass_rows_must_still_use_declared_property_ids() {
+                  let mut value = valid_receipt();
+                  value["native"] = json!({
+                      "result": "not_proven",
+                      "reason": "timeout",
+                      "process_settled": true,
+                      "properties": { "unrelated": "not_proven" }
+                  });
+                  value["obligations"]["positive"]["observed"] = json!(1);
+                  value["obligations"]["positive"]["satisfied"] = json!(0);
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("must be declared"))
+                  );
+              }
+
+              #[test]
               fn pass_requires_native_raw_evidence_not_metadata_only() {
                   let mut value = valid_receipt();
                   value["artifacts"] = json!([
@@ -193,6 +356,69 @@ jobs:
                           .any(|error| error.contains("active disposition cannot be retired"))
                   );
               }
+
+              #[test]
+              fn settled_process_rejects_process_unsettled_reason() {
+                  let mut value = valid_receipt();
+                  value["native"] = json!({
+                      "result": "not_proven",
+                      "reason": "process_unsettled",
+                      "process_settled": true,
+                      "properties": {}
+                  });
+                  value["obligations"]["positive"]["observed"] = json!(0);
+                  value["obligations"]["positive"]["satisfied"] = json!(0);
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("settled process cannot"))
+                  );
+              }
+
+              #[test]
+              fn current_freshness_rejects_unknown_source_state() {
+                  let mut value = valid_receipt();
+                  value["source"]["state"] = json!("unknown");
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("known source state"))
+                  );
+              }
+
+              #[test]
+              fn active_production_bound_pass_requires_established_correspondence() {
+                  let mut value = valid_receipt();
+                  value["correspondence"]["status"] = json!("not_proven");
+                  value["correspondence"]["controls"]["observed"] = json!(0);
+                  value["correspondence"]["controls"]["satisfied"] = json!(0);
+                  value["correspondence"]["artifact_ids"] = json!([]);
+                  value["correspondence"]["reason"] = json!("wrapper changed");
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("requires established correspondence"))
+                  );
+              }
+
+              #[test]
+              fn correspondence_ids_must_bind_correspondence_artifacts() {
+                  let mut value = valid_receipt();
+                  value["artifacts"][1]["kind"] = json!("structured_report");
+
+                  let errors = validate_value(&value);
+                  assert!(
+                      errors
+                          .iter()
+                          .any(|error| error.contains("must reference a correspondence artifact"))
+                  );
+              }
           '''
           marker = '''
               #[test]
@@ -207,26 +433,37 @@ jobs:
       - name: Format with repository toolchain
         run: cargo +1.95.0 fmt --all
 
+      - name: Capture exact repair patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-receipt-repair
+          git diff --binary -- xtask/src/tasks/formal_receipt.rs xtask/src/tasks/gate_receipts.rs xtask/src/tasks/mod.rs > target/formal-receipt-repair.patch
+          cp xtask/src/tasks/formal_receipt.rs target/formal-receipt-repair/
+          cp xtask/src/tasks/gate_receipts.rs target/formal-receipt-repair/
+          cp xtask/src/tasks/mod.rs target/formal-receipt-repair/
+
       - name: Run focused formal receipt tests
         run: cargo +1.95.0 test -p xtask --all-targets --locked formal_receipt
 
       - name: Run focused strict Clippy
         run: cargo +1.95.0 clippy -p xtask --all-targets --locked -- -D warnings
 
+      - name: Run documentation and workflow policy checks
+        run: |
+          cargo +1.95.0 xtask docs-check
+          cargo +1.95.0 xtask workflow-policy
+
       - name: Verify clean patch shape
         run: git diff --check
 
-      - name: Remove temporary workflow and commit exact repair
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "Steven Zimmerman, CPA"
-          git config user.email "15812269+EffortlessSteven@users.noreply.github.com"
-          git rm .github/workflows/tmp-formal-receipt-format.yml
-          git add xtask/src/tasks/formal_receipt.rs xtask/src/tasks/gate_receipts.rs xtask/src/tasks/mod.rs
-          if git diff --cached --quiet; then
-            echo "No repair delta was produced" >&2
-            exit 1
-          fi
-          git commit -m "fix(formal): bind receipts to exact native evidence (#19313)"
-          git push origin "HEAD:${HEAD_BRANCH}"
+      - name: Upload read-only repair evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: formal-receipt-repair-${{ github.event.pull_request.head.sha }}
+          path: |
+            target/formal-receipt-repair/
+            target/formal-receipt-repair.patch
+          if-no-files-found: error
+          retention-days: 1
