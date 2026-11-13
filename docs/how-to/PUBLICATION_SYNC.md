@@ -583,10 +583,16 @@ destination base here. It does not claim that source S is release-prepared.
 Receipt alias and Git-metadata protections apply to the staged source shape too.
 Alias paths are collected before strict model/schema validation, so an extra
 rejected claim cannot make declared input/row paths disappear from the guard.
-If raw JSON, path-bearing slots or their identities cannot be established, no
-receipt is written. The same path extraction protects known slots on an unknown
-profile. The evaluator still creates a diagnostic unevaluated receipt for an
-unparsable manifest; the CLI refuses to write it when aliases are ambiguous.
+If path-bearing slots or their identities cannot be established, no receipt is
+written. The same path extraction protects known slots on an unknown profile.
+Unparsable raw JSON is the one narrowed case. The evaluator still creates a
+diagnostic unevaluated receipt naming `manifest_unparsable`, and the CLI writes
+it when the destination does not yet exist, because creating a new file cannot
+destroy a declared input the guard can no longer read. It refuses when the
+destination already exists, since that file could be one of those unreadable
+declared inputs. The consequence worth knowing before scripting against it:
+re-running over an unparsable manifest refuses once a receipt is already there,
+loudly rather than overwriting it.
 
 Current ceiling: a valid source shape deterministically returns
 `source_profile_not_proven` / NOT_PROVEN. The source fixture contains shape-only
