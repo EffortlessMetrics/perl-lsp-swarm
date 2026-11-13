@@ -110,10 +110,7 @@ pub fn check_utf16_sound(text: &str, index: &LineIndex, line: usize, column: usi
     if let Some(byte) = index.position_to_byte_utf16(text, line, column) {
         assert!(byte <= text.len(), "FV_POSITION_UTF16_BOUNDS");
         assert!(text.is_char_boundary(byte), "FV_POSITION_UTF16_SCALAR_BOUNDARY");
-        assert!(
-            utf16_position(text, byte) == Some((line, column)),
-            "FV_POSITION_UTF16_SOUNDNESS"
-        );
+        assert!(utf16_position(text, byte) == Some((line, column)), "FV_POSITION_UTF16_SOUNDNESS");
     }
 }
 
