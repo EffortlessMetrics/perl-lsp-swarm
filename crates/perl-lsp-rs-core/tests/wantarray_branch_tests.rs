@@ -1,5 +1,10 @@
 //! Integration tests for PL411 — irrelevant `wantarray()` branch detection.
 
+// Fixture helper below uses `.expect` on fixture-internal needles, matching
+// the crate's other integration tests (pre-existing #18698 omission; the
+// `-D warnings` gate could not reach this target while CI clippy was dark).
+#![allow(clippy::expect_used, clippy::panic)]
+
 use std::sync::Arc;
 
 use perl_lsp_rs_core::providers::diagnostics::{Diagnostic, DiagnosticsProvider};
