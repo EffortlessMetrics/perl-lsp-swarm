@@ -24,16 +24,16 @@ reason = "Ineffective file open flags hide intent."
 [[lint]]
 name = "clippy::path_buf_push_overwrite"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "file-policy"
-reason = "Absolute path pushes must not silently discard existing path state."
+reason = "Absolute path pushes must not silently discard existing path state. Activated by #14441 after a zero-finding pierced workspace --all-targets measurement on Linux; Windows/macOS subjects remain NOT_PROVEN."
 
 [[lint]]
 name = "clippy::join_absolute_paths"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "file-policy"
-reason = "Joining absolute paths must not silently ignore the base path."
+reason = "Joining absolute paths must not silently ignore the base path. Activated by #14441 after a zero-finding pierced workspace --all-targets measurement on Linux; Windows/macOS subjects remain NOT_PROVEN."
 
 [[lint]]
 name = "clippy::read_line_without_trim"
