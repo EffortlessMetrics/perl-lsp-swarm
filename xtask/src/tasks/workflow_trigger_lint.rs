@@ -139,6 +139,7 @@ const CLAUSE_IDS: &[&str] = &[
     "workflow-exists",
     "pull-request-trigger",
     "merge-group-trigger",
+    "event-registration-scope",
     "push-targets-master",
     "no-path-filters",
     "event-aware-concurrency",
@@ -1214,6 +1215,56 @@ mod tests {
             unscoped.violations.iter().any(|item| item.contains("merge_group")),
             "unscoped evaluation must name the merge_group registration defect: {:?}",
             unscoped.violations
+        );
+        Ok(())
+    }
+
+    fn evaluate_merge_group_only_scope(
+        exemptions: &[PolicyExemption],
+    ) -> Result<WorkflowEvaluation> {
+        let metadata: Value = serde_yaml_ng::from_str(
+            "on:\n  merge_group: {}\njobs:\n  validate-title:\n    name: validate-title\n    steps: []\n",
+        )?;
+        Ok(evaluate_scoped_entry(
+            "validate-title",
+            "merge-group-title-check.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            exemptions,
+            None,
+        ))
+    }
+
+    #[test]
+    fn event_registration_scope_exemption_is_accepted() -> Result<()> {
+        let evaluated = evaluate_merge_group_only_scope(&[
+            exemption("pull-request-trigger", ExemptionStatus::Accepted),
+            exemption("event-registration-scope", ExemptionStatus::Accepted),
+            exemption("event-aware-concurrency", ExemptionStatus::Accepted),
+            exemption("push-targets-master", ExemptionStatus::Accepted),
+        ])?;
+
+        assert!(evaluated.ok, "known exemption must be accepted: {:?}", evaluated.violations);
+        assert!(evaluated.exemptions.iter().any(|item| item.clause == "event-registration-scope"));
+        Ok(())
+    }
+
+    #[test]
+    fn unexempted_merge_group_only_scope_still_fails() -> Result<()> {
+        let evaluated = evaluate_merge_group_only_scope(&[
+            exemption("pull-request-trigger", ExemptionStatus::Accepted),
+            exemption("event-aware-concurrency", ExemptionStatus::Accepted),
+            exemption("push-targets-master", ExemptionStatus::Accepted),
+        ])?;
+
+        assert!(!evaluated.ok);
+        assert!(
+            evaluated.violations.iter().any(|item| {
+                item == "unscoped merge_group-only producer must declare its event scope"
+            }),
+            "the event-scope finding must survive unrelated exemptions: {:?}",
+            evaluated.violations
         );
         Ok(())
     }
