@@ -460,10 +460,20 @@ class PrFastCacheContractTests(unittest.TestCase):
                                        "${CARGO_TARGET_DIR:-target}")
                         for spelling in (target, f'"{target}"')
                     ]
-                    for flag in re.finditer(r"--target-dir(?:\s+|=)", command):
+                    flag_pattern = r"(?P<whole>['\"])--target-dir=|(?:--target-dir|'--target-dir'|\"--target-dir\")(?:\s+|=)"
+                    for flag in re.finditer(flag_pattern, command):
+                        words = target_words
+                        if quote := flag.group("whole"):
+                            # A quoted whole --target-dir=value argument keeps
+                            # the value in that quote context until its end.
+                            values = ["target", "./target"]
+                            if quote == '"':
+                                values += ["$CARGO_TARGET_DIR", "${CARGO_TARGET_DIR}",
+                                           "${CARGO_TARGET_DIR:-target}"]
+                            words = [value + quote for value in values]
                         self.assertRegex(
                             command[flag.end():],
-                            r"^(?:" + "|".join(map(re.escape, target_words)) + r")(?=$|[\s;&|<>])",
+                            r"^(?:" + "|".join(map(re.escape, words)) + r")(?=$|[\s;&|<>])",
                             f"{job_name} CLI must use the stable cached target tree",
                         )
 
@@ -570,6 +580,21 @@ class PrFastCacheContractTests(unittest.TestCase):
                                 self.check_document(workflow)
                         else:
                             self.check_document(workflow)
+
+    def test_quoted_target_options_preserve_the_same_cli_contract(self) -> None:
+        for name in self.JOBS:
+            for quote in ("'", '"'):
+                for target in ("target", "/mnt/not-cached"):
+                    for argument in (f"{quote}--target-dir{quote} {target}",
+                                     f"{quote}--target-dir={target}{quote}"):
+                        with self.subTest(job=name, argument=argument):
+                            workflow = self.workflow()
+                            self.warm_step(workflow["jobs"][name])["run"] += " " + argument
+                            if target == "target":
+                                self.check_document(workflow)
+                            else:
+                                with self.assertRaisesRegex(AssertionError, "CLI must use the stable cached target"):
+                                    self.check_document(workflow)
 
 if __name__ == "__main__":
     unittest.main()
