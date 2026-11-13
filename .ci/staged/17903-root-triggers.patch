@@ -420,12 +420,11 @@ index 7455b44..f20dfe3 100644
 @@ -385 +360 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
 -fn test_post_merge_workflow_dispatches_all_required_checks()
 +fn test_post_merge_workflow_dispatches_metadata_only()
-@@ -425 +400,4 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
+@@ -425 +400,3 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
 -    let required_workflows = required_workflows(&policy)?;
-+    let mut required_workflows = required_workflows(&policy)?;
-+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-+        required_workflows.remove(product);
-+    }
++    let required_workflows = {
++        ["pr-title-check.yml".to_owned()].into_iter().collect::<BTreeSet<_>>()
++    };
 @@ -461,8 +439 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
 -    // The ci.yml dispatch arm reads its subject identity from step env
 -    // (#13355); both names must be declared so the simulated invocation is
