@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -263,6 +264,7 @@ def run_direct(
     rules = shard.load_execution_policy(policy, gates)
     contract = shard.load_receipt_contract(receipt_schema)
     runner = shard.ShardRunner(
+        worktree_root=root,
         xtask=Path("target/debug/xtask"),
         gate_policy=policy,
         receipt_dir=root / "receipts",
@@ -724,6 +726,7 @@ class GateShardTests(unittest.TestCase):
             rules = shard.load_execution_policy(policy, ["bad"])
             contract = shard.load_receipt_contract(receipt_schema)
             runner = shard.ShardRunner(
+                worktree_root=root,
                 xtask=Path("target/debug/xtask"),
                 gate_policy=policy,
                 receipt_dir=root / "receipts",
@@ -817,6 +820,7 @@ class GateShardTests(unittest.TestCase):
             policy = write_policy(root, {"alpha": []})
             receipt_schema = write_receipt_schema(root)
             runner = shard.ShardRunner(
+                worktree_root=root,
                 xtask=Path("target/debug/xtask"),
                 gate_policy=policy,
                 receipt_dir=root / "receipts",
@@ -828,6 +832,45 @@ class GateShardTests(unittest.TestCase):
             )
             command = runner._command("alpha")
         self.assertEqual(str(policy), command[command.index("--gate-policy") + 1])
+        self.assertEqual(str(root), command[command.index("--worktree-root") + 1])
+
+    def test_relocated_runner_passes_consumer_root_as_one_argument(self) -> None:
+        # A transported executable may have a different compiled-source default.
+        # The subprocess oracle records arguments; it is not an xtask emulator.
+        with tempfile.TemporaryDirectory() as tmp:
+            producer = Path(tmp) / "producer checkout"
+            consumer = Path(tmp) / "consumer checkout ; literal"
+            producer.mkdir()
+            consumer.mkdir()
+            observer = producer / "argument observer.py"
+            observed = producer / "argv.json"
+            observer.write_text(
+                "import json, pathlib, sys\n"
+                "pathlib.Path('argv.json').write_text(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            policy = write_policy(consumer, {"alpha": []})
+            schema = write_receipt_schema(consumer)
+            runner = shard.ShardRunner(
+                xtask=observer,
+                worktree_root=consumer,
+                gate_policy=policy,
+                receipt_dir=consumer / "receipts",
+                summary_path=consumer / "summary.json",
+                subject_sha=SUBJECT,
+                gates=["alpha"],
+                dependency_rules=shard.load_execution_policy(policy, ["alpha"]),
+                receipt_contract=shard.load_receipt_contract(schema),
+            )
+            subprocess.run([sys.executable, *runner._command("alpha")],
+                           cwd=producer, check=True, capture_output=True)
+            arguments = json.loads(observed.read_text(encoding="utf-8"))
+            self.assertEqual(arguments[:3], ["--worktree-root", str(consumer), "gates"])
+            self.assertEqual(arguments[arguments.index("--gate-policy") + 1], str(policy))
+            self.assertEqual(arguments[arguments.index("--receipt-path") + 1],
+                             str(consumer / "receipts/alpha.json"))
+            self.assertEqual(1, arguments.count("--worktree-root"))
+            self.assertEqual(runner._command("alpha"), shlex.split(runner._reproduce("alpha")))
 
     def test_current_tree_source_commit_api_gate_has_executable_policy_command(self) -> None:
         policy = REPO_ROOT / ".ci/gate-policy.yaml"
@@ -1095,9 +1138,28 @@ class GateShardTests(unittest.TestCase):
             shard._path_from_repository_root(Path("receipts"), root),
         )
 
+    def test_absolute_nested_policy_uses_same_git_root_as_native_xtask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            nested = root / "custom policies"
+            nested.mkdir()
+            policy = nested / "policy.yaml"
+            policy.write_text("gates: []\n", encoding="utf-8")
+            preliminary = shard._repository_root_for_execution(
+                Path("/not-used/xtask"), policy,
+            )
+            self.assertEqual(root, shard._canonical_execution_root(preliminary))
+
+    def test_execution_root_refuses_non_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "Git worktree root"):
+                shard._canonical_execution_root(Path(tmp))
+
     def test_main_rebases_relative_launch_paths_from_subdirectory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
             (root / ".ci").mkdir()
             (root / ".ci/gate-policy.yaml").write_text(
                 "schema_version: 1\ngates:\n"
@@ -1140,6 +1202,7 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(root / "receipts", kwargs["receipt_dir"])
         self.assertEqual(root / "summary.json", kwargs["summary_path"])
         self.assertEqual(root / ".ci/gate-policy.yaml", kwargs["gate_policy"])
+        self.assertEqual(root.resolve(), kwargs["worktree_root"])
 
     def test_gate_policy_preflight_rejects_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1878,6 +1941,7 @@ class GateShardTests(unittest.TestCase):
     def test_termination_kills_running_process_and_preserves_partial_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
             marker = root / "slow.pid"
             xtask = fake_sleeping_xtask(root, marker)
             policy = write_policy(root, {"slow": [], "later": []})
@@ -2186,6 +2250,7 @@ class RestoredReceiptCleanupTests(unittest.TestCase):
             rules = shard.load_execution_policy(policy, ["alpha"])
             contract = shard.load_receipt_contract(receipt_schema)
             runner = shard.ShardRunner(
+                worktree_root=root,
                 xtask=Path("target/debug/xtask"),
                 gate_policy=policy,
                 receipt_dir=root / "receipts" / "shards",
@@ -2289,6 +2354,7 @@ class IntegrationSubjectTests(unittest.TestCase):
             receipts = root / "receipts"
             receipts.mkdir()
             runner = shard.ShardRunner(
+                worktree_root=root,
                 xtask=Path(sys.executable), gate_policy=root / "gate-policy.yaml",
                 receipt_dir=receipts, summary_path=receipts / "summary.json",
                 subject_sha=git("rev-parse", "HEAD"), gates=["introduced"],
