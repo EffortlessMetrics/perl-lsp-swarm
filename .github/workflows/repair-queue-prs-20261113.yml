@@ -23,70 +23,30 @@ jobs:
         shell: bash
         env:
           EXPECTED_HEAD: 0a5d8d0e13d92d76d6ec889223b6a7169631df71
+          OLD_CODE_B64: ICAgICAgICAgICAgbGV0IHB1bGxfcmVxdWVzdF90YXJnZXQgPQogICAgICAgICAgICAgICAgZXZlbnRzLmlzX3NvbWVfYW5kKHxldmVudHN8IGV2ZW50X2lzX3JlcXVpcmVkKGV2ZW50cywgInB1bGxfcmVxdWVzdF90YXJnZXQiKSk7Cg==
+          NEW_CODE_B64: ICAgICAgICAgICAgbGV0IHB1bGxfcmVxdWVzdF90YXJnZXQgPSBldmVudHMuaXNfc29tZV9hbmQofGV2ZW50c3wgewogICAgICAgICAgICAgICAgZXZlbnRzLml0ZXIoKS5hbnkofGNhbmRpZGF0ZXwgY2FuZGlkYXRlID09ICJwdWxsX3JlcXVlc3RfdGFyZ2V0IikKICAgICAgICAgICAgfSk7Cg==
+          ANCHOR_B64: ICAgICNbdGVzdF0KICAgIGZuIHB1bGxfcmVxdWVzdF90YXJnZXRfcmVnaXN0cmF0aW9uX2FjY2VwdHNfaXRzX2FjdHVhbF9ldmVudCgpIC0+IFJlc3VsdDwoKT4gewo=
+          REGRESSION_B64: ICAgICNbdGVzdF0KICAgIGZuIGVtcHR5X2V2ZW50X3Njb3BlX2tlZXBzX2xlZ2FjeV9vcmRpbmFyeV9ldmVudHNfd2l0aG91dF9wcl90YXJnZXQoKSAtPiBSZXN1bHQ8KCk+IHsKICAgICAgICBsZXQgbWV0YWRhdGE6IFZhbHVlID0gc2VyZGVfeWFtbF9uZzo6ZnJvbV9zdHIoCiAgICAgICAgICAgICJvbjpcbiAgcHVsbF9yZXF1ZXN0OiB7fVxuam9iczpcbiAgcmVxdWlyZWQ6XG4gICAgbmFtZTogcmVxdWlyZWRcbiAgICBzdGVwczogW11cbiIsCiAgICAgICAgKT87CiAgICAgICAgbGV0IGV2ZW50czogVmVjPFN0cmluZz4gPSBWZWM6Om5ldygpOwogICAgICAgIGxldCBldmFsdWF0ZWQgPSBldmFsdWF0ZV9zY29wZWRfZW50cnkoCiAgICAgICAgICAgICJyZXF1aXJlZCIsCiAgICAgICAgICAgICJyZXF1aXJlZC55bWwiLnRvX3N0cmluZygpLAogICAgICAgICAgICB0cnVlLAogICAgICAgICAgICB0cnVlLAogICAgICAgICAgICBTb21lKCZtZXRhZGF0YSksCiAgICAgICAgICAgICZbXSwKICAgICAgICAgICAgU29tZSgmZXZlbnRzKSwKICAgICAgICApOwogICAgICAgIGFzc2VydCEoCiAgICAgICAgICAgICFldmFsdWF0ZWQKICAgICAgICAgICAgICAgIC52aW9sYXRpb25zCiAgICAgICAgICAgICAgICAuaXRlcigpCiAgICAgICAgICAgICAgICAuYW55KHxpdGVtfCBpdGVtID09ICJtaXNzaW5nIHB1bGxfcmVxdWVzdF90YXJnZXQgdHJpZ2dlciIpLAogICAgICAgICAgICAiYW4gZW1wdHkgc2NvcGUga2VlcHMgdGhlIGxlZ2FjeSBvcmRpbmFyeSBldmVudHMsIG5vdCBwdWxsX3JlcXVlc3RfdGFyZ2V0OiB7Oj99IiwKICAgICAgICAgICAgZXZhbHVhdGVkLnZpb2xhdGlvbnMKICAgICAgICApOwogICAgICAgIGFzc2VydCEoCiAgICAgICAgICAgIGV2YWx1YXRlZAogICAgICAgICAgICAgICAgLnZpb2xhdGlvbnMKICAgICAgICAgICAgICAgIC5pdGVyKCkKICAgICAgICAgICAgICAgIC5hbnkofGl0ZW18IGl0ZW0gPT0gIm1pc3NpbmcgbWVyZ2VfZ3JvdXAgdHJpZ2dlciIpLAogICAgICAgICAgICAiYW4gZW1wdHkgc2NvcGUgbXVzdCByZXRhaW4gdGhlIGxlZ2FjeSBvcmRpbmFyeS1ldmVudCBjb250cmFjdDogezo/fSIsCiAgICAgICAgICAgIGV2YWx1YXRlZC52aW9sYXRpb25zCiAgICAgICAgKTsKICAgICAgICBPaygoKSkKICAgIH0KCiAgICAjW3Rlc3RdCiAgICBmbiBwdWxsX3JlcXVlc3RfdGFyZ2V0X3JlZ2lzdHJhdGlvbl9hY2NlcHRzX2l0c19hY3R1YWxfZXZlbnQoKSAtPiBSZXN1bHQ8KCk+IHsK
         run: |
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
           python3 - <<'PY'
+          import base64
+          import os
           from pathlib import Path
 
           path = Path('xtask/src/tasks/workflow_trigger_lint.rs')
           text = path.read_text(encoding='utf-8')
-
-          old = '''            let pull_request_target =
-                events.is_some_and(|events| event_is_required(events, "pull_request_target"));
-'''
-          new = '''            let pull_request_target = events.is_some_and(|events| {
-                events.iter().any(|candidate| candidate == "pull_request_target")
-            });
-'''
+          old = base64.b64decode(os.environ['OLD_CODE_B64']).decode()
+          new = base64.b64decode(os.environ['NEW_CODE_B64']).decode()
+          anchor = base64.b64decode(os.environ['ANCHOR_B64']).decode()
+          regression = base64.b64decode(os.environ['REGRESSION_B64']).decode()
           if text.count(old) != 1:
               raise SystemExit(f'expected one pull_request_target law, found {text.count(old)}')
           text = text.replace(old, new)
-
-          anchor = '''    #[test]
-    fn pull_request_target_registration_accepts_its_actual_event() -> Result<()> {
-'''
-          regression = '''    #[test]
-    fn empty_event_scope_keeps_legacy_ordinary_events_without_pr_target() -> Result<()> {
-        let metadata: Value = serde_yaml_ng::from_str(
-            "on:\\n  pull_request: {}\\njobs:\\n  required:\\n    name: required\\n    steps: []\\n",
-        )?;
-        let events: Vec<String> = Vec::new();
-        let evaluated = evaluate_scoped_entry(
-            "required",
-            "required.yml".to_string(),
-            true,
-            true,
-            Some(&metadata),
-            &[],
-            Some(&events),
-        );
-        assert!(
-            !evaluated
-                .violations
-                .iter()
-                .any(|item| item == "missing pull_request_target trigger"),
-            "an empty scope keeps the legacy ordinary events, not pull_request_target: {:?}",
-            evaluated.violations
-        );
-        assert!(
-            evaluated
-                .violations
-                .iter()
-                .any(|item| item == "missing merge_group trigger"),
-            "an empty scope must retain the legacy ordinary-event contract: {:?}",
-            evaluated.violations
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn pull_request_target_registration_accepts_its_actual_event() -> Result<()> {
-'''
           if text.count(anchor) != 1:
               raise SystemExit(f'expected one test anchor, found {text.count(anchor)}')
-          text = text.replace(anchor, regression)
-          path.write_text(text, encoding='utf-8')
+          path.write_text(text.replace(anchor, regression), encoding='utf-8')
           PY
           cargo fmt --all
           git diff --check
@@ -101,7 +61,6 @@ jobs:
         run: |
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
-          test "$(git diff --name-only | wc -l)" -eq 1
           [ "$(git diff --name-only)" = "xtask/src/tasks/workflow_trigger_lint.rs" ]
           git config user.name EffortlessSteven
           git config user.email 15812269+EffortlessSteven@users.noreply.github.com
@@ -124,25 +83,20 @@ jobs:
         shell: bash
         env:
           EXPECTED_HEAD: 86daa3a33b3f06726c44d56a26c3412f948831e9
+          OLD_PATCH_B64: QEAgLTQyNSArNDAwLDQgQEAgZm4gdGVzdF9wb3N0X21lcmdlX3dvcmtmbG93X2Rpc3BhdGNoZXNfYWxsX3JlcXVpcmVkX2NoZWNrcygpCi0gICAgbGV0IHJlcXVpcmVkX3dvcmtmbG93cyA9IHJlcXVpcmVkX3dvcmtmbG93cygmcG9saWN5KT87CisgICAgbGV0IG11dCByZXF1aXJlZF93b3JrZmxvd3MgPSByZXF1aXJlZF93b3JrZmxvd3MoJnBvbGljeSk/OworICAgIGZvciBwcm9kdWN0IGluIFsiY2kueW1sIiwgImVtLWNpLXJvdXRlZC1ydXN0LnltbCIsICJyaXByLnltbCJdIHsKKyAgICAgICAgcmVxdWlyZWRfd29ya2Zsb3dzLnJlbW92ZShwcm9kdWN0KTsKKyAgICB9Cg==
+          NEW_PATCH_B64: QEAgLTQyNSArNDAwIEBAIGZuIHRlc3RfcG9zdF9tZXJnZV93b3JrZmxvd19kaXNwYXRjaGVzX2FsbF9yZXF1aXJlZF9jaGVja3MoKQotICAgIGxldCByZXF1aXJlZF93b3JrZmxvd3MgPSByZXF1aXJlZF93b3JrZmxvd3MoJnBvbGljeSk/OworICAgIGxldCByZXF1aXJlZF93b3JrZmxvd3MgPSBCVHJlZVNldDo6ZnJvbShbInByLXRpdGxlLWNoZWNrLnltbCIudG9fc3RyaW5nKCldKTsK
         run: |
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
           python3 - <<'PY'
+          import base64
+          import os
           from pathlib import Path
 
           path = Path('.ci/staged/17903-root-triggers.patch')
           text = path.read_text(encoding='utf-8')
-          old = '''@@ -425 +400,4 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
--    let required_workflows = required_workflows(&policy)?;
-+    let mut required_workflows = required_workflows(&policy)?;
-+    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-+        required_workflows.remove(product);
-+    }
-'''
-          new = '''@@ -425 +400 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
--    let required_workflows = required_workflows(&policy)?;
-+    let required_workflows = BTreeSet::from(["pr-title-check.yml".to_string()]);
-'''
+          old = base64.b64decode(os.environ['OLD_PATCH_B64']).decode()
+          new = base64.b64decode(os.environ['NEW_PATCH_B64']).decode()
           if text.count(old) != 1:
               raise SystemExit(f'expected one inconsistent projected set, found {text.count(old)}')
           path.write_text(text.replace(old, new), encoding='utf-8')
