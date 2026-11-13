@@ -138,8 +138,7 @@ fn native_profile_refuses_each_missing_duplicate_or_relabelled_cover() {
     for harness in HARNESSES {
         for id in harness.covers {
             let quoted = format!("\"{id}\"");
-            for replacement in
-                [String::new(), format!("{quoted}, {quoted}"), "\"FOREIGN\"".into()]
+            for replacement in [String::new(), format!("{quoted}, {quoted}"), "\"FOREIGN\"".into()]
             {
                 let changed = POSITIVE.replacen(quoted.as_str(), &replacement, 1);
                 assert_ne!(changed, POSITIVE);
