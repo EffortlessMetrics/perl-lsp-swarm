@@ -30,42 +30,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  refresh-rust-1-100-book:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'build/rust-1.100-upgrade'
-    permissions:
-      contents: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout migration branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: build/rust-1.100-upgrade
-          fetch-depth: 1
-          persist-credentials: true
-
-      - name: Refresh only mapped Rust 1.100 chapters
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/populate-book.sh >/tmp/populate-book.log
-          git add -f -- \
-            book/src/ci/overview.md \
-            book/src/ci/local-validation.md \
-            book/src/developer/development-workflow.md \
-            book/src/developer/test-infrastructure.md \
-            book/src/getting-started/installation.md
-          git diff --cached --check
-          if git diff --cached --quiet; then
-            echo "Mapped book projections were already fresh."
-            exit 0
-          fi
-          git diff --cached --stat
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "docs(book): refresh Rust 1.100 projections"
-          git push origin HEAD:build/rust-1.100-upgrade
-
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
