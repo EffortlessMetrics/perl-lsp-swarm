@@ -1,0 +1,151 @@
+name: Temporary formal currentness qualification
+
+on:
+  push:
+    branches: [agent/formal-currentness-19314]
+    paths:
+      - .github/workflows/tmp-formal-currentness-qualification.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-formal-currentness-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-position:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Read immutable position candidate without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 4e713e85d0db1a3fb124bd2ffbfa63d5e6308383
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install exact verifier release for diagnostic qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-position-native
+          git rev-parse HEAD > target/formal-position-native/subject.txt
+          test "$(uname -m)" = x86_64
+          test "$(df --output=avail -B1 "$RUNNER_TEMP" | tail -1)" -gt 8589934592
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          cargo +1.95.0 install kani-verifier --version 0.68.0 --locked --jobs 2 --root "$RUNNER_TEMP/kani-launcher"
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 180 https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/kani-0.68.0.tar.gz"
+          printf '32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3  %s\n' "$RUNNER_TEMP/kani-0.68.0.tar.gz" | sha256sum -c -
+          "$RUNNER_TEMP/kani-launcher/bin/kani" setup --use-local-bundle "$RUNNER_TEMP/kani-0.68.0.tar.gz"
+          "$RUNNER_TEMP/kani-launcher/bin/kani" --version > target/formal-position-native/kani-version.txt
+          rustup toolchain list -v > target/formal-position-native/rust-toolchains.txt
+          sha256sum "$RUNNER_TEMP/kani-0.68.0.tar.gz" > target/formal-position-native/bundle-sha256.txt
+      - name: Simplify only the proof generator without narrowing its domain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, subprocess
+          root = Path('crates/perl-line-index/tests/formal')
+          path = root / 'contract.rs'
+          original = path.read_bytes()
+          oid = hashlib.sha1(b'blob ' + str(len(original)).encode() + b'\0' + original).hexdigest()
+          if oid != '3899c4889202e9ee7bd132af6bd9eb78ff668075':
+              raise SystemExit('generator source identity changed')
+          source = original.decode()
+          start = source.index('pub struct BoundedText {')
+          end = source.index('/// Count LF bytes strictly before the clamped offset')
+          replacement = '''pub struct BoundedText {
+              text: String,
+          }
+
+          impl BoundedText {
+              pub fn as_str(&self) -> &str {
+                  self.text.as_str()
+              }
+          }
+
+          /// The same case-to-text bijection, constructed from valid literal strings.
+          /// Three explicit appends avoid nested symbolic generator loops and the
+          /// redundant full UTF-8 validator in the proof-only input construction.
+          pub fn case_text(case: u16) -> BoundedText {
+              assert!(case < CASE_COUNT, "FV_POSITION_DOMAIN_CASE");
+              let (length, mut digits) = match case {
+                  0 => (0, 0),
+                  1..=8 => (1, case - 1),
+                  9..=72 => (2, case - 9),
+                  _ => (MAX_SCALARS, case - 73),
+              };
+              let mut text = String::with_capacity(MAX_BYTES);
+              if length >= 1 {
+                  text.push_str(ALPHABET[usize::from(digits % 8)]);
+                  digits /= 8;
+              }
+              if length >= 2 {
+                  text.push_str(ALPHABET[usize::from(digits % 8)]);
+                  digits /= 8;
+              }
+              if length >= 3 {
+                  text.push_str(ALPHABET[usize::from(digits % 8)]);
+              }
+              BoundedText { text }
+          }
+
+          '''
+          path.write_text(source[:start] + replacement + source[end:])
+          for name, expected in [('line_index_kani.rs', 3), ('false_scalar_boundary.rs', 1)]:
+              path = root / name
+              source = path.read_text()
+              old = '    let decoded = storage.as_str();\n    assert!(decoded.is_ok(), "FV_POSITION_GENERATOR_UTF8");\n    if let Ok(text) = decoded {'
+              if source.count(old) != expected:
+                  raise SystemExit('unexpected harness construction shape')
+              new = '    let text = storage.as_str();\n    assert!(text.len() <= contract::MAX_BYTES, "FV_POSITION_GENERATOR_BOUNDS");\n    {'
+              path.write_text(source.replace(old, new))
+          path = root / 'position_laws.rs'
+          source = path.read_text()
+          if source.count('storage.as_str()?') != 3:
+              raise SystemExit('unexpected ordinary domain-test shape')
+          path.write_text(source.replace('storage.as_str()?', 'storage.as_str()'))
+          subprocess.run(['git', 'diff', '--exit-code', '--', 'crates/perl-line-index/src/lib.rs'], check=True)
+          PY
+          rustfmt +1.95.0 --edition 2024 crates/perl-line-index/tests/formal/contract.rs crates/perl-line-index/tests/formal/line_index_kani.rs crates/perl-line-index/tests/formal/false_scalar_boundary.rs crates/perl-line-index/tests/formal/position_laws.rs
+          git diff --exit-code -- crates/perl-line-index/src/lib.rs
+          git diff --check
+          git diff --binary -- crates/perl-line-index/tests/formal > target/formal-position-native/generator.patch
+          mkdir -p target/formal-position-native/source
+          cp crates/perl-line-index/tests/formal/*.rs target/formal-position-native/source/
+          sha256sum crates/perl-line-index/src/lib.rs crates/perl-line-index/tests/formal/*.rs > target/formal-position-native/source-sha256.txt
+      - name: Execute all eleven ordinary laws before native measurement
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/cargo-admitted test -p perl-line-index --lib --profile agent --locked formal_position_laws -- --test-threads=1 --color never 2>&1 | tee target/formal-position-native/regressions.log
+          grep -Eq 'test result: ok\. 11 passed; 0 failed; 0 ignored;' target/formal-position-native/regressions.log
+      - name: Capture real positive and false-theorem runs without admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Diagnostic only; no canonical custody or accepted-proof receipt.
+          ulimit -v 6291456
+          ulimit -f 262144
+          set +e
+          timeout --kill-after=10s 600s "$RUNNER_TEMP/kani-launcher/bin/kani" crates/perl-line-index/tests/formal/line_index_kani.rs -Z unstable-options -Z concrete-playback --export-json target/formal-position-native/positive.json --concrete-playback=print > target/formal-position-native/positive.log 2>&1
+          positive=$?
+          printf '%s\n' "$positive" > target/formal-position-native/positive-exit.txt
+          timeout --kill-after=10s 180s "$RUNNER_TEMP/kani-launcher/bin/kani" crates/perl-line-index/tests/formal/false_scalar_boundary.rs -Z unstable-options -Z concrete-playback --export-json target/formal-position-native/false-theorem.json --concrete-playback=print > target/formal-position-native/false-theorem.log 2>&1
+          negative=$?
+          printf '%s\n' "$negative" > target/formal-position-native/false-theorem-exit.txt
+          set -e
+          printf '{"proof_accepted":false,"evidence_class":"diagnostic_native_execution","custody_qualified":false,"source_state":"captured_generator_patch","positive_exit":%s,"false_theorem_exit":%s}\n' "$positive" "$negative" > target/formal-position-native/observation.json
+          git diff --exit-code -- crates/perl-line-index/src/lib.rs
+          test "$positive" -eq 0
+      - name: Preserve actual native output, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: formal-position-generator-trial-${{ github.sha }}
+          path: target/formal-position-native/
+          retention-days: 7
+          if-no-files-found: error
