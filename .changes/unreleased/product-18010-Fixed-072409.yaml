@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Native critic distinguishes explicit strict and warnings imports from heredoc, quoted, POD, and data text, and recognizes imports sharing one line.
+time: 2026-10-16T07:24:09Z
+custom:
+  PR: "18010"
+  Slug: native-critic-pragma-imports
+  Breaking: "no"
