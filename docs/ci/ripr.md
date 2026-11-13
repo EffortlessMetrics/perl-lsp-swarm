@@ -302,15 +302,17 @@ burn-down closes.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.10.0` as
-the current advisory version for this lane.
+`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.11.0` as
+the current advisory version for this lane, built from
+`https://github.com/EffortlessMetrics/ripr-swarm.git` at revision
+`9b9143798615bbf1a14c2dbd23a2359a29942078`.
 
 ---
 
 ## Running locally
 
 ```bash
-cargo install ripr --version 0.10.0 --locked
+cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev 9b9143798615bbf1a14c2dbd23a2359a29942078 --locked
 ripr doctor
 cargo xtask ripr-pr --base origin/HEAD --head HEAD --pr-head "$PR_HEAD_SHA"
 cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json

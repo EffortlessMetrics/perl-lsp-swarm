@@ -129,8 +129,8 @@ class ConsumerPacket(unittest.TestCase):
         self.assertEqual(phases["baseline"]["fresh_generation_repo_checks"], formats)
         self.assertEqual(phases["validation"]["additional_repo_checks"], formats)
         self.assertIn("hosted", self.collect()["source_profile"]["lane"])
-        self.assertIn("cargo install ripr --version 0.10.0 --locked", phases["freshness_and_build"]["host_setup"])
-        self.assertIn("cargo install ripr --version 0.10.0 --locked", phases["pr_evidence"]["container_setup"])
+        self.assertIn("cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev 9b9143798615bbf1a14c2dbd23a2359a29942078 --locked", phases["freshness_and_build"]["host_setup"])
+        self.assertIn("cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev 9b9143798615bbf1a14c2dbd23a2359a29942078 --locked", phases["pr_evidence"]["container_setup"])
         self.assertIn("observe-xtask-build.sh container -- cargo build -p xtask --locked",
                       phases["pr_evidence"]["container_setup"])
         self.assertIn("ripr doctor", phases["pr_evidence"]["container_setup"])

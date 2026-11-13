@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect offline qualification inputs for the frozen RIPR 0.10.0 consumer.
+"""Collect offline qualification inputs for the frozen RIPR 0.11.0 consumer.
 
 This reads existing Git objects and bounded recursive Git-tree API snapshots.
 It never fetches, runs RIPR/Cargo, qualifies a runner, or produces gate evidence.
@@ -177,7 +177,7 @@ def proof_sequence():
         {"phase": "freshness_and_build", "requires": "full-history checkout; invocation-specific invalidation handoff; normalized base",
          "host_setup": ["record rustc version",
                         "restore-only Cargo dependencies and version/head-keyed RIPR fact cache",
-                        "cargo install ripr --version 0.10.0 --locked",
+                        "cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev 9b9143798615bbf1a14c2dbd23a2359a29942078 --locked",
                         "python3 scripts/tests/test_observe_xtask_build.py",
                         "observe-xtask-build.sh host-initial -- cargo build -p xtask --locked",
                         "ripr doctor"]},
@@ -188,7 +188,7 @@ def proof_sequence():
          "host_setup": ["docker pull: TERM at 3m, kill after 10s",
                         "image ID and digest inspections: each TERM at 15s, kill after 5s"],
          "container_setup": ["apt update and build-essential/pkg-config/libssl-dev/git/curl/jq/time install",
-                             "cargo install ripr --version 0.10.0 --locked",
+                             "cargo install ripr --git https://github.com/EffortlessMetrics/ripr-swarm.git --rev 9b9143798615bbf1a14c2dbd23a2359a29942078 --locked",
                              "record rustc/cargo/ripr versions and binary SHA-256",
                              "observe-xtask-build.sh container -- cargo build -p xtask --locked",
                              "ripr doctor"],
@@ -269,7 +269,7 @@ def collect(repo, evaluated, base, head, expected_tree, evaluated_snapshot, base
         "admission_effect": "none", "qualification": "NOT_PROVEN",
         "subject": {"evaluated_head": evaluated, "tree": tree, "base": base,
                     "pr_head": head, "ordered_parents": parents, "base_tree": base_tree},
-        "source_profile": {"consumer_ripr_version": "0.10.0", "source_blobs": KNOWN_BLOBS,
+        "source_profile": {"consumer_ripr_version": "0.11.0", "source_blobs": KNOWN_BLOBS,
                            "evaluated_tree": tree,
                            "lane": "ripr-github (primary hosted); not selfhosted or disk-full fallback",
                            "inactive_entry": {"blob": INACTIVE_ENTRY_BLOB, "ripr_version": "0.10.1"}
