@@ -32,10 +32,13 @@ The UTF-16 relation enumerates scalar boundaries, excludes CRLF interiors, and c
 Run the ordinary regression target through the repository's admitted Cargo route:
 
 ```bash
-scripts/cargo-admitted test -p perl-line-index --test formal_position_laws --locked
+scripts/cargo-admitted test -p perl-line-index --lib --locked formal_position_laws
 ```
 
-The six tests cover the complete finite text domain, byte clamping and reverse
+The six tests in `tests/formal/position_laws.rs` are included by a `cfg(test)`
+module in `src/lib.rs`. The existing `unit_foundation_full` gate runs them through
+its unfiltered `cargo test --lib -p perl-line-index` selection; no new workflow or
+CI matrix is added. They cover the complete finite text domain, byte clamping and reverse
 acceptance, UTF-16 soundness and completeness, literal independent witnesses, an
 actual counterexample to the false byte-scalar-boundary theorem, and separate BOM,
 NUL, and longer-input regressions. The ordinary tests enumerate short coordinates
@@ -80,7 +83,7 @@ measured performance qualification.
 
 ### Native invocation and controls
 
-Use an admitted x86_64 Linux executor with the programme's verified **Kani 0.68.0**
+Use an admitted x86_64 Linux executor with the programme's hash-verified, pinned **Kani 0.68.0**
 bundle and its bundled compiler/CBMC. The Kani toolchain is independent of the
 repository's ordinary stable toolchain. The following are tool commands for the
 common custody runner, not an alternative admission wrapper or a CI activation:
@@ -125,7 +128,7 @@ common adapter; this slice does not add a second process runner or result parser
 
 ### Identity, maintenance, and limits
 
-The shared reference file, positive/negative harnesses, and ordinary test target
+The shared reference file, positive/negative harnesses, and ordinary test module
 live under the existing `tests/**` package include rule. The standalone proof is
 still repository-source evidence, not packaged-artifact equivalence. Bind its
 production source, shared oracle/generator, selected harness, target, flags, unwind

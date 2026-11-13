@@ -1,10 +1,10 @@
 //! Exhaustive finite-domain regression tests for the native proof predicates.
 //! These are ordinary tests, not a Kani result or an unbounded Unicode claim.
 
-use perl_line_index::LineIndex;
+use super::LineIndex;
 use std::collections::BTreeSet;
 
-#[path = "formal/contract.rs"]
+#[path = "contract.rs"]
 mod contract;
 
 use contract::{CASE_COUNT, MAX_BYTES, MAX_SCALARS, case_text};
