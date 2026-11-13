@@ -6,7 +6,7 @@
 ## Test Counts
 
 <!-- BEGIN: TESTS_TABLE_ROWS -->
-| **Tier A Tests** | 16277 lib tests (discovered), 44 ignores (tracked) | 100% pass | PASS |
+| **Tier A Tests** | 16277 lib tests (discovered), 44 ignores (tracked) | not executed | UNVERIFIED |
 | **Tracked Test Debt** | 3 (2 bug, 1 manual) | 0 | Near-zero |
 <!-- END: TESTS_TABLE_ROWS -->
 

@@ -48,10 +48,15 @@ pub(super) fn collect_for_selection<T>(
     }
 }
 
+/// `cargo test -- --list` enumerates library tests without executing them.
+/// Status writers must not mint a pass verdict from this inventory (#14298).
+pub(super) const WORKSPACE_LIB_TEST_DISCOVERY_ARGV: &[&str] =
+    &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"];
+
 pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
     inventory_from_merged_result(run_cmd_merged_with_failure_tail(
         root,
-        &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
+        WORKSPACE_LIB_TEST_DISCOVERY_ARGV,
         Duration::from_mins(12),
     ))
 }
@@ -198,6 +203,31 @@ mod tests {
             Err(err) => err.to_string(),
         };
         assert_eq!(message, "test inventory discovery failed or returned no output");
+    }
+
+    #[test]
+    fn workspace_lib_discovery_enumerates_without_executing() {
+        // #14298: pins the production argv so a later swap off `--list` is
+        // visible. Enumeration is not execution-backed evidence.
+        assert_eq!(
+            WORKSPACE_LIB_TEST_DISCOVERY_ARGV,
+            [
+                "cargo",
+                "test",
+                "--workspace",
+                "--lib",
+                "--exclude",
+                "tree-sitter-perl",
+                "--",
+                "--list"
+            ]
+        );
+        let separator = WORKSPACE_LIB_TEST_DISCOVERY_ARGV.iter().position(|arg| *arg == "--");
+        let list = WORKSPACE_LIB_TEST_DISCOVERY_ARGV.iter().position(|arg| *arg == "--list");
+        assert!(
+            matches!((separator, list), (Some(sep), Some(list)) if list > sep),
+            "`--list` must be a test-harness flag after `--`, not a cargo option"
+        );
     }
 
     #[test]
