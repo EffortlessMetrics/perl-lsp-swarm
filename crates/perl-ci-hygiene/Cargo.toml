@@ -1,5 +1,6 @@
 [package]
 name = "perl-ci-hygiene"
+default-run = "perl-ci-hygiene"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

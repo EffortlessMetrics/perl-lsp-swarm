@@ -23,10 +23,8 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let root = std::env::current_dir().context("failed to read the current workspace root")?;
-    let name = perl_ci_hygiene::package_resolver::resolve_single_package_name(
-        &root,
-        &args.crate_dir,
-    )?;
+    let name =
+        perl_ci_hygiene::package_resolver::resolve_single_package_name(&root, &args.crate_dir)?;
     println!("{name}");
     Ok(())
 }

@@ -126,17 +126,11 @@ mod tests {
     #[test]
     fn manifest_directory_requires_a_root_segment_boundary() {
         assert_eq!(
-            manifest_crate_directory(
-                "/work/repo/",
-                "/work/repo/crates/perl-token/Cargo.toml"
-            ),
+            manifest_crate_directory("/work/repo/", "/work/repo/crates/perl-token/Cargo.toml"),
             Some("crates/perl-token")
         );
         assert_eq!(
-            manifest_crate_directory(
-                "/work/repo",
-                "/work/repository/crates/perl-token/Cargo.toml"
-            ),
+            manifest_crate_directory("/work/repo", "/work/repository/crates/perl-token/Cargo.toml"),
             None
         );
     }
