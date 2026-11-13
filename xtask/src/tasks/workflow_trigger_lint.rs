@@ -429,8 +429,9 @@ fn evaluate_scoped_entry(
         if let Some(yaml) = workflow_yaml {
             let ordinary_pull_request =
                 events.is_none_or(|events| event_is_required(events, "pull_request"));
-            let pull_request_target =
-                events.is_some_and(|events| event_is_required(events, "pull_request_target"));
+            let pull_request_target = events.is_some_and(|events| {
+                events.iter().any(|candidate| candidate == "pull_request_target")
+            });
             if ordinary_pull_request && !has_trigger(yaml, "pull_request") {
                 findings.push(("pull-request-trigger", "missing pull_request trigger".to_string()));
             }
@@ -1213,6 +1214,34 @@ mod tests {
             unscoped.violations.iter().any(|item| item.contains("merge_group")),
             "unscoped evaluation must name the merge_group registration defect: {:?}",
             unscoped.violations
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_event_scope_keeps_legacy_ordinary_events_without_pr_target() -> Result<()> {
+        let metadata: Value = serde_yaml_ng::from_str(
+            "on:\n  pull_request: {}\njobs:\n  required:\n    name: required\n    steps: []\n",
+        )?;
+        let events: Vec<String> = Vec::new();
+        let evaluated = evaluate_scoped_entry(
+            "required",
+            "required.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            &[],
+            Some(&events),
+        );
+        assert!(
+            !evaluated.violations.iter().any(|item| item == "missing pull_request_target trigger"),
+            "an empty scope keeps the legacy ordinary events, not pull_request_target: {:?}",
+            evaluated.violations
+        );
+        assert!(
+            evaluated.violations.iter().any(|item| item == "missing merge_group trigger"),
+            "an empty scope must retain the legacy ordinary-event contract: {:?}",
+            evaluated.violations
         );
         Ok(())
     }
