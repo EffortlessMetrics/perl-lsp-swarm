@@ -40,35 +40,9 @@ jobs:
           path = Path("xtask/src/tasks/formal_receipt.rs")
           source = path.read_text()
 
-          old_native = '''                if self.native.properties.is_empty()
-                      || self
-                          .native
-                          .properties
-                          .values()
-                          .any(|outcome| *outcome != PropertyOutcome::Pass)
-                  {
-                      errors.push(
-                          "native pass requires a nonempty all-pass property denominator".to_string(),
-                      );
-                  }
-                  complete("positive", &self.obligations.positive, errors);
-                  complete("harness controls", &self.obligations.harness_controls, errors);
-                  if !self.artifacts.iter().any(|artifact| artifact.required) {
-                      errors.push("native pass requires a required raw artifact".to_string());
-                  }
+          complete_anchor = '''                complete("positive", &self.obligations.positive, errors);
           '''
-          new_native = '''                if self.native.properties.is_empty()
-                      || self
-                          .native
-                          .properties
-                          .values()
-                          .any(|outcome| *outcome != PropertyOutcome::Pass)
-                  {
-                      errors.push(
-                          "native pass requires a nonempty all-pass property denominator".to_string(),
-                      );
-                  }
-                  let expected_properties = self
+          identity_law = '''                let expected_properties = self
                       .obligations
                       .positive
                       .ids
@@ -87,9 +61,16 @@ jobs:
                               .to_string(),
                       );
                   }
-                  complete("positive", &self.obligations.positive, errors);
-                  complete("harness controls", &self.obligations.harness_controls, errors);
-                  if !self.artifacts.iter().any(|artifact| {
+          '''
+          if complete_anchor not in source:
+              raise SystemExit("positive-completion anchor no longer matches reviewed head")
+          source = source.replace(complete_anchor, identity_law + complete_anchor, 1)
+
+          old_artifact = '''                if !self.artifacts.iter().any(|artifact| artifact.required) {
+                      errors.push("native pass requires a required raw artifact".to_string());
+                  }
+          '''
+          new_artifact = '''                if !self.artifacts.iter().any(|artifact| {
                       artifact.required
                           && matches!(
                               artifact.kind,
@@ -104,27 +85,19 @@ jobs:
                       );
                   }
           '''
-          if old_native not in source:
-              raise SystemExit("native PASS admission block no longer matches reviewed head")
-          source = source.replace(old_native, new_native, 1)
+          if old_artifact not in source:
+              raise SystemExit("native-artifact anchor no longer matches reviewed head")
+          source = source.replace(old_artifact, new_artifact, 1)
 
-          old_active = '''                if self.disposition.reason.is_some()
-                      || self.disposition.superseded_by.is_some()
+          old_active = '''                    || self.disposition.superseded_by.is_some()
                       || matches!(
-                          self.freshness.status,
-                          FreshnessStatus::Retired | FreshnessStatus::Superseded
-                      )
           '''
-          new_active = '''                if self.disposition.reason.is_some()
-                      || self.disposition.superseded_by.is_some()
+          new_active = '''                    || self.disposition.superseded_by.is_some()
                       || self.claim.rollout == RolloutState::Retired
                       || matches!(
-                          self.freshness.status,
-                          FreshnessStatus::Retired | FreshnessStatus::Superseded
-                      )
           '''
           if old_active not in source:
-              raise SystemExit("active-disposition block no longer matches reviewed head")
+              raise SystemExit("active-disposition anchor no longer matches reviewed head")
           source = source.replace(old_active, new_active, 1)
 
           tests = '''
@@ -211,7 +184,7 @@ jobs:
               fn counterexample_requires_bound_trace() {
           '''
           if marker not in source:
-              raise SystemExit("test insertion marker no longer matches reviewed head")
+              raise SystemExit("test insertion anchor no longer matches reviewed head")
           source = source.replace(marker, tests + marker, 1)
           path.write_text(source)
           PY
@@ -228,23 +201,13 @@ jobs:
       - name: Verify clean patch shape
         run: git diff --check
 
-      - name: Upload exact repaired sources
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: formal-receipt-repair-${{ github.event.pull_request.head.sha }}
-          retention-days: 1
-          if-no-files-found: error
-          path: |
-            xtask/src/tasks/formal_receipt.rs
-            xtask/src/tasks/gate_receipts.rs
-            xtask/src/tasks/mod.rs
-
-      - name: Commit exact repair to the carrier branch
+      - name: Remove temporary workflow and commit exact repair
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "Steven Zimmerman, CPA"
           git config user.email "15812269+EffortlessSteven@users.noreply.github.com"
+          git rm .github/workflows/tmp-formal-receipt-format.yml
           git add xtask/src/tasks/formal_receipt.rs xtask/src/tasks/gate_receipts.rs xtask/src/tasks/mod.rs
           if git diff --cached --quiet; then
             echo "No repair delta was produced" >&2
