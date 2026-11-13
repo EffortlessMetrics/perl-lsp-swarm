@@ -92,6 +92,9 @@ thread_local! {
     static REBUILD_SEARCH_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
+use crate::semantic::fact_fingerprint::{
+    fingerprint_anchors, fingerprint_edges, fingerprint_entities, fingerprint_occurrences,
+};
 use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
 use crate::semantic::imports::ImportExportIndex;
 pub use crate::semantic::invalidation::ShardReplaceResult;
@@ -3507,35 +3510,21 @@ impl WorkspaceIndex {
             });
         }
         // Hash the per-category fact vectors so consumers can detect staleness
-        // without re-reading the full shard.
-        let anchors_hash = {
-            let mut h = DefaultHasher::new();
-            anchors.len().hash(&mut h);
-            for a in &anchors {
-                a.id.hash(&mut h);
-                a.span_start_byte.hash(&mut h);
-                a.span_end_byte.hash(&mut h);
-            }
-            h.finish()
-        };
-        let entities_hash = {
-            let mut h = DefaultHasher::new();
-            entities.len().hash(&mut h);
-            for e in &entities {
-                e.id.hash(&mut h);
-                e.canonical_name.hash(&mut h);
-            }
-            h.finish()
-        };
+        // without re-reading the full shard. Empty occurrence/edge vectors still
+        // receive the versioned empty-set fingerprint rather than a sentinel 0.
+        let anchors_hash = fingerprint_anchors(&anchors, PRODUCER_SCHEMA_VERSION);
+        let entities_hash = fingerprint_entities(&entities, PRODUCER_SCHEMA_VERSION);
+        let occurrences_hash = fingerprint_occurrences(&[], PRODUCER_SCHEMA_VERSION);
+        let edges_hash = fingerprint_edges(&[], PRODUCER_SCHEMA_VERSION);
         FileFactShard {
             source_uri: uri.to_string(),
             file_id,
             content_hash,
             producer_schema_version: PRODUCER_SCHEMA_VERSION,
-            anchors_hash: Some(anchors_hash),
-            entities_hash: Some(entities_hash),
-            occurrences_hash: Some(0),
-            edges_hash: Some(0),
+            anchors_hash,
+            entities_hash,
+            occurrences_hash,
+            edges_hash,
             anchors,
             entities,
             occurrences: Vec::new(),
@@ -3819,12 +3808,13 @@ impl WorkspaceIndex {
 
     /// Replace a [`FileFactShard`] with per-category incremental invalidation.
     ///
-    /// Compares the whole-file `content_hash` first; when unchanged the
-    /// replacement is skipped entirely.  Otherwise each per-category hash
-    /// (`anchors_hash`, `entities_hash`, `occurrences_hash`, `edges_hash`)
-    /// is compared individually.  Only categories whose hash changed trigger
-    /// removal of old entries and insertion of new ones in the cross-file
-    /// semantic indexes.
+    /// A whole-file `content_hash` match is not sufficient on its own (#8054).
+    /// The replacement is skipped entirely only when producer schema, content
+    /// digest, and every category fingerprint agree. Otherwise each
+    /// per-category hash (`anchors_hash`, `entities_hash`, `occurrences_hash`,
+    /// `edges_hash`) is compared individually. Only categories whose hash
+    /// changed (or is missing/legacy) trigger removal of old entries and
+    /// insertion of new ones in the cross-file semantic indexes.
     ///
     /// **Validates: Requirements 18.1, 18.2, 18.3, 18.4, 18.5**
     pub fn replace_fact_shard_incremental(
@@ -3885,6 +3875,7 @@ impl WorkspaceIndex {
     fn shard_category_hashes(shard: &FileFactShard) -> ShardCategoryHashes {
         ShardCategoryHashes {
             content_hash: shard.content_hash,
+            producer_schema_version: shard.producer_schema_version,
             anchors_hash: shard.anchors_hash,
             entities_hash: shard.entities_hash,
             occurrences_hash: shard.occurrences_hash,
@@ -9044,7 +9035,7 @@ use Data::Dumper;
     #[test]
     fn test_windows_paths() {
         // Test Windows-style paths
-        let result = fs_path_to_uri(r"C:\Users\test\Documents\script.pl");
+        let result = fs_path_to_uri(r"C:\Temp\test\Documents\script.pl");
         assert!(result.is_ok());
         let uri = must(result);
         assert!(uri.starts_with("file://"));
@@ -12494,22 +12485,45 @@ MixedMod->import(qw(qw_one qw_two));
         }
     }
 
-    /// Req 18.5: When content_hash is unchanged, skip all per-category
-    /// comparisons — no index modifications happen.
+    /// #8054: equal `content_hash` with changed category fingerprints must
+    /// not skip replacement. Source-byte equality is not semantic reuse.
     #[test]
-    fn incremental_replace_skips_when_content_hash_unchanged()
+    fn incremental_replace_does_not_skip_on_content_hash_alone()
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/Same.pm";
         let key = DocumentStore::uri_key(uri);
 
         let shard_v1 = make_shard(uri, 42, Some(1), Some(2), Some(3), Some(4));
-        // First insert — no old shard, so all categories are "changed".
         let r1 = index.replace_fact_shard_incremental(&key, shard_v1);
         assert!(!r1.content_unchanged);
 
-        // Second insert with same content_hash → skip entirely.
         let shard_v2 = make_shard(uri, 42, Some(100), Some(200), Some(300), Some(400));
+        let r2 = index.replace_fact_shard_incremental(&key, shard_v2);
+        assert!(!r2.content_unchanged);
+        assert!(r2.anchors_updated);
+        assert!(r2.entities_updated);
+        assert!(r2.occurrences_updated);
+        assert!(r2.edges_updated);
+
+        let stored = must_some(index.file_fact_shard(uri));
+        assert_eq!(stored.anchors_hash, Some(100));
+        Ok(())
+    }
+
+    /// Complete subject equality (content + producer + every category
+    /// fingerprint) is the only whole-shard skip.
+    #[test]
+    fn incremental_replace_skips_when_complete_subject_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Unchanged.pm";
+        let key = DocumentStore::uri_key(uri);
+
+        let shard_v1 = make_shard(uri, 42, Some(1), Some(2), Some(3), Some(4));
+        index.replace_fact_shard_incremental(&key, shard_v1);
+
+        let shard_v2 = make_shard(uri, 42, Some(1), Some(2), Some(3), Some(4));
         let r2 = index.replace_fact_shard_incremental(&key, shard_v2);
         assert!(r2.content_unchanged);
         assert!(!r2.anchors_updated);
@@ -12517,7 +12531,6 @@ MixedMod->import(qw(qw_one qw_two));
         assert!(!r2.occurrences_updated);
         assert!(!r2.edges_updated);
 
-        // The stored shard should still be v1 (unchanged).
         let stored = must_some(index.file_fact_shard(uri));
         assert_eq!(stored.anchors_hash, Some(1));
         Ok(())
@@ -12748,8 +12761,9 @@ MixedMod->import(qw(qw_one qw_two));
             "reference index should be populated after first insert"
         );
 
-        // v2: same content_hash → skip entirely, reference index untouched.
-        let shard_v2_same = make_shard(uri, 1, Some(10), Some(20), Some(99), Some(99));
+        // v2: complete subject equality (content + producer + every category
+        // fingerprint) skips entirely; the reference index is untouched.
+        let shard_v2_same = make_shard(uri, 1, Some(10), Some(20), Some(30), Some(40));
         let r = index.replace_fact_shard_incremental(&key, shard_v2_same);
         assert!(r.content_unchanged);
 
@@ -13019,15 +13033,13 @@ MixedMod->import(qw(qw_one qw_two));
 
         // Property 15: Incremental Invalidation Correctness
         //
-        // **Validates: Requirements 18.3, 18.4, 18.5**
+        // **Validates: Requirements 18.3, 18.4, 18.5 as corrected by #8054**
         //
-        // For any file re-indexing where the whole-file content_hash is
-        // unchanged, the workspace store shall not modify any cross-file
-        // indexes.  For any file re-indexing where a per-category hash is
-        // unchanged, the workspace store shall skip re-indexing that
-        // category.  For any file re-indexing where a per-category hash
-        // has changed, the workspace store shall remove old entries and
-        // insert new ones for that category.
+        // Whole-file content_hash equality does not skip replacement by
+        // itself. The complete shard subject (producer schema + content
+        // digest + every category fingerprint) must agree. A category whose
+        // fingerprint is unchanged is skipped; a changed or missing
+        // fingerprint is rebuilt.
         proptest! {
             #![proptest_config(ProptestConfig {
                 failure_persistence: None,
@@ -13048,84 +13060,77 @@ MixedMod->import(qw(qw_one qw_two));
                 // Replace with the new shard and capture the result.
                 let result = index.replace_fact_shard_incremental(&key, new_shard.clone());
 
-                // ── Req 18.5: content_hash unchanged → skip entirely ──
-                if old_shard.content_hash == new_shard.content_hash {
+                // ── #8054: content_hash is not a semantic short-circuit ──
+                let anchors_should_update = crate::semantic::invalidation::category_hash_changed(
+                    old_shard.anchors_hash,
+                    new_shard.anchors_hash,
+                );
+                let entities_should_update = crate::semantic::invalidation::category_hash_changed(
+                    old_shard.entities_hash,
+                    new_shard.entities_hash,
+                );
+                let occurrences_should_update =
+                    crate::semantic::invalidation::category_hash_changed(
+                        old_shard.occurrences_hash,
+                        new_shard.occurrences_hash,
+                    );
+                let edges_should_update = crate::semantic::invalidation::category_hash_changed(
+                    old_shard.edges_hash,
+                    new_shard.edges_hash,
+                );
+                let producer_changed = old_shard.producer_schema_version
+                    != new_shard.producer_schema_version;
+                let complete_subject_equal = !producer_changed
+                    && old_shard.content_hash == new_shard.content_hash
+                    && !anchors_should_update
+                    && !entities_should_update
+                    && !occurrences_should_update
+                    && !edges_should_update;
+
+                if complete_subject_equal {
                     prop_assert!(
                         result.content_unchanged,
-                        "content_unchanged must be true when content_hash is the same"
+                        "content_unchanged must be true when the complete shard subject matches"
                     );
-                    prop_assert!(
-                        !result.anchors_updated,
-                        "anchors_updated must be false when content_hash unchanged"
-                    );
-                    prop_assert!(
-                        !result.entities_updated,
-                        "entities_updated must be false when content_hash unchanged"
-                    );
-                    prop_assert!(
-                        !result.occurrences_updated,
-                        "occurrences_updated must be false when content_hash unchanged"
-                    );
-                    prop_assert!(
-                        !result.edges_updated,
-                        "edges_updated must be false when content_hash unchanged"
-                    );
+                    prop_assert!(!result.anchors_updated);
+                    prop_assert!(!result.entities_updated);
+                    prop_assert!(!result.occurrences_updated);
+                    prop_assert!(!result.edges_updated);
                 } else {
                     prop_assert!(
                         !result.content_unchanged,
-                        "content_unchanged must be false when content_hash differs"
+                        "content_unchanged must be false unless the complete shard subject matches"
                     );
 
                     // ── Req 18.3 / 18.4: per-category hash comparison ──
-                    // A category is "unchanged" when both old and new have
-                    // Some(h) and the values are equal.  Otherwise the
-                    // category is conservatively treated as changed.
-
-                    let anchors_should_update = crate::semantic::invalidation::category_hash_changed(
-                        old_shard.anchors_hash,
-                        new_shard.anchors_hash,
-                    );
+                    // A category is "unchanged" when producer schema agrees
+                    // and both old and new have Some(h) with equal values.
+                    // Otherwise the category is conservatively treated as
+                    // changed.
                     prop_assert_eq!(
                         result.anchors_updated,
-                        anchors_should_update,
+                        producer_changed || anchors_should_update,
                         "anchors_updated mismatch: old={:?} new={:?}",
                         old_shard.anchors_hash,
                         new_shard.anchors_hash,
                     );
-
-                    let entities_should_update =
-                        crate::semantic::invalidation::category_hash_changed(
-                            old_shard.entities_hash,
-                            new_shard.entities_hash,
-                        );
                     prop_assert_eq!(
                         result.entities_updated,
-                        entities_should_update,
+                        producer_changed || entities_should_update,
                         "entities_updated mismatch: old={:?} new={:?}",
                         old_shard.entities_hash,
                         new_shard.entities_hash,
                     );
-
-                    let occurrences_should_update =
-                        crate::semantic::invalidation::category_hash_changed(
-                            old_shard.occurrences_hash,
-                            new_shard.occurrences_hash,
-                        );
                     prop_assert_eq!(
                         result.occurrences_updated,
-                        occurrences_should_update,
+                        producer_changed || occurrences_should_update,
                         "occurrences_updated mismatch: old={:?} new={:?}",
                         old_shard.occurrences_hash,
                         new_shard.occurrences_hash,
                     );
-
-                    let edges_should_update = crate::semantic::invalidation::category_hash_changed(
-                        old_shard.edges_hash,
-                        new_shard.edges_hash,
-                    );
                     prop_assert_eq!(
                         result.edges_updated,
-                        edges_should_update,
+                        producer_changed || edges_should_update,
                         "edges_updated mismatch: old={:?} new={:?}",
                         old_shard.edges_hash,
                         new_shard.edges_hash,

@@ -11,6 +11,9 @@
 /// Canonical `FileFactShard` population from semantic fact producers.
 pub mod facts;
 
+/// Versioned portable category fingerprints for admitted semantic facts.
+pub(crate) mod fact_fingerprint;
+
 /// Typed reference index for cross-file reference lookups.
 pub mod references;
 
