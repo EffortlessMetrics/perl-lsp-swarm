@@ -195,6 +195,8 @@ def referenced_foreign_types(realisation: str) -> list[str]:
 
 
 def _git_grep(pattern: str, *, fixed: bool) -> bool:
+    # This is an existence query, not exhaustive read-error detection: Git can
+    # return 0/1 with read diagnostics, as it could for the previous -l query.
     mode = "-F" if fixed else "-E"
     result = subprocess.run(
         ["git", "grep", "-q", mode, pattern, "--", ":(glob)crates/**/*.rs"],
@@ -299,6 +301,19 @@ class RustExistenceProbeTest(unittest.TestCase):
         self.assertTrue(type_name_exists_in_crates("AfterEdit"))
         file.with_name("untracked.rs").write_text("pub struct Untracked;\n", encoding="utf-8")
         self.assertFalse(type_name_exists_in_crates("Untracked"))
+
+    def test_git_quoted_rust_filenames_still_supply_type_evidence(self) -> None:
+        subprocess.run(["git", "config", "core.quotePath", "true"], cwd=self.root, check=True)
+        for name, type_name in [("caf\u00e9.rs", "UnicodeType"), ("line\nbreak.rs", "NewlineType")]:
+            with self.subTest(name=name):
+                self.track(f"crates/{name}", f"pub struct {type_name};\n")
+                listed = subprocess.run(
+                    ["git", "grep", "-l", "-F", type_name, "--", "crates"],
+                    cwd=self.root, capture_output=True, text=True, check=True,
+                )
+                self.assertTrue(listed.stdout.startswith('"'), "fixture must exercise Git quoting")
+                self.assertFalse(any(line.endswith(".rs") for line in listed.stdout.splitlines()))
+                self.assertTrue(type_name_exists_in_crates(type_name))
 
     def test_regex_macro_and_fixed_string_queries_keep_their_meaning(self) -> None:
         self.track("crates/example/src/lib.rs", "opaque_id!(\n    MacroType,\n);\nlet _: ForeignType;\n")
