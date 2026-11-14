@@ -373,13 +373,21 @@ pub enum TddState {
     Idle,
 }
 
+/// Deprecation guidance for the simplified legacy workflow facade (#8428).
+pub const LEGACY_TDD_BASIC_WORKFLOW_DEPRECATION: &str = "Legacy simplified TDD workflow facade (#8428): \
+    cycle semantics move to #8175; execution to #4972/#7564; removal governed by #8418.";
+
 /// TDD workflow manager
+#[deprecated(
+    note = "Legacy simplified TDD workflow facade (#8428); see LEGACY_TDD_BASIC_WORKFLOW_DEPRECATION"
+)]
 pub struct TddWorkflow {
     state: TddState,
     generator: TestGenerator,
     analyzer: RefactoringAnalyzer,
 }
 
+#[allow(deprecated, reason = "deprecated facade remains until #8418 removal")]
 impl TddWorkflow {
     /// Create a workflow manager using `framework` for test generation (e.g. `"Test::More"`).
     pub fn new(framework: &str) -> Self {
@@ -390,9 +398,8 @@ impl TddWorkflow {
         }
     }
 
-    /// Start TDD cycle
+    /// Start TDD cycle (intent only; does not claim an observed failing test).
     pub fn start_cycle(&mut self, test_name: &str) -> TddResult {
-        self.state = TddState::Red;
         TddResult {
             state: self.state.clone(),
             message: format!("Starting TDD cycle for '{}'", test_name),
@@ -465,6 +472,8 @@ pub struct TddResult {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated, reason = "unit tests cover the deprecated legacy facade")]
+
     use super::*;
     use crate::SourceLocation;
 
@@ -616,9 +625,10 @@ mod tests {
     fn test_tdd_workflow() {
         let mut workflow = TddWorkflow::new("Test::More");
 
-        // Start cycle
-        let _result = workflow.start_cycle("add");
-        assert_eq!(workflow.state, TddState::Red);
+        // Start cycle (intent only)
+        let result = workflow.start_cycle("add");
+        assert_eq!(workflow.state, TddState::Idle);
+        assert!(result.message.contains("add"));
 
         // Run failing tests
         let _result = workflow.run_tests(false);
