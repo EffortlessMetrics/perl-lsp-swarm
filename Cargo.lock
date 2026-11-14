@@ -1665,6 +1665,7 @@ name = "perl-ast"
 version = "0.17.0"
 dependencies = [
  "perl-ast-v2",
+ "perl-parser-core",
  "perl-position-tracking",
  "perl-token",
  "sha2",

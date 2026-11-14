@@ -375,6 +375,10 @@ pub struct Node {
 impl Node {
     /// Create a new AST node with the given kind and source location.
     ///
+    /// This constructor does not validate local invariants. Public manual builders
+    /// should prefer [`Node::try_new`] or [`Node::try_new_in_source`]; parser
+    /// production and compatibility paths continue to use this unchecked entry.
+    ///
     /// # Examples
     ///
     /// ```

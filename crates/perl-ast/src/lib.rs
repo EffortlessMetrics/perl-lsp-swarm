@@ -25,13 +25,12 @@
 //! ```rust
 //! use perl_ast::{Node, NodeKind, SourceLocation};
 //!
-//! // Build a small AST by hand
+//! // Prefer checked construction for public/manual builders
 //! let loc = SourceLocation { start: 0, end: 2 };
-//! let num = Node::new(NodeKind::Number { value: "42".to_string() }, loc);
+//! let num = Node::try_new(NodeKind::Number { value: "42".to_string() }, loc)
+//!     .expect("locally valid node");
 //!
 //! assert_eq!(num.kind.kind_name(), "Number");
-//! assert_eq!(num.location.start, 0);
-//! assert_eq!(num.location.end, 2);
 //! ```
 //!
 //! In practice the AST is produced by the parser (requires `perl-parser-core`):
@@ -98,6 +97,8 @@ pub mod invariants;
 /// identity and generated NodeKind status are derived from the same registry
 /// and do not change parser or AST structure.
 pub mod kind_schema;
+/// Checked public node construction with local invariant errors.
+pub mod node_construction;
 /// Source-backed string and heredoc payload types: raw source, cooked value,
 /// and ordered segments as separate typed propositions.
 ///
@@ -143,6 +144,11 @@ pub use invariant_policy::{
 /// AST structural validation types and entry point.
 pub use invariants::{
     AstInvariantCode, AstInvariantFinding, AstInvariantOptions, AstInvariantReport, validate_ast,
+};
+/// Checked node construction errors and validation entry point.
+pub use node_construction::{
+    NodeInvariantError, NodeLocalInvariantCode, NodeLocalInvariantError, NodeSpanInvariantCode,
+    validate_node_construction,
 };
 /// Byte-offset span indicating where a node appears in source text.
 pub use perl_position_tracking::SourceLocation;
