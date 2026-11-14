@@ -218,17 +218,40 @@ fn sub_local_hash_decl_and_element_use_highlight_together() -> Result<()> {
 }
 
 #[test]
+fn sub_local_hash_same_named_scalar_key_is_excluded() -> Result<()> {
+    let source = "sub demo {\n    my %h = (a => 1);\n    my $h = 'a';\n    print $h{$h};\n}\n";
+    let (mut client, uri) = highlight_session(source)?;
+    let expected = json!([
+        {"range": {"start": {"line": 1, "character": 7}, "end": {"line": 1, "character": 9}}, "kind": 3},
+        {"range": {"start": {"line": 3, "character": 10}, "end": {"line": 3, "character": 12}}, "kind": 2}
+    ]);
+    let on_decl =
+        normalize_highlights(highlight_at(&mut client, &uri, 1, 8, "hl-hash-scalar-key")?);
+    ensure!(on_decl == expected, "scalar key must not join %h highlights: {on_decl} vs {expected}");
+    let on_use =
+        normalize_highlights(highlight_at(&mut client, &uri, 3, 11, "hl-hash-scalar-use")?);
+    ensure!(
+        on_use == expected,
+        "scalar key must stay outside %h highlights: {on_use} vs {expected}"
+    );
+    finish_highlight_session(client)
+}
+
+#[test]
 fn sub_local_array_last_index_highlights_with_declaration() -> Result<()> {
-    let source = "sub demo {\n    my @items = (1);\n    my $n = $#items;\n}\n";
+    let source = "sub demo {\n    my @items = (1);\n    my $x = $foo[$#items];\n}\n";
     let (mut client, uri) = highlight_session(source)?;
     let expected = json!([
         {"range": {"start": {"line": 1, "character": 7}, "end": {"line": 1, "character": 13}}, "kind": 3},
-        {"range": {"start": {"line": 2, "character": 12}, "end": {"line": 2, "character": 19}}, "kind": 2}
+        {"range": {"start": {"line": 2, "character": 17}, "end": {"line": 2, "character": 24}}, "kind": 2}
     ]);
     let on_decl = normalize_highlights(highlight_at(&mut client, &uri, 1, 8, "hl-last-decl")?);
-    ensure!(on_decl == expected, "on @items: {on_decl} vs {expected}");
-    let on_last = normalize_highlights(highlight_at(&mut client, &uri, 2, 14, "hl-last-use")?);
-    ensure!(on_last == expected, "on last-index use: {on_last} vs {expected}");
+    ensure!(on_decl == expected, "last index is position-independent: {on_decl} vs {expected}");
+    let on_last = normalize_highlights(highlight_at(&mut client, &uri, 2, 17, "hl-last-use")?);
+    ensure!(
+        on_last == expected,
+        "last index in a subscript keeps its array: {on_last} vs {expected}"
+    );
     finish_highlight_session(client)
 }
 
