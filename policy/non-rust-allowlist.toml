@@ -2179,6 +2179,51 @@ covered_by = [
 created = "2026-09-05"
 review_after = "2026-12-05"
 
+[[allow]]
+id = "non-rust-snapshot-warm-start-receipt-schema"
+path = "schemas/snapshot_warm_start_receipt.v1.schema.json"
+kind = "cache_contract"
+language = "json"
+surface = "cache"
+classification = "config"
+owner = "infrastructure"
+reason = "JSON Schema for snapshot_warm_start_receipt.v1 restart-warm ProjectModel evidence (#16992)."
+covered_by = [
+  "cargo xtask check-snapshot-warm-start-receipt",
+]
+created = "2026-11-02"
+review_after = "2027-02-02"
+
+[[allow]]
+id = "non-rust-snapshot-warm-start-receipt-fixture-measured"
+path = "xtask/fixtures/snapshot_warm_start_receipt.v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "infrastructure"
+reason = "Measured snapshot_warm_start_receipt.v1 positive control fixture (#16992)."
+covered_by = [
+  "cargo xtask check-snapshot-warm-start-receipt",
+]
+created = "2026-11-02"
+review_after = "2027-02-02"
+
+[[allow]]
+id = "non-rust-snapshot-warm-start-receipt-fixture-uninstrumented"
+path = "xtask/fixtures/snapshot_warm_start_receipt.v1.uninstrumented.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "infrastructure"
+reason = "Uninstrumented snapshot_warm_start_receipt.v1 control fixture demonstrating missing instrumentation is not zero (#16992)."
+covered_by = [
+  "cargo xtask check-snapshot-warm-start-receipt",
+]
+created = "2026-11-02"
+review_after = "2027-02-02"
+
 # =============================================================================
 # Kubernetes DAP workspace profiles (#10112)
 # =============================================================================

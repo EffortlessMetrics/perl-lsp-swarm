@@ -1,0 +1,546 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/snapshot_warm_start_receipt.v1.schema.json",
+  "title": "Snapshot warm-start receipt v1",
+  "description": "Transport-neutral restart-warm ProjectModel evidence for cache performance (#16992). Missing instrumentation is not zero; work avoidance cannot be inferred from storage presence; correctness failures cannot produce admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "subject",
+    "preparation",
+    "instrument",
+    "phases",
+    "work",
+    "correctness",
+    "samples",
+    "result",
+    "comparison",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {"const": "snapshot_warm_start_receipt.v1"},
+    "receipt_id": {"$ref": "#/$defs/required_text"},
+    "subject": {"$ref": "#/$defs/subject"},
+    "preparation": {"$ref": "#/$defs/preparation"},
+    "instrument": {"$ref": "#/$defs/instrument"},
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/phase"}
+    },
+    "work": {"$ref": "#/$defs/work_block"},
+    "correctness": {"$ref": "#/$defs/correctness_block"},
+    "samples": {"$ref": "#/$defs/samples"},
+    "result": {"$ref": "#/$defs/result_block"},
+    "comparison": {"$ref": "#/$defs/comparison_block"},
+    "limitations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/required_text"}
+    }
+  },
+  "$defs": {
+    "git_object_name": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "required_text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "evidence_status": {
+      "enum": ["measured", "not_proven", "not_applicable", "failed", "cancelled"]
+    },
+    "instrumentation": {
+      "enum": ["complete", "partial", "missing", "failed"]
+    },
+    "sample_outcome": {
+      "enum": [
+        "success",
+        "failed",
+        "cancelled",
+        "timeout",
+        "corrupt",
+        "busy",
+        "incompatible",
+        "fallback",
+        "not_proven"
+      ]
+    },
+    "preparation_mode": {
+      "enum": ["cold", "warm", "unknown"]
+    },
+    "comparison_status": {
+      "enum": ["comparable", "incomparable"]
+    },
+    "phase_name": {
+      "enum": [
+        "namespace_open",
+        "ownership_wait",
+        "manifest_integrity_load",
+        "shard_lookup",
+        "shard_read",
+        "shard_decode",
+        "compatibility_classification",
+        "worker_queue_latency",
+        "command_latency",
+        "checkpoint_encode",
+        "checkpoint_write",
+        "checkpoint_commit",
+        "prune_interference",
+        "quarantine_interference",
+        "admin_interference",
+        "source_validation",
+        "config_validation",
+        "environment_validation",
+        "open_buffer_reconciliation",
+        "facts_considered",
+        "facts_accepted",
+        "facts_rejected",
+        "facts_stale",
+        "facts_corrupt",
+        "project_model_adoption",
+        "project_model_delta",
+        "reverse_dependency_invalidation",
+        "missing_recomputation_scheduling",
+        "stale_recomputation_scheduling",
+        "first_current_diagnostics",
+        "first_current_completion",
+        "first_current_hover",
+        "first_current_definition",
+        "first_current_references",
+        "active_document_readiness",
+        "dependency_neighborhood_readiness",
+        "whole_workspace_readiness",
+        "fixture_preparation",
+        "snapshot_seeding",
+        "independent_fresh_build_oracle",
+        "validation_reporting"
+      ]
+    },
+    "phase_plane": {
+      "enum": ["storage", "currentness", "user_visible", "setup"]
+    },
+    "result_disposition": {
+      "enum": [
+        "admit_default_candidate",
+        "admit_opt_in_only",
+        "admit_shadow_only",
+        "no_material_benefit",
+        "regressed",
+        "not_proven",
+        "product_failure",
+        "instrument_failure"
+      ]
+    },
+    "admission_disposition": {
+      "enum": [
+        "admit_default_candidate",
+        "admit_opt_in_only",
+        "admit_shadow_only",
+        "no_material_benefit",
+        "regressed",
+        "not_proven",
+        "product_failure",
+        "instrument_failure",
+        "blocked_by_correctness"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "profile"],
+      "properties": {
+        "schema": {"$ref": "#/$defs/required_text"},
+        "profile": {"$ref": "#/$defs/required_text"}
+      }
+    },
+    "benchmark_identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["editor_work", "stable_runner", "compiler_pipeline"],
+      "properties": {
+        "editor_work": {"$ref": "#/$defs/identity"},
+        "stable_runner": {"$ref": "#/$defs/identity"},
+        "compiler_pipeline": {"$ref": "#/$defs/identity"}
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "base",
+        "head",
+        "binary_digest",
+        "dirty_tree",
+        "runner",
+        "workspace",
+        "configuration",
+        "fact_admission",
+        "cache_artifact",
+        "rollout_mode",
+        "provider_sequence_digest",
+        "sample_calibration_id",
+        "benchmark_identities",
+        "comparison"
+      ],
+      "properties": {
+        "repository": {"$ref": "#/$defs/required_text"},
+        "base": {"$ref": "#/$defs/git_object_name"},
+        "head": {"$ref": "#/$defs/git_object_name"},
+        "binary_digest": {"$ref": "#/$defs/digest64"},
+        "dirty_tree": {"type": "boolean"},
+        "runner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "filesystem", "power_profile", "toolchain", "profile", "features"],
+          "properties": {
+            "os": {"$ref": "#/$defs/required_text"},
+            "filesystem": {"$ref": "#/$defs/required_text"},
+            "power_profile": {"$ref": "#/$defs/required_text"},
+            "toolchain": {"$ref": "#/$defs/required_text"},
+            "profile": {"$ref": "#/$defs/required_text"},
+            "features": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/required_text"}
+            }
+          }
+        },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root_digest", "fixture_id", "source_digest"],
+          "properties": {
+            "root_digest": {"$ref": "#/$defs/digest64"},
+            "fixture_id": {"$ref": "#/$defs/required_text"},
+            "source_digest": {"$ref": "#/$defs/digest64"}
+          }
+        },
+        "configuration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["environment_digest", "trust", "adapter"],
+          "properties": {
+            "environment_digest": {"$ref": "#/$defs/digest64"},
+            "trust": {"$ref": "#/$defs/required_text"},
+            "adapter": {"$ref": "#/$defs/required_text"}
+          }
+        },
+        "fact_admission": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "assembly_profile"],
+          "properties": {
+            "profile": {"$ref": "#/$defs/required_text"},
+            "assembly_profile": {"$ref": "#/$defs/required_text"}
+          }
+        },
+        "cache_artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifest_version",
+            "shard_version",
+            "codec_version",
+            "project_version",
+            "model_version",
+            "backend",
+            "durability",
+            "namespace",
+            "process_policy"
+          ],
+          "properties": {
+            "manifest_version": {"$ref": "#/$defs/required_text"},
+            "shard_version": {"$ref": "#/$defs/required_text"},
+            "codec_version": {"$ref": "#/$defs/required_text"},
+            "project_version": {"$ref": "#/$defs/required_text"},
+            "model_version": {"$ref": "#/$defs/required_text"},
+            "backend": {"$ref": "#/$defs/required_text"},
+            "durability": {"$ref": "#/$defs/required_text"},
+            "namespace": {"$ref": "#/$defs/required_text"},
+            "process_policy": {"$ref": "#/$defs/required_text"}
+          }
+        },
+        "rollout_mode": {"$ref": "#/$defs/required_text"},
+        "provider_sequence_digest": {"$ref": "#/$defs/digest64"},
+        "sample_calibration_id": {"$ref": "#/$defs/required_text"},
+        "benchmark_identities": {"$ref": "#/$defs/benchmark_identities"},
+        "comparison": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {"$ref": "#/$defs/comparison_status"},
+            "peer_receipt_id": {"$ref": "#/$defs/required_text"},
+            "difference_families": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/required_text"}
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {"status": {"const": "comparable"}},
+                "required": ["status"]
+              },
+              "then": {"required": ["peer_receipt_id"]}
+            },
+            {
+              "if": {
+                "properties": {"status": {"const": "incomparable"}},
+                "required": ["status"]
+              },
+              "then": {"required": ["difference_families"], "properties": {"difference_families": {"minItems": 1}}}
+            }
+          ]
+        }
+      }
+    },
+    "preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "identity_digest"],
+      "properties": {
+        "mode": {"$ref": "#/$defs/preparation_mode"},
+        "identity_digest": {"$ref": "#/$defs/digest64"}
+      }
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "completeness", "status"],
+      "properties": {
+        "schema": {"const": "snapshot_warm_start_instrument.v1"},
+        "completeness": {"$ref": "#/$defs/instrumentation"},
+        "status": {"$ref": "#/$defs/evidence_status"}
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "wall_ns": {"$ref": "#/$defs/count"},
+        "cpu_ns": {"$ref": "#/$defs/count"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "measured"}},
+            "required": ["status"]
+          },
+          "then": {"required": ["wall_ns"]}
+        },
+        {
+          "if": {
+            "properties": {"status": {"enum": ["not_proven", "not_applicable", "failed", "cancelled"]}},
+            "required": ["status"]
+          },
+          "then": {"not": {"required": ["wall_ns", "cpu_ns"]}}
+        }
+      ]
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "plane", "sample_outcome", "timing", "instrumentation"],
+      "properties": {
+        "name": {"$ref": "#/$defs/phase_name"},
+        "plane": {"$ref": "#/$defs/phase_plane"},
+        "sample_outcome": {"$ref": "#/$defs/sample_outcome"},
+        "timing": {"$ref": "#/$defs/timing"},
+        "instrumentation": {"$ref": "#/$defs/instrumentation"}
+      }
+    },
+    "work_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "avoidance_evidence"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "avoidance_evidence": {
+          "enum": ["validated", "not_claimed", "not_proven"]
+        },
+        "bytes_read": {"$ref": "#/$defs/count"},
+        "bytes_written": {"$ref": "#/$defs/count"},
+        "manifests_read": {"$ref": "#/$defs/count"},
+        "shards_read": {"$ref": "#/$defs/count"},
+        "shards_written": {"$ref": "#/$defs/count"},
+        "shards_loaded": {"$ref": "#/$defs/count"},
+        "shards_compatible": {"$ref": "#/$defs/count"},
+        "shards_adopted": {"$ref": "#/$defs/count"},
+        "shards_rejected": {"$ref": "#/$defs/count"},
+        "shards_stale": {"$ref": "#/$defs/count"},
+        "shards_corrupt": {"$ref": "#/$defs/count"},
+        "facts_adopted": {"$ref": "#/$defs/count"},
+        "files_parsed": {"$ref": "#/$defs/count"},
+        "source_bytes_parsed": {"$ref": "#/$defs/count"},
+        "semantic_work_constructed": {"$ref": "#/$defs/count"},
+        "semantic_work_avoided": {"$ref": "#/$defs/count"},
+        "provider_duplicate_scans": {"$ref": "#/$defs/count"},
+        "project_model_work": {"$ref": "#/$defs/count"},
+        "open_buffer_replacements": {"$ref": "#/$defs/count"},
+        "checkpoints_requested": {"$ref": "#/$defs/count"},
+        "checkpoints_coalesced": {"$ref": "#/$defs/count"},
+        "checkpoints_committed": {"$ref": "#/$defs/count"},
+        "checkpoints_dropped": {"$ref": "#/$defs/count"},
+        "checkpoints_failed": {"$ref": "#/$defs/count"},
+        "cold_fallback_events": {"$ref": "#/$defs/count"},
+        "cache_hit_followed_by_full_work": {"$ref": "#/$defs/count"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+          "then": {
+            "required": [
+              "bytes_read",
+              "shards_loaded",
+              "facts_adopted",
+              "files_parsed",
+              "semantic_work_constructed"
+            ]
+          }
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["not_proven", "not_applicable", "failed", "cancelled"]}}, "required": ["status"]},
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["bytes_read"]},
+                {"required": ["semantic_work_avoided"]},
+                {"required": ["shards_adopted"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"semantic_work_avoided": {"type": "integer", "minimum": 1}},
+            "required": ["semantic_work_avoided"]
+          },
+          "then": {"properties": {"avoidance_evidence": {"const": "validated"}}}
+        }
+      ]
+    },
+    "correctness_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "stale_exact": {"$ref": "#/$defs/count"},
+        "false_exact": {"$ref": "#/$defs/count"},
+        "unsafe_edit": {"$ref": "#/$defs/count"},
+        "premature_ready": {"$ref": "#/$defs/count"},
+        "mixed_generation": {"$ref": "#/$defs/count"},
+        "wrong_root_or_namespace": {"$ref": "#/$defs/count"},
+        "open_buffer_overwritten": {"$ref": "#/$defs/count"},
+        "incompatible_or_corrupt_candidate_adopted": {"$ref": "#/$defs/count"},
+        "provider_result_mismatch": {"$ref": "#/$defs/count"},
+        "unexplained_success_empty": {"$ref": "#/$defs/count"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+          "then": {
+            "required": [
+              "stale_exact",
+              "false_exact",
+              "unsafe_edit",
+              "premature_ready",
+              "mixed_generation",
+              "wrong_root_or_namespace",
+              "open_buffer_overwritten",
+              "incompatible_or_corrupt_candidate_adopted",
+              "provider_result_mismatch",
+              "unexplained_success_empty"
+            ]
+          }
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["not_proven", "not_applicable", "failed", "cancelled"]}}, "required": ["status"]},
+          "then": {
+            "not": {"required": ["stale_exact"]}
+          }
+        }
+      ]
+    },
+    "samples": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "non_success", "outcomes"],
+      "properties": {
+        "total": {"$ref": "#/$defs/count"},
+        "non_success": {"$ref": "#/$defs/count"},
+        "outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "success",
+            "failed",
+            "cancelled",
+            "timeout",
+            "corrupt",
+            "busy",
+            "incompatible",
+            "fallback",
+            "not_proven"
+          ],
+          "properties": {
+            "success": {"$ref": "#/$defs/count"},
+            "failed": {"$ref": "#/$defs/count"},
+            "cancelled": {"$ref": "#/$defs/count"},
+            "timeout": {"$ref": "#/$defs/count"},
+            "corrupt": {"$ref": "#/$defs/count"},
+            "busy": {"$ref": "#/$defs/count"},
+            "incompatible": {"$ref": "#/$defs/count"},
+            "fallback": {"$ref": "#/$defs/count"},
+            "not_proven": {"$ref": "#/$defs/count"}
+          }
+        }
+      }
+    },
+    "result_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition"],
+      "properties": {
+        "disposition": {"$ref": "#/$defs/admission_disposition"},
+        "cold_fallback_reason": {"$ref": "#/$defs/required_text"}
+      }
+    },
+    "comparison_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "median_improvement_ratio": {"type": "number"},
+        "p95_regression_ratio": {"type": "number"},
+        "readiness_regression": {"type": "boolean"},
+        "setup_cost_in_product_plane": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+          "then": {
+            "required": ["median_improvement_ratio", "p95_regression_ratio", "readiness_regression", "setup_cost_in_product_plane"]
+          }
+        }
+      ]
+    }
+  }
+}

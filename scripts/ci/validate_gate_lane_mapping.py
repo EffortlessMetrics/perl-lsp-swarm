@@ -156,6 +156,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
     "compiler_performance_receipt_contract": {"lanes": ["merge_gate_shards"]},
+    "snapshot_warm_start_receipt_contract": {"lanes": ["merge_gate_shards"]},
     "kubernetes_dap_profiles": {"lanes": ["merge_gate_shards"]},
     "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},

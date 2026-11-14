@@ -1,0 +1,204 @@
+{
+  "schema_version": "snapshot_warm_start_receipt.v1",
+  "receipt_id": "fixture-snapshot-warm-start-measured-001",
+  "subject": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "base": "a05f4820ab9385b261a2993ea9687cf9d7beedfc",
+    "head": "f530d2f1221c516484a3654f01a3ad694ab56969",
+    "binary_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "dirty_tree": false,
+    "runner": {
+      "os": "linux-x86_64",
+      "filesystem": "ext4",
+      "power_profile": "balanced",
+      "toolchain": "1.95.0-x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "features": [
+        "default"
+      ]
+    },
+    "workspace": {
+      "root_digest": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "fixture_id": "medium-workspace-fixture",
+      "source_digest": "2c26b46b68ffc68ff99b453c1d3042690eb24e64a774f167ea9c8348e9989334"
+    },
+    "configuration": {
+      "environment_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "trust": "workspace",
+      "adapter": "neovim-lsp"
+    },
+    "fact_admission": {
+      "profile": "default",
+      "assembly_profile": "project_model_v1"
+    },
+    "cache_artifact": {
+      "manifest_version": "manifest.v1",
+      "shard_version": "shard.v1",
+      "codec_version": "codec.v1",
+      "project_version": "project.v1",
+      "model_version": "model.v1",
+      "backend": "filesystem",
+      "durability": "durable",
+      "namespace": "workspace-default",
+      "process_policy": "shared_worker"
+    },
+    "rollout_mode": "shadow",
+    "provider_sequence_digest": "4a44dc15364204a80fe80e9039455dc179279698e302a344c92a5a313d3a51ef",
+    "sample_calibration_id": "stable-runner-calibration-fixture-001",
+    "benchmark_identities": {
+      "editor_work": {
+        "schema": "editor_work.v1",
+        "profile": "default"
+      },
+      "stable_runner": {
+        "schema": "stable_runner.v1",
+        "profile": "linux-neovim-medium"
+      },
+      "compiler_pipeline": {
+        "schema": "compiler_pipeline.v1",
+        "profile": "default"
+      }
+    },
+    "comparison": {
+      "status": "comparable",
+      "peer_receipt_id": "fixture-snapshot-warm-start-cold-peer-001"
+    }
+  },
+  "preparation": {
+    "mode": "warm",
+    "identity_digest": "0da42d65a93f9859f9de0df8657f403c2988a1d3c1a5ee0bf0f6cd283e99cac9"
+  },
+  "instrument": {
+    "schema": "snapshot_warm_start_instrument.v1",
+    "completeness": "complete",
+    "status": "measured"
+  },
+  "phases": [
+    {
+      "name": "manifest_integrity_load",
+      "plane": "storage",
+      "sample_outcome": "success",
+      "timing": {
+        "status": "measured",
+        "wall_ns": 1200000,
+        "cpu_ns": 1100000
+      },
+      "instrumentation": "complete"
+    },
+    {
+      "name": "shard_decode",
+      "plane": "storage",
+      "sample_outcome": "success",
+      "timing": {
+        "status": "measured",
+        "wall_ns": 4500000,
+        "cpu_ns": 4200000
+      },
+      "instrumentation": "complete"
+    },
+    {
+      "name": "project_model_adoption",
+      "plane": "currentness",
+      "sample_outcome": "success",
+      "timing": {
+        "status": "measured",
+        "wall_ns": 800000,
+        "cpu_ns": 760000
+      },
+      "instrumentation": "complete"
+    },
+    {
+      "name": "whole_workspace_readiness",
+      "plane": "user_visible",
+      "sample_outcome": "success",
+      "timing": {
+        "status": "measured",
+        "wall_ns": 15000000,
+        "cpu_ns": 14000000
+      },
+      "instrumentation": "complete"
+    },
+    {
+      "name": "fixture_preparation",
+      "plane": "setup",
+      "sample_outcome": "success",
+      "timing": {
+        "status": "measured",
+        "wall_ns": 500000,
+        "cpu_ns": 480000
+      },
+      "instrumentation": "complete"
+    }
+  ],
+  "work": {
+    "status": "measured",
+    "avoidance_evidence": "not_claimed",
+    "bytes_read": 4096,
+    "bytes_written": 0,
+    "manifests_read": 1,
+    "shards_read": 3,
+    "shards_written": 0,
+    "shards_loaded": 3,
+    "shards_compatible": 3,
+    "shards_adopted": 3,
+    "shards_rejected": 0,
+    "shards_stale": 0,
+    "shards_corrupt": 0,
+    "facts_adopted": 120,
+    "files_parsed": 0,
+    "source_bytes_parsed": 0,
+    "semantic_work_constructed": 12,
+    "semantic_work_avoided": 0,
+    "provider_duplicate_scans": 0,
+    "project_model_work": 4,
+    "open_buffer_replacements": 0,
+    "checkpoints_requested": 0,
+    "checkpoints_coalesced": 0,
+    "checkpoints_committed": 0,
+    "checkpoints_dropped": 0,
+    "checkpoints_failed": 0,
+    "cold_fallback_events": 0,
+    "cache_hit_followed_by_full_work": 0
+  },
+  "correctness": {
+    "status": "measured",
+    "stale_exact": 0,
+    "false_exact": 0,
+    "unsafe_edit": 0,
+    "premature_ready": 0,
+    "mixed_generation": 0,
+    "wrong_root_or_namespace": 0,
+    "open_buffer_overwritten": 0,
+    "incompatible_or_corrupt_candidate_adopted": 0,
+    "provider_result_mismatch": 0,
+    "unexplained_success_empty": 0
+  },
+  "samples": {
+    "total": 5,
+    "non_success": 0,
+    "outcomes": {
+      "success": 5,
+      "failed": 0,
+      "cancelled": 0,
+      "timeout": 0,
+      "corrupt": 0,
+      "busy": 0,
+      "incompatible": 0,
+      "fallback": 0,
+      "not_proven": 0
+    }
+  },
+  "result": {
+    "disposition": "no_material_benefit"
+  },
+  "comparison": {
+    "status": "measured",
+    "median_improvement_ratio": 0.05,
+    "p95_regression_ratio": 0.0,
+    "readiness_regression": false,
+    "setup_cost_in_product_plane": false
+  },
+  "limitations": [
+    "Fixture receipt for contract validation only; carries no stable-runner calibration."
+  ]
+}
