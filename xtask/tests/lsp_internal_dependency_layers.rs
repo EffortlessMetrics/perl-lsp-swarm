@@ -36,6 +36,8 @@ macro_rules! layer {
 const LAYERS: &[LayerRow] = &[
     layer!("active_document_readiness_tests", ObservabilityTest),
     layer!("client_requests", AdapterPolicy),
+    layer!("client_session", ApplicationServices),
+    layer!("client_session_tests", ObservabilityTest),
     layer!("constructors", ProductComposition),
     layer!("diagnostic_debounce", ApplicationServices),
     layer!("diagnostics", ApplicationServices),

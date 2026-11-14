@@ -187,7 +187,7 @@ impl LspServer {
             // lifecycle message is dequeued.
             if Self::should_inline_after_shutdown(
                 &method,
-                self.shutdown_received.load(Ordering::Acquire),
+                self.client_session.shutdown_received.load(Ordering::Acquire),
             ) {
                 if self.admit_handler_response(request).is_err() {
                     response_delivery_failed = true;
@@ -298,7 +298,7 @@ impl LspServer {
 
     /// Check if the server is initialized
     pub fn is_initialized(&self) -> bool {
-        self.initialized.load(Ordering::Acquire)
+        self.client_session.initialized.load(Ordering::Acquire)
     }
 
     /// Mark a request as cancelled.
@@ -309,8 +309,8 @@ impl LspServer {
     /// the scheduler-aware path. The legacy helper remains for internal
     /// supersession and test paths; its cap prevents unbounded growth.
     pub(crate) fn cancel_mark(&self, id: &JsonRpcId) {
-        let pending = self.pending_request_ids.lock();
-        let mut c = self.cancelled.lock();
+        let pending = self.client_session.pending_request_ids.lock();
+        let mut c = self.client_session.cancelled.lock();
         if c.len() >= CANCELLED_SET_CAP {
             c.retain(|candidate| pending.contains(candidate));
         }
@@ -319,17 +319,17 @@ impl LspServer {
 
     /// Keep a scheduler-owned request ID protected from stale-marker trimming.
     pub(crate) fn mark_request_pending(&self, id: &JsonRpcId) {
-        self.pending_request_ids.lock().insert(id.clone());
+        self.client_session.pending_request_ids.lock().insert(id.clone());
     }
 
     /// Mark cancellation only while the scheduler still owns this request.
     /// Holding both locks in this order closes the settlement race.
     pub(crate) fn mark_cancelled_if_pending(&self, id: &JsonRpcId) {
-        let pending = self.pending_request_ids.lock();
+        let pending = self.client_session.pending_request_ids.lock();
         if !pending.contains(id) {
             return;
         }
-        let mut cancelled = self.cancelled.lock();
+        let mut cancelled = self.client_session.cancelled.lock();
         if cancelled.len() >= CANCELLED_SET_CAP {
             cancelled.retain(|candidate| pending.contains(candidate));
         }
@@ -338,21 +338,21 @@ impl LspServer {
 
     /// Release a scheduler-owned request ID after it is fully settled.
     pub(crate) fn clear_request_pending(&self, id: &JsonRpcId) {
-        let mut pending = self.pending_request_ids.lock();
-        let mut cancelled = self.cancelled.lock();
+        let mut pending = self.client_session.pending_request_ids.lock();
+        let mut cancelled = self.client_session.cancelled.lock();
         pending.remove(id);
         cancelled.remove(id);
     }
 
     /// Clear a cancelled request
     pub(crate) fn cancel_clear(&self, id: &JsonRpcId) {
-        let mut c = self.cancelled.lock();
+        let mut c = self.client_session.cancelled.lock();
         c.remove(id);
     }
 
     /// Check if a request has been cancelled
     pub(crate) fn is_cancelled(&self, id: &JsonRpcId) -> bool {
-        let set = self.cancelled.lock();
+        let set = self.client_session.cancelled.lock();
         set.contains(id)
     }
 
@@ -362,7 +362,7 @@ impl LspServer {
     /// the server will look up the request ID and signal cancellation via the
     /// global cancellation registry.
     pub(crate) fn register_progress_request(&self, token: &str, request_id: JsonRpcId) {
-        self.progress_token_to_request.lock().insert(token.to_string(), request_id);
+        self.client_session.progress_token_to_request.lock().insert(token.to_string(), request_id);
     }
 
     /// Post-shutdown requests except `shutdown`/`exit` must not hop through
@@ -653,6 +653,69 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn shutdown_then_request_then_socket_exit_uses_one_terminal_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let captured = SharedBuffer::default();
+        let writer = captured.clone();
+        let runtime =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+        let exit_code = runtime.block_on(async {
+            let output = Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>));
+            let mut server = LspServer::with_output(output);
+            server
+                .handle_initialize(None)
+                .map_err(|error| format!("initialize failed: {error:?}"))?;
+            server.exit_policy = crate::runtime::exit_policy::ExitPolicy::EndConnection;
+            let server = Arc::new(server);
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let serving = {
+                let server = Arc::clone(&server);
+                tokio::spawn(async move {
+                    Arc::clone(&server).serve_async(rx).await;
+                })
+            };
+
+            tx.send(request(2, "shutdown")).await?;
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !server
+                    .client_session
+                    .shutdown_received
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "the asynchronous lifecycle worker did not admit shutdown")?;
+            tx.send(request(3, "textDocument/hover")).await?;
+            tx.send(request(4, "exit")).await?;
+            drop(tx);
+            tokio::time::timeout(std::time::Duration::from_secs(5), serving)
+                .await
+                .map_err(|_| "shutdown -> request -> exit did not settle")??;
+            server
+                .outbound
+                .close_and_wait(std::time::Duration::from_secs(1))
+                .ok_or("outbound writer did not settle after socket exit")?;
+            Ok::<_, Box<dyn std::error::Error>>(server.connection_protocol_exit_code())
+        })?;
+
+        let wire = String::from_utf8(captured.bytes())?;
+        if !wire.contains("\"id\":3") && !wire.contains("\"id\": 3") {
+            return Err(
+                format!("post-shutdown InvalidRequest must precede socket exit: {wire}").into()
+            );
+        }
+        if !wire.contains("-32600") {
+            return Err(format!("post-shutdown request must be -32600: {wire}").into());
+        }
+        if exit_code != 0 {
+            return Err(format!("accepted shutdown yielded socket exit code {exit_code}").into());
+        }
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn serve_async_stops_live_ingress_after_required_response_failure()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -678,7 +741,7 @@ mod tests {
         if writes.load(std::sync::atomic::Ordering::SeqCst) == 0 {
             return Err("required response never reached the failing writer".into());
         }
-        if server.pending_request_ids.lock().contains(&JsonRpcId::Integer(14168)) {
+        if server.client_session.pending_request_ids.lock().contains(&JsonRpcId::Integer(14168)) {
             return Err("failed live request remained pending after serve_async returned".into());
         }
         drop(tx);

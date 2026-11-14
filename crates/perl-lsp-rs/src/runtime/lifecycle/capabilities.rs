@@ -197,6 +197,7 @@ impl LspServer {
         // later initialize is InvalidRequest before its parameters can affect
         // the terminal error class (#14301).
         if self
+            .client_session
             .initialize_requested
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -222,7 +223,7 @@ impl LspServer {
         if let Some(params) = &params {
             // Take lock once to write all capabilities
             {
-                let mut caps = self.client_capabilities.lock();
+                let mut caps = self.client_session.client_capabilities.lock();
 
                 caps.declaration_link_support = params
                     .get("capabilities")
@@ -292,7 +293,7 @@ impl LspServer {
                         .and_then(|info| info.get("name"))
                         .and_then(|name| name.as_str())
                         .unwrap_or("JetBrains");
-                    *self.pending_startup_log.lock() = Some(format!(
+                    *self.client_session.pending_startup_log.lock() = Some(format!(
                         "Perl LSP: Dynamic file-watcher registration has been disabled for \
                          JetBrains-family client \"{client_name}\" because its registration \
                          flow is unreliable. Workspace/didChangeWatchedFiles dynamic \
@@ -558,7 +559,7 @@ impl LspServer {
                 .is_some();
 
             if supports_pull && !is_opencode {
-                self.client_supports_pull_diags.store(true, Ordering::Relaxed);
+                self.client_session.client_supports_pull_diags.store(true, Ordering::Relaxed);
                 tracing::debug!(
                     "Client supports pull diagnostics - suppressing automatic publishing"
                 );
@@ -578,7 +579,7 @@ impl LspServer {
             // later folder-change transactions.
             let root_input = classify_initial_root_input(params);
             tracing::debug!(disposition = root_input.as_str(), "Classified initialize root input");
-            *self.initial_root_input.lock() = Some(root_input.clone());
+            *self.client_session.initial_root_input.lock() = Some(root_input.clone());
             match root_input {
                 InitialRootInput::ExplicitWorkspaceFolders => {
                     if let Some(workspace_folders) =
@@ -662,7 +663,7 @@ impl LspServer {
         {
             tracing::debug!("Applying initializationOptions.perl.* as base config layer");
             {
-                let mut config = self.config.lock();
+                let mut config = self.client_session.config.lock();
                 config.update_from_value(perl);
             }
             {
@@ -672,14 +673,14 @@ impl LspServer {
             if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
                 limits.update_from_value(perl);
             }
-            *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+            *self.client_session.initialization_options_perl_settings.lock() = Some(perl.clone());
 
             // Snapshot the post-tier-1 ServerConfig so the next
             // `load_and_apply_project_config` can reset to `defaults + tier-1`
             // before layering tier-2 (project config). This snapshot is
             // updated on every `didChangeConfiguration` so subsequent resets
             // also include tier-3 (issue #15715).
-            *self.server_config_baseline.lock() = Some(self.config.lock().clone());
+            *self.server_config_baseline.lock() = Some(self.client_session.config.lock().clone());
         }
 
         // A client may omit `initializationOptions` (or send null): capture
@@ -687,7 +688,7 @@ impl LspServer {
         // here — so a later folder removal can still reset. Never overwrite
         // the tier-1 snapshot captured above (#15715).
         if self.server_config_baseline.lock().is_none() {
-            let snapshot = self.config.lock().clone();
+            let snapshot = self.client_session.config.lock().clone();
             *self.server_config_baseline.lock() = Some(snapshot);
         }
 
@@ -741,8 +742,8 @@ impl LspServer {
 
         // Persist advertised features for gating
         let features = build_flags.to_advertised_features();
-        *self.advertised_features.lock() = features.clone();
-        *self.advertised_feature_ids.lock() = build_flags.to_feature_ids();
+        *self.client_session.advertised_features.lock() = features.clone();
+        *self.client_session.advertised_feature_ids.lock() = build_flags.to_feature_ids();
 
         // Generate capabilities from build flags
         //
@@ -753,7 +754,7 @@ impl LspServer {
         let mut capabilities =
             crate::protocol::capabilities::capabilities_json(build_flags.clone());
         let (inline_completion_support, inline_completion_dynamic_registration_support) = {
-            let client_capabilities = self.client_capabilities.lock();
+            let client_capabilities = self.client_session.client_capabilities.lock();
             (
                 client_capabilities.inline_completion_support,
                 client_capabilities.inline_completion_dynamic_registration_support,
@@ -809,7 +810,7 @@ impl LspServer {
             capabilities["declarationProvider"] = Value::Bool(true);
         }
         let code_action_documentation_support =
-            self.client_capabilities.lock().code_action_documentation_support;
+            self.client_session.client_capabilities.lock().code_action_documentation_support;
         if features.code_action && code_action_documentation_support {
             if let Some(code_action_provider) =
                 capabilities.get_mut("codeActionProvider").and_then(Value::as_object_mut)
@@ -977,7 +978,7 @@ impl LspServer {
     /// declared from any compat fallback the runtime applied afterwards.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn initial_root_input(&self) -> Option<InitialRootInput> {
-        self.initial_root_input.lock().clone()
+        self.client_session.initial_root_input.lock().clone()
     }
 
     /// How many workspace folders are currently registered (#8161 receipt).
@@ -1156,7 +1157,7 @@ mod tests {
         let workspace_config = server.workspace_config.lock();
         assert_eq!(workspace_config.include_paths, vec!["lib", "local"]);
 
-        let config = server.config.lock();
+        let config = server.client_session.config.lock();
         assert!(!config.inlay_hints_enabled);
         let serialized = serde_json::to_value(&*config)?;
         assert!(serialized.get("testRunner").is_none());
@@ -1302,8 +1303,8 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(server.client_capabilities.lock().workspace_configuration_support);
-        assert!(server.client_capabilities.lock().workspace_folders_support);
+        assert!(server.client_session.client_capabilities.lock().workspace_configuration_support);
+        assert!(server.client_session.client_capabilities.lock().workspace_folders_support);
     }
 
     #[test]
@@ -1321,7 +1322,7 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
 
         assert!(caps.workspace_apply_edit_support);
         assert!(caps.workspace_edit_metadata_support);
@@ -1339,7 +1340,7 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
 
         assert!(!caps.workspace_apply_edit_support);
         assert!(!caps.workspace_edit_metadata_support);
@@ -1361,7 +1362,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         assert!(caps.dynamic_registration_support);
         assert!(caps.file_watcher_relative_pattern_support);
     }
@@ -1399,7 +1400,7 @@ mod tests {
             "server implements workspace-folder semantics regardless of the client bit"
         );
         assert!(
-            !server.client_capabilities.lock().workspace_folders_support,
+            !server.client_session.client_capabilities.lock().workspace_folders_support,
             "the client's own bit stays a separate normalized observation"
         );
         assert!(
@@ -1491,7 +1492,7 @@ mod tests {
             Some("explicit_workspace_folders".to_string()),
         );
         assert_eq!(server.active_workspace_folder_count(), 2);
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         assert!(caps.workspace_folders_support, "client bit stays independently observable");
         Ok(())
     }
@@ -1512,7 +1513,7 @@ mod tests {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         assert!(workspace_folders, "folders supplied anyway do not rewrite server truth");
-        assert!(!server.client_capabilities.lock().workspace_folders_support);
+        assert!(!server.client_session.client_capabilities.lock().workspace_folders_support);
         assert_eq!(server.active_workspace_folder_count(), 1);
         Ok(())
     }
@@ -1673,7 +1674,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         assert!(caps.snippet_support);
         assert!(caps.completion_commit_characters_support);
     }
@@ -1694,7 +1695,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         assert!(caps.snippet_support);
         assert!(caps.completion_commit_characters_support);
     }
@@ -1722,7 +1723,13 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(server.client_capabilities.lock().completion_list_item_defaults_data_support);
+        assert!(
+            server
+                .client_session
+                .client_capabilities
+                .lock()
+                .completion_list_item_defaults_data_support
+        );
     }
 
     #[test]
@@ -1747,7 +1754,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         assert!(
             caps.completion_list_item_defaults_data_support,
             "input that hits the boundary: item.as_str() == Some(\"data\")"
@@ -1775,7 +1782,13 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(!server.client_capabilities.lock().completion_list_item_defaults_data_support);
+        assert!(
+            !server
+                .client_session
+                .client_capabilities
+                .lock()
+                .completion_list_item_defaults_data_support
+        );
     }
 
     #[test]
@@ -1795,7 +1808,9 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(server.client_capabilities.lock().completion_list_apply_kind_support);
+        assert!(
+            server.client_session.client_capabilities.lock().completion_list_apply_kind_support
+        );
     }
 
     #[test]
@@ -1815,7 +1830,9 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(!server.client_capabilities.lock().completion_list_apply_kind_support);
+        assert!(
+            !server.client_session.client_capabilities.lock().completion_list_apply_kind_support
+        );
     }
 
     #[test]
@@ -1833,7 +1850,7 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
 
         assert!(caps.workspace_edit_document_changes_support);
         assert!(caps.workspace_edit_snippet_edit_support);
@@ -1853,7 +1870,7 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
 
         assert!(caps.workspace_edit_document_changes_support);
         assert!(!caps.workspace_edit_snippet_edit_support);
@@ -1874,7 +1891,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(server.client_capabilities.lock().code_action_documentation_support);
+        assert!(server.client_session.client_capabilities.lock().code_action_documentation_support);
     }
 
     #[test]
@@ -1892,7 +1909,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        if !server.client_capabilities.lock().code_action_disabled_support {
+        if !server.client_session.client_capabilities.lock().code_action_disabled_support {
             return Err("disabledSupport capability was not parsed".into());
         }
         Ok(())
@@ -1915,7 +1932,9 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(server.client_capabilities.lock().code_action_llm_generated_tag_support);
+        assert!(
+            server.client_session.client_capabilities.lock().code_action_llm_generated_tag_support
+        );
     }
 
     #[test]
@@ -1935,7 +1954,9 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        assert!(!server.client_capabilities.lock().code_action_llm_generated_tag_support);
+        assert!(
+            !server.client_session.client_capabilities.lock().code_action_llm_generated_tag_support
+        );
     }
 
     #[test]
@@ -1954,7 +1975,7 @@ mod tests {
         let Some(baseline) = baseline else {
             return Err("baseline must be captured without initializationOptions".into());
         };
-        let config = server.config.lock();
+        let config = server.client_session.config.lock();
         assert_eq!(
             baseline.perlcritic_severity, config.perlcritic_severity,
             "baseline must snapshot the shared config even with no init options",
@@ -2348,7 +2369,7 @@ mod tests {
         };
         assert_eq!(err.code, -32602);
         assert!(
-            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            server.client_session.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
             "first attempt must consume the one-shot even when classification fails"
         );
         assert!(
@@ -2410,7 +2431,7 @@ mod tests {
         });
 
         assert!(
-            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            server.client_session.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
             "exactly one owner must consume the one-shot"
         );
         let accepted = server.initialization_accepted();
@@ -2521,7 +2542,7 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         assert!(caps.inline_completion_support);
         assert!(caps.inline_completion_dynamic_registration_support);
     }
@@ -2656,7 +2677,7 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(
-            !server.client_capabilities.lock().dynamic_registration_support,
+            !server.client_session.client_capabilities.lock().dynamic_registration_support,
             "JetBrains clients must have dynamic_registration_support forced to false \
              even when the capabilities object claims support"
         );
@@ -2681,7 +2702,7 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(
-            server.client_capabilities.lock().dynamic_registration_support,
+            server.client_session.client_capabilities.lock().dynamic_registration_support,
             "non-JetBrains clients that advertise dynamic registration must have it enabled"
         );
     }
@@ -2704,7 +2725,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
 
-        let pending = server.pending_startup_log.lock();
+        let pending = server.client_session.pending_startup_log.lock();
         assert!(pending.is_some(), "JetBrains override should queue a pending startup logMessage");
         if let Some(ref msg) = *pending {
             assert!(msg.contains("IntelliJ IDEA"), "pending log should name the client: got {msg}");
@@ -2734,7 +2755,7 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(
-            server.pending_startup_log.lock().is_none(),
+            server.client_session.pending_startup_log.lock().is_none(),
             "non-JetBrains clients should not have a pending startup logMessage"
         );
     }
@@ -2756,7 +2777,7 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(
-            !server.client_supports_pull_diags.load(Ordering::Relaxed),
+            !server.client_session.client_supports_pull_diags.load(Ordering::Relaxed),
             "opencode should keep push diagnostics enabled"
         );
     }
@@ -2778,7 +2799,7 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(
-            server.client_supports_pull_diags.load(Ordering::Relaxed),
+            server.client_session.client_supports_pull_diags.load(Ordering::Relaxed),
             "non-opencode clients with textDocument.diagnostic should enable pull diagnostics"
         );
     }
@@ -2899,7 +2920,10 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 1);
+        assert_eq!(
+            server.client_session.client_capabilities.lock().prepare_support_default_behavior,
+            1
+        );
     }
 
     #[test]
@@ -2914,7 +2938,10 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 0);
+        assert_eq!(
+            server.client_session.client_capabilities.lock().prepare_support_default_behavior,
+            0
+        );
     }
 
     #[test]
@@ -2932,7 +2959,10 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 0);
+        assert_eq!(
+            server.client_session.client_capabilities.lock().prepare_support_default_behavior,
+            0
+        );
     }
 
     /// LSP 3.17 spec key: `ClientCapabilities.workspace.diagnostics` (plural).
@@ -2949,7 +2979,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
         assert!(
-            server.client_capabilities.lock().diagnostic_refresh_support,
+            server.client_session.client_capabilities.lock().diagnostic_refresh_support,
             "spec-conformant `workspace.diagnostics.refreshSupport` must enable refresh"
         );
     }
@@ -2969,7 +2999,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
         assert!(
-            server.client_capabilities.lock().diagnostic_refresh_support,
+            server.client_session.client_capabilities.lock().diagnostic_refresh_support,
             "`lsp-types`-style `workspace.diagnostic.refreshSupport` must still enable refresh"
         );
     }
@@ -2986,7 +3016,7 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
         assert!(
-            !server.client_capabilities.lock().diagnostic_refresh_support,
+            !server.client_session.client_capabilities.lock().diagnostic_refresh_support,
             "neither workspace diagnostic-refresh spelling advertised: must stay false"
         );
     }

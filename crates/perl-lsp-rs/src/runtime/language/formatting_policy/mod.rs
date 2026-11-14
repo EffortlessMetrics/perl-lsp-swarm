@@ -267,13 +267,13 @@ fn sanitized_outcome(decision: &FormattingDecision) -> Value {
 
 impl LspServer {
     fn surface_advertised(&self, surface: Surface) -> bool {
-        let ids = self.advertised_feature_ids.lock();
+        let ids = self.client_session.advertised_feature_ids.lock();
         if !ids.is_empty() {
             return ids.contains(&surface.feature_id());
         }
         drop(ids);
 
-        let advertised = self.advertised_features.lock();
+        let advertised = self.client_session.advertised_features.lock();
         match surface {
             Surface::Document => advertised.formatting,
             Surface::Range | Surface::Ranges => advertised.range_formatting,
@@ -293,7 +293,7 @@ impl LspServer {
 
     fn effective_formatting_config(&self) -> Result<EffectiveConfig, JsonRpcError> {
         let discovered_profile = self.discovered_perltidy_profile.lock().clone();
-        let config = self.config.lock();
+        let config = self.client_session.config.lock();
         let configured_enabled = config.perltidy_enabled;
         let configured_mode = config.formatting_engine;
         let mode = if configured_enabled { configured_mode } else { FormatterMode::Off };

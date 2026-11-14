@@ -364,10 +364,16 @@ mod tests {
         dependency_facts.push(("<dependents>".to_string(), dependents));
         dependency_facts.sort();
 
-        let mut progress_tokens = server.progress_tokens.lock().iter().cloned().collect::<Vec<_>>();
+        let mut progress_tokens =
+            server.client_session.progress_tokens.lock().iter().cloned().collect::<Vec<_>>();
         progress_tokens.sort();
-        let mut progress_requests =
-            server.progress_token_to_request.lock().keys().cloned().collect::<Vec<_>>();
+        let mut progress_requests = server
+            .client_session
+            .progress_token_to_request
+            .lock()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         progress_requests.sort();
         let mut parse_cancel_uris =
             server.parse_cancel_flags.lock().keys().cloned().collect::<Vec<_>>();
@@ -408,8 +414,8 @@ mod tests {
             provider_decision_trace_entries: server.provider_decision_traces.lock().len(),
             progress_tokens,
             progress_requests,
-            cancelled_requests: server.cancelled.lock().len(),
-            pending_request_ids: server.pending_request_ids.lock().len(),
+            cancelled_requests: server.client_session.cancelled.lock().len(),
+            pending_request_ids: server.client_session.pending_request_ids.lock().len(),
             parse_cancel_uris,
             indexing_invocations: server.workspace_indexing_invocation_count.load(Ordering::SeqCst),
             indexing_in_progress: server.indexing_in_progress.load(Ordering::SeqCst),

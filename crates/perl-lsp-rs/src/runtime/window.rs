@@ -140,7 +140,7 @@ impl LspServer {
     /// * `Ok(())` - Request sent successfully
     /// * `Err(_)` - Client doesn't support showDocument or communication error
     pub fn show_document(&self, uri: &str, options: ShowDocumentOptions) -> io::Result<()> {
-        if !self.client_capabilities.lock().show_document_support {
+        if !self.client_session.client_capabilities.lock().show_document_support {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Client doesn't support window/showDocument",
@@ -180,7 +180,7 @@ impl LspServer {
     /// * `Ok(())` - Token successfully created
     /// * `Err(_)` - Client doesn't support progress or token already exists
     pub fn create_work_done_progress(&self, token: &str) -> io::Result<()> {
-        if !self.client_capabilities.lock().work_done_progress_support {
+        if !self.client_session.client_capabilities.lock().work_done_progress_support {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Client doesn't support work done progress",
@@ -189,7 +189,7 @@ impl LspServer {
 
         // Check if token already exists
         {
-            let tokens = self.progress_tokens.lock();
+            let tokens = self.client_session.progress_tokens.lock();
             if tokens.contains(token) {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -202,13 +202,23 @@ impl LspServer {
             "token": token,
         });
 
-        // Send request
+        // Send request without holding session progress locks across I/O.
+        // Reverse-request enqueue is fenced with shutdown inside `send_request`.
         self.send_request_internal("window/workDoneProgress/create", params)?;
 
-        // Register token on success
-        self.progress_tokens.lock().insert(token.to_string());
-
-        Ok(())
+        match self.client_session.install_progress_token(token.to_string(), None) {
+            crate::runtime::client_session::ProgressTokenInstall::Installed => Ok(()),
+            crate::runtime::client_session::ProgressTokenInstall::AlreadyExists => {
+                Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("Progress token '{}' already exists", token),
+                ))
+            }
+            crate::runtime::client_session::ProgressTokenInstall::Shutdown => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("Progress token '{token}' refused: session is shut down"),
+            )),
+        }
     }
 
     /// Report progress begin notification
@@ -226,6 +236,7 @@ impl LspServer {
         title: &str,
         message: Option<&str>,
     ) -> io::Result<()> {
+        self.refuse_progress_if_shutdown("progress begin")?;
         let mut value = json!({
             "kind": "begin",
             "title": title,
@@ -242,7 +253,7 @@ impl LspServer {
             "value": value,
         });
 
-        self.notify("$/progress", params)
+        self.notify_progress(params)
     }
 
     /// Report progress update notification
@@ -259,6 +270,7 @@ impl LspServer {
         message: Option<&str>,
         percentage: Option<u32>,
     ) -> io::Result<()> {
+        self.refuse_progress_if_shutdown("progress report")?;
         let mut value = json!({
             "kind": "report",
         });
@@ -277,7 +289,7 @@ impl LspServer {
             "value": value,
         });
 
-        self.notify("$/progress", params)
+        self.notify_progress(params)
     }
 
     /// Report progress end notification
@@ -288,6 +300,7 @@ impl LspServer {
     /// * `token` - The progress token
     /// * `message` - Optional final message text
     pub fn report_progress_end(&self, token: &str, message: Option<&str>) -> io::Result<()> {
+        self.refuse_progress_if_shutdown("progress end")?;
         let mut value = json!({
             "kind": "end",
         });
@@ -303,9 +316,8 @@ impl LspServer {
             "value": value,
         });
 
-        // Remove token from active set
-        self.progress_tokens.lock().remove(token);
-
+        let _enqueue = self.client_session.admit_outbound_enqueue("$/progress")?;
+        self.client_session.progress_tokens.lock().remove(token);
         self.notify("$/progress", params)
     }
 
@@ -315,7 +327,8 @@ impl LspServer {
     /// doesn't. The caller is responsible for calling `end_request_progress`
     /// when the work is done.
     pub fn try_begin_request_progress(&self, prefix: &str, title: &str) -> Option<String> {
-        let id = self.next_request_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id =
+            self.client_session.next_request_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let token = format!("{prefix}-{id}");
         if self.create_work_done_progress(&token).is_ok() {
             if self.report_progress_begin(&token, title, None).is_ok() {
@@ -347,7 +360,7 @@ impl LspServer {
     /// * `event` - Arbitrary JSON value containing telemetry data
     pub fn send_telemetry(&self, event: Value) -> io::Result<()> {
         // Check if telemetry is enabled
-        let enabled = self.config.lock().telemetry_enabled;
+        let enabled = self.client_session.config.lock().telemetry_enabled;
         if !enabled {
             return Ok(()); // Silently skip if disabled
         }
@@ -367,14 +380,14 @@ impl LspServer {
             && let Some(token) = params.get("token").and_then(|v| v.as_str())
         {
             // Remove from active tokens
-            let removed = self.progress_tokens.lock().remove(token);
+            let removed = self.client_session.progress_tokens.lock().remove(token);
 
             if removed {
                 tracing::debug!(token, "Progress cancelled by client");
 
                 // Look up the request ID associated with this progress token
                 // and signal cancellation via the global registry
-                let request_id = self.progress_token_to_request.lock().remove(token);
+                let request_id = self.client_session.progress_token_to_request.lock().remove(token);
                 if let Some(req_id) = request_id {
                     tracing::debug!(request = ?req_id, token, "Signalling cancellation via progress token");
                     if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&req_id) {
@@ -393,6 +406,21 @@ impl LspServer {
     /// infrastructure which auto-generates request IDs.
     fn send_request_internal(&self, method: &str, params: Value) -> io::Result<()> {
         self.send_request(method, params).map(|_| ())
+    }
+
+    fn refuse_progress_if_shutdown(&self, what: &str) -> io::Result<()> {
+        if self.client_session.shutdown_received.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("{what} refused: session is shut down"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn notify_progress(&self, params: Value) -> io::Result<()> {
+        let _enqueue = self.client_session.admit_outbound_enqueue("$/progress")?;
+        self.notify("$/progress", params)
     }
 }
 
@@ -428,7 +456,7 @@ mod tests {
         let token_str = "test-progress-token-1";
         let request_id = JsonRpcId::Integer(42);
 
-        server.progress_tokens.lock().insert(token_str.to_string());
+        server.client_session.progress_tokens.lock().insert(token_str.to_string());
         server.register_progress_request(token_str, request_id.clone());
 
         // Register a cancellation token in the global registry for this request
@@ -446,10 +474,10 @@ mod tests {
         assert!(GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&request_id));
 
         // Verify token was removed from active set
-        assert!(!server.progress_tokens.lock().contains(token_str));
+        assert!(!server.client_session.progress_tokens.lock().contains(token_str));
 
         // Verify mapping was removed
-        assert!(!server.progress_token_to_request.lock().contains_key(token_str));
+        assert!(!server.client_session.progress_token_to_request.lock().contains_key(token_str));
 
         // Clean up global registry
         GLOBAL_CANCELLATION_REGISTRY.remove_request(&request_id);
@@ -463,8 +491,8 @@ mod tests {
         server.handle_progress_cancel(Some(json!({ "token": "nonexistent-token" })));
 
         // Verify no side effects
-        assert!(server.progress_tokens.lock().is_empty());
-        assert!(server.progress_token_to_request.lock().is_empty());
+        assert!(server.client_session.progress_tokens.lock().is_empty());
+        assert!(server.client_session.progress_token_to_request.lock().is_empty());
     }
 
     #[test]
@@ -473,13 +501,13 @@ mod tests {
 
         // Register a progress token but do NOT register a request mapping
         let token_str = "unmapped-token";
-        server.progress_tokens.lock().insert(token_str.to_string());
+        server.client_session.progress_tokens.lock().insert(token_str.to_string());
 
         // Cancel should succeed (removing the token) without calling the registry
         server.handle_progress_cancel(Some(json!({ "token": token_str })));
 
         // Token should be removed from active set
-        assert!(!server.progress_tokens.lock().contains(token_str));
+        assert!(!server.client_session.progress_tokens.lock().contains(token_str));
     }
 
     #[test]

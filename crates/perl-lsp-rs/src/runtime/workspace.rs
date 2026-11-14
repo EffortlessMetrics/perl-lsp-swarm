@@ -9,7 +9,7 @@
 //! - **Building/Degraded state**: Open document search only (partial results)
 
 use super::{
-    AtomicBool, AtomicI32, BackingFileTransition, DocumentState, GLOBAL_CANCELLATION_REGISTRY,
+    AtomicBool, BackingFileTransition, DocumentState, GLOBAL_CANCELLATION_REGISTRY,
     IndexCoordinator, JsonRpcError, JsonRpcId, LspServer, LspWorkspaceSymbol, Mutex, Ordering,
     PendingWorkspaceConfigurationRequest, PerlLspCancellationToken, ServerRequestId, Value,
     WorkspaceFolderState, best_workspace_folder_for_doc, json, outbound, uri_to_fs_path,
@@ -49,6 +49,7 @@ use perl_workspace::workspace_index::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "workspace")]
 use std::io::Read;
+use std::sync::atomic::AtomicI32;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -350,6 +351,14 @@ unsafe impl Send for OpenDocumentsHandle {}
 // -- because this type never reaches the pointers at all.
 unsafe impl Sync for OpenDocumentsHandle {}
 
+#[cfg(all(test, feature = "workspace"))]
+#[derive(Clone, Default)]
+pub(crate) struct WorkspaceProgressInstallTestObservation {
+    pub(crate) gate: Arc<std::sync::Mutex<Option<super::readiness::WorkspaceIndexingStartGate>>>,
+    pub(crate) outcome:
+        Arc<Mutex<Option<std::sync::mpsc::Sender<super::client_session::ProgressTokenInstall>>>>,
+}
+
 #[cfg(feature = "workspace")]
 #[derive(Clone)]
 struct IndexingResources {
@@ -375,6 +384,9 @@ struct IndexingResources {
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     next_request_id: Arc<AtomicI32>,
+    shutdown_received: Arc<AtomicBool>,
+    #[cfg(all(test, feature = "workspace"))]
+    progress_install_observation: WorkspaceProgressInstallTestObservation,
     permission_denied_shown: Arc<AtomicBool>,
     readiness_receipt: Arc<Mutex<crate::runtime::readiness::WorkspaceReadinessReceipt>>,
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -489,7 +501,7 @@ fn parse_configuration_response_id(value: &Value) -> Option<ServerRequestId> {
 impl LspServer {
     /// Request `workspace/configuration` for each workspace folder (if supported).
     pub(crate) fn request_workspace_configuration_for_folders(&self) {
-        if !self.client_capabilities.lock().workspace_configuration_support {
+        if !self.client_session.client_capabilities.lock().workspace_configuration_support {
             tracing::debug!("Client does not support workspace/configuration; using local config");
             return;
         }
@@ -513,7 +525,7 @@ impl LspServer {
                 }
             };
 
-        let mut pending = self.pending_workspace_configuration_requests.lock();
+        let mut pending = self.client_session.pending_workspace_configuration_requests.lock();
 
         // Count cap backstop: keep at most 10 pending requests to prevent unbounded growth
         // even if client responses are slow or missing.
@@ -557,7 +569,8 @@ impl LspServer {
             return;
         };
 
-        let maybe_pending = self.pending_workspace_configuration_requests.lock().remove(&id);
+        let maybe_pending =
+            self.client_session.pending_workspace_configuration_requests.lock().remove(&id);
         let Some(pending) = maybe_pending else {
             return;
         };
@@ -614,7 +627,7 @@ impl LspServer {
                 )
             })
             .collect();
-        let init_options_perl = self.initialization_options_perl_settings.lock();
+        let init_options_perl = self.client_session.initialization_options_perl_settings.lock();
         let metadata_roots = configuration_response::apply_workspace_configuration_results(
             &mut folders,
             &pending.folder_uris,
@@ -646,7 +659,7 @@ impl LspServer {
         // roots to another, and resolver toggles change resolution for all.
         if resolution_settings_changed {
             self.invalidate_workspace_identity();
-            if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+            if self.client_session.client_supports_pull_diags.load(Ordering::Relaxed) {
                 // Pull diagnostics do not use the push publication path. Ask
                 // after every accepted change; a leading-edge debounce can
                 // lose a second change while the client still has old reports.
@@ -675,7 +688,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().workspace_symbol {
+        if !self.client_session.advertised_features.lock().workspace_symbol {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1398,7 +1411,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().workspace_symbol {
+        if !self.client_session.advertised_features.lock().workspace_symbol {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1500,7 +1513,7 @@ impl LspServer {
         // with the same method-not-advertised error whenever the parent
         // workspaceSymbolProvider is not advertised (e.g. after
         // `disabledFeatures: ["lsp.workspace_symbol"]`).
-        if !self.advertised_features.lock().workspace_symbol {
+        if !self.client_session.advertised_features.lock().workspace_symbol {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1727,7 +1740,7 @@ impl LspServer {
                 invalid.value.trim().to_ascii_lowercase()
             };
             if matches!(
-                self.session_warning_dedup.note_client_setting(
+                self.client_session.session_warning_dedup.note_client_setting(
                     invalid.setting,
                     invalid.value_type,
                     &normalized_value
@@ -1771,14 +1784,13 @@ impl LspServer {
                 "Perl LSP rejected a `perl.workspace.includePaths` entry: {}",
                 entry.render()
             );
-            let decision = self.session_warning_dedup.emit_client_include_path_warning(
-                &entry.entry,
-                entry.reason.dedup_key(),
-                || {
+            let decision = self
+                .client_session
+                .session_warning_dedup
+                .emit_client_include_path_warning(&entry.entry, entry.reason.dedup_key(), || {
                     self.show_message(crate::runtime::window::MessageType::Warning, &message)
                         .is_ok()
-                },
-            );
+                });
             if !matches!(decision, super::session_warning_dedup::SessionWarningDecision::Suppress) {
                 tracing::debug!(?decision, "rejected includePaths warning emission decided");
             }
@@ -1818,13 +1830,13 @@ impl LspServer {
                 // keys, which the parser folds into the same fields.
                 #[cfg(not(target_arch = "wasm32"))]
                 let critic_snapshot_before = {
-                    let cfg = self.config.lock();
+                    let cfg = self.client_session.config.lock();
                     critic_config_snapshot(&cfg)
                 };
 
                 // Update server-owned LSP configuration.
                 {
-                    let mut config = self.config.lock();
+                    let mut config = self.client_session.config.lock();
                     config.update_from_value(perl);
                     tracing::debug!("Updated server config from perl settings");
                 }
@@ -1860,7 +1872,7 @@ impl LspServer {
 
                 #[cfg(not(target_arch = "wasm32"))]
                 let critic_config_changed = {
-                    let cfg = self.config.lock();
+                    let cfg = self.client_session.config.lock();
                     critic_snapshot_before != critic_config_snapshot(&cfg)
                 };
 
@@ -1868,7 +1880,8 @@ impl LspServer {
                 // changed so the next diagnostic cycle rebuilds it with the new config.
                 #[cfg(not(target_arch = "wasm32"))]
                 if critic_config_changed {
-                    self.session_warning_dedup
+                    self.client_session
+                        .session_warning_dedup
                         .clear_family(super::session_warning_dedup::SessionWarningFamily::Critic);
                 }
 
@@ -1927,7 +1940,8 @@ impl LspServer {
                         .collect();
                     {
                         let mut folders = self.workspace_folders.lock();
-                        let init_options_perl = self.initialization_options_perl_settings.lock();
+                        let init_options_perl =
+                            self.client_session.initialization_options_perl_settings.lock();
                         for folder in folders.iter_mut() {
                             let mut effective_config =
                                 perl_lsp_rs_core::config::WorkspaceConfig::default();
@@ -1995,7 +2009,8 @@ impl LspServer {
                 // A configuration notification starts a new user-visible
                 // configuration session; do not let an old auth failure
                 // suppress feedback after settings are changed or removed.
-                self.session_warning_dedup
+                self.client_session
+                    .session_warning_dedup
                     .clear_family(super::session_warning_dedup::SessionWarningFamily::AiBackend);
 
                 // Refresh AI backend when config changes (constructs or clears provider)
@@ -2013,7 +2028,7 @@ impl LspServer {
         }
 
         // Invalidate client-provided workspace/configuration values and re-fetch.
-        self.pending_workspace_configuration_requests.lock().clear();
+        self.client_session.pending_workspace_configuration_requests.lock().clear();
         self.request_workspace_configuration_for_folders();
     }
 
@@ -2162,7 +2177,7 @@ impl LspServer {
     /// restore, or edit. Ask it to re-pull instead, mirroring the
     /// include-path seam.
     pub(crate) fn refresh_diagnostics_after_watched_change(&self) {
-        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+        if self.client_session.client_supports_pull_diags.load(Ordering::Relaxed) {
             if let Err(error) = self.request_diagnostic_refresh() {
                 tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
             }
@@ -2855,7 +2870,7 @@ impl LspServer {
             // Workspace folder membership changed, so any in-flight reverse
             // request now has stale per-folder scoping. Drop pending entries
             // before issuing a fresh `workspace/configuration` pull.
-            self.pending_workspace_configuration_requests.lock().clear();
+            self.client_session.pending_workspace_configuration_requests.lock().clear();
 
             // Update workspace index with new folder list
             #[cfg(feature = "workspace")]
@@ -2906,7 +2921,11 @@ impl LspServer {
             // new folder/configuration authorities are installed. The publish
             // path still performs its sink currentness check; this is only a
             // recomputation trigger for candidates rejected during the move.
-            if !self.client_supports_pull_diags.load(std::sync::atomic::Ordering::Relaxed) {
+            if !self
+                .client_session
+                .client_supports_pull_diags
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 let open_uris = self.documents.lock().keys().cloned().collect::<Vec<_>>();
                 for uri in open_uris {
                     self.publish_diagnostics(&uri);
@@ -2955,6 +2974,12 @@ impl LspServer {
             return;
         };
 
+        // Drop the capability guard before entering the producer function. An
+        // installer gate may otherwise hold it while shutdown drains the same
+        // negotiation state, creating a producer/shutdown deadlock.
+        let work_done_progress =
+            self.client_session.client_capabilities.lock().work_done_progress_support;
+
         Self::start_workspace_indexing_with_resources(IndexingResources {
             coordinator,
             workspace_folders: Arc::clone(&self.workspace_folders),
@@ -2968,10 +2993,13 @@ impl LspServer {
             indexing_scan_observation: Arc::clone(&self.indexing_scan_observation),
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
-            work_done_progress: self.client_capabilities.lock().work_done_progress_support,
-            progress_tokens: Arc::clone(&self.progress_tokens),
-            progress_token_to_request: Arc::clone(&self.progress_token_to_request),
-            next_request_id: Arc::clone(&self.next_request_id),
+            work_done_progress,
+            progress_tokens: Arc::clone(&self.client_session.progress_tokens),
+            progress_token_to_request: Arc::clone(&self.client_session.progress_token_to_request),
+            next_request_id: Arc::clone(&self.client_session.next_request_id),
+            shutdown_received: Arc::clone(&self.client_session.shutdown_received),
+            #[cfg(all(test, feature = "workspace"))]
+            progress_install_observation: self.workspace_progress_install_observation.clone(),
             permission_denied_shown: Arc::clone(&self.permission_denied_shown),
             readiness_receipt: Arc::clone(&self.workspace_readiness_receipt),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -3053,7 +3081,7 @@ impl LspServer {
         // increment so it doesn't collide with IDs from other server-to-client requests.
         let progress_create_id = next_indexing_progress_request_id(&resources.next_request_id);
         let outbound = resources.outbound;
-        let work_done_progress = resources.work_done_progress;
+        let mut work_done_progress = resources.work_done_progress;
         // Keep the cancellation registry identity in a string namespace. The
         // progress-create request ID is server-generated, while the registry
         // also contains client request IDs; sharing numeric IDs would allow a
@@ -3061,6 +3089,9 @@ impl LspServer {
         let progress_request_id = indexing_cancellation_request_id();
         let progress_tokens = resources.progress_tokens;
         let progress_token_to_request = resources.progress_token_to_request;
+        let shutdown_received = resources.shutdown_received;
+        #[cfg(test)]
+        let progress_install_observation = resources.progress_install_observation;
         let cancellation_registered = if work_done_progress {
             let cancellation_token = PerlLspCancellationToken::new(
                 progress_request_id.clone(),
@@ -3070,12 +3101,36 @@ impl LspServer {
                 tracing::warn!(%error, "Failed to register workspace indexing cancellation token");
                 false
             } else {
-                progress_tokens.lock().insert(WORKSPACE_INDEX_PROGRESS_TOKEN.to_string());
-                progress_token_to_request.lock().insert(
-                    WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
-                    progress_request_id.clone(),
+                // Capability and handles are deliberately captured before this
+                // pause: a later shutdown must not turn this probe into a
+                // work_done_progress=false test that skips installation.
+                #[cfg(test)]
+                super::readiness::notify_workspace_indexing_started(
+                    &progress_install_observation.gate,
                 );
-                true
+                let install_outcome = crate::runtime::client_session::install_progress_token_with(
+                    &shutdown_received,
+                    &progress_tokens,
+                    &progress_token_to_request,
+                    WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
+                    Some(progress_request_id.clone()),
+                );
+                #[cfg(test)]
+                if let Some(observer) = progress_install_observation.outcome.lock().take() {
+                    let _ = observer.send(install_outcome);
+                }
+                match install_outcome {
+                    crate::runtime::client_session::ProgressTokenInstall::Installed => true,
+                    crate::runtime::client_session::ProgressTokenInstall::Shutdown
+                    | crate::runtime::client_session::ProgressTokenInstall::AlreadyExists => {
+                        GLOBAL_CANCELLATION_REGISTRY.remove_request(&progress_request_id);
+                        // Installer refusal must suppress this scan's cloned-outbound
+                        // create/begin/end. `send_progress_*` writes the captured
+                        // sink directly and does not take the session enqueue fence.
+                        work_done_progress = false;
+                        false
+                    }
+                }
             }
         } else {
             false
@@ -4540,8 +4595,8 @@ mod tests {
         server.publish_diagnostics(&a_doc);
         server.publish_diagnostics(&b_doc);
         server.publish_diagnostics(&outside_doc);
-        server.client_capabilities.lock().workspace_configuration_support = true;
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.client_capabilities.lock().workspace_configuration_support = true;
+        server.client_session.initialized.store(true, Ordering::Release);
 
         // Diagnostics compute off-lock. Observe all initial missing-module
         // publications and a short quiet interval before measuring the pull.
@@ -4746,16 +4801,17 @@ mod tests {
             .lock()
             .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
         {
-            let mut capabilities = server.client_capabilities.lock();
+            let mut capabilities = server.client_session.client_capabilities.lock();
             capabilities.workspace_configuration_support = true;
             capabilities.diagnostic_refresh_support = true;
         }
-        server.client_supports_pull_diags.store(true, Ordering::Release);
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.client_supports_pull_diags.store(true, Ordering::Release);
+        server.client_session.initialized.store(true, Ordering::Release);
 
         for include_path in ["first-lib", "second-lib"] {
             server.request_workspace_configuration_for_folders();
             let request_id = server
+                .client_session
                 .pending_workspace_configuration_requests
                 .lock()
                 .keys()
@@ -4831,7 +4887,7 @@ mod tests {
             }
         })));
 
-        let current_engine = server.config.lock().critic_engine;
+        let current_engine = server.client_session.config.lock().critic_engine;
         drop(server);
 
         let messages = output.messages()?;
@@ -4953,16 +5009,17 @@ mod tests {
             .lock()
             .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
         {
-            let mut capabilities = server.client_capabilities.lock();
+            let mut capabilities = server.client_session.client_capabilities.lock();
             capabilities.workspace_configuration_support = true;
         }
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.initialized.store(true, Ordering::Release);
 
         // The same rejected entry arriving through two scoped
         // `workspace/configuration` pulls must surface once (#17164).
         for _ in 0..2 {
             server.request_workspace_configuration_for_folders();
             let request_id = server
+                .client_session
                 .pending_workspace_configuration_requests
                 .lock()
                 .keys()
@@ -5029,8 +5086,8 @@ mod tests {
             .workspace_folders
             .lock()
             .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
-        server.client_capabilities.lock().workspace_configuration_support = true;
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.client_capabilities.lock().workspace_configuration_support = true;
+        server.client_session.initialized.store(true, Ordering::Release);
         let doc = url::Url::from_file_path(temp.path().join("main.pl"))
             .map_err(|_| "invalid document URI")?
             .to_string();
@@ -5052,6 +5109,7 @@ mod tests {
         let pull = |payload: serde_json::Value| -> Result<(), Box<dyn std::error::Error>> {
             server.request_workspace_configuration_for_folders();
             let request_id = server
+                .client_session
                 .pending_workspace_configuration_requests
                 .lock()
                 .keys()
@@ -5117,8 +5175,9 @@ mod tests {
             }
         })));
 
-        assert!(server.config.lock().telemetry_enabled);
-        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        assert!(server.client_session.config.lock().telemetry_enabled);
+        let serialized =
+            serde_json::to_value(&*server.client_session.config.lock()).expect("serialize config");
         assert!(serialized.get("testRunner").is_none());
         assert!(serialized.to_string().find("CANARY").is_none());
     }
@@ -5206,7 +5265,7 @@ mod tests {
             server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
         let request_id =
             crate::runtime::types::ServerRequestId::new(7).ok_or("valid request id")?;
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             request_id,
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///tmp/folder-a".to_string()],
@@ -5225,7 +5284,7 @@ mod tests {
         })));
 
         assert!(result.is_ok());
-        assert!(server.pending_workspace_configuration_requests.lock().is_empty());
+        assert!(server.client_session.pending_workspace_configuration_requests.lock().is_empty());
         assert_eq!(
             server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst),
             generation_before + 1,
@@ -5255,8 +5314,8 @@ mod tests {
             .workspace_folders
             .lock()
             .push(super::WorkspaceFolderState::new(a_uri.clone()).with_path(a_path));
-        server.client_capabilities.lock().workspace_configuration_support = true;
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.client_capabilities.lock().workspace_configuration_support = true;
+        server.client_session.initialized.store(true, Ordering::Release);
         let wait_for_pulls = |count: usize| -> Result<Vec<Value>, Box<dyn std::error::Error>> {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             loop {
@@ -5543,7 +5602,7 @@ mod tests {
         let server = LspServer::new();
         let request_id =
             crate::runtime::types::ServerRequestId::new(8).ok_or("valid request id")?;
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             request_id,
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///tmp/folder-a".to_string()],
@@ -5561,7 +5620,7 @@ mod tests {
         })));
 
         assert!(result.is_ok());
-        assert_eq!(server.pending_workspace_configuration_requests.lock().len(), 1);
+        assert_eq!(server.client_session.pending_workspace_configuration_requests.lock().len(), 1);
         assert_eq!(server.workspace_indexing_invocation_count(), before_invocations);
         Ok(())
     }
@@ -5580,9 +5639,9 @@ mod tests {
         let deleted_uri = url::Url::from_file_path(dir.path().join("gone.pm"))
             .map_err(|_| "invalid file path")?
             .to_string();
-        server.client_capabilities.lock().diagnostic_refresh_support = true;
-        server.client_supports_pull_diags.store(true, Ordering::Release);
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.client_capabilities.lock().diagnostic_refresh_support = true;
+        server.client_session.client_supports_pull_diags.store(true, Ordering::Release);
+        server.client_session.initialized.store(true, Ordering::Release);
 
         server.did_open(json!({
             "textDocument": {
@@ -6049,7 +6108,7 @@ mod tests {
             .to_string();
 
         let (mut server, output) = server_with_output_capture();
-        server.client_capabilities.lock().work_done_progress_support = true;
+        server.client_session.client_capabilities.lock().work_done_progress_support = true;
         server.index_coordinator =
             Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
                 IndexResourceLimits::default(),
@@ -6094,8 +6153,12 @@ mod tests {
         ) {
             return Err("cancelled indexing did not leave the coordinator degraded".into());
         }
-        if server.progress_tokens.lock().contains(WORKSPACE_INDEX_PROGRESS_TOKEN)
-            || server.progress_token_to_request.lock().contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN)
+        if server.client_session.progress_tokens.lock().contains(WORKSPACE_INDEX_PROGRESS_TOKEN)
+            || server
+                .client_session
+                .progress_token_to_request
+                .lock()
+                .contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN)
         {
             return Err("cancelled indexing left progress registration behind".into());
         }
@@ -6156,7 +6219,8 @@ mod tests {
             (&mut cancelled_server, cancelled_dir.path(), true, 30_000),
             (&mut other_server, other_dir.path(), other_supports_progress, 0),
         ] {
-            server.client_capabilities.lock().work_done_progress_support = supports_progress;
+            server.client_session.client_capabilities.lock().work_done_progress_support =
+                supports_progress;
             server.index_coordinator =
                 Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
                     IndexResourceLimits::default(),
@@ -6190,12 +6254,14 @@ mod tests {
         other_server.start_workspace_indexing();
         other_started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         let cancelled_request = cancelled_server
+            .client_session
             .progress_token_to_request
             .lock()
             .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
             .cloned()
             .ok_or("cancelled session did not register progress")?;
         let other_request = other_server
+            .client_session
             .progress_token_to_request
             .lock()
             .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
@@ -6230,8 +6296,8 @@ mod tests {
             cancelled_coordinator.state(),
             IndexState::Degraded { reason: DegradationReason::Cancelled, .. }
         ));
-        assert!(cancelled_server.progress_token_to_request.lock().is_empty());
-        assert!(other_server.progress_token_to_request.lock().is_empty());
+        assert!(cancelled_server.client_session.progress_token_to_request.lock().is_empty());
+        assert!(other_server.client_session.progress_token_to_request.lock().is_empty());
         assert!(GLOBAL_CANCELLATION_REGISTRY.get_token(&cancelled_request).is_none());
         if let Some(other_request) = other_request {
             assert_ne!(cancelled_request, other_request);
@@ -6344,6 +6410,152 @@ mod tests {
             .into());
         }
         Ok(())
+    }
+
+    #[cfg(all(test, feature = "workspace"))]
+    fn assert_progress_install_refusal_emits_no_frames(
+        shutdown: bool,
+        expected: crate::runtime::client_session::ProgressTokenInstall,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("installer-refusal.pm"),
+            "package InstallerRefusal;\nsub marker { 1 }\n1;\n",
+        )?;
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+
+        let (mut server, output) = server_with_output_capture();
+        server.client_session.client_capabilities.lock().work_done_progress_support = true;
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let _receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+
+        if !shutdown {
+            let planted = server.client_session.install_progress_token(
+                WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
+                Some(JsonRpcId::Integer(77)),
+            );
+            if planted != crate::runtime::client_session::ProgressTokenInstall::Installed {
+                return Err("expected the independent AlreadyExists precondition".into());
+            }
+        }
+
+        let (before_install_tx, before_install_rx) = std::sync::mpsc::channel();
+        let (release_install_tx, release_install_rx) = std::sync::mpsc::channel();
+        crate::runtime::readiness::set_workspace_indexing_start_gate(
+            &server.workspace_progress_install_observation.gate,
+            before_install_tx,
+            release_install_rx,
+        );
+        let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
+        *server.workspace_progress_install_observation.outcome.lock() = Some(outcome_tx);
+
+        // Capture the enabled producer on its real path, then pause before the
+        // installer so shutdown can happen without resetting that capture.
+        let server = std::sync::Arc::new(server);
+        let producer = {
+            let server = std::sync::Arc::clone(&server);
+            std::thread::spawn(move || server.start_workspace_indexing())
+        };
+        before_install_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("before progress install: {error:?}"))?;
+
+        if shutdown {
+            let admission = server.client_session.begin_shutdown();
+            if admission != crate::runtime::client_session::ShutdownAdmission::First {
+                return Err("expected first-caller shutdown admission".into());
+            }
+        }
+        release_install_tx
+            .send(())
+            .map_err(|error| format!("release progress install gate: {error:?}"))?;
+        producer.join().map_err(|_| "workspace indexing producer thread panicked")?;
+        if outcome_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("observe progress install outcome: {error:?}"))?
+            != expected
+        {
+            return Err(format!("wrong progress installer outcome; expected {expected:?}").into());
+        }
+        let _receipt = receipt_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("installer-refusal readiness receipt: {error:?}"))?;
+
+        if shutdown
+            && (server
+                .client_session
+                .progress_tokens
+                .lock()
+                .contains(WORKSPACE_INDEX_PROGRESS_TOKEN)
+                || server
+                    .client_session
+                    .progress_token_to_request
+                    .lock()
+                    .contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN))
+        {
+            return Err("shutdown refusal retained workspace-index progress identity".into());
+        }
+        if !shutdown
+            && server
+                .client_session
+                .progress_token_to_request
+                .lock()
+                .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
+                != Some(&JsonRpcId::Integer(77))
+        {
+            return Err("AlreadyExists did not preserve the independent token identity".into());
+        }
+
+        drop(server);
+        let messages = output.messages()?;
+        if messages.iter().any(|message| {
+            message.get("method").and_then(Value::as_str) == Some("window/workDoneProgress/create")
+        }) {
+            return Err(format!("{expected:?} emitted window/workDoneProgress/create").into());
+        }
+        if messages
+            .iter()
+            .any(|message| message.get("method").and_then(Value::as_str) == Some("$/progress"))
+        {
+            return Err(format!("{expected:?} emitted $/progress").into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_after_shutdown_does_not_emit_progress_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_progress_install_refusal_emits_no_frames(
+            true,
+            crate::runtime::client_session::ProgressTokenInstall::Shutdown,
+        )
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_with_existing_progress_token_does_not_emit_progress_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_progress_install_refusal_emits_no_frames(
+            false,
+            crate::runtime::client_session::ProgressTokenInstall::AlreadyExists,
+        )
     }
 
     #[cfg(feature = "workspace")]

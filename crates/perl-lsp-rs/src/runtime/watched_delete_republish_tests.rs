@@ -392,9 +392,12 @@ fn watched_create_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::
         open_consumer_fixture_with_dependency(false)?;
     // Mirror the existing watched-delete pull fixture: a refresh request is
     // only sent to a client that advertised refresh support.
-    server.client_capabilities.lock().diagnostic_refresh_support = true;
-    server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
-    server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.client_capabilities.lock().diagnostic_refresh_support = true;
+    server
+        .client_session
+        .client_supports_pull_diags
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
 
     std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
     server.handle_did_change_watched_files(Some(json!({
@@ -785,9 +788,12 @@ fn file_operation_create_and_rename_refresh_pull_clients() -> Result<(), Box<dyn
         // of machine speed; successful invalidations must bypass this timer.
         server.refresh_controller =
             super::refresh::RefreshController::with_debounce(Duration::from_secs(60));
-        server.client_capabilities.lock().diagnostic_refresh_support = true;
-        server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
-        server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+        server.client_session.client_capabilities.lock().diagnostic_refresh_support = true;
+        server
+            .client_session
+            .client_supports_pull_diags
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        server.client_session.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
         // The client may finish the first pull before the second event arrives.
         // A leading-edge debounce must not swallow that second invalidation.
         for attempt in 0..2 {
@@ -834,9 +840,12 @@ fn dependency_save_refreshes_pull_clients_after_reconciliation()
     let (server, output, consumer_uri, role_uri, _dir) = open_save_role_fixture()?;
     let keys = [consumer_uri.clone(), server.normalize_uri_key(&consumer_uri)];
     let key = server.normalize_uri_key(&role_uri);
-    server.client_capabilities.lock().diagnostic_refresh_support = true;
-    server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
-    server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.client_capabilities.lock().diagnostic_refresh_support = true;
+    server
+        .client_session
+        .client_supports_pull_diags
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
     let before = save_output_boundary(&server, &output, "pull-save-before")?;
     server.handle_did_save(Some(json!({
         "textDocument": { "uri": role_uri }, "text": SAVE_ROLE_CONFLICT

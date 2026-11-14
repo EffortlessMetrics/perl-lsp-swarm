@@ -1520,7 +1520,7 @@ mod tests {
 
         Scheduler::settle_abandoned_mutation(queued, &server, &mutation_seq_done, &mutation_notify);
 
-        assert!(!server.pending_request_ids.lock().contains(&id));
+        assert!(!server.client_session.pending_request_ids.lock().contains(&id));
         assert_eq!(mutation_seq_done.load(Ordering::SeqCst), 7);
     }
 
@@ -1561,7 +1561,7 @@ mod tests {
         let pending = tokio::spawn(async move { scheduler.send_mutation(request).await });
         let mut observed_pending = false;
         for _ in 0..1000 {
-            if server.pending_request_ids.lock().contains(&id) {
+            if server.client_session.pending_request_ids.lock().contains(&id) {
                 observed_pending = true;
                 break;
             }
@@ -1574,7 +1574,7 @@ mod tests {
         }
         pending.abort();
         let _ = pending.await;
-        if server.pending_request_ids.lock().contains(&id) {
+        if server.client_session.pending_request_ids.lock().contains(&id) {
             return Err("cancelled full admission leaked its pending request".into());
         }
         if mutation_seq_next.load(Ordering::SeqCst) != 1 {
