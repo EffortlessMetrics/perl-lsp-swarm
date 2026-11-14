@@ -1702,6 +1702,7 @@ dependencies = [
  "color-eyre",
  "nix",
  "perl-core-harness-types",
+ "perl-subprocess-runtime",
  "perl-test-must",
  "serde",
  "serde_json",
