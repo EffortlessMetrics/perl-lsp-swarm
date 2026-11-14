@@ -479,14 +479,20 @@ def read_workflow_catalog(root: Path) -> dict[str, Workflow]:
     return catalog
 
 
-def build_producer_index(workflows: dict[str, Workflow]) -> dict[str, list[tuple[str, str]]]:
-    index: dict[str, list[tuple[str, str]]] = {}
+def build_producer_index(
+    workflows: dict[str, Workflow],
+) -> dict[str, dict[str, list[tuple[str, str]]]]:
+    """Index static context emitters by context and actual trigger event."""
+    index: dict[str, dict[str, list[tuple[str, str]]]] = {}
     for workflow in workflows.values():
         for job in workflow.jobs.values():
             if job.name_static and job.name:
-                index.setdefault(job.name, []).append((workflow.path, job.job_id))
-    for producers in index.values():
-        producers.sort()
+                for event in workflow.events:
+                    producers_for_event = index.setdefault(job.name, {}).setdefault(event, [])
+                    producers_for_event.append((workflow.path, job.job_id))
+    for producers_by_event in index.values():
+        for producers in producers_by_event.values():
+            producers.sort()
     return index
 
 
@@ -576,7 +582,7 @@ def _reporter_binding_findings(entry: dict[str, Any], subject: str) -> list[Find
 def validate_context(
     entry: dict[str, Any],
     workflows: dict[str, Workflow],
-    producers: dict[str, list[tuple[str, str]]],
+    producers: dict[str, dict[str, list[tuple[str, str]]]],
 ) -> tuple[list[Finding], bool]:
     findings: list[Finding] = []
     name = str(entry.get("name") or "<unnamed>")
@@ -674,19 +680,27 @@ def validate_context(
     elif job.name != name:
         findings.append(Finding("context_name_mismatch", name, f"workflow emits {job.name!r}"))
 
-    actual_producers = producers.get(name, [])
+    actual_producers = producers.get(name, {})
     expected_producer = (workflow, job_id)
-    if expected_producer not in actual_producers:
-        findings.append(Finding("mapped_producer_not_indexed", name, f"{workflow}:{job_id} is not the indexed static producer"))
-    if len(actual_producers) != 1:
-        findings.append(
-            Finding(
-                "duplicate_emitted_context",
-                name,
-                "expected one static producer, found "
-                + (", ".join(f"{path}:{job}" for path, job in actual_producers) or "none"),
+    for event in declared_events:
+        event_producers = actual_producers.get(event, [])
+        if len(event_producers) != 1:
+            findings.append(
+                Finding(
+                    "duplicate_emitted_context",
+                    name,
+                    f"expected one static producer for event {event}, found "
+                    + (", ".join(f"{path}:{job}" for path, job in event_producers) or "none"),
+                )
             )
-        )
+        elif event_producers[0] != expected_producer:
+            findings.append(
+                Finding(
+                    "mapped_producer_not_indexed",
+                    name,
+                    f"{workflow}:{job_id} is not the indexed static producer for event {event}",
+                )
+            )
 
     if not job.continue_static:
         findings.append(Finding("job_continue_on_error_not_static", name, f"{workflow}:{job_id} has absent, commented, or dynamic direct continue-on-error"))
@@ -822,7 +836,9 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
 
     selected_sources = sorted(set(qualification_sources))
     findings = qualification_source_findings(workflows, selected_sources)
-    names: set[str] = set()
+    registered_names: set[str] = set()
+    registered_events: set[tuple[str, str]] = set()
+    registered_producers: dict[str, set[tuple[str, str]]] = {}
     mapped = 0
     canonical_contexts: list[dict[str, Any]] = []
     for entry in contexts:
@@ -830,19 +846,71 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
             findings.append(Finding("invalid_context_entry", policy_relative, "[[checks]] entry is not a table"))
             continue
         name = str(entry.get("name") or "<unnamed>")
-        if name in names:
-            findings.append(Finding("duplicate_context", name, "context names must be unique"))
-        names.add(name)
+        registered_names.add(name)
+        if (
+            entry.get("producer") == "repository-job"
+            and isinstance(entry.get("workflow"), str)
+            and isinstance(entry.get("job"), str)
+        ):
+            registered_producers.setdefault(name, set()).add((entry["workflow"], entry["job"]))
+        declared_events = entry.get("events")
+        if (
+            isinstance(declared_events, list)
+            and declared_events
+            and all(isinstance(event, str) and event for event in declared_events)
+        ):
+            for event in declared_events:
+                registration = (name, event)
+                if registration in registered_events:
+                    findings.append(
+                        Finding(
+                            "duplicate_context",
+                            name,
+                            f"context and event must be registered once: {event}",
+                        )
+                    )
+                registered_events.add(registration)
         canonical_contexts.append(_canonical_context(entry))
         entry_findings, is_mapped = validate_context(entry, workflows, producer_index)
         findings.extend(entry_findings)
         mapped += int(is_mapped)
 
+    for name in sorted(registered_names):
+        for event, event_producers in sorted(producer_index.get(name, {}).items()):
+            if (name, event) in registered_events:
+                continue
+            if len(event_producers) > 1:
+                findings.append(
+                    Finding(
+                        "duplicate_emitted_context",
+                        name,
+                        f"expected at most one static producer for unregistered event {event}, found "
+                        + ", ".join(f"{path}:{job}" for path, job in event_producers),
+                    )
+                )
+            if any(
+                producer not in registered_producers.get(name, set())
+                for producer in event_producers
+            ):
+                findings.append(
+                    Finding(
+                        "unregistered_emitted_context",
+                        name,
+                        f"event {event} has no ledger registration for static producer(s) "
+                        + ", ".join(f"{path}:{job}" for path, job in event_producers),
+                    )
+                )
+
     workflow_subjects = [
         {"path": workflow.path, "sha256": workflow.sha256}
         for workflow in sorted(workflows.values(), key=lambda item: item.path)
     ]
-    canonical_contexts.sort(key=lambda item: str(item.get("name", "")))
+    canonical_contexts.sort(
+        key=lambda item: (
+            str(item.get("name", "")),
+            json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+        )
+    )
     policy_subject = {
         "path": policy_relative,
         "sha256": _sha256(policy_file),

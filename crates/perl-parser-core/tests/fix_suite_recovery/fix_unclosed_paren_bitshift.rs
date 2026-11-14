@@ -11,8 +11,7 @@
 //!
 //! Affected corpus files: `Devel/Peek.pm`, `ExtUtils/MM_Any.pm`
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // -- Failing cases: `<<` inside parens after a term --
 

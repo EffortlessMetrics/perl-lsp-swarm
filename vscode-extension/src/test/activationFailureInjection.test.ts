@@ -940,17 +940,20 @@ describe('production activation failure injection (#7855)', () => {
   });
 
   test('a workspace event delivered during rollback cannot corrupt the receipt', async () => {
-    // Fail after the debugger phase. During rollback the configuration watcher
-    // is disposed while other workspace listeners are still live; invoke its
-    // handler from the dispose hook to simulate a host event arriving
-    // mid-rollback without relying on optional streaming listeners.
-    const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (boundary) => {
-      if (boundary.resource_id === nthOfPhase('workspace_listeners', 2).resource_id) {
-        armBusDisposeHook('watcher:configuration', () => {
-          const entry = allEntries('watcher:configuration')[0];
-          entry?.listener({ affectsConfiguration: () => false });
-        });
+    // Fail after the debugger phase. In reverse order the file-creation
+    // listener (registered after the configuration watcher) is disposed before
+    // the configuration watcher, so firing a configuration change while the file
+    // creation watcher's dispose runs reaches the still-live configuration
+    // listener — the realistic mid-rollback interleaving.
+    let rollbackHookArmed = false;
+    const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (_boundary) => {
+      if (rollbackHookArmed || allEntries('watcher:file-creation').length < 2) {
+        return;
       }
+      armBusDisposeHook('watcher:file-creation', () => {
+        fireHostEvent('watcher:configuration', { affectsConfiguration: () => false });
+      });
+      rollbackHookArmed = true;
     });
 
     // The mid-rollback dispatch reached the still-live configuration listener

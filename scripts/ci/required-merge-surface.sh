@@ -346,3 +346,7 @@ cargo test -p xtask --test workflow_draft_snapshot_supersession --locked -- --no
 # required merge surface command 38: Activation inventory suite (required merge surface)
 _step_index=$((_step_index + 1))
 cargo test -p xtask --test activation --test activation_check --locked -- --nocapture
+
+# required merge surface command 39: Draft PR feedback contract (required merge surface)
+_step_index=$((_step_index + 1))
+cargo test -p xtask --test draft_pr_feedback_contract --locked -- --nocapture

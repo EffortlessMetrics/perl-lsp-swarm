@@ -3852,6 +3852,7 @@ pub fn perl_lsp_rs_core::providers::DocumentHighlightProvider::new() -> perl_lsp
 pub fn perl_lsp_rs_core::providers::DocumentHighlightProvider::default() -> perl_lsp_rs_core::providers::DocumentHighlightProvider
 pub mod perl_lsp_rs_core::providers::document_links
 pub fn perl_lsp_rs_core::providers::document_links::compute_links(uri: &str, text: &str, _roots: &[url::Url]) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn perl_lsp_rs_core::providers::document_links::module_runtime_module_at_byte_offset(text: &str, byte_offset: usize) -> core::option::Option<alloc::string::String>
 pub mod perl_lsp_rs_core::providers::document_symbols
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::document_symbols::DocumentSymbol
 pub perl_lsp_rs_core::providers::document_symbols::DocumentSymbol::children: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>
@@ -9878,6 +9879,7 @@ pub fn perl_lsp_rs_core::providers::markup_attribute_name_suffix_end(source: &st
 pub fn perl_lsp_rs_core::providers::matches_query(name: &str, query: &str) -> bool
 pub fn perl_lsp_rs_core::providers::merge_and_sort_completion_candidates(candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>
 pub fn perl_lsp_rs_core::providers::merge_document_symbol_roots_in_source_order(outline: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>, additional: alloc::vec::Vec<perl_lsp_rs_core::providers::DocumentSymbol>)
+pub fn perl_lsp_rs_core::providers::module_runtime_module_at_byte_offset(text: &str, byte_offset: usize) -> core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::normalize_provider_decision_receipt(receipt: serde_json::value::Value) -> serde_json::value::Value
 pub fn perl_lsp_rs_core::providers::parameter_hints(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn perl_lsp_rs_core::providers::parameter_hints_with_resolver(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>, method_resolver: core::option::Option<&dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>>) -> alloc::vec::Vec<serde_json::value::Value>

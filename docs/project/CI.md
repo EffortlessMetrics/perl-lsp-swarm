@@ -46,7 +46,7 @@ Example registry image override:
 
 ```yaml
 default:
-  image: $CI_REGISTRY_IMAGE/ci/rust:1.95-bookworm
+  image: $CI_REGISTRY_IMAGE/ci/rust:1.100-bookworm
 ```
 
 ## Local Equivalents

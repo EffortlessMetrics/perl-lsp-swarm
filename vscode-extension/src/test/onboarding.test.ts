@@ -103,6 +103,26 @@ describe('OnboardingManager.shouldShowWelcome', () => {
   });
 });
 
+describe('OnboardingManager.shouldOfferWelcomeNotification', () => {
+  test('offers welcome on first run when the language server is not running', () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    expect(mgr.shouldOfferWelcomeNotification(false)).toBe(true);
+  });
+
+  test('skips welcome on first run when the language server is already running', () => {
+    const ctx = makeContext();
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    expect(mgr.shouldOfferWelcomeNotification(true)).toBe(false);
+  });
+
+  test('skips welcome after the welcomed flag is set even when the server is not running', () => {
+    const ctx = makeContext({ welcomed: true });
+    const mgr = new OnboardingManager(ctx, makeOutputChannel());
+    expect(mgr.shouldOfferWelcomeNotification(false)).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // markWelcomed
 // ---------------------------------------------------------------------------
@@ -819,7 +839,7 @@ describe('OnboardingManager.showWelcomeNotification', () => {
     jest.clearAllMocks();
   });
 
-  test('markWelcomed is NOT called before the notification resolves', async () => {
+  test('markWelcomed is called before the notification resolves', async () => {
     const ctx = makeContext();
     const mgr = new OnboardingManager(ctx, makeOutputChannel());
     const updateSpy = ctx.globalState.update as jest.Mock;
@@ -834,7 +854,7 @@ describe('OnboardingManager.showWelcomeNotification', () => {
 
     await mgr.showWelcomeNotification(null);
 
-    expect(welcomedDuringNotification).toBe(false);
+    expect(welcomedDuringNotification).toBe(true);
     expect(updateSpy).toHaveBeenCalledWith('perl-lsp.welcomed', true);
   });
 

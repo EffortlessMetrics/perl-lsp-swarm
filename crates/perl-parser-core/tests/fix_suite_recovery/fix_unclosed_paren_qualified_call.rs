@@ -15,8 +15,7 @@
 //!
 //! Affected corpus files: `IO/Compress/Base.pm`
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // ---- Failing cases: qualified call with string/number literal arg in paren context ----
 

@@ -1691,18 +1691,16 @@ fn has_link_or_reparse_component(path: &Path) -> bool {
 }
 
 fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
         use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
     {
-        false
+        metadata.file_type().is_symlink()
     }
 }
 

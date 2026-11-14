@@ -255,8 +255,10 @@ class RiprEventOperands(unittest.TestCase):
             "SCCACHE_DIR", "SCCACHE_CACHE_SIZE", "RIPR_CACHE_DIR",
             "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS", "CARGO_TARGET_DIR",
             "CARGO_HOME", "TMPDIR", "RIPR_FRESHNESS_HANDOFF")}
-        env.update(RIPR_VERSION="0.10.0", GITHUB_WORKSPACE=str(self.repo),
-                   TEST_DOCKER_ARGS=str(capture))
+        env.update(RIPR_VERSION="0.11.0",
+                   RIPR_GIT_REPOSITORY="https://github.com/EffortlessMetrics/ripr-swarm.git",
+                   RIPR_GIT_REV="9b9143798615bbf1a14c2dbd23a2359a29942078",
+                   GITHUB_WORKSPACE=str(self.repo), TEST_DOCKER_ARGS=str(capture))
         wrapper = textwrap.dedent(block)
         syntax = subprocess.run(["bash", "-n"], input=wrapper, text=True, capture_output=True)
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
@@ -276,7 +278,7 @@ class RiprEventOperands(unittest.TestCase):
         badge = json.loads((self.repo / "target/receipts/quality/ripr-badge-producer.json").read_text())
         self.assertEqual(badge, {
             "schema_version": 1, "kind": "ripr_badge_producer", "head": E,
-            "root": ".", "source_format": "ripr-plus repo-badge-json", "ripr_version": "0.10.0",
+            "root": ".", "source_format": "ripr-plus repo-badge-json", "ripr_version": "0.11.0",
         })
 
     def test_every_consumer_and_container_uses_exact_operands(self):
