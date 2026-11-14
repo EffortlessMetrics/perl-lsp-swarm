@@ -1729,6 +1729,7 @@ dependencies = [
  "perl-core-harness-types",
  "perl-parser-core",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
