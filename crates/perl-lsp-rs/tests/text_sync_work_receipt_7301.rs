@@ -91,6 +91,44 @@ fn did_open_and_async_edit_emit_versioned_work_receipt() -> TestResult {
 
 #[test]
 #[serial_test::serial]
+fn worker_totals_stay_in_the_receipts_document_scope() -> TestResult {
+    const OTHER_URI: &str = "file:///7301_other_work_receipt.pl";
+
+    let server = Arc::new(LspServer::new());
+    let _capture = server.test_text_sync_work_capture_start();
+    server.test_install_parse_worker();
+    server.test_handle_initialize_dispatch(Some(json!({
+        "capabilities": {},
+        "rootUri": null,
+        "workspaceFolders": null
+    })))?;
+    server.test_apply_did_open(URI, OPEN_TEXT, 1)?;
+    server.test_apply_did_open(OTHER_URI, OPEN_TEXT, 1)?;
+    server.test_apply_did_change(URI, EDIT_TEXT, 2)?;
+    server.test_apply_did_change(OTHER_URI, EDIT_TEXT, 2)?;
+    assert!(server.test_wait_for_parse_worker_settled(URI, std::time::Duration::from_secs(30)));
+    assert!(
+        server.test_wait_for_parse_worker_settled(OTHER_URI, std::time::Duration::from_secs(30))
+    );
+
+    let receipt = server.test_text_sync_work_capture_receipt(
+        URI,
+        "one_document_inside_a_two_document_capture",
+        "text_sync_work_receipt_7301::worker_totals_stay_in_the_receipts_document_scope",
+    );
+
+    assert_eq!(receipt.instrument_status, InstrumentStatus::Ok);
+    assert_eq!(receipt.accepted_generations, 2);
+    let worker = receipt.parse_worker.as_ref().ok_or("worker metrics missing")?;
+    assert_eq!(worker.jobs_enqueued, 1);
+    assert_eq!(worker.jobs_published, 1);
+    assert_eq!(worker.jobs_coalesced, 0);
+    assert_eq!(worker.jobs_rejected_stale, 0);
+    Ok(())
+}
+
+#[test]
+#[serial_test::serial]
 fn capture_sessions_are_exclusive_across_servers() -> TestResult {
     let first = Arc::new(LspServer::new());
     let second = Arc::new(LspServer::new());

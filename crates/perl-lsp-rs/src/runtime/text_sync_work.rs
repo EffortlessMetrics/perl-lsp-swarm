@@ -55,6 +55,16 @@ pub(crate) fn document_scope(normalized_uri: &str) -> CaptureDocumentScope {
     CaptureDocumentScope { active: true, previous }
 }
 
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn capture_owner() -> Option<usize> {
+    CAPTURE_OWNER.with(std::cell::Cell::get)
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn capture_owner() -> Option<usize> {
+    None
+}
+
 #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
 pub(crate) struct CaptureOwnerScope;
 
@@ -122,6 +132,8 @@ pub enum WorkEventKind {
     IndexingTransitionLockAcquired,
     IndexingTransitionLockReleased,
     ParseWorkerEnqueue,
+    ParseWorkerCoalesced,
+    ParseWorkerRejectedStale,
     ParsedSnapshotSourceIdentity,
     SourceBufferReleased,
 }
@@ -372,14 +384,15 @@ pub(crate) fn record_canonical_digest_computed(
     .record();
 }
 
-pub(crate) fn record_parse_worker_enqueue(
+fn record_parse_worker_lifecycle(
+    kind: WorkEventKind,
     uri_tail: String,
     generation: u32,
     byte_length: u64,
     sync_path: &'static str,
 ) {
     WorkEvent {
-        kind: WorkEventKind::ParseWorkerEnqueue,
+        kind,
         uri_tail,
         client_version: None,
         generation,
@@ -390,6 +403,45 @@ pub(crate) fn record_parse_worker_enqueue(
         disposition: "current",
     }
     .record();
+}
+
+pub(crate) fn record_parse_worker_enqueue(
+    uri_tail: String,
+    generation: u32,
+    byte_length: u64,
+    sync_path: &'static str,
+) {
+    record_parse_worker_lifecycle(
+        WorkEventKind::ParseWorkerEnqueue,
+        uri_tail,
+        generation,
+        byte_length,
+        sync_path,
+    );
+}
+
+pub(crate) fn record_parse_worker_coalesced(uri_tail: String, generation: u32, byte_length: u64) {
+    record_parse_worker_lifecycle(
+        WorkEventKind::ParseWorkerCoalesced,
+        uri_tail,
+        generation,
+        byte_length,
+        "async",
+    );
+}
+
+pub(crate) fn record_parse_worker_rejected_stale(
+    uri_tail: String,
+    generation: u32,
+    byte_length: u64,
+) {
+    record_parse_worker_lifecycle(
+        WorkEventKind::ParseWorkerRejectedStale,
+        uri_tail,
+        generation,
+        byte_length,
+        "async",
+    );
 }
 
 pub(crate) fn record_accepted_parsed_snapshot(
@@ -512,6 +564,8 @@ mod receipt {
             WorkEventKind::IndexingTransitionLockAcquired => "indexing_transition_lock_acquired",
             WorkEventKind::IndexingTransitionLockReleased => "indexing_transition_lock_released",
             WorkEventKind::ParseWorkerEnqueue => "parse_worker_enqueue",
+            WorkEventKind::ParseWorkerCoalesced => "parse_worker_coalesced",
+            WorkEventKind::ParseWorkerRejectedStale => "parse_worker_rejected_stale",
             WorkEventKind::ParsedSnapshotSourceIdentity => "parsed_snapshot_source_identity",
             WorkEventKind::SourceBufferReleased => "source_buffer_released",
         }
@@ -531,6 +585,33 @@ mod receipt {
                 disposition: event.disposition.to_string(),
             }
         }
+    }
+
+    pub fn parse_worker_totals_for_events(events: &[WorkEvent]) -> Option<ParseWorkerTotals> {
+        let mut found_worker_event = false;
+        let mut totals = ParseWorkerTotals::default();
+        for event in events {
+            match event.kind {
+                WorkEventKind::ParseWorkerEnqueue => {
+                    found_worker_event = true;
+                    totals.jobs_enqueued = totals.jobs_enqueued.saturating_add(1);
+                }
+                WorkEventKind::ParseWorkerCoalesced => {
+                    found_worker_event = true;
+                    totals.jobs_coalesced = totals.jobs_coalesced.saturating_add(1);
+                }
+                WorkEventKind::ParseWorkerRejectedStale => {
+                    found_worker_event = true;
+                    totals.jobs_rejected_stale = totals.jobs_rejected_stale.saturating_add(1);
+                }
+                WorkEventKind::ParsedSnapshotSourceIdentity if event.sync_path == "async" => {
+                    found_worker_event = true;
+                    totals.jobs_published = totals.jobs_published.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+        found_worker_event.then_some(totals)
     }
 
     pub fn build_receipt(
@@ -586,7 +667,10 @@ mod receipt {
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-pub use receipt::{InstrumentStatus, ParseWorkerTotals, TextSyncWorkReceipt, build_receipt};
+pub use receipt::{
+    InstrumentStatus, ParseWorkerTotals, TextSyncWorkReceipt, build_receipt,
+    parse_worker_totals_for_events,
+};
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub mod capture {
@@ -712,6 +796,11 @@ pub mod capture {
     }
 
     #[cfg(test)]
+    pub(super) fn baseline_locks_are_held_for_test() -> bool {
+        buffer().try_lock().is_none() && capture_lock().try_lock().is_none()
+    }
+
+    #[cfg(test)]
     pub(super) fn session_for_test() -> u64 {
         SESSION.load(Ordering::Acquire)
     }
@@ -737,6 +826,15 @@ mod tests {
         let (events, baseline) = capture::drain();
         let receipt = build_receipt("test", "none", events, baseline);
         assert_eq!(receipt.instrument_status, InstrumentStatus::NotProven);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn worker_baseline_is_sampled_under_capture_locks() {
+        let _capture = capture::test_lock(|| {
+            assert!(capture::baseline_locks_are_held_for_test());
+            None
+        });
     }
 
     #[test]
@@ -768,6 +866,24 @@ mod tests {
         let (events, baseline) = capture::drain();
         let receipt = build_receipt("accepted", "unit", events, baseline);
         assert_eq!(receipt.accepted_generations, 2);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn worker_totals_are_derived_from_document_events() {
+        let _capture = capture::test_lock(|| None);
+        record_parse_worker_enqueue("file.pl".to_string(), 4, 10, "async");
+        record_parse_worker_coalesced("file.pl".to_string(), 5, 10);
+        record_parse_worker_rejected_stale("file.pl".to_string(), 6, 10);
+        record_accepted_parsed_snapshot("file.pl".to_string(), 7, 10, "async");
+
+        let (events, _) = capture::drain();
+        let totals = parse_worker_totals_for_events(&events).unwrap_or_default();
+
+        assert_eq!(totals.jobs_enqueued, 1);
+        assert_eq!(totals.jobs_coalesced, 1);
+        assert_eq!(totals.jobs_rejected_stale, 1);
+        assert_eq!(totals.jobs_published, 1);
     }
 
     #[test]

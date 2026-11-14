@@ -1138,27 +1138,11 @@ impl LspServer {
     ) -> crate::runtime::text_sync_work::TextSyncWorkReceipt {
         let worker_settled = self.parse_worker().is_none()
             || self.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(30));
-        let (events, baseline) =
+        let (events, _baseline) =
             crate::runtime::text_sync_work::capture::drain_for_uri(&self.normalize_uri_key(uri));
-        let parse_worker = self.test_parse_worker_metrics().map(|m| {
-            let current = crate::runtime::text_sync_work::ParseWorkerTotals {
-                jobs_enqueued: m.jobs_enqueued,
-                jobs_coalesced: m.jobs_coalesced,
-                jobs_rejected_stale: m.jobs_rejected_stale,
-                jobs_published: m.jobs_published,
-            };
-            match baseline {
-                Some(baseline) => crate::runtime::text_sync_work::ParseWorkerTotals {
-                    jobs_enqueued: current.jobs_enqueued.saturating_sub(baseline.jobs_enqueued),
-                    jobs_coalesced: current.jobs_coalesced.saturating_sub(baseline.jobs_coalesced),
-                    jobs_rejected_stale: current
-                        .jobs_rejected_stale
-                        .saturating_sub(baseline.jobs_rejected_stale),
-                    jobs_published: current.jobs_published.saturating_sub(baseline.jobs_published),
-                },
-                None => current,
-            }
-        });
+        let parse_worker = self
+            .test_parse_worker_metrics()
+            .and_then(|_| crate::runtime::text_sync_work::parse_worker_totals_for_events(&events));
         let mut receipt = crate::runtime::text_sync_work::build_receipt(
             workload,
             reproduction,

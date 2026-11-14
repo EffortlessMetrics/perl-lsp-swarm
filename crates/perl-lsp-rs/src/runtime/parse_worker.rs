@@ -164,6 +164,8 @@ struct ParseJob {
     /// Enqueue time, for the (opt-in) `parse_worker.edit_to_publish` timing
     /// span.
     enqueued_at: Instant,
+    /// Owning server identity for the opt-in text-sync capture, if any.
+    capture_owner: Option<usize>,
 }
 
 /// Proof that a `ParsedSnapshot` was accepted by `publish_parsed_if_current`
@@ -399,6 +401,15 @@ impl Coordinator {
     fn enqueue_locked(&self, state: &mut QueueState, job: ParseJob) -> bool {
         self.metrics.jobs_enqueued.fetch_add(1, Ordering::SeqCst);
         let uri = job.normalized_uri.clone();
+        let capture_job = if crate::runtime::text_sync_work::is_enabled() {
+            Some((
+                crate::runtime::timing::uri_tail(&job.normalized_uri),
+                job.generation,
+                u64::try_from(job.text.len()).unwrap_or(u64::MAX),
+            ))
+        } else {
+            None
+        };
         let replaced = state.pending.insert(uri.clone(), job).is_some();
         self.metrics.bump_queue_depth(state.pending.len());
         let newly_active = state.active.insert(uri.clone());
@@ -426,6 +437,11 @@ impl Coordinator {
             // Already owned by a worker (queued or in-flight); this enqueue
             // replaced a not-yet-started job that was waiting behind it.
             self.metrics.jobs_coalesced.fetch_add(1, Ordering::SeqCst);
+            if let Some((tail, generation, byte_len)) = capture_job {
+                crate::runtime::text_sync_work::record_parse_worker_coalesced(
+                    tail, generation, byte_len,
+                );
+            }
         }
         newly_active
     }
@@ -1129,6 +1145,7 @@ impl ParseWorker {
                 text,
                 refresh_consumers_after_index,
                 enqueued_at: Instant::now(),
+                capture_owner: crate::runtime::text_sync_work::capture_owner(),
             })
             .map_err(|_| ())
     }
@@ -1230,6 +1247,9 @@ fn process_job(
         ParseWorkerPanicInjector,
     >,
 ) {
+    let _capture_owner =
+        crate::runtime::text_sync_work::owner_scope(job.capture_owner.unwrap_or(0));
+    let _capture_document = crate::runtime::text_sync_work::document_scope(&job.normalized_uri);
     metrics.jobs_started.fetch_add(1, Ordering::SeqCst);
 
     // Deliberate test-only panic injection to prove the worker's own
@@ -1315,6 +1335,13 @@ fn process_job(
 
     if !published {
         metrics.jobs_rejected_stale.fetch_add(1, Ordering::SeqCst);
+        if crate::runtime::text_sync_work::is_enabled() {
+            crate::runtime::text_sync_work::record_parse_worker_rejected_stale(
+                crate::runtime::timing::uri_tail(&job.normalized_uri),
+                job.generation,
+                u64::try_from(job.text.len()).unwrap_or(u64::MAX),
+            );
+        }
         return;
     }
     metrics.jobs_published.fetch_add(1, Ordering::SeqCst);
