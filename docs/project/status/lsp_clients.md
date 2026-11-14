@@ -19,6 +19,7 @@
 | Claude Code | `plugin_lsp_bridge` | `bridge_or_plugin_dependency` | Support depends on an external plugin registration surface; perllsp remains an LSP server, not an agent tool protocol. |
 | Codex CLI | `lsp_to_mcp_bridge` | `bridge_or_plugin_dependency` | Codex CLI consumes MCP tools; registering perllsp --stdio directly as MCP is unsupported. |
 | Codex Desktop | `no_documented_lsp_surface` | `not_proven_unsupported` | No documented upstream surface registers a language server with Codex Desktop; direct support is unsupported/not proven and no client capability or execution receipt is registered. |
+| Codex IDE extension | `agent_host_skill_and_native_mcp` | `configuration_documented` | Standalone skill and shared local MCP routes are documented and journey cells are contract-pinned; no exact-host agent_client_compat.v1 pass row is registered yet and CLI/desktop receipts cannot substitute. |
 | OpenCode | `custom_stdio_server` | `configuration_documented` | The workaround is documented and implemented, but no protocol-profile or actual OpenCode journey is registered. |
 
 Current executable promotions: `Vim` (`real_generic_client_proven`). Each promotion is validated against its typed evidence class.

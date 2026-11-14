@@ -57,6 +57,7 @@ perllsp --health
 | Claude Code | provide a plugin `.lsp.json` pointing to `perllsp --stdio` | [docs/EDITORS/CLAUDE_CODE_SETUP.md](../EDITORS/CLAUDE_CODE_SETUP.md) |
 | Codex CLI | configure an MCP bridge such as `lsp-mcp`; the bridge exposes tools to Codex and launches `perllsp --stdio` internally | [docs/EDITORS/CODEX_CLI_SETUP.md](../EDITORS/CODEX_CLI_SETUP.md) |
 | Codex Desktop | **Not proven:** no documented custom language server surface; do not configure `perllsp` there | [docs/EDITORS/CODEX_DESKTOP_SETUP.md](../EDITORS/CODEX_DESKTOP_SETUP.md) |
+| Codex IDE extension | **Not proven:** standalone skill + shared local MCP routes are documented; exact-host `agent_client_compat.v1` receipts remain blocked on #7825 / #6958 | [docs/EDITORS/CODEX_IDE_SETUP.md](../EDITORS/CODEX_IDE_SETUP.md) |
 | OpenCode | configure a custom `perl-lsp` server in `opencode.json` | [docs/EDITORS/OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) |
 
 ## Minimal Configurations
@@ -355,3 +356,12 @@ push.
 registering a custom language server, so there is no `perllsp` configuration to
 perform. See [CODEX_DESKTOP_SETUP.md](../EDITORS/CODEX_DESKTOP_SETUP.md) for
 the current host boundaries and the client support ledger for its earned tier.
+
+### Codex IDE extension
+
+**Not proven on exact host.** The extension may expose standalone skills and
+shared local MCP configuration, but those routes require separate
+`agent_client_compat.v1` receipts under [#7826](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7826).
+CLI and desktop receipts cannot substitute. See
+[CODEX_IDE_SETUP.md](../EDITORS/CODEX_IDE_SETUP.md) for the journey matrix and
+current blockers (#7825 standalone skill subject, #6958 / #7230 native MCP).
