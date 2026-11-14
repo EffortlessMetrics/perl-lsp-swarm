@@ -21,7 +21,7 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-from dap_authority_common import PEER_DISPATCH_PATHS, parse_request_table
+from dap_authority_common import PEER_DISPATCH_PATHS, parse_request_table, read_text
 
 COMMIT = "a" * 40
 DOC = f"""# DAP Protocol Authority and Compatibility
@@ -878,6 +878,7 @@ UNAVAILABLE_WARN
                     "availability": "all_frontends",
                     "variant": "Initialize",
                     "handler": "handle_initialize",
+                    "request_argument_family": "with_arguments",
                 },
                 {
                     "row_id": "dap.request.inlineValues",
@@ -886,6 +887,7 @@ UNAVAILABLE_WARN
                     "availability": "native_only",
                     "variant": "Inlinevalues",
                     "handler": "handle_inlinevalues",
+                    "request_argument_family": "with_arguments",
                 },
             ],
         )
@@ -1735,6 +1737,63 @@ UNAVAILABLE_WARN
         )
         self._write_production(dispatch_source=source)
         self.assertAuthorityErrorMatching("duplicate wire names", self._production_rows)
+
+    # --- #9527 criterion 7: request argument family from executable arity ---
+
+    def test_request_argument_family_is_derived_from_executable_handler_arity(self) -> None:
+        rows = parse_request_table(
+            self._table_from_rows(
+                'standard all_frontends Initialize "initialize" => handle_initialize(arguments),',
+                'standard all_frontends ConfigurationDone "configurationDone" => handle_configuration_done(),',
+            )
+        )
+        self.assertEqual(
+            {
+                "initialize": "with_arguments",
+                "configurationDone": "without_arguments",
+            },
+            {row["command"]: row["request_argument_family"] for row in rows},
+        )
+
+    def test_decoy_arguments_marker_in_string_does_not_change_request_argument_family(
+        self,
+    ) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source += 'const DECOY: &str = "=> handle_sneak(arguments),";\n'
+        self._write_production(dispatch_source=source)
+        rows = self._production_rows()["request_rows"]
+        self.assertEqual(
+            ["initialize", "inlineValues"],
+            [row["command"] for row in rows],
+        )
+        self.assertTrue(
+            all(row["request_argument_family"] == "with_arguments" for row in rows)
+        )
+
+    def test_production_inventory_pins_without_arguments_commands(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        rows = parse_request_table(
+            read_text(repo_root / MODULE.DISPATCH_PATH, "production dispatch table")
+        )
+        families = {row["command"]: row["request_argument_family"] for row in rows}
+        self.assertEqual("without_arguments", families["configurationDone"])
+        self.assertEqual("without_arguments", families["threads"])
+        self.assertEqual("with_arguments", families["initialize"])
+
+    def test_dispatch_owner_contract_is_emitted_with_pinned_sources(self) -> None:
+        contract = self._production_rows()["dispatch_owner_contract"]
+        self.assertEqual(
+            sorted(
+                path.as_posix()
+                for path in (
+                    MODULE.DISPATCH_PATH,
+                    PEER_DISPATCH_PATHS[0],
+                    PEER_DISPATCH_PATHS[1],
+                )
+            ),
+            contract["pinned_dispatch_sources"],
+        )
+        self.assertIn("dispatch", contract["discovery_pattern"])
 
     # --- #9527 falsifier 9: a stale extractor or source graph is rejected ---
 
