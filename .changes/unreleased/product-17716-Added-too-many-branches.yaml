@@ -1,0 +1,12 @@
+project: product
+component: Language intelligence
+kind: Added
+body: >-
+  Native critic adds the strict-only maintainability rule
+  native.maintainability.too_many_branches, which reports named subroutines
+  with more than 10 branch points (#17716).
+time: 2026-11-14T00:00:00Z
+custom:
+  Issue: "17716"
+  Slug: too-many-branches
+  Breaking: "no"
