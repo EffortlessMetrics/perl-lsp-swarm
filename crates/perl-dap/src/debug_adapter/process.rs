@@ -365,6 +365,80 @@ fn current_stopped_frame_id(session: &mut DebugSession, advance_generation: bool
     if generation <= SCOPE_FRAME_ID_MAX { generation as i32 } else { i32::MAX }
 }
 
+/// Wall-clock budget for the pre-launch `perl -c` compile of the debuggee
+/// script (#19416).
+///
+/// `PerlOracleEnv::for_version_probe` documents its own 5-second budget as
+/// "generous for a simple `print $]`": it is sized for a version probe, not
+/// for a script compile. The pre-launch syntax check performs the materially
+/// heavier operation — a full compile of the user's script — so it must not
+/// borrow that budget. On a loaded runner the borrowed 5 seconds expired
+/// mid-compile, and the timeout was reported as if the launch had failed for a
+/// product reason. Thirty seconds is the house budget for a real Perl
+/// operation; the bounded capability probe keeps its own smaller budget
+/// ([`DEBUGGER_PROBE_TIMEOUT`]) because it measures module loadability, not a
+/// compile.
+const SYNTAX_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+
+// Test-scoped override for `SYNTAX_CHECK_TIMEOUT`.
+//
+// The override is thread-local so a slow host cannot silently change the
+// latency contract of a concurrently running test, and the guard restores the
+// previous value on unwind. This is the same shape as `perl_lsp_rs_core`'s
+// startup `@INC` probe timeout override.
+#[cfg(test)]
+thread_local! {
+    static SYNTAX_CHECK_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The budget the pre-launch syntax check actually applies.
+#[cfg(not(test))]
+fn effective_syntax_check_timeout() -> Duration {
+    SYNTAX_CHECK_TIMEOUT
+}
+
+/// The budget the pre-launch syntax check actually applies.
+#[cfg(test)]
+fn effective_syntax_check_timeout() -> Duration {
+    SYNTAX_CHECK_TIMEOUT_OVERRIDE.with(|timeout| timeout.get()).unwrap_or(SYNTAX_CHECK_TIMEOUT)
+}
+
+/// Run `body` with the pre-launch syntax-check budget replaced by `timeout`.
+///
+/// Test-only. It lets a proof exercise the timeout path without paying the
+/// production wall-clock cost, while the production budget stays pinned by
+/// [`effective_syntax_check_timeout`].
+#[cfg(test)]
+fn with_syntax_check_timeout<T>(timeout: Duration, body: impl FnOnce() -> T) -> T {
+    SYNTAX_CHECK_TIMEOUT_OVERRIDE.with(|current| {
+        let guard = SyntaxCheckTimeoutGuard {
+            previous: current.replace(Some(timeout)),
+            _thread_bound: std::marker::PhantomData,
+        };
+        let result = body();
+        drop(guard);
+        result
+    })
+}
+
+/// Restores the previous thread-local syntax-check budget, including after an
+/// unwind.
+#[cfg(test)]
+struct SyntaxCheckTimeoutGuard {
+    previous: Option<Duration>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for SyntaxCheckTimeoutGuard {
+    fn drop(&mut self) {
+        SYNTAX_CHECK_TIMEOUT_OVERRIDE.with(|current| {
+            current.set(self.previous);
+        });
+    }
+}
+
 impl DebugAdapter {
     /// Handle initialize request
     pub(super) fn handle_initialize(
@@ -1578,6 +1652,13 @@ impl DebugAdapter {
             PathBuf::from(perl_interpreter),
             prog_cwd,
         );
+        // #19416: `for_version_probe` sizes its budget (5 seconds) for a
+        // trivial `perl -e 'print $]'` version probe. This call compiles the
+        // debuggee script, which is a materially heavier operation, so the
+        // borrowed version-probe budget is replaced with one sized for the
+        // operation. The env contract (deny-all-ambient) is still the one
+        // `for_version_probe` guarantees.
+        oracle.timeout = effective_syntax_check_timeout();
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
         let timeout = oracle.timeout;
         let mut syntax_cmd = oracle.into_command();
@@ -4033,7 +4114,10 @@ mod tests {
         has_prompt_prefix, is_strict_prompt_candidate, is_valid_perl_interpreter, lock_or_recover,
         read_debugger_record, reserve_terminated_event, terminated_delivery_is_current,
     };
-    use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
+    use super::{
+        DapMessage, Duration, Instant, PathBuf, Stdio, Value, effective_syntax_check_timeout, json,
+        thread, with_syntax_check_timeout,
+    };
     use crate::reload::RuntimeModuleGenerationClock;
     use crate::security::launch_authority::{
         LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
@@ -6811,7 +6895,13 @@ mod tests {
     }
 
     /// Pre-launch `perl -c` must not hang indefinitely when the interpreter
-    /// blocks during compile (#2316).
+    /// blocks during compile (#2316), and it must respect the budget it was
+    /// actually given rather than a borrowed one (#19416).
+    ///
+    /// The proof runs with a shortened budget so it stays cheap. The
+    /// wall-clock bound is tied to that budget and the reported budget must be
+    /// the effective one, so this still fails if the timeout is removed, if it
+    /// is ignored, or if the borrowed version-probe budget is restored.
     #[test]
     #[cfg(unix)]
     fn check_syntax_times_out_on_hanging_interpreter() -> Result<(), String> {
@@ -6822,21 +6912,27 @@ mod tests {
         std::fs::write(&script, "use strict;\n1;\n").map_err(|error| error.to_string())?;
 
         let fake_perl = temp.path().join("fake-perl-hang");
+        // Sleep far past the bound asserted below, so a removed or ignored
+        // timeout fails the assertion instead of passing slowly.
         std::fs::write(
             &fake_perl,
-            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then sleep 120; fi\nexit 0\n",
+            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then sleep 30; fi\nexit 0\n",
         )
         .map_err(|error| error.to_string())?;
         std::fs::set_permissions(&fake_perl, std::fs::Permissions::from_mode(0o755))
             .map_err(|error| error.to_string())?;
 
+        let budget = Duration::from_secs(2);
+        let slack = Duration::from_secs(3);
         let start = Instant::now();
-        let result = DebugAdapter::check_syntax(
-            fake_perl.to_str().ok_or("non-utf8 fake perl path")?,
-            script.to_str().ok_or("non-utf8 script path")?,
-            &HashMap::new(),
-            Some(temp.path().to_path_buf()),
-        );
+        let result = with_syntax_check_timeout(budget, || -> Result<(), String> {
+            DebugAdapter::check_syntax(
+                fake_perl.to_str().ok_or("non-utf8 fake perl path")?,
+                script.to_str().ok_or("non-utf8 script path")?,
+                &HashMap::new(),
+                Some(temp.path().to_path_buf()),
+            )
+        });
 
         assert!(result.is_err(), "hanging syntax check must fail, got {result:?}");
         let message = result.unwrap_err();
@@ -6845,11 +6941,70 @@ mod tests {
             "expected timeout message, got: {message}"
         );
         assert!(
-            start.elapsed() < Duration::from_secs(8),
-            "syntax check should respect the 5s oracle timeout, took {:?}",
-            start.elapsed()
+            message.contains(&format!("after {} seconds", budget.as_secs())),
+            "the reported budget must be the effective one ({budget:?}), got: {message}"
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < budget + slack,
+            "syntax check must respect its {budget:?} budget, took {elapsed:?}"
         );
         Ok(())
+    }
+
+    /// The pre-launch syntax check must size its budget for the operation it
+    /// performs — a full compile of the debuggee script — instead of borrowing
+    /// the version-probe budget (#19416).
+    #[test]
+    fn syntax_check_budget_is_not_the_borrowed_version_probe_budget() {
+        let probe_budget = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
+            PathBuf::from("perl"),
+            PathBuf::from("."),
+        )
+        .timeout;
+        let effective = effective_syntax_check_timeout();
+        assert!(
+            effective > probe_budget,
+            "the syntax check budget ({effective:?}) must not be the borrowed \
+             version-probe budget ({probe_budget:?})"
+        );
+        assert_eq!(
+            effective,
+            Duration::from_secs(30),
+            "the syntax check must use the house budget for a real Perl operation"
+        );
+    }
+
+    /// The test-scoped budget override is scoped to the calling thread and
+    /// restores the previous budget, including after an unwind. A leaked
+    /// override would silently shorten the production budget of every later
+    /// syntax check on that thread.
+    #[test]
+    fn syntax_check_timeout_override_is_scoped_and_restored() {
+        let baseline = effective_syntax_check_timeout();
+        let outer = Duration::from_secs(2);
+        let inner = Duration::from_secs(3);
+
+        with_syntax_check_timeout(outer, || {
+            assert_eq!(effective_syntax_check_timeout(), outer);
+            with_syntax_check_timeout(inner, || {
+                assert_eq!(effective_syntax_check_timeout(), inner);
+            });
+            assert_eq!(effective_syntax_check_timeout(), outer);
+        });
+        assert_eq!(effective_syntax_check_timeout(), baseline);
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_syntax_check_timeout(outer, || -> () {
+                std::panic::resume_unwind(Box::new("controlled unwind"));
+            });
+        }));
+        assert!(unwind.is_err(), "the controlled unwind must have propagated");
+        assert_eq!(
+            effective_syntax_check_timeout(),
+            baseline,
+            "the budget must be restored after an unwind"
+        );
     }
 
     /// Verify that a failed launch returns a response whose message mentions Perl.
