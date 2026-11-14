@@ -98,6 +98,19 @@ The tracked catalog covers five broad families:
 4. **File, process, API, and reviewability rules:** explicit filesystem/process behavior and inspectable public/API intent.
 5. **Suppression governance:** narrow `#[expect(..., reason = "...")]` evidence instead of broad or unexplained allowances.
 
+### Cost measurement boundary
+
+The `clippy-cost-measure` instrument's `members-cold` mode invalidates only the
+legacy workspace-member fingerprint layout. It accepts stable Cargo 1.95–1.99
+only when Cargo metadata reports the same target and intermediate build directory.
+Cargo 1.100, separate build directories, and unknown or prerelease toolchains
+refuse any selection containing `members-cold` before creating logs, invalidating
+files, or starting even a warm priming pass. Use `--states warm` for those layouts.
+The receipt includes the probed Cargo and Clippy versions. Restoring cold
+measurements requires a supported invalidation route with actual rebuild evidence;
+the instrument does not guess new cache paths or call zero invalidations proof of
+a cold Cargo 1.100 run. This measurement boundary does not relax lint enforcement.
+
 ## Suppression and debt
 
 Use `#[expect]` only where the lint is correct and the exact exception is intentional:

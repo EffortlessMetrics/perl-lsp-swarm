@@ -243,6 +243,23 @@ def empty_record(reason):
             "host_backing_free_bytes": None}
 
 
+def cargo_fingerprint_path(relative):
+    """Recognize known Cargo layouts, not arbitrary JSON named fingerprint.
+
+    Both layouts may coexist after an upgrade. Paths are relative to the
+    observed target/build root; a target triple may precede the profile.
+    This only selects observation inputs and grants no cleanup authority.
+    """
+    parts = relative.parts
+    if relative.suffix != ".json":
+        return False
+    if len(parts) in (4, 5) and parts[-3] == ".fingerprint":
+        return True
+    return (len(parts) in (6, 7) and parts[-5] == "build"
+            and parts[-2] == "fingerprint"
+            and re.fullmatch(r"[0-9a-f]{16}", parts[-3]) is not None)
+
+
 def inventory_roots(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
                     max_seconds=MAX_SECONDS, max_fingerprints=MAX_FINGERPRINTS,
                     max_fingerprint_bytes=MAX_FINGERPRINT_BYTES,
@@ -320,8 +337,7 @@ def inventory_roots(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
                     if facts(path.lstat()) != facts(metadata):
                         errors.add("entry_changed")
                 elif (collect_fingerprints and name in ("target", "build")
-                      and ".fingerprint" in path.relative_to(root).parts
-                      and path.suffix == ".json"):
+                      and cargo_fingerprint_path(path.relative_to(root))):
                     if (len(record["fingerprints"]) >= max_fingerprints
                             or fingerprint_bytes >= max_fingerprint_bytes):
                         fingerprint_reasons.add("fingerprints_clipped")
