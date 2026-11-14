@@ -41,8 +41,8 @@ Bounded execution contexts are:
 - **Agent Team** — only when lateral communication changes the result;
 - **Ultracode** — bounded dynamic execution when tasks become ready during one
   programme;
-- **direct main-thread work** — tiny or tightly coupled judgment where delegation
-  changes no evidence surface.
+- **direct main-thread work** — the owning session's main context, including directed
+  staged review; delegate only when another context materially helps.
 
 Nested agents, forks, Teams, and dynamic workflows are physical execution techniques.
 They do not transfer logical claim orchestration or create a required recursive
@@ -76,7 +76,7 @@ replace it with an invented lifecycle.
 | Tiny tightly coupled work | Main thread/current writer |
 | High-output or bounded exploration | Focused read-only subagent/researcher |
 | Candidate/proof mutation | One builder/writer programme |
-| Substantive review | One or more differentiated reviewer/fork programmes |
+| Substantive review | Directed staged passes inline in the owning session's main context |
 | Dynamic bounded task graph | Ultracode when useful |
 | Coupled specialists needing lateral communication | Agent Team when useful |
 | Distinct claims | Distinct root-held frames; separate writers/worktrees where needed |
@@ -111,8 +111,21 @@ reviewer: claim/proof/candidate lenses over one fixed subject
 ```
 
 Atomic skills change attention and method. They do not automatically require a new
-agent. Conversely, use a fresh context when a different source, oracle, threat model,
-tool boundary, or independence property is the reason for delegation.
+agent. A different source, oracle, threat model, tool boundary, or required independence
+property can justify delegation; a change of attention alone does not require it.
+
+Default to one owning session performing directed staged review inline in its main
+context. Use the named review skills with concrete falsifiers and differing evidence,
+methods, or attention; review stages do not require separate agents. A directed
+same-context pass is not independent actor review.
+
+When an applicable requirement genuinely needs an independent agent reviewer, use a
+subagent inside the current working session with a concrete differing lens. Keep the
+candidate, useful build context, and one writer there. Do not make an external reviewer, Space
+handoff, or routine parent approval of the exact payload a prerequisite for authorized
+PR work. Preserve earlier valid reviews and refresh only affected evidence. Existing
+required reviews, approvals, checks, and holds still apply; inline review does not
+replace a required independent actor or GitHub approval.
 
 ## Capacity admission
 
@@ -249,7 +262,7 @@ transitions runtime-local.
 ## PR review orchestration
 
 ```text
-root-held claim frame
+directed passes in the owning session's main context
 ├── claim-vs-code proposition checks
 ├── `review-tests` for proof discrimination/evidence integrity
 ├── `review-candidate` for implementation, ownership, reachability, complexity,
@@ -258,7 +271,7 @@ root-held claim frame
 ├── bounded external oracle when language/protocol/platform/release truth matters
 └── focused security/package/migration/persistence/support lens when applicable
 
-join evidence in main thread
+join evidence in main thread; use a helper only when it materially helps or is required
 → main thread verifies load-bearing seams and contradictions
 → one writer repairs accepted findings through `address-review-comments`
 → main thread publishes cumulative `review-pr`
@@ -273,8 +286,10 @@ meaningful independence.
 
 1. Anchor the durable subject, root-held claim frame, and selected route.
 2. Identify unresolved judgments and the one mutation owner.
-3. Compile the smallest useful **flat root-to-programme** execution shape.
-4. Send complete briefs with named skills, falsifiers, returns, and stop conditions.
+3. Keep directed stages inline by default; select bounded delegation only where useful
+   or genuinely required.
+4. For delegated work, send complete briefs with named skills, falsifiers, returns, and
+   stop conditions.
 5. Steer, retry, replace, or cancel while evidence can change a decision.
 6. Join graph deltas in the main thread, inspect load-bearing evidence, and publish only
    useful durable facts at their native GitHub boundary.
@@ -283,7 +298,7 @@ meaningful independence.
 
 ## What this establishes
 
-A provider-native root orchestration result with root-held claim frames, bounded
+A provider-native root orchestration result with root-held claim frames, optional bounded
 programme delegation, one candidate writer, contradiction-aware evidence joins, named
 backward routes, and a useful GitHub publication boundary.
 
