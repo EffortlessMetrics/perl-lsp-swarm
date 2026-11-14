@@ -5,8 +5,7 @@
 //! The shared shape is a conditional fat-comma pair in a method argument list,
 //! e.g. `Test2/Compare/Array.pm` around the `push @deltas => ...->new(...)` call.
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 #[test]
 fn test2_compare_ending_ternary_fat_comma_pair_in_arg_list() {

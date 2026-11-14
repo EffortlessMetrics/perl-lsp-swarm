@@ -16,8 +16,7 @@
 //!
 //! Affected corpus files: `Method/Generate/Accessor.pm`, `Moo/HandleMoose/FakeMetaClass.pm`
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // ---- Pattern D: declaration + `&&`/`||` in condition ----
 
