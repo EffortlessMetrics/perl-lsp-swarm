@@ -1571,9 +1571,17 @@ gates:
     # `cargo test --tests` otherwise skips them silently when the feature is off
     # (#14333). Recorded per #11694; flipping the broad support-crate portion to
     # --tests is blocked on the red suites in #11708.
+    # The fifth target, dap_entry_stop_stack_trace_18491, is not
+    # feature-gated; it executes the #18491 entry-stop stackTrace regression
+    # proof against a real `perl -d` session on this required lane (PR #18536
+    # review F1: the proof previously ran in no required lane). The strict
+    # PERL_LSP_DAP_REQUIRE_PERL=1 prefix is mandatory: if the pipe-capability
+    # probe cannot resolve the interpreter, the test fails instead of returning
+    # a vacuous success without running the session. The typed SKIP helper
+    # remains available to non-required local suites, but cannot relax this gate.
     # pr_fast residual: unit_routed_full still runs the perl-dap leg without
-    # `--features test-helpers`, so these four targets stay absent from the
-    # pr_fast lane; closing that leg is tracked in #14458.
+    # `--features test-helpers`, so the four test-helpers targets stay absent
+    # from the pr_fast lane; closing that leg is tracked in #14458.
     #   perl-ci-hygiene               6
     #   perl-dap                    115
     #   perl-tdd-support              4
@@ -1596,11 +1604,13 @@ gates:
       -p perl-tdd-support -p perl-test-generators -p perl-test-must
       -p tree-sitter-perl-c -p tree-sitter-perl-rs
       -- --test-threads=4 &&
+      env PERL_LSP_DAP_REQUIRE_PERL=1
       cargo test --locked --features test-helpers -p perl-dap
       --test eval_ref_cache_miss_resume_tests
       --test dap_evaluate_comprehensive_tests
       --test dap_variable_reference_hardening_tests
       --test pause_signal_delivery_tests
+      --test dap_entry_stop_stack_trace_18491
       -- --test-threads=4
     timeout_seconds: 450
     retry_count: 1
