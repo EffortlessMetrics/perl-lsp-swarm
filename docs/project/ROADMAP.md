@@ -522,10 +522,10 @@ The LSP declared-catalog table is auto-generated from `features.toml`.
 | debug | 0 | 24 |
 | notebook | 2 | 3 |
 | protocol | 0 | 9 |
-| text_document | 15 | 54 |
+| text_document | 16 | 54 |
 | window | 0 | 9 |
-| workspace | 1 | 30 |
-| **Overall** | **18** | **129** |
+| workspace | 2 | 31 |
+| **Overall** | **20** | **130** |
 
 Counts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.
 <!-- END: COMPLIANCE_TABLE -->
