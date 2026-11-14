@@ -39,6 +39,35 @@ pub fn find_data_marker_byte_lexed(s: &str) -> Option<usize> {
     None
 }
 
+/// Find every stray `=cut` in `source` using the lexer's own amputation
+/// decision (#18771).
+///
+/// A stray `=cut` is a line-initial `=cut` that opened a POD block because no
+/// POD was already open; everything the block covered is documentation to the
+/// lexer and parser. Because the events come from the lexer itself, `=cut`
+/// sequences embedded in heredocs, strings, regexes, or POD opened by `=pod`
+/// / `=head1` are excluded by construction — no text heuristic re-derives
+/// that opinion.
+///
+/// Returns `(cut_offset, runs_to_eof)` pairs in source order, where
+/// `cut_offset` is the byte offset of the line-start `=` and `runs_to_eof`
+/// is `true` when no later `=cut` closed the block.
+pub fn find_stray_cut_opens_lexed(s: &str) -> Vec<(usize, bool)> {
+    // Cheap prefilter: avoid constructing the lexer when no `=cut` exists.
+    if !s.contains("=cut") {
+        return Vec::new();
+    }
+
+    use crate::{PerlLexer, TokenType};
+    let mut lx = PerlLexer::new(s);
+    while let Some(tok) = lx.next_token() {
+        if tok.token_type == TokenType::EOF {
+            break;
+        }
+    }
+    lx.stray_cut_opens().iter().map(|event| (event.cut_offset, event.runs_to_eof)).collect()
+}
+
 /// Helper to get the code portion of text (before __DATA__/__END__)
 pub fn code_slice(text: &str) -> &str {
     split_code_and_data(text).0
@@ -151,6 +180,53 @@ mod tests {
 
         let pod = "=pod\n__END__\n=cut\nprint 'ok';\n";
         assert_eq!(find_data_marker_byte_lexed(pod), None);
+    }
+
+    #[test]
+    fn stray_cut_to_eof_is_recorded_with_runs_to_eof() {
+        let src = "use strict;\n=cut\ntrailing code is POD\n";
+        assert_eq!(find_stray_cut_opens_lexed(src), vec![(12, true)]);
+    }
+
+    #[test]
+    fn stray_cut_bounded_by_later_cut_records_runs_to_eof_false() {
+        let src = "use strict;\n=cut\nhidden\n=cut\nmy $x = 1;\n";
+        assert_eq!(find_stray_cut_opens_lexed(src), vec![(12, false)]);
+    }
+
+    #[test]
+    fn pod_opened_block_cut_is_not_recorded() {
+        let src = "use strict;\n=pod\nDocs\n=cut\nsub after { 1 }\n";
+        assert_eq!(find_stray_cut_opens_lexed(src), Vec::new());
+    }
+
+    #[test]
+    fn cut_inside_heredoc_is_not_recorded() {
+        let src = "my $text = <<'END';\n=cut\nEND\nprint $text;\n";
+        assert_eq!(find_stray_cut_opens_lexed(src), Vec::new());
+    }
+
+    #[test]
+    fn cut_inside_string_is_not_recorded() {
+        let src = "my $s = \"first\n=cut\nlast\";\n";
+        assert_eq!(find_stray_cut_opens_lexed(src), Vec::new());
+    }
+
+    #[test]
+    fn cutlery_is_not_recorded() {
+        let src = "use strict;\n=cutlery\nnot a cut directive\n";
+        assert_eq!(find_stray_cut_opens_lexed(src), Vec::new());
+    }
+
+    #[test]
+    fn assignment_continuation_cut_is_not_recorded() {
+        let src = "my $x = 1\n=cut\n";
+        assert_eq!(find_stray_cut_opens_lexed(src), Vec::new());
+    }
+
+    #[test]
+    fn no_cut_means_no_prefilter_scan() {
+        assert_eq!(find_stray_cut_opens_lexed("print 'hello';\n"), Vec::new());
     }
 
     #[test]

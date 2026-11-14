@@ -1,6 +1,20 @@
 use super::{BuildFlags, completion_trigger_characters, get_supported_commands};
-#[allow(clippy::wildcard_imports)]
-use lsp_types::*;
+// Capability field types are imported explicitly (#2895); avoid `lsp_types::*`.
+use lsp_types::{
+    CallHierarchyServerCapability, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
+    CodeLensOptions, ColorProviderCapability, CompletionOptions, CompletionOptionsCompletionItem,
+    DeclarationCapability, DiagnosticOptions, DiagnosticServerCapabilities, DocumentLinkOptions,
+    DocumentOnTypeFormattingOptions, ExecuteCommandOptions, FoldingRangeProviderCapability,
+    HoverProviderCapability, ImplementationProviderCapability, InlayHintOptions,
+    InlayHintServerCapabilities, LinkedEditingRangeServerCapabilities, Notebook,
+    NotebookCellSelector, NotebookDocumentSyncOptions, NotebookSelector, OneOf, RenameOptions,
+    SelectionRangeProviderCapability, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TypeDefinitionProviderCapability, WorkDoneProgressOptions,
+    WorkspaceSymbolOptions,
+};
 
 pub(super) fn apply_document_sync(caps: &mut ServerCapabilities) {
     // Use Options instead of Kind to comply with LSP 3.18 shape requirements.

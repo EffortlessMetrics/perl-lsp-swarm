@@ -6180,8 +6180,8 @@ fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) 
 
 fn write_pr_diff(repo: &Path, receipt: &CommittedDiffReceipt) -> Result<()> {
     let range = format!("{}...{}", receipt.base, receipt.head);
-    let diff = run_git_output(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
-    write_text(&repo.join(PR_DIFF), &diff)?;
+    let diff = run_git_bytes(repo, &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
+    write_text(&repo.join(PR_DIFF), &String::from_utf8_lossy(&diff))?;
     let receipt_json = format_json(&serde_json::to_value(receipt)?)?;
     write_text(&repo.join(PR_DIFF_RECEIPT), &receipt_json)
 }
@@ -13249,6 +13249,107 @@ paths = ["archive/["]
             .context("git command returned non-UTF8 output")?
             .trim()
             .to_string())
+    }
+
+    #[cfg(not(windows))]
+    fn diff_repo_with_corpus(non_utf8: bool) -> Result<tempfile::TempDir> {
+        let repo = tempfile::tempdir()?;
+        init_git_repo(repo.path())?;
+        fs::create_dir_all(repo.path().join("src"))?;
+        write_text(&repo.path().join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n")?;
+        run_git(repo.path(), &["add", "tracked.txt", "src/lib.rs"])?;
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "rust base",
+            ],
+        )?;
+
+        write_text(&repo.path().join("src/lib.rs"), "pub fn value() -> u8 { 2 }\n")?;
+        let corpus = repo.path().join("fuzz/corpus/incremental_edit_sequences/non_utf8_seed");
+        fs::create_dir_all(corpus.parent().ok_or_else(|| eyre!("corpus parent missing"))?)?;
+        if non_utf8 {
+            fs::write(&corpus, [b's', b'e', b'e', b'd', b'\n', 0xff, b'\n'])?;
+        } else {
+            fs::write(&corpus, b"seed\nreplacement\n")?;
+        }
+        run_git(repo.path(), &["add", "src/lib.rs", "fuzz/corpus"])?;
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "candidate",
+            ],
+        )?;
+        Ok(repo)
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_utf8_pr_diff_is_lossy_utf8_and_preserves_ripr_findings() -> Result<()> {
+        let clean = diff_repo_with_corpus(false)?;
+        let lossy = diff_repo_with_corpus(true)?;
+        let mut outputs = Vec::new();
+        for (repo, expect_non_utf8) in [(&clean, false), (&lossy, true)] {
+            let receipt = resolve_committed_diff(repo.path(), "HEAD~1", "HEAD")?;
+            let expected_digest = receipt.diff_digest.clone();
+            let range = format!("{}...{}", receipt.base, receipt.head);
+            let raw =
+                run_git_bytes(repo.path(), &["diff", "--binary", "--no-ext-diff", range.as_str()])?;
+            assert_eq!(std::str::from_utf8(&raw).is_err(), expect_non_utf8);
+
+            write_pr_diff(repo.path(), &receipt)?;
+            let persisted = fs::read(repo.path().join(PR_DIFF))?;
+            let text = std::str::from_utf8(&persisted)?;
+            assert_eq!(text.contains('\u{fffd}'), expect_non_utf8);
+            assert!(!persisted.contains(&0xff));
+            let persisted_receipt: CommittedDiffReceipt =
+                serde_json::from_str(&fs::read_to_string(repo.path().join(PR_DIFF_RECEIPT))?)?;
+            assert_eq!(persisted_receipt.diff_digest, expected_digest);
+            assert_eq!(receipt, resolve_committed_diff(repo.path(), "HEAD~1", "HEAD")?);
+
+            let binary = ripr_binary()?;
+            let Ok(version) = Command::new(&binary).arg("--version").output() else {
+                eprintln!("ripr is unavailable; lossy writer proof passed, comparison not run");
+                continue;
+            };
+            assert!(version.status.success(), "ripr --version failed: {version:?}");
+            let output = Command::new(&binary)
+                .args([
+                    "check",
+                    "--root",
+                    ".",
+                    "--diff",
+                    &repo.path().join(PR_DIFF).display().to_string(),
+                    "--format",
+                    "json",
+                ])
+                .current_dir(repo.path())
+                .env("RIPR_CACHE_DIR", repo.path().join("target/ripr-facts"))
+                .output()?;
+            assert!(
+                output.status.success(),
+                "ripr check failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            outputs.push(serde_json::from_slice::<Value>(&output.stdout)?);
+        }
+        if outputs.len() == 2 {
+            assert_eq!(outputs[0]["findings"], outputs[1]["findings"]);
+            assert_eq!(outputs[0]["summary"], outputs[1]["summary"]);
+        }
+        Ok(())
     }
 
     /// Serializes every test that swaps the `ripr` binary.

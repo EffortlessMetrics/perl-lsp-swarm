@@ -363,32 +363,39 @@ gates:
     description: "Validate release-history surfaces"
     required: true
     command: just ci-release-history
-    # 480s/420000ms: #16419 appended scripts.tests.test_domain6_fragment to the
-    # `ci-release-history` recipe; its final two tests each shell out to
-    # `generate_domain6_fragment.py --check`, which re-renders the pinned
-    # f6b7b2c..10297415 range via `git log --full-history` — candidate-
-    # independent git grind that scales with history, not with the change
-    # under review. Pre-#16419 receipts ran the whole gate in 2.5s (run
-    # 36172362426 job 108194853240); after that merge every required meta
-    # shard kills the gate at the old 120s watchdog with the first traversal
-    # complete and the second in flight (first main-red run 36174358018 job
-    # 108207415263 at 120116ms; PR-family run 36186745952 job 108242179458 at
-    # 120084ms). A local Windows traversal measured 213s, bounding
-    # slow-runner checkout variance. The suite content is clean — the
-    # byte-identical re-render passes — so the envelope was the binding
-    # constraint. Sibling release_history_check (script only) still passes in
-    # ~1.4s and keeps its own bound. max_duration_ms is a declarative soft
-    # budget, not the enforced watchdog.
-    timeout_seconds: 480
+    # Candidate-independent deterministic re-rendering moved to the required
+    # release_history_domain6_rerender merge gate below. This pr_fast gate
+    # keeps the cheap checked-artifact and release-history validations.
+    timeout_seconds: 120
     retry_count: 0
     budgets:
-      max_duration_ms: 420000
+      max_duration_ms: 90000
     quarantine: false
     tags:
       - release
       - hygiene
     planning:
       role: always_on
+
+  - name: release_history_domain6_rerender
+    tier: merge_gate
+    description: "Re-render the pinned Domain-6 release-history range and reject drift"
+    required: true
+    command: python3 scripts/tests/test_domain6_fragment.py Domain6RerenderTest -v
+    # The tested evidence is candidate-independent but remains a required
+    # pre-merge admission check: both CRLF and deterministic re-render drift
+    # fail. It is deliberately outside the affected/cheap pr_fast loop.
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    tags:
+      - release
+      - hygiene
+      - expensive
+    planning:
+      role: static
 
   - name: readme_heading_check
     tier: pr_fast
@@ -514,6 +521,31 @@ gates:
     tags:
       - policy
       - hygiene
+      - ratchet
+    planning:
+      role: always_on
+
+  # Issue #18736: the canonical-form half of public-api-check, extracted to a
+  # pure grep/sed/awk gate (~4 s, no Rust toolchain) so the merge-gate meta
+  # shard reds on a hand-edited or corrupted baseline. `required: true` here
+  # means the gate fails its shard; ruleset-level merge blocking additionally
+  # needs the shard's own context promoted (#17193 / #18736 Step 2). The full
+  # instrument lane (`Public API Surface (facade PR)`) stays the owner of
+  # additive-drift detection; this gate only proves the committed baselines
+  # are filter-stable canonical form.
+  - name: public_api_baseline_canonical
+    tier: pr_fast
+    description: "Committed .ci/public-api-baselines/*.txt are filter-stable canonical form (#18736)"
+    required: true
+    command: just public-api-baselines-canonical
+    timeout_seconds: 60
+    retry_count: 0
+    budgets:
+      max_duration_ms: 30000
+    quarantine: false
+    tags:
+      - public-api
+      - baseline
       - ratchet
     planning:
       role: always_on
@@ -1479,11 +1511,12 @@ gates:
     tier: merge_gate
     description: "LSP core library tests (heaviest single crate in the LSP surface)"
     required: true
-    # `--lib` excludes tests/. 82 integration targets in these crates are
+    # `--lib` excludes tests/. 114 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-rs-core             82
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-rs-core            114
     command: >-
       cargo test --locked --lib
       -p perl-lsp-rs-core
@@ -1502,15 +1535,16 @@ gates:
     tier: merge_gate
     description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
-    # `--lib` excludes tests/. 356 integration targets in these crates are
+    # `--lib` excludes tests/. 492 integration targets in these crates are
     # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
-    #   perl-lsp-perltidy            10
-    #   perl-lsp-rs                 253  (19 covered by explicit --test elsewhere)
-    #   perl-lsp-ux-tests            82
-    #   perl-subprocess-runtime       3
-    #   perllsp                       8  (1 covered by explicit --test elsewhere)
+    # to touch the crate, via unit_routed_full. Expanding these gates to
+    # `--tests` is owned by #6054; #11694 closed the per-gate inventory audit
+    # and #11708 closed the red-suite debt it tracked (both 2026-08-19).
+    #   perl-lsp-perltidy            17
+    #   perl-lsp-rs                 337
+    #   perl-lsp-ux-tests           101
+    #   perl-subprocess-runtime       4
+    #   perllsp                      33
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs

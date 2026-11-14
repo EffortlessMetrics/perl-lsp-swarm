@@ -19,7 +19,10 @@ spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/
 safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
 REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--", "-D", "warnings"]
+KEEP_GOING_REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--keep-going", "--", "-D", "warnings"]
+KEEP_GOING_OFFLINE_REQUEST = ["clippy", "-p", "consumer", "--all-targets", "--profile", "agent", "--locked", "--offline", "--keep-going", "--", "-D", "warnings"]
 NAMED_REQUEST = ["clippy", "-p", "consumer", "--test", "named-proof", "--profile", "agent", "--locked", "--", "-D", "warnings"]
+NAMED_KEEP_GOING_REQUEST = ["clippy", "-p", "consumer", "--test", "named-proof", "--profile", "agent", "--locked", "--keep-going", "--", "-D", "warnings"]
 
 
 class QualificationBindingTests(unittest.TestCase):
@@ -66,6 +69,11 @@ class QualificationBindingTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "linux" and sys.version_info >= (3, 11), "staged Linux Clippy only")
 class ClippyAdmissionTests(unittest.TestCase):
     def setUp(self):
+        # These fixtures mock the launch/owner; native discovery is tested separately.
+        # The driver fixtures do not assert private Git allocation provenance.
+        self.enterContext(patch.object(safe, "PrivateAllocation", return_value=Mock(
+            receipt={"status": "unknown", "reason": "synthetic_admission_fixture"})))
+        self.enterContext(patch.object(safe, "child_discovery_capability", return_value={}))
         self.temp = tempfile.TemporaryDirectory(prefix="admitted-clippy-controls-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -77,9 +85,11 @@ class ClippyAdmissionTests(unittest.TestCase):
                                   ("cargo", "rustc", "rustdoc", "cargo-clippy", "clippy-driver")}}
         self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
 
-    def invoke(self, args=REQUEST, status=0, env=None, call=None, versions=None, config=None, settled=False, cancelled=False):
+    def invoke(self, args=REQUEST, status=0, env=None, call=None, versions=None, config=None, settled=False, cancelled=False, probe=None):
         stderr = io.StringIO()
         guard = Mock()
+        guard.probe.return_value = subprocess.CompletedProcess([], 0, b"{}\n", b"")
+        guard.probe.side_effect = probe
         guard.finish.return_value = {"tree_settled": settled, "cancelled": cancelled}
         with patch.dict(os.environ, env or self.env, clear=True), contextlib.redirect_stderr(stderr), \
              patch.object(safe, "resource_plan", return_value=(self.worktree, self.slot, self.paths)), \
@@ -125,6 +135,107 @@ class ClippyAdmissionTests(unittest.TestCase):
         self.assertEqual(tuple(receipt["lease_identity"]), safe.directory_identity(lock))
         self.assertEqual(receipt["lease_marker"], str(next(lock.iterdir())))
         self.assertEqual(tuple(receipt["marker_identity"]), safe.directory_identity(next(lock.iterdir())))
+
+    def test_forced_child_environment_wins_over_local_config_after_clippy_dispatch(self):
+        self.worktree = self.root / "worktree"
+        self.worktree.mkdir()
+        local = self.worktree / ".cargo" / "config.local.toml"
+        names = ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL", "CARGO", "RUSTC", "RUSTDOC",
+                 "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "SYSROOT", "CARGO_ENCODED_RUSTFLAGS",
+                 "RUSTFLAGS", "CLIPPY_ARGS", "CLIPPY_CONF_DIR", "CARGO_TARGET_DIR",
+                 "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS")
+        sentinel = {"value": "retained local value", "force": True, "relative": False}
+
+        for configured in (False, True):
+            if configured:
+                local.parent.mkdir()
+                values = {name: {"value": "foreign-" + name, "force": True, "relative": True}
+                          for name in names}
+                values["LOCAL_CONFIG_SENTINEL"] = sentinel
+                local.write_text("\n".join(
+                    "env." + name + "." + field + "=" + json.dumps(value)
+                    for name, fields in values.items() for field, value in fields.items()) + "\n")
+            for request in (REQUEST, NAMED_REQUEST):
+                with self.subTest(local_config=configured, request=request), \
+                     patch.object(safe.Path, "cwd", return_value=self.worktree):
+                    def launch(command, env, lock):
+                        self.assertEqual(command[:2], [self.plan["subjects"]["cargo-clippy"]["path"], "clippy"])
+                        self.assertEqual(command[-len(request[1:]):], request[1:])
+                        # This fixture uses only dotted, JSON-compatible TOML
+                        # scalars. Fold the real local file and emitted inline
+                        # settings in order, without requiring tomllib or Cargo.
+                        child_config = {}
+                        for index, argument in enumerate(command):
+                            if argument == "--":
+                                break
+                            if argument != "--config":
+                                continue
+                            value = command[index + 1]
+                            entries = local.read_text().splitlines() if value == str(local) else [value]
+                            for entry in entries:
+                                if entry.startswith("env."):
+                                    key, encoded = entry.split("=", 1)
+                                    _, name, field = key.split(".")
+                                    child_config.setdefault(name, {})[field] = json.loads(encoded)
+                        self.assertEqual(
+                            {name: child_config.get(name) for name in names},
+                            {name: {"value": env[name], "force": True, "relative": False} for name in names})
+                        self.assertEqual(child_config.get("LOCAL_CONFIG_SENTINEL"), sentinel if configured else None)
+                        return 0
+
+                    result, _ = self.invoke(args=request, call=launch, settled=True)
+                    self.assertEqual(result, 0)
+
+    def test_scalar_and_mixed_configuration_preserve_all_clippy_child_controls(self):
+        names = ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL", "CARGO_TARGET_DIR",
+                 "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS",
+                 "CARGO", "RUSTC", "RUSTDOC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                 "SYSROOT", "CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS", "CLIPPY_ARGS", "CLIPPY_CONF_DIR")
+        def projected(command):
+            result = {}
+            for index, argument in enumerate(command):
+                if argument == "--config" and command[index + 1].startswith("env."):
+                    key, encoded = command[index + 1].split("=", 1)
+                    fields = key.split(".")
+                    if len(fields) == 2:
+                        result[fields[1]] = json.loads(encoded)
+                    else:
+                        result.setdefault(fields[1], {})[fields[2]] = json.loads(encoded)
+            return result
+        for shape in ("scalar", "mixed"):
+            with self.subTest(shape=shape):
+                types = {name: str if shape == "scalar" or i % 2 else dict for i, name in enumerate(names)}
+                def probe(command, env, **bounds):
+                    self.assertEqual(command[0], self.plan["subjects"]["cargo"]["path"])
+                    self.assertEqual(command[-2:], ["locate-project", "--message-format=json"])
+                    if any(type(value) is not types[name] for name, value in projected(command).items()):
+                        raise subprocess.CalledProcessError(101, command, b"", b"fixture: incompatible config")
+                    return subprocess.CompletedProcess(command, 0, b"{}", b"")
+                oracle = Mock(side_effect=probe)
+                launched = []
+                def launch(command, env, lock):
+                    launched.append(command)
+                    expected = {name: env[name] if types[name] is str else
+                                {"value": env[name], "force": True, "relative": False} for name in names}
+                    self.assertEqual(projected(command), expected)
+                    self.assertEqual(env["CLIPPY_ARGS"], safe.CLIPPY_LINT_ARGS)
+                    self.assertEqual(env["RUSTC_WORKSPACE_WRAPPER"], self.plan["subjects"]["clippy-driver"]["path"])
+                    self.assertEqual(command[-len(REQUEST[1:]):], REQUEST[1:])
+                    return 101
+                result, _ = self.invoke(probe=oracle, call=launch, settled=True)
+                self.assertEqual(result, 101)
+                self.assertEqual(len(launched), 1)
+                self.assertEqual(oracle.call_count, 2 if shape == "scalar" else 3 + len(names) + len(names) // 2)
+
+    def test_configuration_probe_failure_is_setup_failure_without_clippy_product(self):
+        product = Mock()
+        oracle = Mock(side_effect=subprocess.CalledProcessError(7, ["fixture"], b"", b"unexpected"))
+        result, output = self.invoke(probe=oracle, call=product, settled=True)
+        self.assertEqual(result, 75)
+        product.assert_not_called()
+        self.assertEqual(oracle.call_count, 1)
+        self.assertNotIn("Clippy product:", output)
+        self.assertFalse((self.slot / "cargo-active").exists())
 
     def test_settled_clippy_retains_replacement_marker_and_reports_original_identity(self):
         original = self.root / "original-marker"
@@ -253,6 +364,47 @@ class ClippyAdmissionTests(unittest.TestCase):
                 self.assertEqual((self.slot / "cargo-active").exists(), not settled)
                 self.assertIn('"lease_released": ' + str(settled).lower(), output)
 
+    def test_keep_going_all_targets_and_named_requests_forward_exactly_once(self):
+        for request in (KEEP_GOING_REQUEST, KEEP_GOING_OFFLINE_REQUEST, NAMED_KEEP_GOING_REQUEST):
+            with self.subTest(request=request):
+                observed = []
+                result, output = self.invoke(request, status=101, settled=True,
+                                             call=lambda command, env, lock: observed.append(command) or 101)
+                self.assertEqual(len(observed), 1, output)
+                command = observed[0]
+                self.assertEqual(command[:2], [self.plan["subjects"]["cargo-clippy"]["path"], "clippy"])
+                self.assertEqual(command[-len(request[1:]):], request[1:])
+                self.assertEqual(command.count("--keep-going"), 1)
+                self.assertEqual(result, 101)
+
+    def test_exact_admitted_keep_going_command_is_accepted_before_allocation(self):
+        exact = ["clippy", "-p", "xtask", "--all-targets", "--profile", "agent", "--locked", "--keep-going", "--", "-D", "warnings"]
+        observed = []
+        result, _ = self.invoke(exact, call=lambda command, env, lock: observed.append(command) or 0)
+        self.assertEqual(result, 75)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0].count("--keep-going"), 1)
+        self.assertEqual(observed[0][-len(exact[1:]):], exact[1:])
+
+    def test_keep_going_rejects_duplicate_misplaced_and_unsupported_fields(self):
+        invalid = [KEEP_GOING_REQUEST[:7] + ["--keep-going"] + KEEP_GOING_REQUEST[7:],
+                   REQUEST[:7] + ["--keep-going", "--fix"] + REQUEST[7:],
+                   KEEP_GOING_REQUEST[:1] + ["--keep-going"] + KEEP_GOING_REQUEST[1:],
+                   NAMED_KEEP_GOING_REQUEST[:4] + ["--all-targets"] + NAMED_KEEP_GOING_REQUEST[4:]]
+        for args in invalid:
+            with self.subTest(args=args):
+                result, _ = self.invoke(args)
+                self.assertEqual(result, 75)
+                self.assertFalse(self.slot.exists(), "refuse before allocation")
+
+    def test_keep_going_changes_budget_scope_digest(self):
+        scopes = []
+        for args in (REQUEST, KEEP_GOING_REQUEST, KEEP_GOING_OFFLINE_REQUEST, NAMED_KEEP_GOING_REQUEST):
+            result, output = self.invoke(["--preflight", *args], env=dict(self.env, FIXTURE="yes"))
+            self.assertEqual(result, 0, output)
+            scopes.append(json.loads(output.split("cargo-admitted preflight: ")[1])["scope"])
+        self.assertEqual(len({scope["cargo_argv_sha256"] for scope in scopes}), 4)
+
     def test_named_selector_rejects_malformed_conflicting_and_unsupported_requests(self):
         for selection in (["--test"], ["--test", ""], ["--test", "*"], ["--test", "a?"],
                           ["--test", "../a"], ["--test", "a/b"], ["--test", "a\\b"],
@@ -261,7 +413,7 @@ class ClippyAdmissionTests(unittest.TestCase):
                           ["--test", "a", "--test", "b"], ["--all-targets", "--test", "a"],
                           ["--test", "a", "--all-targets"], ["--test", "a", "--lib"],
                           ["--test", "a", "--bin", "consumer"], ["--test", "a", "--features", "x"],
-                          ["--test", "a", "--no-default-features"], ["--test", "a", "--keep-going"], []):
+                          ["--test", "a", "--no-default-features"], []):
             with self.subTest(selection=selection):
                 args = REQUEST[:3] + selection + REQUEST[4:]
                 result, _ = self.invoke(args)
@@ -344,8 +496,22 @@ class ClippyAdmissionTests(unittest.TestCase):
 
     def test_configuration_change_during_setup_refuses_package_and_retains_lease(self):
         launch = Mock()
-        result, output = self.invoke(call=launch, config=Mock(side_effect=[[], [], [{"path": "changed"}]]))
+        probe = Mock(return_value=subprocess.CompletedProcess([], 0, b"{}", b""))
+        result, output = self.invoke(call=launch, probe=probe,
+                                    config=Mock(side_effect=[[], [], [{"path": "changed"}]]))
         self.assertEqual(result, 75)
+        probe.assert_not_called()
+        launch.assert_not_called()
+        self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertNotIn("Clippy product:", output)
+
+    def test_configuration_change_during_projection_refuses_before_clippy_product(self):
+        launch = Mock()
+        probe = Mock(return_value=subprocess.CompletedProcess([], 0, b"{}", b""))
+        result, output = self.invoke(call=launch, probe=probe,
+                                    config=Mock(side_effect=[[], [], [], [{"path": "changed"}]]))
+        self.assertEqual(result, 75)
+        self.assertEqual(probe.call_count, 1)
         launch.assert_not_called()
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertNotIn("Clippy product:", output)
@@ -362,6 +528,17 @@ class ClippyAdmissionTests(unittest.TestCase):
                 config.write_text(text)
                 with self.assertRaises(safe.Denied):
                     safe.clippy_configuration(worktree, self.paths)
+
+    def test_local_config_is_part_of_clippy_configuration_scope(self):
+        worktree = self.root / "worktree"
+        (worktree / ".cargo").mkdir(parents=True)
+        local = worktree / ".cargo/config.local.toml"
+        local.write_text("[build]\njobs = 1\n", encoding="utf-8")
+        with patch.object(safe.Path, "cwd", return_value=worktree):
+            baseline = safe.clippy_configuration(worktree, self.paths)
+            local.write_text("[build]\njobs = 2\n", encoding="utf-8")
+            changed = safe.clippy_configuration(worktree, self.paths)
+        self.assertNotEqual(baseline, changed)
 
     def test_interruption_retains_owned_lease(self):
         result, output = self.invoke(call=Mock(side_effect=KeyboardInterrupt))

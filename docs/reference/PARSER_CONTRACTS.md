@@ -87,7 +87,7 @@ the canonical functions.
 `parse_quote_operator_content_space_before_paren`,
 `parse_quote_operator_content_space_before_bracket`.
 
-**qw comment tests**: `crates/perl-parser-core/tests/fix_qw_comment_tests.rs`.
+**qw comment tests**: `crates/perl-parser-core/tests/fix_suite_quoting_loops.rs` (`qw_comment` module).
 
 ### Known exceptions / specializations
 
@@ -248,7 +248,7 @@ Substitution {
 **Merged PR #1238** — `fix(parser): mark s///e substitution as embedded code
 (#975) (#1238)`, commit `7753cc032`.
 
-**Regression test file**: `crates/perl-parser-core/tests/fix_subst_e_has_embedded_code_975.rs`.
+**Regression test file**: `crates/perl-parser-core/tests/fix_suite_quoting_loops.rs` (`subst_embedded_code_975` module).
 
 Test functions:
 - `subst_e_modifier_sets_has_embedded_code` — `s///e` sets true
@@ -788,9 +788,9 @@ that span line boundaries.
 
 | Contract | Owner crate | Key test file | Governing PR |
 |---|---|---|---|
-| Quote-like canonical | `perl-parser-core` | `crates/perl-parser-core/tests/fix_qw_comment_tests.rs` | #1294, #1292 |
+| Quote-like canonical | `perl-parser-core` | `crates/perl-parser-core/tests/fix_suite_quoting_loops.rs` (`qw_comment`) | #1294, #1292 |
 | Indirect-object ambiguity | `perl-parser-core` | `crates/perl-parser/tests/parser_regressions.rs` | #1296, #1214 |
-| Embedded code (`s///e`) | `perl-ast`, `perl-parser-core` | `crates/perl-parser-core/tests/fix_subst_e_has_embedded_code_975.rs` | #1238 |
+| Embedded code (`s///e`) | `perl-ast`, `perl-parser-core` | `crates/perl-parser-core/tests/fix_suite_quoting_loops.rs` (`subst_embedded_code_975`) | #1238 |
 | NodeKind classification | `perl-ast` | `crates/perl-ast/tests/classification_tests.rs` | #1295 |
 | NodeKind non-exhaustive consumer audit | `perl-semantic-analyzer`, `perl-symbol`, `perl-workspace` | grep `if let NodeKind::` + `_ =>` wildcard arms | #1457 deep-review |
 | Recovery node decision | `perl-ast` | (not fixture-coverable — never emitted) | open #915 |

@@ -1,0 +1,6 @@
+kind: Added
+body: "perl-workspace-core gains non-executing Dist::Zilla environment adapter detection for #2980. `detect_dist_zilla` classifies `dist.ini` projects without executing `dzil` or plugins, admits `lib`/`t/lib` source roots, selects or rejects `.build` and `blib/*` generated roots with freshness and typed rejection reasons, records reviewed plugin registry notes from authoring facts, and admits only explicitly configured `dzil` executable candidates (never PATH-derived defaults)."
+packages:
+  - perl-workspace-core
+metadata:
+  Slug: dist-zilla-adapter-detection-2980

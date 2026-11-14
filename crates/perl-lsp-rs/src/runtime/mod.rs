@@ -83,6 +83,8 @@ mod runtime_services_tests;
 #[cfg(test)]
 mod session_warning_dedup_tests;
 #[cfg(test)]
+mod stale_previous_break_diagnostics_tests;
+#[cfg(test)]
 mod watched_delete_republish_tests;
 
 // Test/pressure observation of the bounded session-warning dedup store (#9769).
@@ -432,6 +434,9 @@ pub struct LspServer {
     /// is reconstructed per request and cannot hold persistent state.
     pub(crate) module_scan_cache:
         Arc<perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache>,
+    /// Session-local negative cache for unresolvable module names (issue #18776).
+    pub(crate) module_resolution_negative_cache:
+        Arc<lifecycle::module_resolution::ModuleResolutionNegativeCache>,
     /// Per-document cache for compiler-backed `use lib` recovery paths.
     ///
     /// The legacy module resolver can be called by several request handlers;

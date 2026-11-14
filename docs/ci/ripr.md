@@ -88,6 +88,11 @@ When reporting `ripr` findings, use ripr's own classifications:
 | `propagation_unknown` | could not classify propagation |
 | `static_unknown` | analysis bottomed out |
 
+Ledger suppressions may also list `weakly_gripped` in `classification`. That is a
+ripr 0.9.x `grip_class` label, not a separate bucket in `ripr.toml`
+`[severity.findings]`; `cargo xtask ripr-pr` / `ripr-plus` canonicalize it to
+`reachable_unrevealed` when matching suppressions to findings.
+
 Do **not** translate these into `killed` / `survived`. They mean something different.
 
 ---
@@ -157,11 +162,16 @@ never infer success from emptiness.
   classifier's `--api-evidence` mode applies the same positive-marker boundary;
   unreadable or marker-free evidence still fails closed. Every classified lane
   failure leaves a `ripr-gate-classification` artifact carrying its class and
-  reason. When the artifact is absent, the gate's classification step did not
-  produce a file — which points at a gate-side failure, though it is not by
-  itself proof of any single cause: paths that exit before classification and
-  upload-step skip conditions also leave no artifact (the upload step ignores
-  missing files). The authoritative signal is the classification content when
+  reason. When the gate retrieved a lane log before classifying a configured
+  hosted timeout (`configured-timeout-no-proof`, #16980), it also uploads a
+  `ripr-lane-log-tail` artifact with the last four mebibytes of that log so
+  timeout events stay diagnosable when the hosted UI truncates to an early
+  build prefix (#17450); that tail artifact is best-effort and its absence does
+  not replace the classification verdict. When `ripr-gate-classification` is
+  absent, the gate's classification step did not produce a file — which points
+  at a gate-side failure, though it is not by itself proof of any single cause:
+  paths that exit before classification and upload-step skip conditions also
+  leave no classification artifact (the upload step ignores missing files). The authoritative signal is the classification content when
   the artifact exists; consumers such as ripr-infra-retry treat absence as
   no-arm and surface NOT_PROVEN rather than guessing a class.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
@@ -247,14 +257,20 @@ than one PR.
 ## Suppressions
 
 Suppressions live in [`policy/ripr-suppressions.toml`](../../policy/ripr-suppressions.toml).
-Each suppression requires:
+Each suppression entry should carry:
 
 - `id` — stable identifier
 - `kind` — e.g. `generated_or_non_production_surface`
 - `paths` and/or `classification` — what to suppress
 - `owner` — accountable person/team
 - `reason` — why this is suppressed
-- `created`, `review_after`, `expires` — dates
+- `created`, `review_after`, `expires` — lifecycle dates committed with the entry
+
+Lifecycle dates are **advisory**. No quality gate reads them, and a suppression
+does not stop applying when `expires` passes; retiring one remains the owner's
+call. `cargo xtask ripr-suppression-audit` writes
+`target/ripr/suppressions/lifecycle-audit.json` (and `.md`) for owner review
+only; that artifact is not an input to any gate verdict.
 
 The suppression file is read by `ripr.toml`'s `[suppressions] path` setting.
 The `cargo xtask ripr-pr` and `cargo xtask ripr-plus` wrappers also apply the

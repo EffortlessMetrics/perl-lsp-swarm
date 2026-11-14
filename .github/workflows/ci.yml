@@ -327,7 +327,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
       - name: Cache cargo dependencies
@@ -383,7 +383,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
       # #2908: this lane builds only the ci-scope-selected crate subset
@@ -480,7 +480,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           bash scripts/tools/aqua-doctor.sh
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
@@ -653,7 +653,7 @@ jobs:
 
       - name: Install Rust
         if: env.RUN_API_RATCHET == 'true'
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -684,7 +684,7 @@ jobs:
 
       - name: Install just
         if: env.RUN_API_RATCHET == 'true'
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -701,10 +701,8 @@ jobs:
 
   semver-pr:
     name: Semver Compatibility (facade PR)
-    # Advisory per #2266: cargo-semver-checks stays continue-on-error until
-    # baseline noise-confidence is established; promote to a blocking verdict
-    # with the same evidence window that hardens public-api-pr.
-    continue-on-error: true
+    # Advisory per #2266: not in the merge-gate required set. Detected breaks
+    # must still fail the job (#17208); continue-on-error hid them as success.
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [draft-pr-check, preflight-latest-check]
@@ -735,7 +733,7 @@ jobs:
 
       - name: Install Rust
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: stable
 
@@ -775,26 +773,9 @@ jobs:
         if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
         env:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
-        # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
-        # list `just semver-check-all` and `just public-api-check` read (#14607).
-        run: |
-          mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
-          if [ "${#crates[@]}" -eq 0 ]; then
-            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists no crates; refusing a vacuous semver pass"
-            exit 1
-          fi
-          if [ -n "$(printf '%s\n' "${crates[@]}" | sort | uniq -d)" ]; then
-            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists a crate twice; fix the list rather than checking it twice"
-            exit 1
-          fi
-          for crate in "${crates[@]}"; do
-            if cargo semver-checks check-release -p "${crate}" \
-              --baseline-rev "${SEMVER_BASELINE}"; then
-              echo "semver: ${crate} compatible"
-            else
-              echo "::warning::Breaking changes detected in ${crate}"
-            fi
-          done
+        # Crate set and fail-closed guards live in scripts/ci/semver_pr_check.sh
+        # (#14607 list authority; #17208 truthful step outcome on detection).
+        run: bash scripts/ci/semver_pr_check.sh
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
@@ -845,14 +826,22 @@ jobs:
       # run 37195503421 (2026-10-04) after the trim above. The preflight
       # guard derives its floor from this bound plus a reserve; update it
       # only with a fresh measured receipt, never to make a red lane pass.
-      PR_SMOKE_FOOTPRINT_GIB: "85"
+      # EXPIRED-UNVERIFIABLE (#19067): the originating run 37195503421's
+      # artifacts are expired (artifacts API total_count=0), so the 85 GiB
+      # value cannot be re-verified from that run. It is retained
+      # conservatively (85 GiB + 5 GiB reserve = 90 GiB floor unchanged).
+      # The committed provenance record is
+      # .ci/pr-smoke-footprint-baseline.json: the Resolve step below
+      # materializes it from the workflow SHA and the preflight guard
+      # reads it via --baseline-path, so this job carries no second
+      # literal copy of the bound.
       # #15528: one stable, cache-aligned target dir. The former per-run
       # `pr-smoke-${run_id}-${run_attempt}` path (unique per run and attempt)
       # made every run a full cold build, so the 45m watchdog reliably killed
       # the tier mid-compile. `target` is exactly the tree the rust-cache step
       # below restores and saves, so the lane warms like every other ci.yml
       # job. The #11943 arms: line-tables-only debuginfo above bounds the
-      # footprint (declared below as PR_SMOKE_FOOTPRINT_GIB), and the
+      # footprint (declared in the committed baseline below), and the
       # preflight guard's floor is derived from that bound plus a reserve
       # (#17231), plus the post-run disk guards, which probe this same
       # filesystem (hosted `df` shows /mnt on /dev/root, so the old /mnt
@@ -887,11 +876,20 @@ jobs:
           fi
           guard_path="${RUNNER_TEMP}/pr-smoke-disk-guard.py"
           guard_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-disk-guard.XXXXXX")"
-          trap 'rm -f "$guard_tmp"' EXIT
+          baseline_path="${RUNNER_TEMP}/pr-smoke-footprint-baseline.json"
+          baseline_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-footprint-baseline.XXXXXX")"
+          trap 'rm -f "$guard_tmp" "$baseline_tmp"' EXIT
           git show "${PR_SMOKE_WORKFLOW_SHA}:scripts/ci/pr_smoke_disk_guard.py" > "$guard_tmp"
           test -s "$guard_tmp"
           mv "$guard_tmp" "$guard_path"
+          # #19067: materialize the committed footprint baseline from the
+          # same workflow SHA, so the preflight guard evaluates the
+          # committed record instead of a duplicated workflow literal.
+          git show "${PR_SMOKE_WORKFLOW_SHA}:.ci/pr-smoke-footprint-baseline.json" > "$baseline_tmp"
+          test -s "$baseline_tmp"
+          mv "$baseline_tmp" "$baseline_path"
           echo "PR_SMOKE_DISK_GUARD=$guard_path" >> "$GITHUB_ENV"
+          echo "PR_SMOKE_BASELINE_PATH=$baseline_path" >> "$GITHUB_ENV"
           echo "PR Smoke disk guard source: $PR_SMOKE_WORKFLOW_SHA"
 
       - name: Fetch release tags from canonical repo
@@ -900,13 +898,13 @@ jobs:
           git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -964,12 +962,13 @@ jobs:
       # must fail here in seconds instead of dying inside `ld` with SIGBUS
       # disguised as a compile failure 40 minutes in.
       - name: Pre-flight disk budget guard
+        id: pr-smoke-disk-preflight
         shell: bash
         run: |
           python3 "$PR_SMOKE_DISK_GUARD" preflight \
             --workspace-path . \
             --target-dir "${CARGO_TARGET_DIR:-target}" \
-            --footprint-bytes "${PR_SMOKE_FOOTPRINT_GIB}GiB"
+            --baseline-path "$PR_SMOKE_BASELINE_PATH"
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
@@ -1082,6 +1081,7 @@ jobs:
           exit "$preparation_status"
 
       - name: Run PR-fast via shared xtask gate runner
+        id: pr-smoke-gate-runner
         env:
           PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
         run: |
@@ -1163,7 +1163,10 @@ jobs:
       # only — the original gate outcome is preserved; this step never exits
       # non-zero.
       - name: Classify PR-fast disk exhaustion
-        if: always() && steps.pr-smoke-disk-guard.outcome == 'success'
+        if: >-
+          always()
+          && steps.pr-smoke-disk-preflight.outcome == 'success'
+          && steps.pr-smoke-gate-runner.outcome != 'skipped'
         shell: bash
         run: |
           python3 "$PR_SMOKE_DISK_GUARD" classify \
@@ -1193,8 +1196,18 @@ jobs:
             --out target/receipts/pr-fast-failure-digest.md
           cat target/receipts/pr-fast-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
 
+      # #19067: the PR Smoke receipt is the only durable record of what the
+      # runner actually offered (the free-bytes snapshot in
+      # pr-fast-disk-pressure.log) and of the tier's gate verdicts. At 7 days
+      # that record expires before anyone can review it, which made the guard's
+      # own rule -- update the footprint bound only with a fresh measured
+      # receipt (the committed footprint baseline above) -- unsatisfiable: the bound's
+      # originating run (37195503421) has no surviving artifact and no job
+      # log. Retain at least as long as both the CI Gate shard receipts
+      # ("Upload gate receipt") and derived telemetry ("Upload CI actuals"),
+      # so the related evidence cannot drift apart in lifetime.
       - name: Upload PR-fast receipt
-        if: always()
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: pr-fast-receipt-${{ github.sha }}
@@ -1204,8 +1217,24 @@ jobs:
             target/receipts/routed-test-build/logs/*.log
             target/receipts/ci-subject.json
             target/receipts/logs/*.log
+          if-no-files-found: error
+          retention-days: 30
+
+      # When the tier never produced receipt.json, publish diagnostics under a
+      # name that does not impersonate a completed pr-fast run (#17915).
+      - name: Upload PR-fast missing-receipt diagnostics
+        if: always() && hashFiles('target/receipts/receipt.json') == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: pr-fast-missing-receipt-${{ github.sha }}
+          path: |
+            target/receipts/logs/*.log
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
+            target/receipts/ci-subject.json
+            target/receipts/pr-fast-failure-digest.md
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 30
 
       - name: Summarize PR-fast gate failures
         if: always()
@@ -1234,7 +1263,7 @@ jobs:
           fi
 
       - name: Convert PR-fast receipt to JUnit
-        if: always()
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
         run: |
           python3 scripts/ci/receipts-to-junit.py \
             --input target/receipts/receipt.json \
@@ -1242,9 +1271,9 @@ jobs:
             --suite-name pr-fast
 
       - name: Upload PR-fast test results to Codecov
-        if: always() && env.CODECOV_TOKEN != ''
+        if: always() && hashFiles('target/receipts/receipt.json') != '' && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -1256,6 +1285,505 @@ jobs:
       # parallel check-all-targets job (just check-all-targets), which runs
       # cargo check --workspace --all-targets --locked independently of pr-smoke.
       # Adding a redundant fallback here would duplicate that work without gain.
+
+  # ── Source-commit API ledger on the evaluated combined/landed tree (#15965)
+  # The meta shard already runs `source_commit_api_check`, but PR-head
+  # evaluation can stay green while the post-merge tree drifts the
+  # `compatibility_baseline` count (d7d4c5143 / #16011, #17212). This job
+  # reuses that same checker on merge_group (queue combined tree) and push
+  # to main/master (landed tree). It is not a new required GitHub context.
+  pr-fast-unblocked:
+    name: PR Fast (unblocked revival, advisory)
+    runs-on: ubuntu-24.04
+    # Same envelope as pr-smoke: 60m inner watchdog plus setup/receipt
+    # headroom for the routed-compile tail (#17459, #15915).
+    timeout-minutes: 75
+    # Advisory like pr-smoke: a pr-fast flake must not present as hard red.
+    continue-on-error: true
+    needs: [draft-pr-check, preflight-latest-check]
+    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # #19045: sibling of pr-smoke that runs the pr_fast tier without the
+    # fatal pre-flight floor, so the tier emits verdicts again. pr-smoke
+    # keeps its fatal guard for comparison; revert is deleting this job.
+    # No change to any required context; not in merge-gate needs.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # No explicit token: the default github.token applies. An explicit
+          # secrets.GITHUB_TOKEN reference in a PR-triggered job trips the
+          # workflow security ratchet (pr_secret_reference); default
+          # credentials already cover fetch-tags here (#19229).
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          # Fetch full history so the immutable subject can validate exact event ancestry.
+          fetch-depth: 0
+          # release_history --verify-git resolves every release tag locally.
+          fetch-tags: true
+
+      # The workflow can be newer than the candidate checkout (#17835).
+      # Pair its CLI and disk policy with the exact workflow definition,
+      # without replacing candidate files or changing immutable-subject ancestry.
+
+      - name: Resolve workflow-bound PR Smoke disk guard
+        id: pr-smoke-disk-guard
+        shell: bash
+        env:
+          PR_SMOKE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR_SMOKE_WORKFLOW_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::PR Smoke requires an exact workflow commit SHA"
+            exit 1
+          fi
+          if ! git cat-file -e "${PR_SMOKE_WORKFLOW_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$PR_SMOKE_WORKFLOW_SHA"
+          fi
+          guard_path="${RUNNER_TEMP}/pr-smoke-disk-guard.py"
+          guard_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-disk-guard.XXXXXX")"
+          baseline_path="${RUNNER_TEMP}/pr-smoke-footprint-baseline.json"
+          baseline_tmp="$(mktemp "${RUNNER_TEMP}/pr-smoke-footprint-baseline.XXXXXX")"
+          trap 'rm -f "$guard_tmp" "$baseline_tmp"' EXIT
+          git show "${PR_SMOKE_WORKFLOW_SHA}:scripts/ci/pr_smoke_disk_guard.py" > "$guard_tmp"
+          test -s "$guard_tmp"
+          mv "$guard_tmp" "$guard_path"
+          # #19067: materialize the committed footprint baseline from the
+          # same workflow SHA, so the preflight guard evaluates the
+          # committed record instead of a duplicated workflow literal.
+          git show "${PR_SMOKE_WORKFLOW_SHA}:.ci/pr-smoke-footprint-baseline.json" > "$baseline_tmp"
+          test -s "$baseline_tmp"
+          mv "$baseline_tmp" "$baseline_path"
+          echo "PR_SMOKE_DISK_GUARD=$guard_path" >> "$GITHUB_ENV"
+          echo "PR_SMOKE_BASELINE_PATH=$baseline_path" >> "$GITHUB_ENV"
+          echo "PR Smoke disk guard source: $PR_SMOKE_WORKFLOW_SHA"
+
+      - name: Fetch release tags from canonical repo
+        run: |
+          # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none.
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Install just
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: just
+
+      # #15528: dedicated cache family for this lane. The shared `ci-gate-`
+      # entry is seeded by the merge-gate shards at full debuginfo, whose dep
+      # artifacts never fingerprint-match this lane's line-tables-only env, and
+      # both jobs saving under one key would nondeterministically overwrite
+      # each other's newest main entry. This lane uses its own shared key
+      # (same shape, separate family): on main pushes pr-smoke fails fast at
+      # its guard yet still saves first, which would pin the shared key to a
+      # compile-free entry and starve this lane's seed (#19229 review).
+      # A stable shared key (no lockfile hash —
+      # rust-cache already folds the lockfile into its internal keying,
+      # docs/ci/cache-policy.md) lets the push-to-main run of this job seed
+      # matching line-tables-only artifacts that PR and merge-group runs
+      # restore. Save authority is unchanged: candidate events restore only.
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+          shared-key: pr-fast-unblocked
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      # #15528 hardening: the dedicated cache family restores the whole
+      # target/ tree of the seeding main run, including receipts. Clear them so
+      # a run killed by the watchdog can never upload a stale receipt that
+      # reads as this run's verdict (same hygiene as the shard job's "Clear
+      # restored inventory evidence").
+
+      - name: Clear restored PR-fast receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts
+          mkdir -p target/receipts/logs
+
+      # The digest step below runs under `always()`, so it must never find a
+      # receipt this run did not write. `target/` is restored from a shared
+      # rust-cache (#12085), and `xtask gates` writes `receipt.json` only after
+      # the whole plan returns -- so any failure before that point (a degraded
+      # runner caught by the guard below, a timeout, a failed warm build) would
+      # otherwise leave an unrelated SHA's receipt in place for the digest to
+      # publish as this run's failure, `first_failure` and all. Rendering the
+      # wrong test as the cause is worse than rendering nothing, which is the
+      # whole premise of the digest. Cleared here, ahead of everything that can
+      # fail, rather than inside the step that produces them.
+
+      - name: Clear cache-restored PR-fast receipt surfaces (#12085)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts/receipt.json target/receipts/logs \
+            target/receipts/pr-fast-failure-digest.md \
+            || { echo "::error::cannot clear cache-restored PR-fast receipt surfaces (#12085); refusing to run over a possibly stale receipt"; exit 1; }
+          mkdir -p target/receipts
+
+      # Revival telemetry (#19045): observe the same floor without refusing
+      # to start. The guard's ::error:: verdict is relabeled warning-only:
+      # a breach is recorded, never fatal, and the tier proceeds so pr_fast
+      # emits verdicts again. Exoneration of ENOSPC stays with the advisory
+      # Classify step below; ground-truth df/du capture is unchanged.
+      - name: Observe disk budget (telemetry only)
+        id: pr-fast-disk-telemetry
+        continue-on-error: true
+        shell: bash
+        run: |
+          python3 "$PR_SMOKE_DISK_GUARD" preflight \
+            --workspace-path . \
+            --target-dir "${CARGO_TARGET_DIR:-target}" \
+            --baseline-path "$PR_SMOKE_BASELINE_PATH" 2>&1 \
+            | sed 's/^::error::/::warning::telemetry-only: /' || true
+          echo "::warning::disk observation is telemetry-only; the tier proceeds regardless (#19045)"
+          exit 0
+
+      - name: Warm xtask
+        run: cargo build -p xtask --locked
+
+      - name: Resolve immutable CI subject
+        env:
+          SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
+          SUBJECT_HEAD_SHA: ${{ inputs.head_sha || '' }}
+        run: |
+          "$CARGO_TARGET_DIR/debug/xtask" ci-subject \
+            --base-sha "$SUBJECT_BASE_SHA" \
+            --head-sha "$SUBJECT_HEAD_SHA" \
+            --receipt target/receipts/ci-subject.json
+
+      - name: Determine inline-completion warm-up scope
+        id: inline-completion-scope
+        shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"
+          warm_inline_completion=true
+
+          if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --subject target/receipts/ci-subject.json --format json > "$scope_json"; then
+            echo "::warning::ci-scope failed; retaining inline-completion warm-up (fail-closed)"
+          elif ! diff_class="$(jq -er '
+            if type != "object" or (.diff_class | type) != "string" or
+               (.direct_crates | type) != "array" or
+               (any(.direct_crates[]?; type != "object" or (.name | type) != "string")) or
+               (.reverse_dep_closure | type) != "array" or
+               (any(.reverse_dep_closure[]?; type != "object" or (.name | type) != "string")) or
+               (.architecture_wideners | type) != "array" or
+               (any(.architecture_wideners[]?; type != "object" or (.name | type) != "string")) or
+               (.selected_lanes | type) != "array" or
+               (any(.selected_lanes[]?; type != "object" or (.scope | type) != "array" or any(.scope[]?; type != "string")))
+            then error("invalid ci-scope JSON")
+            else .diff_class
+            end
+          ' "$scope_json")"; then
+            echo "::warning::ci-scope returned invalid JSON; retaining inline-completion warm-up (fail-closed)"
+          else
+            case "$diff_class" in
+              prose_only|docs_as_code|ci_config)
+                warm_inline_completion=false
+                ;;
+              code|mixed)
+                if ! relevant="$(jq -r '
+                  [
+                    .direct_crates[]?.name,
+                    .reverse_dep_closure[]?.name,
+                    .architecture_wideners[]?.name,
+                    .selected_lanes[]?.scope[]?
+                  ]
+                  | any(. == "perl-lsp-rs" or . == "perl-lsp-rs-core")
+                ' "$scope_json")"; then
+                  echo "::warning::ci-scope package analysis failed; retaining inline-completion warm-up (fail-closed)"
+                elif [ "$relevant" = "false" ]; then
+                  warm_inline_completion=false
+                fi
+                ;;
+              *)
+                echo "::warning::ci-scope returned unknown diff_class '$diff_class'; retaining inline-completion warm-up (fail-closed)"
+                ;;
+            esac
+          fi
+
+          echo "diff_class=${diff_class:-unknown}"
+          echo "warm_inline_completion=$warm_inline_completion"
+          echo "warm_inline_completion=$warm_inline_completion" >> "$GITHUB_OUTPUT"
+
+      # Build the two cold inline-completion test targets before the independent
+      # pr-fast gates start when ci-scope identifies a relevant package change.
+      # The gates retain their separate 150s budgets and still execute the tests;
+      # scope failure intentionally keeps this warm-up enabled.
+
+      - name: Warm inline-completion test targets
+        if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'
+        run: |
+          cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
+          cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
+
+      # #17459: the retained main run spent 21m45s compiling routed targets
+      # after earlier gates consumed most of the 60m runtime watchdog. Prepare
+      # the exact canonical scope first, with independent compile-only evidence.
+      # The 75m job envelope and all runtime assertions remain unchanged.
+
+      - name: Prepare routed integration-test targets
+        # Preserve the full tier's independent facts even if preparation fails.
+        # Its separate failed receipt remains evidence; runtime gates still own
+        # the verdict, including the required compilation row on their retry.
+        continue-on-error: true
+        # Bound preparation inside the 75m job envelope so a cold routed
+        # build cannot silently consume the runtime watchdog's hour.
+        timeout-minutes: 25
+        run: |
+          set +e
+          "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast \
+            --gate unit_routed_full_build --subject target/receipts/ci-subject.json \
+            --receipt --receipt-path target/receipts/routed-test-build/receipt.json
+          preparation_status=$?
+          # The full tier writes the same gate log again. Keep the original
+          # preparation log beside its independent receipt, including failures,
+          # and point the preparation receipt at the preserved copy.
+          if [ -f target/receipts/logs/unit_routed_full_build.log ]; then
+            mkdir -p target/receipts/routed-test-build/logs || exit 1
+            cp target/receipts/logs/unit_routed_full_build.log \
+              target/receipts/routed-test-build/logs/unit_routed_full_build.log || exit 1
+            python3 -c 'import json, pathlib; p = pathlib.Path("target/receipts/routed-test-build/receipt.json"); d = json.loads(p.read_text()); gates = d.get("gates", d if isinstance(d, list) else []); rows = gates if isinstance(gates, list) else []; [r.__setitem__("log_path", "routed-test-build/logs/unit_routed_full_build.log") for r in rows if isinstance(r, dict) and str(r.get("log_path", "")).endswith("logs/unit_routed_full_build.log")]; p.write_text(json.dumps(d, indent=2) + "\n")' || exit 1
+          fi
+          exit "$preparation_status"
+
+      - name: Run PR-fast via shared xtask gate runner
+        id: pr-smoke-gate-runner
+        env:
+          PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
+        run: |
+          set +e
+          # Gate commands reuse the shared CARGO_TARGET_DIR=target build warmed
+          # by "Warm xtask" and the cache restore above (#15528).
+          # Gate receipts intentionally stay at target/receipts for upload steps.
+          echo "PR-fast timeout policy: GitHub job 75m, outer runner watchdog 60m, per-gate timeouts recorded in target/receipts/receipt.json"
+          # Share the existing 60m watchdog: run two in-process server targets
+          # that unit_routed_full otherwise reaches after DAP.
+          # Both targets and the broader tier retain their independent failures.
+          timeout --signal=TERM --kill-after=60s 3600s bash <<'PR_FAST'
+          set -uo pipefail
+          navigation_status=0
+          if [ "$PR_SMOKE_NAVIGATION_PROOF" = 'true' ]; then
+            source_sha="$(git rev-parse --verify HEAD)"
+            source_status=$?
+            echo "NAVIGATION_PROOF source=$source_sha"
+            for target in cross_file_goto_definition_tests navigation_regression_tests; do
+              log="target/receipts/logs/navigation-${target}.log"
+              target_status=1
+              if ! printf 'NAVIGATION_PROOF source=%s target=%s\n' "$source_sha" "$target" | tee "$log"; then
+                navigation_status=1
+              fi
+              if [ "$source_status" -eq 0 ]; then
+                cargo test -p perl-lsp-rs --locked --test "$target" -- --test-threads=1 --color never 2>&1 | tee -a "$log"
+                result=("${PIPESTATUS[@]}")
+                target_status="${result[0]}"
+                if [ "${result[1]}" -ne 0 ] || ! grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' "$log"; then
+                  target_status=1
+                fi
+              else
+                echo 'NOT_PROVEN: current source identity prerequisite failed' | tee -a "$log"
+              fi
+              if ! printf 'NAVIGATION_PROOF source=%s target=%s exit=%s\n' "$source_sha" "$target" "$target_status" | tee -a "$log"; then
+                navigation_status=1
+              fi
+              if [ "$target_status" -ne 0 ]; then navigation_status=1; fi
+            done
+          fi
+          "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
+          full_status=$?
+          if [ "$full_status" -ne 0 ]; then exit "$full_status"; fi
+          exit "$navigation_status"
+          PR_FAST
+          status=$?
+          case "$status" in
+            124)
+              echo "::error::PR-fast hit the 60m runner watchdog before xtask produced a final receipt"
+              ;;
+            137|143)
+              echo "::error::PR-fast was cancelled by the runner or process group (exit $status)"
+              ;;
+          esac
+          exit "$status"
+
+      - name: Capture PR-fast disk pressure
+        if: always()
+        shell: bash
+        run: |
+          # #11943: capture setup and gate failures, including ENOSPC -> ld SIGBUS,
+          # before the runner is discarded. This is advisory evidence only.
+          set +e
+          mkdir -p target/receipts/logs
+          {
+            echo "== $(date -u '+%Y-%m-%dT%H:%M:%SZ') PR-fast disk pressure snapshot =="
+            echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}"
+            echo "GITHUB_SHA=${GITHUB_SHA:-<unset>}"
+            echo "GITHUB_RUN_ID=${GITHUB_RUN_ID:-<unset>}"
+            echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-<unset>}"
+            df -h . "${CARGO_TARGET_DIR:-target}" || true
+            timeout --signal=TERM --kill-after=5s 30s \
+              bash -c 'du -h --max-depth=1 -- "$1" 2>/dev/null | sort -rh | head -n 20' \
+              _ "${CARGO_TARGET_DIR:-target}" || true
+          } >> target/receipts/logs/pr-fast-disk-pressure.log || true
+
+      # #11943 visible arm (post-run): classify gate-log exhaustion signatures
+      # into an explicit annotation naming the filled path family. Advisory
+      # only — the original gate outcome is preserved; this step never exits
+      # non-zero.
+
+      - name: Classify PR-fast disk exhaustion
+        if: >-
+          always()
+          && steps.pr-smoke-gate-runner.outcome != 'skipped'
+        shell: bash
+        run: |
+          python3 "$PR_SMOKE_DISK_GUARD" classify \
+            --logs-dir target/receipts/logs \
+            --target-dir "${CARGO_TARGET_DIR:-target}"
+
+      # PR Smoke is the lane a contributor reads first and it published no
+      # step summary at all: a red sent the reader straight to the job log.
+      # The receipt already carries each gate's command and first failure;
+      # this renders them. Advisory, and never changes the gate outcome.
+
+      - name: Explain PR-fast failures
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # target/ is restored from a shared cache (#12085), so anything
+          # already at this path belongs to another run, not this one.
+          rm -f target/receipts/pr-fast-failure-digest.md
+          if [ ! -f target/receipts/receipt.json ]; then
+            echo "no PR-fast receipt; nothing to explain"
+            exit 0
+          fi
+          "$CARGO_TARGET_DIR/debug/xtask" gate-failure-digest \
+            --summary target/receipts/receipt.json \
+            --logs target/receipts/logs \
+            --out target/receipts/pr-fast-failure-digest.md
+          cat target/receipts/pr-fast-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
+
+      # #19067: the PR Smoke receipt is the only durable record of what the
+      # runner actually offered (the free-bytes snapshot in
+      # pr-fast-disk-pressure.log) and of the tier's gate verdicts. At 7 days
+      # that record expires before anyone can review it, which made the guard's
+      # own rule -- update the footprint bound only with a fresh measured
+      # receipt (the committed footprint baseline above) -- unsatisfiable: the bound's
+      # originating run (37195503421) has no surviving artifact and no job
+      # log. Retain at least as long as both the CI Gate shard receipts
+      # ("Upload gate receipt") and derived telemetry ("Upload CI actuals"),
+      # so the related evidence cannot drift apart in lifetime.
+
+      - name: Upload PR-fast receipt
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pr-fast-unblocked-receipt-${{ github.sha }}
+          path: |
+            target/receipts/receipt.json
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
+            target/receipts/ci-subject.json
+            target/receipts/logs/*.log
+          if-no-files-found: error
+          retention-days: 30
+
+      # When the tier never produced receipt.json, publish diagnostics under a
+      # name that does not impersonate a completed pr-fast run (#17915).
+
+      - name: Upload PR-fast missing-receipt diagnostics
+        if: always() && hashFiles('target/receipts/receipt.json') == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pr-fast-unblocked-missing-receipt-${{ github.sha }}
+          path: |
+            target/receipts/logs/*.log
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
+            target/receipts/ci-subject.json
+            target/receipts/pr-fast-failure-digest.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Summarize PR-fast gate failures
+        if: always()
+        shell: bash
+        # Renders the gate table into GITHUB_STEP_SUMMARY, mirrors it to stdout
+        # for the job-log tail, and publishes one `::error` annotation per
+        # failing gate so the check-runs API can name the gate without the
+        # artifact download (#15492). The logic lives in a script rather than
+        # inline here because four of its branches -- the `skip` exclusion, the
+        # workflow-command escaping, the `::stop-commands::` fence and the
+        # ten-annotation fold -- are only falsifiable from a test harness:
+        # scripts/ci/test_summarize_pr_fast_gates.py, run by
+        # .github/workflows/ci-gate-self-tests.yml.
+        # Existence guard (#16375): the workflow definition is loaded from
+        # `main` even when the PR checkout predates the script, so an unguarded
+        # `python3 scripts/ci/summarize_pr_fast_gates.py` exits with
+        # `No such file or directory` and turns this advisory step red. Skip
+        # with an explicit annotation instead; the missing summary is not a
+        # gate failure, and re-basing restores the full behaviour without any
+        # other change to this step.
+        run: |
+          if [ -f scripts/ci/summarize_pr_fast_gates.py ]; then
+            python3 scripts/ci/summarize_pr_fast_gates.py
+          else
+            echo "::warning title=pr-fast summary::summarize_pr_fast_gates.py is not present on this checkout; skipping PR-fast gate summary (rebase onto current main to restore it; issue #16375)."
+          fi
+
+      - name: Convert PR-fast receipt to JUnit
+        if: always() && hashFiles('target/receipts/receipt.json') != ''
+        run: |
+          python3 scripts/ci/receipts-to-junit.py \
+            --input target/receipts/receipt.json \
+            --output target/test-results/pr-fast-junit.xml \
+            --suite-name pr-fast
+
+  source-commit-api-ledger:
+    name: Source-commit API ledger (combined tree)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    if: >-
+      github.event_name == 'merge_group' ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    steps:
+      - name: Checkout evaluated tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Recheck source-commit API ledger counts
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TREE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set +e
+          python3 scripts/ci/check_source_commit_api.py
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=source_commit_api_check::source-commit API ledger check failed on the ${EVENT_NAME} tree (${TREE_SHA}); see checker output for the failure."
+            exit "$status"
+          fi
 
   # ── Merge Gate shards: bounded validation lanes for every PR/push ────
   merge-gate-shards:
@@ -1309,7 +1837,7 @@ jobs:
           # and re-flip `ci_workflow_includes_compile_all_targets_in_matrix`
           # if the dedicated job is ever reverted.
           - name: meta
-            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet regex_static_ratchet release_history_check source_commit_api_check perl_token_leaf_contract clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet regex_static_ratchet release_history_check release_history_domain6_rerender source_commit_api_check perl_token_leaf_contract public_api_baseline_canonical clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
@@ -1368,13 +1896,13 @@ jobs:
           git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -1663,7 +2191,7 @@ jobs:
       - name: Upload gate shard test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -1934,15 +2462,17 @@ jobs:
     # UX suite does not consume pr-smoke artifacts/results; parallelize after preflight.
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
-    # Run on every PR push — this is the regression prevention gate.
+    # Run on every PR push — advisory UX regression evidence (not branch-protection
+    # required; see .ci/policies/required-checks.toml for this job).
     # Flakiness note: .ci/ux-flakes.json records quarantine/disposition state for
-    # known-flaky UX scenario tests (currently all of them historical scenario_14 /
-    # @INC conformance rows); any active row must carry the bounded review contract
-    # (issue, owner, expiry) enforced by the quarantine registry contract test,
-    # but the registry is advisory only — it is NOT enforced here. If any
-    # scenario_14 test fails this job fails and merge-gate blocks. Quarantine
-    # enforcement (reading the registry to generate --skip flags) is a follow-up;
-    # see .ci/ux-flakes.json for the current per-row state.
+    # known-flaky UX scenario tests; use its `summary` block for active/total counts
+    # (historical rows are mostly scenario_14 / @INC conformance). Any active row must
+    # carry the bounded review contract (issue, owner, expiry) enforced by
+    # quarantine_registry_contract.rs, but the registry is advisory only — it is NOT
+    # enforced here and does not skip tests in this job. A failing UX test fails this
+    # job, yet branch protection does not require it; failures surface in the advisory
+    # CI aggregate only. Quarantine enforcement (reading the registry to generate --skip
+    # flags) is a follow-up; see .ci/ux-flakes.json for per-row state.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1963,12 +2493,12 @@ jobs:
           printf 'Testing exact candidate %s\n' "$TESTED_SHA"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -2098,7 +2628,7 @@ jobs:
       - name: Upload UX regression test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -2200,12 +2730,12 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -2223,362 +2753,10 @@ jobs:
       # #17349: routed xtask library failures can prevent this integration
       # target from executing. Run its 15 retained tests independently here;
       # require the real workflow assertion and both positive/negative controls.
-      - name: PR-fast watchdog contract (required merge surface)
-        run: |
-          set -o pipefail
-          cargo test -p xtask --test gates_1469_pr_required_static_checks --locked -- \
-            --test-threads=1 --color never | tee "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
-          # Reject zero matches, ignored/filtered tests, and missing target controls.
-          grep -Eq '^test result: ok\. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
-            "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
-          for test_name in \
-            ci_workflow_runs_unit_routed_full_in_pr_smoke \
-            pr_fast_watchdog_accepts_direct_and_heredoc_runners \
-            pr_fast_watchdog_rejects_untimed_or_status_losing_runners; do
-            grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
-          done
+      # #19262: the complete local admission target and this CI job share one producer.
+      - name: Required merge surface
+        run: bash scripts/ci/required-merge-surface.sh
 
-      # #17459: workflow/policy-only changes skip RustScoped routed tests.
-      # Execute this governed-surface contract on the protected merge surface.
-      - name: Routed test preparation contract (required merge surface)
-        run: |
-          set -o pipefail
-          cargo test -p xtask --test routed_test_preparation_contract --locked -- \
-            --test-threads=1 --color never | tee "$RUNNER_TEMP/routed-test-preparation-contract.log"
-          grep -Eq '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
-            "$RUNNER_TEMP/routed-test-preparation-contract.log"
-          for test_name in \
-            preparation_preserves_runtime_command_and_budget \
-            preparation_precedes_watchdog_and_has_separate_evidence; do
-            grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/routed-test-preparation-contract.log"
-          done
-
-      # The frozen legacy parity authority is a required merge surface. Keep
-      # both integration targets here because compile-all-targets alone cannot
-      # execute their assertions, and the routed pr-fast lane is advisory.
-      - name: Legacy parity library authority (required merge surface)
-        run: cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture
-
-      - name: Legacy parity CLI authority (required merge surface)
-        run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture
-
-      # Required merge surface for #7767/#7796: unit_routed_full only executes via
-      # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
-      # contract merely compiles. Keep the oracle on Compile All Targets.
-      - name: Emacs docs contract (required merge surface)
-        run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
-
-      # Keep the direct-command guidance guard load-bearing on the required
-      # merge surface, including the tracked root AGENTS.md instructions.
-      - name: Direct command guidance contract (required merge surface)
-        run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
-
-      # #17233: the routed xtask library suite can fail before main-binary
-      # tests run. Execute the four retained formatter callers directly on
-      # this existing required surface, using its already compiled binary.
-      - name: Package formatter caller contracts (required merge surface)
-        run: |
-          set -o pipefail
-          cargo test -p xtask --bin xtask --locked -- --exact \
-            tasks::check::tests::check_task_run_routes_fmt_through_package_formatter \
-            tasks::check::tests::check_task_run_preserves_all_check_order \
-            tasks::ci::runner::tests::ci_runner_fmt_check_routes_to_package_formatter \
-            tasks::ci_doctor::tests::ci_doctor_fmt_drift_routes_to_package_formatter \
-            --nocapture | tee "$RUNNER_TEMP/package-formatter-callers.log"
-          # libtest succeeds with zero matches; require all four contracts to run.
-          grep -Eq '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured;' \
-            "$RUNNER_TEMP/package-formatter-callers.log"
-
-      # The active cache denominator (#9177) is derived from workflow source, so it
-      # silently rots whenever a cache step, trigger, or save guard moves. This
-      # contract lives as the xtask binary's own unit tests (tasks::ci_cache_inventory),
-      # and the merge gate runs `cargo test --workspace --lib`, which never compiles or
-      # runs the xtask *binary*'s unit tests — so keep this step required here.
-      - name: CI cache inventory contract (required merge surface)
-        run: cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked -- --nocapture
-
-      # The unit tests above prove the deriver's logic; this proves the
-      # *producer* against the live workflow tree: the checked-in manifest
-      # `.ci/ci-cache/cache-inventory.v1.json` must equal what
-      # `ci-cache-inventory` derives right now, or the drift gate fails the
-      # merge surface instead of letting the manifest rot silently.
-      - name: CI cache inventory manifest drift gate (required merge surface)
-        run: cargo run --locked --package xtask -- ci-cache-inventory --check
-
-      # Same reasoning as the Emacs contract above: the merge gate runs
-      # `cargo test --workspace --lib`, so this integration test would otherwise
-      # only execute via advisory pr-smoke. It guards the publish path that can
-      # overwrite a shipped release asset (#9597), so keep it required here.
-      - name: Release-asset identity contract (required merge surface)
-        run: cargo test -p xtask --test publish_extension_release_identity --locked -- --nocapture
-
-      # Same reasoning for the publication receipt the post-publish smoke test
-      # consumes (#9593). If this drifts unobserved the smoke lane silently
-      # goes back to certifying a version from a ref shape.
-      - name: Publish-provenance contract (required merge surface)
-        run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
-
-      # Same reasoning as the contracts above: the #11377 semantic-facade
-      # recurrence guard otherwise only executes through diff-routed advisory
-      # lanes, so stale facade imports could merge without it ever running.
-      - name: Semantic facade consumer contract (required merge surface)
-        run: cargo test -p xtask --test parser_semantic_facade_consumers --locked -- --nocapture
-
-      # Same reasoning as the contracts above: the #11389 workspace/index
-      # facade recurrence guard otherwise only executes through diff-routed
-      # advisory lanes, so stale facade imports could merge without it ever
-      # running.
-      - name: Workspace/index facade consumer contract (required merge surface)
-        run: cargo test -p xtask --test parser_workspace_index_facade_consumers --locked -- --nocapture
-
-      # Same reasoning as the contracts above, and the #10544 recurrence #10433
-      # exists to prevent: the merge gate runs `cargo test --workspace --lib`, so
-      # this ledger would otherwise only execute via advisory pr-smoke. It is the
-      # architecture check that stops a second canonical index lifecycle authority,
-      # a telemetry-as-readiness disposition, or an unmapped lifecycle declaration
-      # from merging, so the producer needs a blocking execution route here.
-      - name: Index lifecycle ownership ledger (required merge surface)
-        run: cargo test -p xtask --test workspace_index_lifecycle_ledger --locked -- --nocapture
-
-      # Same reasoning as the contracts above: the #11382 TDD-facade
-      # recurrence guard otherwise only executes through diff-routed advisory
-      # lanes, so stale facade imports could merge without it ever running.
-      - name: TDD facade consumer contract (required merge surface)
-        run: cargo test -p xtask --test parser_tdd_facade_consumers --locked -- --nocapture
-
-      # #12863/#12693: no gate row or other workflow executed the budget witness
-      # below, so its pins could all fail while every required check stayed
-      # green. It reads exactly the two files this job budgets, so run it next
-      # to the four contracts above on the same required merge surface.
-      - name: Gate-policy budget witness contract (required merge surface)
-        run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
-
-      # #16133: the ripr-liveness dedup read's `--paginate`, `filter=all`,
-      # `per_page`, and `external_id` properties rest on inline Python inside
-      # `ripr-liveness.yml` and no other workflow or test exercises them. The
-      # advisory reporter is not a required gate, so without this contract a
-      # regression would only show up as duplicate posted check runs in
-      # production. Same reasoning as the contracts above, so it belongs on
-      # the same required merge surface.
-      - name: ripr-liveness dedup paginate contract (required merge surface)
-        run: cargo test -p xtask --test issue_16133_ripr_liveness_dedup_paginate --locked -- --nocapture
-
-      # #17182: these four ripr contract suites pin Gap Gate retrieval,
-      # classifier, retry/preflight, version-badge, CLI-policy, and seam-proof
-      # behavior, but no workflow executed them — PR #16989 stayed green with
-      # two stale pins in the gate file. Same reasoning as the contracts
-      # above, so they belong on the same required merge surface.
-      - name: ripr gap-gate workflow contract (required merge surface)
-        run: cargo test -p xtask --test ripr_new_gap_gate_workflow --locked -- --nocapture
-      - name: ripr version badge contract (required merge surface)
-        run: cargo test -p xtask --test badge_ripr_version_contract --locked -- --nocapture
-      - name: ripr gap CLI policy contract (required merge surface)
-        run: cargo test -p xtask --test quality_gate_ripr_new_gap_cli_policy --locked -- --nocapture
-      - name: ripr seam-proof observation contract (required merge surface)
-        run: cargo test -p xtask --test ripr_seam_proof_contributor_observation --locked -- --nocapture
-
-      # #13295: standalone semantic conformance corpus — oracle, mutation bank,
-      # and CLI command wiring. These tests span corpus authoring rules,
-      # derivation determinism, and all 15 behavioral mutations; they are the
-      # primary negative-control surface for the standalone install semantics
-      # (#10243/#11550) and must run on the required merge surface so a broken
-      # corpus vector or a regressed oracle cannot land undetected.
-      - name: Standalone semantic conformance corpus contract (required merge surface)
-        run: cargo test -p xtask --test standalone_vectors_cli --locked -- --nocapture
-
-      # #7611: keep the JSON-RPC dependency-boundary probe on a required
-      # merge surface so a restored Perl taxonomy dependency cannot merge
-      # behind the advisory PR Smoke lane.
-      - name: LSP JSON-RPC dependency probe (required merge surface)
-        run: cargo test -p xtask --test lsp_jsonrpc_dependency_probe --locked -- --nocapture
-
-      # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
-      # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
-      # (which does not build `tests/`), and the policy shard runs
-      # `cargo xtask gates` rather than the test binary. The suite asserts the
-      # inventory gate's tier, required flag, description, command, timeout,
-      # budgets, single mapping, and shard membership — so the gate guarding the
-      # non-Rust inventory was itself guarded by a contract that could not go
-      # red, and did in fact sit red on main unnoticed. Same reasoning as the
-      # contracts above, so it belongs on the same required merge surface.
-      - name: Non-Rust file policy contract (required merge surface)
-        run: cargo test -p xtask --test file_policy --locked -- --nocapture
-
-      # #14178: identical reasoning to the file-policy contract directly above.
-      # This suite asserts that every literal crate name in the Cargo dependabot
-      # entry, and every crate the dependency guide advertises, resolves to a
-      # dependency some workspace manifest declares. Its whole value is going
-      # red when a stale name is added, and `.github/dependabot.yml` is not in
-      # ci-scope's CI_CONFIG_PATHS, so a config-only edit does not even reach
-      # the advisory routed lane. Left off this surface the guard would compile
-      # and never execute — the state #14585 found `file_policy` in.
-      - name: Dependabot dependency-name contract (required merge surface)
-        run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
-
-      # #13477: same required-surface reasoning as the dependency-name
-      # contract above. This suite asserts that the Cargo row keeps
-      # `prefix: "chore"` plus `include: "scope"` and rejects
-      # `prefix: "chore(deps)"` plus that include. `.github/dependabot.yml`
-      # is not in ci-scope's CI_CONFIG_PATHS, so a config-only revert of
-      # #13482 would never reach the advisory routed lane.
-      - name: Dependabot Cargo commit-message contract (required merge surface)
-        run: cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture
-
-      # #13484: nothing executed the `xtask` *bin* unit tests. The merge gate
-      # runs `cargo test --workspace --lib` (a bin is not a lib target) and no
-      # workflow names `--bin xtask`, so `tasks::changelog::tests` — the proof
-      # that a malformed fragment `time:` becomes a named per-fragment finding
-      # instead of a repo-wide `changie batch` crash, and that an absent
-      # disposition artifact cannot supply the disposition removing it — could
-      # not go red. Same failure mode as #14585 above: the gate guarding the
-      # release ledger was itself guarded by a contract with no way to fail.
-      # Scoped to the changelog/changie modules rather than the whole bin
-      # suite on purpose — that suite also carries inventory ratchets which are
-      # red on main today, so enabling it wholesale would gate this surface on
-      # other lanes' work.
-      # One invocation with both filters, not two runs: libtest ORs positional
-      # filters and runs each match once, so `check_malformed_changie_yaml_is_
-      # instrument_failure_exit2` — the one name containing both words — is not
-      # executed twice. Kept as substring filters rather than exact module
-      # paths on purpose: they also pick up the `merge_ready` changelog fan-in
-      # tests and the `file_policy` changie-rule tests, which exact paths would
-      # drop from this surface.
-      - name: Changelog fragment gate contract (required merge surface)
-        run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
-
-      # #15040: same defect shape as #13484 directly above. PR #14513 added 12
-      # `ci_subject_materializer::tests` and 3 `file_policy::tests::preapproved`
-      # unit tests, but no workflow invoked them — `xtask` is a bin target so
-      # `cargo test --workspace --lib` does not build them, the only
-      # `--bin xtask` invocations are in `emacs-train-context-contract.yml`
-      # for unrelated modules, and `ci-gate-self-tests.yml` is path-gated to
-      # other paths. Without these steps a future revert of the
-      # `-c core.autocrlf=false -c merge.renormalize=false` git wrapper flags,
-      # a bump of `PREAPPROVED_SUBJECT_CONTRACT_VERSION` without retargeting
-      # the live workflow contract-version, or a relaxation of
-      # `validate_preapproved_subject_workflow` could land without the merge
-      # surface ever failing — the very failure mode #13484 added to keep
-      # `tasks::changelog::tests` honest. Scoped to the exact module paths
-      # rather than substring filters on purpose: only those modules carry
-      # the structural-validator regressions this claim covers, and broader
-      # filters would re-introduce the inventory-ratchet red that #13484
-      # was specifically avoiding.
-      - name: PR-subject materializer unit tests (required merge surface)
-        run: cargo test -p xtask --bin xtask --locked ci_subject_materializer::tests -- --nocapture
-
-      - name: File-policy preapproval unit tests (required merge surface)
-        run: cargo test -p xtask --bin xtask --locked file_policy::tests::preapproved -- --nocapture
-
-      - name: Workflow policy CLI wiring (required merge surface)
-        run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint
-
-      # #14180: same required-surface reasoning as the Cargo dependency-name
-      # contract above. This suite asserts that the GitHub Actions `/` and npm
-      # `/vscode-extension` rows keep `prefix: "chore"` plus `include: "scope"`
-      # and reject `prefix: "chore(deps)"` plus that include. Cargo is out of
-      # this claim (#13482 / #14898). `.github/dependabot.yml` is not in
-      # ci-scope's CI_CONFIG_PATHS, so a config-only revert would never reach
-      # the advisory routed lane. Inserted after the changelog fragment gate
-      # so it does not occupy the insertion site #14898 uses after the Cargo
-      # name contract.
-      - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)
-        run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture
-
-      # #15100: same required-surface reasoning as the contracts above. These
-      # suites assert that every generated-PR CI dispatcher (post-merge-status
-      # today, lane-history after this change) satisfies ci.yml's required
-      # workflow_dispatch subject inputs (#13019) and refuses to prove a moved
-      # subject. No workflow named either target: the post-merge suite sat red
-      # on main unobserved after #13468 changed the dispatch shape, and the
-      # lane-history suite would never run at all.
-      - name: Post-merge generated-PR dispatch contract (required merge surface)
-        run: cargo test -p xtask --test post_merge_status_regen_tests --locked -- --nocapture
-
-      - name: Lane-history generated-PR dispatch contract (required merge surface)
-        run: cargo test -p xtask --test lane_history_ci_dispatch_contract --locked -- --nocapture
-
-      # #11933: the freshness cfg-binding test lives in
-      # `xtask/tests/gate_policy_profile_tests.rs`. unit_routed_full only
-      # executes xtask integration tests when the PR diff selects xtask, and
-      # `.ci/gate-policy.yaml` is not an xtask-policy-guarded input. A
-      # gate-policy-only edit that dropped `workspace` from
-      # `pending_parse_freshness` would compile zero tests, exit 0, and leave
-      # every required check green — the exact silent-rot this gate exists to
-      # catch. Compile-all-targets is the required merge surface that still
-      # runs when only `.ci/` changes.
-      - name: Freshness-gate cfg-binding contract (required merge surface)
-        run: cargo test -p xtask --test gate_policy_profile_tests --locked -- freshness_gate_commands_satisfy_every_named_suite_cfg --nocapture
-      # #13491: identical reasoning to the contracts above. The staged
-      # product-topology contract lives in `xtask/src/bin/product-topology.rs`
-      # (unit tests) and `xtask/tests/product_topology_cli.rs` (current-tree
-      # reachability). The merge gate runs `cargo test --workspace --lib`,
-      # which builds neither `--bin` nor `tests/` targets, and no workflow
-      # names either one — so as authored the whole contract would compile and
-      # never execute, the exact state #14585 found `file_policy` in. A
-      # topology guard that cannot go red does not guard the topology.
-      - name: Product-topology staged contract (required merge surface)
-        run: |
-          cargo test -p xtask --bin product-topology --locked -- --nocapture
-          cargo test -p xtask --test product_topology_cli --locked -- --nocapture
-
-      # #9777: the dead-code API disposition ledger's drift check lives in
-      # `xtask/src/tasks/dead_code_api_ledger.rs` — a *bin* unit-test module.
-      # Same failure mode as the changelog contract above (#13484): `--lib`
-      # gates skip bin targets entirely, and unit_routed_full only executes via
-      # advisory pr-smoke and only when the PR diff selects xtask. A public item
-      # added to `crates/perl-parser/src/dead_code/mod.rs` alone therefore
-      # touches no xtask path, so the ledger could go stale — the surface
-      # growing an undispositioned item — with every required check green. That
-      # is the exact guard-with-no-way-to-fail this ledger exists to prevent.
-      # Filtered to this module rather than the whole bin suite on purpose: that
-      # suite also carries inventory ratchets red on main today.
-      # The ledger check proves the *record* matches the source. It does not run
-      # the behavioral fixtures, so an analyzer change could contradict a
-      # `never_produced`, `inert` or constant-confidence disposition while the
-      # ledger stayed green. Both halves are required for the claim to hold.
-      - name: Dead-code API ledger contract (required merge surface)
-        run: |
-          cargo test -p xtask --bin xtask --locked -- --nocapture dead_code_api_ledger
-          cargo test -p perl-parser --test dead_code_api_compat --locked -- --nocapture
-
-      # #16101: identical reasoning to the contracts above. This suite is the
-      # only executable proof that the two required contexts mirror a
-      # conclusion from their own bound integration rather than from whichever
-      # aggregator posted last. It executes the real `Evaluate routed result`
-      # shell block through real `jq` with a shimmed `gh`, so it is what catches
-      # a regression in the app-id binding, in the newest-attempt ordering, or
-      # in the self-exclusion that stops the mirror reading its own in-progress
-      # check. The merge gate runs `cargo test --workspace --lib`, which builds
-      # no `tests/` target, and no workflow named this one — so as authored the
-      # contract could compile and never execute while a draft-run snapshot
-      # silently overwrote a green required check.
-      - name: Required-context mirror contract (required merge surface)
-        run: cargo test -p xtask --test workflow_draft_snapshot_supersession --locked -- --nocapture
-
-      # #16219: identical reasoning to the contracts above, in its most complete
-      # form -- the activation inventory suite is reachable from no CI lane at
-      # all. `xtask/tests/activation.rs` is a `tests/` target, so the merge
-      # gate's `cargo test --workspace --lib` never builds it, and no workflow
-      # named it. The only lane that executes xtask's `tests/` is
-      # unit_routed_full, which is advisory and scope-aware, so it is silent
-      # unless a diff happens to select xtask. The suite sat 21 passed / 42
-      # failed on main while every required check stayed green (#16159).
-      # The suite covers inventory drift as well as deriver behaviour:
-      # `committed_inventory_matches_fresh_generation` calls
-      # `activation::check_drift`, which regenerates in memory and byte-compares
-      # against the committed artifact -- the same function `cargo xtask
-      # activation generate` calls. Measured: injecting a gate into
-      # `.ci/gate-policy.yaml` without regenerating gives 62 passed, 1 failed,
-      # that test. So no separate drift step is needed, and this job is the
-      # right surface for both, being the required check that still runs when
-      # only `.ci/` changes and no crate is selected.
-      # #9205: `xtask/tests/activation_check.rs` is the same class of
-      # `tests/` target. Without naming it here, class-contract checks would
-      # compile in an advisory lane and never execute on the required merge
-      # surface. This is not a product `activation check` gate (#9210);
-      # it is the checker suite that proves the inventory's class contracts.
-      - name: Activation inventory suite (required merge surface)
-        run: cargo test -p xtask --test activation --test activation_check --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
@@ -2593,7 +2771,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -2703,7 +2881,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned formatter toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt

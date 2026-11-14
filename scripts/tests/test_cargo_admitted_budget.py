@@ -18,6 +18,11 @@ class ConstrainedAdmissionTests(unittest.TestCase):
     """The byte quantities below are arithmetic fixtures, not host measurements."""
 
     def setUp(self):
+        # These fixtures mock the launch/owner; native discovery is tested separately.
+        # The arithmetic fixtures do not assert private Git allocation provenance.
+        self.enterContext(patch.object(safe, "PrivateAllocation", return_value=Mock(
+            receipt={"status": "unknown", "reason": "synthetic_admission_fixture"})))
+        self.enterContext(patch.object(safe, "child_discovery_capability", return_value={}))
         import hashlib
         import json
         import socket
@@ -48,6 +53,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.budget.write_text(json.dumps(self.document), encoding="utf-8")
         # Arithmetic fixtures mock execution; native route tests prove ownership.
         tree = Mock()
+        tree.probe.return_value = subprocess.CompletedProcess([], 0, b"{}\n", b"")
         tree.finish.return_value = {"tree_settled": True, "cancelled": False}
         self.enterContext(patch.object(safe, "ClippyTree", return_value=tree))
         self.enterContext(patch.object(safe, "call_clippy", side_effect=
@@ -66,6 +72,8 @@ class ConstrainedAdmissionTests(unittest.TestCase):
              patch.object(safe, "resource_plan", return_value=(self.root, self.slot, self.paths)), \
              patch.object(safe.shutil, "disk_usage", side_effect=disk,
                           return_value=self.Usage(32*self.gib, 32*self.gib-free, free)), \
+             patch.object(safe.subprocess, "run", return_value=
+                          subprocess.CompletedProcess([], 0, b"", b"")), \
              patch.object(safe.subprocess, "call", side_effect=call, return_value=0) as cargo, \
              contextlib.redirect_stderr(output):
             result = safe.main(args)
@@ -274,10 +282,12 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertIn("docs/how-to/CONSTRAINED_CARGO_BUILDS.md", section)
         rows = [line for line in section.splitlines() if line.startswith("| ")]
         for operation in ("check", "test"):
-            command = f"scripts/cargo-admitted {operation} -p <package> --locked"
+            command = f"scripts/cargo-admitted {operation} -p <package> --profile agent --locked"
             self.assertTrue(any("New agent" in row and command in row for row in rows), command)
-        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
-                       "agent-nextest", "agent-pr-fast"):
+            selector = " <selector>" if operation == "test" else ""
+            shortcut = f"just agent-{operation} <package>{selector} [args...]"
+            self.assertTrue(any(shortcut in row and "admitted" in row for row in rows), shortcut)
+        for recipe in ("cached", "agent-clippy", "agent-nextest", "agent-pr-fast"):
             matching = [row for row in rows if f"`just {recipe}" in row]
             self.assertTrue(matching, recipe)
             self.assertTrue(all("compatibility" in row.lower() for row in matching), recipe)
@@ -288,8 +298,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
 
     def test_legacy_recipe_help_does_not_promise_admission(self):
         justfile = (ROOT / "justfile").read_text(encoding="utf-8")
-        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
-                       "agent-nextest", "agent-pr-fast"):
+        for recipe in ("cached", "agent-clippy", "agent-nextest", "agent-pr-fast"):
             with self.subTest(recipe=recipe):
                 match = re.search(r"((?:^#[^\n]*\n)+)^" + re.escape(recipe)
                                   + r"(?: [^\n:]*)?:", justfile, re.MULTILINE)
@@ -300,7 +309,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
                 self.assertIn("not host admission", help_text)
                 self.assertNotIn("Agent-safe", help_text)
                 self.assertNotIn("Documented default", help_text)
-                if recipe in ("cached", "agent-check", "agent-test"):
+                if recipe == "cached":
                     self.assertIn("scripts/cargo-admitted", help_text)
                 elif recipe == "agent-clippy":
                     self.assertIn("CARGO_STORAGE.md#staged-native-clippy", help_text)
@@ -345,6 +354,7 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertIn("free_bytes=" + str(29*self.gib), output)
         self.assertIn("required_free_bytes=" + str(30*self.gib), output)
         self.assertIn("shortfall_bytes=" + str(self.gib), output)
+        self.assertIn("scripts/cargo-admitted --preflight", output)
 
     def test_exact_boundary_passes_and_one_byte_short_refuses(self):
         options = ["--preflight", "--budget-file", str(self.budget), *self.args]
@@ -355,10 +365,115 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assert_unallocated()
 
     def test_default_policy_still_refuses_29_gib(self):
-        result, _, cargo = self.invoke(self.args)
+        import json
+        args = ["run", "-p", "small", "--", "--credential=PRIVATE-FIXTURE-TOKEN"]
+        with patch.object(Path, "mkdir", side_effect=AssertionError("refusal must not allocate")) as mkdir:
+            result, output, cargo = self.invoke(args)
+            preflight_result, preflight_output, preflight_cargo = self.invoke(["--preflight", *args])
         self.assertEqual(result, 75)
+        self.assertEqual(preflight_result, 75)
         cargo.assert_not_called()
+        preflight_cargo.assert_not_called()
+        mkdir.assert_not_called()
         self.assert_unallocated()
+        self.assertIn("required_free_bytes=" + str(40*self.gib), output)
+        self.assertIn("scripts/cargo-admitted --preflight", output)
+        self.assertIn("same admission options and exact Cargo arguments", output)
+        self.assertIn("private output roots", output)
+        self.assertIn("read-only", output)
+        self.assertIn("no capacity reservation", output)
+        self.assertNotIn("PRIVATE-FIXTURE-TOKEN", output + preflight_output)
+        self.assertNotIn("cargo-admitted: next:", preflight_output)
+        report = json.loads(preflight_output.split("cargo-admitted preflight: ", 1)[1])
+        self.assertEqual(report["verdict"], "DENY")
+        self.assertEqual(report["scope"]["resources"], {key: str(path) for key, path in self.paths.items()})
+        self.assertIs(report["lease_acquired"], False)
+
+    def test_default_capacity_refusal_preserves_resources_and_foreign_lease(self):
+        import json
+        for name, path in self.paths.items():
+            path.mkdir(parents=True)
+            (path / "evidence").write_bytes(name.encode())
+        lock = self.slot / "cargo-active"
+        lock.mkdir()
+        (lock / "foreign-owner").write_bytes(b"retain this lease")
+
+        def snapshot():
+            return {str(path.relative_to(self.root)): (
+                path.stat().st_mode, path.stat().st_ino, path.stat().st_mtime_ns,
+                path.read_bytes() if path.is_file() else None)
+                for path in (self.root, *self.root.rglob("*"))}
+
+        before = snapshot()
+        for preflight in (False, True):
+            with self.subTest(preflight=preflight), \
+                 patch.object(Path, "mkdir", side_effect=AssertionError("refusal must not allocate")) as mkdir:
+                args = ["--preflight", *self.args] if preflight else self.args
+                result, output, cargo = self.invoke(args, free=30*self.gib)
+                self.assertEqual(result, 75)
+                cargo.assert_not_called()
+                mkdir.assert_not_called()
+                self.assertEqual(snapshot(), before)
+                if preflight:
+                    report = json.loads(output.split("cargo-admitted preflight: ", 1)[1])
+                    self.assertIs(report["lease_acquired"], False)
+                else:
+                    hints = [line for line in output.splitlines() if line.startswith("cargo-admitted: next:")]
+                    self.assertEqual(len(hints), 1, output)
+                    hint = hints[0]
+                    self.assertIn("scripts/cargo-admitted --preflight", hint)
+                    self.assertNotIn("lease", hint)
+
+    def test_percent_only_refusal_suggests_preflight_once_without_allocating(self):
+        import json
+        for free_gib, used_pct, additional in ((100, 90.0, 50*self.gib+1), (150, 85.0, 1)):
+            usage = self.Usage(1000*self.gib, (1000-free_gib)*self.gib, free_gib*self.gib)
+            with self.subTest(free_gib=free_gib), \
+                 patch.object(Path, "mkdir", side_effect=AssertionError("refusal must not allocate")) as mkdir:
+                result, output, cargo = self.invoke(self.args, disk=lambda path: usage)
+                preflight_result, preflight_output, preflight_cargo = self.invoke(
+                    ["--preflight", *self.args], disk=lambda path: usage)
+                self.assertEqual(result, 75, output)
+                self.assertEqual(preflight_result, 75, preflight_output)
+                cargo.assert_not_called()
+                preflight_cargo.assert_not_called()
+                mkdir.assert_not_called()
+                self.assert_unallocated()
+                hints = [line for line in output.splitlines() if line.startswith("cargo-admitted: next:")]
+                self.assertEqual(len(hints), 1, output)
+                self.assertIn("scripts/cargo-admitted --preflight", hints[0])
+                self.assertNotIn("cargo-admitted: next:", preflight_output)
+                reason = ("volume used percentage at or above MAX_USED_PCT at " + str(self.slot)
+                          + " free_bytes=" + str(usage.free)
+                          + " used_pct=" + str(used_pct)
+                          + " max_used_pct=85.0"
+                          + " required_free_bytes_for_pct=" + str(float(150*self.gib))
+                          + " additional_free_bytes_needed=" + str(additional))
+                self.assertIn("cargo-admitted: DENY: " + reason, output)
+                report = json.loads(preflight_output.split("cargo-admitted preflight: ", 1)[1])
+                self.assertEqual(report["verdict"], "DENY")
+                self.assertEqual(report["reason"], reason)
+                self.assertIs(report["lease_acquired"], False)
+                observation = report["observation"]
+                self.assertEqual(observation["required_free_bytes"], 40*self.gib)
+                self.assertGreater(observation["headroom_bytes"], 0)
+                self.assertEqual(observation["used_pct"], used_pct)
+                self.assertEqual(observation["max_used_pct"], 85)
+                self.assertEqual(observation["required_free_bytes_for_pct"], 150*self.gib)
+                self.assertEqual(observation["pct_shortfall_bytes"], additional)
+                self.assertEqual(observation["additional_free_bytes_needed"], additional)
+
+    def test_noncapacity_refusals_do_not_suggest_capacity_preflight(self):
+        def unavailable(path):
+            raise OSError("fixture capacity unavailable")
+
+        for args, disk in ((["clean"], None), (self.args, unavailable)):
+            with self.subTest(args=args, disk=disk):
+                result, output, cargo = self.invoke(args, disk=disk)
+                self.assertEqual(result, 75)
+                self.assertNotIn("cargo-admitted: next:", output)
+                cargo.assert_not_called()
+                self.assert_unallocated()
 
     def test_invalid_documents_cannot_allocate(self):
         import copy
@@ -559,6 +674,8 @@ class AdmissionProcessTests(unittest.TestCase):
         import json
         import sys
         import textwrap
+        if sys.platform == "linux" and not (Path("/proc/self/task") / str(os.getpid()) / "children").exists():
+            self.skipTest("default proc-children interface unavailable on this host")
         with tempfile.TemporaryDirectory(prefix="cargo-admission-process-") as temporary:
             root = Path(temporary)
             repo, plane = root / "repo", root / "plane"
