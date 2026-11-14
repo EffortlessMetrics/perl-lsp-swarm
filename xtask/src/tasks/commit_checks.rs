@@ -269,6 +269,33 @@ fn staged_tree_identity_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
         )));
     }
 
+    let semantic_paths: Vec<&str> = changed
+        .iter()
+        .map(String::as_str)
+        .filter(|&path| {
+            path.ends_with(".rs")
+                || matches!(
+                    Path::new(path).file_name().and_then(|name| name.to_str()),
+                    Some("Cargo.toml" | "Cargo.lock")
+                )
+                || path == ".ci/gate-policy.yaml"
+        })
+        .collect();
+    let what_remains = if semantic_paths.is_empty() {
+        "none — the structural checks run alongside this identity check".to_string()
+    } else {
+        format!(
+            "semantic proof for staged Rust/Cargo/gate-policy paths {semantic_paths:?}: \
+             in the coding session, select the cheapest check that can disprove the changed \
+             behavior (including a negative control), then affected-package checks as needed. \
+             For Cargo changes, include affected dependency/feature behavior; for gate-policy \
+             changes, include gate selection and receipt behavior. Reuse current evidence \
+             and use workload-specific admission for expensive checks. This advisory does \
+             not select a test suite from filenames or execute semantic checks; pre-push \
+             and CI proof remain required."
+        )
+    };
+
     // Deliberately ADVISORY, not a Pass one-liner: this exercises the full
     // AgentReceipt.advisories plumbing (build_agent_receipt ->
     // commit_advisories -> parse_report) even though nothing here is a real
@@ -287,9 +314,7 @@ fn staged_tree_identity_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
         affected: changed,
         fix: None,
         rerun: rerun_for("staged_tree_identity"),
-        what_remains: "none — the nine structural checks (issue #3786-B) run alongside this \
-                       one, not instead of it"
-            .to_string(),
+        what_remains,
     }))
 }
 
@@ -1097,6 +1122,155 @@ mod tests {
                     report.result
                 );
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn staged_semantic_advice_covers_rust_cargo_policy_and_deletions() -> Result<()> {
+        for path in [
+            "src/lib.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates/owner/Cargo.toml",
+            "crates/owner/Cargo.lock",
+            ".ci/gate-policy.yaml",
+        ] {
+            let repo = TempRepo::init()?;
+            repo.write("README.md", "initial\n")?;
+            repo.add("README.md")?;
+            repo.commit("initial")?;
+            repo.write(path, "staged\n")?;
+            repo.add(path)?;
+            let tree = staged::staged_tree_oid(repo.root())?;
+            let CommitCheckOutcome::Flagged(report) =
+                staged_tree_identity_at(repo.root(), Some(&tree))?
+            else {
+                bail!("expected staged advice for {path}");
+            };
+            assert_eq!(report.posture, Posture::Advisory);
+            assert_eq!(report.affected, vec![path]);
+            assert!(report.what_remains.contains("semantic proof"));
+            assert!(report.what_remains.contains("coding session"));
+            assert!(report.what_remains.contains("negative control"));
+            assert!(report.what_remains.contains(path));
+            assert_eq!(report.rerun, rerun_for("staged_tree_identity"));
+
+            repo.commit("add relevant path")?;
+            repo.remove_cached(path)?;
+            let tree = staged::staged_tree_oid(repo.root())?;
+            let CommitCheckOutcome::Flagged(report) =
+                staged_tree_identity_at(repo.root(), Some(&tree))?
+            else {
+                bail!("expected staged deletion advice for {path}");
+            };
+            assert!(report.what_remains.contains("semantic proof"));
+            assert_eq!(report.affected, vec![path]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn staged_semantic_advice_ignores_docs_and_unstaged_rust_cargo_policy() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("README.md", "initial\n")?;
+        repo.add("README.md")?;
+        repo.commit("initial")?;
+        for path in ["README.md", "docs/Cargo.toml.md", ".ci/gate-policy.yaml.md"] {
+            repo.write(path, "documentation\n")?;
+            repo.add(path)?;
+        }
+        for path in ["src/lib.rs", "Cargo.toml", ".ci/gate-policy.yaml"] {
+            repo.write(path, "unstaged\n")?;
+        }
+        let tree = staged::staged_tree_oid(repo.root())?;
+        let CommitCheckOutcome::Flagged(report) =
+            staged_tree_identity_at(repo.root(), Some(&tree))?
+        else {
+            bail!("expected docs identity advisory");
+        };
+        assert!(!report.what_remains.contains("semantic proof"));
+        assert_eq!(
+            report.affected,
+            vec![".ci/gate-policy.yaml.md", "README.md", "docs/Cargo.toml.md"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn staged_semantic_advice_keeps_relevant_rename_sources() -> Result<()> {
+        for (source, destination) in [
+            ("src/lib.rs", "docs/lib.md"),
+            ("Cargo.toml", "Cargo.toml.disabled"),
+            (".ci/gate-policy.yaml", ".ci/gate-policy.txt"),
+        ] {
+            let repo = TempRepo::init()?;
+            repo.write(source, "unchanged contents\n")?;
+            repo.add(source)?;
+            repo.commit("initial")?;
+            if let Some(parent) = repo.root().join(destination).parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let status = Command::new("git")
+                .current_dir(repo.root())
+                .args(["config", "diff.renames", "true"])
+                .status()?;
+            assert!(status.success());
+            let status = Command::new("git")
+                .current_dir(repo.root())
+                .args(["mv", source, destination])
+                .status()?;
+            assert!(status.success());
+            let tree = staged::staged_tree_oid(repo.root())?;
+            let CommitCheckOutcome::Flagged(report) =
+                staged_tree_identity_at(repo.root(), Some(&tree))?
+            else {
+                bail!("expected rename advice for {source}");
+            };
+            assert!(report.affected.contains(&source.to_string()));
+            assert!(report.affected.contains(&destination.to_string()));
+            assert!(report.what_remains.contains("semantic proof"));
+            assert!(report.what_remains.contains(source));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn staged_semantic_advice_stays_with_pinned_tree_after_index_changes() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("README.md", "initial\n")?;
+        repo.add("README.md")?;
+        repo.commit("initial")?;
+        let empty_tree = staged::staged_tree_oid(repo.root())?;
+        repo.write("src/lib.rs", "staged Rust\n")?;
+        repo.add("src/lib.rs")?;
+        let rust_tree = staged::staged_tree_oid(repo.root())?;
+        repo.remove_cached("src/lib.rs")?;
+        repo.write("README.md", "docs only\n")?;
+        repo.add("README.md")?;
+        let docs_tree = staged::staged_tree_oid(repo.root())?;
+        // The live index now has a third, different relevant subject.
+        repo.write("Cargo.toml", "later index\n")?;
+        repo.add("Cargo.toml")?;
+
+        assert!(matches!(
+            staged_tree_identity_at(repo.root(), Some(&empty_tree))?,
+            CommitCheckOutcome::Pass(_)
+        ));
+        for (tree, expected_path, semantic) in
+            [(&rust_tree, "src/lib.rs", true), (&docs_tree, "README.md", false)]
+        {
+            let CommitCheckOutcome::Flagged(report) =
+                staged_tree_identity_at(repo.root(), Some(tree))?
+            else {
+                bail!("expected pinned identity advisory");
+            };
+            assert_eq!(report.affected, vec![expected_path]);
+            assert_eq!(report.what_remains.contains("semantic proof"), semantic);
+            assert!(!report.what_remains.contains("Cargo.toml"));
+            let parsed = parse_report(&report.render()?)
+                .ok_or_else(|| color_eyre::eyre::eyre!("advice report should round-trip"))?;
+            assert_eq!(parsed.what_remains, report.what_remains);
         }
         Ok(())
     }
