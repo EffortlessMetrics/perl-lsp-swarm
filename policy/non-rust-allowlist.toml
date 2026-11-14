@@ -3773,6 +3773,39 @@ created = "2026-08-25"
 review_after = "2026-09-25"
 
 [[allow]]
+id = "non-rust-litexl-workspace-edit"
+path = "clients/lite-xl/upstream/workspace_edit.lua"
+kind = "editor_extension"
+language = "lua"
+surface = "editor"
+classification = "production"
+owner = "editor/lite-xl"
+reason = "#8986 reusable WorkspaceEdit.changes application helper: resolves target URIs, validates admitted transactions fail-closed, applies per-document TextEdit batches through the caller hook, and refuses unsupported documentChanges/resource shapes."
+covered_by = [
+  "lua clients/lite-xl/tests/workspace_edit_test.lua",
+  "lua clients/lite-xl/tests/init_request_currentness_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-11-02"
+review_after = "2026-12-02"
+
+[[allow]]
+id = "non-rust-litexl-workspace-edit-tests"
+path = "clients/lite-xl/tests/workspace_edit_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "#8986 WorkspaceEdit.changes proof: single- and multi-file application, descending edit order, UTF-16/non-BMP and CRLF fixtures, overlap and documentChanges fail-closed controls, null rename, and missing-target refusal."
+covered_by = [
+  "lua clients/lite-xl/tests/workspace_edit_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-11-02"
+review_after = "2026-12-02"
+
+[[allow]]
 id = "non-rust-litexl-capability-manifest-tests"
 path = "clients/lite-xl/tests/capability_manifest_test.lua"
 kind = "editor_extension_test"

@@ -15,11 +15,12 @@
 --
 --   - lsp:view-call-hierarchy sends textDocument/prepareCallHierarchy and
 --     discards the result (#10719 owns consumption);
---   - lsp:rename-symbol sends textDocument/rename and logs returned edits
---     as its only effect (#8986 owns application).
+--   - lsp:rename-symbol sends textDocument/rename only when the manifest row
+--     proves an implemented client consumer (#8986 application).
 --
--- Under the projection both refuse with one explicit unsupported message
--- naming the owner issue, and NOTHING reaches the wire. Commands whose
+-- Under the projection call hierarchy refuses with one explicit unsupported
+-- message naming the owner issue, and NOTHING reaches the wire. Rename sends
+-- once application is implemented. Commands whose consumer is implemented keep
 -- consumer is implemented keep sending under the same pipeline (positive
 -- control), and every registered lsp:* command carries a manifest row so
 -- future seams inherit the mechanism mechanically.
@@ -141,8 +142,7 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- Rename: capability advertised (even with prepare support), application
--- absent -> no wire traffic
+-- Rename: capability advertised, consumer implemented -> wire traffic
 -- ---------------------------------------------------------------------------
 
 do
@@ -150,10 +150,10 @@ do
 
   world.lsp.request_symbol_rename(doc, 1, 6, "$renamed")
 
-  ok(not sent(world, "textDocument/rename"),
-    "rename never sends under an unsupported client row")
-  ok(logged(world, "#8986"),
-    "one explicit unsupported message names the rename owner")
+  ok(sent(world, "textDocument/rename"),
+    "rename sends when the client consumer is implemented")
+  ok(not logged(world, "#8986"),
+    "implemented rename does not log the unsupported owner message")
 
   world.teardown()
 end
