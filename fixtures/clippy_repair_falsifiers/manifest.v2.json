@@ -1,8 +1,8 @@
 {
-  "schema_version": 1,
-  "corpus": "ClippyRepairFalsifierCorpusV1",
+  "schema_version": 2,
+  "corpus": "ClippyRepairFalsifierCorpusV2",
   "producer_toolchain": "1.95",
-  "validated_under_toolchain": "1.100",
+  "validated_toolchain": "1.100.0",
   "case_count": 50,
   "cases": [
     {
