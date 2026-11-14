@@ -8,6 +8,11 @@
 //! fixture and verify that the expected typed facts match actual
 //! [`crate::RegexAnalyzer`] output.
 //!
+//! Safe compile-only real-Perl probes for disposition [`OracleDisposition::Required`]
+//! rows live under programme `perl_regex_compile_oracle` in
+//! `tests/fixtures/conformance_oracle/compile_safe.json`, exercised by
+//! `tests/conformance_oracle_tests.rs`.
+//!
 //! # Schema version
 //!
 //! [`SCHEMA_VERSION`] guards against silent meaning drift.  An incompatible
@@ -86,6 +91,48 @@ impl OracleDisposition {
             Self::Required => "required",
             Self::Unavailable => "unavailable",
             Self::NotApplicable => "not_applicable",
+        }
+    }
+}
+
+/// Normalized compile-probe outcome for bounded real-Perl oracle receipts.
+///
+/// Instrument failure (`Unavailable`, `TimedOut`, `Crashed`, `HarnessError`) must
+/// never be treated as agreement with an expected accept/reject row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CompileProbeClass {
+    /// Perl accepted the compile-only probe (`perl -c` success).
+    Accepted,
+    /// Perl rejected the probe with an ordinary compile failure exit code.
+    Rejected,
+    /// Perl accepted with warnings that qualify the agreement (reserved).
+    WarningQualified,
+    /// No suitable Perl executable/profile was available to run the probe.
+    Unavailable,
+    /// The bounded probe deadline was exceeded.
+    TimedOut,
+    /// The probe child crashed or exited without a portable status code.
+    Crashed,
+    /// The harness failed before a probe result was obtained.
+    HarnessError,
+    /// The selected Perl profile is outside the harness-supported range.
+    UnsupportedProfile,
+}
+
+impl CompileProbeClass {
+    /// Stable machine token for receipts and protocol adapters.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::WarningQualified => "warning_qualified",
+            Self::Unavailable => "unavailable",
+            Self::TimedOut => "timed_out",
+            Self::Crashed => "crashed",
+            Self::HarnessError => "harness_error",
+            Self::UnsupportedProfile => "unsupported_profile",
         }
     }
 }
