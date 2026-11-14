@@ -60,7 +60,7 @@ write_fake_cargo() {
   mkdir -p "$fake_bin"
   cat > "${fake_bin}/cargo" <<FAKE
 #!/usr/bin/env bash
-if [ "\${1:-}" = "--version" ]; then printf 'cargo %s (stub)\n' "\${FAKE_CARGO_VERSION:-1.95.0}"; exit 0; fi
+if [ "\${1:-}" = "--version" ]; then printf 'cargo %s (stub)\n' "\${FAKE_CARGO_VERSION:-1.100.0}"; exit 0; fi
 rendered=""
 for arg in "\$@"; do
   rendered+="[\${arg}]"
@@ -85,6 +85,29 @@ for arg in "\$@"; do
   rendered+="[\${arg}]"
 done
 printf 'admitted args=%s\n' "\${rendered}" >> "${admitted_log}"
+# Optional routing oracle: only the intended executable is available from
+# this producer. Selecting auxiliary targets fails before any descriptor is
+# emitted; a pre-existing xtask must not hide that failure.
+if [[ "\${FAKE_ADMITTED_ONLY_XTASK:-}" == "1" ]]; then
+  named_targets=0
+  while [[ "\$#" -gt 0 ]]; do
+    case "\$1" in
+      --bin)
+        shift
+        if [[ "\${1:-}" != xtask ]]; then exit 86; fi
+        named_targets=\$((named_targets + 1))
+        ;;
+      --bins|--all-targets|--workspace|--lib|--examples|--tests|--benches|--example|--test|--bench)
+        exit 86
+        ;;
+    esac
+    shift
+  done
+  if [[ "\$named_targets" -ne 1 ]]; then
+    printf 'auxiliary binary selected by unscoped bootstrap (stub)\n' >&2
+    exit 86
+  fi
+fi
 if [[ -n "\${FAKE_ADMITTED_FAIL_PATTERN:-}" && "\${rendered}" == *"\${FAKE_ADMITTED_FAIL_PATTERN}"* ]]; then
   printf 'cargo-admitted: DENY: fake admission failure (stub)\n' >&2
   printf 'error[E0583]: fake build failure (stub)\n' >&2
@@ -176,8 +199,11 @@ scenario_success_path() {
   assert_contains "success: args forwarded verbatim" "$argv" "[ci][doctor][--help]"
 
   admitted_args="$(cat "${dir}/admitted.log")"
-  assert_contains "success: build uses admitted cargo-admitted build -p xtask --locked" \
-    "$admitted_args" "[build][-p][xtask][--locked]"
+  if [[ "$admitted_args" == 'admitted args=[build][-p][xtask][--bin][xtask][--locked]' ]]; then
+    pass "success: admitted build selects only the xtask binary"
+  else
+    fail "success: unexpected build selection (${admitted_args})"
+  fi
 
   if [[ -f "${dir}/cargo.log" ]]; then
     cargo_log_size="$(wc -c <"${dir}/cargo.log")"
@@ -318,6 +344,22 @@ scenario_argv_spaces_and_unicode() {
     "$argv" "[arg with space][unicodé-Δ]"
 }
 
+# A producer that cannot build unrelated binaries is still sufficient for
+# this single-binary dispatcher. This proves routing, not native compilation.
+scenario_single_binary_producer() {
+  local dir status
+  dir="$(make_scenario_dir)"
+  register_scenario_dir "$dir"
+  status=0
+  FAKE_ADMITTED_ONLY_XTASK=1 run_wrapper "$dir" ci doctor --help \
+    >"${dir}/out.txt" 2>"${dir}/err.txt" || status=$?
+  if [[ "$status" -eq 0 && -s "${dir}/argv.log" ]]; then
+    pass "single-binary producer: no auxiliary executable is required"
+  else
+    fail "single-binary producer: bootstrap selected other binaries (exit ${status})"
+  fi
+}
+
 # Each accepted form must preserve its exact build argv. The glob names an
 # existing source file so an unquoted expansion cannot pass this fixture by
 # leaving an unmatched pattern unchanged.
@@ -346,7 +388,7 @@ scenario_supported_build_flags() {
   local index
   for ((index = 0; index < ${#cases[@]}; index++)); do
     flags="${cases[index]}"
-    expected="admitted args=[build][-p][xtask][--locked]${expected_args[index]}"
+    expected="admitted args=[build][-p][xtask][--bin][xtask][--locked]${expected_args[index]}"
     dir="$(make_scenario_dir)"
     register_scenario_dir "$dir"
     status=0
@@ -467,8 +509,8 @@ scenario_source_pins_admitted_producer() {
     "$source" 'scripts/cargo-admitted'
   assert_contains "source: admitted producer is resolved from script_dir" \
     "$source" '${script_dir}/cargo-admitted'
-  assert_contains "source: admitted argv is build -p xtask --locked" \
-    "$source" '"$admitted" build -p xtask --locked'
+  assert_contains "source: admitted argv selects only the xtask binary" \
+    "$source" '"$admitted" build -p xtask --bin xtask --locked'
   if grep -Eq '^[[:space:]]*cargo[[:space:]]+build([[:space:]]|$)' "$XTASK_QUIET_SCRIPT"; then
     fail "source: raw cargo build producer is still present"
   else
@@ -482,6 +524,7 @@ scenario_build_flags_passthrough
 scenario_xtask_exit_status
 scenario_missing_resources_does_not_exec
 scenario_argv_spaces_and_unicode
+scenario_single_binary_producer
 scenario_supported_build_flags
 scenario_unsupported_build_flags
 scenario_build_target_environment

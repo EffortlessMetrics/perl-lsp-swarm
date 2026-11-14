@@ -56,7 +56,7 @@ class InstallerRootFixtures(unittest.TestCase):
         cls.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(cls.sandbox / "global"),
                        GIT_TEMPLATE_DIR=str(cls.sandbox / "templates"),
                        FIXTURE_SANDBOX=str(cls.sandbox), RUSTUP_AUTO_INSTALL="0",
-                       RUSTUP_TOOLCHAIN="1.95.0", DEVPLANE=str(cls.sandbox / "devplane"))
+                       RUSTUP_TOOLCHAIN="1.100.0", DEVPLANE=str(cls.sandbox / "devplane"))
         (cls.sandbox / "templates").mkdir()
         cls.a, cls.b, cls.sibling = [cls.sandbox / n for n in ("compiled root", "caller", "sibling")]
         for root in (cls.a, cls.b):

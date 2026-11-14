@@ -17,7 +17,7 @@
 #
 # This wrapper dispatches the same command without the preamble noise:
 #
-#   1. run `scripts/cargo-admitted build -p xtask --locked` with stderr
+#   1. run `scripts/cargo-admitted build -p xtask --bin xtask --locked` with stderr
 #      captured (the same admitted producer `cargo xtask` uses via
 #      `scripts/cargo-admitted run -p xtask --locked -- …`; docs/agents/CARGO_STORAGE.md);
 #   2. on build or admission failure, print the captured output verbatim and
@@ -34,7 +34,7 @@
 # compiler warnings, and cargo-admitted descriptor/settlement lines) is
 # dropped. The workspace lint enforcement contract is
 # `cargo clippy -D warnings`, not plain-build warnings; run
-# `scripts/cargo-admitted build -p xtask --locked` directly when you need to
+# `scripts/cargo-admitted build -p xtask --bin xtask --locked` directly when you need to
 # see them.
 #
 # Arguments are forwarded verbatim. `XTASK_QUIET_BUILD_FLAGS` accepts only
@@ -118,7 +118,9 @@ build_log="$(mktemp)"
 trap 'rm -f "$build_log"' EXIT
 
 set +e
-"$admitted" build -p xtask --locked "${build_flags[@]}" 2>"$build_log"
+# default-run selects `cargo run`, not `cargo build`: without --bin, this
+# package's auxiliary binaries would also be built for every quiet command.
+"$admitted" build -p xtask --bin xtask --locked "${build_flags[@]}" 2>"$build_log"
 build_status=$?
 set -e
 

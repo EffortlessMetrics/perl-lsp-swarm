@@ -971,7 +971,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
         .replace("${{ needs.route-ripr.outputs.target }}", "selfhosted");
     let executable_steps = [
         "Require immutable RIPR subject",
-        "Toolchain (rust-toolchain.toml pins 1.95.0)",
+        "Toolchain (rust-toolchain.toml pins 1.100.0)",
         "Install ripr",
         "Run ripr doctor",
         "Generate PR evidence",
@@ -1863,15 +1863,35 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
             .lines()
             .filter(|line| !line.trim_start().starts_with('#'))
             .filter(|line| {
-                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.95")
+                line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.100")
             })
             .count(),
-        1,
-        "the self-hosted rust-standard lane must check the required Docker image before running ripr"
+        2,
+        "the self-hosted rust-standard lane must check the required Docker image before cleanup and again before running ripr"
+    );
+    let cleanup = workflow
+        .split("- name: Fix workspace ownership (pre-checkout)")
+        .nth(1)
+        .and_then(|tail| tail.split("- name: Checkout").next())
+        .expect("self-hosted pre-checkout cleanup must be present");
+    let missing_image_guard = cleanup
+        .find("if ! docker image inspect em-ci-rust:1.100")
+        .expect("missing-image admission must precede Docker cleanup");
+    let recorded_refusal = cleanup
+        .find("preflight_ok=false")
+        .expect("missing-image admission must record the fallback refusal");
+    let docker_cleanup =
+        cleanup.find("docker run --rm").expect("available-image cleanup must remain present");
+    assert!(
+        missing_image_guard < recorded_refusal
+            && recorded_refusal < docker_cleanup
+            && cleanup.contains("exit 1"),
+        "missing-image admission must record preflight_ok=false, fail the primary lane, and skip the image-dependent cleanup"
     );
     assert!(
-        workflow
-            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner"),
+        workflow.contains(
+            "Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner"
+        ),
         "missing self-hosted Rust image must be reported as preflight failure"
     );
     assert!(
@@ -1881,6 +1901,115 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
       needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
         ),
         "only a failed self-hosted preflight with preflight_ok=false must route the run to the GitHub-hosted fallback"
+    );
+
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let job_output = yaml
+        .get("jobs")
+        .and_then(|jobs| jobs.get("ripr-selfhosted"))
+        .and_then(|job| job.get("outputs"))
+        .and_then(|outputs| outputs.get("preflight_ok"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        job_output,
+        Some(
+            "${{ steps.admission.outputs.preflight_ok != 'false' && steps.preflight.outputs.preflight_ok != 'false' }}"
+        ),
+        "job output must preserve either preflight refusal"
+    );
+    let checkout = workflow_step_value("ripr-selfhosted", "Checkout")?;
+    assert_eq!(
+        checkout.get("if").and_then(Value::as_str),
+        Some("steps.admission.outputs.preflight_ok != 'false'"),
+        "an early missing-image refusal must skip checkout"
+    );
+
+    let sandbox = tempfile::tempdir()?;
+    let output_file = sandbox.path().join("admission-output");
+    let preflight_output = sandbox.path().join("preflight-output");
+    let docker_calls = sandbox.path().join("docker-calls");
+    let inspect_count = sandbox.path().join("inspect-count");
+    let scratch = sandbox.path().join("scratch");
+    let cache = sandbox.path().join("cache");
+    fs::create_dir_all(&scratch)?;
+    fs::create_dir_all(&cache)?;
+    let admission =
+        workflow_run_block("ripr-selfhosted", "Fix workspace ownership (pre-checkout)")?;
+    let preflight = workflow_run_block("ripr-selfhosted", "Preflight disk")?;
+    // The first image inspection refuses admission; every later inspection would
+    // succeed. GitHub's ordinary success() gate must keep that later availability
+    // from reviving the primary lane after the admission step fails.
+    let fake_docker = r#"
+docker() {
+  printf '%s\n' "$*" >> "$DOCKER_CALLS"
+  if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+    inspections=$(cat "$DOCKER_INSPECT_COUNT" 2>/dev/null || echo 0)
+    inspections=$((inspections + 1))
+    printf '%s\n' "$inspections" > "$DOCKER_INSPECT_COUNT"
+    [ "$inspections" -gt 1 ]
+    return
+  fi
+  return 0
+}
+ci-disk-guard() {
+  return 0
+}
+"#;
+    let script = format!(
+        "{fake_docker}\n(\n{admission}\n)\nadmission_status=$?\nprimary_result=$admission_status\nif [ \"$admission_status\" -eq 0 ]; then\n  export GITHUB_OUTPUT=\"$PREFLIGHT_OUTPUT\"\n  (\n{preflight}\n  )\n  primary_result=$?\nfi\nprintf 'primary_result=%s\\n' \"$primary_result\""
+    );
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_WORKSPACE", sandbox.path())
+        .env("GITHUB_OUTPUT", &output_file)
+        .env("PREFLIGHT_OUTPUT", &preflight_output)
+        .env("DOCKER_CALLS", &docker_calls)
+        .env("DOCKER_INSPECT_COUNT", &inspect_count)
+        .env("SCCACHE_DIR", cache.join("sccache"))
+        .env("TMPDIR", scratch.join("tmp"))
+        .env("CARGO_TARGET_DIR", scratch.join("target"))
+        .env("CARGO_HOME", cache.join("cargo-home"))
+        .env("RIPR_CACHE_DIR", cache.join("ripr"))
+        .env("GITHUB_STEP_SUMMARY", sandbox.path().join("summary.md"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("pre-checkout bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(
+        output.status.success() && combined.contains("primary_result=1"),
+        "missing-image admission must leave a failed primary lane for the fallback: {combined}"
+    );
+    ensure!(
+        fs::read_to_string(&output_file)?.contains("preflight_ok=false"),
+        "the real early step must record preflight_ok=false"
+    );
+    ensure!(
+        !preflight_output.exists() && fs::read_to_string(&inspect_count)? == "1\n",
+        "later image availability must not execute or revive the refused primary preflight"
+    );
+    let calls = fs::read_to_string(&docker_calls)?;
+    ensure!(
+        calls.contains("image inspect em-ci-rust:1.100") && !calls.contains("run --rm"),
+        "missing-image admission must stop before image-dependent cleanup"
+    );
+    let (admission_fallback, admission_fallback_output) =
+        run_fallback_condition("selfhosted", "failure", "false")?;
+    ensure!(
+        admission_fallback.status.success()
+            && admission_fallback_output.contains("fallback_started=true"),
+        "the terminal admission refusal must select the hosted fallback: {admission_fallback_output}"
     );
 
     let (self_hosted_route, self_hosted_output) =
@@ -1933,7 +2062,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     let (missing_image, missing_image_output) = run_preflight_case(false, false)?;
     if missing_image.status.success()
         || !missing_image_output
-            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner")
+            .contains("Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner")
         || !missing_image_output.contains("preflight_ok=false")
     {
         bail!(

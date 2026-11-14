@@ -4,6 +4,8 @@ This is source rehearsal. Neither patch application nor adapter metadata admits
 product execution or satisfies a native required context.
 """
 from contextlib import contextmanager
+import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -17,20 +19,38 @@ from scripts.ci import test_request_qualification as adapter_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / '.ci/staged/17903-root-triggers.patch'
+COMBINED_COMPAT_PATCH = ROOT / '.ci/staged/17903-root-triggers-combined.patch'
 ROOTS = ('.github/workflows/ci.yml', '.github/workflows/ripr.yml',
          '.github/workflows/em-ci-routed-rust.yml')
 POLICY = '.ci/policies/required-checks.toml'
 DISPATCH_PATHS = ('.github/workflows/aggregate-ci-lane-history.yml',
                   '.github/workflows/post-merge-status.yml',
+                  'scripts/ci/test_merge_group_title_workflow.js',
                   'xtask/tests/lane_history_ci_dispatch_contract.rs',
+                  'xtask/tests/merge_group_title_producer.rs',
                   'xtask/tests/post_merge_status_regen_tests.rs')
+REHEARSAL_PATHS = ('scripts/ci/test_staged_qualification_workflow_cutover.py',
+                   'scripts/ci/test_generated_pr_metadata_dispatch.py')
 ORDINARY = {'pull_request', 'pull_request_target', 'merge_group', 'push'}
 
 
 def git(root, *args):
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    return subprocess.run(['git', '-C', str(root), *args], env=env, check=True,
-                          capture_output=True, text=True).stdout
+    command = ['git', '-C', str(root), *args]
+    result = subprocess.run(command, env=env, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        rendered = ' '.join(command)
+        raise AssertionError(
+            f"command failed ({result.returncode}): {rendered}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return result.stdout
+
+
+def selected_patch(root):
+    """Return the exact fixture patch admitted by this temporary tree."""
+    return Path(root.joinpath('.staged-rehearsal-patch').read_text(encoding='utf-8'))
 
 
 @contextmanager
@@ -39,7 +59,8 @@ def staged_tree():
         root = Path(directory)
         for name in (*[path.relative_to(ROOT).as_posix() for path in
                        sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY,
-                     *[path for path in DISPATCH_PATHS if path.startswith('xtask/')]):
+                     *[path for path in (*DISPATCH_PATHS, *REHEARSAL_PATHS)
+                       if path.startswith(('xtask/', 'scripts/ci/'))]):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -47,9 +68,23 @@ def staged_tree():
         git(root, 'add', '.')
         git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
             'commit', '-qm', 'source rehearsal')
-        git(root, 'apply', '--unidiff-zero', '--check', str(PATCH))
-        git(root, 'apply', '--unidiff-zero', str(PATCH))
-        yield root
+        for patch in (PATCH, COMBINED_COMPAT_PATCH):
+            try:
+                git(root, 'apply', '--unidiff-zero', '--check', str(patch))
+            except subprocess.CalledProcessError:
+                continue
+            print(f'source rehearsal patch: {patch.name}')
+            root.joinpath('.staged-rehearsal-patch').write_text(str(patch), encoding='utf-8')
+            git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'add', '.staged-rehearsal-patch')
+            git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'commit', '-qm', 'record exact staged fixture')
+            git(root, 'apply', '--unidiff-zero', str(patch))
+            yield root
+            return
+        raise RuntimeError(
+            'neither staged patch matches the exact source; refusing fuzzy combined-tree proof'
+        )
 
 
 class StagedTriggerCutoverTests(unittest.TestCase):
@@ -77,8 +112,8 @@ class StagedTriggerCutoverTests(unittest.TestCase):
 
     def test_root_policy_rollback_restores_exact_original_bytes(self):
         with staged_tree() as root:
-            git(root, 'apply', '--unidiff-zero', '--reverse', '--check', str(PATCH))
-            git(root, 'apply', '--unidiff-zero', '--reverse', str(PATCH))
+            git(root, 'apply', '--unidiff-zero', '--reverse', '--check', str(selected_patch(root)))
+            git(root, 'apply', '--unidiff-zero', '--reverse', str(selected_patch(root)))
             for path in (*ROOTS, POLICY, *DISPATCH_PATHS):
                 self.assertEqual((root / path).read_bytes(), (ROOT / path).read_bytes(), path)
             self.assertEqual(git(root, 'diff', '--exit-code'), '')
@@ -111,16 +146,35 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             after = tomllib.loads((root / POLICY).read_text(encoding='utf-8'))
         self.assertEqual(before.keys(), after.keys())
         for key in before:
-            if key != 'checks':
+            if key not in {'check', 'checks'}:
                 self.assertEqual(before[key], after[key])
-        self.assertEqual(len(before['checks']), len(after['checks']))
-        for left, right in zip(before['checks'], after['checks']):
-            if left.get('workflow') in ROOTS:
-                events = [event for event in left['events'] if event not in ORDINARY]
-                expected = {**left, 'events': events or ['workflow_dispatch']}
-                self.assertEqual(expected, right)
-            else:
-                self.assertEqual(left, right)
+
+        def canonical(rows):
+            return sorted(json.dumps(row, sort_keys=True) for row in rows)
+
+        retired = '.github/workflows/merge-group-title-check.yml'
+        expected_by_key = {}
+        for key in ('check', 'checks'):
+            expected = []
+            retired_rows = []
+            for row in before[key]:
+                if row['workflow'] == retired:
+                    retired_rows.append(row)
+                    continue
+                if key == 'checks' and row['workflow'] in ROOTS:
+                    events = [event for event in row['events'] if event not in ORDINARY]
+                    row = {**row, 'events': events or ['workflow_dispatch']}
+                expected.append(row)
+            self.assertEqual(1, len(retired_rows), retired_rows)
+            expected_by_key[key] = canonical(expected)
+            self.assertEqual(expected_by_key[key], canonical(after[key]))
+
+        corrupted = copy.deepcopy(after)
+        victim = next(row for row in corrupted['checks'] if row.get('job') == 'check-all-targets')
+        victim['job'] = 'wrong-job'
+        victim['required'] = False
+        with self.assertRaises(AssertionError):
+            self.assertEqual(expected_by_key['checks'], canonical(corrupted['checks']))
 
     def test_projected_native_contract_remains_structurally_valid(self):
         with staged_tree() as root:

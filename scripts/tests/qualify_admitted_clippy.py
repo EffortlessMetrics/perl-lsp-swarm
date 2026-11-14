@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in owned native proof, not a generic executor or lease cleanup service.
 
-Run with Python3.11+, installed pinned1.95.0 Cargo+Clippy, and explicit CARGO_HOME/
+Run with Python3.11+, installed pinned1.100.0 Cargo+Clippy, and explicit CARGO_HOME/
 RUSTUP_HOME. This creates only an owned no-dependency fixture under --proof-root.
 Reserve4GiB/growth2GiB are fixture-specific; admission checks every actual volume.
 All artifacts/evidence are retained. The original owner now releases only after
@@ -85,7 +85,7 @@ debug = "line-tables-only"
 incremental = false
 ''')
 (ROOT / 'Cargo.lock').write_text('version = 4\n[[package]]\nname = "consumer"\nversion = "0.1.0"\n')
-(ROOT / 'rust-toolchain.toml').write_text('[toolchain]\nchannel = "1.95.0"\ncomponents = ["clippy"]\n')
+(ROOT / 'rust-toolchain.toml').write_text('[toolchain]\nchannel = "1.100.0"\ncomponents = ["clippy"]\n')
 (ROOT / '.cargo').mkdir(exist_ok=True)
 (ROOT / '.cargo/config.toml').write_text('''[build]
 rustc = "/unadmitted/compiler"
@@ -238,7 +238,7 @@ if not options.named_only:
 if not options.keep_going_only:
     # A real named target must retain default features and lint policy, while a
     # deliberately invalid unselected target proves Cargo did not expand selection.
-    (ROOT / 'tests').mkdir()
+    (ROOT / 'tests').mkdir(exist_ok=True)
     (ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
     named = ROOT / 'tests/named-proof.rs'
     prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'

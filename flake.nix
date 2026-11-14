@@ -16,12 +16,18 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        # MSRV: Rust 1.95.0 - pinned for OpenAI Codex compatibility
+        # MSRV: Rust 1.100.0 - exact product compiler and source-build floor
         # This matches rust-toolchain.toml and CI workflows
-        rustVersion = "1.95.0";
+        rustVersion = "1.100.0";
         rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
           extensions = [ "rust-src" "clippy" "rustfmt" ];
           targets = [ "wasm32-unknown-unknown" ];  # For WASM determinism checks
+        };
+
+        # Bind package builds to the same compiler as the development shells.
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
         };
 
         # Common build inputs (libraries needed for compilation)
@@ -203,7 +209,7 @@
         packages = {
           default = self.packages.${system}.perllsp;
 
-          perllsp = pkgs.rustPlatform.buildRustPackage {
+          perllsp = rustPlatform.buildRustPackage {
             pname = "perllsp";
             version = "0.17.0";
             src = self;

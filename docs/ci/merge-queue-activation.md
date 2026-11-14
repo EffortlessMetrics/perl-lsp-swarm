@@ -16,6 +16,8 @@ Each precondition bullet carries a stable marker (`<!--precondition:...-->`). `s
 
 - [ ] <!--precondition:singleton-canary--> The canary is a **singleton G**: exactly one pull request is queued, and the resulting `merge_group` G is read back and confirmed to contain that one PR. `max_entries_to_build=1` limits concurrent builds, not group size, so it does not by itself guarantee a singleton. Raise concurrency only after B/G trust and group composition handle speculation.
 
+- [ ] <!--precondition:merge-group-head-sha--> Every required context that checks out source on `merge_group` pins `github.event.merge_group.head_sha` instead of resolving the ephemeral queue branch through `github.ref_name`. This includes `Conflict marker check`; apply the same binding to advisory source checkouts such as `LSP Memory Smoke` so their first activation evidence is interpretable too.
+
 ## Guard
 
 `scripts/ci/test_merge_queue_activation_checklist.py` asserts this file exists, that the precondition bullets sit under `## Preconditions`, that each carries exactly one stable marker and its load-bearing phrases, and that the queue is described as disabled. It does not enable or disable the queue; the settings change is a steward action. Deleting a bullet, moving one out of `## Preconditions`, or gutting its prose fails the guard; a file that merely contains the key phrases does not pass.

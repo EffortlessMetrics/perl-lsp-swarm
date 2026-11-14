@@ -15,7 +15,9 @@ static ANSI_ESCAPE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI escape regex is valid"));
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"Running unittests[^\(]*\([^\)]*deps[/\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)")
+    // Cargo reports the hashed executable basename in both layouts. Its
+    // parent directories are not stable: 1.100 uses build/<pkg>/<hash>/out.
+    Regex::new(r"^Running unittests\s+.*\((?:.*[/\\])?([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)\s*$")
         .expect("running-test regex is valid")
 });
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
@@ -90,9 +92,13 @@ fn parse_per_crate_test_counts(output: &str) -> PerCrateTestCounts {
     let mut discovered = 0usize;
     for line in output.lines() {
         let plain_line = ANSI_ESCAPE_RE.replace_all(line, "");
-        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(plain_line.as_ref()) {
-            current_crate = Some(caps[1].replace('_', "-"));
-        } else if TEST_LIST_LINE_RE.is_match(plain_line.as_ref()) {
+        let plain_line = plain_line.trim_start();
+        if plain_line.starts_with("Running unittests") {
+            // An unknown header starts a new attribution scope too. Keeping
+            // the prior crate would silently credit it with another binary's tests.
+            current_crate =
+                RUNNING_TEST_BINARY_RE.captures(plain_line).map(|caps| caps[1].replace('_', "-"));
+        } else if TEST_LIST_LINE_RE.is_match(plain_line) {
             discovered += 1;
             if let Some(krate) = &current_crate {
                 *counts.by_crate.entry(krate.clone()).or_default() += 1;
@@ -171,6 +177,51 @@ mod tests {
         assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&1));
         assert_eq!(counts.by_crate.get("perl-workspace"), Some(&1));
         assert_eq!(counts.by_crate.get("perl-lsp-rs"), Some(&1));
+    }
+
+    #[test]
+    fn parser_handles_cargo_1_100_layout_with_custom_and_windows_build_paths() {
+        let output = "Running unittests src/lib.rs \
+            (target/debug/build/perl-parser-core/0123456789abcdef/out/perl_parser_core-abc123)\n\
+            parser_smoke: test\n\
+            Running unittests src/lib.rs \
+            (/work/build artifacts (shared)/agent/build/perl-workspace/1234567890abcdef/out/perl_workspace-123def)\n\
+            workspace_smoke: test\n\
+            Running unittests src/lib.rs \
+            (C:\\build cache\\x86_64-pc-windows-msvc\\custom\\build\\perl-lsp-rs\\fedcba9876543210\\out\\perl_lsp_rs-feed456.exe)\n\
+            lsp_smoke: test\n";
+        let counts = parse_per_crate_test_counts(output);
+        assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&1));
+        assert_eq!(counts.by_crate.get("perl-workspace"), Some(&1));
+        assert_eq!(counts.by_crate.get("perl-lsp-rs"), Some(&1));
+        assert_eq!(counts.unattributed, 0);
+        assert_eq!(counts.total(), 3);
+    }
+
+    #[test]
+    fn parser_handles_mixed_layouts_and_resets_attribution_at_unknown_headers() {
+        let output = "Running unittests src/lib.rs \
+            (target/debug/deps/perl_parser_core-abc123)\nlegacy_test: test\n\
+            Running unittests src/lib.rs (unrecognized executable)\nunknown_test: test\n\
+            Running unittests src/lib.rs \
+            (/external/build/agent/build/perl-workspace/0123456789abcdef/out/perl_workspace-123def)\n\
+            current_test: test\n\
+            Running unittests\nmissing_executable_test: test\n";
+        let counts = parse_per_crate_test_counts(output);
+        assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&1));
+        assert_eq!(counts.by_crate.get("perl-workspace"), Some(&1));
+        assert_eq!(counts.unattributed, 2);
+        assert_eq!(counts.total(), 4);
+    }
+
+    #[test]
+    fn parser_does_not_treat_embedded_header_text_as_cargo_attribution() {
+        let output = "warning: Running unittests src/lib.rs \
+            (target/debug/deps/perl_parser_core-abc123)\norphan: test\n";
+        let counts = parse_per_crate_test_counts(output);
+        assert!(counts.by_crate.is_empty());
+        assert_eq!(counts.unattributed, 1);
+        assert_eq!(counts.total(), 1);
     }
 
     #[test]

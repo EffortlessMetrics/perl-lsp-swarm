@@ -124,6 +124,14 @@ export class OnboardingManager {
   }
 
   /**
+   * First-run welcome toast is for uncertain startup. When the language server
+   * already reached `running`, skip the stacked health-check prompt (#18432).
+   */
+  shouldOfferWelcomeNotification(languageServerRunning: boolean): boolean {
+    return this.shouldShowWelcome() && !languageServerRunning;
+  }
+
+  /**
    * Persist the welcomed flag so the welcome view only appears once per install.
    */
   async markWelcomed(): Promise<void> {
@@ -358,14 +366,14 @@ export class OnboardingManager {
    * @param serverPath  Path to the LSP binary for the health check.
    */
   async showWelcomeNotification(serverPath: string | null): Promise<void> {
+    await this.markWelcomed();
+
     const selection = await vscode.window.showInformationMessage(
       'Welcome to Perl Language Server! Run a setup health check to verify your environment.',
       'Run Health Check',
       'Show Output',
       'Dismiss',
     );
-
-    await this.markWelcomed();
 
     if (selection === 'Run Health Check') {
       if (serverPath) {

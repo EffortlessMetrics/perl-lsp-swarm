@@ -49,7 +49,7 @@ impl SessionResolveAuthenticator {
     /// Reserve the next nonzero, nonwrapping token issue sequence.
     pub fn next_issue_sequence(&self) -> Result<u64, ResolveAuthenticatorFailure> {
         self.next_issue_sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
             .map_err(|_| ResolveAuthenticatorFailure::Internal)
     }
 
