@@ -25,11 +25,49 @@ pub struct IncrementalConfig {
 impl Default for IncrementalConfig {
     fn default() -> Self {
         Self {
-            // Check environment variable to enable incremental parsing
-            enabled: std::env::var("PERL_LSP_INCREMENTAL").is_ok(),
+            enabled: perl_lsp_incremental_enabled_from_env(),
             target_parse_time_ms: 1.0,
             max_cache_size: 10000,
         }
+    }
+}
+
+/// Parse `PERL_LSP_INCREMENTAL` with strict truthy/falsy tokens (presence alone must not enable).
+fn perl_lsp_incremental_enabled_from_env() -> bool {
+    match std::env::var("PERL_LSP_INCREMENTAL") {
+        Err(_) => false,
+        Ok(raw) => match parse_incremental_env_token(&raw) {
+            IncrementalEnvParse::On => true,
+            IncrementalEnvParse::Off => false,
+            IncrementalEnvParse::Invalid => {
+                tracing::warn!(
+                    var = "PERL_LSP_INCREMENTAL",
+                    value = %raw.trim(),
+                    accepted = "1, true, yes, on (enable); 0, false, no, off, empty (disable)",
+                    "ignoring invalid PERL_LSP_INCREMENTAL; incremental parsing disabled",
+                );
+                false
+            }
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IncrementalEnvParse {
+    On,
+    Off,
+    Invalid,
+}
+
+fn parse_incremental_env_token(raw: &str) -> IncrementalEnvParse {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return IncrementalEnvParse::Off;
+    }
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" => IncrementalEnvParse::On,
+        "0" | "false" | "no" | "off" => IncrementalEnvParse::Off,
+        _ => IncrementalEnvParse::Invalid,
     }
 }
 
