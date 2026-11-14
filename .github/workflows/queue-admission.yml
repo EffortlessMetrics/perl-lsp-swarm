@@ -1,0 +1,58 @@
+name: Immutable Queue Admission Evaluator
+on:
+  workflow_call:
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+jobs:
+  admission:
+    name: Queue Lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Authenticate immutable reusable generation
+        id: generation
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: context.runId});
+            const prefix = 'EffortlessMetrics/perl-lsp-swarm/.github/workflows/queue-admission.yml@';
+            const refs = (run.referenced_workflows || []).filter(x => x.path.startsWith(prefix));
+            if (refs.length !== 1 || !/^[0-9a-f]{40}$/.test(refs[0].sha) || /^0+$/.test(refs[0].sha) ||
+                refs[0].path !== prefix + refs[0].sha || ('ref' in refs[0] && refs[0].ref !== refs[0].sha))
+              throw Error('NOT_PROVEN: immutable called workflow pin required');
+            core.setOutput('sha', refs[0].sha);
+      - name: Authenticate protected source before loading executable files
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        with:
+          script: |
+            const owner = 'EffortlessMetrics', repo = 'perl-lsp-swarm';
+            if (context.repo.owner !== owner || context.repo.repo !== repo) throw Error('NOT_PROVEN: repository');
+            const {data: r} = await github.rest.repos.get({owner, repo});
+            const {data: b} = await github.rest.repos.getBranch({owner, repo, branch: 'main'});
+            const {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const T = process.env.TRUSTED_WORKFLOW_SHA;
+            if (r.id !== context.payload.repository.id || r.default_branch !== 'main' ||
+                !b.protected || b.commit.sha !== T || ref.object.type !== 'commit' || ref.object.sha !== T)
+              throw Error('NOT_PROVEN: protected source unavailable/moved');
+      - name: Load protected evaluator, never candidate H
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.generation.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify exact-H substantive review and current authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADMISSION_SOURCE_SHA: ${{ steps.generation.outputs.sha }}
+        run: python3 scripts/ci/hosted_queue_admission.py
+      - name: Preserve admission-only observation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: queue-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/queue-admission.json
+          if-no-files-found: error
+          retention-days: 7
