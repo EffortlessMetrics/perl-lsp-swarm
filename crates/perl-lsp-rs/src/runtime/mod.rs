@@ -57,7 +57,9 @@ mod text_sync;
 /// Deterministic full-source work accounting for text-sync (#7301).
 pub(crate) mod text_sync_work;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-pub use text_sync_work::{InstrumentStatus, RECEIPT_SCHEMA_VERSION, TextSyncWorkReceipt};
+pub use text_sync_work::{
+    CaptureGuard, InstrumentStatus, RECEIPT_SCHEMA_VERSION, TextSyncWorkReceipt,
+};
 /// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
 pub(crate) mod timing;
 mod types;

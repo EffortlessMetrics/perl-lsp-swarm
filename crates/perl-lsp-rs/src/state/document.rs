@@ -299,31 +299,6 @@ impl ParsedSnapshot {
             crate::declaration::DeclarationProvider::build_parent_map(arc, &mut parent_map, None);
         }
         let degradation_tier = DegradationTier::from_parse_result(&ast, &parse_errors);
-        if crate::runtime::text_sync_work::is_enabled() {
-            let byte_len = u64::try_from(source.len()).unwrap_or(u64::MAX);
-            crate::runtime::text_sync_work::record_canonical_digest_computed(
-                "snapshot".to_string(),
-                generation,
-                byte_len,
-                "from_parse_result",
-                "sync",
-            );
-            crate::runtime::text_sync_work::record_parsed_snapshot_source_identity(
-                "snapshot".to_string(),
-                generation,
-                byte_len,
-                "sync",
-            );
-            crate::runtime::text_sync_work::record_full_source_allocation(
-                "snapshot".to_string(),
-                None,
-                generation,
-                byte_len,
-                "parsed_snapshot_source_arc",
-                "parsed_snapshot",
-                "sync",
-            );
-        }
         Self {
             generation,
             content_hash,

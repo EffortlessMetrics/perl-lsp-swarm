@@ -45,6 +45,7 @@ fn capture_enabled() -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum WorkEventKind {
     RopeEditApplied,
+    RopeRebuilt,
     FullSourceMaterialized,
     FullSourceAllocation,
     FullSourceBytesCopied,
@@ -88,8 +89,10 @@ fn push_event(event: WorkEvent) {
     capture::push(event.clone());
 
     if env_enabled() {
-        // Best-effort stderr JSONL; never touches LSP stdout.
-        if let Ok(line) = serde_json::to_string(&event) {
+        // Best-effort stderr JSONL; never touches LSP stdout or retains filenames.
+        let mut log_event = event;
+        log_event.uri_tail.clear();
+        if let Ok(line) = serde_json::to_string(&log_event) {
             let _ = writeln!(std::io::stderr(), "{line}");
         }
     }
@@ -97,8 +100,9 @@ fn push_event(event: WorkEvent) {
 
 use std::io::Write;
 
-/// Records [`WorkEventKind::DocumentsLockReleased`] when dropped, after the real mutex guard.
-pub(crate) struct DocumentsLockScope {
+/// Owns the real documents mutex guard, so its events share the guard's lifetime.
+pub(crate) struct DocumentsLockScope<'a, T> {
+    guard: parking_lot::MutexGuard<'a, T>,
     uri_tail: String,
     generation: u32,
     stage: &'static str,
@@ -106,14 +110,16 @@ pub(crate) struct DocumentsLockScope {
     active: bool,
 }
 
-impl DocumentsLockScope {
+impl<'a, T> DocumentsLockScope<'a, T> {
     pub fn enter(
+        mutex: &'a parking_lot::Mutex<T>,
         uri_tail: String,
         client_version: Option<i32>,
         generation: u32,
         stage: &'static str,
         sync_path: &'static str,
     ) -> Self {
+        let guard = mutex.lock();
         let active = is_enabled();
         if active {
             WorkEvent {
@@ -129,11 +135,30 @@ impl DocumentsLockScope {
             }
             .record();
         }
-        Self { uri_tail, generation, stage, sync_path, active }
+        Self { guard, uri_tail, generation, stage, sync_path, active }
+    }
+
+    /// Borrow the actual guard for APIs whose signature requires it.
+    pub fn guard(&self) -> &parking_lot::MutexGuard<'a, T> {
+        &self.guard
     }
 }
 
-impl Drop for DocumentsLockScope {
+impl<T> std::ops::Deref for DocumentsLockScope<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl<T> std::ops::DerefMut for DocumentsLockScope<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl<T> Drop for DocumentsLockScope<'_, T> {
     fn drop(&mut self) {
         if self.active {
             WorkEvent {
@@ -152,14 +177,14 @@ impl Drop for DocumentsLockScope {
     }
 }
 
-pub(crate) fn record_rope_edit_applied(
+pub(crate) fn record_rope_rebuilt(
     uri_tail: String,
     client_version: Option<i32>,
     generation: u32,
     sync_path: &'static str,
 ) {
     WorkEvent {
-        kind: WorkEventKind::RopeEditApplied,
+        kind: WorkEventKind::RopeRebuilt,
         uri_tail,
         client_version,
         generation,
@@ -302,12 +327,40 @@ pub(crate) fn record_parse_worker_enqueue(
     .record();
 }
 
-pub(crate) fn record_parsed_snapshot_source_identity(
+pub(crate) fn record_accepted_parsed_snapshot(
     uri_tail: String,
     generation: u32,
     byte_length: u64,
     sync_path: &'static str,
 ) {
+    record_canonical_digest_computed(
+        uri_tail.clone(),
+        generation,
+        byte_length,
+        "from_parse_result",
+        sync_path,
+    );
+    record_full_source_allocation(
+        uri_tail.clone(),
+        None,
+        generation,
+        byte_length,
+        "parsed_snapshot_source_arc",
+        "parsed_snapshot",
+        sync_path,
+    );
+    // Accepted snapshots own their source in a fresh Arc<str>. Preserve that
+    // ownership model and account for the exact full-source copy at the same
+    // acceptance boundary as the snapshot identity.
+    record_full_source_bytes_copied(
+        uri_tail.clone(),
+        None,
+        generation,
+        byte_length,
+        "parsed_snapshot_source_arc",
+        "parsed_snapshot",
+        sync_path,
+    );
     WorkEvent {
         kind: WorkEventKind::ParsedSnapshotSourceIdentity,
         uri_tail,
@@ -317,7 +370,7 @@ pub(crate) fn record_parsed_snapshot_source_identity(
         owner: "parsed_snapshot",
         byte_length,
         sync_path,
-        disposition: "current",
+        disposition: "accepted",
     }
     .record();
 }
@@ -371,7 +424,7 @@ mod receipt {
         pub documents_lock_acquire_release_pairs: u64,
     }
 
-    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
     pub struct ParseWorkerTotals {
         pub jobs_enqueued: u64,
         pub jobs_coalesced: u64,
@@ -382,6 +435,7 @@ mod receipt {
     fn kind_to_snake(kind: WorkEventKind) -> &'static str {
         match kind {
             WorkEventKind::RopeEditApplied => "rope_edit_applied",
+            WorkEventKind::RopeRebuilt => "rope_rebuilt",
             WorkEventKind::FullSourceMaterialized => "full_source_materialized",
             WorkEventKind::FullSourceAllocation => "full_source_allocation",
             WorkEventKind::FullSourceBytesCopied => "full_source_bytes_copied",
@@ -424,14 +478,16 @@ mod receipt {
             if events.is_empty() { InstrumentStatus::NotProven } else { InstrumentStatus::Ok };
 
         let mut totals = WorkTotals::default();
-        let mut max_generation = 0u32;
+        let mut accepted_generations = 0u32;
         let mut lock_acquired = 0u64;
         let mut lock_released = 0u64;
         let records: Vec<WorkEventRecord> = events
             .into_iter()
             .map(|event| {
-                max_generation = max_generation.max(event.generation);
                 match event.kind {
+                    WorkEventKind::ParsedSnapshotSourceIdentity => {
+                        accepted_generations = accepted_generations.saturating_add(1)
+                    }
                     WorkEventKind::FullSourceMaterialized => {
                         totals.full_source_materializations += 1
                     }
@@ -452,11 +508,11 @@ mod receipt {
 
         TextSyncWorkReceipt {
             schema_version: super::RECEIPT_SCHEMA_VERSION.to_string(),
-            claim_boundary: "LSP commit→parse→snapshot source-owner accounting (#7301); excludes workspace-index reader clones (#17198)".to_string(),
+            claim_boundary: "Accepted LSP commit→parse→snapshot source-owner accounting (#7301); excludes stale pre-publication snapshots and workspace-index reader clones (#17198)".to_string(),
             reproduction: reproduction.to_string(),
             workload: workload.to_string(),
             instrument_status,
-            accepted_generations: max_generation,
+            accepted_generations,
             events: records,
             totals,
             parse_worker,
@@ -465,23 +521,45 @@ mod receipt {
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-pub use receipt::{
-    InstrumentStatus, ParseWorkerTotals, TextSyncWorkReceipt, WorkEventRecord, WorkTotals,
-    build_receipt,
-};
+pub use receipt::{InstrumentStatus, ParseWorkerTotals, TextSyncWorkReceipt, build_receipt};
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub mod capture {
-    use super::WorkEvent;
-    use parking_lot::Mutex;
+    use super::{ParseWorkerTotals, WorkEvent};
+    use parking_lot::{Mutex, MutexGuard};
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static ENABLED: AtomicBool = AtomicBool::new(false);
 
-    fn buffer() -> &'static Mutex<Vec<WorkEvent>> {
-        static BUFFER: OnceLock<Mutex<Vec<WorkEvent>>> = OnceLock::new();
-        BUFFER.get_or_init(|| Mutex::new(Vec::new()))
+    #[derive(Default)]
+    struct CaptureBuffer {
+        events: Vec<WorkEvent>,
+        worker_baseline: Option<ParseWorkerTotals>,
+    }
+
+    fn buffer() -> &'static Mutex<CaptureBuffer> {
+        static BUFFER: OnceLock<Mutex<CaptureBuffer>> = OnceLock::new();
+        BUFFER.get_or_init(|| Mutex::new(CaptureBuffer::default()))
+    }
+
+    fn capture_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Excludes overlapping captures across all servers in this process.
+    pub struct CaptureGuard {
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for CaptureGuard {
+        fn drop(&mut self) {
+            ENABLED.store(false, Ordering::Relaxed);
+            let mut buffer = buffer().lock();
+            buffer.events.clear();
+            buffer.worker_baseline = None;
+        }
     }
 
     #[inline]
@@ -489,22 +567,32 @@ pub mod capture {
         ENABLED.load(Ordering::Relaxed)
     }
 
-    pub fn start() {
-        buffer().lock().clear();
+    pub fn test_lock(worker_baseline: Option<ParseWorkerTotals>) -> CaptureGuard {
+        let lock = capture_lock().lock();
+        {
+            let mut buffer = buffer().lock();
+            buffer.events.clear();
+            buffer.worker_baseline = worker_baseline;
+        }
         ENABLED.store(true, Ordering::Relaxed);
+        CaptureGuard { _lock: lock }
     }
 
-    pub fn drain() -> Vec<WorkEvent> {
+    pub fn drain() -> (Vec<WorkEvent>, Option<ParseWorkerTotals>) {
         ENABLED.store(false, Ordering::Relaxed);
-        std::mem::take(&mut *buffer().lock())
+        let mut buffer = buffer().lock();
+        (std::mem::take(&mut buffer.events), buffer.worker_baseline)
     }
 
     pub(super) fn push(event: WorkEvent) {
         if is_enabled() {
-            buffer().lock().push(event);
+            buffer().lock().events.push(event);
         }
     }
 }
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub use capture::CaptureGuard;
 
 #[cfg(test)]
 mod tests {
@@ -513,18 +601,40 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn empty_capture_is_not_proven() {
-        capture::start();
-        let receipt = build_receipt("test", "none", capture::drain(), None);
+        let _capture = capture::test_lock(None);
+        let (events, baseline) = capture::drain();
+        let receipt = build_receipt("test", "none", events, baseline);
         assert_eq!(receipt.instrument_status, InstrumentStatus::NotProven);
     }
 
     #[test]
     #[serial_test::serial]
     fn arc_share_does_not_add_copied_bytes() {
-        capture::start();
+        let _capture = capture::test_lock(None);
         record_source_buffer_share("file.pl".to_string(), 1, "enqueue", "parse_worker", "async");
-        let receipt = build_receipt("share", "unit", capture::drain(), None);
+        let (events, baseline) = capture::drain();
+        let receipt = build_receipt("share", "unit", events, baseline);
         assert_eq!(receipt.totals.source_buffer_shares, 1);
         assert_eq!(receipt.totals.full_source_bytes_copied, 0);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn accepted_snapshots_are_counted_at_publication_not_max_generation() {
+        let _capture = capture::test_lock(None);
+        record_accepted_parsed_snapshot("file.pl".to_string(), 40, 10, "async");
+        record_accepted_parsed_snapshot("file.pl".to_string(), 3, 12, "async");
+        record_full_source_allocation(
+            "file.pl".to_string(),
+            None,
+            99,
+            12,
+            "worker_snapshot_source_arc",
+            "parsed_snapshot",
+            "async",
+        );
+        let (events, baseline) = capture::drain();
+        let receipt = build_receipt("accepted", "unit", events, baseline);
+        assert_eq!(receipt.accepted_generations, 2);
     }
 }

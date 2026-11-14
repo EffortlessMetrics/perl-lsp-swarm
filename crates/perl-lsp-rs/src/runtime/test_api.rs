@@ -1111,21 +1111,11 @@ impl LspServer {
             .collect()
     }
 
-    /// Test-only: begin capturing #7301 text-sync work events.
-    pub fn test_text_sync_work_capture_start(&self) {
-        let _ = self;
-        crate::runtime::text_sync_work::capture::start();
-    }
-
-    /// Test-only: drain captured work events and build a versioned receipt.
-    pub fn test_text_sync_work_capture_receipt(
+    /// Test-only: begin an exclusive #7301 text-sync work capture session.
+    pub fn test_text_sync_work_capture_start(
         &self,
-        workload: &str,
-        reproduction: &str,
-    ) -> crate::runtime::text_sync_work::TextSyncWorkReceipt {
-        let _ = self;
-        let events = crate::runtime::text_sync_work::capture::drain();
-        let parse_worker = self.test_parse_worker_metrics().map(|m| {
+    ) -> crate::runtime::text_sync_work::CaptureGuard {
+        let baseline = self.test_parse_worker_metrics().map(|m| {
             crate::runtime::text_sync_work::ParseWorkerTotals {
                 jobs_enqueued: m.jobs_enqueued,
                 jobs_coalesced: m.jobs_coalesced,
@@ -1133,7 +1123,48 @@ impl LspServer {
                 jobs_published: m.jobs_published,
             }
         });
-        crate::runtime::text_sync_work::build_receipt(workload, reproduction, events, parse_worker)
+        crate::runtime::text_sync_work::capture::test_lock(baseline)
+    }
+
+    /// Test-only: settle this document's worker, then drain and build a receipt.
+    pub fn test_text_sync_work_capture_receipt(
+        &self,
+        uri: &str,
+        workload: &str,
+        reproduction: &str,
+    ) -> crate::runtime::text_sync_work::TextSyncWorkReceipt {
+        let worker_settled = self.parse_worker().is_none()
+            || self.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(30));
+        let (events, baseline) = crate::runtime::text_sync_work::capture::drain();
+        let parse_worker = self.test_parse_worker_metrics().map(|m| {
+            let current = crate::runtime::text_sync_work::ParseWorkerTotals {
+                jobs_enqueued: m.jobs_enqueued,
+                jobs_coalesced: m.jobs_coalesced,
+                jobs_rejected_stale: m.jobs_rejected_stale,
+                jobs_published: m.jobs_published,
+            };
+            match baseline {
+                Some(baseline) => crate::runtime::text_sync_work::ParseWorkerTotals {
+                    jobs_enqueued: current.jobs_enqueued.saturating_sub(baseline.jobs_enqueued),
+                    jobs_coalesced: current.jobs_coalesced.saturating_sub(baseline.jobs_coalesced),
+                    jobs_rejected_stale: current
+                        .jobs_rejected_stale
+                        .saturating_sub(baseline.jobs_rejected_stale),
+                    jobs_published: current.jobs_published.saturating_sub(baseline.jobs_published),
+                },
+                None => current,
+            }
+        });
+        let mut receipt = crate::runtime::text_sync_work::build_receipt(
+            workload,
+            reproduction,
+            events,
+            parse_worker,
+        );
+        if !worker_settled {
+            receipt.instrument_status = crate::runtime::text_sync_work::InstrumentStatus::NotProven;
+        }
+        receipt
     }
 
     /// Install the production off-lock async parse worker (#3396 Phase 3)
