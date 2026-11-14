@@ -55,23 +55,32 @@ impl LspServer {
         edit: Value,
         is_refactoring: bool,
     ) -> io::Result<Option<ServerRequestId>> {
-        let caps = self.client_capabilities.lock();
-        if !caps.workspace_apply_edit_support || !caps.workspace_edit_metadata_support {
-            return Ok(None);
-        }
-        drop(caps);
+        let include_metadata = {
+            let caps = self.client_capabilities.lock();
+            if !caps.workspace_apply_edit_support {
+                return Ok(None);
+            }
+            caps.workspace_edit_metadata_support
+        };
 
-        let params = json!({
-            "label": label,
-            "edit": edit,
-            "metadata": {
+        let params = if include_metadata {
+            json!({
                 "label": label,
-                "description": description,
-                "isRefactoring": is_refactoring,
-            },
-        });
+                "edit": edit,
+                "metadata": {
+                    "label": label,
+                    "description": description,
+                    "isRefactoring": is_refactoring,
+                },
+            })
+        } else {
+            json!({
+                "label": label,
+                "edit": edit,
+            })
+        };
         let id = self.send_request(WORKSPACE_APPLY_EDIT, params)?;
-        tracing::debug!(%label, "Requested workspace/applyEdit with metadata");
+        tracing::debug!(%label, include_metadata, "Requested workspace/applyEdit");
         Ok(Some(id))
     }
 
@@ -311,12 +320,20 @@ mod tests {
             true,
         )?;
         assert!(
-            request_id.is_none(),
-            "workspace.applyEdit without metadataSupport must keep the old no-request path"
+            request_id.is_some(),
+            "workspace.applyEdit without metadataSupport must still send applyEdit without metadata"
         );
+        thread::sleep(Duration::from_millis(50));
+        let messages = output.messages()?;
+        let request = messages
+            .iter()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some(WORKSPACE_APPLY_EDIT)
+            })
+            .ok_or_else(|| format!("expected workspace/applyEdit request: {messages:?}"))?;
         assert!(
-            output.messages()?.is_empty(),
-            "no workspace/applyEdit request should be emitted without metadataSupport"
+            request.pointer("/params/metadata").is_none(),
+            "metadata must be omitted when metadataSupport is false: {request}"
         );
 
         let (server, output) = server_with_output_capture();
@@ -329,7 +346,7 @@ mod tests {
         )?;
         assert!(
             request_id.is_none(),
-            "metadataSupport without workspace.applyEdit must keep the old no-request path"
+            "metadataSupport without workspace.applyEdit must keep the no-request path"
         );
         assert!(
             output.messages()?.is_empty(),
