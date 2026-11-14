@@ -629,7 +629,7 @@ fn extract_unpaired_body(text: &str, closing: char) -> (String, &str, bool) {
         }
 
         match ch {
-            '\\' => {
+            '\\' if closing != '\\' => {
                 body.push(ch);
                 escaped = true;
             }
@@ -741,7 +741,7 @@ fn extract_unpaired_body_skip_strings(text: &str, closing: char) -> (String, &st
         }
 
         match ch {
-            '\\' => {
+            '\\' if closing != '\\' => {
                 body.push(ch);
                 escaped = true;
                 pos += ch.len_utf8();
