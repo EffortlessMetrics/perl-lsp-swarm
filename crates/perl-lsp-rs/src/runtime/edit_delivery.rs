@@ -12,6 +12,7 @@ pub(crate) enum EditDeliveryDisposition {
     RequestClientApplyEdit,
     PreviewOnly,
     RefusedUnsupportedClient,
+    ApplyEditSendFailed,
 }
 
 impl EditDeliveryDisposition {
@@ -21,6 +22,7 @@ impl EditDeliveryDisposition {
             Self::RequestClientApplyEdit => "request_client_apply_edit",
             Self::PreviewOnly => "preview_only",
             Self::RefusedUnsupportedClient => "refused_unsupported_client",
+            Self::ApplyEditSendFailed => "apply_edit_send_failed",
         }
     }
 }
@@ -105,6 +107,11 @@ fn snippet_text_edit_item(item: &Value) -> bool {
 pub(crate) fn execute_command_mutation_refusal_message() -> &'static str {
     "This editor profile does not support server-initiated apply-edit for execute-command \
      mutations, and this command does not define an inline edit application contract. \
+     No source changes were applied."
+}
+
+pub(crate) fn execute_command_mutation_send_failure_message() -> &'static str {
+    "The server could not send the workspace/applyEdit request to this editor. \
      No source changes were applied."
 }
 

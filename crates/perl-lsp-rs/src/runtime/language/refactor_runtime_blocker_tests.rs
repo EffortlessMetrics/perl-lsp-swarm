@@ -3557,7 +3557,7 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_requests_apply_edit_withou
 }
 
 #[test]
-fn refactor_runtime_blocker_ux_safe_delete_live_pilot_keeps_edit_when_apply_edit_send_fails()
+fn refactor_runtime_blocker_ux_safe_delete_live_pilot_withholds_edit_when_apply_edit_send_fails()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut server = create_server();
     {
@@ -3586,13 +3586,21 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_keeps_edit_when_apply_edit
     assert_eq!(live_result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(false));
     assert_eq!(
         live_result.get("edit_delivery_disposition").and_then(Value::as_str),
-        Some("refused_unsupported_client")
+        Some("apply_edit_send_failed")
     );
     assert_eq!(live_result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
     assert_eq!(live_result.get("apply_edit_requested").and_then(Value::as_bool), None);
     assert!(
         live_result.get("apply_edit_request").is_none(),
         "failed client request must not be recorded as sent: {live_result}"
+    );
+    let user_message =
+        live_result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+    assert!(
+        user_message.contains("could not send")
+            && user_message.contains("No source changes")
+            && !user_message.contains("does not support"),
+        "expected applyEdit send-failure message, not capability refusal: {user_message}"
     );
 
     let workspace_edit = live_result.get("workspace_edit").ok_or("missing live workspace_edit")?;

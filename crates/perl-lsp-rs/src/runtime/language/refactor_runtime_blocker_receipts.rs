@@ -4,7 +4,7 @@ use super::super::{JsonRpcError, LspServer, Value, json};
 use crate::protocol::{req_position, req_uri};
 use crate::runtime::edit_delivery::{
     EditDeliveryDisposition, EditDeliverySurface, execute_command_mutation_refusal_message,
-    select_edit_delivery,
+    execute_command_mutation_send_failure_message, select_edit_delivery,
 };
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 
@@ -972,7 +972,7 @@ impl LspServer {
                     Ok(None) | Err(_) => {
                         live_delivery_enabled = false;
                         edit_for_result = json!({"changes": {}});
-                        recorded_disposition = EditDeliveryDisposition::RefusedUnsupportedClient;
+                        recorded_disposition = EditDeliveryDisposition::ApplyEditSendFailed;
                     }
                 }
             }
@@ -988,6 +988,12 @@ impl LspServer {
             && recorded_disposition == EditDeliveryDisposition::RefusedUnsupportedClient
         {
             execute_command_mutation_refusal_message().to_string()
+        } else if edit_plan_ready
+            && !live_delivery_enabled
+            && can_return_edit
+            && recorded_disposition == EditDeliveryDisposition::ApplyEditSendFailed
+        {
+            execute_command_mutation_send_failure_message().to_string()
         } else {
             safe_delete_symbol_live_pilot_message(&receipt, live_delivery_enabled)
         };
