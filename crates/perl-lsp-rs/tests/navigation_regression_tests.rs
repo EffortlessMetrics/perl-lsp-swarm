@@ -27,6 +27,7 @@
 mod support;
 
 use serde_json::json;
+use std::time::Duration;
 use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -34,6 +35,16 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 // ----------------------------------------------------------------
 // Shared helpers
 // ----------------------------------------------------------------
+
+/// Count UTF-16 code units in `text` (LSP `character` positions).
+fn utf16_units(text: &str) -> u32 {
+    text.chars().map(|ch| ch.len_utf16() as u32).sum()
+}
+
+/// UTF-16 column at a UTF-8 byte boundary within one line.
+fn utf16_col_at_byte(line: &str, byte_col: usize) -> u32 {
+    utf16_units(line.get(..byte_col).unwrap_or(""))
+}
 
 /// Return the (line, character) of the first occurrence of `needle` in `source`.
 /// Counts lines from 0 and characters from 0 (UTF-8 byte positions on the line).
@@ -330,6 +341,133 @@ fn test_def_after_multibyte_prefix_does_not_error() -> TestResult {
     assert!(
         result.is_null() || result.is_object() || result.is_array(),
         "definition must return a valid LSP result near UTF-8 text, got: {result}"
+    );
+
+    Ok(())
+}
+
+// ----------------------------------------------------------------
+// Unicode qualified names (#14616)
+// ----------------------------------------------------------------
+
+const UNICODE_FQN_FIXTURE: &str = concat!(
+    "use utf8;\n",     // 0
+    "package Ñañá;\n", // 1
+    "sub ñ {}\n",      // 2 -- sub declaration discriminator
+    "package main;\n", // 3
+    "\n",              // 4
+    "Ñañá::ñ();\n",    // 5 -- qualified call
+);
+
+/// Regression (#14616): Unicode package/sub names must participate in the shared
+/// qualified-name matcher so prefix and final components classify distinctly.
+#[test]
+fn test_def_unicode_qualified_prefix_does_not_resolve_sub() -> TestResult {
+    let doc = UNICODE_FQN_FIXTURE;
+    let call_line = doc.lines().nth(5).ok_or("call line")?;
+    let sep = call_line.find("::").ok_or(":: in call")?;
+    // Cursor on the `ñ` inside the `Ñañá` prefix (middle of a non-ASCII component).
+    let prefix_byte = call_line
+        .get(..sep)
+        .and_then(|prefix| prefix.char_indices().find(|(_, ch)| *ch == 'ñ').map(|(i, _)| i))
+        .ok_or("prefix ñ byte offset")?;
+    let prefix_col = utf16_col_at_byte(call_line, prefix_byte);
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///unicode_fqn_def.pl", doc)?;
+    harness.wait_for_idle(Duration::from_millis(300));
+    let request_timeout = Duration::from_secs(10);
+
+    let on_prefix = harness.request_with_timeout(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///unicode_fqn_def.pl"},
+            "position": {"line": 5, "character": prefix_col}
+        }),
+        request_timeout,
+    )?;
+
+    if let Some(def_line) = first_location_line(&on_prefix) {
+        assert_ne!(
+            def_line, 2,
+            "cursor on the `Ñañá` prefix in `Ñañá::ñ()` must not navigate to `sub ñ` on line 2; \
+             got line {def_line} (#14616)."
+        );
+    }
+
+    let final_byte = sep + "::".len();
+    let final_col = utf16_col_at_byte(call_line, final_byte);
+    let on_final = harness.request_with_timeout(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///unicode_fqn_def.pl"},
+            "position": {"line": 5, "character": final_col}
+        }),
+        request_timeout,
+    )?;
+    let final_line = first_location_line(&on_final).ok_or(
+        "negative control failed: cursor on the final `ñ` must resolve to `sub ñ` on line 2 (#14616)",
+    )?;
+    assert_eq!(
+        final_line, 2,
+        "final-component definition must land on the sub declaration; got line {final_line}"
+    );
+
+    Ok(())
+}
+
+/// Regression (#14616): find-references must distinguish Unicode prefix vs final
+/// components the same way as the ASCII #1849 guards.
+#[test]
+fn test_refs_unicode_qualified_prefix_does_not_report_sub_declaration() -> TestResult {
+    let doc = UNICODE_FQN_FIXTURE;
+    let call_line = doc.lines().nth(5).ok_or("call line")?;
+    let sep = call_line.find("::").ok_or(":: in call")?;
+    let prefix_byte = call_line
+        .get(..sep)
+        .and_then(|prefix| prefix.char_indices().find(|(_, ch)| *ch == 'ñ').map(|(i, _)| i))
+        .ok_or("prefix ñ byte offset")?;
+    let prefix_col = utf16_col_at_byte(call_line, prefix_byte);
+    let final_byte = sep + "::".len();
+    let final_col = utf16_col_at_byte(call_line, final_byte);
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///unicode_fqn_refs.pl", doc)?;
+    harness.wait_for_idle(Duration::from_millis(300));
+    let request_timeout = Duration::from_secs(10);
+
+    let on_final = harness.request_with_timeout(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///unicode_fqn_refs.pl"},
+            "position": {"line": 5, "character": final_col},
+            "context": {"includeDeclaration": true}
+        }),
+        request_timeout,
+    )?;
+    let final_lines = reported_lines(&on_final);
+    assert!(
+        final_lines.contains(&2),
+        "negative control failed: final-component references must include `sub ñ` on line 2; \
+         got {final_lines:?} (#14616)."
+    );
+
+    let on_prefix = harness.request_with_timeout(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///unicode_fqn_refs.pl"},
+            "position": {"line": 5, "character": prefix_col},
+            "context": {"includeDeclaration": true}
+        }),
+        request_timeout,
+    )?;
+    let prefix_lines = reported_lines(&on_prefix);
+    assert!(
+        !prefix_lines.contains(&2),
+        "cursor on the `Ñañá` prefix must not report the `sub ñ` declaration on line 2; \
+         got {prefix_lines:?} (#14616)."
     );
 
     Ok(())
