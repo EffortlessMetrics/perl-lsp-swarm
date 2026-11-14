@@ -1666,6 +1666,7 @@ version = "0.17.0"
 dependencies = [
  "perl-ast-v2",
  "perl-position-tracking",
+ "perl-test-must",
  "perl-token",
  "sha2",
  "strum",
