@@ -123,6 +123,19 @@ created = "2026-10-12"
 review_after = "2027-01-12"
 
 [[allow]]
+id = "non-rust-policy-validator-build-routing-proof"
+path = "scripts/tests/test_policy_validator_build_routing.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Compiler-free Python CLI controls preserve the compatibility policy validator's admitted producer, caller-relative file referents and refusal status without allocating Cargo build state."
+covered_by = ["python3 -B -m unittest discover -s scripts/tests -p test_policy_validator_build_routing.py -v"]
+created = "2026-11-09"
+review_after = "2026-12-09"
+
+[[allow]]
 id = "non-rust-changelog-fragments"
 glob = ".changes/unreleased/*.yaml"
 kind = "release_metadata"
@@ -5941,6 +5954,19 @@ reason = "Standard-library scoped budget and lease regression fixtures exercise 
 covered_by = ["python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'"]
 created = "2026-10-10"
 review_after = "2027-01-10"
+
+[[allow]]
+id = "non-rust-cargo-admitted-frontdoor-proof"
+path = "scripts/tests/test_cargo_admitted_frontdoor.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Real Git/Bash/Just fixtures prove read-only storage planning and literal focused recipe delegation before any Rust build (#19215)."
+covered_by = ["python3 -B -m unittest scripts.tests.test_cargo_admitted_frontdoor"]
+created = "2026-11-09"
+review_after = "2026-12-09"
 
 [[allow]]
 id = "non-rust-cleanup-fetch-maintenance-proof"

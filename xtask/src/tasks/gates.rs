@@ -2404,7 +2404,10 @@ fn run_single_gate(
             // parseable: a compile-timeout for a cargo test command produces
             // no summary at all but still deserves an explicit false in the
             // receipt so a reviewer can tell it from an intra-test hang.
-            let mut metrics = if gate.tags.contains(&"test".to_string()) {
+            // A retained summary describes only one observed test binary. On failure or
+            // timeout, publishing its counts can claim zero failures despite a later
+            // failing binary. Keep execution evidence below, not partial numeric totals.
+            let mut metrics = if status == "pass" && gate.tags.contains(&"test".to_string()) {
                 parse_test_metrics(&execution.stdout)
             } else {
                 None
@@ -5362,7 +5365,11 @@ gates:
                 "manifest_path": "/workspace/xtask/Cargo.toml"}],
             "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
         });
-        for file in [".ci/gate-policy.yaml", ".ci/policies/required-checks.toml"] {
+        for file in [
+            ".ci/gate-policy.yaml",
+            ".ci/policies/required-checks.toml",
+            ".ci/schemas/ci-route-plan.v1.schema.json",
+        ] {
             let scope = crate::tasks::ci_scope::classify_files(
                 &[file.to_string()],
                 &metadata,
@@ -6266,6 +6273,69 @@ gates:
         assert!(
             tmp.path().join("unit-smoke.log").exists(),
             "shell gate should write the command log"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_single_gate_omits_partial_counts_after_later_failure() -> color_eyre::eyre::Result<()> {
+        let command = if cfg!(windows) {
+            "echo running 3 tests && echo test result: ok. 3 passed; 0 failed; 0 ignored && echo test fixture_failure ... FAILED && echo test result: FAILED. 0 passed; 1 failed; 0 ignored && exit /b 1 && cargo test never-executed"
+        } else {
+            "printf 'running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored\ntest fixture_failure ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n'; exit 1; true && cargo test never-executed"
+        };
+        let mut gate = pr_gate("partial-count-failure", GatePlanningRole::AlwaysOn, command);
+        gate.tags.push("test".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        assert!(is_cargo_test_command(command));
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+        assert_eq!(result.status, "fail");
+        assert_eq!(result.exit_code, Some(1));
+        let serialized = serde_json::to_value(&result)?;
+        for field in ["tests_total", "tests_passed", "tests_failed", "tests_ignored"] {
+            assert!(
+                serialized.pointer(&format!("/metrics/{field}")).is_none(),
+                "partial test counts must not imply complete failed-gate coverage: {serialized}"
+            );
+        }
+        let metrics = must_some_with(result.metrics, "execution evidence remains available");
+        assert_eq!(metrics.test_execution_reached, Some(true));
+        assert_eq!(
+            result.first_failure.as_ref().and_then(|failure| failure.test.as_deref()),
+            Some("fixture_failure")
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_omits_partial_counts_after_summary_timeout() -> color_eyre::eyre::Result<()>
+    {
+        let command = "printf 'running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored\n'; sleep 3; exit 0; true && cargo test never-executed";
+        let mut gate = pr_gate("partial-count-timeout", GatePlanningRole::AlwaysOn, command);
+        gate.tags.push("test".to_string());
+        gate.timeout_seconds = 1;
+        gate.retry_count = 0;
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        assert!(is_cargo_test_command(command));
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+        assert_eq!(result.status, "timeout");
+        let serialized = serde_json::to_value(&result)?;
+        for field in ["tests_total", "tests_passed", "tests_failed", "tests_ignored"] {
+            assert!(
+                serialized.pointer(&format!("/metrics/{field}")).is_none(),
+                "timeout must not retain partial counts: {serialized}"
+            );
+        }
+        let metrics = must_some_with(result.metrics, "execution evidence remains available");
+        assert_eq!(metrics.test_execution_reached, Some(true));
+        assert!(
+            std::fs::read_to_string(tmp.path().join("partial-count-timeout.log"))?
+                .contains("test result: ok.")
         );
         Ok(())
     }

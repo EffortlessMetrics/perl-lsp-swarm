@@ -8,7 +8,18 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 AQUA_CONFIG_PATH="${AQUA_CONFIG:-${REPO_ROOT}/aqua.yaml}"
 
 if ! command -v aqua >/dev/null 2>&1; then
-    cat >&2 <<EOF
+    if [[ -n "${HOME:-}" && -f "${HOME}/.local/bin/aqua" && -x "${HOME}/.local/bin/aqua" ]]; then
+        cat >&2 <<EOF
+portable toolchain: NOT PROVEN — aqua is not found on PATH
+
+Activate the default install location:
+  export PATH="\$HOME/.local/bin:\$PATH"
+
+Nix users may instead enter the repository dev shell; Nix remains the complete
+development environment. Aqua is the portable non-Nix CLI installer only.
+EOF
+    else
+        cat >&2 <<EOF
 portable toolchain: NOT PROVEN — aqua is not installed
 
 Pinned bootstrap:
@@ -17,6 +28,7 @@ Pinned bootstrap:
 Nix users may instead enter the repository dev shell; Nix remains the complete
 development environment. Aqua is the portable non-Nix CLI installer only.
 EOF
+    fi
     exit 2
 fi
 

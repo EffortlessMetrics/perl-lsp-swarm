@@ -268,14 +268,14 @@ note = "The active command caller this inventory must distinguish from archived 
 reference_hashes = ["099275fc78aa843cd04d9e6fe82025060232b917ae7078d19b4afcfa11420563", "1d3bce567f53e47f9c9fc57fcf24acfe3fb8f9f6ffb55127c6be99db47d51149", "38fedc598cedd6afd461056b199e96751cc7cf3c58336fbaf069dba2420c050b", "4ad46b731f87c6b71cb08f1f52d3b99a9e3aa321b9310b0eae5d4fd4ff5703e6", "793bfc8d47ee9d28f93c8af4d461cf372bc8fdbb767de9d815b16004ddff21d4", "815355fed958977b26c7d5286f91a3eff9be1dbb8621e0767220f5576024d53c", "82b9c97ffad1f9f8347df46549ac7b33086491ef2b88d77691c20603abf95528", "9b41b66c7aaa79959660963e05c79598868951f00ba2b0e466770002ce614dc7", "9fa4000e6f4e3ee034c6d354b3714dc03ab3f07244aadeaa193ad8eba7120c8a", "f62f8ede7d756814c11c9d79a606369c388f24fd20023dd278c07d64319b6dfe"]
 
 [[entry]]
-path = ".github/workflows/ci.yml"
+path = "scripts/ci/required-merge-surface.sh"
 classification = "legacy_compatibility"
 migration_target = "legacy_receipt_readability"
 owner_issue = 7192
 removal_condition = "Parity lanes retire with the frozen compatibility proof (#7192)."
 allowed_to_remain = true
 note = "Runs the legacy parity suites; proof wiring, not a readiness caller."
-reference_hashes = ["55a1c0296146736453eb8a3b33bacb9df7b822aa684dabb6ba21f442cf15621e"]
+reference_hashes = ["e04fe5a52a1ff6d9df5929e3818b20b4e61c832470496599bced8629ab13b14e"]
 
 [[entry]]
 path = ".spec/11246-clippy-map-err-ignore-boundaries/activation-plan.md"
@@ -455,7 +455,7 @@ owner_issue = 8425
 removal_condition = "Frozen-surface parity proof retires when the command reaches its canonical surface (#8425)."
 allowed_to_remain = true
 note = "Parity between the command and the frozen library corpus."
-reference_hashes = ["09be7c41e382617d63209353ae7dabf9eb6f9c9dd3c85e429ba0026631196ee5", "09be7c41e382617d63209353ae7dabf9eb6f9c9dd3c85e429ba0026631196ee5", "15ffdc1f5fb718cb65deb7c5f3a849d6b4f82776b96f0defc0b22bc0ddeb25db", "68bf7351f4ae9daf928538f063d031fe134df0607c8707c42908d727d0b57e29", "a1a20548a24a34badc323d90e1c66030f6eb6919fb237f1b9b8f89cfe7397edb", "ab38c13d2ea1a4acbac11e8558bc64ba79ecdb58b02f390b0e4fb97400bba546", "cb9bf1221153aed24975943aceff63c8b310dd72336fce23eba403b9fde6ec39", "ce5b8334e9de4a7e3aeac9493c42a0e1a804a59aefb193f80eb50561edb468cb", "eb1d4c6a4d903fa9ecdf2eb873bb1e8b501be4b4a8d1da56978f93426d1ceaef"]
+reference_hashes = ["09be7c41e382617d63209353ae7dabf9eb6f9c9dd3c85e429ba0026631196ee5", "09be7c41e382617d63209353ae7dabf9eb6f9c9dd3c85e429ba0026631196ee5", "15ffdc1f5fb718cb65deb7c5f3a849d6b4f82776b96f0defc0b22bc0ddeb25db", "68bf7351f4ae9daf928538f063d031fe134df0607c8707c42908d727d0b57e29", "a1a20548a24a34badc323d90e1c66030f6eb6919fb237f1b9b8f89cfe7397edb", "ab38c13d2ea1a4acbac11e8558bc64ba79ecdb58b02f390b0e4fb97400bba546", "cb9bf1221153aed24975943aceff63c8b310dd72336fce23eba403b9fde6ec39", "304b83c2b46ed70744822cec238ea6c6162bc2b4169e22b33da690d8733190b2", "eb1d4c6a4d903fa9ecdf2eb873bb1e8b501be4b4a8d1da56978f93426d1ceaef"]
 
 [[entry]]
 path = "xtask/tests/quality_ci_wiring_policy.rs"

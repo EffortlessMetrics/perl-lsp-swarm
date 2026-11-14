@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -12,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("workflow_security_ratchet.py")
 SPEC = importlib.util.spec_from_file_location("workflow_security_ratchet", MODULE_PATH)
@@ -28,9 +31,16 @@ class Args:
     baseline_root: Path | None = None
 
 
+def write_baseline(root: Path, output: Path) -> int:
+    # Routine status output is irrelevant to these tests and must not make a
+    # Unicode fixture path depend on the native console's ANSI code page.
+    with contextlib.redirect_stdout(io.StringIO()):
+        return ratchet.write_baseline(root, output, Args())
+
+
 class WorkflowSecurityRatchetTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(prefix="workflow ratchet ' λ ")
         self.root = Path(self.temp.name)
         (self.root / ".github/workflows").mkdir(parents=True)
         (self.root / ".github/actions/example").mkdir(parents=True)
@@ -61,7 +71,7 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
 
     def write_current_baseline(self) -> Path:
         path = self.baseline_path()
-        self.assertEqual(ratchet.write_baseline(self.root, path, Args()), 0)
+        self.assertEqual(write_baseline(self.root, path), 0)
         return path
 
     def exact_args(self) -> Args:
@@ -401,7 +411,7 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
     def test_baseline_generation_is_byte_deterministic(self) -> None:
         first = self.write_current_baseline().read_bytes()
         second_path = self.root / ".ci/second.json"
-        self.assertEqual(ratchet.write_baseline(self.root, second_path, Args()), 0)
+        self.assertEqual(write_baseline(self.root, second_path), 0)
         self.assertEqual(first, second_path.read_bytes())
 
     def test_invalid_utf8_is_an_actionable_finding(self) -> None:
@@ -450,18 +460,29 @@ class WorkflowSecurityApplicabilityTests(unittest.TestCase):
     """Execute the trusted workflow import step against real divergent Git trees."""
 
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(prefix="workflow ratchet ' λ ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        self.env = dict(os.environ, GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.com",
-                        GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.com",
-                        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-                        GITHUB_ENV=str(self.root / "env"),
-                        GITHUB_STEP_SUMMARY=str(self.root / "summary"), PR_NUMBER="7")
+        self.env = dict(
+            os.environ,
+            GIT_AUTHOR_NAME="Test",
+            GIT_AUTHOR_EMAIL="test@example.com",
+            GIT_COMMITTER_NAME="Test",
+            GIT_COMMITTER_EMAIL="test@example.com",
+            GIT_CONFIG_NOSYSTEM="1",
+            GIT_CONFIG_GLOBAL=os.devnull,
+            # Bash consumes these from `cwd`; native absolute paths must not
+            # cross the Python/shell boundary as redirection operands.
+            GITHUB_ENV="../env",
+            GITHUB_STEP_SUMMARY="../summary",
+            PR_NUMBER="7",
+        )
         self.git("init", "-q")
-        self.git("remote", "add", "origin", str(self.repo))
+        # A self-remote is valid on every supported shell. In particular, do
+        # not serialize a native Windows path into `.git/config` for Bash.
+        self.git("remote", "add", "origin", ".")
         for path in ratchet.CONTROL_SOURCE_PATHS:
             self.write(path, "# inert fixture control\n")
         self.workflow = ".github/workflows/release.yml"
@@ -488,7 +509,7 @@ class WorkflowSecurityApplicabilityTests(unittest.TestCase):
         dest.write_text(data)
 
     def baseline(self) -> None:
-        ratchet.write_baseline(self.repo, self.repo / ".ci/workflow-security-baseline.json", Args())
+        write_baseline(self.repo, self.repo / ".ci/workflow-security-baseline.json")
 
     def commit(self, message: str) -> str:
         self.git("add", ".")
@@ -500,21 +521,64 @@ class WorkflowSecurityApplicabilityTests(unittest.TestCase):
         self.baseline()
         return self.commit("repair debt")
 
+    @staticmethod
+    def run_bash_script(
+        script: str, repo: Path, env: dict[str, str]
+    ) -> subprocess.CompletedProcess:
+        # Never use text mode for Bash stdin: native Python newline conversion
+        # can turn the unchanged workflow's LF script into CRLF on Windows.
+        completed = subprocess.run(
+            ["bash", "-s"],
+            cwd=repo,
+            env=env,
+            input=script.encode("utf-8"),
+            capture_output=True,
+            timeout=20,
+        )
+        return subprocess.CompletedProcess(
+            completed.args,
+            completed.returncode,
+            stdout=completed.stdout.decode("utf-8"),
+            stderr=completed.stderr.decode("utf-8"),
+        )
+
     def run_import(self, base: str, head: str, *, git_error: str = "") -> subprocess.CompletedProcess:
         self.git("update-ref", "refs/pull/7/head", head)
         self.git("checkout", "--detach", "-q", base)
         env = dict(self.env, BASE_SHA=base, HEAD_SHA=head)
+        # Native Windows process environments are not automatically exported
+        # into WSL. Bind validated test SHAs and relative paths in Bash itself
+        # rather than relying on WSLENV or on host-specific path translation.
+        shell_inputs = (
+            f"BASE_SHA={base}\n"
+            f"HEAD_SHA={head}\n"
+            f"PR_NUMBER={self.env['PR_NUMBER']}\n"
+            "GITHUB_ENV=../env\n"
+            "GITHUB_STEP_SUMMARY=../summary\n"
+            "export BASE_SHA HEAD_SHA PR_NUMBER GITHUB_ENV GITHUB_STEP_SUMMARY\n"
+        )
+        script = shell_inputs + self.script
         if git_error:
-            # A failed diff must not be confused with its ordinary 'changed' exit 1.
-            bindir = self.root / "bin"
-            bindir.mkdir()
-            wrapper = bindir / "git"
-            wrapper.write_text('#!/bin/bash\nif [ "$1" = "' + git_error +
-                               '" ]; then exit 128; fi\nexec "' + shutil.which("git") + '" "$@"\n')
-            wrapper.chmod(0o755)
-            env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
-        return subprocess.run(["bash", "-c", self.script], cwd=self.repo, env=env,
-                              text=True, capture_output=True, timeout=20)
+            # Keep fault injection in this Bash process. A native shim on PATH
+            # tests shim discovery instead of the workflow failure branch.
+            script = (
+                "git() {\n"
+                f'  if [ "$1" = "{git_error}" ]; then\n'
+                "    printf '__RATCHET_TEST_GIT_FAULT__=%s\\n' \"$1\" >&2\n"
+                "    return 128\n"
+                "  fi\n"
+                "  command git \"$@\"\n"
+                "}\n"
+                + script
+            )
+        result = self.run_bash_script(script, self.repo, env)
+        if not git_error:
+            self.assertEqual(
+                self.git("rev-parse", "refs/remotes/ratchet/head^{commit}"),
+                head,
+                "an ordinary import must materialize the exact PR head",
+            )
+        return result
 
     def assert_scanned_and_rejected(self, base: str, head: str) -> None:
         result = self.run_import(base, head)
@@ -580,6 +644,14 @@ class WorkflowSecurityApplicabilityTests(unittest.TestCase):
     def assert_closed(self, base: str, head: str, *, git_error: str = "") -> None:
         result = self.run_import(base, head, git_error=git_error)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        if git_error:
+            # Any old import/setup failure previously made these negative tests
+            # green. Require the named Git command to have been reached.
+            self.assertIn(f"__RATCHET_TEST_GIT_FAULT__={git_error}", result.stderr)
+            if git_error != "fetch":
+                self.assertEqual(
+                    self.git("rev-parse", "refs/remotes/ratchet/head^{commit}"), head
+                )
         self.assertFalse((self.root / "env").exists())
         self.assertFalse((self.repo / "candidate").exists())
 
@@ -602,6 +674,41 @@ class WorkflowSecurityApplicabilityTests(unittest.TestCase):
 
     def test_merge_base_failure_fails_closed(self) -> None:
         self.assert_closed(self.ancestor, self.ancestor, git_error="merge-base")
+
+    def test_relative_shell_inputs_cover_native_paths_and_outputs(self) -> None:
+        base = self.repaired_base()
+        self.git("checkout", "--detach", "-q", self.ancestor)
+        self.write("README.md", "docs only\n")
+        head = self.commit("docs")
+        result = self.run_import(base, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / "env").read_text(), "SCOPED_NOOP=true\n")
+        self.assertIn(
+            "workflow security scoped-noop: no control paths changed",
+            (self.root / "summary").read_text(),
+        )
+
+    def test_broken_fetch_cannot_impersonate_a_negative_control(self) -> None:
+        result = self.run_import(self.ancestor, self.ancestor, git_error="fetch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("__RATCHET_TEST_GIT_FAULT__=fetch", result.stderr)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("rev-parse", "--verify", "refs/remotes/ratchet/head")
+        self.assertFalse((self.root / "env").exists())
+        self.assertFalse((self.repo / "candidate").exists())
+
+    def test_bash_stdin_is_binary_utf8_without_crlf_translation(self) -> None:
+        script = "printf 'λ\\n'\n"
+        completed = subprocess.CompletedProcess(
+            ["bash", "-s"], 0, stdout=b"lambda\n", stderr=b""
+        )
+        with mock.patch.object(subprocess, "run", return_value=completed) as run:
+            result = self.run_bash_script(script, self.repo, self.env)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(run.call_args.args[0], ["bash", "-s"])
+        self.assertEqual(kwargs["input"], script.encode("utf-8"))
+        self.assertNotIn(b"\r\n", kwargs["input"])
+        self.assertEqual(result.stdout, "lambda\n")
 
 
 if __name__ == "__main__":

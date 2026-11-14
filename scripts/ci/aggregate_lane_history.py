@@ -41,6 +41,7 @@ MAX_MARKER_BYTES = 16_384
 MAX_JOBS_PER_RECEIPT = 100
 MAX_SAMPLES_PER_LANE = 1_000
 TRUSTED_MARKER = "trusted-run.json"
+TRUSTED_MARKER_SCHEMA_VERSION = "trusted_run_marker.v1"
 RUN_DIRECTORY_RE = re.compile(r"run-([1-9][0-9]*)")
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 CONTENT_DIGEST_HEX_RE = re.compile(r"[0-9a-f]{64}")
@@ -187,6 +188,10 @@ def validate_trusted_marker(
         return None, "invalid_marker"
     if not isinstance(marker, dict):
         return None, "invalid_marker"
+
+    schema_version = marker.get("schema_version")
+    if schema_version != TRUSTED_MARKER_SCHEMA_VERSION:
+        return None, "unsupported_marker_schema"
 
     run_id = marker.get("run_id")
     if (
