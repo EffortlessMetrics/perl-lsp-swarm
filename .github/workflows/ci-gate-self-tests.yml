@@ -169,6 +169,10 @@ on:
       # ripr liveness classifier (#16098): it decides whether a ripr run with no
       # scheduled job is a designed wait or an absence of proof, and posts a
       # real check run on a real head. Both halves gate each other.
+      - 'scripts/ci/ripr-hosted-guidance.sh'
+      - 'scripts/ci/ripr-hosted-guidance.py'
+      - 'scripts/ci/test_ripr_hosted_guidance.py'
+      - '.github/workflows/ripr.yml'
       - 'scripts/ci/ripr_liveness.py'
       - 'scripts/ci/test_ripr_liveness.py'
       # The reporter's own workflow calls into that module for the one decision
@@ -542,6 +546,9 @@ jobs:
 
       - name: Run PR-fast gate reporter tests (#15492)
         run: python3 -m unittest scripts.ci.test_summarize_pr_fast_gates
+
+      - name: Run hosted guidance environment transport tests (#19177)
+        run: python3 -m unittest scripts.ci.test_ripr_hosted_guidance
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness
