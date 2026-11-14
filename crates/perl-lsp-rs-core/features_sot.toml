@@ -1989,7 +1989,7 @@ counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "textDocumentSync"
 registration = "static_capabilities"
-implementation_owner = "crates/perl-lsp-rs/src/runtime/text_sync/mod.rs"
+implementation_owner = "crates/perl-lsp-rs/src/runtime/text_sync.rs"
 state_owner = "document_store"
 tests = [
   "crates/perl-lsp-rs/tests/lsp_text_sync_tests.rs",
