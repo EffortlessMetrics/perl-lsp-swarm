@@ -3770,8 +3770,11 @@ fn is_plain_decimal(value: &str) -> bool {
 /// operands such as `!;`) and valid-idiom desugaring (`while ()` empty
 /// condition): all share the zero-width point location, and a written token
 /// always spans at least one character, so the marker is truthful for every
-/// scalar arm. Call only with scalar nodes; broader fabrication coverage
-/// belongs to #6666's honesty sweep, not to this leaf.
+/// scalar arm. Call only with scalar nodes.
+///
+/// Known zero-width scalar fabrications on current `main` are enumerated and
+/// regression-tested in `tests/fix_17000_zero_width_fabrication_inventory.rs`
+/// (#17000). Broader non-scalar honesty work remains #6666.
 fn is_fabricated_scalar(node: &Node) -> bool {
     node.location.start == node.location.end
 }
