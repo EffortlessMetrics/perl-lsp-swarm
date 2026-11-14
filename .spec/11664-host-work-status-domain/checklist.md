@@ -31,9 +31,11 @@
 
 ## Rollback
 
-Single-module revert: delete `xtask/src/host_work_status/`, drop the two `lib.rs`/
-`mod.rs` lines, remove `.spec/11664-host-work-status-domain/`. No other surface
-changes; no data migration.
+Single-module revert: delete `xtask/src/host_work_status/`, drop
+`mod host_work_status;` at `xtask/src/main.rs:17`, remove the two
+`policy/allow.toml` entries and the `policy/ripr-suppressions.toml` suppression,
+and remove `.spec/11664-host-work-status-domain/`. No other surface changes; no
+data migration.
 
 ## Successor handoffs
 
