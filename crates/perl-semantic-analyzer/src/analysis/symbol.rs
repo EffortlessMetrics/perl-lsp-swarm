@@ -408,46 +408,9 @@ impl SymbolTable {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Classification of Moo/Moose framework variant detected via `use` statements during Parse/Analyze workflows.
-pub enum FrameworkKind {
-    /// `use Moo;`
-    Moo,
-    /// `use Moo::Role;`
-    MooRole,
-    /// `use Moose;`
-    Moose,
-    /// `use Moose::Role;`
-    MooseRole,
-    /// `use Role::Tiny;` — the package is a role
-    RoleTiny,
-    /// `use Role::Tiny::With;` — the package consumes roles
-    RoleTinyWith,
-    /// `use Class::Tiny;` or `use Class::Tiny::RW;`
-    ClassTiny,
-}
-
-/// Classify a `use`d module name as an object-framework activation.
-///
-/// This is the single mapping from module spelling to [`FrameworkKind`]. Other
-/// analyses that need to know whether a package activated Moo/Moose/Role::Tiny
-/// must call this rather than re-testing module spellings, so one authority
-/// decides what counts as activation.
-///
-/// Returns `None` for modules that do not activate an object framework,
-/// including `Class::Tiny` and `Class::Accessor`, which are tracked separately
-/// because they do not import the Moo/Moose DSL keywords.
-pub fn classify_framework_module(module: &str) -> Option<FrameworkKind> {
-    match module {
-        "Moo" | "Mouse" => Some(FrameworkKind::Moo),
-        "Moo::Role" | "Mouse::Role" => Some(FrameworkKind::MooRole),
-        "Moose" => Some(FrameworkKind::Moose),
-        "Moose::Role" => Some(FrameworkKind::MooseRole),
-        "Role::Tiny" => Some(FrameworkKind::RoleTiny),
-        "Role::Tiny::With" => Some(FrameworkKind::RoleTinyWith),
-        _ => None,
-    }
-}
+pub use perl_symbol::{
+    FrameworkKind, classify_framework_module, namespace_symbol_kind_for_framework,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Web framework variant detected via `use` statements during Parse/Analyze workflows.
@@ -644,15 +607,7 @@ impl SymbolExtractor {
             let Some(kind) = flags.kind else {
                 continue;
             };
-            let new_kind = match kind {
-                FrameworkKind::Moo
-                | FrameworkKind::Moose
-                | FrameworkKind::RoleTinyWith
-                | FrameworkKind::ClassTiny => SymbolKind::Class,
-                FrameworkKind::MooRole | FrameworkKind::MooseRole | FrameworkKind::RoleTiny => {
-                    SymbolKind::Role
-                }
-            };
+            let new_kind = namespace_symbol_kind_for_framework(kind);
             if let Some(symbols) = self.table.symbols.get_mut(pkg_name) {
                 for symbol in symbols.iter_mut() {
                     if symbol.kind == SymbolKind::Package {

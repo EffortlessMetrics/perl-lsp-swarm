@@ -15,6 +15,8 @@
 pub mod cache;
 /// Open-document storage used to overlay in-editor content over on-disk files.
 pub mod document_store;
+/// Framework namespace kind alignment for workspace symbol projection (#18342).
+mod framework_namespace;
 #[cfg(feature = "memory-profiling")]
 /// Optional memory-profiling utilities for workspace index internals.
 pub mod memory;
