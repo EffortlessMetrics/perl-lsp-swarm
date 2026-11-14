@@ -52,7 +52,7 @@ cargo doc -p perl-position-tracking --open   # View docs
 | `LineIndex` | Owning variant of line index. Stores text and line starts together. |
 | `LineRecordTable` | Canonical byte-only LF source-line authority: chunk-stable scan, immutable records `{start_byte, content_end_byte, separator_end_byte, separator_kind}` under policy `lf-source-lines/v1`. Bare CR / VT / FF / NEL / LS / PS are content, not boundaries. New exact-source consumers build on this, not the legacy CR-aware constructors. |
 | `PositionMapper` | Rope-backed mapper: LSP pos to byte offset, byte offset to LSP pos, incremental edits, line-ending detection. |
-| `WirePosition` | LSP wire type: 0-based line + UTF-16 character. |
+| `WirePosition` | LSP wire type: 0-based line + structural `character` (encoding supplied by session/mapper). |
 | `WireRange` | LSP wire type: start/end `WirePosition`. |
 | `WireLocation` | LSP wire type: URI + `WireRange`. |
 | `LineEnding` | Enum: `Lf`, `CrLf`, `Cr`, `Mixed`. |

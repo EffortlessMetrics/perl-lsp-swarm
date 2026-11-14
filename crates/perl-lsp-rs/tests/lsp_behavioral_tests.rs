@@ -450,18 +450,18 @@ sub calculate {
 
         // Check for specific violations. Since #3299 the default (Native)
         // `perl.runCritic` reports native rule IDs (`native.testing.require_use_*`)
-        // rather than the legacy BuiltInAnalyzer PascalCase policy names.
+        // rather than the legacy BuiltInAnalyzer PascalCase policy names. Since
+        // #6969 it shows each finding as the row pull diagnostics show, so a
+        // native finding the report collapses into its ordinary twin
+        // (PL100/PL101 for missing strict/warnings) carries that twin's code.
         if let Some(violations) = result["violations"].as_array() {
-            let has_strict_violation = violations.iter().any(|v| {
-                v["policy"]
-                    .as_str()
-                    .is_some_and(|p| p.contains("native.testing.require_use_strict"))
-            });
-            let has_warnings_violation = violations.iter().any(|v| {
-                v["policy"]
-                    .as_str()
-                    .is_some_and(|p| p.contains("native.testing.require_use_warnings"))
-            });
+            let has_policy = |native: &str, twin: &str| {
+                violations
+                    .iter()
+                    .any(|v| v["policy"].as_str().is_some_and(|p| p == native || p == twin))
+            };
+            let has_strict_violation = has_policy("native.testing.require_use_strict", "PL100");
+            let has_warnings_violation = has_policy("native.testing.require_use_warnings", "PL101");
 
             assert!(has_strict_violation, "Should detect missing 'use strict'");
             assert!(has_warnings_violation, "Should detect missing 'use warnings'");
@@ -503,7 +503,7 @@ fn run_critic_open_dirty_document_matches_pull_and_differs_from_disk() -> TestRe
     use std::collections::BTreeSet;
 
     let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
-    let dirty_text = "my $c = '1';\neval $c;\nprint $c;\n";
+    let dirty_text = "use strict;\nuse warnings;\nopen FH, '<', 'input.txt';\nprint <FH>;\n";
     let (mut harness, workspace) = LspHarness::with_workspace(&[("dirty.pl", disk_text)])?;
     let uri = workspace.uri("dirty.pl");
 
@@ -529,8 +529,8 @@ fn run_critic_open_dirty_document_matches_pull_and_differs_from_disk() -> TestRe
         .map(ToOwned::to_owned)
         .collect();
     assert!(
-        pull_codes.contains("native.security.string_eval"),
-        "pull diagnostics for dirty text must include string_eval: {pull_codes:?}"
+        pull_codes.contains("native.io.bareword_filehandle"),
+        "pull diagnostics for dirty text must include bareword_filehandle: {pull_codes:?}"
     );
 
     let result = harness.request_with_timeout(
@@ -557,7 +557,7 @@ fn run_critic_open_dirty_document_matches_pull_and_differs_from_disk() -> TestRe
         "open-document runCritic must match pull critic codes for the same text"
     );
     assert!(
-        command_codes.contains("native.security.string_eval"),
+        command_codes.contains("native.io.bareword_filehandle"),
         "dirty-only finding must come from in-memory text, not disk: {command_codes:?}"
     );
 
@@ -582,10 +582,159 @@ fn run_critic_open_dirty_document_matches_pull_and_differs_from_disk() -> TestRe
         .map(ToOwned::to_owned)
         .collect();
     assert!(
-        !disk_codes.contains("native.security.string_eval"),
+        !disk_codes.contains("native.io.bareword_filehandle"),
         "unopened runCritic must reflect on-disk text: {disk_codes:?}"
     );
     assert_ne!(command_codes, disk_codes);
+    Ok(())
+}
+
+/// One Critic row as `(code, 1-based line, 1-based column, message)`.
+type CriticRow = (String, u64, u64, String);
+
+/// Rows of a pull report as `(all rows, normalized native Critic rows)`. The
+/// native rows carry a `data.suppressionKey` that ordinary core rows do not.
+fn pull_rows(report: &Value) -> Result<(Vec<CriticRow>, Vec<CriticRow>), String> {
+    let items = report
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("pull report must include items: {report}"))?;
+    let row = |item: &Value| -> CriticRow {
+        (
+            item["code"].as_str().unwrap_or_default().to_owned(),
+            item.pointer("/range/start/line").and_then(Value::as_u64).map_or(0, |line| line + 1),
+            item.pointer("/range/start/character")
+                .and_then(Value::as_u64)
+                .map_or(0, |column| column + 1),
+            item["message"].as_str().unwrap_or_default().to_owned(),
+        )
+    };
+    let all: Vec<CriticRow> = items.iter().map(row).collect();
+    let mut native: Vec<CriticRow> = items
+        .iter()
+        .filter(|item| item.pointer("/data/suppressionKey").is_some())
+        .map(row)
+        .collect();
+    native.sort();
+    Ok((all, native))
+}
+
+/// Rows of a `perl.runCritic` result in the same shape as [`pull_rows`].
+fn command_critic_rows(result: &Value) -> Result<Vec<CriticRow>, String> {
+    let violations = result
+        .get("violations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("runCritic must include violations: {result}"))?;
+    let mut rows: Vec<CriticRow> = violations
+        .iter()
+        .map(|violation| {
+            (
+                violation["policy"].as_str().unwrap_or_default().to_owned(),
+                violation["line"].as_u64().unwrap_or(0),
+                violation["column"].as_u64().unwrap_or(0),
+                violation["description"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    rows.sort();
+    Ok(rows)
+}
+
+// #6969: for one open buffer version, `perl.runCritic` and pull diagnostics
+// are one Critic answer — the same rows (code, position, message, count),
+// including merged built-in/native overlap rows — and both move together
+// when the buffer changes, without the disk copy influencing either.
+#[test]
+fn run_critic_returns_pull_critic_rows_for_each_buffer_version() -> TestResult {
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    let version_one = "use strict;
+use warnings;
+my $cmd = shift;
+system($cmd);
+my $out = `ls`;
+open FH, '<', 'input.txt';
+print $out if defined $out;
+";
+    let version_two = "use strict;
+use warnings;
+my $v;
+if ($v == undef) { print 1; }
+open LOG, '>', 'out.txt';
+";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("parity.pl", disk_text)])?;
+    let uri = workspace.uri("parity.pl");
+
+    let mut seen_rows: Vec<Vec<CriticRow>> = Vec::new();
+    for (version, text) in [(1, version_one), (2, version_two)] {
+        if version == 1 {
+            harness.open_document(&uri, text)?;
+        } else {
+            harness.change_full(&uri, version, text)?;
+        }
+        harness.wait_for_idle(Duration::from_millis(200));
+
+        let report = harness.request(
+            "textDocument/diagnostic",
+            json!({
+                "textDocument": { "uri": uri },
+                "identifier": "perl-lsp",
+                "previousResultId": null
+            }),
+        )?;
+        let (all_pull_rows, native_pull_rows) = pull_rows(&report)?;
+
+        let result = harness.request_with_timeout(
+            "workspace/executeCommand",
+            json!({ "command": "perl.runCritic", "arguments": [uri] }),
+            Duration::from_secs(5),
+        )?;
+        assert_eq!(result["status"].as_str(), Some("success"), "v{version} runCritic: {result}");
+        assert_eq!(result["analyzerUsed"].as_str(), Some("native"), "v{version}: {result}");
+        let command_rows = command_critic_rows(&result)?;
+        assert_eq!(
+            result["violationCount"].as_u64(),
+            Some(command_rows.len() as u64),
+            "v{version}: violationCount must count the returned rows"
+        );
+
+        assert!(
+            native_pull_rows.iter().any(|row| row.0 == "native.io.bareword_filehandle"),
+            "v{version}: fixture must produce a native Critic row in pull: {native_pull_rows:#?}"
+        );
+        // Every command row is a row the pull report shows, byte for byte...
+        for row in &command_rows {
+            assert!(
+                all_pull_rows.contains(row),
+                "v{version}: runCritic row {row:?} is not in the pull report: {all_pull_rows:#?}"
+            );
+        }
+        // ...and every native Critic row of the report is in the command.
+        for row in &native_pull_rows {
+            assert!(
+                command_rows.contains(row),
+                "v{version}: pull Critic row {row:?} missing from runCritic: {command_rows:#?}"
+            );
+        }
+        // Rows the report collapsed into an ordinary `PL*` twin (here
+        // `open()` unchecked) are shown under that twin, not dropped.
+        assert!(
+            command_rows.len() > native_pull_rows.len(),
+            "v{version}: collapsed native findings must surface as their pull twin: {command_rows:#?}"
+        );
+        seen_rows.push(command_rows);
+    }
+
+    // Version one exercises the merged system() overlap row; version two the
+    // merged undef-comparison row. Fixtures avoid facts whose native twin the
+    // full report collapses into an ordinary `PL*` row (e.g. string eval), so
+    // every command row is visible on the pull wire. Distinct row sets prove the second answer
+    // is not a replay of the first.
+    assert!(
+        seen_rows[0].iter().any(|row| row.0 == "PL603"),
+        "v1 must carry the merged PL603 system() row: {:#?}",
+        seen_rows[0]
+    );
+    assert_ne!(seen_rows[0], seen_rows[1], "buffer change must change the Critic answer");
     Ok(())
 }
 
@@ -658,7 +807,7 @@ fn run_critic_open_document_parse_failure_reports_syntax_violation() -> TestResu
 #[test]
 fn run_critic_open_document_relative_path_target_uses_dirty_buffer() -> TestResult {
     let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
-    let dirty_text = "my $c = '1';\neval $c;\nprint $c;\n";
+    let dirty_text = "use strict;\nuse warnings;\nopen FH, '<', 'input.txt';\nprint <FH>;\n";
     let (mut harness, workspace) = LspHarness::with_workspace(&[("rel.pl", disk_text)])?;
     let uri = workspace.uri("rel.pl");
     harness.open_document(&uri, dirty_text)?;
@@ -672,7 +821,7 @@ fn run_critic_open_document_relative_path_target_uses_dirty_buffer() -> TestResu
     assert_eq!(result["status"].as_str(), Some("success"), "relative runCritic: {result}");
     let policies = run_critic_policies(&result);
     assert!(
-        policies.iter().any(|p| p == "native.security.string_eval"),
+        policies.iter().any(|p| p == "native.io.bareword_filehandle"),
         "dirty buffer must be analyzed via relative target: {policies:?}"
     );
     Ok(())

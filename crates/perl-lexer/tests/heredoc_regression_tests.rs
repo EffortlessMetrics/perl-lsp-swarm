@@ -153,7 +153,6 @@ fn reset_inside_print_call_clears_the_slot() {
         }
     }
     lx.reset();
-    let mut lx = lx;
     lx = PerlLexer::new("my $x = (1 << 2);\n");
     let tokens = lx.collect_tokens();
     assert!(

@@ -55,7 +55,7 @@ write_fake_cargo() {
   cat > "${fake_bin}/cargo" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${1:-}" = "--version" ]; then printf 'cargo %s (stub)\n' "${FAKE_CARGO_VERSION:-1.95.0}"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then printf 'cargo %s (stub)\n' "${FAKE_CARGO_VERSION:-1.100.0}"; exit 0; fi
 printf '%s\0' "$@" >> "${FAKE_CARGO_LOG_DIR:?}/args.bin"
 pwd >> "${FAKE_CARGO_LOG_DIR}/cwd.txt"
 exit "${FAKE_CARGO_EXIT:-0}"

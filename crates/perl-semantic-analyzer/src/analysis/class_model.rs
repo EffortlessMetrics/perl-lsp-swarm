@@ -1878,7 +1878,7 @@ fn collect_export_tags(node: &Node) -> HashMap<String, Vec<String>> {
             }
         }
         NodeKind::ArrayLiteral { elements } => {
-            for pair in elements.chunks_exact(2) {
+            for pair in elements.as_chunks::<2>().0 {
                 let Some(tag_name) = collect_single_symbol_name(&pair[0]) else { continue };
                 let Some(symbols) = collect_static_symbol_names(&pair[1]) else { continue };
                 if symbols.is_empty() {

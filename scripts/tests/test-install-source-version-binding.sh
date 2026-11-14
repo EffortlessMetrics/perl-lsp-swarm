@@ -62,7 +62,7 @@ set -euo pipefail
 printf '%s\0' "$@" >> "${FAKE_CARGO_LOG:?}"
 
 if [[ "${1:-}" == "--version" ]]; then
-    echo "cargo 1.95.0 (fake-shim)"
+    echo "cargo 1.100.0 (fake-shim)"
     exit 0
 fi
 
@@ -118,7 +118,7 @@ chmod +x "$FAKEBIN/cargo"
 cat > "$FAKEBIN/rustc" <<'SHIM'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-    echo "rustc 1.95.0 (fake-shim)"
+    echo "rustc 1.100.0 (fake-shim)"
     exit 0
 fi
 exit 0

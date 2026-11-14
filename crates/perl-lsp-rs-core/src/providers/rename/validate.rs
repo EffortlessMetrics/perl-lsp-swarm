@@ -25,11 +25,7 @@ pub fn can_rename_symbol(name: &str, _kind: SymbolKind) -> bool {
         "die", "warn", "eval", "exit", "require", "use", "package", "sub",
     ];
 
-    if builtins.contains(&name) {
-        return false;
-    }
-
-    true
+    !builtins.contains(&name)
 }
 
 /// Validate a new name

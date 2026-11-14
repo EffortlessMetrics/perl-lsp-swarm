@@ -1,0 +1,277 @@
+//! Regression (#19206): a `#` inside a string or regex must not make the
+//! definition/completion comment guard treat the rest of the line as a
+//! comment. The guard adjudicates a naive `#`-earlier-on-line hit with the
+//! snapshot `SourceRegionIndex`; a real trailing comment still blocks.
+
+mod support;
+
+use serde_json::{Value, json};
+use support::lsp_harness::LspHarness;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn pos_of(source: &str, needle: &str) -> Result<(u32, u32), String> {
+    for (line_idx, line) in source.lines().enumerate() {
+        if let Some(idx) = line.find(needle) {
+            return Ok((line_idx as u32, idx as u32));
+        }
+    }
+    Err(format!("needle {needle:?} not found"))
+}
+
+fn assert_definition_at_declaration(result: &Value, label: &str) -> TestResult {
+    let location = match result {
+        Value::Array(items) => items.first(),
+        Value::Object(_) => Some(result),
+        _ => None,
+    };
+    let location = location.ok_or_else(|| format!("{label} must resolve, got: {result}"))?;
+    let line = location
+        .pointer("/range/start/line")
+        .or_else(|| location.pointer("/targetRange/start/line"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{label} location has no start line, got: {result}"))?;
+    assert_eq!(line, 0, "{label} must land on the declaration (line 0), got: {result}");
+    Ok(())
+}
+
+fn definition_resolves_to_declaration(doc: &str, uri: &str, label: &str) -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document(uri, doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "target_sub();")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 2}
+        }),
+    )?;
+    assert_definition_at_declaration(&result, label)
+}
+
+#[test]
+fn definition_after_hash_in_string_resolves() -> TestResult {
+    definition_resolves_to_declaration(
+        "sub target_sub { return 1; }\nmy $sep = \"#\"; target_sub();\n",
+        "file:///hash_string.pl",
+        "definition after \"#\" string",
+    )
+}
+
+#[test]
+fn definition_after_hash_in_single_quotes_resolves() -> TestResult {
+    definition_resolves_to_declaration(
+        "sub target_sub { return 1; }\nmy $sep = '#'; target_sub();\n",
+        "file:///hash_single_quote.pl",
+        "definition after '#' string",
+    )
+}
+
+#[test]
+fn definition_after_hash_in_regex_resolves() -> TestResult {
+    definition_resolves_to_declaration(
+        "sub target_sub { return 1; }\nmy $s = \"ab\"; $s =~ s/#.*//; target_sub();\n",
+        "file:///hash_regex.pl",
+        "definition after regex #",
+    )
+}
+
+#[test]
+fn definition_inside_quoted_text_still_refused() -> TestResult {
+    // Definition must not gain jumps from quoted text the naive guard used
+    // to suppress: the cursor is inside a string literal here, not in code
+    // after it (#19206 review).
+    let doc = "package Foo::Bar;\nmy $m = \"# use Foo::Bar\";\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///quoted_module.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "# use Foo::Bar")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///quoted_module.pl"},
+            "position": {"line": line, "character": character + 8}
+        }),
+    )?;
+    assert!(
+        result.is_null() || result.as_array().is_some_and(|items| items.is_empty()),
+        "definition inside quoted text must refuse, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn definition_inside_real_comment_still_refused() -> TestResult {
+    let doc = "sub target_sub { return 1; }\nmy $x = 1; # target_sub();\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///real_comment.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "# target_sub")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///real_comment.pl"},
+            "position": {"line": line, "character": character + 4}
+        }),
+    )?;
+    assert!(
+        result.is_null() || result.as_array().is_some_and(|items| items.is_empty()),
+        "definition inside a real comment must refuse, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_after_hash_in_string_offers_symbols() -> TestResult {
+    let doc = "sub target_sub { return 1; }\nmy $sep = \"#\"; targ\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///hash_completion.pl", doc)?;
+    harness.barrier();
+
+    // Anchored needle: plain "targ" would first match `target_sub` on line 0.
+    let (line, character) = pos_of(doc, "; targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///hash_completion.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub")),
+        "completion after \"#\" string must offer target_sub, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_after_hash_in_regex_offers_symbols() -> TestResult {
+    let doc = "sub target_sub { return 1; }\nmy $s = \"ab\"; $s =~ s/#.*//; targ\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///hash_regex_completion.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "; targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///hash_regex_completion.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub")),
+        "completion after regex # must offer target_sub, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_at_eof_after_hash_in_string_offers_symbols() -> TestResult {
+    // No trailing newline: the cursor is at EOF, so the guard must classify
+    // through the empty-range left-hand kind (code), not fail closed.
+    let doc = "sub target_sub { return 1; }\nmy $sep = \"#\"; targ";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///hash_eof.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "; targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///hash_eof.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub")),
+        "completion at EOF after \"#\" string must offer target_sub, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_at_eof_inside_real_comment_still_empty() -> TestResult {
+    // Paired with the EOF rescue above: the left-hand kind here is a real
+    // comment, so the guard must still block.
+    let doc = "sub target_sub { return 1; }\nmy $x = 1; # targ";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///comment_eof.pl", doc)?;
+    harness.barrier();
+
+    let (line, character) = pos_of(doc, "# targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///comment_eof.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        items.is_empty(),
+        "completion at EOF inside a real comment must be empty, got: {result}"
+    );
+    Ok(())
+}
+
+#[test]
+fn completion_inside_real_comment_still_empty() -> TestResult {
+    let doc = "sub target_sub { return 1; }\n# targ\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///comment_completion.pl", doc)?;
+    harness.barrier();
+
+    // Anchored needle: plain "targ" would first match `target_sub` on line 0.
+    let (line, character) = pos_of(doc, "# targ")?;
+    let result = harness.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///comment_completion.pl"},
+            "position": {"line": line, "character": character + 6}
+        }),
+    )?;
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(items.is_empty(), "completion inside a real comment must be empty, got: {result}");
+    Ok(())
+}

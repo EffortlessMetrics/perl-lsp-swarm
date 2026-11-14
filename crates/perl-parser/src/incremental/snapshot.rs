@@ -1,11 +1,12 @@
-use perl_parser_core::error::{ParseError, ParseOutput};
+use perl_parser_core::error::{
+    ParseCompletion, ParseCompletionClass, ParseCompletionValidationError, ParseOutput,
+};
 use perl_source_identity::ContentDigest;
 use thiserror::Error;
 
-#[cfg(test)]
-use super::geometry_attachment::SourceGeometryAttachmentState;
 use super::geometry_attachment::{
-    SourceGeometryAttachment, SourceGeometrySubject, SourceGeometryValidationError,
+    SourceGeometryAttachment, SourceGeometryAttachmentState, SourceGeometrySubject,
+    SourceGeometryValidationError,
 };
 
 /// Monotonic identity for one committed parser generation.
@@ -42,11 +43,9 @@ impl ParseGeneration {
 
 /// Terminal parser disposition for one exact source generation.
 ///
-/// The classification consumes maintained parser-output fields (`recovered_count`,
-/// `terminated_early`) and typed diagnostic variants; it never treats a bare
-/// non-empty diagnostic vector as recovery, because [`ParseError::Advisory`]
-/// diagnostics do not invalidate the AST. #8036 owns the final exact stop-cause
-/// vocabulary this classification will consume once it lands.
+/// This is the coarse projection of [`ParseCompletion`]. The snapshot stores
+/// the typed completion produced by the parser operation and never classifies
+/// from diagnostic count, wording, or a post-hoc diagnostic scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ParseTerminalDisposition {
@@ -61,6 +60,21 @@ pub enum ParseTerminalDisposition {
     Cancelled,
     /// Parsing stopped because a parser resource budget was exhausted.
     BudgetExhausted,
+}
+
+impl ParseTerminalDisposition {
+    /// Project the coarse snapshot class from a typed parser completion.
+    #[must_use]
+    pub const fn from_completion(completion: ParseCompletion) -> Self {
+        match completion.class() {
+            ParseCompletionClass::Clean => Self::Clean,
+            ParseCompletionClass::Recovered => Self::Recovered,
+            ParseCompletionClass::Catastrophic => Self::Catastrophic,
+            ParseCompletionClass::Cancelled => Self::Cancelled,
+            ParseCompletionClass::BudgetExhausted => Self::BudgetExhausted,
+            _ => Self::Catastrophic,
+        }
+    }
 }
 
 /// Production path that created the committed snapshot.
@@ -89,7 +103,7 @@ pub struct ParseSnapshot {
     generation: ParseGeneration,
     content_digest: ContentDigest,
     source_len: usize,
-    disposition: ParseTerminalDisposition,
+    completion: ParseCompletion,
     strategy: ParseSnapshotStrategy,
     source_geometry: SourceGeometryAttachment,
     parse_output: ParseOutput,
@@ -136,7 +150,8 @@ impl ParseSnapshot {
         parse_output: ParseOutput,
         previous_subject: Option<&SourceGeometrySubject>,
     ) -> Self {
-        let disposition = classify_output(&parse_output);
+        let completion = parse_output.completion();
+        let disposition = ParseTerminalDisposition::from_completion(completion);
         let content_digest = ContentDigest::of_bytes(source.as_bytes());
         let source_len = source.len();
         let geometry_subject = match previous_subject {
@@ -161,11 +176,36 @@ impl ParseSnapshot {
             generation,
             content_digest,
             source_len,
-            disposition,
+            completion,
             strategy,
             source_geometry,
             parse_output,
         }
+    }
+
+    /// Instrument or setup failure cannot become a parser snapshot.
+    ///
+    /// External timeout, missing instrument, harness panic, and receipt-write
+    /// failure remain operation failure/`NOT_PROVEN`, not a parser-domain
+    /// terminal class.
+    pub fn from_operation_failure(
+        failure: ParseOperationFailure,
+    ) -> Result<Self, ParseSnapshotConstructionError> {
+        match failure {
+            ParseOperationFailure::InstrumentFailure => {
+                Err(ParseSnapshotConstructionError::InstrumentFailure)
+            }
+            ParseOperationFailure::NotProven => Err(ParseSnapshotConstructionError::NotProven),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_instrument_failure_geometry(mut self) -> Self {
+        self.source_geometry = SourceGeometryAttachment::instrument_failure(
+            self.source_geometry.subject().clone(),
+            super::geometry_attachment::SourceGeometryInstrumentFailureReason::ProducerFailed,
+        );
+        self
     }
 
     /// Monotonic committed generation.
@@ -186,10 +226,16 @@ impl ParseSnapshot {
         self.source_len
     }
 
+    /// Typed parser-operation completion carried into this snapshot.
+    #[must_use]
+    pub const fn completion(&self) -> ParseCompletion {
+        self.completion
+    }
+
     /// Terminal parser disposition for this generation.
     #[must_use]
     pub const fn disposition(&self) -> ParseTerminalDisposition {
-        self.disposition
+        ParseTerminalDisposition::from_completion(self.completion)
     }
 
     /// Production path that produced this generation.
@@ -229,31 +275,61 @@ impl ParseSnapshot {
             });
         }
 
-        let observed_disposition = classify_output(&self.parse_output);
-        if self.disposition != observed_disposition {
+        let observed_completion = self.parse_output.completion();
+        if self.completion != observed_completion {
             return Err(ParseSnapshotValidationError::Disposition {
-                recorded: self.disposition,
-                observed: observed_disposition,
+                recorded: ParseTerminalDisposition::from_completion(self.completion),
+                observed: ParseTerminalDisposition::from_completion(observed_completion),
             });
         }
+        self.completion.validate_against_output(&self.parse_output)?;
 
-        // For Unavailable/InstrumentFailure attachments this subject compare
-        // is tautological (the attachment subject was built from these same
-        // fields); the discriminating payload check runs only for
-        // Partial/Complete states inside validate_for. The uniform call is
-        // deliberate defense in depth for the snapshot-bound identity.
+        if matches!(
+            self.source_geometry.state(),
+            SourceGeometryAttachmentState::InstrumentFailure { .. }
+        ) {
+            return Err(ParseSnapshotValidationError::InstrumentFailure);
+        }
+
+        // Unavailable attachments compare tautologically (the attachment
+        // subject was built from these same fields); the discriminating
+        // payload check runs only for Partial/Complete states inside
+        // validate_for. The uniform call is deliberate defense in depth.
         let expected_geometry_subject = SourceGeometrySubject::next_for_same_instance(
             self.source_geometry.subject(),
             self.generation,
             self.content_digest.clone(),
             self.source_len,
-            self.disposition,
+            self.disposition(),
             self.strategy,
         );
         self.source_geometry.validate_for(&expected_geometry_subject)?;
 
         Ok(())
     }
+}
+
+/// Parser-domain operation that failed before a snapshot could exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseOperationFailure {
+    /// Geometry or other instrumentation failed independently of parser output.
+    InstrumentFailure,
+    /// The operation result is missing or untrustworthy.
+    NotProven,
+}
+
+/// Why a parser snapshot could not be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum ParseSnapshotConstructionError {
+    /// Instrument or setup failure cannot become a parser snapshot.
+    #[error("instrument or setup failure cannot produce a parser snapshot")]
+    InstrumentFailure,
+    /// Missing instrument, harness failure, or receipt-write failure is not a
+    /// parser-domain terminal.
+    #[error("operation failure remains NOT_PROVEN, not a parser snapshot")]
+    NotProven,
 }
 
 /// Snapshot/source identity, terminal-class, or geometry-attachment mismatch.
@@ -284,49 +360,47 @@ pub enum ParseSnapshotValidationError {
         /// Disposition derived from the native output.
         observed: ParseTerminalDisposition,
     },
+    /// Stored completion fails required/forbidden field checks.
+    #[error(transparent)]
+    Completion(#[from] ParseCompletionValidationError),
+    /// Instrument failure leaked into a constructed snapshot.
+    #[error("instrument failure cannot remain a successful parser snapshot")]
+    InstrumentFailure,
     /// Source geometry is malformed or belongs to another snapshot subject.
     #[error(transparent)]
     SourceGeometry(#[from] SourceGeometryValidationError),
 }
 
-fn classify_output(output: &ParseOutput) -> ParseTerminalDisposition {
-    if output.diagnostics.iter().any(|error| matches!(error, ParseError::Cancelled)) {
-        ParseTerminalDisposition::Cancelled
-    } else if output.terminated_early()
-        || output.diagnostics.iter().any(|error| {
-            matches!(error, ParseError::RecursionLimit | ParseError::NestingTooDeep { .. })
-        })
-    {
-        ParseTerminalDisposition::BudgetExhausted
-    } else if output.recovered_count > 0 {
-        ParseTerminalDisposition::Recovered
-    } else if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
-        ParseTerminalDisposition::Catastrophic
-    } else {
-        ParseTerminalDisposition::Clean
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_parser_core::error::ParseStopCause;
+    use perl_parser_core::error::{
+        ParseBudgetExhaustionDimension, ParseCancellationIdentity, ParseCatastrophicCause,
+        ParseCompletionStage, ParseCoreDimension, ParseError, ParseStopCause,
+    };
     use perl_parser_core::parser::Parser;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     fn parse(source: &str) -> ParseOutput {
         Parser::new(source).parse_with_recovery()
     }
 
-    #[test]
-    fn clean_output_has_clean_disposition() {
-        let source = "my $x = 1;";
-        let snapshot = ParseSnapshot::from_output(
+    fn make_snapshot(source: &str, output: ParseOutput) -> ParseSnapshot {
+        ParseSnapshot::from_output(
             source,
             ParseGeneration::INITIAL,
             ParseSnapshotStrategy::Fresh,
-            parse(source),
-        );
+            output,
+        )
+    }
 
+    #[test]
+    fn clean_output_has_clean_disposition() {
+        let source = "my $x = 1;";
+        let snapshot = make_snapshot(source, parse(source));
+
+        assert_eq!(snapshot.completion(), ParseCompletion::CompletedClean);
         assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Clean);
         assert!(snapshot.validate_against(source).is_ok());
         assert!(matches!(
@@ -344,35 +418,22 @@ mod tests {
     #[test]
     fn independent_snapshots_with_identical_bytes_have_distinct_instances() {
         let source = "my $x = 1;";
-        let first = ParseSnapshot::from_output(
-            source,
-            ParseGeneration::INITIAL,
-            ParseSnapshotStrategy::Fresh,
-            parse(source),
-        );
-        let second = ParseSnapshot::from_output(
-            source,
-            ParseGeneration::INITIAL,
-            ParseSnapshotStrategy::Fresh,
-            parse(source),
-        );
+        let first = make_snapshot(source, parse(source));
+        let second = make_snapshot(source, parse(source));
 
         assert!(
             !first.source_geometry().subject().same_instance_as(second.source_geometry().subject())
         );
         assert_ne!(first.source_geometry().subject(), second.source_geometry().subject());
+        assert_eq!(first.completion(), second.completion());
     }
 
     #[test]
     fn diagnostics_with_recovery_make_the_snapshot_recovered() {
         let source = "my $x = ;";
-        let snapshot = ParseSnapshot::from_output(
-            source,
-            ParseGeneration::INITIAL,
-            ParseSnapshotStrategy::Fresh,
-            parse(source),
-        );
+        let snapshot = make_snapshot(source, parse(source));
 
+        assert!(matches!(snapshot.completion(), ParseCompletion::CompletedWithRecovery { .. }));
         assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Recovered);
         assert_eq!(
             snapshot.source_geometry().subject().disposition(),
@@ -382,87 +443,192 @@ mod tests {
 
     #[test]
     fn advisory_only_output_is_not_recovered() {
-        // ParseError::Advisory explicitly does not invalidate the AST, so an
-        // advisory-only valid parse must not be classified as Recovered; that
-        // would wrongly disable downstream features gating on recovered output.
         let source = "my $x = 1;";
         let mut advisory = parse(source);
         assert_eq!(advisory.recovered_count, 0);
         advisory
             .diagnostics
             .push(ParseError::Advisory { message: "style note".to_string(), location: 0 });
-        let snapshot = ParseSnapshot::from_output(
-            source,
-            ParseGeneration::INITIAL,
-            ParseSnapshotStrategy::Fresh,
-            advisory,
-        );
+        let snapshot = make_snapshot(source, advisory);
+        assert_eq!(snapshot.completion(), ParseCompletion::CompletedClean);
         assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Clean);
         assert!(snapshot.validate_against(source).is_ok());
     }
 
     #[test]
-    fn blocking_diagnostic_without_recovery_is_catastrophic() {
+    fn blocking_diagnostic_without_recovery_is_not_inferred_catastrophe() {
         let source = "my $x = 1;";
         let mut output = parse(source);
         assert_eq!(output.recovered_count, 0);
         output.diagnostics.push(ParseError::UnexpectedEof);
 
-        let snapshot = ParseSnapshot::from_output(
-            source,
-            ParseGeneration::INITIAL,
-            ParseSnapshotStrategy::Fresh,
-            output,
-        );
-
-        assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Catastrophic);
+        let snapshot = make_snapshot(source, output);
+        assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Clean);
+        assert_ne!(snapshot.disposition(), ParseTerminalDisposition::Recovered);
+        assert_ne!(snapshot.disposition(), ParseTerminalDisposition::Catastrophic);
         assert!(snapshot.validate_against(source).is_ok());
     }
 
     #[test]
-    fn cancellation_and_budget_exhaustion_are_not_recovery() {
+    fn typed_catastrophic_constructor_is_reachable_with_and_without_safe_partial() {
         let source = "my $x = 1;";
+        let mut without_partial = parse(source);
+        without_partial.set_stop_cause(Some(ParseStopCause::CatastrophicTermination));
+        let without_partial = make_snapshot(source, without_partial);
+        assert_eq!(
+            without_partial.completion(),
+            ParseCompletion::catastrophic(
+                ParseCatastrophicCause::UnrecoverableParserOrLexerFailure,
+                true,
+            )
+        );
+        assert_eq!(without_partial.disposition(), ParseTerminalDisposition::Catastrophic);
+        assert!(without_partial.validate_against(source).is_ok());
+
+        let mut with_shell = parse(source);
+        with_shell.ast = perl_parser_core::Node::new(
+            perl_parser_core::NodeKind::Program { statements: vec![] },
+            perl_parser_core::SourceLocation { start: 0, end: 0 },
+        );
+        with_shell.set_stop_cause(Some(ParseStopCause::CatastrophicTermination));
+        let with_shell = make_snapshot(source, with_shell);
+        assert_eq!(
+            with_shell.completion(),
+            ParseCompletion::catastrophic(
+                ParseCatastrophicCause::UnrecoverableParserOrLexerFailure,
+                false,
+            )
+        );
+        assert_eq!(with_shell.disposition(), ParseTerminalDisposition::Catastrophic);
+    }
+
+    #[test]
+    fn diagnostic_text_cannot_synthesize_cancellation_or_exhaustion() {
+        let source = "my $x = 1;";
+        let mut cancelled_diag = parse(source);
+        cancelled_diag.diagnostics.push(ParseError::Cancelled);
+        cancelled_diag.diagnostics.push(ParseError::RecursionLimit);
+        let cancelled_diag = make_snapshot(source, cancelled_diag);
+        assert_eq!(cancelled_diag.disposition(), ParseTerminalDisposition::Clean);
+        assert_ne!(cancelled_diag.disposition(), ParseTerminalDisposition::Cancelled);
+        assert_ne!(cancelled_diag.disposition(), ParseTerminalDisposition::BudgetExhausted);
+
         let mut cancelled = parse(source);
-        cancelled.diagnostics.push(ParseError::Cancelled);
-        let cancelled = ParseSnapshot::from_output(
-            source,
-            ParseGeneration::INITIAL,
-            ParseSnapshotStrategy::Fresh,
-            cancelled,
+        cancelled.diagnostics.push(ParseError::syntax("looks recovered", 0));
+        cancelled.set_stop_cause(Some(ParseStopCause::Cancelled));
+        let cancelled = make_snapshot(source, cancelled);
+        assert_eq!(
+            cancelled.completion(),
+            ParseCompletion::cancelled(
+                ParseCompletionStage::Unspecified,
+                ParseCancellationIdentity::CooperativeToken,
+            )
         );
         assert_eq!(cancelled.disposition(), ParseTerminalDisposition::Cancelled);
 
         let mut exhausted = parse(source);
-        // Simulated budget exhaustion through the only checked mutation path;
-        // the derived `terminated_early` projection follows automatically.
+        exhausted.diagnostics.push(ParseError::Cancelled);
         exhausted.set_stop_cause(Some(ParseStopCause::NestingOrDepthBudgetExhausted {
             limit: 512,
             usage: 513,
         }));
-        let exhausted = ParseSnapshot::from_output(
+        let exhausted = make_snapshot(source, exhausted);
+        assert_eq!(exhausted.disposition(), ParseTerminalDisposition::BudgetExhausted);
+        assert!(matches!(
+            exhausted.completion(),
+            ParseCompletion::BudgetExhausted {
+                dimension: ParseBudgetExhaustionDimension::NestingOrDepth,
+                limit: Some(512),
+                usage: Some(513),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn live_cancellation_and_core_budget_use_typed_completion() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut parser = Parser::new_with_cancellation("my $x = 1;", flag);
+        let cancelled = parser.parse_with_recovery();
+        let snapshot = make_snapshot("my $x = 1;", cancelled);
+        assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Cancelled);
+        assert!(snapshot.validate_against("my $x = 1;").is_ok());
+
+        let mut exhausted = parse("my $x = 1;");
+        exhausted.set_stop_cause(Some(ParseStopCause::CoreBudgetExhausted {
+            dimension: ParseCoreDimension::DiagnosticsEmitted,
+            limit: 1,
+            usage: 1,
+        }));
+        let exhausted = make_snapshot("my $x = 1;", exhausted);
+        assert_eq!(exhausted.disposition(), ParseTerminalDisposition::BudgetExhausted);
+    }
+
+    #[test]
+    fn instrument_failure_cannot_become_a_snapshot() {
+        assert!(matches!(
+            ParseSnapshot::from_operation_failure(ParseOperationFailure::InstrumentFailure),
+            Err(ParseSnapshotConstructionError::InstrumentFailure)
+        ));
+        assert!(matches!(
+            ParseSnapshot::from_operation_failure(ParseOperationFailure::NotProven),
+            Err(ParseSnapshotConstructionError::NotProven)
+        ));
+
+        let source = "my $x = 1;";
+        let leaked = make_snapshot(source, parse(source)).with_instrument_failure_geometry();
+        assert_eq!(
+            leaked.validate_against(source),
+            Err(ParseSnapshotValidationError::InstrumentFailure)
+        );
+        assert_eq!(leaked.disposition(), ParseTerminalDisposition::Clean);
+    }
+
+    #[test]
+    fn fresh_restart_and_fallback_share_the_terminal_constructor() {
+        let source = "my $x = 1;";
+        let output = parse(source);
+        let fresh = ParseSnapshot::from_output(
             source,
             ParseGeneration::INITIAL,
             ParseSnapshotStrategy::Fresh,
-            exhausted,
+            output.clone(),
         );
-        assert_eq!(exhausted.disposition(), ParseTerminalDisposition::BudgetExhausted);
+        let restart = ParseSnapshot::from_output(
+            source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::IncrementalTokenRestartThenFullParse,
+            output.clone(),
+        );
+        let fallback = ParseSnapshot::from_output(
+            source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::IncrementalFullFallback,
+            output,
+        );
+        assert_eq!(fresh.completion(), restart.completion());
+        assert_eq!(restart.completion(), fallback.completion());
+        assert_eq!(fresh.disposition(), ParseTerminalDisposition::Clean);
+    }
+
+    #[test]
+    fn repeated_identical_source_is_deterministic() {
+        let source = "my $x = ;";
+        let first = make_snapshot(source, parse(source));
+        let second = make_snapshot(source, parse(source));
+        assert_eq!(first.completion(), second.completion());
+        assert_eq!(first.disposition(), second.disposition());
     }
 
     #[test]
     fn exact_source_identity_is_load_bearing() {
         let source = "my $x = 1;";
-        let snapshot = ParseSnapshot::from_output(
-            source,
-            ParseGeneration::INITIAL,
-            ParseSnapshotStrategy::Fresh,
-            parse(source),
-        );
+        let snapshot = make_snapshot(source, parse(source));
 
         assert!(matches!(
             snapshot.validate_against("my $y = 1;"),
             Err(ParseSnapshotValidationError::ContentDigest { .. })
         ));
-        // Same length, different bytes: a length-only check would accept this.
         assert!(matches!(
             snapshot.validate_against("my $z = 1;"),
             Err(ParseSnapshotValidationError::ContentDigest { .. })

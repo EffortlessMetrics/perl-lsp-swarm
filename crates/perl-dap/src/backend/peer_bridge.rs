@@ -149,7 +149,7 @@ impl DapPeerBridge {
             // is future work for cooperative mode; the v1 integration target does
             // not require peers to send it — see PTKDB_PEER_INTEGRATION_TARGET.md.)
             DebugEvent::Initialized => {}
-            DebugEvent::Stopped { reason, thread_id: _, .. } => {
+            DebugEvent::Stopped { reason, .. } => {
                 // Same identity contract as `validate_thread_scoped`: the
                 // editor must only ever observe the advertised synthetic
                 // execution context, so a backend event reporting a foreign id

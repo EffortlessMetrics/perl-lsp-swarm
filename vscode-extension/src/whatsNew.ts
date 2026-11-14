@@ -120,13 +120,28 @@ export class WhatsNewManager {
    * or an empty string when the version is not found.
    */
   extractChangelogSection(version: string): string {
-    try {
-      const changelogPath = path.join(this.context.extensionPath, 'CHANGELOG.md');
-      const full = fs.readFileSync(changelogPath, 'utf8');
-      return extractVersionSection(full, version);
-    } catch {
-      return '';
+    // vsce normalizes the packaged changelog to lowercase. Keep the
+    // source-checkout spelling as a fallback for development hosts.
+    for (const name of ['changelog.md', 'CHANGELOG.md']) {
+      try {
+        const full = fs.readFileSync(path.join(this.context.extensionPath, name), 'utf8');
+        return resolveVersionSection(full, version);
+      } catch {
+        // Try the development filename, then preserve the missing-file fallback.
+      }
     }
+    return '';
+  }
+
+  /**
+   * Returns true when auto-opening What's New would show substantive release notes.
+   */
+  hasReleaseNotesContent(): boolean {
+    const version = this.currentVersion();
+    if (!version) {
+      return false;
+    }
+    return hasSectionBody(this.extractChangelogSection(version));
   }
 
   /**
@@ -204,7 +219,10 @@ ${htmlBody}
 export function extractVersionSection(changelog: string, version: string): string {
   // Match headings like: ## [0.12.0] - 2026-03-19  or  ## 0.12.0
   const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const headingRe = new RegExp(`^##\\s+(?:\\[${escaped}\\]|${escaped})(?:\\s+[^\\n]*)?$`, 'm');
+  const headingRe = new RegExp(
+    `^##[ \\t]+(?:\\[${escaped}\\]|${escaped})(?:[ \\t]+[^\\n]*)?$`,
+    'm',
+  );
   const match = headingRe.exec(changelog);
   if (!match) {
     return '';
@@ -217,6 +235,36 @@ export function extractVersionSection(changelog: string, version: string): strin
   const end = nextHeading !== null ? start + match[0].length + nextHeading.index : changelog.length;
 
   return changelog.slice(start, end).trim();
+}
+
+/**
+ * Resolve changelog content for `package.json` versions that do not yet have a
+ * dedicated heading (pre-releases) or that track `## [Unreleased]` (#18432).
+ */
+export function resolveVersionSection(changelog: string, version: string): string {
+  const candidates = [version];
+  const hyphen = version.indexOf('-');
+  if (hyphen > 0) {
+    candidates.push(version.slice(0, hyphen));
+  }
+  candidates.push('Unreleased');
+
+  for (const candidate of candidates) {
+    const section = extractVersionSection(changelog, candidate);
+    if (hasSectionBody(section)) {
+      return section;
+    }
+  }
+  return '';
+}
+
+/**
+ * True when an extracted section has content beyond its `##` heading line, so a
+ * heading-only `## [Unreleased]` never auto-opens an empty What's New tab.
+ */
+export function hasSectionBody(section: string): boolean {
+  const newline = section.indexOf('\n');
+  return newline >= 0 && section.slice(newline + 1).trim().length > 0;
 }
 
 /**
