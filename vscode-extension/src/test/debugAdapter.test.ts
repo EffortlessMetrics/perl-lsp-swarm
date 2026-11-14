@@ -2029,6 +2029,27 @@ describe('activateDebugger debug config onboarding (#16499)', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  test('background Perl document becoming active prompts only on its first switch', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-active-background-'));
+    try {
+      mockFolderForDoc(tmpDir);
+      activateDebugger(makeContext(tmpDir));
+      const calls = jest.mocked(vscode.window.onDidChangeActiveTextEditor).mock.calls;
+      const onActive = calls[calls.length - 1]?.[0] as (editor?: vscode.TextEditor) => void;
+      expect(onActive).toBeDefined();
+      const editor = { document: perlDoc(tmpDir) } as vscode.TextEditor;
+      onActive?.(editor);
+      await settleDebugPrompt();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+      onActive?.(undefined);
+      onActive?.(editor);
+      await settleDebugPrompt();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 async function settleDebugPrompt(): Promise<void> {

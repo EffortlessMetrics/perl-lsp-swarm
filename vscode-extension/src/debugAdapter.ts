@@ -1162,6 +1162,13 @@ export function activateDebugger(context: vscode.ExtensionContext) {
       void offerDebugConfigOnFirstPerlOpen(document);
     }),
   );
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) {
+        void offerDebugConfigOnFirstPerlOpen(editor.document);
+      }
+    }),
+  );
 
   const activeEditor = vscode.window.activeTextEditor;
   if (activeEditor) {
