@@ -42,6 +42,7 @@ Choose the path that matches what you are trying to do:
 | Understand the server architecture | [Architecture Reference](reference/ARCHITECTURE.md) |
 | Understand measured editor trust and the Rust Perl replacement path | [Measured Perl Editor Trust](explanation/MEASURED_PERL_EDITOR_TRUST.md) |
 | Understand the compiler-backed LSP direction | [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md) |
+| Work on formal verification or review proof claims | [Formal Methods](formal-methods/README.md) |
 | Work on LSP features as a contributor | [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md) |
 | Run builds, tests, and CI commands | [Commands Reference](reference/COMMANDS_REFERENCE.md) |
 | Add or audit public API documentation | [Missing Documentation Guide](reference/MISSING_DOCUMENTATION_GUIDE.md) |
@@ -157,6 +158,7 @@ Resources for contributors working on the codebase itself.
 - [Scripts Directory Index](../scripts/README.md) — categorized guide to the 89 helper scripts
 - [Worked lanes](agents/README.md) — optional calibration examples grounded in durable repository artifacts
 - [LSP Development Guide](tutorials/LSP_DEVELOPMENT_GUIDE.md) — how to implement and test LSP features
+- [Formal Methods](formal-methods/README.md) — bounded formal claims, authoring, operations, review, and maintenance
 - [ADR Index](adr/README.md) — design decisions and rationale
 
 ## Suggested Reading Order for New Contributors
