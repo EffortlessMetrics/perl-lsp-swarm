@@ -447,7 +447,15 @@ impl LspServer {
                         )
                     } else {
                         (
-                            Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
+                            Self::extract_token_hover(
+                                uri,
+                                &text,
+                                offset,
+                                source_region.as_deref(),
+                                parsed.as_ref().and_then(|snapshot| {
+                                    snapshot.regex_analysis().map(Arc::as_ref)
+                                }),
+                            ),
                             live_compiler_context,
                             range,
                             HoverPublication::OpenGeneration(generation),
@@ -1138,7 +1146,13 @@ impl LspServer {
             }
         }
 
-        Self::extract_token_hover(uri, text, offset, source_region)
+        Self::extract_token_hover(
+            uri,
+            text,
+            offset,
+            source_region,
+            parsed.as_ref().and_then(|snapshot| snapshot.regex_analysis().map(Arc::as_ref)),
+        )
     }
 
     /// Whether the whole token candidate range at `offset` is proven
@@ -1256,16 +1270,13 @@ impl LspServer {
         text: &str,
         offset: usize,
         region_index: Option<&SourceRegionIndex>,
+        regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
     ) -> HoverExtracted {
-        // Check if the cursor is inside a regex literal and provide explanation.
-        //
-        // Semantic island: regex construct documentation claims an exact
-        // operator/pattern span and stays possible inside genuine regex
-        // regions. The scan itself is a whole-line lexical heuristic, so the
-        // claimed span must carry generation-bound `RegexLike` evidence to
-        // answer; regex-shaped text in comments, strings, POD, heredocs, or
-        // recovery input fails closed (#4967).
-        if let Some(regex_hover) = Self::extract_regex_hover(text, offset, region_index) {
+        // Canonical regex hover (#7048) consumes parser-retained analysis when
+        // present; legacy metacharacter hover remains only without a table.
+        if let Some(regex_hover) =
+            Self::extract_regex_hover(text, offset, region_index, regex_analysis)
+        {
             return HoverExtracted::Complete(regex_hover);
         }
 

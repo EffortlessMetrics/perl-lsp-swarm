@@ -1291,7 +1291,8 @@ fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::e
     let index = SourceRegionIndex::build(text);
     for delta in [0usize, 1] {
         let offset = must_some(text.find("$!")) + delta;
-        let hover = LspServer::extract_token_hover("file:///t.pl", text, offset, Some(&index));
+        let hover =
+            LspServer::extract_token_hover("file:///t.pl", text, offset, Some(&index), None);
         let HoverExtracted::Complete(card) = hover else {
             return Err(format!(
                 "expected a complete `$!` card inside the interpolating string at +{delta}"
