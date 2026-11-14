@@ -1708,7 +1708,7 @@ gates:
   # purely environmental, not parser regressions. Strategic redesign tracked
   # separately; out-of-band cron will own the ratchet going forward.
   - name: parser_corpus_ratchet
-    tier: merge_gate
+    tier: nightly
     description: "System Perl corpus must not regress against parser baseline (advisory; baseline drifts with runner Perl)"
     required: false
     command: >-
@@ -1733,7 +1733,7 @@ gates:
   # this gate cannot pass on PR runners. The post-merge corpus-ratchet
   # workflow already owns the real CPAN check.
   - name: cpan_corpus_ratchet
-    tier: merge_gate
+    tier: nightly
     description: "CPAN corpus baseline + known-clean manifest must remain green (advisory; CPAN corpus not installed on PR runners)"
     required: false
     command: cargo run --locked -p xtask -- cpan-corpus sweep --enforce
@@ -1753,7 +1753,7 @@ gates:
   # false enforcement claim. Re-promote only after wiring into a merge-gate shard
   # and burn-in on current main (issue #6261 G5).
   - name: parser_audit_closeout
-    tier: merge_gate
+    tier: nightly
     # Evaluates repository-local corpus files only (`--corpus-path .`), not host
     # CPAN/system trees. Uses a fresh in-process run (`--fresh`).
     description: "Project corpus parser closeout metrics (repo-scoped, deterministic run) must not regress (advisory; no workflow route)"
@@ -1775,7 +1775,7 @@ gates:
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # route executes this gate; cargo-audit remains quarantined per debt-ledger.
   - name: security_audit
-    tier: merge_gate
+    tier: nightly
     description: "Check dependencies for known security vulnerabilities (advisory; quarantined + no workflow route)"
     required: false
     # Quarantined: cargo-audit ecosystem breakage as of 2026-04-26.
@@ -1798,7 +1798,7 @@ gates:
   # in other shards but the full && chain never executes. Decompose and wire per
   # #6261 G4 before re-promotion.
   - name: policy_checks
-    tier: merge_gate
+    tier: nightly
     description: "Enforce project policies (docs baseline, version sync, ExitStatus helper, features invariants) (advisory; no workflow route)"
     required: false
     command: >-
@@ -1833,7 +1833,7 @@ gates:
   # It still fails on a truly UNACCOUNTED workspace member (neither
   # has-context, exempt, nor needs_context), so drift stays visible.
   - name: agent_context_coverage
-    tier: merge_gate
+    tier: nightly
     description: "Every workspace member has package-local context, an exemption, or tracked context debt (advisory; needs_context non-empty)"
     required: false
     command: cargo run --locked -p xtask -- check-agent-context
@@ -2285,7 +2285,7 @@ gates:
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.
   - name: v2_parity
-    tier: merge_gate
+    tier: nightly
     description: "Verify in-crate v2 and perl-parser-pest v2 produce identical corpus output (advisory; no workflow route)"
     required: false
     command: >-
@@ -2321,7 +2321,7 @@ gates:
   # route executes this gate; the audit script also times out on current main.
   # Repair/bound the oracle before wiring (issue #6261 G2/G3 REPAIR_THEN_WIRE).
   - name: workflow_audit
-    tier: merge_gate
+    tier: nightly
     description: "Audit CI workflows for ungated expensive jobs (advisory; no workflow route)"
     required: false
     command: python3 scripts/ci-audit-workflows.py
@@ -2617,7 +2617,7 @@ gates:
   # Tests job covers overlapping LSP smoke surface but not via `cargo xtask gates
   # --gate lsp_tier_a`; wire explicitly before re-promotion.
   - name: lsp_tier_a
-    tier: merge_gate
+    tier: nightly
     description: "LSP smoke tests: capabilities, protocol basics (<30s) (advisory; no workflow route)"
     required: false
     command: >-
@@ -2639,7 +2639,7 @@ gates:
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate.
   - name: lsp_tier_b
-    tier: merge_gate
+    tier: nightly
     description: "LSP core behavior: definitions, completion, color handling, code lens, inline completion, security (2-5 min) (advisory; no workflow route)"
     required: false
     command: >-

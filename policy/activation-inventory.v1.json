@@ -2884,7 +2884,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -3505,7 +3505,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -4099,7 +4099,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -4126,7 +4126,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -4288,7 +4288,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -4342,7 +4342,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -4450,7 +4450,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -4882,7 +4882,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -5422,7 +5422,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
@@ -5503,7 +5503,7 @@
       "registration": {
         "state": "established",
         "authority": ".ci/gate-policy.yaml",
-        "detail": "tier = \"merge_gate\"; required = false"
+        "detail": "tier = \"nightly\"; required = false"
       },
       "proof_references": [],
       "publication": {
