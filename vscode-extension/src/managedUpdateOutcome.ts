@@ -14,7 +14,10 @@
 import type { ManagedUpdateCheckDecision } from './managedUpdateCheckAdmission';
 
 export type ManagedUpdateOutcome =
-  | { readonly kind: 'check_skipped'; readonly decision: Exclude<ManagedUpdateCheckDecision, { kind: 'run' }> }
+  | {
+      readonly kind: 'check_skipped';
+      readonly decision: Exclude<ManagedUpdateCheckDecision, { kind: 'run' }>;
+    }
   | { readonly kind: 'up_to_date'; readonly installedVersion: string; readonly manual: boolean }
   | { readonly kind: 'updated_reload_required'; readonly installedVersion: string }
   | { readonly kind: 'updated_reload_unverified'; readonly installedPath: string };
@@ -72,7 +75,9 @@ export function composeUpdatedReloadUnverifiedOutcome(
   return { kind: 'updated_reload_unverified', installedPath };
 }
 
-export function projectManagedUpdateOutcome(outcome: ManagedUpdateOutcome): ManagedUpdatePresentation {
+export function projectManagedUpdateOutcome(
+  outcome: ManagedUpdateOutcome,
+): ManagedUpdatePresentation {
   switch (outcome.kind) {
     case 'check_skipped':
       return projectCheckSkipped(outcome.decision);

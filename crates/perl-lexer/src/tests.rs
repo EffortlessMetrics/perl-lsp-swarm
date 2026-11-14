@@ -841,3 +841,90 @@ fn pod_after_blank_line_reads_only_the_immediately_previous_line() {
         assert_eq!(lexer.pod_after_blank_line(), expected, "{source:?}");
     }
 }
+
+#[test]
+fn vstring_autoquoted_brace_gate_discriminates_every_byte_class_before_the_brace() {
+    // Direct calls into `vstring_is_autoquoted` so the brace-gate seams of the
+    // v-string autoquote decision have a co-located static test path: each row
+    // pins the exact verdict for one byte class before the candidate's `{`.
+    // (input, candidate `v` offset, candidate end, expected autoquote verdict)
+    let cases = [
+        // `$`-sigiled name before `{`: the name walk stops at the sigil.
+        ("$h{v5}", 3, 5, true),
+        // Dotted candidate in a hash subscript stays a v-string.
+        ("$h{v65.66}", 3, 9, false),
+        // Underscore boundary of the identifier-arm guard: name `h_`.
+        ("$h_{v5}", 4, 6, true),
+        // Multi-character name with several walk iterations, `@` sigil.
+        ("@ARGV{v5}", 6, 8, true),
+        // Name preceded by `->` (arrow-suffixed-name arm).
+        ("$r->x{v5}", 6, 8, true),
+        // Closing brace directly before `{` (chained subscript).
+        ("$h{a}{v5}", 6, 8, true),
+        // Closing bracket directly before `{`.
+        ("$h->[0]{v5}", 8, 10, true),
+        // `->` directly before `{` (arrow arm).
+        ("$h->{v5}", 5, 7, true),
+        // Deref braces directly after `@` and `%` sigils.
+        ("@{v5}", 2, 4, true),
+        ("%{v5}", 2, 4, true),
+        // Whitespace before the brace lands on the sigil and on the bracket.
+        ("$h {v5}", 4, 6, true),
+        ("$h->[0] {v5}", 9, 11, true),
+        // Fat-comma key and package-segment anchors.
+        ("v5 => 1", 0, 2, true),
+        ("Foo::v5", 5, 7, true),
+        // `_` fallthrough arm: `;` is neither closer, sigil, arrow, nor name.
+        ("; { v5 }", 4, 6, false),
+        // `inner > 0` below-boundary: brace at input start cannot classify.
+        ("{ v5 }", 2, 4, false),
+        // Bare named block: identifier without sigil or arrow falls through.
+        ("sub f { v5 }", 8, 10, false),
+        // No brace at all: expression-position v-string stays autoquoted-false.
+        ("use v5.36;", 4, 9, false),
+        ("my $x = v65.66.67;", 8, 17, false),
+    ];
+    for (input, start, end, expected) in cases {
+        let lexer = PerlLexer::new(input);
+        assert_eq!(
+            lexer.vstring_is_autoquoted(start, end),
+            expected,
+            "vstring_is_autoquoted({input:?}, {start}..{end})"
+        );
+    }
+}
+
+#[test]
+fn vstring_autoquoted_fat_comma_allows_only_tabs_and_spaces_before_the_arrow() {
+    // The fat-comma arm walks only spaces and tabs between the candidate and
+    // `=>`; a comment or newline in between must not autoquote.
+    let lexer = PerlLexer::new("v5 \t=> 1");
+    assert!(lexer.vstring_is_autoquoted(0, 2), "spaces and tabs before => autoquote");
+    let lexer = PerlLexer::new("v5\n=> 1");
+    assert!(
+        !lexer.vstring_is_autoquoted(0, 2),
+        "newline before => is not a fat-comma key position"
+    );
+}
+
+#[test]
+fn vstring_autoquoted_fat_comma_does_not_autoquote_a_dotted_candidate() {
+    // Perl oracle: `v65.66 => 1` keeps the v-string (key is chr(65).chr(66)),
+    // while single-component `v5 => 1` autoquotes. The fat-comma arm must
+    // therefore only fire for candidates without a dot.
+    let lexer = PerlLexer::new("v65.66 => 1");
+    assert!(!lexer.vstring_is_autoquoted(0, 6), "dotted v-string before => is not autoquoted");
+    let lexer = PerlLexer::new("v5 => 1");
+    assert!(lexer.vstring_is_autoquoted(0, 2), "single-component candidate still autoquotes");
+}
+
+#[test]
+fn vstring_autoquoted_identifier_continuation_after_the_candidate_is_not_autoquoted() {
+    // An identifier continuation after the candidate never reaches this gate
+    // (try_vstring bails first), but the gate itself must stay inert for it.
+    let lexer = PerlLexer::new("v5x => 1");
+    assert!(
+        !lexer.vstring_is_autoquoted(0, 2),
+        "the gate looks backward only and does not autoquote on its own"
+    );
+}

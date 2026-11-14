@@ -17,6 +17,7 @@ on:
       # Scoped pre-build storage admission; Python fixtures compile no Rust.
       - 'scripts/cargo-admitted'
       - 'scripts/cargo_admitted.py'
+      - 'scripts/devplane-init'
       - 'scripts/cargo_cohort.py'
       # Parser-policy proofs inspect Cargo graphs; their CI consumer must not
       # bootstrap the product-linked xtask integration harness (#18016).
@@ -28,7 +29,10 @@ on:
       - 'Cargo.lock'
       - 'scripts/tests/test_cargo_cohort.py'
       - 'scripts/tests/test_cargo_admitted_storage.py'
+      - 'scripts/tests/test_cargo_admitted_discovery_gate.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
+      - 'scripts/tests/test_cargo_admitted_frontdoor.py'
+      - '.vscode/tasks.json'
       - 'scripts/storage-doctor'
       - 'scripts/storage_observation.py'
       - 'scripts/tests/test_storage_doctor.py'
@@ -103,6 +107,8 @@ on:
       # half must re-run the self-test gate.
       - 'scripts/worktree-add.sh'
       - 'scripts/tests/test-worktree-add-hooks.sh'
+      - 'scripts/githooks/warn-stale-checkout.sh'
+      - 'scripts/tests/test_warn_stale_checkout.py'
       - 'scripts/agent-preflight.sh'
       - 'scripts/test-agent-preflight.sh'
       # Per-worktree core.hooksPath isolation (issue #17414 rule C).
@@ -648,6 +654,9 @@ jobs:
       - name: Run worktree hook-provisioning self-test
         run: bash scripts/tests/test-worktree-add-hooks.sh
 
+      - name: Run warning-only checkout hook regression
+        run: python3 -m unittest discover -s scripts/tests -p test_warn_stale_checkout.py -v
+
       - name: Summary
         if: always()
         env:
@@ -657,6 +666,7 @@ jobs:
             echo "## Worktree hook-provisioning self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Fresh worktrees (issue #17406) get a current executable pre-push hook via scripts/worktree-add.sh and worktree-manager.py \`allocate\`, installer failures fail loudly naming the installer, and current hooks skip the installer build." >> "$GITHUB_STEP_SUMMARY"
+            echo "Warning-only checkout hooks also preserve successful Git transitions when freshness receipts or parsers fail (#19108)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## Worktree hook-provisioning self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -787,7 +797,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Run both admitted storage suites without Rust builds
+      - name: Install just for admitted recipe regressions
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: just@1.46.0
+          fallback: none
+      - name: Run admitted storage suites without Rust builds
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
       - name: Check cohort ownership and exact reclamation controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v

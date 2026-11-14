@@ -1196,7 +1196,7 @@ mod tests {
         let Some(line_start) = crlf.find("print") else {
             unreachable!("print fixture must contain print");
         };
-        assert!(previous_line_ends_with_arrow_or_ampersand(&crlf, line_start));
+        assert!(previous_line_ends_with_arrow_or_ampersand(crlf, line_start));
 
         let blank = "obj->
 
@@ -1205,7 +1205,7 @@ print($fh <<E);
         let Some(line_start) = blank.find("print") else {
             unreachable!("print fixture must contain print");
         };
-        assert!(previous_line_ends_with_arrow_or_ampersand(&blank, line_start));
+        assert!(previous_line_ends_with_arrow_or_ampersand(blank, line_start));
 
         let commented = "obj-> # chain
 print($fh <<E);
@@ -1213,7 +1213,7 @@ print($fh <<E);
         let Some(line_start) = commented.find("print") else {
             unreachable!("print fixture must contain print");
         };
-        assert!(previous_line_ends_with_arrow_or_ampersand(&commented, line_start));
+        assert!(previous_line_ends_with_arrow_or_ampersand(commented, line_start));
 
         let amp = "&
 print($fh <<E);
@@ -1221,7 +1221,7 @@ print($fh <<E);
         let Some(line_start) = amp.find("print") else {
             unreachable!("print fixture must contain print");
         };
-        assert!(previous_line_ends_with_arrow_or_ampersand(&amp, line_start));
+        assert!(previous_line_ends_with_arrow_or_ampersand(amp, line_start));
     }
 
     #[test]
@@ -1234,7 +1234,7 @@ print($fh <<E);
         let Some(line_start) = source.find("print") else {
             unreachable!("print fixture must contain print");
         };
-        assert!(!previous_line_ends_with_arrow_or_ampersand(&source, line_start));
+        assert!(!previous_line_ends_with_arrow_or_ampersand(source, line_start));
         assert!(!previous_line_ends_with_arrow_or_ampersand("", 0));
     }
 
