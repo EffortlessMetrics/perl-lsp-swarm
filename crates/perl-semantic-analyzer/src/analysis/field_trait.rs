@@ -33,6 +33,8 @@
 //! declaration node, and then removed after canonical generated-member facts
 //! are promoted. It must not grow into a second long-lived attribute parser.
 
+use perl_module::parse_module_token;
+
 /// The trait family a decoded `field` attribute belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FieldTraitKind {
@@ -162,15 +164,19 @@ fn decode_argument_body(body: &str) -> FieldTraitArgument {
 ///
 /// Only an identifier can name a generated method. Non-identifier static text
 /// is still meaningful as a `:param` constructor key, and is reported as
-/// [`FieldTraitArgument::LiteralText`] rather than discarded. Identifiers are
-/// Unicode-aware, matching the parser's own rule for variable and method
-/// names under `use utf8` (variables.rs) — an ASCII-only check would drop
-/// valid generated methods such as `:reader(manĝis)`.
+/// [`FieldTraitArgument::LiteralText`] rather than discarded.
+///
+/// Reuses [`parse_module_token`] so generated accessor names follow the same
+/// Unicode Word ∩ XID rules as module identifiers, without admitting qualified
+/// names or the lexer's broader emoji allowances (#14999).
 fn is_static_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else { return false };
-    (first == '_' || first.is_alphabetic())
-        && chars.all(|character| character == '_' || character.is_alphanumeric())
+    if name.is_empty() || name.contains("::") || name.contains('\'') {
+        return false;
+    }
+    let Some(span) = parse_module_token(name, 0) else {
+        return false;
+    };
+    span.start == 0 && span.end == name.len()
 }
 
 /// Decode every attribute spelling on one `field` declaration, in source order.
@@ -310,6 +316,41 @@ mod tests {
                 decoded(spelling),
                 (*kind, argument.clone()),
                 "decoding `{spelling}` did not preserve its source identity"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_identifier_authority_admits_unicode_and_rejects_non_identifiers() {
+        let unicode_cases: &[(&str, FieldTraitArgument)] = &[
+            ("reader(manĝis)", FieldTraitArgument::StaticName("manĝis".to_owned())),
+            ("writer(naïve)", FieldTraitArgument::StaticName("naïve".to_owned())),
+            ("accessor(कvalue)", FieldTraitArgument::StaticName("कvalue".to_owned())),
+        ];
+        for (spelling, argument) in unicode_cases {
+            assert_eq!(
+                decoded(spelling).1,
+                argument.clone(),
+                "Unicode identifier `{spelling}` must decode as a static name"
+            );
+        }
+
+        let rejected: &[&str] = &[
+            "reader(1bad)",
+            "reader($dyn)",
+            "reader(a-b)",
+            "reader(Foo::bar)",
+            "reader(Foo'bar)",
+            "reader(🙂)",
+            "reader(℘name)",
+        ];
+        for spelling in rejected {
+            assert!(
+                !matches!(
+                    DecodedFieldTrait::decode(spelling).argument,
+                    FieldTraitArgument::StaticName(_)
+                ),
+                "`{spelling}` must not decode as a static method name"
             );
         }
     }
