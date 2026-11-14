@@ -1,0 +1,17 @@
+{
+  "name": "perl-lsp-swarm",
+  "dockerFile": "../.docker/perl-lsp/Dockerfile",
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "perl-lsp.serverPath": "/usr/local/bin/perllsp"
+      }
+    }
+  },
+  "remoteUser": "appuser",
+  "features": {},
+  "postCreateCommand": "perllsp --version",
+  "comment": "Editor-inside-container topology (editor_inside_container). Host editors must use scripts/docker/run-perllsp-host-editor.sh instead."
+}

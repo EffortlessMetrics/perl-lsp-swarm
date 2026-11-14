@@ -4,8 +4,9 @@
 # Stage 2: Minimal runtime image with Perl 5.40 installed (supports class/method
 #          and try/catch syntax — #5210)
 #
-# Usage (stdio LSP transport):
-#   docker run --rm -i -v "${PWD}:/workspace" ghcr.io/effortlessmetrics/perl-lsp:latest-perl
+# Topologies (#8987 — docs/reference/docker-workspace-path.md):
+#   editor_inside_container:  docker compose / Dev Container mount at /workspace
+#   host_editor_same_path:    scripts/docker/run-perllsp-host-editor.sh
 #
 # Build locally:
 #   docker build -f .docker/perl-lsp/Dockerfile -t perl-lsp:local .
@@ -64,7 +65,8 @@ RUN chmod +x /usr/local/bin/perllsp /usr/local/bin/perl-dap
 # Non-root user for safety.
 RUN useradd --create-home --uid 10001 --shell /bin/bash appuser
 
-# Default workspace mount point — callers bind-mount their Perl project here.
+# Default in-container workspace root for editor_inside_container only (#8987).
+# Host editors must bind-mount each client root at the same absolute path instead.
 RUN mkdir -p /workspace && chown appuser:appuser /workspace
 
 WORKDIR /workspace
