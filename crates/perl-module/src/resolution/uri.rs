@@ -21,9 +21,8 @@ pub enum IncRootKind {
     ExternalAbsolute,
     /// Paths sourced from the `PERL5LIB` environment variable.
     ///
-    /// Treated like `ExternalAbsolute` for resolution (no workspace-boundary
-    /// validation) but carries a distinct source label so diagnostics and
-    /// tooling can tell environment-supplied roots apart from project-configured ones.
+    /// Resolved without workspace-boundary validation (trusted like
+    /// [`IncRootKind::InterpreterStartup`]) but carries a distinct source label.
     Perl5LibEnv,
     /// Startup `@INC` entries from the selected Perl interpreter.
     InterpreterStartup,
@@ -109,7 +108,8 @@ fn candidate_report(
 /// `.perl-lsp.toml` or via resource-scoped LSP client settings (issue #4998).
 /// Callers MUST NOT pass
 /// untrusted absolute entries into `include_paths`; validate/reject those
-/// before merging into the caller's `include_paths`. See
+/// before merging into the caller's `include_paths`. Resolution
+/// workspace-boundary validates `ExternalAbsolute` roots (issue #1767). See
 /// `perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`
 /// (issue #4957, precedent: issue #3729) for where that untrusted-channel
 /// sanitization happens.
@@ -199,11 +199,9 @@ pub enum ModuleUriResolution {
 ///
 /// # Security
 ///
-/// Absolute `include_paths` entries are followed as literal external roots
-/// with no workspace-boundary check (see [`build_effective_inc_roots`]).
-/// Callers MUST NOT pass untrusted (e.g. workspace-file-sourced,
-/// `.perl-lsp.toml`) absolute entries into `include_paths` — validate/reject
-/// those upstream. See
+/// Absolute `include_paths` entries are classified as [`IncRootKind::ExternalAbsolute`]
+/// and workspace-boundary validated at resolution time (issue #1767). Callers should
+/// still reject untrusted absolute entries upstream; see
 /// `perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`
 /// (issue #4957, precedent: issue #3729).
 #[must_use]
@@ -396,8 +394,49 @@ fn collect_module_uri_candidates(
                     }
                 }
             }
-            IncRootKind::ExternalAbsolute
-            | IncRootKind::Perl5LibEnv
+            IncRootKind::ExternalAbsolute => {
+                for workspace_folder in workspace_folders {
+                    if start_time.elapsed() >= timeout {
+                        return candidate_report(
+                            &canonical_module_name,
+                            &relative_path,
+                            candidates,
+                            true,
+                        );
+                    }
+
+                    let workspace_path = workspace_folder_to_path(workspace_folder);
+                    let Some(full_path) =
+                        full_path_for_root(inc_root, &workspace_path, &relative_path)
+                    else {
+                        continue;
+                    };
+
+                    if full_path.is_file()
+                        && let Ok(url) = Url::from_file_path(&full_path)
+                    {
+                        let uri = url.to_string();
+                        if insert_seen_uri(&mut seen_uris, &uri) {
+                            candidates.push(ModuleUriCandidate {
+                                uri,
+                                source: inc_root.source.clone(),
+                                inc_root: Some(inc_root.clone()),
+                                search_order,
+                            });
+                            search_order += 1;
+                            if candidate_limit == Some(candidates.len()) {
+                                return candidate_report(
+                                    &canonical_module_name,
+                                    &relative_path,
+                                    candidates,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            IncRootKind::Perl5LibEnv
             | IncRootKind::InterpreterStartup
             | IncRootKind::RuntimeDerived => {
                 let full_path = inc_root.path.join(&relative_path);
@@ -503,14 +542,18 @@ fn full_path_for_root(
                 let full_path = workspace_path.join(relative_path);
                 validate_workspace_path(&full_path, workspace_path).ok()
             } else if inc_root.path.is_absolute() {
-                Some(inc_root.path.join(relative_path))
+                let full_path = inc_root.path.join(relative_path);
+                validate_workspace_path(&full_path, workspace_path).ok()
             } else {
                 let full_path = workspace_path.join(&inc_root.path).join(relative_path);
                 validate_workspace_path(&full_path, workspace_path).ok()
             }
         }
-        IncRootKind::ExternalAbsolute
-        | IncRootKind::Perl5LibEnv
+        IncRootKind::ExternalAbsolute => {
+            let full_path = inc_root.path.join(relative_path);
+            validate_workspace_path(&full_path, workspace_path).ok()
+        }
+        IncRootKind::Perl5LibEnv
         | IncRootKind::InterpreterStartup
         | IncRootKind::RuntimeDerived => Some(inc_root.path.join(relative_path)),
     }
@@ -690,16 +733,12 @@ mod tests {
         );
 
         assert!(!report.timed_out);
-        assert_eq!(report.candidates.len(), 3);
-        assert_eq!(report.candidates[0].source, "external-first");
+        assert_eq!(report.candidates.len(), 2);
+        assert_eq!(report.candidates[0].source, "workspace-second");
         assert_eq!(report.candidates[0].search_order, 0);
-        assert_eq!(report.candidates[0].inc_root.as_ref(), Some(&roots[0]));
-        assert!(report.candidates[0].uri.ends_with("external/Foo/Bar.pm"));
-        assert_eq!(report.candidates[1].source, "workspace-second");
+        assert!(report.candidates[0].uri.ends_with("workspace-a/lib/Foo/Bar.pm"));
         assert_eq!(report.candidates[1].search_order, 1);
-        assert!(report.candidates[1].uri.ends_with("workspace-a/lib/Foo/Bar.pm"));
-        assert_eq!(report.candidates[2].search_order, 2);
-        assert!(report.candidates[2].uri.ends_with("workspace-b/lib/Foo/Bar.pm"));
+        assert!(report.candidates[1].uri.ends_with("workspace-b/lib/Foo/Bar.pm"));
         assert_eq!(
             resolve_module_uri_with_effective_inc(
                 "Foo::Bar",
@@ -709,6 +748,76 @@ mod tests {
                 std::time::Duration::from_secs(1),
             ),
             ModuleUriResolution::Resolved(report.candidates[0].uri.clone())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn external_absolute_inside_workspace_still_resolves() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let vendor = workspace.join("vendor");
+        std::fs::create_dir_all(vendor.join("Evil"))?;
+        std::fs::write(vendor.join("Evil/Module.pm"), "package Evil::Module; 1;")?;
+
+        let workspace_uri = url::Url::from_directory_path(&workspace)
+            .map_err(|_| "failed to create workspace URI")?
+            .to_string();
+        let roots = [IncRoot {
+            kind: IncRootKind::ExternalAbsolute,
+            path: vendor,
+            precedence: 0,
+            source: "use-lib-lexical".to_string(),
+        }];
+
+        let resolution = resolve_module_uri_with_effective_inc(
+            "Evil::Module",
+            &[],
+            std::slice::from_ref(&workspace_uri),
+            &roots,
+            std::time::Duration::from_secs(1),
+        );
+
+        assert!(
+            matches!(resolution, ModuleUriResolution::Resolved(ref uri) if uri.ends_with("Evil/Module.pm")),
+            "expected in-workspace absolute root to resolve, got {resolution:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn external_absolute_outside_workspace_does_not_resolve_evil_module()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace)?;
+        let outside = temp.path().join("outside-etc");
+        std::fs::create_dir_all(outside.join("Evil"))?;
+        std::fs::write(outside.join("Evil/Module.pm"), "package Evil::Module; 1;")?;
+
+        let workspace_uri = url::Url::from_directory_path(&workspace)
+            .map_err(|_| "failed to create workspace URI")?
+            .to_string();
+        let roots = [IncRoot {
+            kind: IncRootKind::ExternalAbsolute,
+            path: outside,
+            precedence: 0,
+            source: "use-lib-lexical".to_string(),
+        }];
+
+        let resolution = resolve_module_uri_with_effective_inc(
+            "Evil::Module",
+            &[],
+            std::slice::from_ref(&workspace_uri),
+            &roots,
+            std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            resolution,
+            ModuleUriResolution::NotFound,
+            "use lib '/etc'-style roots outside the workspace must not resolve modules"
         );
         Ok(())
     }
