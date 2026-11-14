@@ -1,0 +1,168 @@
+name: Merge Queue Title Check
+
+on:
+  # #18255: one read-only validate-title producer for the merge-group ref.
+  merge_group: {}
+
+permissions:
+  checks: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  validate-title:
+    # The merge-group ref carries candidate workflow steps, so this producer is
+    # deliberately read-only. It never checks out candidate contents or mutates
+    # GitHub state; the adjacent PR workflow owns comment/label reconciliation.
+    name: validate-title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate merge-group title
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            'use strict';
+
+            // Shared title policy, byte-identical to pr-title-check.yml so the
+            // queue path and PR path cannot drift. Pure: never mutates state.
+            const RELEASE_STAMP = /^v?\d+\.\d+\.\d+$/;
+            const ISSUE_REFERENCE = /\B#(\d+)\b/g;
+
+            const labelsOf = (pr) => {
+              const labels = pr.labels || [];
+              return labels.map((label) => (typeof label === 'string' ? label : label.name));
+            };
+            const loginOf = (pr) =>
+              (pr.user && pr.user.login) || (pr.author && pr.author.login) || '';
+
+            const validateTitle = (pr) => {
+              const title = pr.title || '';
+              const login = loginOf(pr);
+              const labels = labelsOf(pr);
+
+              if (login === 'dependabot[bot]') {
+                return { ok: true, kind: 'exempt', reason: 'dependabot' };
+              }
+              if (labels.includes('skip-title-check')) {
+                return { ok: true, kind: 'exempt', reason: 'skip-title-check' };
+              }
+              if (RELEASE_STAMP.test(title.trim())) {
+                return { ok: true, kind: 'exempt', reason: 'release stamp' };
+              }
+
+              const matches = [...title.matchAll(ISSUE_REFERENCE)];
+              if (matches.length === 0) {
+                return { ok: false, kind: 'missing-issue', reason: 'no issue reference' };
+              }
+
+              const nonZero = matches.find((match) => parseInt(match[1], 10) !== 0);
+              if (!nonZero) {
+                const placeholder = matches.find((match) => parseInt(match[1], 10) === 0);
+                return {
+                  ok: true,
+                  kind: 'placeholder',
+                  reason: 'placeholder issue reference',
+                  placeholder: placeholder[0],
+                };
+              }
+
+              const issueNumber = parseInt(nonZero[1], 10);
+              return { ok: true, kind: 'issue', reason: `issue #${issueNumber}`, issueNumber };
+            };
+
+            // ---------------------------------------------------------------
+            // Queue path (#18255). A native squash group commit has no PR
+            // association, so the authoritative queue ref names the PR instead.
+            // Re-read that PR's CURRENT title and metadata. Malformed, absent,
+            // or contradictory identity fails closed. The event does not carry
+            // the admitted PR head or a complete member list, so this validates
+            // current named-PR metadata rather than claiming an exact-head or
+            // complete-group proof. This branch never mutates PR state.
+            // ---------------------------------------------------------------
+            if (context.eventName === 'merge_group') {
+              const mergeGroup = context.payload.merge_group || {};
+              const headSha = mergeGroup.head_sha;
+              const baseSha = mergeGroup.base_sha;
+              const headRef = mergeGroup.head_ref;
+              const baseRef = mergeGroup.base_ref;
+              const shaPattern = /^[0-9a-f]{40}$/;
+
+              if (
+                typeof headSha !== 'string' || !shaPattern.test(headSha) ||
+                typeof baseSha !== 'string' || !shaPattern.test(baseSha) ||
+                typeof headRef !== 'string' || typeof baseRef !== 'string'
+              ) {
+                core.setFailed(
+                  'merge_group payload is missing or has malformed head_ref, base_ref, head_sha, or base_sha'
+                );
+                return;
+              }
+
+              const groupBaseRef = baseRef.replace(/^refs\/heads\//, '');
+              const queueRef = headRef.replace(/^refs\/heads\//, '');
+              if (!groupBaseRef) {
+                core.setFailed('merge_group payload is missing base_ref');
+                return;
+              }
+
+              // Match the entire native ref. The suffix is the group BASE, not
+              // the PR head or synthetic group head. Escaping the base branch
+              // keeps its characters literal and prevents partial or multiple
+              // PR components from being accepted as a singleton identity.
+              const escapedBase = groupBaseRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const match = queueRef.match(
+                new RegExp(`^gh-readonly-queue/${escapedBase}/pr-([1-9]\\d*)-${baseSha}$`)
+              );
+              const member = match ? Number(match[1]) : NaN;
+              if (!Number.isSafeInteger(member) || member <= 0) {
+                core.setFailed(
+                  `merge_group head_ref ${headRef} does not name exactly one PR on ` +
+                  `base ${groupBaseRef} with base SHA ${baseSha}`
+                );
+                return;
+              }
+
+              let current;
+              try {
+                const { data } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: member,
+                });
+                current = data;
+              } catch (e) {
+                core.setFailed(
+                  `merge group title validation failed: #${member}: ` +
+                  `could not re-read current title (${e.message})`
+                );
+                return;
+              }
+
+              // The group base may be an earlier synthetic commit. A PR's
+              // recorded base SHA is not required to equal that queue base.
+              if (
+                current.number !== member ||
+                current.state !== 'open' ||
+                current.base?.ref?.replace(/^refs\/heads\//, '') !== groupBaseRef ||
+                typeof current.head?.sha !== 'string' ||
+                !shaPattern.test(current.head.sha)
+              ) {
+                core.setFailed(
+                  `merge group title validation failed: #${member} changed state, base, ` +
+                  'or identity while queued; refusing to validate a different admission'
+                );
+                return;
+              }
+
+              const verdict = validateTitle(current);
+              if (!verdict.ok) {
+                core.setFailed(`merge group title validation failed: #${member}: ${verdict.reason}`);
+                return;
+              }
+              core.info(
+                `merge group title validation passed for PR #${member} named by ${headRef}`
+              );
+              return;
+            }

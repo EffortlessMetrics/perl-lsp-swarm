@@ -577,6 +577,9 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // binding would sail through every required check green (#15995
         // review).
         || file == ".ci/policies/required-checks.toml"
+        // The canonical route-plan schema is read by xtask integration tests
+        // for vocabulary and generated-payload conformance (#19364).
+        || file == ".ci/schemas/ci-route-plan.v1.schema.json"
         // The #8401 selection guard in lsp_internal_dependency_layers reads
         // this facade-owned target. With the reverse core dev edge removed,
         // facade-only edits no longer reach xtask through reverse dependencies.
@@ -1467,6 +1470,23 @@ mod tests {
             crates.contains("xtask"),
             "changing the required-checks ledger must route to the contract test that asserts on it"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn route_plan_schema_selects_only_its_exact_guarded_input() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask"), ("perllsp", "crates/perllsp")]);
+        for (file, selected) in [
+            (".ci/schemas/ci-route-plan.v1.schema.json", true),
+            (".ci/schemas/ci-route-plan.v1.schema.json.bak", false),
+            (".ci/schemas/unrelated.schema.json", false),
+            ("docs/reference/STABILITY.md", false),
+        ] {
+            let crates = crates_from_files(&[file.to_string()], &metadata, "/workspace")?;
+            let expected =
+                if selected { BTreeSet::from(["xtask".to_string()]) } else { BTreeSet::new() };
+            assert_eq!(crates, expected, "{file}");
+        }
         Ok(())
     }
 

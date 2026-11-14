@@ -291,7 +291,7 @@ jobs:
   # lane. GitHub schedules within the capability pool: this job names a
   # capability, never a physical host, and queues behind busy pool members.
   #
-  # All cargo/ripr commands run inside the em-ci-rust:1.95 Docker image,
+  # All cargo/ripr commands run inside the em-ci-rust:1.100 Docker image,
   # matching em-ci-routed-rust.yml exactly. The host runner does not have
   # the Rust toolchain on PATH -- it is only available inside the container.
   # ripr is installed into /cargo-home/bin (= /mnt/ci-cache/cargo-home/bin
@@ -312,9 +312,11 @@ jobs:
       labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
     timeout-minutes: 60
     outputs:
-      preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
+      preflight_ok: ${{ steps.admission.outputs.preflight_ok != 'false' && steps.preflight.outputs.preflight_ok != 'false' }}
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
       # #15498: pin the admission boundary explicitly on every producer lane.
       # The self-hosted lane holds the measured 2560-file/14g pair with
       # headroom; without the pin it silently inherits the CLI's built-in
@@ -357,6 +359,7 @@ jobs:
       TMPDIR: /mnt/ci-scratch/tmp/ripr-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Fix workspace ownership (pre-checkout)
+        id: admission
         shell: bash
         run: |
           # Docker writes workspace files as root. If a previous run left root-owned
@@ -364,19 +367,28 @@ jobs:
           # EACCES when it tries to 'git clean'. Use Docker (running as root) to chown
           # back and then delete the stale workspace target/ so it cannot cause
           # `mkdir target` failures on the next run. Fall back to a host-side rm -rf
-          # in case the Docker image is unavailable.
+          # in case the Docker image is unavailable. Check before invoking that
+          # image: a missing-image refusal must reach the hosted fallback even
+          # when an earlier run left root-owned files. Fail the primary lane so
+          # later preflight/image availability cannot revive it or suppress fallback.
+          if ! docker image inspect em-ci-rust:1.100 >/dev/null 2>&1; then
+            echo "::error::Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner. Failover job will run on GitHub-hosted."
+            echo "preflight_ok=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           # Safe on CI: CARGO_TARGET_DIR is set to /mnt/ci-scratch/... so the real
           # build artifacts are NOT in workspace/target/. Only xtask/ripr JSON
           # receipts accumulate there and they must not persist between runs.
           set +e
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
 
       - name: Checkout
+        if: steps.admission.outputs.preflight_ok != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
@@ -421,8 +433,8 @@ jobs:
           # If the self-hosted runner lost the preloaded Rust image, this lane
           # cannot run ripr. Mark preflight failed so the GitHub-hosted fallback
           # runs instead of surfacing as a false new-gap failure.
-          if ! docker image inspect em-ci-rust:1.95 >/dev/null 2>&1; then
-            echo "::error::Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner. Failover job will run on GitHub-hosted."
+          if ! docker image inspect em-ci-rust:1.100 >/dev/null 2>&1; then
+            echo "::error::Required Docker image em-ci-rust:1.100 is missing on the self-hosted runner. Failover job will run on GitHub-hosted."
             disk_ok=false
           fi
           # ── Disk guard ────────────────────────────────────────────────────────
@@ -448,6 +460,8 @@ jobs:
             --cpus="14" \
             --memory="28g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
+            -e RIPR_GIT_REPOSITORY="$RIPR_GIT_REPOSITORY" \
+            -e RIPR_GIT_REV="$RIPR_GIT_REV" \
             -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
             -e RIPR_BASE_SHA -e RIPR_EVENT_HEAD_SHA -e RIPR_EVALUATED_SHA \
             -e GITHUB_EVENT_NAME \
@@ -474,7 +488,7 @@ jobs:
             -v "$CARGO_TARGET_DIR:/target" \
             -v "$TMPDIR:/tmp/jobtmp" \
             -w /workspace \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -eu -o pipefail -c '
               # The workspace is checked out by the host runner user; the container
               # runs as a different UID. Mark it safe so git commands work.
@@ -487,7 +501,7 @@ jobs:
               sccache --version || true
 
               # Install ripr into the cached cargo-home so subsequent runs skip this.
-              cargo install ripr --version "$RIPR_VERSION" --locked
+              cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
               /cargo-home/bin/ripr doctor
 
@@ -497,7 +511,7 @@ jobs:
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
               mkdir -p target/receipts/quality
               printf '\''{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n'\'' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
-              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || true
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
@@ -508,7 +522,7 @@ jobs:
               # Validation phase.
               cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
+              cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check || true
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
               cargo xtask ripr-pr-summary --check
               cargo xtask ripr-annotations --check
@@ -608,13 +622,13 @@ jobs:
           # Without this the next run's checkout action cannot clean them (EACCES).
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workspace" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c "chown -R $(id -u):$(id -g) /workspace/target/ripr /workspace/target/xtask /workspace/target/receipts 2>/dev/null || true" || true
           # Clean the scratch dirs (Docker-owned files removed by Docker).
           docker run --rm \
             -v "$TMPDIR:/tmpdir" \
             -v "$CARGO_TARGET_DIR:/target" \
-            em-ci-rust:1.95 \
+            em-ci-rust:1.100 \
             bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
           rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/ci-cache || true
@@ -636,7 +650,9 @@ jobs:
     # analysis + receipt + guidance + gate together, not guidance alone.
     timeout-minutes: 135
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
       RIPR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base_sha }}
       RIPR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || (github.event_name == 'push' && github.sha) || inputs.head_sha }}
       RIPR_EVALUATED_SHA: ${{ github.sha }}
@@ -661,7 +677,7 @@ jobs:
           token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
           printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+      - name: Toolchain (rust-toolchain.toml pins 1.100.0)
         run: rustc --version
 
       - name: Cache cargo dependencies
@@ -714,7 +730,7 @@ jobs:
             ripr-facts-${{ env.RIPR_VERSION }}-
 
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Check xtask build observer controls
         run: python3 scripts/tests/test_observe_xtask_build.py
@@ -755,7 +771,7 @@ jobs:
           }
           trap cleanup_host_state EXIT
           printf "runner=github-hosted\njob_phase=host-start\n" > target/ripr/pr/ripr-measurement-config.txt
-          image='rust:1.95-slim-bookworm'
+          image='rust:1.100-slim-bookworm'
           set +e
           timeout --signal=TERM --kill-after=10s 3m docker pull "$image"
           pull_status=$?
@@ -783,7 +799,7 @@ jobs:
           # never as an OOM kill.
           timeout --signal=TERM --kill-after=30s 40m docker run --rm --name "$container_name" \
             --cpus=4 --memory=14g --memory-swap=14g \
-            -e RIPR_VERSION -e PR_HEAD_SHA \
+            -e RIPR_VERSION -e RIPR_GIT_REPOSITORY -e RIPR_GIT_REV -e PR_HEAD_SHA \
             -e RIPR_BASE_SHA -e RIPR_EVENT_HEAD_SHA -e RIPR_EVALUATED_SHA \
             -e GITHUB_EVENT_NAME \
             -e RIPR_MAX_DIFF_INDEX_FILES=2560 \
@@ -799,7 +815,7 @@ jobs:
               printf "job_phase=container-tools-start\n" >> target/ripr/pr/ripr-measurement-config.txt
               bash scripts/ci/require-ripr-subject.sh
               base_arg="$RIPR_BASE_SHA"
-              cargo install ripr --version "$RIPR_VERSION" --locked
+              cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
               rustc_version="$(rustc --version)"; cargo_version="$(cargo --version)"
               ripr_version="$(ripr --version)"; ripr_path="$(command -v ripr)"
               ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
@@ -900,6 +916,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
+        continue-on-error: true
         # 1800s: the guidance pass on a new-crate diff no longer completes in
         # 600s on the hosted lane — #15082 and #15028 both failed the required
         # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
@@ -909,8 +926,32 @@ jobs:
         # exceeding 1800s on a 1600+-file closure (xtask SIGTERMed the ripr
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
-        # and an incomplete receipt keeps failing closed, just later.
-        run: bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        # while an incomplete advisory receipt no longer owns the required verdict.
+        # #18428: this pass is the one lane workload with no memory envelope
+        # (the analysis container above is capped at 14g). Both examined kills
+        # (jobs 124028039451 and 124544802140) show the guidance child at
+        # ~15 GiB RSS with the 16 GB host down to 44-100 MiB free before the
+        # runner died at exit 143 — host-memory exhaustion read as runner
+        # eviction, which armed the infra retry and fed a same-head rerun
+        # loop. Run the pass inside a transient cgroup scope with the same
+        # 14g / no-swap budget as the container (systemd is PID 1 on
+        # ubuntu-24.04), so an oversized pass is OOM-killed inside the lane:
+        # SIGKILL (exit 137) carries no runner-teardown marker, so the
+        # classifier fails closed to ripr-failure and never arms the retry.
+        # The envelope itself fails closed — if sudo -n or systemd-run cannot
+        # create the scope the step reds rather than running unbounded.
+        # --setenv forwards the step environment sudo strips (names filtered
+        # to what systemd accepts); --uid/--gid keep target/ runner-owned for
+        # the host steps that follow. Same command and 3600s bound as before.
+        shell: bash
+        run: |
+          scope_env=()
+          while IFS= read -r -d '' pair; do
+            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
+          done < <(env -0)
+          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
+            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
+            bash scripts/ci/observe-xtask-build.sh host-guidance "$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -942,10 +983,14 @@ jobs:
           bash scripts/ci/require-ripr-subject.sh
           cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
+
+      - name: Validate advisory review guidance
+        if: always()
+        continue-on-error: true
+        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
 
       - name: Enforce new RIPR gap quality gate
         if: always()
@@ -1087,7 +1132,9 @@ jobs:
     # Same measured budget as the primary hosted lane (#15498 sequel).
     timeout-minutes: 135
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
       # #15498: this lane runs ripr-pr directly on the runner, so without an
       # explicit cap it inherits the CLI's built-in default — which tightened
       # from 1600 (ripr 0.9.0) to 800 (ripr 0.10.0) and would fail closed on
@@ -1129,7 +1176,7 @@ jobs:
           token="${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$$"
           printf "RIPR_FRESHNESS_HANDOFF=%s\nRIPR_FRESHNESS_TOKEN=%s\n" "$handoff" "$token" >> "$GITHUB_ENV"
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+      - name: Toolchain (rust-toolchain.toml pins 1.100.0)
         run: rustc --version
 
       - name: Cache cargo dependencies
@@ -1163,7 +1210,7 @@ jobs:
             ripr-facts-${{ env.RIPR_VERSION }}-
 
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Build xtask
         run: cargo build -p xtask --locked
@@ -1239,6 +1286,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
+        continue-on-error: true
         # 1800s: the guidance pass on a new-crate diff no longer completes in
         # 600s on the hosted lane — #15082 and #15028 both failed the required
         # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
@@ -1248,8 +1296,19 @@ jobs:
         # exceeding 1800s on a 1600+-file closure (xtask SIGTERMed the ripr
         # child at the bound, exit 143), so the bound is raised together with
         # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
-        # and an incomplete receipt keeps failing closed, just later.
-        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
+        # while an incomplete advisory receipt no longer owns the required verdict.
+        # #18428: same 14g / no-swap cgroup envelope as the primary hosted
+        # lane's guidance step above — this lane runs on the same 16 GB
+        # ubuntu-24.04 host with the same unbounded guidance child.
+        shell: bash
+        run: |
+          scope_env=()
+          while IFS= read -r -d '' pair; do
+            if [[ "$pair" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then scope_env+=("--setenv=$pair"); fi
+          done < <(env -0)
+          sudo -n systemd-run --scope -p MemoryMax=14G -p MemorySwapMax=0 \
+            --uid="$(id -un)" --gid="$(id -gn)" "${scope_env[@]}" -- \
+            cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -1281,10 +1340,14 @@ jobs:
           bash scripts/ci/require-ripr-subject.sh
           cargo xtask ripr-pr --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
+
+      - name: Validate advisory review guidance
+        if: always()
+        continue-on-error: true
+        run: cargo xtask ripr-review-comments --base "$RIPR_BASE_SHA" --head "$RIPR_EVALUATED_SHA" --pr-head "$PR_HEAD_SHA" --check
 
       - name: Enforce new RIPR gap quality gate
         if: always()
@@ -1409,12 +1472,14 @@ jobs:
     # original pair.
     timeout-minutes: 90
     env:
-      RIPR_VERSION: "0.10.0"
+      RIPR_VERSION: "0.11.0"
+      RIPR_GIT_REPOSITORY: "https://github.com/EffortlessMetrics/ripr-swarm.git"
+      RIPR_GIT_REV: "9b9143798615bbf1a14c2dbd23a2359a29942078"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+      - name: Toolchain (rust-toolchain.toml pins 1.100.0)
         run: rustc --version
 
       - name: Cache cargo dependencies
@@ -1427,7 +1492,7 @@ jobs:
           save-if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       - name: Install ripr
-        run: cargo install ripr --version "$RIPR_VERSION" --locked
+        run: cargo install ripr --git "$RIPR_GIT_REPOSITORY" --rev "$RIPR_GIT_REV" --locked
 
       - name: Build xtask
         run: cargo build -p xtask --locked

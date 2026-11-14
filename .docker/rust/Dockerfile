@@ -14,7 +14,7 @@
 # bakes in a copy of the repository source and builds as root. Do not give it
 # a product identity, and do not depend on it as a prebuilt base.
 
-FROM rust:1.95-slim-bookworm
+FROM rust:1.100-slim-bookworm
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

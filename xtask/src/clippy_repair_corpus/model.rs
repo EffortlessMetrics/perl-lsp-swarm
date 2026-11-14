@@ -5,8 +5,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub(crate) const SCHEMA_VERSION: u32 = 1;
-pub(crate) const CORPUS_NAME: &str = "ClippyRepairFalsifierCorpusV1";
+pub(crate) const SCHEMA_VERSION: u32 = 2;
+pub(crate) const CASE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CORPUS_NAME: &str = "ClippyRepairFalsifierCorpusV2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -282,7 +283,15 @@ pub(crate) struct ManifestCaseEntry {
 pub(crate) struct CorpusManifest {
     pub(crate) schema_version: u32,
     pub(crate) corpus: String,
+    /// The toolchain the corpus packets were *authored* under. This is history:
+    /// it is never compared against the tree, because authoring a static JSON
+    /// packet does not depend on the installed toolchain.
     pub(crate) producer_toolchain: String,
+    /// The toolchain the corpus was last *validated* against. This is the field
+    /// the validator compares to the tree's pinned channel, so a toolchain move
+    /// forces an explicit re-validation instead of silently invalidating a
+    /// provenance record.
+    pub(crate) validated_toolchain: String,
     pub(crate) case_count: usize,
     pub(crate) cases: Vec<ManifestCaseEntry>,
 }

@@ -767,12 +767,13 @@ impl LspServer {
                 let existing_doc =
                     documents.get(&normalized_uri).or_else(|| documents.get(uri)).cloned();
 
-                // LSP requires didChange only for opened documents. If we don't
-                // have a document and receive ranged edits, applying them against
-                // an empty buffer can corrupt state. Ignore this notification and
-                // wait for didOpen (or a full-document replace change).
-                if existing_doc.is_none() && changes.iter().all(|c| c.get("range").is_some()) {
-                    tracing::warn!("Ignoring ranged didChange for unopened document {}", uri);
+                // LSP requires didChange only for opened documents (#10254).
+                // Applying any change — ranged or full — for a document we
+                // never opened would fabricate state from an empty buffer
+                // and publish answers for a document the client never
+                // opened. Ignore the notification and wait for didOpen.
+                if existing_doc.is_none() {
+                    tracing::warn!("Ignoring didChange for unopened document {}", uri);
                     return Ok(());
                 }
 

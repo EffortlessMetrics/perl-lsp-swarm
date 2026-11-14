@@ -685,7 +685,7 @@ fn collect_named_test_subs_in_scope(
     out: &mut Vec<NamedSubCall>,
 ) {
     match &node.kind {
-        NodeKind::Subroutine { name: Some(name), name_span, body: _, .. }
+        NodeKind::Subroutine { name: Some(name), name_span, .. }
             if is_conservative_test_sub_name(name) =>
         {
             let Some(range) = node_range(index, node, source_len) else {

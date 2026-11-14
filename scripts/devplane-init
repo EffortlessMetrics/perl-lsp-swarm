@@ -2,30 +2,45 @@
 # scripts/devplane-init
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-repo_name="$(basename "$repo_root")"
-devplane="${DEVPLANE:-${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$repo_name}"
+# Planning must not allocate a second cache layout or probe/install Cargo.
+if command -v python3 >/dev/null 2>&1; then
+  python=python3
+elif command -v python >/dev/null 2>&1; then
+  python=python
+else
+  echo 'devplane-init: DENY: Python 3 is required to plan admitted storage' >&2
+  exit 75
+fi
 
-mkdir -p \
-  "$devplane/cargo-home" \
-  "$devplane/target" \
-  "$devplane/build" \
-  "$devplane/sccache" \
-  "$devplane/tmp" \
-  "$devplane/locks"
+# -B also keeps importing the admission owner from writing __pycache__.
+exec "$python" -B - "$(dirname -- "${BASH_SOURCE[0]}")" <<'PY'
+import json
+import os
+import subprocess
+import sys
 
-cat <<EOM
-devplane ready:
+sys.path.insert(0, sys.argv[1])
+from cargo_admitted import Denied, read_only_git_environment, resource_plan
 
-  DEVPLANE=$devplane
-  CARGO_HOME=$devplane/cargo-home
-  CARGO_TARGET_DIR=$devplane/target
-  CARGO_BUILD_BUILD_DIR=$devplane/build
-  SCCACHE_DIR=$devplane/sccache
-  TMPDIR=$devplane/tmp
+try:
+    worktree, slot, paths = resource_plan(read_only_git_environment(os.environ))
+except (Denied, OSError, subprocess.SubprocessError) as error:
+    print("devplane-init: DENY: " + str(error), file=sys.stderr)
+    raise SystemExit(75)
 
-Recommended:
+print("devplane plan: " + json.dumps({
+    "status": "planned", "allocated": False, "capacity_assessed": False,
+    "lease_acquired": False, "worktree": str(worktree), "slot": str(slot),
+    "resources": {name: str(path) for name, path in paths.items()},
+}, sort_keys=True))
+print("Directories not allocated; capacity not assessed.")
+print("""
+Preflight and execute the same focused request from this worktree and shell:
 
-  export DEVPLANE="$devplane"
-  ./scripts/cargo-safe check --workspace --all-targets --profile agent --locked
-EOM
+  scripts/cargo-admitted --preflight check -p PACKAGE --profile agent --locked
+  just agent-check PACKAGE
+
+Keep any additional package, target, feature and test arguments identical in
+preflight and execution. See docs/agents/CARGO_STORAGE.md for host admission.
+""")
+PY

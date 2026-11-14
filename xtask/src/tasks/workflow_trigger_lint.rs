@@ -37,8 +37,16 @@ struct PolicyCheck {
     name: String,
     workflow: String,
     required: bool,
+    /// Ordinary lifecycle events owned by this producer. An omitted list keeps
+    /// the legacy full product-lifecycle contract for non-metadata workflows.
+    #[serde(default = "default_required_events")]
+    events: Vec<String>,
     #[serde(default)]
     exemption: Vec<PolicyExemption>,
+}
+
+fn default_required_events() -> Vec<String> {
+    ["pull_request", "merge_group", "push"].map(str::to_string).to_vec()
 }
 
 /// A `[[checks]]` row. Only the three fields this lint reasons about are
@@ -131,6 +139,7 @@ const CLAUSE_IDS: &[&str] = &[
     "workflow-exists",
     "pull-request-trigger",
     "merge-group-trigger",
+    "event-registration-scope",
     "push-targets-master",
     "no-path-filters",
     "event-aware-concurrency",
@@ -178,7 +187,7 @@ impl GovernanceSummary {
     /// that.
     fn summary_line(&self) -> String {
         format!(
-            "{}/{} ruleset-required contexts governed, {} produced outside this \
+            "{}/{} ruleset-required producer registrations governed, {} produced outside this \
              repository, {} ungoverned, {} accepted exemptions, {} remainders",
             self.governed,
             self.required_contexts,
@@ -286,7 +295,7 @@ fn evaluate_policy(
     Ok((evaluations, GovernanceSummary { accepted_exemptions, remainders, ..governance }))
 }
 
-/// Count the ruleset-required contexts the governance list covers.
+/// Count the required context/event producer registrations the list covers.
 ///
 /// A context is governed when some `[[check]]` row names its workflow *and*
 /// carries `required = true`, because `evaluate_required_entry` returns no
@@ -365,14 +374,19 @@ fn evaluate_required_workflow(root: &Path, check: &PolicyCheck) -> Result<Workfl
     let workflow =
         if workflow_path.exists() { Some(read_workflow_yaml(&workflow_path)?) } else { None };
 
-    Ok(evaluate_required_entry(
+    Ok(evaluate_scoped_entry(
         &check.name,
         check.workflow.clone(),
         check.required,
         workflow_path.exists(),
         workflow.as_ref(),
         &check.exemption,
+        Some(&check.events),
     ))
+}
+
+fn event_is_required(events: &[String], event: &str) -> bool {
+    events.is_empty() || events.iter().any(|candidate| candidate == event)
 }
 
 fn evaluate_required_entry(
@@ -382,6 +396,26 @@ fn evaluate_required_entry(
     workflow_exists: bool,
     workflow_yaml: Option<&Value>,
     exemptions: &[PolicyExemption],
+) -> WorkflowEvaluation {
+    evaluate_scoped_entry(
+        name,
+        workflow,
+        required,
+        workflow_exists,
+        workflow_yaml,
+        exemptions,
+        None,
+    )
+}
+
+fn evaluate_scoped_entry(
+    name: &str,
+    workflow: String,
+    required: bool,
+    workflow_exists: bool,
+    workflow_yaml: Option<&Value>,
+    exemptions: &[PolicyExemption],
+    events: Option<&[String]>,
 ) -> WorkflowEvaluation {
     // Each finding carries the clause id an exemption names, so a divergence
     // and the record that accounts for it are matched on an identifier rather
@@ -394,13 +428,37 @@ fn evaluate_required_entry(
         }
 
         if let Some(yaml) = workflow_yaml {
-            if !has_trigger(yaml, "pull_request") {
+            let ordinary_pull_request =
+                events.is_none_or(|events| event_is_required(events, "pull_request"));
+            let pull_request_target = events.is_some_and(|events| {
+                events.iter().any(|candidate| candidate == "pull_request_target")
+            });
+            if ordinary_pull_request && !has_trigger(yaml, "pull_request") {
                 findings.push(("pull-request-trigger", "missing pull_request trigger".to_string()));
             }
-            if !has_trigger(yaml, "merge_group") {
+            if pull_request_target && !has_trigger(yaml, "pull_request_target") {
+                findings.push((
+                    "pull-request-trigger",
+                    "missing pull_request_target trigger".to_string(),
+                ));
+            }
+            let merge_group_required =
+                events.is_none_or(|events| event_is_required(events, "merge_group"));
+            if merge_group_required && !has_trigger(yaml, "merge_group") {
                 findings.push(("merge-group-trigger", "missing merge_group trigger".to_string()));
             }
-            if !push_targets_master(yaml) {
+            if ordinary_pull_request
+                && merge_group_required
+                && !has_trigger(yaml, "pull_request")
+                && has_trigger(yaml, "merge_group")
+            {
+                findings.push((
+                    "event-registration-scope",
+                    "unscoped merge_group-only producer must declare its event scope".to_string(),
+                ));
+            }
+            let push_required = events.is_none_or(|events| event_is_required(events, "push"));
+            if push_required && !push_targets_master(yaml) {
                 findings.push((
                     "push-targets-master",
                     "push trigger must target master branch".to_string(),
@@ -794,6 +852,7 @@ mod tests {
             name: workflow.to_string(),
             workflow: workflow.to_string(),
             required,
+            events: Vec::new(),
             exemption: Vec::new(),
         }
     }
@@ -1043,7 +1102,7 @@ mod tests {
 
         let line = summary.summary_line();
         ensure!(
-            line.contains("3/5 ruleset-required contexts governed"),
+            line.contains("3/5 ruleset-required producer registrations governed"),
             "the governed fraction must lead the line: {line}"
         );
         ensure!(
@@ -1118,6 +1177,142 @@ mod tests {
             "{:?}",
             eval.violations
         );
+        Ok(())
+    }
+
+    #[test]
+    fn event_scoped_metadata_producers_do_not_inherit_other_event_requirements() -> Result<()> {
+        let metadata: Value = serde_yaml_ng::from_str(
+            "on:\n  merge_group: {}\njobs:\n  validate-title:\n    name: validate-title\n    steps: []\n",
+        )?;
+        let accepted = exemption("event-aware-concurrency", ExemptionStatus::Accepted);
+        let scoped = evaluate_scoped_entry(
+            "validate-title",
+            "merge-group-title-check.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            &[accepted],
+            Some(&["merge_group".to_string()]),
+        );
+        assert!(scoped.ok, "disjoint queue producer must pass: {:?}", scoped.violations);
+        assert_eq!(scoped.exemptions.len(), 1, "cancellation remains an explicit exemption");
+
+        let unscoped = evaluate_required_entry(
+            "validate-title",
+            "merge-group-title-check.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            &[],
+        );
+        assert!(
+            unscoped.violations.iter().any(|item| item == "missing pull_request trigger"),
+            "unscoped evaluation must retain the ordinary PR requirement: {:?}",
+            unscoped.violations
+        );
+        assert!(
+            unscoped.violations.iter().any(|item| item.contains("merge_group")),
+            "unscoped evaluation must name the merge_group registration defect: {:?}",
+            unscoped.violations
+        );
+        Ok(())
+    }
+
+    fn evaluate_merge_group_only_scope(
+        exemptions: &[PolicyExemption],
+    ) -> Result<WorkflowEvaluation> {
+        let metadata: Value = serde_yaml_ng::from_str(
+            "on:\n  merge_group: {}\njobs:\n  validate-title:\n    name: validate-title\n    steps: []\n",
+        )?;
+        Ok(evaluate_scoped_entry(
+            "validate-title",
+            "merge-group-title-check.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            exemptions,
+            None,
+        ))
+    }
+
+    #[test]
+    fn event_registration_scope_exemption_is_accepted() -> Result<()> {
+        let evaluated = evaluate_merge_group_only_scope(&[
+            exemption("pull-request-trigger", ExemptionStatus::Accepted),
+            exemption("event-registration-scope", ExemptionStatus::Accepted),
+            exemption("event-aware-concurrency", ExemptionStatus::Accepted),
+            exemption("push-targets-master", ExemptionStatus::Accepted),
+        ])?;
+
+        assert!(evaluated.ok, "known exemption must be accepted: {:?}", evaluated.violations);
+        assert!(evaluated.exemptions.iter().any(|item| item.clause == "event-registration-scope"));
+        Ok(())
+    }
+
+    #[test]
+    fn unexempted_merge_group_only_scope_still_fails() -> Result<()> {
+        let evaluated = evaluate_merge_group_only_scope(&[
+            exemption("pull-request-trigger", ExemptionStatus::Accepted),
+            exemption("event-aware-concurrency", ExemptionStatus::Accepted),
+            exemption("push-targets-master", ExemptionStatus::Accepted),
+        ])?;
+
+        assert!(!evaluated.ok);
+        assert!(
+            evaluated.violations.iter().any(|item| {
+                item == "unscoped merge_group-only producer must declare its event scope"
+            }),
+            "the event-scope finding must survive unrelated exemptions: {:?}",
+            evaluated.violations
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_event_scope_keeps_legacy_ordinary_events_without_pr_target() -> Result<()> {
+        let metadata: Value = serde_yaml_ng::from_str(
+            "on:\n  pull_request: {}\njobs:\n  required:\n    name: required\n    steps: []\n",
+        )?;
+        let events: Vec<String> = Vec::new();
+        let evaluated = evaluate_scoped_entry(
+            "required",
+            "required.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            &[],
+            Some(&events),
+        );
+        assert!(
+            !evaluated.violations.iter().any(|item| item == "missing pull_request_target trigger"),
+            "an empty scope keeps the legacy ordinary events, not pull_request_target: {:?}",
+            evaluated.violations
+        );
+        assert!(
+            evaluated.violations.iter().any(|item| item == "missing merge_group trigger"),
+            "an empty scope must retain the legacy ordinary-event contract: {:?}",
+            evaluated.violations
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_request_target_registration_accepts_its_actual_event() -> Result<()> {
+        let metadata: Value = serde_yaml_ng::from_str(
+            "on:\n  pull_request_target:\n  workflow_dispatch:\njobs:\n  validate-title:\n    name: validate-title\n    steps: []\n",
+        )?;
+        let accepted = exemption("event-aware-concurrency", ExemptionStatus::Accepted);
+        let scoped = evaluate_scoped_entry(
+            "validate-title",
+            "pr-title-check.yml".to_string(),
+            true,
+            true,
+            Some(&metadata),
+            &[accepted],
+            Some(&["pull_request_target".to_string(), "workflow_dispatch".to_string()]),
+        );
+        assert!(scoped.ok, "actual PR metadata trigger must pass: {:?}", scoped.violations);
         Ok(())
     }
 

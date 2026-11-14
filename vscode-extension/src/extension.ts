@@ -888,14 +888,6 @@ export async function copyProviderDecisionReceiptCommand(
   return copyProviderDecisionReceipt(activeClient, providerOverride, diagnosticCommandOptions());
 }
 
-/**
- * Passive workspace file creation must not insert boilerplate (#14451).
- * Explicit create/scaffold commands own starter content.
- */
-export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
-  return;
-}
-
 export async function activate(context: vscode.ExtensionContext) {
   const activation = new ExtensionActivationOwner(context, (message) => {
     outputChannel?.error(message);
@@ -1539,6 +1531,15 @@ async function runExtensionActivation(
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
 
+  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
+    try {
+      await populateCreatedFiles(event);
+    } catch (e) {
+      outputChannel.error('File creation handler error', e);
+    }
+  });
+  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
+
   // The document feature group receives a scoped facade context: registrations
   // it pushes during activation join the attempt, while lazily created
   // resources (a POD preview webview panel's onDidDispose hook) fall through
@@ -1937,25 +1938,42 @@ function runActivationHousekeeping(
     false,
     () => new OnboardingManager(context, outputChannel),
   );
+  const languageServerRunning = languageClientLifecycle?.snapshot.state === 'running';
+
   if (onboarding?.shouldShowWelcome()) {
     featureActivationMetrics.markFirstUse('onboarding');
-    // Fire-and-forget; failures must not block extension startup.
-    onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      outputChannel.error(`[onboarding] Error showing welcome: ${msg}`);
-    });
     // Mark the version seen on first install so the next activation
     // (after an update) triggers the What's New panel instead of welcome.
     whatsNewManager.markVersionSeen().catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       outputChannel.error(`[whats-new] Error marking version seen: ${msg}`);
     });
+
+    if (onboarding.shouldOfferWelcomeNotification(languageServerRunning)) {
+      // Fire-and-forget; failures must not block extension startup.
+      onboarding.showWelcomeNotification(currentServerPath).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.error(`[onboarding] Error showing welcome: ${msg}`);
+      });
+    } else {
+      // Healthy cold start — skip the stacked welcome toast (#18432).
+      onboarding.markWelcomed().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        outputChannel.error(`[onboarding] Error marking welcomed: ${msg}`);
+      });
+    }
   } else if (whatsNewManager.shouldShowWhatsNew()) {
     // Extension was updated — show What's New panel.
     // Fire-and-forget; failures must not block extension startup.
     whatsNewManager
       .markVersionSeen()
       .then(() => {
+        if (!whatsNewManager.hasReleaseNotesContent()) {
+          outputChannel.info(
+            '[whats-new] Skipping auto-open — no changelog section for this version',
+          );
+          return undefined;
+        }
         return whatsNewManager.showWhatsNew();
       })
       .catch((err: unknown) => {
@@ -4100,4 +4118,10 @@ async function disposeLanguageClient(): Promise<void> {
   // no-op and strand the user on a stopped server.
   serverDemand?.noteStopped();
   userInitiatedStopPending = false;
+}
+
+/** Compile-time handler for the file-creation listener (#14621 registration retained). */
+async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
+  // Auto-populate on ordinary file creation was retired (#14451); scaffold
+  // commands own explicit boilerplate insertion.
 }

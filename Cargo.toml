@@ -235,7 +235,7 @@ allow = [
 [workspace.package]
 version = "0.17.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Steven Zimmerman, CPA <git@effortlesssteven.com>"]
 description = "Perl parser, LSP, and DAP ecosystem in Rust"
 license = "MIT OR Apache-2.0"
@@ -483,6 +483,11 @@ same_length_and_capacity = "deny"
 # ptr_arg: zero-copy signature discipline — public APIs prefer &str/&[T]/&Path over
 # &String/&Vec<T>/&PathBuf (#2313); activated after a zero-site pierced measurement.
 ptr_arg = "deny"
+# path_buf_push_overwrite + join_absolute_paths: activated by #14441 after a
+# zero-finding pierced measurement across all workspace members on Linux
+# (--force-warn on both lints). Windows/macOS product subjects: NOT_PROVEN.
+path_buf_push_overwrite = "deny"
+join_absolute_paths = "deny"
 # disallowed_fields: architectural seam protection (#6114).
 # The actual field denylist lives in clippy.toml `disallowed-fields = []`.
 disallowed_fields = "deny"

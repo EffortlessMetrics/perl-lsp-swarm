@@ -47,35 +47,30 @@ name = "validate-title"
 workflow = ".github/workflows/pr-title-check.yml"
 required = true
 contract_role = "required-workflow-shape"
+events = ["pull_request_target", "workflow_dispatch"]
 
-  # A metadata-only check. It reads the PR title through the API and never
-  # checks out or executes candidate contents, which is what lets it run on
-  # `pull_request_target` with write permission without crossing the trust
-  # boundary. The contract's remaining clauses assume a workflow that builds
-  # the candidate; they are the wrong requirements here rather than unmet ones.
-  [[check.exemption]]
-  clause = "pull-request-trigger"
-  status = "accepted"
-  reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
-  tracking = "16164"
-
-  [[check.exemption]]
-  clause = "merge-group-trigger"
-  status = "accepted"
-  reason = "A merge queue entry has no PR title to validate; the title was already validated on the PR."
-  tracking = "16164"
-
-  [[check.exemption]]
-  clause = "push-targets-master"
-  status = "accepted"
-  reason = "A push to main has no PR title; the check is meaningless outside a pull request."
-  tracking = "16164"
-
+  # #18255: one producer per event. This workflow owns only the advisory PR
+  # title write path; its pull_request_target trigger is required, but merge
+  # group and push belong to other event registrations, not stale exemptions.
   [[check.exemption]]
   clause = "event-aware-concurrency"
   status = "accepted"
   reason = "A five-minute metadata job with no runner cost worth cancelling; the clause exists to stop long candidate builds stacking up."
   tracking = "16164"
+
+[[check]]
+name = "validate-title"
+workflow = ".github/workflows/merge-group-title-check.yml"
+required = true
+contract_role = "required-workflow-shape"
+events = ["merge_group"]
+
+  # Queue title validation is read-only and emitted by exactly one job.
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "A five-minute read-only queue metadata job must not be cancelled into a false red required context; no long candidate build runs here."
+  tracking = "18255"
 
 [[check]]
 name = "Methodology Gate"
@@ -94,6 +89,12 @@ name = "Authority Transfer Review"
 workflow = ".github/workflows/authority-transfer-review.yml"
 required = false
 contract_role = "advisory-workflow-shape"
+
+[[check]]
+name = "Gate Enforcement Contract"
+workflow = ".github/workflows/gate-enforcement-contract.yml"
+required = true
+contract_role = "required-workflow-shape"
 
 # `[[checks]]` is the emitted status-context inventory. The fields answer
 # different questions and must not be inferred from each other:
@@ -149,7 +150,7 @@ policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; named new gaps in changed production files block, while sensor availability remains advisory."
+reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; diff-scoped ripr check findings and gaps block, raw-check and review-guidance limitations remain visible, and ripr-review-comments availability is advisory (#19240)."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"
@@ -192,6 +193,20 @@ applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
 reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
+
+[[checks]]
+name = "validate-title"
+producer = "repository-job"
+workflow = ".github/workflows/merge-group-title-check.yml"
+job = "validate-title"
+workflow_result = "propagate"
+events = ["merge_group"]
+required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "The same required context on merge_group has a separate read-only producer while the pull_request_target/workflow_dispatch producer preserves comment and label writes. Cross-event registration does not weaken same-event uniqueness (#18255)."
 
 [[checks]]
 name = "Rust formatting"
@@ -288,11 +303,25 @@ workflow = ".github/workflows/gate-enforcement-contract.yml"
 job = "contract"
 workflow_result = "propagate"
 events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "The static contract is the authority on whether the checked-in policy and the workflow emitters agree. While it was advisory, a PR could be offered for acceptance with the contract red, so a contract violation reached a human instead of blocking the merge. It is deterministic, offline, and always reported on every PR and merge-group ref."
+
+[[checks]]
+name = "Trusted-base workflow security ratchet"
+producer = "repository-job"
+workflow = ".github/workflows/workflow-security-ratchet.yml"
+job = "trusted-base-ratchet"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "The static contract reports repository policy drift but is not yet protected by GitHub."
+reason = "The ratchet rejects new workflow write-authority and injection findings against the trusted base baseline. It is designed to be ruleset-required (#10536), but its workflow does not yet meet the required-workflow shape (no merge_group trigger, path-filtered push, non-standard concurrency), so promotion needs its own workflow change."
 
 [[checks]]
 name = "Semantic close containment (advisory)"

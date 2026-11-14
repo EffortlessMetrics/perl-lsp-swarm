@@ -232,11 +232,7 @@ fn is_identifier_byte(b: u8) -> bool {
 fn is_operator_boundary(bytes: &[u8], op_end: usize) -> bool {
     // Require a non-identifier boundary after multi-character operators so
     // identifiers like `qqx` aren't mistaken for `qq`.
-    if op_end < bytes.len() && is_identifier_byte(bytes[op_end]) {
-        return false;
-    }
-
-    true
+    !(op_end < bytes.len() && is_identifier_byte(bytes[op_end]))
 }
 
 fn matching_delimiter(open: u8) -> (u8, bool) {
