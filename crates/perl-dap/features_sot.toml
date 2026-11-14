@@ -946,7 +946,7 @@ direction = "client_to_server"
 capability_gate = "executeCommandProvider"
 registration = "static_capabilities"
 implementation_owner = "crates/perl-lsp-rs/src/execute_command/provider.rs"
-state_owner = "document_store"
+state_owner = "none"
 tests = ["crates/perllsp/tests/lsp_critic_native_only_process.rs"]
 evidence = [
   { class = "integration_test", id = "crates/perllsp/tests/lsp_critic_native_only_process.rs" },
@@ -1998,7 +1998,7 @@ tests = [
 evidence = [
   { class = "integration_test", id = "crates/perllsp/tests/lsp_text_sync_diagnostics_process.rs" },
 ]
-claim_boundary = "Proof covers full-document didOpen/didChange and UTF-16 positions through the public process, including ordered replacements and ranged-edit refusal; didClose, didSave, and installed-editor lifecycle are outside this citation."
+claim_boundary = "Proof covers full-document didOpen/didChange and UTF-16 positions through the public process, including ordered replacements and ranged-edit refusal; explicit versions that are wrongly typed or outside i32 are treated as absent and the replacement still applies with a synthesized version; didClose, didSave, and installed-editor lifecycle are outside this citation."
 description = "didOpen/didChange/didClose text synchronization"
 
 [[feature]]
