@@ -363,8 +363,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a ReDoS vector where an unclosed heredoc delimiter in a large document could
   trigger catastrophic backtracking. (#3568)
 
-## [0.18.0] - 2026-11-03
-
 ### Language intelligence
 #### Added
 - Code after an unconditional `goto LABEL` is now flagged as unreachable (PL406), matching the existing detection for die/exit/croak, including correct handling of forward goto targets inside continue blocks. ([#4699](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/4699))
