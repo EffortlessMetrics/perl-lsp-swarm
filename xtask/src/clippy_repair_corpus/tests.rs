@@ -97,6 +97,111 @@ fn checked_in_corpus_validates_and_reports_counts() -> Result<()> {
     Ok(())
 }
 
+/// Read one quoted string field out of the manifest text.
+fn manifest_field(raw: &str, field: &str) -> Result<String> {
+    let needle = format!("\"{field}\": \"");
+    let after = raw
+        .split(&needle)
+        .nth(1)
+        .ok_or_else(|| color_eyre::eyre::eyre!("{field} not found in manifest"))?;
+    let value = after
+        .split('"')
+        .next()
+        .ok_or_else(|| color_eyre::eyre::eyre!("{field} value not terminated"))?;
+    Ok(value.to_owned())
+}
+
+/// The corpus records the toolchain it was authored under as history and the
+/// release line it was validated under as the field the tree can invalidate.
+/// A producer record that no longer matches the tree is history, not a
+/// defect, so it must not raise a violation.
+#[test]
+fn producer_toolchain_history_is_not_compared_against_the_tree() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let manifest_raw = fs::read_to_string(root.join(FIXTURE_DIR).join("manifest.v1.json"))?;
+    let producer = manifest_field(&manifest_raw, "producer_toolchain")?;
+    let validated = manifest_field(&manifest_raw, "validated_under_toolchain")?;
+    let channel_raw = fs::read_to_string(root.join("rust-toolchain.toml"))?;
+    if producer == validated {
+        bail!("the corpus must record a producer release distinct from the validated one");
+    }
+    if !channel_raw.contains(&validated) {
+        bail!("validated release {validated} is not the tree's pinned channel");
+    }
+    let violations = violations_for(&root)?;
+    if violations.iter().any(|v| v.contains("producer_toolchain")) {
+        bail!("producer provenance was compared against the tree: {violations:?}");
+    }
+    Ok(())
+}
+
+/// A release line that is a prefix of the tree's release names a different
+/// release. `1.10` is a substring of `1.100.0`, so a substring comparison would
+/// accept it; the validator must not.
+#[test]
+fn toolchain_validation_pin_rejects_a_prefix_release() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    patch_file(
+        &manifest,
+        "\"validated_under_toolchain\": \"1.100\"",
+        "\"validated_under_toolchain\": \"1.10\"",
+    )?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("validated_under_toolchain")) {
+        bail!("a prefix release was accepted as the validation pin: {violations:?}");
+    }
+    Ok(())
+}
+
+/// A validation pin that names a different release must be rejected.
+#[test]
+fn toolchain_validation_pin_rejects_a_different_release() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    patch_file(
+        &manifest,
+        "\"validated_under_toolchain\": \"1.100\"",
+        "\"validated_under_toolchain\": \"1.99\"",
+    )?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("validated_under_toolchain")) {
+        bail!("a different release was accepted as the validation pin: {violations:?}");
+    }
+    Ok(())
+}
+
+/// The validation pin is compared against the tree's pinned channel, not
+/// against a constant: moving the tree's channel must invalidate the pin.
+#[test]
+fn toolchain_validation_pin_is_compared_against_the_tree_channel() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    patch_file(&root.join("rust-toolchain.toml"), "channel = \"1.100.0\"", "channel = \"1.99.0\"")?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("validated_under_toolchain")) {
+        bail!("moving the tree's channel did not invalidate the validation pin: {violations:?}");
+    }
+    Ok(())
+}
+
+/// A malformed producer record is still a defect: the history field is shaped
+/// even though it is never compared against the tree.
+#[test]
+fn malformed_producer_toolchain_is_rejected() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    patch_file(
+        &manifest,
+        "\"producer_toolchain\": \"1.95\"",
+        "\"producer_toolchain\": \"not-a-release\"",
+    )?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("producer_toolchain")) {
+        bail!("a malformed producer record was accepted: {violations:?}");
+    }
+    Ok(())
+}
+
 #[test]
 fn digest_tampering_without_digest_movement_fails() -> Result<()> {
     let (_temp, root) = isolated_repo()?;

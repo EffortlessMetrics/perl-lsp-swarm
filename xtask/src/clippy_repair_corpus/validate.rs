@@ -461,6 +461,104 @@ fn stable_case_id_ok(id: &str) -> bool {
     STABLE_CASE_ID.is_match(id)
 }
 
+/// Whether a recorded toolchain value is a well-formed `MAJOR.MINOR` release
+/// line. Shape only: a provenance record is never compared against the tree.
+fn is_release_line(value: &str) -> bool {
+    let mut parts = value.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    !major.is_empty()
+        && !minor.is_empty()
+        && major.chars().all(|c| c.is_ascii_digit())
+        && minor.chars().all(|c| c.is_ascii_digit())
+}
+
+/// The `MAJOR.MINOR` release line of a pinned toolchain channel.
+///
+/// `rust-toolchain.toml` pins a full release such as `1.100.0`; the corpus
+/// records the release line it was validated under. Parsing the line and
+/// comparing it for equality keeps a different release from being accepted as
+/// a prefix: `1.10` is a prefix of `1.100`, and it names a different release.
+fn release_line(channel: &str) -> Option<String> {
+    let mut parts = channel.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    if !is_release_line(&format!("{major}.{minor}")) {
+        return None;
+    }
+    if let Some(patch) = parts.next() {
+        if patch.is_empty() || !patch.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        if parts.next().is_some() {
+            return None;
+        }
+    }
+    Some(format!("{major}.{minor}"))
+}
+
+/// Check the corpus's two toolchain records against each other and the tree.
+///
+/// `producer_toolchain` is history: it records the toolchain the packets were
+/// authored under, is shaped but never compared against the tree, and stays
+/// true when the repository moves to a newer toolchain. The field that the
+/// tree can invalidate is `validated_under_toolchain`: it names the release
+/// line the corpus was last validated against, so a toolchain move surfaces
+/// as a demand to re-validate rather than as a stale provenance record.
+fn check_toolchain_pins(
+    manifest: &CorpusManifest,
+    toolchain_raw: &str,
+    violations: &mut Vec<String>,
+) {
+    if !is_release_line(manifest.producer_toolchain.trim()) {
+        violations.push(format!(
+            "producer_toolchain {} is not a MAJOR.MINOR release line",
+            manifest.producer_toolchain
+        ));
+    }
+    let validated = manifest.validated_under_toolchain.trim();
+    if !is_release_line(validated) {
+        violations.push(format!(
+            "validated_under_toolchain {} is not a MAJOR.MINOR release line",
+            manifest.validated_under_toolchain
+        ));
+        return;
+    }
+    let channel_value: toml::Value = match toml::from_str(toolchain_raw) {
+        Ok(value) => value,
+        Err(error) => {
+            violations.push(format!("parsing {TOOLCHAIN_FILE}: {error}"));
+            return;
+        }
+    };
+    let Some(channel) = channel_value
+        .get("toolchain")
+        .and_then(|toolchain| toolchain.get("channel"))
+        .and_then(toml::Value::as_str)
+    else {
+        violations.push(format!(
+            "{TOOLCHAIN_FILE} pins no toolchain channel to validate the corpus against"
+        ));
+        return;
+    };
+    let Some(line) = release_line(channel) else {
+        violations.push(format!("{TOOLCHAIN_FILE} channel {channel} is not a numbered release"));
+        return;
+    };
+    if line != validated {
+        violations.push(format!(
+            "validated_under_toolchain {validated} disagrees with the {TOOLCHAIN_FILE} channel {channel}"
+        ));
+    }
+}
+
 /// Validate the checked-in corpus against every structural invariant.
 pub(crate) fn validate_corpus(repo_root: &Path) -> Result<CorpusReport> {
     let fixture_dir = repo_root.join(FIXTURE_DIR);
@@ -489,12 +587,7 @@ pub(crate) fn validate_corpus(repo_root: &Path) -> Result<CorpusReport> {
         ));
     }
     let toolchain_raw = read_repo_file(repo_root, TOOLCHAIN_FILE)?;
-    if !toolchain_raw.contains(manifest.producer_toolchain.trim()) {
-        violations.push(format!(
-            "producer_toolchain {} disagrees with {}",
-            manifest.producer_toolchain, TOOLCHAIN_FILE
-        ));
-    }
+    check_toolchain_pins(&manifest, &toolchain_raw, &mut violations);
 
     let ctx = CorpusContext::load(repo_root)?;
     let loaded = load_cases(repo_root, &manifest, &mut violations);

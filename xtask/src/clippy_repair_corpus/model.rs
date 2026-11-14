@@ -282,7 +282,15 @@ pub(crate) struct ManifestCaseEntry {
 pub(crate) struct CorpusManifest {
     pub(crate) schema_version: u32,
     pub(crate) corpus: String,
+    /// The toolchain the corpus packets were *authored* under. This is history:
+    /// it is never compared against the tree, because authoring a static JSON
+    /// packet does not depend on the installed toolchain.
     pub(crate) producer_toolchain: String,
+    /// The toolchain the corpus was last *validated* against. This is the field
+    /// the validator compares to the tree's pinned channel, so a toolchain move
+    /// forces an explicit re-validation instead of silently invalidating a
+    /// provenance record.
+    pub(crate) validated_under_toolchain: String,
     pub(crate) case_count: usize,
     pub(crate) cases: Vec<ManifestCaseEntry>,
 }
