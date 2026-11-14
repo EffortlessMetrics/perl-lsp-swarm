@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as testAdapter from '../testAdapter';
 import {
   runAllTestsWithProve,
   runCurrentTestWithProve,
@@ -34,11 +35,22 @@ function setActiveEditor(editor: TestEditor | undefined): void {
 }
 
 describe('test command implementations', () => {
+  let resolveProveCommandSpy: jest.SpiedFunction<typeof testAdapter.resolveProveCommand>;
+
   beforeEach(() => {
     jest.clearAllMocks();
     setActiveEditor(undefined);
     Object.assign(vscode.workspace, { workspaceFolders: undefined });
     (vscode.workspace.getWorkspaceFolder as jest.Mock).mockReturnValue(undefined);
+    resolveProveCommandSpy = jest.spyOn(testAdapter, 'resolveProveCommand').mockImplementation((args) => ({
+      command: 'prove',
+      args,
+      shell: false,
+    }));
+  });
+
+  afterEach(() => {
+    resolveProveCommandSpy.mockRestore();
   });
 
   test('runs the selected file and restores status-bar state after adapter failure', async () => {
@@ -181,14 +193,63 @@ describe('test command implementations', () => {
     expect(editor.document.save).toHaveBeenCalledTimes(1);
   });
 
-  test('builds a recursive prove task for the first workspace folder', async () => {
-    Object.assign(vscode.workspace, { workspaceFolders: [{ uri: { fsPath: '/workspace' } }] });
+  test('builds a recursive prove task for each workspace folder', async () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [
+        { name: 'root-a', uri: { fsPath: '/workspace-a' } },
+        { name: 'root-b', uri: { fsPath: '/workspace-b' } },
+      ],
+    });
 
     await runAllTestsWithProve();
 
+    expect(vscode.tasks.executeTask).toHaveBeenCalledTimes(2);
+    const firstTask = (vscode.tasks.executeTask as jest.Mock).mock.calls[0]?.[0];
+    const secondTask = (vscode.tasks.executeTask as jest.Mock).mock.calls[1]?.[0];
+    expect(firstTask?.name).toBe('Perl Tests: All (root-a)');
+    expect(firstTask?.execution.args).toEqual(['-r', 't/']);
+    expect(firstTask?.execution.options).toEqual({ cwd: '/workspace-a' });
+    expect(secondTask?.name).toBe('Perl Tests: All (root-b)');
+    expect(secondTask?.execution.options).toEqual({ cwd: '/workspace-b' });
+  });
+
+  test('shows prove resolution errors and skips the task (#16576 item 1)', async () => {
+    const message =
+      'A matching Perl/prove installation was not found on PATH; install Perl with prove or configure a supported Perl runtime.';
+    resolveProveCommandSpy.mockReturnValue({
+      command: '',
+      args: [],
+      shell: false,
+      error: message,
+    });
+    setActiveEditor(makeEditor());
+    (vscode.workspace.getWorkspaceFolder as jest.Mock).mockReturnValue({
+      uri: { fsPath: '/workspace' },
+    });
+
+    await runCurrentTestWithProve();
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(message);
+    expect(vscode.tasks.executeTask).not.toHaveBeenCalled();
+  });
+
+  test('uses resolved Windows prove invocation in the task execution (#16576 item 1)', async () => {
+    const perlExe = 'C:\\Strawberry\\perl\\bin\\perl.exe';
+    const proveBat = 'C:\\Strawberry\\perl\\bin\\prove.bat';
+    resolveProveCommandSpy.mockReturnValue({
+      command: perlExe,
+      args: ['-x', proveBat, '-v', '/workspace/t/example.t'],
+      shell: false,
+    });
+    setActiveEditor(makeEditor());
+    (vscode.workspace.getWorkspaceFolder as jest.Mock).mockReturnValue({
+      uri: { fsPath: '/workspace' },
+    });
+
+    await runCurrentTestWithProve();
+
     const task = (vscode.tasks.executeTask as jest.Mock).mock.calls[0]?.[0];
-    expect(task?.name).toBe('Perl Tests: All');
-    expect(task?.execution.args).toEqual(['-r', 't/']);
-    expect(task?.execution.options).toEqual({ cwd: '/workspace' });
+    expect(task?.execution.command).toBe(perlExe);
+    expect(task?.execution.args).toEqual(['-x', proveBat, '-v', '/workspace/t/example.t']);
   });
 });

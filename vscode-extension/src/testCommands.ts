@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { parseDebugTestLaunchTarget } from './debugAdapter';
-import type { PerlTestAdapter } from './testAdapter';
+import { resolveProveCommand, type PerlTestAdapter } from './testAdapter';
 import { selectTestCommandAtPosition } from './runTestAtCursor';
 import { isPerlLanguageId } from './languageIdentity';
 
@@ -110,10 +110,20 @@ export async function runTestAtCursorCommand(dependencies: TestCommandDependenci
 }
 
 async function runProveTask(name: string, args: string[], cwd?: string): Promise<void> {
+  const resolution = resolveProveCommand(args);
+  if (resolution.error) {
+    void vscode.window.showErrorMessage(resolution.error);
+    return;
+  }
+
   const scope = cwd
     ? (vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd)) ?? vscode.TaskScope.Global)
     : vscode.TaskScope.Global;
-  const execution = new vscode.ProcessExecution('prove', args, cwd ? { cwd } : undefined);
+  const execution = new vscode.ProcessExecution(
+    resolution.command,
+    resolution.args,
+    cwd ? { cwd } : undefined,
+  );
   const task = new vscode.Task({ type: 'perl-lsp' }, scope, name, 'perl-lsp', execution);
   task.presentationOptions = {
     reveal: vscode.TaskRevealKind.Always,
@@ -141,14 +151,19 @@ export async function runCurrentTestWithProve(): Promise<void> {
   await runProveTask('Perl Tests: Current File', ['-v', filePath], workspaceFolder?.uri.fsPath);
 }
 
-/** Run prove recursively against the first workspace folder. */
+/** Run prove recursively against every workspace folder. */
 export async function runAllTestsWithProve(): Promise<void> {
   const workspaceFolders = vscode.workspace.workspaceFolders;
-  const firstFolder = workspaceFolders?.[0];
-  if (!firstFolder) {
+  if (!workspaceFolders || workspaceFolders.length === 0) {
     vscode.window.showErrorMessage('No workspace folder open');
     return;
   }
 
-  await runProveTask('Perl Tests: All', ['-r', 't/'], firstFolder.uri.fsPath);
+  for (const folder of workspaceFolders) {
+    const name =
+      workspaceFolders.length === 1
+        ? 'Perl Tests: All'
+        : `Perl Tests: All (${folder.name})`;
+    await runProveTask(name, ['-r', 't/'], folder.uri.fsPath);
+  }
 }
