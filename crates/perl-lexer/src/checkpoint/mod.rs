@@ -1,10 +1,15 @@
 //! Lexer checkpointing for incremental parsing.
 
+mod behavior_equality;
 mod cache;
 mod core;
 mod diff;
 mod identity;
 
+pub use behavior_equality::{
+    BEHAVIOR_BEARING_STATE_COMPARE_VERSION, BehaviorBearingStateFingerprint,
+    BehaviorBearingStateMismatch,
+};
 pub use cache::CheckpointCache;
 pub(crate) use core::ReplayState;
 pub use core::{
