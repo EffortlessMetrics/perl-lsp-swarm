@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16585,
-  "reason": "Re-measured from this PR's failing smoke receipt projected_actual (31 files, 1938202 bytes): the PR's extension changes (gate the AI-completion enable journey) shifted the produced package; base is main's current baseline.",
-  "base_baseline_file_sha256": "daa7d4775e6e0aa1aa026b08bf6e2b6f1483004be2da8d8272d211e247ea8d42",
-  "base_inventory_sha256": "4ed08e537a58d83824d48ac7cff1c4aa058516f02d9858333018995ed39c3735",
-  "candidate_baseline_file_sha256": "76ced040e30a4f70d0d55448beceec25475d3c399a06f661c613756ebb8ce4db",
-  "candidate_inventory_sha256": "ba88ea223cd3cee7f5d0ee1d02d246cb805732b19079f4bd99228c257e01e296"
+  "owner_issue": 9864,
+  "reason": "Merge main onboarding and What's New packaging with the Rust 1.100 source-build minimum: out/extension.js adopts main's welcome gating and fallback logic, while the MSRV-1.100 badge adds one README byte; no files added or removed",
+  "base_baseline_file_sha256": "6fc630983acde8e559bb4e10f875f6960c5df2439dccfd09762b1b8c8c223ea3",
+  "candidate_baseline_file_sha256": "686faa5fef23a36add99101fb2ce23b8bf4d4f3dbae25142a6a5e359914725f0",
+  "base_inventory_sha256": "1f39cc7522fa37db92ab26799a3e4140dd7be06439a068c3202fe04e9d90bfbe",
+  "candidate_inventory_sha256": "eec70960e0bfaef1fcd494e7001cbccfc15624d6967143a178cd0d68ea1d9f15"
 }

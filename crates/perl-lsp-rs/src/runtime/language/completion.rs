@@ -27,6 +27,7 @@ use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
 use perl_lsp_rs_core::providers::dancer2::Dancer2CompletionCandidate;
+use perl_lsp_rs_core::providers::htmx::htmx_attribute_name_completion_admitted;
 use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -1048,6 +1049,7 @@ impl LspServer {
             });
         if is_method_completion
             || CompletionProvider::detect_hash_key_context(doc_text, offset).is_some()
+            || htmx_attribute_name_completion_admitted(doc_text, offset)
         {
             return;
         }
@@ -1185,6 +1187,17 @@ impl LspServer {
                             | crate::workspace_index::SymbolKind::Class
                             | crate::workspace_index::SymbolKind::Role
                     );
+                    // `find_symbols` admits subsequence matches. Completion's
+                    // typed prefix must not: `Thing0` is a subsequence of
+                    // `Thing10` but not a string prefix (#18760). Variables
+                    // keep the looser matcher (`token` → `$api_token`).
+                    if is_module_kind
+                        && !prefix.is_empty()
+                        && !symbol.name.starts_with(&prefix)
+                        && !Self::workspace_symbol_qualified_name(&symbol).starts_with(&prefix)
+                    {
+                        continue;
+                    }
                     if is_use_module_context
                         && is_module_kind
                         && let Some(ctx) = inc_ctx
@@ -1613,18 +1626,12 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                if super::navigation::is_in_comment_naive(offset, &doc.text) {
-                    break 'completion_response None;
-                }
-
+                // Mirrors the goto-definition comment guard (#5066/#5408):
+                // the naive `#`-earlier-on-line hit is adjudicated by the
+                // snapshot SourceRegionIndex (#19206), so a `#` inside a
+                // string or regex no longer suppresses completions for code
+                // later on the line.
+                //
                 // Use the generation-current snapshot, or a stale one whose
                 // parsed source still equals the current text. While the
                 // current generation's parse is pending, never pair the stale
@@ -1634,6 +1641,21 @@ impl LspServer {
                 // snapshot, which stays usable. Full-sync desynchronization
                 // is not pending parse (#8129).
                 let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
+                if super::navigation::is_in_comment_for_guard(
+                    offset,
+                    &doc.text,
+                    parsed.as_deref(),
+                    true,
+                ) {
+                    // While the parse is pending the guard verdict rests on
+                    // the naive fallback alone, so answer incomplete instead
+                    // of a confident empty list (#19206 review).
+                    break 'completion_response if pending_parse_gap {
+                        Some(json!({"isIncomplete": true, "items": []}))
+                    } else {
+                        None
+                    };
+                }
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1981,15 +2003,24 @@ impl LspServer {
                 // real symbol and no completion path below (AST-based
                 // provider, lexical/keyword fallback, declared-dependency,
                 // or workspace-wide completions) should suggest anything.
-                // Mirrors the goto-definition comment guard (#5066/#5408) at
-                // navigation.rs. String-aware guarding is intentionally
-                // omitted: text-based quote scanners produce false positives
-                // on real Perl code (regexes, heredocs, qw(), POD), and
-                // `is_in_comment && !is_in_string` is the inverted pattern
-                // #5411 fixed for goto-definition -- a position the naive
-                // quote-counter classifies as both comment and string would
-                // wrongly skip this guard.
-                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
+                // Mirrors the goto-definition comment guard (#5066/#5408):
+                // the naive `#`-earlier-on-line hit is adjudicated by the
+                // snapshot SourceRegionIndex (#19206). The snapshot is
+                // resolved here, before the cancellation check below, exactly
+                // as the freshness contract further down prescribes; the
+                // adjudication itself is pure and does not touch the token.
+                //
+                // Same freshness contract as `handle_completion`: never pair
+                // a stale AST with newer text while the parse is pending
+                // (#17775); same-text stale snapshots stay usable (#11858),
+                // and full-sync desynchronization is not pending parse (#8129).
+                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
+                let in_comment = super::navigation::is_in_comment_for_guard(
+                    offset,
+                    &doc.text,
+                    parsed.as_deref(),
+                    true,
+                );
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead
@@ -2012,14 +2043,16 @@ impl LspServer {
                 }
 
                 if in_comment {
-                    break 'completion_response None;
+                    // While the parse is pending the guard verdict rests on
+                    // the naive fallback alone, so answer incomplete instead
+                    // of a confident empty list (#19206 review).
+                    break 'completion_response if pending_parse_gap {
+                        Some(json!({"isIncomplete": true, "items": []}))
+                    } else {
+                        None
+                    };
                 }
 
-                // Same freshness contract as `handle_completion`: never pair
-                // a stale AST with newer text while the parse is pending
-                // (#17775); same-text stale snapshots stay usable (#11858),
-                // and full-sync desynchronization is not pending parse (#8129).
-                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -3256,6 +3289,53 @@ mod tests {
              cancelled mid-analysis (#3619 regression), got spans: {spans:?}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn hash_in_string_completion_reaches_both_runtime_request_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #19206: the wire route exercises only the cancellable handler, so
+        // pin the shared comment-guard adjudication on both request routes.
+        for (source, needle, expect_target) in [
+            ("sub target_sub { return 1; }\nmy $sep = \"#\"; targ", "; targ", true),
+            ("sub target_sub { return 1; }\nmy $x = 1; # targ", "# targ", false),
+        ] {
+            let (line, character) = source
+                .lines()
+                .enumerate()
+                .find_map(|(idx, text)| {
+                    text.find(needle).map(|col| (idx as u32, (col + needle.len()) as u32))
+                })
+                .ok_or("missing completion needle")?;
+            for cancellable in [false, true] {
+                let server = LspServer::default();
+                let uri = "file:///workspace/hash_guard_completion.pl";
+                server.test_apply_did_open(uri, source, 1)?;
+                let params = Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character }
+                }));
+                let response = if cancellable {
+                    server.handle_completion_cancellable(params, None)?
+                } else {
+                    server.handle_completion(params)?
+                };
+                let items: Vec<&Value> = response
+                    .as_ref()
+                    .and_then(|value| value.get("items"))
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().collect())
+                    .unwrap_or_default();
+                let offered = items
+                    .iter()
+                    .any(|item| item.get("label").and_then(Value::as_str) == Some("target_sub"));
+                assert_eq!(
+                    offered, expect_target,
+                    "hash guard route mismatch: source={source:?}, cancellable={cancellable}, response={response:?}"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -6076,5 +6156,54 @@ our $single_root_var;
 
         assert_eq!(insert_text.as_deref(), Some("$Secrets::api_token"));
         assert!(text_edit_range.is_some());
+    }
+
+    /// Package completion must not admit subsequence-only hits: `Thing0` is a
+    /// string prefix of `Thing01` but only a subsequence of `Thing10` (#18760).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn runtime_workspace_package_prefix_excludes_subsequence_numeric_hits() {
+        use crate::runtime::routing::IndexAccessMode;
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_workspace::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        server
+            .workspace_folders
+            .lock()
+            .push(WorkspaceFolderState::new("file:///project".to_string()));
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        for name in ["Thing01", "Thing09", "Thing10", "Thing20"] {
+            let uri = format!("file:///project/lib/BigApp/Gen/{name}.pm");
+            let source = format!("package BigApp::Gen::{name};\n1;\n");
+            let _ = coordinator.index().index_initial_file_str(&uri, &source);
+        }
+        coordinator.transition_to_ready(4, 4);
+
+        let doc_uri = "file:///project/bin/app.pl";
+        let doc_text = "my $class = BigApp::Gen::Thing0";
+        let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            &inc_context,
+            &IndexAccessMode::Full(&coordinator),
+            None,
+        );
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+        assert!(
+            labels
+                .iter()
+                .any(|label| *label == "BigApp::Gen::Thing01" || label.ends_with("Thing01")),
+            "true prefix Thing01 must remain; got {labels:?}"
+        );
+        for bogus in ["Thing10", "Thing20"] {
+            assert!(
+                !labels.iter().any(|label| label.contains(bogus)),
+                "subsequence package {bogus} must not appear for prefix Thing0; got {labels:?}"
+            );
+        }
     }
 }

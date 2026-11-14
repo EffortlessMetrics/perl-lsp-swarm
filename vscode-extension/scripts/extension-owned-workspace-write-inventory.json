@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "policy_id": "vscode.extension-owned-write",
+  "primitive_module": "src/extensionOwnedWorkspaceWrite.ts",
+  "consumers": [
+    {
+      "module": "src/debugAdapter.ts",
+      "import": "./extensionOwnedWorkspaceWrite"
+    },
+    {
+      "module": "src/gherkinStepDefinitions.ts",
+      "import": "./extensionOwnedWorkspaceWrite"
+    }
+  ]
+}

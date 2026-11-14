@@ -128,7 +128,7 @@ pub fn keyword_completion_candidates(
             rank_penalty: KEYWORD_RANK_PENALTY,
             detail: format!(
                 "Dancer2 {} keyword ({} — {})",
-                &version, scope_detail, activation.facts.dsl_contract_version
+                version, scope_detail, activation.facts.dsl_contract_version
             ),
             availability: scope_detail,
             dsl_contract_version: activation.facts.dsl_contract_version,

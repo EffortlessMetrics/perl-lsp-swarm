@@ -31,13 +31,16 @@ cargo build -p perl-lsp-rs --release
 # Binary lands at: target/release/perllsp (or perllsp.exe on Windows)
 ```
 
-Then in VS Code settings, set:
+Then run **Preferences: Open User Settings (JSON)** and add:
 
 ```json
-"perl-lsp.serverPath": "/path/to/perl-lsp/target/release/perllsp"
+{
+  "perl-lsp.serverPath": "/path/to/perl-lsp/target/release/perllsp"
+}
 ```
 
-This bypasses the auto-download and uses your local build.
+`perl-lsp.serverPath` is machine-scoped; values in `.vscode/settings.json` are
+ignored. This bypasses the auto-download and uses your local build.
 
 ## Compile the extension
 
@@ -270,13 +273,14 @@ command modules only register handlers and delegate those operations.
 
 ## Pointing the extension at a different server version
 
-Set `perl-lsp.serverPath` to any `perllsp` binary. This is the fastest way to test a specific build without reinstalling the extension:
+Set `perl-lsp.serverPath` to any `perllsp` binary. This is the fastest way to test a specific build without reinstalling the extension. Run **Preferences: Open User Settings (JSON)** and add:
 
 ```json
-// .vscode/settings.json in your test workspace
 {
   "perl-lsp.serverPath": "/absolute/path/to/perllsp"
 }
 ```
+
+The setting is machine-scoped; a copy in a test workspace's `.vscode/settings.json` is ignored.
 
 Unset or remove `perl-lsp.serverPath` to revert to the auto-downloaded release binary.

@@ -1,4 +1,6 @@
 //! Public-process regression for variable tokens that share builtin names (#17776).
+
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #[path = "support/real_process.rs"]
 mod real_process;
 

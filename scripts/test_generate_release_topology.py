@@ -544,6 +544,10 @@ class ReleaseTopologyTests(unittest.TestCase):
         workflow = (MODULE_PATH.parents[1] / ".github/workflows/release.yml").read_text(encoding="utf-8")
         MODULE.consolidated_checksum_producer(workflow)
         mutations = {
+            "wrong immutable Rust action": workflow.replace(
+                "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8",
+                "dtolnay/rust-toolchain@" + "0" * 40,
+            ),
             "removed producer": workflow.replace("- name: Generate consolidated SHA256SUMS", "- name: Removed checksum producer"),
             "duplicate producer": workflow + workflow,
             "omitted zip": workflow.replace(" -o -name '*.zip'", ""),

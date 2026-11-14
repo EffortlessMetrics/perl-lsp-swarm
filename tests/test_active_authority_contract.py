@@ -140,6 +140,7 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "MERGE_BLOCKED",
         "NOT_PROVEN",
         "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
+        "re-evaluates the current tree and is the honest action",
         "no admissible exact-subject producer means `NOT_PROVEN`",
         THREAD_PRECONDITION,
         "is `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`",
@@ -387,8 +388,8 @@ class ActiveAuthorityContractTests(unittest.TestCase):
             "CONTRIBUTING.md prose",
             (
                 "agent contributing guide",
-                "Rust channel `1.95.0`",
-                "MSRV 1.95",
+                "Rust channel `1.100.0`",
+                "MSRV 1.100",
                 "There is no fixed two-model review ladder",
                 "Labels may help navigation. They are not proof or merge permission.",
                 "Behind-only movement requires no action.",
@@ -648,13 +649,19 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                 self.assertIn(marker, codex, f"{codex_path} is missing semantic invariant {marker!r}")
                 self.assertIn(marker, claude, f"{claude_path} is missing semantic invariant {marker!r}")
 
-    def test_missing_merge_tree_producer_refuses_instead_of_pushing(self) -> None:
+    def test_fresh_trigger_is_predicate_bounded(self) -> None:
         for provider in (".agents", ".claude"):
             text = active_text(f"{provider}/skills/verify-live-ci/SKILL.md")
             self.assertIn("no admissible exact-subject producer means `NOT_PROVEN`", text)
-            for instruction in ("Authorize one verified-clean empty commit",
-                                "empty-commit head bump", "fresh-trigger exception applies"):
-                self.assertNotIn(instruction, text)
+            self.assertIn("re-evaluates the current tree and is the honest action", text)
+            self.assertIn("Authorize one verified-clean empty commit", text)
+            self.assertIn("empty-commit head bump", text)
+            self.assertIn("the currentness contract's narrow fresh-trigger exception applies", text)
+            self.assertIn("not a retry-to-green mechanism", text)
+            self.assertIn("manufacturing a current status on an unchanged subject", text)
+            self.assertIn("unrelated or behind-only main movement, conflict-free", text)
+            self.assertNotIn("always push an empty commit when main advances", text)
+            self.assertNotIn("poll unchanged pending checks", text)
 
     def test_documented_worktree_root_is_ignored(self) -> None:
         protocol = active_text(WORKTREE_PROTOCOL)
