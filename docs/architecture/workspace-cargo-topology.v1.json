@@ -1,0 +1,4014 @@
+{
+  "schema_version": "workspace_cargo_topology.v1",
+  "generated_by": "cargo xtask repo-topology",
+  "package_count": 48,
+  "workspace_internal_edge_count": 175,
+  "packages": [
+    {
+      "name": "perl-ast",
+      "version": "0.17.0",
+      "path": "crates/perl-ast",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-ast-v2",
+      "version": "0.17.0",
+      "path": "crates/perl-ast-v2",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-ci-hygiene",
+      "version": "0.17.0",
+      "path": "crates/perl-ci-hygiene",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-core-harness",
+      "version": "0.17.0",
+      "path": "crates/perl-core-harness",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-core-harness-types",
+      "version": "0.17.0",
+      "path": "crates/perl-core-harness-types",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-core-test-runner",
+      "version": "0.17.0",
+      "path": "crates/perl-core-test-runner",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-corpus",
+      "version": "0.17.0",
+      "path": "crates/perl-corpus",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-dap",
+      "version": "0.17.0",
+      "path": "crates/perl-dap",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-diagnostics",
+      "version": "0.17.0",
+      "path": "crates/perl-diagnostics",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-evidence-envelope",
+      "version": "0.17.0",
+      "path": "crates/perl-evidence-envelope",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-incremental-parsing",
+      "version": "0.17.0",
+      "path": "crates/perl-incremental-parsing",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-lexer",
+      "version": "0.17.0",
+      "path": "crates/perl-lexer",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-line-index",
+      "version": "0.17.0",
+      "path": "crates/perl-line-index",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-lsp-perltidy",
+      "version": "0.17.0",
+      "path": "crates/perl-lsp-perltidy",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-lsp-rs",
+      "version": "0.17.0",
+      "path": "crates/perl-lsp-rs",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-lsp-rs-core",
+      "version": "0.17.0",
+      "path": "crates/perl-lsp-rs-core",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-lsp-ux-tests",
+      "version": "0.17.0",
+      "path": "crates/perl-lsp-ux-tests",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-module",
+      "version": "0.17.0",
+      "path": "crates/perl-module",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-operation-trace",
+      "version": "0.17.0",
+      "path": "crates/perl-operation-trace",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-parser",
+      "version": "0.17.0",
+      "path": "crates/perl-parser",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-parser-bench",
+      "version": "0.17.0",
+      "path": "crates/perl-parser-bench",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-parser-comparison",
+      "version": "0.17.0",
+      "path": "crates/perl-parser-comparison",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-parser-core",
+      "version": "0.17.0",
+      "path": "crates/perl-parser-core",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-parser-pest",
+      "version": "0.17.0",
+      "path": "crates/perl-parser-pest",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-pod",
+      "version": "0.17.0",
+      "path": "crates/perl-pod",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-position-tracking",
+      "version": "0.17.0",
+      "path": "crates/perl-position-tracking",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-pragma",
+      "version": "0.17.0",
+      "path": "crates/perl-pragma",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-regex",
+      "version": "0.17.0",
+      "path": "crates/perl-regex",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-release-readiness",
+      "version": "0.17.0",
+      "path": "crates/perl-release-readiness",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-ripr-facts",
+      "version": "0.17.0",
+      "path": "crates/perl-ripr-facts",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-semantic-analyzer",
+      "version": "0.17.0",
+      "path": "crates/perl-semantic-analyzer",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-semantic-facts",
+      "version": "0.17.0",
+      "path": "crates/perl-semantic-facts",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-source-identity",
+      "version": "0.17.0",
+      "path": "crates/perl-source-identity",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-subprocess-runtime",
+      "version": "0.17.0",
+      "path": "crates/perl-subprocess-runtime",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-symbol",
+      "version": "0.17.0",
+      "path": "crates/perl-symbol",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-tdd-support",
+      "version": "0.17.0",
+      "path": "crates/perl-tdd-support",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-test-facts",
+      "version": "0.17.0",
+      "path": "crates/perl-test-facts",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-test-generators",
+      "version": "0.17.0",
+      "path": "crates/perl-test-generators",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-test-must",
+      "version": "0.17.0",
+      "path": "crates/perl-test-must",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-token",
+      "version": "0.17.0",
+      "path": "crates/perl-token",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-tree-sitter-compat",
+      "version": "0.17.0",
+      "path": "crates/perl-tree-sitter-compat",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-uri",
+      "version": "0.17.0",
+      "path": "crates/perl-uri",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-workspace",
+      "version": "0.17.0",
+      "path": "crates/perl-workspace",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perl-workspace-core",
+      "version": "0.17.0",
+      "path": "crates/perl-workspace-core",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "perllsp",
+      "version": "0.17.0",
+      "path": "crates/perllsp",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "tree-sitter-perl-c",
+      "version": "0.17.0",
+      "path": "crates/tree-sitter-perl-c",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "tree-sitter-perl-rs",
+      "version": "0.17.0",
+      "path": "crates/tree-sitter-perl-rs",
+      "publish_disposition": "published",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    },
+    {
+      "name": "xtask",
+      "version": "0.17.0",
+      "path": "xtask",
+      "publish_disposition": "private_workspace_member",
+      "repository_owner": "swarm-product",
+      "integration_mode": "workspace_path"
+    }
+  ],
+  "direct_dependency_edges": [
+    {
+      "from": "perl-ast",
+      "to": "perl-ast-v2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast-v2"
+    },
+    {
+      "from": "perl-ast",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-ast",
+      "to": "perl-token",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-token"
+    },
+    {
+      "from": "perl-ast",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ast",
+      "to": "strum",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ast-v2",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "chrono",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "clap",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "color-eyre",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "proc-macro2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "syn",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "toml",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ci-hygiene",
+      "to": "walkdir",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "chrono",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "color-eyre",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "nix",
+      "dependency_kind": "normal",
+      "optional": false,
+      "target": "cfg(unix)",
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "perl-core-harness-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-core-harness-types"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "tempfile",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness",
+      "to": "winapi",
+      "dependency_kind": "normal",
+      "optional": false,
+      "target": "cfg(windows)",
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness-types",
+      "to": "clap",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness-types",
+      "to": "jsonschema",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness-types",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-harness-types",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-test-runner",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-test-runner",
+      "to": "perl-core-harness-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-core-harness-types"
+    },
+    {
+      "from": "perl-core-test-runner",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-core-test-runner",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-core-test-runner",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "chrono",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "clap",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "glob",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "proptest",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "rand",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "same-file",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "toml",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-corpus",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "clap",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "getrandom",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "libc",
+      "dependency_kind": "dev",
+      "optional": false,
+      "target": "cfg(unix)",
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "nix",
+      "dependency_kind": "normal",
+      "optional": false,
+      "target": "cfg(unix)",
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-lexer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-lsp-rs-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-rs-core"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-module",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-module"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-parser",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-dap",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-dap",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "ropey",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "serde",
+      "dependency_kind": "build",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "serial_test",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "tokio",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "toml",
+      "dependency_kind": "build",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "toml",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-dap",
+      "to": "winapi",
+      "dependency_kind": "normal",
+      "optional": false,
+      "target": "cfg(windows)",
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-diagnostics",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-diagnostics",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-diagnostics",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-evidence-envelope",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-evidence-envelope",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-evidence-envelope",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-evidence-envelope",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-incremental-parsing",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-incremental-parsing",
+      "to": "lsp-types",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-incremental-parsing",
+      "to": "perl-lexer",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "perl-incremental-parsing",
+      "to": "perl-parser",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser"
+    },
+    {
+      "from": "perl-incremental-parsing",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-incremental-parsing",
+      "to": "ropey",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-incremental-parsing",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "memchr",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "perl-parser-core",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "perl-token",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-token"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "phf",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lexer",
+      "to": "unicode-ident",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-line-index",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "perl-subprocess-runtime",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-subprocess-runtime"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-perltidy",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "assert_cmd",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "chrono",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "insta",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "lsp-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "md5",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "parking_lot",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "parking_lot",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-corpus",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-corpus"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-dap",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-dap"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-diagnostics",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-diagnostics"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-lexer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-lsp-perltidy",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-perltidy"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-lsp-rs-core",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-rs-core"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-lsp-rs-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-rs-core"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-lsp-ux-tests",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-ux-tests"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-module",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-module"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-parser",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-pod",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-pod"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-ripr-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ripr-facts"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-semantic-analyzer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-analyzer"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-subprocess-runtime",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-subprocess-runtime"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-symbol",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-symbol"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-tdd-support",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-uri",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-uri"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "perl-workspace",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-workspace"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "predicates",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "ropey",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "serial_test",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "sha2",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "static_assertions",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "tokio",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "toml",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "tracing-subscriber",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "unicode-ident",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "uuid",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "walkdir",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs",
+      "to": "which",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "clap",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "insta",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "jsonschema",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "lsp-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "moka",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-diagnostics",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-diagnostics"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-lexer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-lsp-perltidy",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-perltidy"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-module",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-module"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-parser",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-pragma",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-pragma"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-regex"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-semantic-analyzer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-analyzer"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-subprocess-runtime",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-subprocess-runtime"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-subprocess-runtime",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-subprocess-runtime"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-symbol",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-symbol"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-test-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-facts"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-uri",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-uri"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "perl-workspace",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-workspace"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "rustc-hash",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "serde",
+      "dependency_kind": "build",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "serial_test",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "sha2",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "toml",
+      "dependency_kind": "build",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "toml",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "tracing-appender",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "tracing-subscriber",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "ureq",
+      "dependency_kind": "normal",
+      "optional": true,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-rs-core",
+      "to": "walkdir",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "anyhow",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "chrono",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "tempfile",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "url",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-lsp-ux-tests",
+      "to": "which",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-module",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-module",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "perl-module",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-module",
+      "to": "perl-workspace",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-workspace"
+    },
+    {
+      "from": "perl-module",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-module",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-module",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-module",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-module",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-module",
+      "to": "unicode-ident",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-module",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-operation-trace",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-operation-trace",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": true,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "insta",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "lsp-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-corpus",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-corpus"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-lexer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-line-index",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-line-index"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-lsp-rs-core",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-rs-core"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-module",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-module"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-semantic-analyzer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-analyzer"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-tdd-support",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-test-generators",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-generators"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-uri",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-uri"
+    },
+    {
+      "from": "perl-parser",
+      "to": "perl-workspace",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-workspace"
+    },
+    {
+      "from": "perl-parser",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "regex",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "ropey",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "rstest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "rustc-hash",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "serial_test",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "static_assertions",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": true,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-bench",
+      "to": "perl-parser",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser"
+    },
+    {
+      "from": "perl-parser-bench",
+      "to": "walkdir",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "perl-parser-pest",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-pest"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "tree-sitter",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "tree-sitter-perl-c",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/tree-sitter-perl-c"
+    },
+    {
+      "from": "perl-parser-comparison",
+      "to": "walkdir",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-ast-v2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast-v2"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-lexer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-pragma",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-pragma"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-regex"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "perl-token",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-token"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-core",
+      "to": "tracing-subscriber",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "pest",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "pest_derive",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "sha2",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "stacker",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-parser-pest",
+      "to": "toml",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-pod",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-pod",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "lsp-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "perl-test-generators",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-generators"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "ropey",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-position-tracking",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-pragma",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-pragma",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-pragma",
+      "to": "perl-parser-core",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-pragma",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-regex",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-regex",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-regex",
+      "to": "serde",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-regex",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-regex",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-release-readiness",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-release-readiness",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-release-readiness",
+      "to": "sha2",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-release-readiness",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-release-readiness",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-release-readiness",
+      "to": "toml",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ripr-facts",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ripr-facts",
+      "to": "jsonschema",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ripr-facts",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-ripr-facts",
+      "to": "perl-symbol",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-symbol"
+    },
+    {
+      "from": "perl-ripr-facts",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-ripr-facts",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-ripr-facts",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "perl-module",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-module"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "perl-pod",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-pod"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "perl-symbol",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-symbol"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "perl-test-generators",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-generators"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "rustc-hash",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "static_assertions",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-analyzer",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-facts",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-semantic-facts",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-facts",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-semantic-facts",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-source-identity",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-source-identity",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-source-identity",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-subprocess-runtime",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "anyhow",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "perl-ast",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "perl-parser-core",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-symbol",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "anyhow",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "lsp-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "perl-source-identity",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-source-identity"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "perl-test-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-facts"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "perl-test-must",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "thiserror",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tdd-support",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": true,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-test-generators",
+      "to": "proptest",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-token",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-token",
+      "to": "perl-lexer",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "perl-token",
+      "to": "perl-parser-core",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-token",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-token",
+      "to": "serde",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-token",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tree-sitter-compat",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-tree-sitter-compat",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-tree-sitter-compat",
+      "to": "perl-workspace-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-workspace-core"
+    },
+    {
+      "from": "perl-tree-sitter-compat",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-tree-sitter-compat",
+      "to": "serde_json",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-uri",
+      "to": "percent-encoding",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-uri",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-uri",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-uri",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-uri",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "anyhow",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "criterion",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "insta",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "lsp-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "parking_lot",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "perl-symbol",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-symbol"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "perl-uri",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-uri"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "proptest",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "tracing",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "url",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace",
+      "to": "walkdir",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace-core",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "perl-workspace-core",
+      "to": "perl-pod",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-pod"
+    },
+    {
+      "from": "perl-workspace-core",
+      "to": "perl-pragma",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-pragma"
+    },
+    {
+      "from": "perl-workspace-core",
+      "to": "perl-symbol",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-symbol"
+    },
+    {
+      "from": "perl-workspace-core",
+      "to": "perl-test-must",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-test-must"
+    },
+    {
+      "from": "perl-workspace-core",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perl-workspace-core",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perllsp",
+      "to": "anyhow",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perllsp",
+      "to": "perl-lsp-rs",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-rs"
+    },
+    {
+      "from": "perllsp",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perllsp",
+      "to": "tempfile",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "perllsp",
+      "to": "url",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "tree-sitter-perl-c",
+      "to": "cc",
+      "dependency_kind": "build",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "tree-sitter-perl-c",
+      "to": "insta",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "tree-sitter-perl-c",
+      "to": "tree-sitter",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "tree-sitter-perl-c",
+      "to": "tree-sitter-language",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "tree-sitter-perl-rs",
+      "to": "insta",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "tree-sitter-perl-rs",
+      "to": "perl-ast",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ast"
+    },
+    {
+      "from": "tree-sitter-perl-rs",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "tree-sitter-perl-rs",
+      "to": "perl-position-tracking",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "tree-sitter-perl-rs",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "xtask",
+      "to": "anyhow",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "assert_cmd",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "chrono",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "clap",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "color-eyre",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "console",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "duct",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "filetime",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "flate2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "glob",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "indicatif",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "jsonschema",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "libc",
+      "dependency_kind": "normal",
+      "optional": false,
+      "target": "cfg(unix)",
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "notify",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-ci-hygiene",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-ci-hygiene"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-core-harness",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-core-harness"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-core-harness-types",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-core-harness-types"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-corpus",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-corpus"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-lexer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lexer"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-lsp-rs-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-rs-core"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-lsp-ux-tests",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-lsp-ux-tests"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-parser",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-parser-core",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-parser-core"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-position-tracking",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-position-tracking"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-release-readiness",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-release-readiness"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-semantic-analyzer",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-analyzer"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-semantic-facts",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-semantic-facts"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-tdd-support",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-tdd-support"
+    },
+    {
+      "from": "xtask",
+      "to": "perl-workspace",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/perl-workspace"
+    },
+    {
+      "from": "xtask",
+      "to": "proc-macro2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "procfs",
+      "dependency_kind": "normal",
+      "optional": false,
+      "target": "cfg(target_os = \"linux\")",
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "regex",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "serde",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "serde_json",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "serde_yaml_ng",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "serial_test",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "sha1",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "sha2",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "similar",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "strum",
+      "dependency_kind": "dev",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "syn",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "tar",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "tempfile",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "toml",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "tree-sitter",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "tree-sitter-perl-rs",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "workspace_internal",
+      "to_path": "crates/tree-sitter-perl-rs"
+    },
+    {
+      "from": "xtask",
+      "to": "walkdir",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "winapi",
+      "dependency_kind": "normal",
+      "optional": false,
+      "target": "cfg(windows)",
+      "to_scope": "external"
+    },
+    {
+      "from": "xtask",
+      "to": "zip",
+      "dependency_kind": "normal",
+      "optional": false,
+      "to_scope": "external"
+    }
+  ]
+}
