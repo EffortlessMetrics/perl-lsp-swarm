@@ -206,6 +206,13 @@ class DapProcess:
         try:
             while True:
                 message = read_framed_message(self.process.stdout)
+                # Output events are debuggee telemetry; the scorecard never waits
+                # on them. Drop them before buffering, as `_wait` already did,
+                # so bursts cannot evict responses and lifecycle events or poison
+                # the reader with a bounded-capacity failure. All other messages
+                # stay subject to the queue and retention bounds below.
+                if self._discard_if_unmatched(message):
+                    continue
                 size = _message_size(message)
                 self._retain_message(size)
                 try:
@@ -329,6 +336,8 @@ class DapProcess:
         except OSError as exc:
             raise ScorecardError(
                 f"cannot write DAP request {command!r}: {exc}; "
+                f"adapter_returncode={self.process.poll()}; "
+                f"reader_error={self._reader_error!r}; "
                 f"stderr={self.stderr_tail() or '<empty>'}"
             ) from exc
         return seq

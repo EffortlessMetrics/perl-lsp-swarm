@@ -80,13 +80,35 @@ fn comma_separated_heredoc_stays_an_ordinary_print_list() -> Result<(), String> 
 
 #[test]
 fn shift_operands_do_not_become_filehandle_messages() {
-    for source in ["print $fh << 2;", "my $n = $fh << 2;", "print($fh << 'END');"] {
+    for source in ["print $fh << 2;", "my $n = $fh << 2;"] {
         let ast = clean_ast(source);
         let mut calls = Vec::new();
         indirect_calls(&ast, &mut calls);
         assert!(calls.is_empty(), "{source:?}: {}", ast.to_sexp());
         assert!(contains_left_shift(&ast), "shift lost: {}", ast.to_sexp());
     }
+}
+
+/// #16365 / #18537: a quoted delimiter inside parentheses is a heredoc introducer,
+/// not a left-shift operand. Perl accepts the introducer at compile time even when
+/// the terminator is absent; the parser may surface an unterminated-heredoc
+/// diagnostic without misclassifying the `<<` as shift.
+#[test]
+fn parenthesized_quoted_delimiter_is_not_left_shift() {
+    let source = "print($fh << 'END');";
+    let output = perl_parser_core::Parser::new(source).parse_with_recovery();
+    assert!(
+        !contains_left_shift(&output.ast),
+        "quoted delimiter in parens must not lower to shift: {}",
+        output.ast.to_sexp()
+    );
+    let mut calls = Vec::new();
+    indirect_calls(&output.ast, &mut calls);
+    assert!(
+        calls.is_empty(),
+        "paren heredoc introducer must not become an indirect filehandle call: {}",
+        output.ast.to_sexp()
+    );
 }
 
 #[test]

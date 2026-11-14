@@ -67,6 +67,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: /scripts/ci/ripr_liveness.py
+          sparse-checkout-cone-mode: false
 
       - name: Snapshot ripr runs
         id: snapshot
@@ -84,22 +86,27 @@ jobs:
           # an infra alarm. Fetch two pages so a worst-case predecessor (queue
           # + 31 min analysis) is still scanned inside this snapshot. Dedupe by
           # run id and bound the merge so a noisy history cannot stall the cron.
-          # Residual race: offset pagination can shift a run off the tail
-          # between the two fetches; bounded follow-up in #16386.
+          # Offset pagination can shift the tail between sequential fetches when a
+          # new run starts mid-snapshot; fetch an overlapping page three so the
+          # former 200th run cannot fall off the merged window (#16386).
           {
             gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
-              --jq '[.workflow_runs[] | {id, status, event, created_at, updated_at, head_sha, head_branch,
+              --jq '[.workflow_runs[] | {id, status, conclusion, run_attempt, event, created_at, updated_at, head_sha, head_branch,
                      head_repository: .head_repository.full_name,
                      pull_requests: [.pull_requests[]?.number]}]'
             gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100&page=2" \
-              --jq '[.workflow_runs[] | {id, status, event, created_at, updated_at, head_sha, head_branch,
+              --jq '[.workflow_runs[] | {id, status, conclusion, run_attempt, event, created_at, updated_at, head_sha, head_branch,
+                     head_repository: .head_repository.full_name,
+                     pull_requests: [.pull_requests[]?.number]}]'
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100&page=3" \
+              --jq '[.workflow_runs[] | {id, status, conclusion, run_attempt, event, created_at, updated_at, head_sha, head_branch,
                      head_repository: .head_repository.full_name,
                      pull_requests: [.pull_requests[]?.number]}]'
           } | jq -s 'add | unique_by(.id) | sort_by(.created_at) | reverse | .[0:300]' \
             > target/ripr/liveness/runs.json
 
-          # Only a run that has scheduled nothing needs its job count read, so
-          # the per-run call is bounded to the candidates.
+          # Queued runs and recent cancelled attempts need their job counts
+          # read. Other completions cannot explain an absent gate (#19129).
           python3 - <<'PY'
           import json, os, subprocess, datetime, importlib.util, pathlib
 
@@ -112,16 +119,17 @@ jobs:
 
           repo = os.environ["GITHUB_REPOSITORY"]
           runs = json.load(open("target/ripr/liveness/runs.json"))
+          as_of = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
           for run in runs:
-              if run.get("status") in liveness.UNSTARTED_STATUSES:
+              endpoint = liveness.job_count_endpoint(repo, run, as_of)
+              if endpoint is not None:
                   out = subprocess.run(
-                      ["gh", "api", f"repos/{repo}/actions/runs/{run['id']}/jobs",
-                       "--jq", ".total_count"],
+                      ["gh", "api", endpoint, "--jq", ".total_count"],
                       capture_output=True, text=True, check=False,
                   )
                   run["job_count"] = liveness.job_count_from_api(out.returncode, out.stdout)
               else:
-                  run["job_count"] = 1
+                  run["job_count"] = None if liveness.is_cancelled(run) else 1
 
               # An in-flight run also gets its step detail read. This is the
               # only evidence of progress that exists: GitHub advances a run's
@@ -143,8 +151,9 @@ jobs:
                   )
                   run["progress"] = liveness.progress_from_api(out.returncode, out.stdout)
 
-              # A completed run can neither be a candidate nor hold a group,
-              # so it needs no identity and no call spent on one.
+              # A completed run cannot hold a group, so it needs no PR identity
+              # lookup. Cancelled attempts remain in the snapshot for terminal
+              # classification and correction of earlier wait observations.
               if run.get("status") == "completed":
                   continue
 
@@ -205,9 +214,7 @@ jobs:
           # make this advisory reporter the expensive thing it exists to make
           # cheap. The decision of which heads qualify is the module's, so it
           # is testable rather than a number typed into YAML.
-          as_of = datetime.datetime.now(datetime.timezone.utc)
-          heads = liveness.posted_memory_heads(
-              runs, as_of.replace(microsecond=0))
+          heads = liveness.posted_memory_heads(runs, as_of)
           posted = {}
           for head in sorted(heads):
               out = subprocess.run(

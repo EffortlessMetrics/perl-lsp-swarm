@@ -130,13 +130,16 @@ pub struct RuntimeTuning {
 impl RuntimeTuning {
     /// Default tuning for normal editor sessions.
     ///
-    /// 250ms debounce, full diagnostics, eager workspace indexing on,
-    /// file watchers on.
+    /// 50ms debounce, full diagnostics, eager workspace indexing on,
+    /// file watchers on. The debounce bounds publication coalescing for
+    /// fast typing without imposing a visible quarter-second tick on every
+    /// settled keystroke (#18774); `PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS` /
+    /// `--diagnostic-debounce-ms` restore any other window.
     pub const fn normal_defaults() -> Self {
         Self {
             runtime_mode: RuntimeMode::Normal,
             diagnostic_mode: DiagnosticMode::Normal,
-            diagnostic_debounce_ms: 250,
+            diagnostic_debounce_ms: 50,
             eager_workspace_indexing: true,
             file_watchers: true,
         }
@@ -287,7 +290,9 @@ mod tests {
         let tuning = RuntimeTuning::normal_defaults();
         assert_eq!(tuning.runtime_mode, RuntimeMode::Normal);
         assert_eq!(tuning.diagnostic_mode, DiagnosticMode::Normal);
-        assert_eq!(tuning.diagnostic_debounce_ms, 250);
+        // #18774: 50ms keeps visible coalescing for fast typing without the
+        // quarter-second settled-keystroke tick of the old 250ms default.
+        assert_eq!(tuning.diagnostic_debounce_ms, 50);
         assert!(tuning.eager_workspace_indexing);
         assert!(tuning.file_watchers);
         assert_eq!(tuning, RuntimeTuning::default());

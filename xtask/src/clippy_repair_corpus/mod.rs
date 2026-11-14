@@ -1,4 +1,4 @@
-//! Canonical Clippy repair-falsifier corpus (`ClippyRepairFalsifierCorpusV1`).
+//! Canonical Clippy repair-falsifier corpus (`ClippyRepairFalsifierCorpusV2`).
 //!
 //! The corpus freezes one reusable denominator of known dishonest-repair and
 //! verifier-weakening mutations (#11649) as checked-in fixtures plus a

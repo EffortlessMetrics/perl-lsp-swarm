@@ -1,9 +1,0 @@
-project: product
-component: Language intelligence
-kind: Fixed
-body: "Inline debug values no longer produce false-positive entries for variable names that appear inside comments or POD documentation blocks, and JetBrains-family clients now receive a one-time log message explaining why dynamic file-watcher registration was disabled for them."
-time: 2026-07-23T16:26:48Z
-custom:
-  PR: "4809"
-  Slug: inline-values-comment-pod-and-jetbrains-notice
-  Breaking: "no"

@@ -21,6 +21,7 @@ import os
 import re
 import unittest
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(os.environ.get("A3_REPO_ROOT", Path(__file__).resolve().parents[2]))
 WORKFLOW = REPO_ROOT / ".github/workflows/ripr-liveness.yml"
@@ -102,6 +103,37 @@ def page_calls(script: str) -> list[str]:
 PAGE_PARAM = re.compile(r"(?<![A-Za-z_])page=")
 
 
+def merge_workflow_pages(pages: list[list[dict[str, Any]]], *, bound: int = 300) -> list[dict[str, Any]]:
+    """Mirror the Snapshot step's ``jq -s`` merge used in ripr-liveness.yml."""
+
+    merged: list[dict[str, Any]] = []
+    for page in pages:
+        merged.extend(page)
+    seen: dict[Any, dict[str, Any]] = {}
+    for run in merged:
+        seen.setdefault(run["id"], run)
+    unique = list(seen.values())
+    unique.sort(key=lambda run: run["created_at"])
+    unique.reverse()
+    return unique[:bound]
+
+
+def offset_shift_fixture() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+    """Simulate a new run starting between the page-one and page-two fetches."""
+
+    runs = [
+        {"id": run_id, "created_at": f"2026-01-01T{run_id:02d}:00:00Z"}
+        for run_id in range(1, 201)
+    ]
+    page_one = list(runs[:100])
+    inserted = {"id": 0, "created_at": "2026-01-01T99:00:00Z"}
+    shifted = [inserted, *runs]
+    page_two = list(shifted[100:200])
+    page_three = list(shifted[200:300])
+    predecessor_id = 200
+    return page_one, page_two, page_three, predecessor_id
+
+
 class RiprLivenessPaginationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -109,38 +141,41 @@ class RiprLivenessPaginationTests(unittest.TestCase):
         cls.run_script = "\n".join(find_run_blocks(cls.source))
 
     def assert_page_identity(self, script: str) -> None:
-        """Exactly one unpaged call (page one) and one explicit `page=2`.
+        """Exactly one unpaged call plus explicit `page=2` and `page=3`.
 
         Counting calls alone is not enough: retargeting the first call to
-        `page=2` keeps two calls and a `per_page=100` each while silently
+        `page=2` keeps three calls and a `per_page=100` each while silently
         dropping the newest 100 runs -- the exact omission this contract
         exists to catch.
         """
         calls = page_calls(script)
         self.assertEqual(
-            len(calls), 2,
-            "the snapshot step must make exactly two page calls so a "
-            "worst-case predecessor (queue + ~31 min analysis) is still "
-            "scanned inside the snapshot",
+            len(calls), 3,
+            "the snapshot step must make exactly three page calls so a "
+            "worst-case predecessor (queue + ~31 min analysis) survives an "
+            "offset shift at the two-hundred-run tail (#16386)",
         )
         self.assertEqual(
-            sum(1 for call in calls if PAGE_PARAM.search(call)), 1,
-            "exactly one call must carry an explicit page parameter",
+            sum(1 for call in calls if PAGE_PARAM.search(call)), 2,
+            "exactly two calls must carry an explicit page parameter",
         )
         self.assertEqual(
             sum(1 for call in calls if not PAGE_PARAM.search(call)), 1,
             "exactly one call must be page one (no page parameter), so the "
             "newest runs cannot be silently dropped",
         )
-        # Pin the values, not just the presence of a page parameter:
-        # page=1 fetches page one twice and page=3 skips page two, and both
-        # pass a presence-only count while silently restoring a wrong
-        # window. per_page is likewise part of the window arithmetic.
         paged = [call for call in calls if PAGE_PARAM.search(call)]
         self.assertIn(
-            "page=2", paged[0],
-            "the paged call must fetch page two explicitly; any other "
+            "page=2",
+            paged[0],
+            "the first paged call must fetch page two explicitly; any other "
             "value reintroduces a wrong-window snapshot",
+        )
+        self.assertIn(
+            "page=3",
+            paged[1],
+            "the trailing paged call must fetch page three so a run shifted "
+            "off the page-two tail is still merged (#16386)",
         )
         for call in calls:
             self.assertIn(
@@ -170,7 +205,7 @@ class RiprLivenessPaginationTests(unittest.TestCase):
         )
         self.assertGreaterEqual(
             int(bound.group(1)), 200,
-            "the bound must retain both fetched pages (2 x 100 runs), "
+            "the bound must retain the fetched pages (at least 2 x 100 runs), "
             "otherwise a predecessor past the bound is truncated even "
             "though it was fetched: the one-page defect in merge form",
         )
@@ -178,6 +213,25 @@ class RiprLivenessPaginationTests(unittest.TestCase):
             int(bound.group(1)), 1000,
             "the bound must stay modest; huge snapshots defeat the queueing "
             "argument that motivates this workflow",
+        )
+
+    def test_offset_shift_keeps_the_two_hundredth_predecessor(self) -> None:
+        """A run inserted between page fetches must not drop the old tail (#16386)."""
+
+        page_one, page_two, page_three, predecessor_id = offset_shift_fixture()
+        two_page = merge_workflow_pages([page_one, page_two])
+        three_page = merge_workflow_pages([page_one, page_two, page_three])
+        merged_ids = {run["id"] for run in three_page}
+        self.assertIn(
+            predecessor_id,
+            merged_ids,
+            "the overlapping page-three fetch must retain the predecessor that "
+            "offset pagination shifted off page two",
+        )
+        self.assertNotIn(
+            predecessor_id,
+            {run["id"] for run in two_page},
+            "fixture must reproduce the two-page tail drop the workflow fix addresses",
         )
 
     def test_the_workflow_publishes_via_an_existing_check_run(self) -> None:
@@ -231,17 +285,22 @@ class RiprLivenessPaginationTests(unittest.TestCase):
             self.assert_page_identity(mutated)
 
     def test_a_wrong_page_value_is_rejected(self) -> None:
-        """Negative control: the paged call must name page two, not any page.
+        """Negative control: paged calls must name pages two and three."""
 
-        page=1 fetches page one twice and page=3 skips page two; both keep
-        exactly one explicit page parameter, so a presence-only identity
-        check passes them while the scanned window is silently wrong.
-        """
-        for wrong in ("page=1", "page=3"):
+        for wrong in ("page=1", "page=4"):
             mutated = self.run_script.replace("page=2", wrong, 1)
             self.assertNotEqual(
                 mutated, self.run_script,
-                "the page-value mutation must actually change the script",
+                "the page-two mutation must actually change the script",
+            )
+            with self.assertRaises(AssertionError, msg=f"{wrong} must fail"):
+                self.assert_page_identity(mutated)
+
+        for wrong in ("page=2", "page=4"):
+            mutated = self.run_script.replace("page=3", wrong, 1)
+            self.assertNotEqual(
+                mutated, self.run_script,
+                "the page-three mutation must actually change the script",
             )
             with self.assertRaises(AssertionError, msg=f"{wrong} must fail"):
                 self.assert_page_identity(mutated)
@@ -258,7 +317,7 @@ class RiprLivenessPaginationTests(unittest.TestCase):
 
     def test_a_one_page_snapshot_is_rejected(self) -> None:
         """Negative control: the defect class is a single-page snapshot."""
-        # Strip the second-page call and the jq-merge. The remaining script
+        # Strip the paged calls and the jq-merge. The remaining script
         # must no longer satisfy the contract, so a future regression that
         # drops pagination is caught.
         mutated = self.run_script
@@ -274,8 +333,8 @@ class RiprLivenessPaginationTests(unittest.TestCase):
             mutated,
         )
         self.assertLess(
-            len(mutated_pages), 2,
-            "removing the second-page call must drop the page count below 2 "
+            len(mutated_pages), 3,
+            "removing the paged calls must drop the page count below 3 "
             "so the contract fires fail-closed; the regex above is the "
             "intended mutation surface",
         )

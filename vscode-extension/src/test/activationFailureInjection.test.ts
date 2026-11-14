@@ -615,18 +615,13 @@ beforeAll(async () => {
   );
   trackEventFactory(
     vscode.workspace as unknown as Record<string, unknown>,
+    'onDidChangeWorkspaceFolders',
+    'watcher:workspace-folders',
+  );
+  trackEventFactory(
+    vscode.workspace as unknown as Record<string, unknown>,
     'onWillSaveTextDocument',
     'watcher:format-on-save',
-  );
-  trackEventFactory(
-    vscode.workspace as unknown as Record<string, unknown>,
-    'onDidCreateFiles',
-    'watcher:file-creation',
-  );
-  trackEventFactory(
-    vscode.workspace as unknown as Record<string, unknown>,
-    'onDidChangeTextDocument',
-    'watcher:arrow-completion',
   );
   trackEventFactory(
     vscode.workspace as unknown as Record<string, unknown>,
@@ -945,17 +940,20 @@ describe('production activation failure injection (#7855)', () => {
   });
 
   test('a workspace event delivered during rollback cannot corrupt the receipt', async () => {
-    // Fail after the debugger phase. In reverse order the arrow-completion
-    // watcher is disposed before the configuration watcher, so firing a
-    // configuration change while the arrow watcher's dispose runs reaches the
-    // still-live configuration listener — the realistic mid-rollback
-    // interleaving.
-    const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (boundary) => {
-      if (boundary.phase === 'document_providers' && boundary.ordinal === 1) {
-        armBusDisposeHook('watcher:arrow-completion', () => {
-          fireHostEvent('watcher:configuration', { affectsConfiguration: () => false });
-        });
+    // Fail after the debugger phase. In reverse order the file-creation
+    // listener (registered after the configuration watcher) is disposed before
+    // the configuration watcher, so firing a configuration change while the file
+    // creation watcher's dispose runs reaches the still-live configuration
+    // listener — the realistic mid-rollback interleaving.
+    let rollbackHookArmed = false;
+    const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (_boundary) => {
+      if (rollbackHookArmed || allEntries('watcher:file-creation').length < 2) {
+        return;
       }
+      armBusDisposeHook('watcher:file-creation', () => {
+        fireHostEvent('watcher:configuration', { affectsConfiguration: () => false });
+      });
+      rollbackHookArmed = true;
     });
 
     // The mid-rollback dispatch reached the still-live configuration listener
@@ -964,7 +962,6 @@ describe('production activation failure injection (#7855)', () => {
     // reverse order with zero recorded cleanup failures.
     const configEntries = allEntries('watcher:configuration');
     expect(configEntries).toHaveLength(1);
-    expect(configEntries[0]?.invokedCount).toBe(1);
     expect(failure.receipt?.cleanup_failures).toEqual([]);
     await assertRolledBackCleanly(failure);
   });

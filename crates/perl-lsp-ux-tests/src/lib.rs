@@ -63,7 +63,8 @@ pub mod taxonomy;
 pub mod workspace;
 
 pub use client::{
-    CapabilityViolation, LspEvent, UxClient,
+    CapabilityViolation, DefaultServerRequestDelivery, DefaultServerRequestPolicy, LspEvent,
+    ObservedDefaultServerRequest, UxClient,
     server_request_script::{
         ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
     },

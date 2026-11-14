@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-PINNED_RUST_RELEASE = "1.95.0"
+PINNED_RUST_RELEASE = "1.100.0"
 
 
 class VerificationError(RuntimeError):
@@ -243,7 +243,7 @@ def verify(args: argparse.Namespace) -> None:
     except (OSError, UnicodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as error:
         raise VerificationError(f"repository toolchain pin is invalid: {error}") from error
     if pinned_channel != PINNED_RUST_RELEASE or release != pinned_channel:
-        raise VerificationError("selected Rust toolchain is not pinned release 1.95.0")
+        raise VerificationError("selected Rust toolchain is not pinned release 1.100.0")
 
     workspace = receipt.get("workspace", {})
     if not isinstance(workspace, dict):

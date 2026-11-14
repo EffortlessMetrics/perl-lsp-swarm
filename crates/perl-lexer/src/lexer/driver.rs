@@ -34,6 +34,7 @@ impl<'a> PerlLexer<'a> {
             qw_recovery_enabled: true,
             eof_emitted: false,
             pod_cut_cache: None,
+            stray_cut_opens: Vec::new(),
             scan_limit: None,
             logical_source: None,
             generation: perl_source_identity::SourceGeneration::Unknown,
