@@ -78,9 +78,11 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         keeper = tempfile.TemporaryDirectory()
         self.addCleanup(keeper.cleanup)
         altered = Path(keeper.name) / 'required-merge-surface.sh'
+        current = producer_commands()
+        next_command = len(current) + 1
         altered.write_text(
             SCRIPT.read_text(encoding='utf-8')
-            + '\n# required merge surface command 39: Future contract (required merge surface)\n'
+            + f'\n# required merge surface command {next_command}: Future contract (required merge surface)\n'
             + '_step_index=$((_step_index + 1))\n'
             + 'cargo test -p xtask --test future_contract --locked -- --nocapture\n',
             encoding='utf-8',
@@ -88,7 +90,8 @@ class RequiredMergeSurfaceTests(unittest.TestCase):
         expected = [step['run'].strip() for step in original_steps()]
         actual = producer_commands(altered)
         self.assertEqual(actual[:len(expected)], expected)
-        self.assertEqual(len(actual), len(expected) + 1)
+        self.assertEqual(actual[:len(current)], current)
+        self.assertEqual(len(actual), len(current) + 1)
 
     def test_ci_retains_setup_compile_and_exactly_one_shared_producer(self):
         data = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8'))
