@@ -1882,7 +1882,7 @@ impl SymbolExtractor {
                 scope_id,
                 declaration: Some("has".to_string()),
                 documentation: Some(format!("Moo/Moose attribute `{attribute_name}`")),
-                attributes: metadata.clone(),
+                attributes: Self::attribute_metadata_for_name(attribute_name, &option_map),
             });
         }
 
@@ -2755,6 +2755,13 @@ impl SymbolExtractor {
 
     /// Convert option metadata into hover-friendly key/value tags.
     fn attribute_metadata(option_map: &HashMap<String, String>) -> Vec<String> {
+        Self::attribute_metadata_for_name("", option_map)
+    }
+
+    fn attribute_metadata_for_name(
+        attribute_name: &str,
+        option_map: &HashMap<String, String>,
+    ) -> Vec<String> {
         let preferred_order = [
             "is",
             "isa",
@@ -2775,6 +2782,13 @@ impl SymbolExtractor {
             if let Some(value) = option_map.get(key) {
                 metadata.push(format!("{key}={value}"));
             }
+        }
+
+        if option_map.get("is").is_some_and(|mode| mode == "lazy")
+            && !option_map.contains_key("builder")
+            && !attribute_name.is_empty()
+        {
+            metadata.push(format!("builder=_build_{attribute_name}"));
         }
         metadata
     }
@@ -2813,7 +2827,7 @@ impl SymbolExtractor {
         let mut methods = Vec::new();
         let mut seen = HashSet::new();
 
-        for key in ["accessor", "reader", "writer", "predicate", "clearer", "builder"] {
+        for key in ["accessor", "reader", "writer", "predicate", "clearer"] {
             for name in Self::option_method_names(options_expr, key, attribute_names) {
                 if seen.insert(name.clone()) {
                     methods.push(name);

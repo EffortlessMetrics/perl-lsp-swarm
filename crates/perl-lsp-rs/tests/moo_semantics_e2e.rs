@@ -93,13 +93,16 @@ mod moo_semantics_e2e_tests {
             server.get_completion(uri, completion_line as u32, completion_char as u32);
         let items = completion_items(&completion_response).ok_or("missing completion items")?;
 
-        for expected in ["full_name", "timezone", "has_profile", "clear_profile", "_build_profile"]
-        {
+        for expected in ["full_name", "timezone", "has_profile", "clear_profile"] {
             assert!(
                 items.iter().any(|item| item["label"] == expected),
                 "expected `{expected}` completion, got: {completion_response:#}"
             );
         }
+        assert!(
+            !items.iter().any(|item| item["label"] == "_build_profile"),
+            "builder hooks must not be completion candidates (#1649), got: {completion_response:#}"
+        );
 
         let call_line = code
             .lines()
