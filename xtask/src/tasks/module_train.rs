@@ -50,6 +50,7 @@ pub const MANIFEST_RELATIVE_PATH: &str = ".spec/11625-module-train-graph/train.m
 /// Schema identity consumed by this tool.
 pub const SCHEMA_NAME: &str = "module_train.v1";
 pub const SCHEMA_VERSION: u64 = 1;
+const MAX_KNOWN_SCHEMA_VERSION: u64 = SCHEMA_VERSION;
 
 /// C01's published semantic SHA-256 for the current manifest revision
 /// (closeout of PR #12043 / merge `7cc48f77`). Recorded here as provenance:
@@ -538,6 +539,13 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
         bail!("schema name mismatch: expected {SCHEMA_NAME}, found {}", manifest.schema);
     }
     if manifest.schema_version != SCHEMA_VERSION {
+        if manifest.schema_version > MAX_KNOWN_SCHEMA_VERSION {
+            bail!(
+                "schema_version {} newer than known max {}; upgrade xtask",
+                manifest.schema_version,
+                MAX_KNOWN_SCHEMA_VERSION
+            );
+        }
         bail!(
             "schema_version mismatch: expected {SCHEMA_VERSION}, found {}",
             manifest.schema_version
