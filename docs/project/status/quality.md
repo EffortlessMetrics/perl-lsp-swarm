@@ -42,7 +42,7 @@
 | perl-parser-core | — | 1157 |
 | perl-parser-pest | — | 18 |
 | perl-pod | — | 44 |
-| perl-position-tracking | — | 85 |
+| perl-position-tracking | — | 87 |
 | perl-pragma | — | 1 |
 | perl-regex | — | 103 |
 | perl-release-readiness | — | 150 |
