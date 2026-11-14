@@ -73,7 +73,7 @@ function keysInJsonSnippet(snippet: string, machineKeys: ReadonlySet<string>): s
 }
 
 const AFFIRMATIVE_WORKSPACE_INSTRUCTION =
-  /\b(?:add to|create or edit|create|edit)\b[^\n]*\.vscode\/settings\.json/i;
+  /^(?=.*\b(?:add to|add|create or edit|create|edit|set)\b)(?=.*(?:\.vscode\/settings\.json|\.code-workspace|workspace `.vscode\/settings\.json|in your test workspace))/i;
 
 function keysInInstructionProse(snippet: string, machineKeys: ReadonlySet<string>): string[] {
   const found: string[] = [];
@@ -135,9 +135,9 @@ export function machineScopedKeysInWorkspaceGuidance(
     }
   }
 
-  const fencedJson = /```json\s*\n([\s\S]*?)```/g;
+  const fencedJson = /(`{3,}|~{3,})json\s*\n([\s\S]*?)\1/g;
   for (const match of markdown.matchAll(fencedJson)) {
-    const body = match[1] ?? '';
+    const body = match[2] ?? '';
     const blockStart = lineNumberAtOffset(markdown, match.index ?? 0);
     const beforeLine = blockStart - 1;
 

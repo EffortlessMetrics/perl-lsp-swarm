@@ -182,4 +182,26 @@ describe('user-facing setup guides', () => {
 
     expect(failures).toEqual([]);
   });
+
+  test.each([
+    'Set `perl-lsp.serverPath` in `.vscode/settings.json`.',
+    'Edit team.code-workspace to set `perl-lsp.serverPath`.',
+  ])('rejects machine-scoped keys in actionable workspace prose in any order: %s', (markdown) => {
+    const violations = machineScopedKeysInWorkspaceGuidance(markdown, machineKeys);
+    expect(violations.map((violation) => violation.key)).toContain('perl-lsp.serverPath');
+  });
+
+  test('rejects machine-scoped keys in tilde-fenced JSON examples', () => {
+    const markdown = [
+      'Create `.vscode/settings.json`:',
+      '~~~json',
+      '{',
+      '  "perl-lsp.serverPath": "/tmp/perllsp"',
+      '}',
+      '~~~',
+    ].join('\n');
+
+    const violations = machineScopedKeysInWorkspaceGuidance(markdown, machineKeys);
+    expect(violations.map((violation) => violation.key)).toContain('perl-lsp.serverPath');
+  });
 });

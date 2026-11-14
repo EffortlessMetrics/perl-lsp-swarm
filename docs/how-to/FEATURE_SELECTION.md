@@ -138,6 +138,10 @@ ignored in workspace settings:
 }
 ```
 
+When using this user-level `ga-lock` example, also change or remove any
+`perl-lsp.featureProfile` value in workspace settings (including the
+`production` example above); the workspace value takes precedence.
+
 ### Neovim (via nvim-lspconfig)
 
 ```lua
