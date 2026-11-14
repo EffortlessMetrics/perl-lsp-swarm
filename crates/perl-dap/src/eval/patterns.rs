@@ -153,6 +153,14 @@ pub static REGEX_MUTATION_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::
 pub static ASSIGNMENT_OP_TOKENS_RE: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"([!~^&|+\-*/%=<>]+)"));
 
+/// Dynamic subroutine invocation via `&{ ... }` (deny-list bypass class).
+pub static DEREF_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"&[\s]*\{"));
+
+/// Glob read operator `<*...>` (deny-list bypass class).
+pub static GLOB_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"<\*[^>]*>"));
+
 #[cfg(test)]
 mod tests {
     use super::*;

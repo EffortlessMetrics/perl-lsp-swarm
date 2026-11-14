@@ -151,6 +151,19 @@ impl DebugAdapter {
                         )),
                     };
                 }
+            } else if admission == EvaluateAdmission::TrustedReplExecution {
+                // #1746: trusted REPL skips full screening, but deny-list bypass
+                // classes remain blocked so opt-in cannot resurrect evasion patterns.
+                if let Some(message) = SAFE_EVALUATOR.validate_bypass_confinement(expression) {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "evaluate".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
             }
         }
 
