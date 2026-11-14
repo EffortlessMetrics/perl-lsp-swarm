@@ -30,6 +30,12 @@ fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn st
     {
         let name =
             check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let Some(events) = check.get("events").and_then(TomlValue::as_array) else {
+            continue;
+        };
+        if !events.iter().any(|event| event.as_str() == Some("workflow_dispatch")) {
+            continue;
+        }
         let workflow = check
             .get("workflow")
             .and_then(TomlValue::as_str)
@@ -359,19 +365,26 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
         .and_then(TomlValue::as_array)
         .ok_or("required-checks.toml must declare a checks array")?;
 
-    for check in checks
+    let required_names: BTreeSet<&str> = checks
         .iter()
         .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
-    {
-        let required_name =
-            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
-        let events = check
-            .get("events")
-            .and_then(TomlValue::as_array)
-            .ok_or_else(|| format!("`{required_name}` must declare events"))?;
+        .map(|check| {
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>")
+        })
+        .collect();
+    for required_name in required_names {
+        let has_dispatch_route = checks
+            .iter()
+            .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+            .filter(|check| check.get("name").and_then(TomlValue::as_str) == Some(required_name))
+            .any(|check| {
+                check.get("events").and_then(TomlValue::as_array).is_some_and(|events| {
+                    events.iter().any(|event| event.as_str() == Some("workflow_dispatch"))
+                })
+            });
         assert!(
-            events.iter().any(|event| event.as_str() == Some("workflow_dispatch")),
-            "`{required_name}` must record workflow_dispatch as a supported route"
+            has_dispatch_route,
+            "`{required_name}` must record workflow_dispatch on at least one event registration"
         );
     }
 

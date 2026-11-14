@@ -113,7 +113,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with: { toolchain: 1.100.0 }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
@@ -149,7 +149,7 @@ jobs:
         persist-credentials: false
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
       with:
         toolchain: stable
 
@@ -161,7 +161,7 @@ jobs:
         save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Install just
-      uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+      uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
       with:
         tool: just
 
@@ -466,7 +466,7 @@ jobs:
         persist-credentials: false
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
       with:
         toolchain: stable
 
@@ -510,7 +510,7 @@ jobs:
         persist-credentials: false
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
       with:
         toolchain: stable
 
@@ -552,7 +552,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.100.0
 
@@ -745,7 +745,7 @@ jobs:
           echo "routing_classification=$routing_classification" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # nightly (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # nightly (master)
         with:
           toolchain: nightly
           components: llvm-tools-preview
@@ -758,7 +758,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -835,7 +835,7 @@ jobs:
         if: |
           env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/lcov.info
@@ -881,7 +881,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: stable
 
@@ -914,7 +914,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: stable
 
@@ -1019,7 +1019,7 @@ jobs:
           test "$(git rev-parse 'HEAD^{commit}')" = "$TESTED_SHA"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.100.0
 
@@ -1046,7 +1046,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -1072,7 +1072,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.100.0
 
@@ -1084,7 +1084,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8  # v2.87.28
         with:
           tool: just
 
@@ -1110,7 +1110,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: stable
 
@@ -1145,7 +1145,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.100.0
 
@@ -1277,7 +1277,7 @@ jobs:
         persist-credentials: false
 
     - name: Install Rust toolchain (nightly)
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # nightly (master)
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # nightly (master)
       with:
         toolchain: nightly
         components: rust-src

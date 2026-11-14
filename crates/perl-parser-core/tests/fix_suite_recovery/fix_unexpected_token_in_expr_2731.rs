@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // === Sub-Pattern A: No-arg filetest / builtin before && / || ===
 // Filetest operators like -f, -d, -w used without explicit operand

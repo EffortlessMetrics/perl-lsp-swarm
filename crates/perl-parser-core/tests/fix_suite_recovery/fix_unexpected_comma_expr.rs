@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // === Core comma patterns (regression tests) ===
 
@@ -245,7 +244,7 @@ fn test_core_prefix_preserved_in_function_call_name() -> Result<(), Box<dyn std:
     // name, not silently dropped (#2024). Downstream semantic analysis (hover,
     // goto-definition, override detection) needs to distinguish CORE::open from
     // a plain open() call.
-    use cpan_test_helpers::parse;
+    use super::cpan_test_helpers::parse;
     use perl_parser_core::{Node, NodeKind};
     let ast = parse("CORE::open(my $fh, '<', '/dev/null');");
 

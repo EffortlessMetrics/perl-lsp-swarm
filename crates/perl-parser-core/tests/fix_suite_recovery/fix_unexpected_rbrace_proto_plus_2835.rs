@@ -14,8 +14,7 @@
 //!   Example: `sub myfunc (+) { ... }` — accepts anything that would satisfy
 //!   the scalar-or-reftype check.  Used heavily in List::Util, CPAN modules.
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 use perl_parser_core::NodeKind;
 
 // ---------------------------------------------------------------------------

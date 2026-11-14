@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 9864,
-  "reason": "Distinguish the published crate Rust 1.95 minimum from the Rust 1.100 repository source-build minimum, with measured package inventory.",
+  "owner_issue": 18432,
+  "reason": "Onboarding and What's New resolution (#18432): out/extension.js grows from welcome gating and changelog fallback logic; no files added or removed",
   "base_baseline_file_sha256": "da6796d3f285c415d0b3016fd8bdee2f8991a80c728fbb25090071ad4a194650",
-  "candidate_baseline_file_sha256": "7b0036ac1ceb3334d5609f8f5a64f9df105d859b555d085b631f5b90b2089f0c",
+  "candidate_baseline_file_sha256": "6fc630983acde8e559bb4e10f875f6960c5df2439dccfd09762b1b8c8c223ea3",
   "base_inventory_sha256": "16d16af12d4ff899c299d91d487d0b2297d12ec6fdb0a906b7187051b39019b3",
-  "candidate_inventory_sha256": "356109712a653634ea40a1c6eca935b55f315162257f65d29f469e57bdb6df9b"
+  "candidate_inventory_sha256": "1f39cc7522fa37db92ab26799a3e4140dd7be06439a068c3202fe04e9d90bfbe"
 }
