@@ -1658,6 +1658,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn coalesced_event_records_replaced_job_identity() {
+        let _owner = crate::runtime::text_sync_work::owner_scope(1);
         let _capture = crate::runtime::text_sync_work::capture::test_lock(|| None);
         let coordinator =
             Coordinator::new(Arc::new(ParseWorkerMetrics::default()), Arc::new(|_| {}));
