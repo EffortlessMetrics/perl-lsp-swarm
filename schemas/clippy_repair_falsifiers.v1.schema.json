@@ -5,12 +5,11 @@
   "description": "Canonical shape for ClippyRepairFalsifierCorpusV1 (#11649). The Rust validator in xtask::clippy_repair_corpus is the enforcement authority; this schema documents the same contract for external consumers. Unknown fields are rejected by both.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "corpus", "producer_toolchain", "validated_under_toolchain", "case_count", "cases"],
+  "required": ["schema_version", "corpus", "producer_toolchain", "case_count", "cases"],
   "properties": {
     "schema_version": { "const": 1 },
     "corpus": { "const": "ClippyRepairFalsifierCorpusV1" },
     "producer_toolchain": { "type": "string", "pattern": "^1\\.[0-9]+$" },
-    "validated_under_toolchain": { "type": "string", "pattern": "^1\\.[0-9]+$" },
     "case_count": { "type": "integer", "minimum": 1 },
     "cases": {
       "type": "array",

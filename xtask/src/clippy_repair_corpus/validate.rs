@@ -4,8 +4,8 @@
 //! whole broken surface instead of only the first defect.
 
 use super::model::{
-    AuthorityKind, AuthorityStatus, CORPUS_NAME, CorpusManifest, LoadedCases, RepairFalsifierCase,
-    SCHEMA_VERSION,
+    AuthorityKind, AuthorityStatus, CASE_SCHEMA_VERSION, CORPUS_NAME, CorpusManifest, LoadedCases,
+    RepairFalsifierCase, SCHEMA_VERSION,
 };
 use color_eyre::eyre::{Result, WrapErr, bail};
 use regex::Regex;
@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 pub(crate) const FIXTURE_DIR: &str = "fixtures/clippy_repair_falsifiers";
-const MANIFEST_FILE: &str = "manifest.v1.json";
+const MANIFEST_FILE: &str = "manifest.v2.json";
 const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
 const GATE_POLICY_FILE: &str = ".ci/gate-policy.yaml";
 const CARGO_MANIFEST: &str = "Cargo.toml";
@@ -363,7 +363,7 @@ fn validate_case(case: &RepairFalsifierCase, ctx: &CorpusContext) -> Vec<String>
     if case.applicability.packet_classes.is_empty() || case.applicability.domains.is_empty() {
         violations.push(format!("{id}: applicability must name packet classes and domains"));
     }
-    if case.schema_version != SCHEMA_VERSION {
+    if case.schema_version != CASE_SCHEMA_VERSION {
         violations.push(format!("{}: unsupported case schema version {}", id, case.schema_version));
     }
 
@@ -449,7 +449,7 @@ fn split_symbol_reference(reference: &str) -> std::result::Result<(&str, &str), 
 
 /// The stable case-id grammar, mirroring the schema pattern
 /// `^[A-G][0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*$` from
-/// schemas/clippy_repair_falsifiers.v1.schema.json so the validator and the
+/// schemas/clippy_repair_falsifiers.v2.schema.json so the validator and the
 /// schema cannot drift apart.
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static STABLE_CASE_ID: LazyLock<Regex> = LazyLock::new(|| {
@@ -461,9 +461,22 @@ fn stable_case_id_ok(id: &str) -> bool {
     STABLE_CASE_ID.is_match(id)
 }
 
-/// Whether a recorded toolchain value is a well-formed `MAJOR.MINOR` release
-/// line. Shape only: a provenance record is never compared against the tree.
+fn numeric_component(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Match the schema's raw `^1\.[0-9]+$` producer grammar exactly. History is
+/// deliberately not release-validated against the tree, but whitespace and
+/// other majors remain malformed records.
 fn is_release_line(value: &str) -> bool {
+    let Some((major, minor)) = value.split_once('.') else {
+        return false;
+    };
+    major == "1" && numeric_component(minor) && !minor.contains('.')
+}
+
+/// Match the schema's raw `^1\.[0-9]+\.[0-9]+$` full-channel grammar exactly.
+fn is_release_channel(value: &str) -> bool {
     let mut parts = value.split('.');
     let Some(major) = parts.next() else {
         return false;
@@ -471,63 +484,34 @@ fn is_release_line(value: &str) -> bool {
     let Some(minor) = parts.next() else {
         return false;
     };
-    if parts.next().is_some() {
+    let Some(patch) = parts.next() else {
         return false;
-    }
-    !major.is_empty()
-        && !minor.is_empty()
-        && major.chars().all(|c| c.is_ascii_digit())
-        && minor.chars().all(|c| c.is_ascii_digit())
-}
-
-/// The `MAJOR.MINOR` release line of a pinned toolchain channel.
-///
-/// `rust-toolchain.toml` pins a full release such as `1.100.0`; the corpus
-/// records the release line it was validated under. Parsing the line and
-/// comparing it for equality keeps a different release from being accepted as
-/// a prefix: `1.10` is a prefix of `1.100`, and it names a different release.
-fn release_line(channel: &str) -> Option<String> {
-    let mut parts = channel.split('.');
-    let major = parts.next()?;
-    let minor = parts.next()?;
-    if !is_release_line(&format!("{major}.{minor}")) {
-        return None;
-    }
-    if let Some(patch) = parts.next() {
-        if patch.is_empty() || !patch.chars().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-        if parts.next().is_some() {
-            return None;
-        }
-    }
-    Some(format!("{major}.{minor}"))
+    };
+    major == "1" && parts.next().is_none() && numeric_component(minor) && numeric_component(patch)
 }
 
 /// Check the corpus's two toolchain records against each other and the tree.
 ///
 /// `producer_toolchain` is history: it records the toolchain the packets were
 /// authored under, is shaped but never compared against the tree, and stays
-/// true when the repository moves to a newer toolchain. The field that the
-/// tree can invalidate is `validated_under_toolchain`: it names the release
-/// line the corpus was last validated against, so a toolchain move surfaces
-/// as a demand to re-validate rather than as a stale provenance record.
+/// true when the repository moves to a newer toolchain. `validated_toolchain`
+/// records the full toolchain channel used for the latest validation. Exact
+/// parsed-channel comparison rejects prefix matches and patch-only drift.
 fn check_toolchain_pins(
     manifest: &CorpusManifest,
     toolchain_raw: &str,
     violations: &mut Vec<String>,
 ) {
-    if !is_release_line(manifest.producer_toolchain.trim()) {
+    if !is_release_line(&manifest.producer_toolchain) {
         violations.push(format!(
             "producer_toolchain {} is not a MAJOR.MINOR release line",
             manifest.producer_toolchain
         ));
     }
-    let validated = manifest.validated_under_toolchain.trim();
-    if !is_release_line(validated) {
+    let validated = &manifest.validated_toolchain;
+    if !is_release_channel(validated) {
         violations.push(format!(
-            "validated_under_toolchain {} is not a MAJOR.MINOR release line",
-            manifest.validated_under_toolchain
+            "validated_toolchain {validated} is not a full numeric toolchain channel"
         ));
         return;
     }
@@ -548,13 +532,14 @@ fn check_toolchain_pins(
         ));
         return;
     };
-    let Some(line) = release_line(channel) else {
-        violations.push(format!("{TOOLCHAIN_FILE} channel {channel} is not a numbered release"));
+    if !is_release_channel(channel) {
+        violations
+            .push(format!("{TOOLCHAIN_FILE} channel {channel} is not a full numeric release"));
         return;
-    };
-    if line != validated {
+    }
+    if channel != validated {
         violations.push(format!(
-            "validated_under_toolchain {validated} disagrees with the {TOOLCHAIN_FILE} channel {channel}"
+            "validated_toolchain {validated} disagrees with the {TOOLCHAIN_FILE} channel {channel}"
         ));
     }
 }

@@ -111,22 +111,46 @@ fn manifest_field(raw: &str, field: &str) -> Result<String> {
     Ok(value.to_owned())
 }
 
+fn tree_channel(root: &Path) -> Result<String> {
+    let raw = fs::read_to_string(root.join("rust-toolchain.toml"))?;
+    let parsed: toml::Value = toml::from_str(&raw)?;
+    parsed
+        .get("toolchain")
+        .and_then(|toolchain| toolchain.get("channel"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| color_eyre::eyre::eyre!("rust-toolchain.toml has no channel"))
+}
+
+fn increment_channel_component(channel: &str, component: usize) -> Result<String> {
+    let mut parts: Vec<String> = channel.split('.').map(str::to_owned).collect();
+    let value = parts
+        .get_mut(component)
+        .ok_or_else(|| color_eyre::eyre::eyre!("channel has no component {component}"))?;
+    *value = value
+        .parse::<u32>()?
+        .checked_add(1)
+        .ok_or_else(|| color_eyre::eyre::eyre!("channel component overflow"))?
+        .to_string();
+    Ok(parts.join("."))
+}
+
 /// The corpus records the toolchain it was authored under as history and the
-/// release line it was validated under as the field the tree can invalidate.
+/// exact channel it was validated under as the field the tree can invalidate.
 /// A producer record that no longer matches the tree is history, not a
 /// defect, so it must not raise a violation.
 #[test]
 fn producer_toolchain_history_is_not_compared_against_the_tree() -> Result<()> {
     let (_temp, root) = isolated_repo()?;
-    let manifest_raw = fs::read_to_string(root.join(FIXTURE_DIR).join("manifest.v1.json"))?;
+    let manifest_raw = fs::read_to_string(root.join(FIXTURE_DIR).join("manifest.v2.json"))?;
     let producer = manifest_field(&manifest_raw, "producer_toolchain")?;
-    let validated = manifest_field(&manifest_raw, "validated_under_toolchain")?;
-    let channel_raw = fs::read_to_string(root.join("rust-toolchain.toml"))?;
+    let validated = manifest_field(&manifest_raw, "validated_toolchain")?;
+    let channel = tree_channel(&root)?;
     if producer == validated {
         bail!("the corpus must record a producer release distinct from the validated one");
     }
-    if !channel_raw.contains(&validated) {
-        bail!("validated release {validated} is not the tree's pinned channel");
+    if channel != validated {
+        bail!("validated channel {validated} is not the tree's pinned channel {channel}");
     }
     let violations = violations_for(&root)?;
     if violations.iter().any(|v| v.contains("producer_toolchain")) {
@@ -135,37 +159,49 @@ fn producer_toolchain_history_is_not_compared_against_the_tree() -> Result<()> {
     Ok(())
 }
 
-/// A release line that is a prefix of the tree's release names a different
-/// release. `1.10` is a substring of `1.100.0`, so a substring comparison would
-/// accept it; the validator must not.
+/// A shortened channel prefix is not another spelling of the validated full
+/// channel. `1.10` is a substring of `1.100.0`, so substring containment would
+/// accept it; the full-channel validator must not.
 #[test]
 fn toolchain_validation_pin_rejects_a_prefix_release() -> Result<()> {
     let (_temp, root) = isolated_repo()?;
-    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
+    let validated = manifest_field(&fs::read_to_string(&manifest)?, "validated_toolchain")?;
+    let mut parts = validated.split('.');
+    let major = parts.next().ok_or_else(|| color_eyre::eyre::eyre!("missing major"))?;
+    let minor = parts.next().ok_or_else(|| color_eyre::eyre::eyre!("missing minor"))?;
+    let prefix_len = minor
+        .len()
+        .checked_sub(1)
+        .filter(|len| *len > 0)
+        .ok_or_else(|| color_eyre::eyre::eyre!("cannot derive a shorter minor prefix"))?;
+    let prefix = format!("{major}.{}", &minor[..prefix_len]);
     patch_file(
         &manifest,
-        "\"validated_under_toolchain\": \"1.100\"",
-        "\"validated_under_toolchain\": \"1.10\"",
+        &format!("\"validated_toolchain\": \"{validated}\""),
+        &format!("\"validated_toolchain\": \"{prefix}\""),
     )?;
     let violations = violations_for(&root)?;
-    if !violations.iter().any(|v| v.contains("validated_under_toolchain")) {
+    if !violations.iter().any(|v| v.contains("validated_toolchain")) {
         bail!("a prefix release was accepted as the validation pin: {violations:?}");
     }
     Ok(())
 }
 
-/// A validation pin that names a different release must be rejected.
+/// A validation pin that names a different full channel must be rejected.
 #[test]
 fn toolchain_validation_pin_rejects_a_different_release() -> Result<()> {
     let (_temp, root) = isolated_repo()?;
-    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
+    let validated = manifest_field(&fs::read_to_string(&manifest)?, "validated_toolchain")?;
+    let different = increment_channel_component(&validated, 1)?;
     patch_file(
         &manifest,
-        "\"validated_under_toolchain\": \"1.100\"",
-        "\"validated_under_toolchain\": \"1.99\"",
+        &format!("\"validated_toolchain\": \"{validated}\""),
+        &format!("\"validated_toolchain\": \"{different}\""),
     )?;
     let violations = violations_for(&root)?;
-    if !violations.iter().any(|v| v.contains("validated_under_toolchain")) {
+    if !violations.iter().any(|v| v.contains("validated_toolchain")) {
         bail!("a different release was accepted as the validation pin: {violations:?}");
     }
     Ok(())
@@ -176,10 +212,35 @@ fn toolchain_validation_pin_rejects_a_different_release() -> Result<()> {
 #[test]
 fn toolchain_validation_pin_is_compared_against_the_tree_channel() -> Result<()> {
     let (_temp, root) = isolated_repo()?;
-    patch_file(&root.join("rust-toolchain.toml"), "channel = \"1.100.0\"", "channel = \"1.99.0\"")?;
+    let channel = tree_channel(&root)?;
+    let different = increment_channel_component(&channel, 1)?;
+    patch_file(
+        &root.join("rust-toolchain.toml"),
+        &format!("channel = \"{channel}\""),
+        &format!("channel = \"{different}\""),
+    )?;
     let violations = violations_for(&root)?;
-    if !violations.iter().any(|v| v.contains("validated_under_toolchain")) {
+    if !violations.iter().any(|v| v.contains("validated_toolchain")) {
         bail!("moving the tree's channel did not invalidate the validation pin: {violations:?}");
+    }
+    Ok(())
+}
+
+/// Exact-channel comparison also rejects patch-only movement within the same
+/// release line.
+#[test]
+fn toolchain_validation_pin_rejects_patch_only_drift() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let channel = tree_channel(&root)?;
+    let different = increment_channel_component(&channel, 2)?;
+    patch_file(
+        &root.join("rust-toolchain.toml"),
+        &format!("channel = \"{channel}\""),
+        &format!("channel = \"{different}\""),
+    )?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("validated_toolchain")) {
+        bail!("patch-only drift did not invalidate the validation pin: {violations:?}");
     }
     Ok(())
 }
@@ -189,15 +250,68 @@ fn toolchain_validation_pin_is_compared_against_the_tree_channel() -> Result<()>
 #[test]
 fn malformed_producer_toolchain_is_rejected() -> Result<()> {
     let (_temp, root) = isolated_repo()?;
-    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
+    let producer = manifest_field(&fs::read_to_string(&manifest)?, "producer_toolchain")?;
     patch_file(
         &manifest,
-        "\"producer_toolchain\": \"1.95\"",
+        &format!("\"producer_toolchain\": \"{producer}\""),
         "\"producer_toolchain\": \"not-a-release\"",
     )?;
     let violations = violations_for(&root)?;
     if !violations.iter().any(|v| v.contains("producer_toolchain")) {
         bail!("a malformed producer record was accepted: {violations:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn producer_toolchain_must_use_the_schema_major() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
+    let producer = manifest_field(&fs::read_to_string(&manifest)?, "producer_toolchain")?;
+    let invalid_major = format!("2.{}", producer.split_once('.').map_or("95", |(_, minor)| minor));
+    patch_file(
+        &manifest,
+        &format!("\"producer_toolchain\": \"{producer}\""),
+        &format!("\"producer_toolchain\": \"{invalid_major}\""),
+    )?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("producer_toolchain")) {
+        bail!("a producer outside the schema major was accepted: {violations:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn validated_toolchain_rejects_surrounding_whitespace() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
+    let validated = manifest_field(&fs::read_to_string(&manifest)?, "validated_toolchain")?;
+    patch_file(
+        &manifest,
+        &format!("\"validated_toolchain\": \"{validated}\""),
+        &format!("\"validated_toolchain\": \" {validated} \""),
+    )?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("validated_toolchain")) {
+        bail!("whitespace-padded validation pin was accepted: {violations:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_validation_toolchain_fails_closed() -> Result<()> {
+    let (_temp, root) = isolated_repo()?;
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
+    let mut document: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
+    let removed = document.as_object_mut().and_then(|fields| fields.remove("validated_toolchain"));
+    if removed.is_none() {
+        bail!("validation field was already missing");
+    }
+    fs::write(&manifest, serde_json::to_vec_pretty(&document)?)?;
+    let violations = violations_for(&root)?;
+    if !violations.iter().any(|v| v.contains("validated_toolchain")) {
+        bail!("missing validation pin did not fail closed: {violations:?}");
     }
     Ok(())
 }
@@ -217,7 +331,7 @@ fn digest_tampering_without_digest_movement_fails() -> Result<()> {
 #[test]
 fn duplicate_manifest_identity_fails() -> Result<()> {
     let (_temp, root) = isolated_repo()?;
-    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
     // Repoint A02's identity onto A01's ID while keeping its own file name,
     // which must trip uniqueness before layout checks.
     patch_file(
@@ -245,7 +359,7 @@ fn deleted_required_case_cannot_make_validation_green() -> Result<()> {
     {
         bail!("silent file deletion was not detected: {violations_after_file_loss:?}");
     }
-    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
     let raw = fs::read_to_string(&manifest)?;
     let key = raw.find("\"case_id\": \"F39-lib-only-helper-deletion\"").ok_or_else(|| {
         color_eyre::eyre::eyre!("F39 manifest entry not found for deletion probe")
@@ -340,7 +454,7 @@ fn sanctioned_control_leaking_into_mutation_fails() -> Result<()> {
 #[test]
 fn pending_authority_claiming_packet_ready_fails() -> Result<()> {
     let (_temp, root) = isolated_repo()?;
-    let manifest = root.join(FIXTURE_DIR).join("manifest.v1.json");
+    let manifest = root.join(FIXTURE_DIR).join("manifest.v2.json");
     // A05 is pending_owner; flipping its manifest readiness must contradict.
     let raw = fs::read_to_string(&manifest)?;
     let needle = "\"case_id\": \"A05-command-missing-docs-reintroduction\"";
@@ -399,7 +513,7 @@ fn mutable_state_as_stable_identity_fails() -> Result<()> {
     // The manifest must agree with the embedded identity for the case to load;
     // both sides carrying the mutable hash then trips the grammar law.
     patch_file(
-        root.join(FIXTURE_DIR).join("manifest.v1.json").as_path(),
+        root.join(FIXTURE_DIR).join("manifest.v2.json").as_path(),
         "\"case_id\": \"C20-log-only-error-consumption\"",
         &format!("\"case_id\": \"{renamed}\""),
     )?;
@@ -446,7 +560,7 @@ fn self_referential_authority_is_rejected() -> Result<()> {
     patch_file(
         &path,
         "\"status\": \"pending_owner\",\n    \"owner_issue\": 11407,\n    \"unresolved_reason\": \"Consumptive finding-admission transitions (#11407) are unlanded; identity vocabulary exists only in issue prose.\"",
-        "\"status\": \"bound\",\n    \"authority_kind\": \"file_contract\",\n    \"reference\": \"file:fixtures/clippy_repair_falsifiers/manifest.v1.json#corpus\"",
+        "\"status\": \"bound\",\n    \"authority_kind\": \"file_contract\",\n    \"reference\": \"file:fixtures/clippy_repair_falsifiers/manifest.v2.json#corpus\"",
     )?;
     let violations = violations_for(&root)?;
     if !violations.iter().any(|v| v.contains("cites the corpus itself")) {

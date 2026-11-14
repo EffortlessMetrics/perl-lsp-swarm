@@ -5,8 +5,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub(crate) const SCHEMA_VERSION: u32 = 1;
-pub(crate) const CORPUS_NAME: &str = "ClippyRepairFalsifierCorpusV1";
+pub(crate) const SCHEMA_VERSION: u32 = 2;
+pub(crate) const CASE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CORPUS_NAME: &str = "ClippyRepairFalsifierCorpusV2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -290,7 +291,7 @@ pub(crate) struct CorpusManifest {
     /// the validator compares to the tree's pinned channel, so a toolchain move
     /// forces an explicit re-validation instead of silently invalidating a
     /// provenance record.
-    pub(crate) validated_under_toolchain: String,
+    pub(crate) validated_toolchain: String,
     pub(crate) case_count: usize,
     pub(crate) cases: Vec<ManifestCaseEntry>,
 }
