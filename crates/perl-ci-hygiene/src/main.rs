@@ -3624,19 +3624,13 @@ mod tests {
         // The crate-component branch: a path component listed in
         // CI_REPORT_CRATES_EXCLUDE is excluded even though no path component
         // is a test directory and the file name is not a test suffix.
-        assert!(is_excluded_test_path(Path::new(
-            "crates/perl-parser-pest/src/lib.rs"
-        )));
-        assert!(is_excluded_test_path(Path::new(
-            "crates/perl-ci-hygiene/src/main.rs"
-        )));
+        assert!(is_excluded_test_path(Path::new("crates/perl-parser-pest/src/lib.rs")));
+        assert!(is_excluded_test_path(Path::new("crates/perl-ci-hygiene/src/main.rs")));
 
         // The not-excluded tail: no directory component, no test-suffix file
         // name, and no excluded crate component. This is the path whose
         // truth value the final branch now produces directly.
-        assert!(!is_excluded_test_path(Path::new(
-            "crates/perl-workspace/src/lib.rs"
-        )));
+        assert!(!is_excluded_test_path(Path::new("crates/perl-workspace/src/lib.rs")));
     }
 
     #[test]
