@@ -521,4 +521,41 @@ mod newline_policy_tests {
         assert_eq!(cache.position_to_offset(text, 0, 1), 3);
         assert_eq!(index.position_to_offset(0, 1), Some(3));
     }
+
+    // Differential gate for the #18769 documentSymbol conversion swap: the
+    // projection now builds every wire range through `LineStartsCache`
+    // instead of `offset_to_utf16_line_col`, so the two converters must agree
+    // at every offset of a mixed LF/CRLF/bare-CR/BOM/multi-byte corpus before
+    // any call site may switch. Covers every in-range offset plus
+    // past-the-end clamping.
+    #[test]
+    fn line_starts_cache_matches_legacy_offset_conversion_every_offset() {
+        let corpus = concat!(
+            "héllo 😀 line\r\n",
+            "package Foo;\r\n",
+            "\r\n",
+            "sub bar { }\n",
+            "\n",
+            "\tmy $x = \"你 utf16\";\n",
+            "emoji \u{1F9D1}\u{200D}\u{1F4BB} line\n",
+            "bare\rcr line\n",
+            "\u{FEFF}bom line\n",
+            "no trailing newline"
+        );
+        let cache = LineStartsCache::new(corpus);
+        for offset in 0..=corpus.len() {
+            assert_eq!(
+                cache.offset_to_position(corpus, offset),
+                crate::offset_to_utf16_line_col(corpus, offset),
+                "offset {offset} diverged in the mixed-EOL/unicode corpus"
+            );
+        }
+        for offset in corpus.len() + 1..=corpus.len() + 32 {
+            assert_eq!(
+                cache.offset_to_position(corpus, offset),
+                crate::offset_to_utf16_line_col(corpus, offset),
+                "clamped offset {offset} diverged"
+            );
+        }
+    }
 }

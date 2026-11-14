@@ -261,7 +261,10 @@ impl LspServer {
                         perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(
                             &text,
                         );
-                    perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
+                    // AST-path roots span their package extents, so headings
+                    // nest under the enclosing package instead of cluttering
+                    // the top level and duplicating nested subs (#18769).
+                    perl_lsp_rs_core::providers::document_symbols::nest_pod_headings_into_outline(
                         &mut outline,
                         pod_headings,
                     );
@@ -1596,6 +1599,85 @@ mod tests {
         assert!(
             !restored_ranges.is_empty(),
             "accepted full replacement must restore current foldingRange: {restored}"
+        );
+        Ok(())
+    }
+
+    /// Outline shape for an interleaved-POD Moo class through the live
+    /// handler (#18769): the top level holds only the package root, every
+    /// sub and POD heading nests under it, and a POD heading that names a sub
+    /// does not duplicate it. Lives in `--lib` so the `unit_lsp_full` gate
+    /// executes it on every PR.
+    #[test]
+    fn document_symbol_nests_subs_and_pod_under_the_package_without_duplicates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///outline-pod-nesting.pm";
+        let content = "package Store::Inventory;\nuse Moo;\n\n=head1 NAME\n\nStore::Inventory - demo\n\n=head1 SYNOPSIS\n\n    use Store::Inventory;\n\n=cut\n\nhas items => (is => 'ro');\n\n=head2 add_item\n\nAdds an item.\n\n=cut\n\nsub add_item { my ($self, $item) = @_; return $item; }\n\n=head2 NOTES\n\nMore docs.\n\n=cut\n\nsub count_items { my ($self) = @_; return 0; }\n\n1;\n";
+        server.test_apply_did_open(uri, content, 1)?;
+        let result = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("documentSymbol must return a result")?;
+        let roots = result.as_array().ok_or("documentSymbol must return an array")?;
+
+        let root_names: Vec<&str> = roots.iter().filter_map(|r| r["name"].as_str()).collect();
+        assert_eq!(root_names, vec!["Store::Inventory"], "top level is the package only: {result}");
+        let children = roots[0]["children"].as_array().ok_or("package root has no children")?;
+        let child = |name: &str, kind: u64| {
+            children.iter().filter(|c| c["name"] == name && c["kind"] == kind).count()
+        };
+        for sub in ["add_item", "count_items"] {
+            assert_eq!(child(sub, 12), 1, "sub {sub} nests under the package once: {result}");
+        }
+        for heading in ["NAME", "SYNOPSIS", "NOTES"] {
+            assert_eq!(child(heading, 26), 1, "{heading} nests under the package: {result}");
+        }
+        let all_names = document_symbol_names(&result)?;
+        assert_eq!(
+            all_names.iter().filter(|n| n.as_str() == "add_item").count(),
+            1,
+            "=head2 add_item must not duplicate sub add_item: {result}"
+        );
+        Ok(())
+    }
+
+    /// A heading inside a block-form nested package nests under that inner
+    /// package, not under the outer root (#18769 review).
+    #[test]
+    fn document_symbol_nests_pod_under_the_innermost_block_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///outline-pod-inner-package.pm";
+        let content = "package Outer;\n\nsub outer_sub { 1 }\n\npackage Inner {\n\n=head1 INNER_DOC\n\nInner docs.\n\n=cut\n\n    sub inner_sub { 1 }\n}\n\n1;\n";
+        server.test_apply_did_open(uri, content, 1)?;
+        let result = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("documentSymbol must return a result")?;
+
+        fn parent_of<'a>(
+            nodes: &'a Value,
+            target: &str,
+            parent: Option<&'a str>,
+        ) -> Option<&'a str> {
+            for node in nodes.as_array()? {
+                if node["name"] == target {
+                    return parent;
+                }
+                if let Some(found) = parent_of(&node["children"], target, node["name"].as_str()) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        assert_eq!(
+            parent_of(&result, "inner_sub", None),
+            Some("Inner"),
+            "fixture precondition: inner_sub nests under Inner: {result}"
+        );
+        assert_eq!(
+            parent_of(&result, "INNER_DOC", None),
+            Some("Inner"),
+            "POD heading inside package Inner {{}} nests under Inner: {result}"
         );
         Ok(())
     }

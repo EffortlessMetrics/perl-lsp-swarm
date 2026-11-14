@@ -6,7 +6,7 @@
 //! for generated, stale, and dynamic candidates that must stay gated.
 
 use perl_parser_core::ast::Node;
-use perl_position_tracking::WireRange;
+use perl_position_tracking::{LineStartsCache, WirePosition, WireRange};
 use perl_semantic_analyzer::symbol::{ScopeKind, Symbol, SymbolExtractor, SymbolKind, SymbolTable};
 use perl_semantic_facts::{
     AnchorId, Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind,
@@ -23,7 +23,8 @@ mod budget;
 pub use budget::{
     DOCUMENT_SYMBOL_NODE_BUDGET_ID, DocumentSymbolBudgetOutcome, DocumentSymbolProjectionReceipt,
     apply_document_symbol_node_budget, count_document_symbol_nodes,
-    merge_document_symbol_roots_in_source_order, pod_heading_document_symbols,
+    merge_document_symbol_roots_in_source_order, nest_pod_headings_into_outline,
+    pod_heading_document_symbols,
 };
 
 /// LSP-compatible document symbol produced from source-backed compiler facts.
@@ -130,7 +131,16 @@ pub fn source_backed_document_symbols_from_ast(
                 .or_insert(Some(declaration));
         }
     }
-    source_backed_document_symbols_from_table(&symbol_table, source, &declaration_names)
+    // One per-request line-starts index: every wire range below converts
+    // through this cache instead of rescanning the whole source per offset,
+    // which made documentSymbol latency scale as O(symbols x source) (#18769).
+    let line_starts = LineStartsCache::new(source);
+    source_backed_document_symbols_from_table(
+        &symbol_table,
+        source,
+        &declaration_names,
+        &line_starts,
+    )
 }
 
 fn is_namespace_container(symbol: &Symbol) -> bool {
@@ -289,6 +299,7 @@ fn source_backed_document_symbols_from_table(
     symbol_table: &SymbolTable,
     source: &str,
     declaration_names: &DeclarationNames<'_>,
+    line_starts: &LineStartsCache,
 ) -> DocumentSymbolLiveResult {
     let mut all_symbols: Vec<Symbol> = symbol_table
         .symbols
@@ -341,6 +352,7 @@ fn source_backed_document_symbols_from_table(
             declaration_names,
             &mut fact_traces,
             range_override,
+            line_starts,
         ) {
             pending.push(Some(PendingSymbol {
                 document_symbol,
@@ -455,11 +467,12 @@ fn source_backed_document_symbol(
     declaration_names: &DeclarationNames<'_>,
     fact_traces: &mut Vec<ProviderFactTrace>,
     range_override: Option<(usize, usize)>,
+    line_starts: &LineStartsCache,
 ) -> Option<DocumentSymbol> {
     if !is_source_backed(symbol, source) {
         return None;
     }
-    let selection_range = symbol_name_range(source, symbol, declaration_names)?;
+    let selection_range = symbol_name_range(source, symbol, declaration_names, line_starts)?;
 
     fact_traces.push(source_backed_trace());
     Some(DocumentSymbol {
@@ -467,8 +480,8 @@ fn source_backed_document_symbol(
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
         range: range_override
-            .map(|(start, end)| WireRange::from_byte_offsets(source, start, end))
-            .unwrap_or_else(|| symbol_range(source, symbol)),
+            .map(|(start, end)| cached_wire_range(line_starts, source, start, end))
+            .unwrap_or_else(|| symbol_range(source, symbol, line_starts)),
         selection_range,
         children: Vec::new(),
         sort_priority: document_symbol_priority(symbol),
@@ -493,8 +506,29 @@ fn is_source_backed(symbol: &Symbol, source: &str) -> bool {
     symbol.location.start <= symbol.location.end && symbol.location.end <= source.len()
 }
 
-fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
-    WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end)
+/// Convert two byte offsets to a wire range through the shared per-request
+/// [`LineStartsCache`]. Each conversion is one binary search plus a UTF-16
+/// count of the target line only; the legacy
+/// `WireRange::from_byte_offsets` path instead rescanned the source from
+/// byte 0 per offset, dominating documentSymbol latency on large files
+/// (#18769). Parity with `offset_to_utf16_line_col` is pinned by the
+/// differential test in `perl-position-tracking`.
+fn cached_wire_range(
+    line_starts: &LineStartsCache,
+    source: &str,
+    start: usize,
+    end: usize,
+) -> WireRange {
+    let (start_line, start_character) = line_starts.offset_to_position(source, start);
+    let (end_line, end_character) = line_starts.offset_to_position(source, end);
+    WireRange::new(
+        WirePosition::new(start_line, start_character),
+        WirePosition::new(end_line, end_character),
+    )
+}
+
+fn symbol_range(source: &str, symbol: &Symbol, line_starts: &LineStartsCache) -> WireRange {
+    cached_wire_range(line_starts, source, symbol.location.start, symbol.location.end)
 }
 
 /// Project existing canonical package/subroutine/named-method spans. Known missing,
@@ -503,6 +537,7 @@ fn symbol_name_range(
     source: &str,
     symbol: &Symbol,
     declaration_names: &DeclarationNames<'_>,
+    line_starts: &LineStartsCache,
 ) -> Option<WireRange> {
     // The compatibility extractor reclassifies a framework `package` as
     // Class or Role, while its canonical declaration record stays Package
@@ -527,13 +562,13 @@ fn symbol_name_range(
             {
                 return None;
             }
-            return Some(WireRange::from_byte_offsets(source, start, end));
+            return Some(cached_wire_range(line_starts, source, start, end));
         }
     }
     // Compatibility for unported declaration families and synthesized symbols
     // (phasers, typeglob callables, framework members, etc.). This bounded slice
     // does not claim to complete their canonical-span migration under #8183.
-    Some(legacy_symbol_name_range(source, symbol))
+    Some(legacy_symbol_name_range(source, symbol, line_starts))
 }
 
 /// Compatibility name inference for unported declaration families.
@@ -546,25 +581,29 @@ fn symbol_name_range(
 /// If the name cannot be located within the bounds (malformed source, empty name, out-of-range
 /// location), the function falls back to `symbol_range()` — the full declaration span — so that
 /// clients always receive a valid, non-panicking range.
-fn legacy_symbol_name_range(source: &str, symbol: &Symbol) -> WireRange {
+fn legacy_symbol_name_range(
+    source: &str,
+    symbol: &Symbol,
+    line_starts: &LineStartsCache,
+) -> WireRange {
     if symbol.name.is_empty() {
-        return symbol_range(source, symbol);
+        return symbol_range(source, symbol, line_starts);
     }
     let slice = match source.get(symbol.location.start..symbol.location.end) {
         Some(s) => s,
-        None => return symbol_range(source, symbol),
+        None => return symbol_range(source, symbol, line_starts),
     };
     let rel_offset = match slice.find(symbol.name.as_str()) {
         Some(o) => o,
-        None => return symbol_range(source, symbol),
+        None => return symbol_range(source, symbol, line_starts),
     };
     let abs_start = symbol.location.start + rel_offset;
     let abs_end = abs_start + symbol.name.len();
     // Guard: name end must not exceed the symbol's declared bounds.
     if abs_end > symbol.location.end {
-        return symbol_range(source, symbol);
+        return symbol_range(source, symbol, line_starts);
     }
-    WireRange::from_byte_offsets(source, abs_start, abs_end)
+    cached_wire_range(line_starts, source, abs_start, abs_end)
 }
 
 fn document_symbol_kind(symbol: &Symbol) -> u32 {
