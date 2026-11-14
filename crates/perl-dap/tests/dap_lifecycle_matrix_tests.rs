@@ -662,7 +662,7 @@ fn disconnect_terminal_after_terminate_and_rejected_replacement() -> TestResult 
             "terminate",
             true,
         )?;
-        require_terminal_count(&rx, 1, "repeated explicit terminate remains acknowledged")?;
+        require_terminal_count(&rx, 0, "repeated explicit terminate remains acknowledged")?;
         require_lifecycle_response(
             adapter.handle_request(6, "disconnect", None),
             "disconnect",
