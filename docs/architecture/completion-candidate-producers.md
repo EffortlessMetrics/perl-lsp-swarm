@@ -12,6 +12,8 @@ The dispositions below were audited against the shipped (non-test) surface of th
 
 - Digest: `sha256:21e0f9b8d51e0b5c955651f6e6b54fab424dbf58c8307c34c8b5c23345108094`
 - Files (41):
+- Digest: `sha256:933d722c4bedc931c486e8bed7d134d823237a64e40780781a235b4262993bb5`
+- Files (42):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins/catalog.rs`
