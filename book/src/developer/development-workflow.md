@@ -55,9 +55,11 @@ just doctor
 just pr-fast
 ```
 
-Without Nix, install the pinned toolchain through [rustup](https://rustup.rs/) and
-`cargo install just`. The repository pins Rust channel `1.100.0` in `rust-toolchain.toml`
-and currently requires MSRV 1.100.
+Without Nix, install Rust through [rustup](https://rustup.rs/) and `cargo install just`.
+Stay on the stable channel: `rustup default stable`, then `rustup update stable` when you
+want a newer one. You do not need to install the MSRV by hand, because
+`rust-toolchain.toml` selects the pinned build toolchain automatically. The repository
+currently pins Rust channel `1.100.0` and requires MSRV 1.100.
 
 ---
 
