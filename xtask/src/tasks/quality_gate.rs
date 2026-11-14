@@ -1463,27 +1463,34 @@ fn genuine_new_ripr_gap_count(payload: &Value) -> Option<u64> {
     }
 }
 
+fn limitation_touches_rust_path(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.to_ascii_lowercase().contains(".rs"),
+        Value::Array(values) => values.iter().any(limitation_touches_rust_path),
+        Value::Object(fields) => fields.values().any(limitation_touches_rust_path),
+        _ => false,
+    }
+}
+
 fn bounded_non_rust_scope_limitation(limitation: &Value) -> bool {
-    if limitation.get("kind").and_then(Value::as_str) != Some("language_scope_unsupported") {
+    let kind = limitation.get("kind").and_then(Value::as_str);
+    if !matches!(kind, Some("language_scope_unsupported" | "language_adapter_unavailable")) {
         return false;
     }
-    let object = limitation.as_object();
-    let touches_rust_path = object.is_some_and(|fields| {
-        fields.values().filter_map(Value::as_str).any(|text| {
-            let lower = text.to_ascii_lowercase();
-            lower.contains(".rs")
-        })
-    });
-    if touches_rust_path {
+    if limitation_touches_rust_path(limitation) {
         return false;
     }
-    let explicit_non_rust_path = ["path", "file", "file_path"].into_iter().any(|key| {
-        limitation.get(key).and_then(Value::as_str).is_some_and(|path| !path.is_empty())
-    });
-    let bounded_python_preview = limitation
-        .get("bounded_detail")
-        .and_then(Value::as_str)
-        .is_some_and(|detail| detail.contains("Python preview adapter"));
+    let explicit_non_rust_path = kind == Some("language_scope_unsupported")
+        && ["path", "file", "file_path"].into_iter().any(|key| {
+            limitation.get(key).and_then(Value::as_str).is_some_and(|path| !path.is_empty())
+        });
+    let bounded_python_preview =
+        limitation.get("bounded_detail").and_then(Value::as_str).is_some_and(|detail| {
+            let detail = detail.to_ascii_lowercase();
+            detail.contains("python")
+                && detail.contains("preview adapter")
+                && (detail.contains("not enabled") || detail.contains("not available"))
+        });
     explicit_non_rust_path || bounded_python_preview
 }
 
@@ -3163,6 +3170,53 @@ mod tests {
     }
 
     #[test]
+    fn hosted_python_adapter_limitation_is_bounded_but_other_adapters_block() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "hosted-python-preview-head";
+        let receipt = dir.path().join("repo-exposure.json");
+        let mut payload = json!({
+            "schema_version": "0.1",
+            "head_sha": head,
+            "status": "incomplete",
+            "analysis_outcome": {
+                "analysis_complete": false,
+                "outcome": {
+                    "kind": "partial_with_limitations",
+                    "limitations": [{
+                        "affected_items": 5,
+                        "bounded_detail": "python changed 5 file(s), but the preview adapter was not enabled or available",
+                        "kind": "language_adapter_unavailable",
+                        "path": null,
+                        "producer_stage": "language_adapter",
+                        "recovery": {
+                            "detail": "Enable the python preview adapter and re-run the analysis.",
+                            "kind": "enable_language"
+                        }
+                    }]
+                }
+            },
+            "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+        });
+        write_text(&receipt, &payload.to_string())?;
+
+        // Exact limitation shape returned by RIPR 0.11.0 in run 43551000063.
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "present");
+
+        payload["analysis_outcome"]["outcome"]["limitations"][0]["bounded_detail"] =
+            json!("go adapter was unavailable");
+        write_text(&receipt, &payload.to_string())?;
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+
+        payload["analysis_outcome"]["outcome"]["limitations"][0]["bounded_detail"] =
+            json!("python changed 5 file(s), but the preview adapter was not enabled or available");
+        payload["analysis_outcome"]["outcome"]["limitations"][0]["recovery"]["detail"] =
+            json!("Re-run analysis for crates/perl-parser/src/lib.rs");
+        write_text(&receipt, &payload.to_string())?;
+        assert_eq!(read_ripr_pr_receipt(&receipt, head).status, "incomplete");
+        Ok(())
+    }
+
+    #[test]
     fn review_guidance_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
         let dir = tempdir()?;
         let head = "schema-head";
@@ -4678,71 +4732,94 @@ mod tests {
         let dir = tempdir()?;
         let head = "review-head";
         let reason = "review_guidance_oversized: 4554 closure input files exceed the review-guidance ceiling (RIPR_REVIEW_GUIDANCE_MAX_INDEX_FILES=1200); the guidance pass was not run to protect runner memory.";
-        fs::write(
-            dir.path().join("ripr-plus.json"),
-            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
-        )?;
-        fs::write(
-            dir.path().join("repo-exposure.json"),
-            json!({
-                "schema_version": "0.1",
-                "head_sha": head,
-                "base": "origin/main",
-                "base_sha": "base-sha",
-                "analysis_outcome": {
-                    "analysis_complete": false,
-                    "outcome": {
-                        "kind": "partial_with_limitations",
-                        "limitations": [{
-                            "kind": "language_scope_unsupported",
-                            "bounded_detail": "Python preview adapter is not enabled"
-                        }]
+        for (limitation, expected_detail) in [
+            (
+                json!({
+                    "kind": "language_scope_unsupported",
+                    "bounded_detail": "Python preview adapter is not enabled"
+                }),
+                "Python preview adapter is not enabled",
+            ),
+            (
+                json!({
+                    "affected_items": 5,
+                    "bounded_detail": "python changed 5 file(s), but the preview adapter was not enabled or available",
+                    "kind": "language_adapter_unavailable",
+                    "path": null,
+                    "producer_stage": "language_adapter",
+                    "recovery": {
+                        "detail": "Enable the python preview adapter and re-run the analysis.",
+                        "kind": "enable_language"
                     }
-                },
-                "summary": {
-                    "severe_gaps": 0,
-                    "reachable_unrevealed": 0,
-                    "no_static_path": 0
-                }
-            })
-            .to_string(),
-        )?;
-        fs::write(
-            dir.path().join("comments.json"),
-            json!({
-                "schema_version": "0.1",
-                "head_sha": head,
-                "status": "incomplete",
-                "comments": [],
-                "summary_only": [],
-                "suppressed": [],
-                "warnings": [{ "kind": "review_guidance_oversized", "message": reason }]
-            })
-            .to_string(),
-        )?;
-        let args = new_ripr_args(dir.path())?;
+                }),
+                "python changed 5 file(s), but the preview adapter was not enabled or available",
+            ),
+        ] {
+            fs::write(
+                dir.path().join("ripr-plus.json"),
+                json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
+            )?;
+            fs::write(
+                dir.path().join("repo-exposure.json"),
+                json!({
+                    "schema_version": "0.1",
+                    "head_sha": head,
+                    "base": "origin/main",
+                    "base_sha": "base-sha",
+                    "analysis_outcome": {
+                        "analysis_complete": false,
+                        "outcome": {
+                            "kind": "partial_with_limitations",
+                            "limitations": [limitation]
+                        }
+                    },
+                    "summary": {
+                        "severe_gaps": 0,
+                        "reachable_unrevealed": 0,
+                        "no_static_path": 0
+                    }
+                })
+                .to_string(),
+            )?;
+            fs::write(
+                dir.path().join("comments.json"),
+                json!({
+                    "schema_version": "0.1",
+                    "head_sha": head,
+                    "status": "incomplete",
+                    "comments": [],
+                    "summary_only": [],
+                    "suppressed": [],
+                    "warnings": [{ "kind": "review_guidance_oversized", "message": reason }]
+                })
+                .to_string(),
+            )?;
+            let args = new_ripr_args(dir.path())?;
 
-        let evaluation = evaluate_new_ripr(head, &args, None)?;
+            let evaluation = evaluate_new_ripr(head, &args, None)?;
 
-        assert!(
-            !evaluation.failed,
-            "a bounded non-Rust limitation must not block required Rust proof"
-        );
-        assert_eq!(evaluation.receipt["decision"], json!("pass"));
-        assert_eq!(evaluation.receipt.pointer("/ripr_pr/status"), Some(&json!("present")));
-        assert_eq!(
-            evaluation.receipt.pointer("/ripr_pr/analysis_outcome/outcome/kind"),
-            Some(&json!("partial_with_limitations"))
-        );
-        assert_eq!(
-            evaluation.receipt.pointer("/review_guidance/unavailable_reason"),
-            Some(&json!(reason))
-        );
-        assert!(
-            evaluation.markdown.contains("raw check analysis outcome: `partial_with_limitations`")
-        );
-        assert!(evaluation.markdown.contains("Python preview adapter is not enabled"));
-        assert!(evaluation.markdown.contains(reason));
+            assert!(
+                !evaluation.failed,
+                "a bounded non-Rust limitation must not block required Rust proof"
+            );
+            assert_eq!(evaluation.receipt["decision"], json!("pass"));
+            assert_eq!(evaluation.receipt.pointer("/ripr_pr/status"), Some(&json!("present")));
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_pr/analysis_outcome/outcome/kind"),
+                Some(&json!("partial_with_limitations"))
+            );
+            assert_eq!(
+                evaluation.receipt.pointer("/review_guidance/unavailable_reason"),
+                Some(&json!(reason))
+            );
+            assert!(
+                evaluation
+                    .markdown
+                    .contains("raw check analysis outcome: `partial_with_limitations`")
+            );
+            assert!(evaluation.markdown.contains(expected_detail));
+            assert!(evaluation.markdown.contains(reason));
+        }
         Ok(())
     }
 

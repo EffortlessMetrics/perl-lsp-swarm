@@ -234,8 +234,10 @@ never infer success from emptiness.
   guidance can supply it. Missing, stale, malformed, or required-scope partial
   analysis remains `NOT_PROVEN` and blocks, including every limitation that names
   a Rust path. A bounded `language_scope_unsupported` limitation confined to a
-  non-Rust file does not add a blocker when the required raw gap count is zero;
-  its reason remains visible rather than being relabelled as clean. Fallback
+  non-Rust file, or RIPR 0.11.0's `language_adapter_unavailable` limitation for
+  the named Python-preview absence, does not add a blocker when the required raw
+  gap count is zero; its reason remains visible rather than being relabelled as
+  clean. Other adapter-unavailable limitations still block. Fallback
   suggested-proof text is generic, not analyzer-derived, and the advisory receipt
   warning says so.
 - Emits non-blocking warning annotations from `comments[]` only.
