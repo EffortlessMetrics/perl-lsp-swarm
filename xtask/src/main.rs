@@ -72,10 +72,11 @@ use tasks::{
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
     shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
     supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
-    targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
-    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
-    workflow_authority_inventory, workflow_policy_lint, workflow_trigger_lint,
-    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
+    targeted_checks, test, test_lsp, train_edge_contract, tree_sitter_scanner_gate, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
+    workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
+    writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -444,6 +445,14 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Synchronize or verify the Tree-sitter Perl external scanner authority
+    /// and active projections (#7261).
+    #[command(name = "tree-sitter-scanner")]
+    TreeSitterScanner {
+        #[command(subcommand)]
+        command: TreeSitterScannerCommand,
     },
 
     /// Reconcile `policy/kwalitee-namespace-inventory.toml` against every live
@@ -5293,6 +5302,16 @@ enum PerlCorpusTrainCommand {
 }
 
 #[derive(Subcommand)]
+enum TreeSitterScannerCommand {
+    /// Copy authority bytes to every active projection and refresh fingerprints.
+    Sync,
+    /// Fail when authority, projections, or ledger provenance drift.
+    Check,
+    /// Run the check gate and prove `tree-sitter-perl-c` still compiles.
+    PackageSmoke,
+}
+
+#[derive(Subcommand)]
 enum ModuleTrainCommand {
     /// Project every stable node into its typed exact current-tree state.
     ///
@@ -6103,6 +6122,11 @@ fn run_cli(cli: Cli) -> Result<()> {
             no_publish_side_effects::run(inventory, topology)
         }
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::TreeSitterScanner { command } => match command {
+            TreeSitterScannerCommand::Sync => tree_sitter_scanner_gate::run_sync(),
+            TreeSitterScannerCommand::Check => tree_sitter_scanner_gate::run_check(),
+            TreeSitterScannerCommand::PackageSmoke => tree_sitter_scanner_gate::run_package_smoke(),
+        },
         Commands::KwaliteeInventory { check, scaffold, root } => {
             kwalitee_namespace_inventory::run(check, scaffold, root)
         }

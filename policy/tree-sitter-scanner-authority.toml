@@ -1,0 +1,36 @@
+# Tree-sitter Perl external scanner source authority (#7261).
+#
+# Hand-edited inventory and provenance. Regenerate active projections with:
+#   cargo xtask tree-sitter-scanner sync
+# Fail closed on drift with:
+#   cargo xtask tree-sitter-scanner check
+
+schema_version = "tree_sitter_scanner_authority.v1"
+controlling_issue = 7261
+sync_command = "cargo xtask tree-sitter-scanner sync"
+check_command = "cargo xtask tree-sitter-scanner check"
+generator = "xtask tree_sitter_scanner v1 (byte copy, LF-normalized)"
+
+[authority]
+path = "tree-sitter-perl/src/scanner.c"
+role = "authoritative"
+content_sha256 = "27f2f5cf8e2562bb1727231de53291c43aba67c6362a749cf878caa2261b3f77"
+note = "Sole behavior-owning hand-written external scanner in this repository."
+
+[[projection]]
+path = "crates/tree-sitter-perl-c/c-src/scanner.c"
+role = "active_projection"
+authority = "tree-sitter-perl/src/scanner.c"
+consumer = "crates/tree-sitter-perl-c/build.rs (cc compile + crates.io include)"
+note = "Exact checked projection consumed by the published comparison crate."
+
+[[archive]]
+path = "archive/crates/tree-sitter-perl-rs/src/scanner.c"
+role = "archived"
+note = "Historical harness snapshot; excluded from active synchronization comparisons."
+
+[[archive]]
+path = "archive/legacy-crates/perl-parser-pest/src/scanner.c"
+role = "archived"
+optional = true
+note = "Legacy path referenced by .gitattributes; absent paths are ignored."

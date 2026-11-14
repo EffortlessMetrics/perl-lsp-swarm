@@ -77,6 +77,21 @@ fn check_vendored_projection_drift(violations: &mut Vec<String>) {
     );
 }
 
+fn check_tree_sitter_scanner_drift(violations: &mut Vec<String>) {
+    let root = match crate::utils::project_root() {
+        Ok(root) => root,
+        Err(error) => {
+            violations.push(format!("SCANNER_DRIFT_READ: cannot resolve project root: {error}"));
+            return;
+        }
+    };
+    violations.extend(
+        xtask::tree_sitter_scanner::check(&root)
+            .into_iter()
+            .map(|violation| violation.display_line()),
+    );
+}
+
 fn snapshot_comparable_feature_ids() -> BTreeSet<String> {
     let mut ids: BTreeSet<String> =
         catalog_advertised_feature_ids(FeatureProfile::All).into_iter().map(String::from).collect();
@@ -158,6 +173,7 @@ fn check_invariants() -> Result<()> {
     }
 
     check_vendored_projection_drift(&mut violations);
+    check_tree_sitter_scanner_drift(&mut violations);
 
     if !violations.is_empty() {
         let violations_count = violations.len();
