@@ -3234,6 +3234,31 @@ print $result;
     }
 
     #[test]
+    fn code_action_runtime_offers_inline_variable() {
+        let server = LspServer::new();
+        let uri = "file:///inline_test.pl";
+        let text = "my $extracted = 1 + 2;\nprint $extracted;\n";
+        open_test_document(&server, uri, text);
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 4 },
+                "end": { "line": 0, "character": 13 }
+            },
+            "context": { "diagnostics": [], "only": ["refactor.inline"] }
+        })));
+
+        let actions =
+            response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+        assert!(
+            actions.iter().any(|a| a["kind"] == "refactor.inline" && a.get("edit").is_some()),
+            "expected refactor.inline action on initialized lexical, got: {actions:?}"
+        );
+    }
+
+    #[test]
     fn code_action_runtime_emits_source_fix_all_when_multiple_quick_fixes_exist() {
         // A script with no pragmas and an undefined variable triggers at
         // least two quick fixes (add `use strict`, add `use warnings`).
